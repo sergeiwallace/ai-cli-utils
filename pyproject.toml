@@ -1,5 +1,5 @@
 [project]
-name = "ai-cli"
+name = "ai-cli-utils"
 version = "0.1.0"
 description = "Unified AI session manager for Claude Code and Gemini CLI"
 readme = "README.md"
