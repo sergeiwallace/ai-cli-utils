@@ -579,11 +579,57 @@ def get_engine_script(
     ai sync watch &>/dev/null &
     ai memory watch &>/dev/null &
 
+    # iTerm2 fleet management: set profile, rolling tab color, badge, tab title
+    # Only runs when TERM_PROGRAM is iTerm.app (skipped on Ghostty, Windows Terminal, etc.)
+    _iterm2_fleet_setup() {{
+      [[ "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
+      local num="$1" stype="$2" sname="$3"
+
+      # Profile switch
+      case "$stype" in
+        cc)    printf '\\e]1337;SetProfile=ClaudeCode\\a' ;;
+        shell) printf '\\e]1337;SetProfile=ShellUtility\\a' ;;
+        *)     return 0 ;;
+      esac
+
+      # Rolling tab color (10 distinct colors, assigned by session number)
+      if [[ "$stype" == "cc" ]]; then
+        local colors=("6440dc" "4a90d9" "2ecc71" "e67e22" "e74c3c"
+                      "1abc9c" "9b59b6" "f39c12" "3498db" "e91e63")
+        local idx=$(( (num - 1) % ${{#colors[@]}} ))
+        printf '\\e]1337;SetColors=tab=%s\\a' "${{colors[$idx]}}"
+      fi
+
+      # User variables for badge interpolation
+      printf '\\e]1337;SetUserVar=%s=%s\\a' \
+        "sessionType" "$(echo -n "$stype" | base64)"
+      printf '\\e]1337;SetUserVar=%s=%s\\a' \
+        "sessionNum" "$(echo -n "$num" | base64)"
+      printf '\\e]1337;SetUserVar=%s=%s\\a' \
+        "tmuxSession" "$(echo -n "$sname" | base64)"
+
+      # Badge
+      local badge_text="$stype sw-$num"
+      printf '\\e]1337;SetBadgeFormat=%s\\a' \
+        "$(echo -n "$badge_text" | base64)"
+
+      # Tab title
+      printf '\\e]0;%s sw-%s\\a' "$stype" "$num"
+    }}
+
+    # Extract session number from ai_name (e.g., "sw-3" → "3")
+    _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
+    _session_type="cc"
+    [[ "$engine" == "g" ]] && _session_type="gemini"
+    _iterm2_fleet_setup "$_session_num" "$_session_type" "$tmux_session"
+
     trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
       start_ts=$(date +%s)
+      # Re-emit iTerm2 setup on each loop (restores color/badge after reconnect)
+      _iterm2_fleet_setup "$_session_num" "$_session_type" "$tmux_session"
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
