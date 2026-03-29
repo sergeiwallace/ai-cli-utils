@@ -83,7 +83,7 @@ NEVER generate binary images.
 
 | # | Type | Topic | Task | Model | Status |
 |---|------|-------|------|-------|--------|
-| R-2 | Research | GitHub repo automation & ecosystem tooling | AI-CLI-3 | opus researcher | Running |
+| R-2 | Research | GitHub repo automation & ecosystem tooling | AI-CLI-3 | opus researcher | Complete |
 
 ### Completed
 
@@ -96,7 +96,7 @@ NEVER generate binary images.
 
 ### R-2: GitHub Repository Automation & Ecosystem Tooling
 
-**Status:** Running
+**Status:** Complete
 **Task:** AI-CLI-3 (extended to cover full remaining professionalization gaps)
 **Target doc:** `docs/research/github-repo-automation.md`
 **Model:** `opus researcher`
