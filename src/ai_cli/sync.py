@@ -580,7 +580,8 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
     if not history_path.exists():
         return 0
 
-    projects_base = Path.home() / "projects"
+    from .main import _get_projects_dir
+    projects_base = _get_projects_dir()
     entries = history_path.read_text().strip().split("\n")
     existing_projects = set()
     main_entries_by_project: dict[str, list[str]] = {}
@@ -803,7 +804,8 @@ def _replicate_to_worktrees(
     """
     import json as _json
 
-    projects_base = Path.home() / "projects"
+    from .main import _get_projects_dir
+    projects_base = _get_projects_dir()
     count = 0
 
     for cc_dir in sorted(cc_projects_dir.iterdir()):

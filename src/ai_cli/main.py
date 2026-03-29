@@ -66,8 +66,10 @@ stale_session_timeout = 15
 # remote_url = "ssh://user@host/home/user/.claude-sync-staging.git"
 
 [project]
-## Name of the main project directory under ~/projects/
+## Name of the main project directory
 # main_project = "myproject"
+## Base directory for all projects (default: ~/projects)
+# projects_dir = "~/projects"
 
 [messaging]
 # NATS server URLs for fleet messaging (heartbeats, events)
@@ -123,10 +125,23 @@ def save_session_map(d, engine="c"):
 WORKTREE_DIR = ".worktrees"
 
 
+def _get_projects_dir() -> Path:
+    """Return the base directory for all projects. Configurable via [project] projects_dir."""
+    try:
+        cfg = load_config().get("project", {})
+        custom = cfg.get("projects_dir")
+        if custom:
+            return Path(custom).expanduser()
+    except Exception:
+        pass
+    return Path.home() / "projects"
+
+
 def _find_project_dir(name: str, _home: Path = None) -> Path:
-    """Find a project directory under ~/projects."""
-    home = _home if _home is not None else Path.home()
-    return home / "projects" / name
+    """Find a project directory under the configured projects_dir (default: ~/projects)."""
+    if _home is not None:
+        return _home / "projects" / name
+    return _get_projects_dir() / name
 
 
 def get_current_project_name() -> str:
