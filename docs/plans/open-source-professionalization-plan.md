@@ -215,13 +215,24 @@ All tasks are independent and can be done in a single session.
 ## Open Questions
 
 1. **Repo name mismatch** — GitHub repo is `ai-cli`, PyPI package is `ai-cli-utils`. Rename repo to match, or keep them different?
-> -
 
-2. **Installation method** — Should README recommend `pipx install ai-cli-utils` (isolated) or `uv tool install ai-cli-utils` (what we use)?
-> -
+> **Recommendation: Keep them different.** Many popular projects have repo/PyPI name mismatches (Pillow, beautifulsoup4). Renaming creates churn across the ecosystem (directory paths, sergei.toml, memory files, deploy scripts, editable installs on 3 machines) for minimal user benefit. Only you see the repo name (contributor) and PyPI name (installer). Rename later when going public if alignment matters then.
+>
+> **Risks if we did rename (for reference):**
+> - Local directory `~/projects/ai-cli/` needs renaming on Mac + server
+> - `sergei.toml` path entry needs updating
+> - Memory files and CLAUDE.md deploy commands reference old path
+> - All editable installs (`uv tool install -e ~/projects/ai-cli`) break until path updated
+> - GitHub auto-redirects old URLs (permanent redirect, low risk)
+> - PyPI package name stays `ai-cli-utils` regardless (no PyPI impact)
+
+2. **Installation method** — Should README recommend `pipx install ai-cli-utils` or `uv tool install ai-cli-utils`?
+
+> **Recommendation: `uv tool install` as primary, `pipx` as alternative.** uv is the modern standard, faster than pipx, and what we already use. Document both for users without uv.
 
 3. **Trusted Publisher setup** — Requires manual configuration on pypi.org. Should the implementing session do this, or is it a separate manual step?
-> -
+
+> **Recommendation: Include as a manual step in the batch.** ~5 minutes on pypi.org — fill in repo name, workflow filename, environment name. The implementing session can document the steps but the user needs to do the PyPI web UI part.
 
 ---
 
