@@ -65,6 +65,7 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
 **Option B: Foundation now, polish later.** This gives us CI, automated publishing, badges, CHANGELOG, and community files — the things that matter for a professional repo — without blocking on the GIF or README rewrite. The README rewrite is better done after CI is set up (need CI URLs for badges) and after the current feature burst stabilizes.
 
 **Now (this batch):**
+- **Generalize: remove all sergei/humanware-specific references** (prerequisite — must be done first)
 - CI workflow (lint + test)
 - Publish workflow (PyPI on tag via Trusted Publishers)
 - Shields.io badges in README
@@ -83,6 +84,39 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
 - MkDocs docs site (when README exceeds ~500 lines)
 
 ## Task Breakdown
+
+### T-00: Generalize — remove sergei/humanware-specific references
+
+**Size:** L
+**Batch:** 1 (DO THIS FIRST — other tasks depend on clean generic code)
+
+Remove all hardcoded references to `sergei`, `humanware`, and personal paths so the package works for any user out of the box.
+
+**Changes required:**
+
+1. **`SERGEI_TOML` → `PROJECT_REGISTRY`**: Rename the concept. The path is derived from config: `~/.config/ai-cli/projects.toml` (user-level) or `{main_project_dir}/{project_name}.toml` (project-level). Both should be checked, project-level first.
+
+2. **`_get_main_project_name()` default**: Change from `"sergei"` to `None`. If no `main_project` is configured and no project TOML is found, features that depend on it (project aliases, cross-project sync) gracefully degrade — they just don't work until configured.
+
+3. **`DEFAULT_SERVER_HOST`**: Remove hardcoded `"sergei@178.104.70.139"`. If `[sync] remote_host` is not set in config.toml, sync commands should print a helpful error message pointing to config setup.
+
+4. **`humanware` section reference**: The code reads `config.get("humanware", {}).get("task_prefix", "SW")` for the main project. Generalize: read `config.get("project", {}).get("task_prefix")` — or better, just look up the project name in the `[[projects]]` list like all other projects.
+
+5. **Comments/docstrings**: Replace `/home/sergei/...` and `/Users/sergeiwallace/...` path examples with generic `/home/user/...` and `/Users/username/...`.
+
+6. **Help text**: Replace `sergei`, `aurion` examples with generic `myproject`, `webapp`.
+
+7. **Default config template (`DEFAULT_CONFIG`)**: Already clean, verify no sergei references remain.
+
+8. **`sync.py`**: Remove hardcoded `DEFAULT_SERVER_HOST`. Replace path examples in docstrings. The `_MAC_HOME` and `_SERVER_HOME` constants for path translation need to be derived from config or auto-detected, not hardcoded.
+
+**Acceptance criteria:**
+- [ ] `grep -rn "sergei\|humanware" src/ai_cli/` returns 0 results (excluding test fixtures if any)
+- [ ] Package works with empty config (graceful degradation for unconfigured features)
+- [ ] Package works with a minimal config (`[remote] host = ...` + `[project] main_project = ...`)
+- [ ] All existing functionality preserved for configured users
+
+**Dependencies:** None — do this first.
 
 ### T-01: CI workflow
 
@@ -201,9 +235,9 @@ Add missing metadata fields.
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
-| 1 | T-01 through T-07 | Foundation — CI, publishing, badges, metadata | Human approval of plan |
+| 1 | T-00 first, then T-01 through T-07 | Generalize + Foundation — remove personal refs, then CI, publishing, badges, metadata | Human approval of plan |
 
-All tasks are independent and can be done in a single session.
+T-00 must be done first. T-01 through T-07 are independent of each other.
 
 ## Human Gates
 
