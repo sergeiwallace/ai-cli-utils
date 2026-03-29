@@ -2,7 +2,7 @@
 
 ## Open
 
-- [ ] `[P1]` `[AI-CLI-6]` **Going public — repo automation & hardening** — CI matrix (3.11/3.12/3.13), Codecov, GH Release automation, pre-commit, Renovate (replace Dependabot), issue/PR templates, branch protection, secret scan. Plan: `docs/plans/going-public-plan.md`. Research: R-2.
+- [x] `[P1]` `[AI-CLI-6]` **Going public — repo automation & hardening** — CI matrix (3.11/3.12/3.13), Codecov, GH Release automation, pre-commit, Renovate (replace Dependabot), issue/PR templates, secret scan, GH Release v0.1.1. Branch protection deferred (requires public repo or Pro). Plan: `docs/plans/going-public-plan.md`. Research: R-2.
 - [ ] `[P3]` `[AI-CLI-3]` **Terminal demo GIF** — Record terminal session demo with vhs (`demo/demo.tape` ready). Install vhs, run `vhs demo/demo.tape`, embed in README.
 - [ ] `[P3]` `[AI-CLI-7]` **Release Drafter** — Auto-draft GitHub Release notes from PR labels. Add when project gets regular external PRs.
 - [ ] `[P3]` `[AI-CLI-8]` **pyright type checking in CI** — Add pyright basic mode to CI. Requires type annotation audit first.
