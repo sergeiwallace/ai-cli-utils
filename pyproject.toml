@@ -28,9 +28,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sergeiwallace/ai-cli"
-Repository = "https://github.com/sergeiwallace/ai-cli"
-Issues = "https://github.com/sergeiwallace/ai-cli/issues"
+Homepage = "https://github.com/sergeiwallace/ai-cli-utils"
+Repository = "https://github.com/sergeiwallace/ai-cli-utils"
+Issues = "https://github.com/sergeiwallace/ai-cli-utils/issues"
 
 [project.scripts]
 ai = "ai_cli.main:cli"
