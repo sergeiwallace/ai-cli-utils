@@ -25,8 +25,6 @@ from typing import Optional
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_SERVER_HOST = "sergei@178.104.70.139"
-
 CONFLICT_LOG = Path.home() / ".claude-sync-conflicts.log"
 
 _GIT_ENV = {
@@ -64,8 +62,8 @@ def get_local_prefix() -> str:
     plus '-projects-'.
 
     Examples:
-      Mac  /Users/sergeiwallace  -> -Users-sergeiwallace-projects-
-      Linux /home/sergei         -> -home-sergei-projects-
+      Mac  /Users/username  -> -Users-username-projects-
+      Linux /home/user      -> -home-user-projects-
     """
     home = str(Path.home())
     encoded = re.sub(r"[^a-zA-Z0-9]", "-", home)
@@ -100,7 +98,21 @@ def load_sync_config() -> SyncConfig:
 
     local_prefix = get_local_prefix()
     source_machine = get_source_machine()
-    remote_host = sync_cfg.get("remote_host", DEFAULT_SERVER_HOST)
+    remote_host = sync_cfg.get("remote_host")
+    if not remote_host:
+        # Derive from [remote] section if available
+        remote_cfg = config.get("remote", {})
+        r_host = remote_cfg.get("host")
+        r_user = remote_cfg.get("user", "ubuntu")
+        if r_host:
+            remote_host = f"{r_user}@{r_host}"
+        else:
+            print(
+                "Error: [sync] remote_host not set in ~/.config/ai-cli/config.toml.\n"
+                "Set [sync] remote_host = \"user@host\" or configure [remote] host + user.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     staging_dir = Path(sync_cfg.get("staging_dir", "~/.claude-sync-staging")).expanduser()
 
     if source_machine == "mac":
@@ -174,8 +186,8 @@ def _parse_flags(flags: list[str]) -> tuple[bool, bool, bool, bool, bool]:
 def normalize_project_path(cc_dir_name: str, local_prefix: str) -> Optional[str]:
     """Convert a CC project dir name to a bare project name.
 
-    E.g. '-Users-sergeiwallace-projects-sergei' -> 'sergei'
-    '-Users-sergeiwallace-projects-sergei--worktrees-sw-1' -> 'sergei--worktrees-sw-1'
+    E.g. '-Users-username-projects-myproject' -> 'myproject'
+    '-Users-username-projects-myproject--worktrees-sw-1' -> 'myproject--worktrees-sw-1'
     Returns None if the dir name does not match the local prefix.
     """
     if cc_dir_name.startswith(local_prefix):
@@ -186,7 +198,7 @@ def normalize_project_path(cc_dir_name: str, local_prefix: str) -> Optional[str]
 def denormalize_project_name(bare_name: str, local_prefix: str) -> str:
     """Convert a bare project name to the CC project dir name for this machine.
 
-    E.g. 'sergei' -> '-Users-sergeiwallace-projects-sergei'
+    E.g. 'myproject' -> '-Users-username-projects-myproject'
     """
     return local_prefix + bare_name
 
@@ -256,8 +268,8 @@ def _detect_foreign_home(jsonl_path: Path) -> Optional[str]:
                     if val and val.startswith("/") and not val.startswith(local_home):
                         # Extract the home prefix: the path starts with /home/user or /Users/user
                         parts = val.split("/")
-                        # /home/sergei/... → parts[0]="" parts[1]="home" parts[2]="sergei"
-                        # /Users/sergeiwallace/... → parts[1]="Users" parts[2]="sergeiwallace"
+                        # /home/user/... -> parts[0]="" parts[1]="home" parts[2]="user"
+                        # /Users/username/... -> parts[1]="Users" parts[2]="username"
                         if len(parts) >= 3:
                             return "/" + "/".join(parts[1:3])
     except Exception:
@@ -551,8 +563,8 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
 
     CC's /resume picker filters conversations by matching the `project` field in
     history.jsonl against the current session's working directory. When a session
-    runs inside a worktree (e.g. /home/sergei/projects/aido/.worktrees/aido-1),
-    history entries with project=/home/sergei/projects/aido won't match.
+    runs inside a worktree (e.g. /home/user/projects/myproject/.worktrees/myproject-1),
+    history entries with project=/home/user/projects/myproject won't match.
 
     This function finds main-project history entries and creates copies with
     project paths rewritten to each active worktree path, so conversations
@@ -765,7 +777,7 @@ def apply_pull_files(
 def _find_project_worktrees(project_path: Path) -> list[Path]:
     """Find active git worktree directories for a project.
 
-    Returns a list of worktree absolute paths (e.g. /home/sergei/projects/aido/.worktrees/aido-1).
+    Returns a list of worktree absolute paths (e.g. /home/user/projects/myproject/.worktrees/myproject-1).
     """
     worktrees_dir = project_path / ".worktrees"
     if not worktrees_dir.is_dir():
@@ -979,26 +991,33 @@ def apply_handoff_files(
 # Config sync (hooks, statusline, settings.json with path translation)
 # ---------------------------------------------------------------------------
 
-# Path pairs for translation: (mac_home, server_home)
-_MAC_HOME = "/Users/sergeiwallace"
-_SERVER_HOME = "/home/sergei"
+def _get_remote_home(remote_host: str) -> str:
+    """Derive the remote home directory from a user@host string.
+
+    E.g. 'user@host' -> '/home/user', 'root@host' -> '/root'
+    """
+    if "@" in remote_host:
+        user = remote_host.split("@")[0]
+        return "/root" if user == "root" else f"/home/{user}"
+    return "/root"
 
 
-def _translate_settings_paths(content: str, direction: str) -> str:
-    """Translate absolute paths in settings.json between Mac and server.
+def _translate_settings_paths(content: str, direction: str, remote_host: str = "") -> str:
+    """Translate absolute paths in settings.json between local and remote machines.
 
-    direction: "to_local" — replace foreign paths with local
-               "to_staging" — normalize to a canonical form (server paths)
+    direction: "to_local" -- replace remote paths with local
+               "to_staging" -- normalize to remote (canonical) form in staging
     """
     local_home = str(Path.home())
+    remote_home = _get_remote_home(remote_host) if remote_host else ""
+
+    if not remote_home or local_home == remote_home:
+        return content
+
     if direction == "to_staging":
-        # Normalize to server paths as canonical form in staging
-        return content.replace(_MAC_HOME, _SERVER_HOME)
+        return content.replace(local_home, remote_home)
     elif direction == "to_local":
-        # Translate from canonical (server) to local machine
-        if local_home == _SERVER_HOME:
-            return content  # Already server paths
-        return content.replace(_SERVER_HOME, local_home)
+        return content.replace(remote_home, local_home)
     return content
 
 
@@ -1006,6 +1025,7 @@ def stage_config_files(
     staging_dir: Path,
     verbose: bool,
     dry_run: bool,
+    remote_host: str = "",
 ) -> int:
     """Stage user-level CC config files into the staging repo. Returns count staged."""
     cc_dir = Path.home() / ".claude"
@@ -1032,7 +1052,7 @@ def stage_config_files(
         if not dry_run:
             settings_dst.parent.mkdir(parents=True, exist_ok=True)
             content = settings_src.read_text()
-            translated = _translate_settings_paths(content, "to_staging")
+            translated = _translate_settings_paths(content, "to_staging", remote_host)
             settings_dst.write_text(translated)
         count += 1
         if verbose:
@@ -1045,6 +1065,7 @@ def apply_config_files(
     staging_dir: Path,
     verbose: bool,
     dry_run: bool,
+    remote_host: str = "",
 ) -> int:
     """Apply config files from staging repo to local ~/.claude/. Returns count applied."""
     cc_dir = Path.home() / ".claude"
@@ -1077,7 +1098,7 @@ def apply_config_files(
     if settings_src.exists():
         settings_dst = cc_dir / _SETTINGS_FILE
         staged_content = settings_src.read_text()
-        translated = _translate_settings_paths(staged_content, "to_local")
+        translated = _translate_settings_paths(staged_content, "to_local", remote_host)
 
         # Only write if content actually changed
         if settings_dst.exists():
@@ -1344,6 +1365,7 @@ def sync_push(flags: list[str]) -> int:
             staging_dir=cfg.staging_dir,
             verbose=verbose,
             dry_run=dry_run,
+            remote_host=cfg.remote_host,
         )
 
     if dry_run:
@@ -1472,6 +1494,7 @@ def sync_pull(flags: list[str]) -> int:
             staging_dir=cfg.staging_dir,
             verbose=verbose,
             dry_run=dry_run,
+            remote_host=cfg.remote_host,
         )
         if verbose and config_applied:
             print(f"Applied {config_applied} config file(s) to ~/.claude/")

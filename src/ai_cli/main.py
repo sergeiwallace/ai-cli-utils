@@ -35,8 +35,8 @@ DEFAULT_CONFIG = """## ai-cli configuration
 
 [gemini]
 ## Projects that should NOT be sandboxed by default
-## (Matches the project prefix in sergei.toml)
-sandbox_whitelist = ["sw"]
+## (Matches the project prefix in your project registry TOML)
+# sandbox_whitelist = ["sw"]
 
 [behavior]
 ## Enable system notifications on task completion
@@ -67,7 +67,7 @@ stale_session_timeout = 15
 
 [project]
 ## Name of the main project directory under ~/projects/
-main_project = "sergei"
+# main_project = "myproject"
 
 [messaging]
 # NATS server URLs for fleet messaging (heartbeats, events)
@@ -138,27 +138,44 @@ def get_current_project_name() -> str:
     return Path.cwd().name
 
 
-def _get_main_project_name() -> str:
-    """Return the main project name from config, defaulting to 'sergei'."""
+def _get_main_project_name() -> str | None:
+    """Return the main project name from config, or None if not configured."""
     try:
-        return load_config().get("project", {}).get("main_project", "sergei")
+        return load_config().get("project", {}).get("main_project") or None
     except Exception:
-        return "sergei"
+        return None
 
 
-def _get_main_project_dir() -> Path:
-    return _find_project_dir(_get_main_project_name())
+def _get_main_project_dir() -> Path | None:
+    name = _get_main_project_name()
+    if name is None:
+        return None
+    return _find_project_dir(name)
 
 
-SERGEI_TOML = _get_main_project_dir() / f"{_get_main_project_name()}.toml"
-HANDOFF_QUEUE_DIR = _get_main_project_dir() / ".handoff-queue"
+def _get_project_registry_path() -> Path | None:
+    """Return the path to the project registry TOML, or None if not configured."""
+    main_dir = _get_main_project_dir()
+    if main_dir is None:
+        return None
+    name = _get_main_project_name()
+    path = main_dir / f"{name}.toml"
+    return path if path.exists() else None
+
+
+def _get_handoff_queue_dir() -> Path | None:
+    main_dir = _get_main_project_dir()
+    if main_dir is None:
+        return None
+    return main_dir / ".handoff-queue"
 
 
 def _get_project_prefix_by_name(project_name: str) -> str:
-    """Look up a project's task_prefix from sergei.toml by directory name."""
-    if SERGEI_TOML.exists():
+    """Look up a project's task_prefix from the project registry TOML by directory name."""
+    registry = _get_project_registry_path()
+    if registry is not None:
         try:
-            with open(SERGEI_TOML, "rb") as f:
+            with open(registry, "rb") as f:
                 toml = tomllib.load(f)
             for p in toml.get("projects", []):
                 if p.get("name") == project_name:
@@ -169,11 +186,12 @@ def _get_project_prefix_by_name(project_name: str) -> str:
 
 
 def get_project_aliases() -> dict:
-    """Build project alias map: task_prefix.lower() → project name from sergei.toml."""
+    """Build project alias map: task_prefix.lower() -> project name from project registry TOML."""
     aliases = {}
-    if SERGEI_TOML.exists():
+    registry = _get_project_registry_path()
+    if registry is not None:
         try:
-            with open(SERGEI_TOML, "rb") as f:
+            with open(registry, "rb") as f:
                 toml = tomllib.load(f)
             for p in toml.get("projects", []):
                 prefix = p.get("task_prefix", "").lower()
@@ -190,8 +208,10 @@ def get_latest_gemini_session_id():
     project_name = cwd.name
     paths = [
         Path.home() / ".gemini" / "tmp" / project_name / "logs.json",
-        Path.home() / ".gemini" / "tmp" / _get_main_project_name() / "logs.json",
     ]
+    main_name = _get_main_project_name()
+    if main_name is not None:
+        paths.append(Path.home() / ".gemini" / "tmp" / main_name / "logs.json")
     for p in paths:
         if p.exists():
             try:
@@ -210,19 +230,16 @@ def get_latest_gemini_session_id():
 
 def get_project_prefix():
     project_name = get_current_project_name()
-    if SERGEI_TOML.exists():
+    registry = _get_project_registry_path()
+    if registry is not None:
         try:
-            with open(SERGEI_TOML, "rb") as f:
+            with open(registry, "rb") as f:
                 config = tomllib.load(f)
-            if project_name == "sergei":
-                return config.get("humanware", {}).get("task_prefix", "SW").lower()
             for p in config.get("projects", []):
                 if p.get("name") == project_name:
-                    return p.get("task_prefix", project_name[:2]).lower()
+                    return p.get("task_prefix", project_name[:3]).lower()
         except Exception:
             pass
-    if project_name == "sergei":
-        return "sw"
     return project_name[:3].lower()
 
 
@@ -609,12 +626,16 @@ def get_engine_script(
 
 
 def post_handoff(title, priority, project, message):
-    queue_dir = HANDOFF_QUEUE_DIR / "pending"
+    handoff_dir = _get_handoff_queue_dir()
+    if handoff_dir is None:
+        print("Error: [project] main_project not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+        sys.exit(1)
+    queue_dir = handoff_dir / "pending"
     created_by = os.environ.get("AI_TMUX_SESSION", "unknown")
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     max_id = 0
     for subdir in ["pending", "claimed", "completed"]:
-        d = HANDOFF_QUEUE_DIR / subdir
+        d = handoff_dir / subdir
         if not d.exists():
             continue
         for f in d.glob("*.md"):
@@ -634,7 +655,10 @@ def post_handoff(title, priority, project, message):
 
 
 def check_handoff():
-    queue_dir = HANDOFF_QUEUE_DIR / "pending"
+    handoff_dir = _get_handoff_queue_dir()
+    if handoff_dir is None:
+        return
+    queue_dir = handoff_dir / "pending"
     if not queue_dir.exists():
         return
     best_file, best_prio = None, 9
@@ -658,7 +682,11 @@ def check_handoff():
 def claim_handoff(file_path, claimer=None):
     if claimer is None:
         claimer = os.environ.get("AI_TMUX_SESSION", "unknown")
-    claimed_dir = HANDOFF_QUEUE_DIR / "claimed"
+    handoff_dir = _get_handoff_queue_dir()
+    if handoff_dir is None:
+        print("Error: [project] main_project not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+        sys.exit(1)
+    claimed_dir = handoff_dir / "claimed"
     claimed_dir.mkdir(parents=True, exist_ok=True)
     src, dst = Path(file_path), claimed_dir / Path(file_path).name
     try:
@@ -676,7 +704,10 @@ def claim_handoff(file_path, claimer=None):
 
 
 def complete_handoff(file_path):
-    completed_dir = HANDOFF_QUEUE_DIR / "completed"
+    handoff_dir = _get_handoff_queue_dir()
+    if handoff_dir is None:
+        return
+    completed_dir = handoff_dir / "completed"
     completed_dir.mkdir(parents=True, exist_ok=True)
     src, dst = Path(file_path), completed_dir / Path(file_path).name
     try:
@@ -948,7 +979,7 @@ def cli():
         "-R", "--remote", action="store_true", help="Run session on remote server (configured in [remote])"
     )
     parser.add_argument(
-        "-p", "--project", default="", help="Project to open on remote server (directory name, e.g. 'sergei', 'aurion')"
+        "-p", "--project", default="", help="Project to open on remote server (directory name, e.g. 'myproject', 'webapp')"
     )
     parser.add_argument("--is-remote", action="store_true", help=argparse.SUPPRESS)  # set by local machine when SSHing
     parser.add_argument("--project-prefix", default="", help=argparse.SUPPRESS)  # override auto-detected project prefix
@@ -1020,11 +1051,12 @@ def cli():
     # before creating the worktree so git commands work correctly.
     if args.is_remote:
         aliases = get_project_aliases()
-        raw_project = args.project or config.get("remote", {}).get("project", _get_main_project_name())
-        project_name = aliases.get(raw_project, raw_project)
-        project_dir = _find_project_dir(project_name)
-        if project_dir.exists():
-            os.chdir(project_dir)
+        raw_project = args.project or config.get("remote", {}).get("project") or _get_main_project_name()
+        if raw_project:
+            project_name = aliases.get(raw_project, raw_project)
+            project_dir = _find_project_dir(project_name)
+            if project_dir.exists():
+                os.chdir(project_dir)
 
     if args.bare:
         if engine == "c":
