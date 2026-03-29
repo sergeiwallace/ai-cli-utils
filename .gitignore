@@ -9,3 +9,7 @@ build/
 *.so
 .ruff_cache/
 .pytest_cache/
+
+# Exported conversation transcripts (generated output)
+docs/conversations/*
+!docs/conversations/README.md
