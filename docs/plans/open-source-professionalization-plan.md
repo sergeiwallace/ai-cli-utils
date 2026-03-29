@@ -239,12 +239,34 @@ Add missing metadata fields.
 
 T-00 must be done first. T-01 through T-07 are independent of each other.
 
+### T-08: Post-implementation review + verification
+
+**Size:** M
+**Batch:** 1 (final step)
+
+Autonomous review of the completed work:
+
+1. **Code review:** `grep -rn "sergei\|humanware\|sergeiwallace" src/ai_cli/` — must return 0 results
+2. **Config review:** verify `~/.config/ai-cli/config.toml` on both Mac and server has `main_project = "sergei"` set (since that's what makes the generic code work for our installation)
+3. **Functional test:** verify `ai c 1 -R` still works (project aliases, session naming, auto-resume)
+4. **CI verification:** push a test commit and verify GitHub Actions runs
+5. **Badge verification:** check README renders correctly on GitHub with all badges
+6. **PyPI metadata:** verify `pip show ai-cli-utils` shows correct URLs and metadata
+7. **Clean install test:** `uv tool install ai-cli-utils` from PyPI (not editable) and verify `ai --help` works
+
+**Acceptance criteria:**
+- [ ] Zero hardcoded personal references in source
+- [ ] Existing installations still work with config
+- [ ] CI passes on GitHub
+- [ ] Badges render on GitHub README
+- [ ] Fresh install from PyPI works
+
 ## Human Gates
 
 | Gate | After | Decision needed |
 |------|-------|-----------------|
 | Plan approval | Before coding | Approve scope and approach |
-| UAT | After implementation | Verify CI runs, badges render, PyPI publish works |
+| Post-implementation review | After T-08 | User verifies installations work, does manual testing |
 
 ## Open Questions
 
