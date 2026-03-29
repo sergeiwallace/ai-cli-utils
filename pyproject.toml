@@ -8,6 +8,7 @@ requires-python = ">=3.11"
 authors = [
     { name = "Sergei Wallace", email = "sergeipwallace@gmail.com" },
 ]
+keywords = ["ai", "cli", "claude", "gemini", "tmux", "mosh", "developer-tools"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -18,7 +19,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
     "Topic :: Utilities",
+    "Typing :: Typed",
 ]
 dependencies = [
     "nats-py>=2.9.0",
@@ -30,6 +33,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/sergeiwallace/ai-cli-utils"
 Repository = "https://github.com/sergeiwallace/ai-cli-utils"
+Changelog = "https://github.com/sergeiwallace/ai-cli-utils/blob/main/CHANGELOG.md"
 Issues = "https://github.com/sergeiwallace/ai-cli-utils/issues"
 
 [project.scripts]
