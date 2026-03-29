@@ -2,10 +2,14 @@
 
 ## Open
 
-- [x] `[P1]` `[AI-CLI-1]` **Fix lint + test failures and ship v0.1.1** — 13 ruff lint issues + 7 test failures from professionalization refactor. Fix all, bump to v0.1.1, tag, push to trigger auto-publish to PyPI via Trusted Publishers. Delegated to c-r-ai-cli-1 session.
+- [ ] `[P1]` `[AI-CLI-6]` **Going public — repo automation & hardening** — CI matrix (3.11/3.12/3.13), Codecov, GH Release automation, pre-commit, Renovate (replace Dependabot), issue/PR templates, branch protection, secret scan. Plan: `docs/plans/going-public-plan.md`. Research: R-2.
 - [ ] `[P3]` `[AI-CLI-3]` **Terminal demo GIF** — Record terminal session demo with vhs (`demo/demo.tape` ready). Install vhs, run `vhs demo/demo.tape`, embed in README.
+- [ ] `[P3]` `[AI-CLI-7]` **Release Drafter** — Auto-draft GitHub Release notes from PR labels. Add when project gets regular external PRs.
+- [ ] `[P3]` `[AI-CLI-8]` **pyright type checking in CI** — Add pyright basic mode to CI. Requires type annotation audit first.
 
 ## Completed
+
+- [x] `[P1]` `[AI-CLI-1]` **Fix lint + test failures and ship v0.1.1** — 13 ruff lint issues + 7 test failures. v0.1.1 on PyPI.
 
 - [x] `[P2]` `[AI-CLI-2]` **Full README rewrite** — PyOpenSci 13-section structure with badges, features table, usage reference, config example, quick start.
 - [x] `[P3]` `[AI-CLI-4]` **CONTRIBUTING.md** — Dev setup, testing, code style, PR process, project structure.
