@@ -12,6 +12,9 @@ cd ai-cli-utils
 # Create virtual environment and install dev dependencies
 uv sync --dev
 
+# Set up pre-commit hooks (optional but recommended)
+uv run pre-commit install
+
 # Verify everything works
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
