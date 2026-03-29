@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CI test matrix (Python 3.11/3.12/3.13) with Codecov coverage reporting
+- GitHub Release automation on tag push
+- Pre-commit config (ruff + hygiene hooks)
+- Renovate for dependency management (replaces Dependabot)
+- Issue templates (bug report, feature request) and PR template
+- Full README rewrite (PyOpenSci 13-section structure)
+- CONTRIBUTING.md
+
+## [0.1.1] - 2026-03-29
+
 ### Changed
 
 - Generalized all code to remove hardcoded personal references; package now works
@@ -22,7 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shields.io badges in README (PyPI, Python version, license, CI)
 - CHANGELOG.md
 - SECURITY.md with vulnerability reporting instructions
-- Dependabot configuration for dependency updates
+
+### Fixed
+
+- 13 ruff lint issues (unused imports, undefined names, unused variables)
+- 7 failing tests (remote transport, sync worktree isolation, PID lock mocking)
 
 ## [0.1.0] - 2026-03-29
 
@@ -43,5 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale session cleanup
 - Session reconnection (`ai reconnect`)
 
-[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sergeiwallace/ai-cli-utils/releases/tag/v0.1.0
