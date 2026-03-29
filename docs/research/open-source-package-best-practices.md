@@ -8,7 +8,12 @@ source: "opus-researcher-2026-03-29"
 
 # Open-Source Python CLI Package Best Practices
 
-> Researched: 2026-03-29 | Confidence: high
+**Status:** complete
+
+**Created:** 2026-03-29
+
+**Task:** SW-672
+**Prompt:** R-35 in `~/projects/sergei/docs/research/prompts/research-prompt-registry.md`
 
 ## Summary
 
