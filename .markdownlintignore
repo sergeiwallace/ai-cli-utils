@@ -1,0 +1,3 @@
+# Tool config files — not content docs, skip markdown linting
+.claude/
+.githooks/

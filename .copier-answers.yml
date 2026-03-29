@@ -1,0 +1,9 @@
+_commit: v1.1.0
+_src_path: /home/sergei/projects/project-template
+orchestrator: agent-teams
+project_description: Unified AI session manager for Claude Code and Gemini CLI
+project_name: ai-cli-utils
+project_vision: ''
+tech_stack: python
+tmux_tag: ai-cli
+use_jira: false
