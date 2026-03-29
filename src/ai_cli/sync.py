@@ -109,7 +109,7 @@ def load_sync_config() -> SyncConfig:
         else:
             print(
                 "Error: [sync] remote_host not set in ~/.config/ai-cli/config.toml.\n"
-                "Set [sync] remote_host = \"user@host\" or configure [remote] host + user.",
+                'Set [sync] remote_host = "user@host" or configure [remote] host + user.',
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -581,6 +581,7 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
         return 0
 
     from .main import _get_projects_dir
+
     projects_base = _get_projects_dir()
     entries = history_path.read_text().strip().split("\n")
     existing_projects = set()
@@ -802,9 +803,9 @@ def _replicate_to_worktrees(
 
     Returns the number of files replicated.
     """
-    import json as _json
 
     from .main import _get_projects_dir
+
     projects_base = _get_projects_dir()
     count = 0
 
@@ -992,6 +993,7 @@ def apply_handoff_files(
 # ---------------------------------------------------------------------------
 # Config sync (hooks, statusline, settings.json with path translation)
 # ---------------------------------------------------------------------------
+
 
 def _get_remote_home(remote_host: str) -> str:
     """Derive the remote home directory from a user@host string.
@@ -1251,6 +1253,7 @@ def _wait_for_dream_completion(verbose: bool) -> None:
             # Simple approach: check if the memory watcher PID is alive and the
             # MEMORY.md mtime is recent (within last 5s = likely mid-dream)
             from pathlib import Path as _Path
+
             cc_projects = _Path.home() / ".claude" / "projects"
             recent_write = False
             if cc_projects.exists():
@@ -1276,7 +1279,9 @@ def _wait_for_dream_completion(verbose: bool) -> None:
                 completed.set()
 
             # Subscribe briefly and wait
-            sub = await client.nc.subscribe("memory.dream.completed", cb=lambda msg: asyncio.ensure_future(on_completed({})))
+            sub = await client.nc.subscribe(
+                "memory.dream.completed", cb=lambda msg: asyncio.ensure_future(on_completed({}))
+            )
             try:
                 await asyncio.wait_for(completed.wait(), timeout=30.0)
                 if verbose:
@@ -1403,6 +1408,7 @@ def sync_push(flags: list[str]) -> int:
     try:
         import asyncio as _asyncio
         from .messaging import NATSClient as _NATSClient
+
         _client = _NATSClient()
         _asyncio.run(_client.publish("sync.pull.requested", {"machine": cfg.source_machine}))
     except Exception:

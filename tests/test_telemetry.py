@@ -2,10 +2,9 @@
 
 import json
 import sqlite3
-from pathlib import Path
 from unittest.mock import patch
 
-from ai_cli.telemetry import init_db, write_event, record_event, _is_enabled, _SCHEMA
+from ai_cli.telemetry import init_db, write_event, record_event, _is_enabled
 
 
 class TestTelemetryDB:
@@ -26,8 +25,9 @@ class TestTelemetryDB:
     def test_write_event_when_valid_then_persists(self, tmp_path):
         db_path = tmp_path / "test.db"
         conn = init_db(db_path)
-        write_event(conn, "telemetry.action.click", {"button": "save"},
-                    machine="test-host", session="c-sw-1", ts=1000.0)
+        write_event(
+            conn, "telemetry.action.click", {"button": "save"}, machine="test-host", session="c-sw-1", ts=1000.0
+        )
 
         row = conn.execute("SELECT * FROM events").fetchone()
         assert row is not None
@@ -42,8 +42,7 @@ class TestTelemetryDB:
         db_path = tmp_path / "test.db"
         conn = init_db(db_path)
         for i in range(5):
-            write_event(conn, f"telemetry.action.event{i}", {"i": i},
-                        machine="host", ts=float(i))
+            write_event(conn, f"telemetry.action.event{i}", {"i": i}, machine="host", ts=float(i))
 
         count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         assert count == 5
@@ -63,6 +62,7 @@ class TestRecordEvent:
                 with patch("ai_cli.telemetry._get_machine_id", return_value="test"):
                     # Mock NATS to avoid connection
                     from nats.errors import NoServersError
+
                     with patch("nats.connect", side_effect=NoServersError):
                         with patch("asyncio.sleep"):
                             result = record_event("click", {"button": "save"})

@@ -98,18 +98,14 @@ def memory_watch() -> int:
     def on_write_start(path):
         print(f"[memory-watch] dream started: {path}")
         try:
-            loop.run_until_complete(
-                client.publish("memory.dream.started", {"path": str(path), "ts": time.time()})
-            )
+            loop.run_until_complete(client.publish("memory.dream.started", {"path": str(path), "ts": time.time()}))
         except Exception as e:
             print(f"[memory-watch] failed to publish dream.started: {e}", file=sys.stderr)
 
     def on_write_settle():
         print("[memory-watch] dream completed (2s debounce)")
         try:
-            loop.run_until_complete(
-                client.publish("memory.dream.completed", {"ts": time.time()})
-            )
+            loop.run_until_complete(client.publish("memory.dream.completed", {"ts": time.time()}))
         except Exception as e:
             print(f"[memory-watch] failed to publish dream.completed: {e}", file=sys.stderr)
 

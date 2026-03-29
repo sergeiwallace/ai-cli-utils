@@ -1,8 +1,5 @@
 """Tests for memory watch daemon."""
 
-import time
-from unittest.mock import MagicMock
-
 from ai_cli.memory import MemoryFileHandler, _find_memory_dirs
 
 from watchdog.events import FileModifiedEvent
@@ -23,6 +20,7 @@ class TestMemoryFileHandler:
 
     def test_on_modified_when_non_memory_file_then_ignores(self):
         started = []
+        settled = []
         handler = MemoryFileHandler(
             on_write_start=lambda p: started.append(p),
             on_write_settle=lambda: settled.append(True),
@@ -84,6 +82,7 @@ class TestMemoryFileHandler:
 class TestFindMemoryDirs:
     def test_find_memory_dirs_when_no_cc_dir_then_returns_empty(self, tmp_path):
         from unittest.mock import patch
+
         with patch("ai_cli.memory.Path") as MockPath:
             MockPath.home.return_value = tmp_path
             result = _find_memory_dirs()
@@ -97,14 +96,14 @@ class TestFindMemoryDirs:
         (memory_dir / "MEMORY.md").write_text("test")
 
         from unittest.mock import patch
+
         with patch("ai_cli.memory.Path") as MockPath:
             MockPath.home.return_value = tmp_path
-            # Make the path joining work like real Path
-            real_path = type(tmp_path)
             MockPath.home.return_value = tmp_path
 
         # Direct test — construct the path the function would check
         from pathlib import Path
+
         with patch.object(Path, "home", return_value=tmp_path):
             result = _find_memory_dirs()
         assert memory_dir in result

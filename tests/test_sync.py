@@ -403,14 +403,15 @@ def test_apply_pull_files_translates_cwd_on_new_file(tmp_path):
     (staging_dir / "sergei").mkdir(parents=True)
     (staging_dir / "sergei" / "abc123.jsonl").write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/sergei"}}\n')
 
-    result = apply_pull_files(
-        staging_dir=staging_dir,
-        cc_projects_dir=cc_projects_dir,
-        local_prefix=_MAC_PREFIX,
-        memories_only=False,
-        verbose=False,
-        dry_run=False,
-    )
+    with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
 
     dst = cc_projects_dir / "-Users-sergeiwallace-projects-sergei" / "abc123.jsonl"
     assert dst.exists()
@@ -726,15 +727,16 @@ def test_apply_pull_files_when_prefer_remote_and_diverged_then_overwrites(tmp_pa
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text('{"type":"human","text":"local msg"}\n')
 
-    result = apply_pull_files(
-        staging_dir=staging_dir,
-        cc_projects_dir=cc_projects_dir,
-        local_prefix=_MAC_PREFIX,
-        memories_only=False,
-        verbose=False,
-        dry_run=False,
-        prefer_remote=True,
-    )
+    with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+            prefer_remote=True,
+        )
 
     assert len(result["conflicts"]) == 0
     assert result["applied_count"] == 1
@@ -811,14 +813,15 @@ def test_apply_pull_files_when_jsonl_identical_then_no_action(tmp_path):
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text(content)
 
-    result = apply_pull_files(
-        staging_dir=staging_dir,
-        cc_projects_dir=cc_projects_dir,
-        local_prefix=_MAC_PREFIX,
-        memories_only=False,
-        verbose=False,
-        dry_run=False,
-    )
+    with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
 
     assert result["conflicts"] == []
     assert result["applied_count"] == 0
@@ -907,7 +910,13 @@ def test_pre_pull_push_memories_when_memory_changed_then_staged(tmp_path):
         cwd=staging_dir,
         check=True,
         capture_output=True,
-        env={**__import__("os").environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+        env={
+            **__import__("os").environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
     )
 
     # Local CC memory file
@@ -917,6 +926,7 @@ def test_pre_pull_push_memories_when_memory_changed_then_staged(tmp_path):
     (project_dir / "memory" / "project_current_work.md").write_text("---\ntype: project\n---\nserver edits\n")
 
     from ai_cli.sync import SyncConfig
+
     cfg = SyncConfig(
         staging_dir=staging_dir,
         remote_url="file:///nonexistent/bare.git",  # push will fail but that's fine
@@ -1104,8 +1114,11 @@ def test_notify_conflicts_when_called_then_appends_to_log(tmp_path):
 def test_notify_conflicts_when_many_conflicts_then_truncates_notification(tmp_path):
     log_path = tmp_path / "conflicts.log"
     conflicts = ["a", "b", "c", "d", "e"]
-    with patch("subprocess.run") as mock_run, patch("ai_cli.sync.CONFLICT_LOG", log_path), \
-         patch("ai_cli.sync._is_mac", return_value=True):
+    with (
+        patch("subprocess.run") as mock_run,
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
         notify_conflicts(conflicts)
 
     # Find the osascript call
@@ -1118,8 +1131,11 @@ def test_notify_conflicts_when_many_conflicts_then_truncates_notification(tmp_pa
 def test_notify_conflicts_when_exactly_three_then_no_truncation(tmp_path):
     log_path = tmp_path / "conflicts.log"
     conflicts = ["a", "b", "c"]
-    with patch("subprocess.run") as mock_run, patch("ai_cli.sync.CONFLICT_LOG", log_path), \
-         patch("ai_cli.sync._is_mac", return_value=True):
+    with (
+        patch("subprocess.run") as mock_run,
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
         notify_conflicts(conflicts)
 
     osascript_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "osascript"]
@@ -1257,7 +1273,7 @@ def test_apply_handoff_files_when_no_staging_namespace_then_returns_zero(tmp_pat
 
 def test_push_to_remote_when_stale_rebase_merge_then_aborts_before_rebase(tmp_path):
     """_push_to_remote aborts stale rebase-merge dir before attempting pull --rebase."""
-    from unittest.mock import patch, call
+    from unittest.mock import patch
     from ai_cli.sync import _push_to_remote
 
     # Simulate stale rebase-merge directory
@@ -1316,9 +1332,11 @@ def test_sync_watch_when_nats_unavailable_returns_nonzero():
     from nats.errors import NoServersError
     from ai_cli.sync import sync_watch
 
-    with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
-        with patch("asyncio.sleep", new=AsyncMock()):
-            result = sync_watch([])
+    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+        with patch("ai_cli.sync._release_pid_file"):
+            with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
+                with patch("asyncio.sleep", new=AsyncMock()):
+                    result = sync_watch([])
 
     assert result == 1
 
@@ -1326,7 +1344,7 @@ def test_sync_watch_when_nats_unavailable_returns_nonzero():
 def test_sync_watch_when_nats_available_runs_pull_on_message(tmp_path):
     """sync_watch subscribes and calls sync_pull when a message arrives."""
     import asyncio
-    from unittest.mock import AsyncMock, MagicMock, patch, call
+    from unittest.mock import AsyncMock, MagicMock, patch
     from ai_cli.sync import sync_watch
 
     mock_nc = MagicMock()
@@ -1347,10 +1365,12 @@ def test_sync_watch_when_nats_available_runs_pull_on_message(tmp_path):
         pull_calls.append(flags)
         return 0
 
-    with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
-        with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
-            with patch("ai_cli.sync.sync_pull", side_effect=fake_sync_pull):
-                result = sync_watch([])
+    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+        with patch("ai_cli.sync._release_pid_file"):
+            with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
+                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                    with patch("ai_cli.sync.sync_pull", side_effect=fake_sync_pull):
+                        result = sync_watch([])
 
     assert result == 0
     assert pull_calls == [["--force"]]

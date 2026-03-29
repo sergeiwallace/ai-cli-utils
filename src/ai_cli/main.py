@@ -305,7 +305,13 @@ def cleanup_stale_sessions(config: dict) -> None:
     now = int(time.time())
 
     res = subprocess.run(
-        ["tmux", "list-panes", "-a", "-F", "#{session_name}|#{session_last_attached}|#{session_attached}|#{pane_current_command}"],
+        [
+            "tmux",
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}|#{session_last_attached}|#{session_attached}|#{pane_current_command}",
+        ],
         capture_output=True,
         text=True,
     )
@@ -850,7 +856,6 @@ def cli():
                 print("Usage: ai internal publish <subject> <json_payload>", file=sys.stderr)
                 sys.exit(1)
             import asyncio
-            import json
             from .messaging import NATSClient
 
             subject = sys.argv[3]
@@ -890,6 +895,7 @@ def cli():
             print("Usage: ai memory watch", file=sys.stderr)
             sys.exit(1)
         from .memory import memory_watch
+
         sys.exit(memory_watch())
 
     if len(sys.argv) > 1 and sys.argv[1] == "quota":
@@ -897,6 +903,7 @@ def cli():
             print("Usage: ai quota watch", file=sys.stderr)
             sys.exit(1)
         from .quota import quota_watch
+
         sys.exit(quota_watch())
 
     if len(sys.argv) > 1 and sys.argv[1] == "telemetry":
@@ -904,6 +911,7 @@ def cli():
             print("Usage: ai telemetry writer", file=sys.stderr)
             sys.exit(1)
         from .telemetry import telemetry_writer
+
         sys.exit(telemetry_writer())
 
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
@@ -942,7 +950,8 @@ def cli():
         # Find tmux sessions matching remote pattern on the server
         probe = subprocess.run(
             ["ssh", f"{user}@{host}", "tmux", "list-sessions", "-F", "#{session_name}"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if probe.returncode != 0:
             print("Error: could not list remote tmux sessions", file=sys.stderr)
@@ -994,7 +1003,10 @@ def cli():
         "-R", "--remote", action="store_true", help="Run session on remote server (configured in [remote])"
     )
     parser.add_argument(
-        "-p", "--project", default="", help="Project to open on remote server (directory name, e.g. 'myproject', 'webapp')"
+        "-p",
+        "--project",
+        default="",
+        help="Project to open on remote server (directory name, e.g. 'myproject', 'webapp')",
     )
     parser.add_argument("--is-remote", action="store_true", help=argparse.SUPPRESS)  # set by local machine when SSHing
     parser.add_argument("--project-prefix", default="", help=argparse.SUPPRESS)  # override auto-detected project prefix
@@ -1038,9 +1050,7 @@ def cli():
             remote_prefix = _get_project_prefix_by_name(remote_project)
         else:
             remote_prefix = project_prefix
-        remote_cmd = (
-            f"ai {engine} --is-remote --project-prefix {remote_prefix} --project {shlex.quote(remote_project)}"
-        )
+        remote_cmd = f"ai {engine} --is-remote --project-prefix {remote_prefix} --project {shlex.quote(remote_project)}"
         if args.resume:
             remote_cmd += " --resume"
         if name:

@@ -51,6 +51,7 @@ class TestDedupKey:
         assert "quota-50-" in key
         # Should contain today's date
         from datetime import date
+
         assert date.today().isoformat() in key
 
 

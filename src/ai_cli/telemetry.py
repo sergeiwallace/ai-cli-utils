@@ -38,6 +38,7 @@ def _is_enabled() -> bool:
     """Check if telemetry is enabled in config."""
     try:
         from .main import load_config
+
         config = load_config()
         return config.get("telemetry", {}).get("enabled", True)
     except Exception:
@@ -54,9 +55,14 @@ def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def write_event(conn: sqlite3.Connection, subject: str, data: dict,
-                machine: str | None = None, session: str | None = None,
-                ts: float | None = None) -> None:
+def write_event(
+    conn: sqlite3.Connection,
+    subject: str,
+    data: dict,
+    machine: str | None = None,
+    session: str | None = None,
+    ts: float | None = None,
+) -> None:
     """Write a single event to the telemetry database."""
     conn.execute(
         "INSERT INTO events (ts, subject, machine, session, data) VALUES (?, ?, ?, ?, ?)",
@@ -104,6 +110,7 @@ def record_event(subject: str, data: dict) -> bool:
     # Publish to NATS (non-blocking, non-fatal)
     try:
         from .messaging import NATSClient
+
         client = NATSClient()
         asyncio.run(client.publish(full_subject, payload))
     except Exception:

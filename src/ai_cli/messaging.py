@@ -50,12 +50,10 @@ class NATSClient:
         if not stream_name or stream_name in self._streams_ensured:
             return bool(stream_name)
         try:
-            from nats.js.api import StreamConfig
             await self.js.find_stream_name_by_subject(subject)
             self._streams_ensured.add(stream_name)
         except Exception:
             try:
-                from nats.js.api import StreamConfig
                 subjects = STREAM_CONFIG.get(stream_name, [subject])
                 await self.js.add_stream(name=stream_name, subjects=subjects)
                 self._streams_ensured.add(stream_name)

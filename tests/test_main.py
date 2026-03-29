@@ -233,7 +233,7 @@ def _run_cli_with_args(argv, config_override=None):
 
 
 def test_remote_flag_when_host_configured_then_sshs_to_host():
-    config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": ""}}
+    config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
     mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)
     mock_exec.assert_called_once()
     cmd, args = mock_exec.call_args[0]
@@ -289,7 +289,15 @@ def test_remote_flag_without_resume_when_called_then_no_resume_in_cmd():
 
 
 def test_remote_flag_when_identity_file_set_then_passes_i_flag():
-    config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "~/.ssh/id_ed25519"}}
+    config = {
+        "remote": {
+            "host": "1.2.3.4",
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "~/.ssh/id_ed25519",
+            "transport": "ssh",
+        }
+    }
     mock_exec = _run_cli_with_args(["ai", "c", "--remote"], config)
     mock_exec.assert_called_once()
     _, args = mock_exec.call_args[0]
@@ -427,7 +435,6 @@ def test_cleanup_when_no_tmux_then_does_nothing():
 def test_cleanup_when_session_currently_attached_then_never_kills_it():
     """Session with clients attached must never be killed — this was the root bug."""
     now = int(time.time())
-    timeout_seconds = 15 * 60
     # Session has been running for 2 hours (well beyond timeout) but is currently attached
     panes = _make_list_panes_output(("c-sw-1", now - 7200, "claude", 1))
     killed = _cleanup({}, panes, now)

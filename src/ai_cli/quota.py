@@ -43,6 +43,7 @@ def _get_claude_usage_percent() -> float | None:
         if result.returncode == 0:
             # Parse percentage from output
             import re
+
             match = re.search(r"(\d+(?:\.\d+)?)%", result.stdout)
             if match:
                 return float(match.group(1))
