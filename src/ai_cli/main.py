@@ -992,6 +992,12 @@ def cli():
 
         sys.exit(telemetry_writer())
 
+    if len(sys.argv) > 1 and sys.argv[1] == "gemini":
+        from .gemini import gemini_cli
+
+        gemini_cli(sys.argv[2:])
+        sys.exit(0)
+
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         if len(sys.argv) == 2:
             print("Usage: ai sync [push|pull|conflicts|watch] [--memories-only] [--dry-run] [--verbose] [--force]")
