@@ -843,23 +843,27 @@ def _replicate_to_worktrees(
             wt_session_name = wt_path.name
 
             # Copy and translate JSONL files — only those belonging to this worktree's session.
-            # A JSONL belongs to worktree "sw-N" if its first line has "customTitle":"sw-N".
+            # Match criteria (any of):
+            #   1. customTitle matches worktree name (e.g. "sw-5" from --name sw-5)
+            #   2. cwd in the JSONL points to this worktree path (conversation created in worktree)
+            wt_path_marker = f".worktrees/{wt_session_name}".encode()
             for src in cc_dir.glob("*.jsonl"):
                 dst = wt_cc_dir / src.name
                 if dst.exists() and not dst.is_symlink():
                     # Don't overwrite the worktree's own conversations
                     continue
 
-                # Check if this conversation belongs to this worktree by reading the first line
+                # Check if this conversation belongs to this worktree
                 try:
                     with open(src, "rb") as f:
-                        first_line = f.readline()
-                    # Fast byte-level check before parsing JSON
+                        # Read first few KB — title is line 1, cwd appears early
+                        head = f.read(4096)
                     title_match = (
-                        f'"customTitle":"{wt_session_name}"'.encode() in first_line
-                        or f'"customTitle": "{wt_session_name}"'.encode() in first_line
+                        f'"customTitle":"{wt_session_name}"'.encode() in head
+                        or f'"customTitle": "{wt_session_name}"'.encode() in head
                     )
-                    if not title_match:
+                    cwd_match = wt_path_marker in head
+                    if not title_match and not cwd_match:
                         continue  # Not this worktree's conversation — skip
                 except Exception:
                     continue
