@@ -617,19 +617,40 @@ def get_engine_script(
       printf '\\e]0;%s sw-%s\\a' "$stype" "$num"
     }}
 
+    # iTerm2 status updates: badge + tab title (NOT color — color is for identity)
+    _iterm2_status() {{
+      [[ "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
+      local status="$1" num="$2" stype="$3"
+      local badge="" title=""
+      case "$status" in
+        running)   badge="▶ $stype sw-$num";   title="▶ $stype sw-$num" ;;
+        waiting)   badge="⏸ WAIT sw-$num";     title="⏸ WAIT sw-$num" ;;
+        done)      badge="✓ DONE sw-$num";     title="✓ DONE sw-$num" ;;
+        error)     badge="✗ ERROR sw-$num";    title="✗ ERROR sw-$num" ;;
+        resuming)  badge="↻ sw-$num";          title="↻ sw-$num" ;;
+      esac
+      [[ -n "$badge" ]] && printf '\\e]1337;SetBadgeFormat=%s\\a' "$(echo -n "$badge" | base64)"
+      [[ -n "$title" ]] && printf '\\e]0;%s\\a' "$title"
+    }}
+
     # Extract session number from ai_name (e.g., "sw-3" → "3")
     _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
     _iterm2_fleet_setup "$_session_num" "$_session_type" "$tmux_session"
 
+    # Export for CC Notification hook to use
+    export ITERM2_SESSION_NUM="$_session_num"
+    export ITERM2_SESSION_TYPE="$_session_type"
+
     trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
       start_ts=$(date +%s)
-      # Re-emit iTerm2 setup on each loop (restores color/badge after reconnect)
+      # Re-emit iTerm2 setup + set status to running
       _iterm2_fleet_setup "$_session_num" "$_session_type" "$tmux_session"
+      _iterm2_status "running" "$_session_num" "$_session_type"
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
@@ -665,20 +686,31 @@ def get_engine_script(
         fi
       fi
       
+      # Set iTerm2 status based on how CC exited + publish NATS event for gateway
+      _exit_elapsed=$(( $(date +%s) - start_ts ))
+      if (( _exit_elapsed < 3 )); then
+        _iterm2_status "error" "$_session_num" "$_session_type"
+        (ai internal publish-session-event "$tmux_session" "error" 2>/dev/null || true) &
+      else
+        _iterm2_status "done" "$_session_num" "$_session_type"
+        (ai internal publish-session-event "$tmux_session" "completed" 2>/dev/null || true) &
+      fi
+
       {notify_cmd}
-      
+
       new_uuid=$(ai internal get-latest-gemini-id 2>/dev/null)
       if [[ -n "$new_uuid" ]]; then
         uuid="$new_uuid"
         ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null
       fi
-      
+
       first_run=false
-      elapsed=$(( $(date +%s) - start_ts ))
+      elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai' to retry."
         break
       fi
+      _iterm2_status "resuming" "$_session_num" "$_session_type"
       echo "Resuming... (Ctrl-C to exit to shell)"
       sleep 0.5 || break
     done
