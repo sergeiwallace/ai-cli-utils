@@ -839,11 +839,29 @@ def _replicate_to_worktrees(
             wt_cc_dir.mkdir(parents=True, exist_ok=True)
             wt_cwd = str(wt_path)
 
-            # Copy and translate JSONL files
+            # Worktree name is the directory name (e.g. "sw-5" from .worktrees/sw-5)
+            wt_session_name = wt_path.name
+
+            # Copy and translate JSONL files — only those belonging to this worktree's session.
+            # A JSONL belongs to worktree "sw-N" if its first line has "customTitle":"sw-N".
             for src in cc_dir.glob("*.jsonl"):
                 dst = wt_cc_dir / src.name
                 if dst.exists() and not dst.is_symlink():
                     # Don't overwrite the worktree's own conversations
+                    continue
+
+                # Check if this conversation belongs to this worktree by reading the first line
+                try:
+                    with open(src, "rb") as f:
+                        first_line = f.readline()
+                    # Fast byte-level check before parsing JSON
+                    title_match = (
+                        f'"customTitle":"{wt_session_name}"'.encode() in first_line
+                        or f'"customTitle": "{wt_session_name}"'.encode() in first_line
+                    )
+                    if not title_match:
+                        continue  # Not this worktree's conversation — skip
+                except Exception:
                     continue
 
                 # Read, translate cwd, write
@@ -862,9 +880,12 @@ def _replicate_to_worktrees(
                 if verbose:
                     print(f"  replicate to worktree: {bare_name}/{src.name} → {wt_path.name}")
 
-            # Copy session lock directories (uuid dirs, not 'memory')
+            # Copy session lock directories only for conversations we replicated
+            replicated_uuids = {f.stem for f in wt_cc_dir.glob("*.jsonl")}
             for d in cc_dir.iterdir():
                 if d.is_dir() and d.name != "memory" and not d.name.endswith(".jsonl"):
+                    if d.name not in replicated_uuids:
+                        continue  # Only copy lock dirs for replicated conversations
                     wt_d = wt_cc_dir / d.name
                     if not wt_d.exists():
                         shutil.copytree(d, wt_d)
