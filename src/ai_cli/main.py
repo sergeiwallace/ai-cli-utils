@@ -580,9 +580,9 @@ def get_engine_script(
     ai memory watch &>/dev/null &
 
     # iTerm2 fleet management: set profile, rolling tab color, badge, tab title
-    # Only runs when TERM_PROGRAM is iTerm.app (skipped on Ghostty, Windows Terminal, etc.)
+    # Only runs under iTerm2 (check LC_TERMINAL which survives tmux, unlike TERM_PROGRAM)
     _iterm2_fleet_setup() {{
-      [[ "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
+      [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local num="$1" stype="$2" sname="$3"
 
       # Profile switch
@@ -619,7 +619,7 @@ def get_engine_script(
 
     # iTerm2 status updates: badge + tab title (NOT color — color is for identity)
     _iterm2_status() {{
-      [[ "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
+      [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local status="$1" num="$2" stype="$3"
       local badge="" title=""
       case "$status" in
