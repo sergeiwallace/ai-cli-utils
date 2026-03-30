@@ -66,3 +66,7 @@ SCRATCH.md
 .playwright-mcp/
 
 # Note: uv.lock is tracked for reproducible CI (not ignored)
+
+# Node
+node_modules/
+package-lock.json
