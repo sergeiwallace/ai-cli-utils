@@ -707,16 +707,16 @@ def get_engine_script(
       first_run=false
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
-        echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai' to retry."
+        echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
       _iterm2_status "resuming" "$_session_num" "$_session_type"
-      echo "Resuming... (Ctrl-C to exit to shell)"
+      echo "Resuming... (Ctrl-C to exit)"
       sleep 0.5 || break
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
-    {('tmux detach-client -s "$tmux_session" 2>/dev/null || true') if is_remote else "exec $SHELL"}
+    {('echo "Session ended. Exit shell to close tmux session."; exec $SHELL') if is_remote else 'exit 0'}
     """
     return script
 
