@@ -1254,8 +1254,8 @@ def cli():
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
     if existing.returncode == 0:
-        # Session exists — just attach to it
-        os.execvp("tmux", ["tmux", "attach-session", "-t", session_id])
+        # Session exists — attach and detach any stale clients (e.g., closed tabs)
+        os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     elif args.is_remote:
         # Create session attached (not -d) so Claude gets a proper PTY.
         # The script's tmux detach-client at loop end drops us back to the SSH/mosh shell.
