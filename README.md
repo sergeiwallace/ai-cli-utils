@@ -20,6 +20,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | Feature | Description |
 |---------|-------------|
 | **Session management** | `ai c 1`, `ai c 2` — numbered tmux sessions with auto-resume on disconnect |
+| **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
 | **Remote sessions** | `ai c -R` — run sessions on a remote server via mosh or SSH |
 | **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory and conversations between machines |
@@ -121,14 +122,22 @@ ai gemini "prompt" -m flash --no-file     # Stdout only, no file
 
 Install with Gemini REST support: `uv tool install "ai-cli-utils[gemini]"`
 
+### Session picker
+
+```bash
+ai ls                # Interactive fzf session picker (installs fzf via apt if absent)
+ai ls --all          # Show all tmux sessions, not just ai-cli sessions
+ai attach <name>     # Attach directly to a named tmux session
+```
+
 ### Other commands
 
 ```bash
 ai memory watch      # Watch for Claude Code memory file changes
-ai quota             # Check API quota status
-ai telemetry         # Manage telemetry settings
+ai quota watch       # Monitor API quota usage
+ai telemetry writer  # Run telemetry writer daemon
 ai upgrade           # Self-upgrade the tool
-ai reconnect         # Reconnect to a detached session
+ai reconnect         # Print reconnect commands for remote sessions
 ```
 
 ## Configuration

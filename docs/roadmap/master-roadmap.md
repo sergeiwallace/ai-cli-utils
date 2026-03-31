@@ -2,7 +2,6 @@
 
 ## Open
 
-- [ ] `[P2]` `[AI-CLI-12]` **Coverage push to ~97-98%** — Three tracks: (A) mock os.execvp + pragma: no cover for main.py exec paths, (B) NATS service container in CI to cover sync.py bulk gap, (C) SSH integration tests — deferred until after B, re-evaluate based on actual numbers. Plan: `docs/plans/going-public-plan.md` § AI-CLI-12.
 - [ ] `[P3]` `[AI-CLI-11]` **Logo polish — increase visual weight** — All elements (nodes, edges, arc eye, chevron, underscore) appear pencil-thin vs other ecosystem logos (e.g. Python). Increase stroke widths and node radii so the logo holds up at small sizes and alongside other icons.
 - [ ] `[P3]` `[AI-CLI-3]` **Terminal demo GIF** — Record terminal session demo with vhs (`demo/demo.tape` ready). Install vhs, run `vhs demo/demo.tape`, embed in README.
 - [ ] `[P3]` `[AI-CLI-7]` **Release Drafter** — Auto-draft GitHub Release notes from PR labels. Add when project gets regular external PRs.
@@ -10,6 +9,7 @@
 
 ## Completed
 
+- [x] `[P2]` `[AI-CLI-12]` **Coverage push to 100%** — 587 tests, 100% line coverage. Added ai ls/attach features, test quality audit + fixes, CI isolation fixes. Plan: `docs/plans/going-public-plan.md` § AI-CLI-12.
 - [x] `[P1]` `[AI-CLI-10]` **Create developer email + update SECURITY.md** — Create a dedicated developer email for security reports. Update SECURITY.md contact info. Also update pyproject.toml author email and any other references to personal email.
 - [x] `[P1]` `[AI-CLI-9]` **Flip repo public** — Install Renovate App, set up Codecov token, flip to public, enable branch rulesets + CodeQL + secret scanning, social preview image, verify badges + external clone. 80% test coverage + Codecov badge added.
 - [x] `[P1]` `[AI-CLI-6]` **Going public — repo automation & hardening** — CI matrix (3.11/3.12/3.13), Codecov, GH Release automation, pre-commit, Renovate (replace Dependabot), issue/PR templates, secret scan, GH Release v0.1.1. Plan: `docs/plans/going-public-plan.md`.

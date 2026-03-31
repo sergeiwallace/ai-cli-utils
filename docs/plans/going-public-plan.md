@@ -466,3 +466,4 @@ Test `_replicate_to_worktrees` with unreadable JSONL file (chmod 000) → `excep
 |------|----------|-------|
 | 2026-03-29 | Plan approved | User approved autonomous implementation |
 | 2026-03-31 | Follow-up approved | All groups A-F + ai ls/attach approved |
+| 2026-03-31 | AI-CLI-12 complete | 587 tests, 100% line coverage. CI fixed (6 sync_push isolation failures). reviewer.md updated with Opus escalation guidance. Both Opus (security) and Sonnet (general quality) reviewer passes completed. |
