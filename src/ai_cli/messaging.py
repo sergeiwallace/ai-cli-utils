@@ -28,15 +28,27 @@ class NATSClient:
         self._streams_ensured = set()
 
     async def connect(self):
-        """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts."""
+        """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts.
+
+        Passes max_reconnect_attempts=0 to the nats library to disable its own internal
+        retry loop (default 60 attempts × 2s = 2-minute hang when NATS is unavailable).
+        Our own retry loop handles backoff instead.
+
+        error_cb silences the nats library's verbose per-attempt tracebacks — connection
+        failures are expected when NATS is not running locally (e.g. on Mac).
+        """
         retry_delay = 1
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                self.nc = await nats.connect(servers=self.servers)
+                self.nc = await nats.connect(
+                    servers=self.servers,
+                    max_reconnect_attempts=0,
+                    error_cb=lambda e: None,
+                )
                 self.js = self.nc.jetstream()
                 return
-            except (NoServersError, TimeoutError):
+            except (NoServersError, TimeoutError, OSError):
                 if attempt == max_retries - 1:
                     return  # self.nc remains None -- callers must check
                 await asyncio.sleep(retry_delay)
