@@ -47,10 +47,10 @@
         font-size="86" font-weight="700"
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
 
-  <!-- right eye: circle outline, friendly/open -->
-  <circle cx="131" cy="85" r="8"
-          fill="none" stroke="#00ff88" stroke-width="4"
-          filter="url(#glow)" opacity="0.85"/>
+  <!-- right eye: upward arc like a happy eyelash/squint -->
+  <path d="M 118,88 Q 131,72 144,88"
+        fill="none" stroke="#00ff88" stroke-width="4" stroke-linecap="round"
+        filter="url(#glow)" opacity="0.85"/>
 
   <!-- > smaller, tip slightly overlapping left edge of _ -->
   <text x="48" y="106"
