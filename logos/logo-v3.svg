@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="100%" style="stop-color:#161b22"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00d4ff"/>
+      <stop offset="100%" style="stop-color:#00ff88"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="nodeglow">
+      <feGaussianBlur stdDeviation="1.8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="200" rx="32" fill="url(#bg)"/>
+
+  <!-- Head-shaped node arc — nodes trace a rounded outline around the top, suggesting a head/face -->
+  <!-- Arc: bottom-left → left → upper-left → top → upper-right → right → bottom-right -->
+  <polyline
+    points="32,155 22,95 42,48 100,22 158,48 178,95 168,155"
+    fill="none" stroke="#00d4ff" stroke-width="0.8" opacity="0.12"/>
+
+  <!-- Nodes along the arc -->
+  <circle cx="32"  cy="155" r="3"   fill="#00d4ff" opacity="0.35" filter="url(#nodeglow)"/>
+  <circle cx="22"  cy="95"  r="3.5" fill="#00d4ff" opacity="0.45" filter="url(#nodeglow)"/>
+  <circle cx="42"  cy="48"  r="3"   fill="#00d4ff" opacity="0.4"  filter="url(#nodeglow)"/>
+  <circle cx="100" cy="22"  r="4"   fill="#00ff88" opacity="0.5"  filter="url(#nodeglow)"/>
+  <circle cx="158" cy="48"  r="3"   fill="#00ff88" opacity="0.4"  filter="url(#nodeglow)"/>
+  <circle cx="178" cy="95"  r="3.5" fill="#00ff88" opacity="0.45" filter="url(#nodeglow)"/>
+  <circle cx="168" cy="155" r="3"   fill="#00ff88" opacity="0.35" filter="url(#nodeglow)"/>
+
+  <!-- Two eye nodes — symmetric, inside the arc -->
+  <circle cx="74"  cy="72" r="4" fill="#00d4ff" opacity="0.55" filter="url(#nodeglow)"/>
+  <circle cx="126" cy="72" r="4" fill="#00ff88" opacity="0.55" filter="url(#nodeglow)"/>
+
+  <!-- Prompt >_ centered -->
+  <text x="100" y="138"
+        text-anchor="middle"
+        font-family="'SF Mono','Fira Code','Courier New',monospace"
+        font-size="76" font-weight="700"
+        fill="url(#prompt)" filter="url(#glow)" opacity="0.95">&#62;_</text>
+</svg>
