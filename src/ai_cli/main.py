@@ -501,10 +501,10 @@ _ITERM2_PROFILE_MAP = [
     "ClaudeCode-D",  # 3: f0b429  yellow       bright
     "ClaudeCode-D",  # 4: 2ecc71  green        bright
     "ClaudeCode-D",  # 5: 1abc9c  teal         bright
-    "ClaudeCode",    # 6: 039be5  sky blue     cool
-    "ClaudeCode",    # 7: 1e88e5  blue         cool
-    "ClaudeCode",    # 8: 5e35b1  purple       dark
-    "ClaudeCode",    # 9: d81b60  pink         dark
+    "ClaudeCode",  # 6: 039be5  sky blue     cool
+    "ClaudeCode",  # 7: 1e88e5  blue         cool
+    "ClaudeCode",  # 8: 5e35b1  purple       dark
+    "ClaudeCode",  # 9: d81b60  pink         dark
     "ClaudeCode-W",  # 10: 00acc1 cyan         medium
     "ClaudeCode-W",  # 11: ff5722 deep orange  warm
     "ClaudeCode-D",  # 12: 7cb342 lime         bright

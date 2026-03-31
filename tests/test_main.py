@@ -2230,6 +2230,25 @@ class TestEmitIterm2ProfileSetup:
             _emit_iterm2_profile_setup("sw-1", "x")
         assert capsys.readouterr().out == ""
 
+    def test_when_iterm_session_id_set_then_writes_color_profile_file(self, tmp_path):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
+            with patch("builtins.open", create=True) as mock_open:
+                mock_open.return_value.__enter__ = lambda s: s
+                mock_open.return_value.__exit__ = MagicMock(return_value=False)
+                mock_open.return_value.write = MagicMock()
+                _emit_iterm2_profile_setup("sw-1", "c")
+        # open was called with the tab-key path
+        paths_opened = [str(call.args[0]) for call in mock_open.call_args_list]
+        assert any("iterm2-cc-color-w0t0" in p for p in paths_opened)
+
+    def test_when_iterm_color_file_write_raises_oserror_then_silently_passes(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
+            with patch("builtins.open", side_effect=OSError("read-only fs")):
+                # Should not raise — OSError is silently swallowed
+                _emit_iterm2_profile_setup("sw-1", "c")
+        # Profile and color still emitted to stdout before the file write
+        assert "SetProfile=ClaudeCode" in capsys.readouterr().out
+
 
 class TestCliAttachDispatch:
     """Tests for `ai attach` subcommand — lines 1106-1114."""
