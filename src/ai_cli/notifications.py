@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -13,31 +14,25 @@ class NotificationManager:
         """Checks if notifications are suppressed by an active batch lock."""
         return self.lock_file.exists()
 
-    def emit_osc9(self, msg: str):
-        r"""Writes OSC 9 escape sequence to stdout.
+    def emit_badge(self, msg: str):
+        """Update iTerm2 badge to show completion status.
 
-        Supported by iTerm2 and VS Code terminal to fire system notifications.
-        Format: \e]9;{msg}\a
+        ntfy is the sole macOS push notification channel. OSC 9 is not used
+        because it fires macOS system notifications indistinguishable from ntfy,
+        creating duplicate noise.
         """
         if self._is_suppressed():
             return
 
-        # Use direct write to stderr to avoid being swallowed by some redirections
-        sys.stderr.write(f"\033]9;{msg}\007")
-        sys.stderr.flush()
-
-    def emit_iterm2(self, msg: str):
-        """Writes iTerm2-specific notification string.
-
-        Requires a corresponding regex trigger in iTerm2 profile: ^NOTIFY: (.*)
-        """
-        if self._is_suppressed():
+        session_num = os.environ.get("ITERM2_SESSION_NUM", "")
+        if not session_num:
             return
 
-        sys.stderr.write(f"NOTIFY: {msg}\n")
+        badge = f"✓ {msg}"
+        encoded = __import__("base64").b64encode(badge.encode()).decode()
+        sys.stderr.write(f"\033]1337;SetBadgeFormat={encoded}\007")
         sys.stderr.flush()
 
     def notify(self, msg: str):
-        """Fires all enabled notification methods."""
-        self.emit_osc9(msg)
-        self.emit_iterm2(msg)
+        """Update iTerm2 badge to reflect completion state."""
+        self.emit_badge(msg)
