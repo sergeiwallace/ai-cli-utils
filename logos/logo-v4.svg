@@ -41,7 +41,7 @@
   <line x1="180" y1="100" x2="170" y2="170" stroke="#39ff14" stroke-width="0.8" opacity="0.15"/>
 
   <!-- >_ centered, positioned in lower half like a face expression -->
-  <text x="93" y="115"
+  <text x="93" y="112"
         text-anchor="middle"
         font-family="'SF Mono','Fira Code','Courier New',monospace"
         font-size="76" font-weight="700"
