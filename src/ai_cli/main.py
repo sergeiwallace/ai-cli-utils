@@ -662,34 +662,11 @@ def _iterm2_update_window_title(win_key: str, tab_key: str, session_name: str, s
     heuristic = _iterm2_heuristic_window_title(all_sessions)
     sys.stdout.write(f"\033]2;{heuristic}\007")
     sys.stdout.flush()
-    sessions_str = ", ".join(all_sessions)
-    prompt = (
-        f"2-4 word iTerm2 window title for terminal window containing: {sessions_str}. "
-        f"Concise, descriptive. Examples: 'SW Remote CC', 'Local Dev', 'Aurion CC'. "
-        f"Reply with the title only, no quotes."
-    )
     try:
-        with open(title_file, "w") as out_f:
-            subprocess.Popen(
-                [
-                    "claude",
-                    "-p",
-                    prompt,
-                    "--model",
-                    "claude-haiku-4-5-20251001",
-                    "--output-format",
-                    "text",
-                ],
-                stdout=out_f,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-    except (OSError, FileNotFoundError):
-        try:
-            with open(title_file, "w") as f:
-                f.write(heuristic)
-        except OSError:
-            pass
+        with open(title_file, "w") as f:
+            f.write(heuristic)
+    except OSError:
+        pass
 
 
 def _emit_iterm2_profile_setup(ai_name: str, engine: str, session: str = "") -> None:
