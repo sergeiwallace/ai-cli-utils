@@ -1,6 +1,7 @@
 """Tests for notifications module."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_cli.notifications import NotificationManager
 
@@ -17,43 +18,50 @@ class TestNotificationManager:
         mgr.lock_file = tmp_path / "nonexistent.lock"
         assert mgr._is_suppressed() is False
 
-    def test_emit_osc9_when_not_suppressed_then_writes_escape(self, capfd):
+    def test_emit_badge_when_session_num_set_then_writes_escape(self, monkeypatch, capfd):
+        monkeypatch.setenv("ITERM2_SESSION_NUM", "1")
         mgr = NotificationManager("test-session")
         mgr.lock_file = Path("/tmp/nonexistent-lock-file-xyz.lock")
-        mgr.emit_osc9("hello")
+        mgr.emit_badge("done")
         captured = capfd.readouterr()
-        assert "\033]9;hello\007" in captured.err
+        assert "\033]1337;SetBadgeFormat=" in captured.err
+        assert "\007" in captured.err
 
-    def test_emit_osc9_when_suppressed_then_silent(self, tmp_path, capfd):
+    def test_emit_badge_when_no_session_num_then_silent(self, monkeypatch, capfd):
+        monkeypatch.delenv("ITERM2_SESSION_NUM", raising=False)
         mgr = NotificationManager("test-session")
-        mgr.lock_file = tmp_path / "test.lock"
-        mgr.lock_file.touch()
-        mgr.emit_osc9("hello")
+        mgr.lock_file = Path("/tmp/nonexistent-lock-file-xyz.lock")
+        mgr.emit_badge("done")
         captured = capfd.readouterr()
         assert captured.err == ""
 
-    def test_emit_iterm2_when_not_suppressed_then_writes_notify(self, capfd):
-        mgr = NotificationManager("test-session")
-        mgr.lock_file = Path("/tmp/nonexistent-lock-file-xyz.lock")
-        mgr.emit_iterm2("done")
-        captured = capfd.readouterr()
-        assert "NOTIFY: done\n" in captured.err
-
-    def test_emit_iterm2_when_suppressed_then_silent(self, tmp_path, capfd):
+    def test_emit_badge_when_suppressed_then_silent(self, monkeypatch, tmp_path, capfd):
+        monkeypatch.setenv("ITERM2_SESSION_NUM", "1")
         mgr = NotificationManager("test-session")
         mgr.lock_file = tmp_path / "test.lock"
         mgr.lock_file.touch()
-        mgr.emit_iterm2("done")
+        mgr.emit_badge("done")
         captured = capfd.readouterr()
         assert captured.err == ""
 
-    def test_notify_when_not_suppressed_then_emits_both(self, capfd):
+    def test_emit_badge_encodes_message_as_base64(self, monkeypatch, capfd):
+        import base64
+
+        monkeypatch.setenv("ITERM2_SESSION_NUM", "1")
         mgr = NotificationManager("test-session")
         mgr.lock_file = Path("/tmp/nonexistent-lock-file-xyz.lock")
-        mgr.notify("task complete")
+        mgr.emit_badge("hello")
         captured = capfd.readouterr()
-        assert "\033]9;task complete\007" in captured.err
-        assert "NOTIFY: task complete\n" in captured.err
+        expected = base64.b64encode("✓ hello".encode()).decode()
+        assert expected in captured.err
+
+    def test_notify_when_called_then_delegates_to_emit_badge(self, monkeypatch):
+        monkeypatch.setenv("ITERM2_SESSION_NUM", "1")
+        mgr = NotificationManager("test-session")
+        mgr.lock_file = Path("/tmp/nonexistent-lock-file-xyz.lock")
+        with patch.object(mgr, "emit_badge") as mock_badge:
+            mgr.notify("task complete")
+        mock_badge.assert_called_once_with("task complete")
 
     def test_notify_when_suppressed_then_emits_nothing(self, tmp_path, capfd):
         mgr = NotificationManager("test-session")
