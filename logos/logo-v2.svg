@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="100%" style="stop-color:#161b22"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00d4ff"/>
+      <stop offset="100%" style="stop-color:#00ff88"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="nodeglow">
+      <feGaussianBlur stdDeviation="1.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="200" rx="32" fill="url(#bg)"/>
+
+  <!-- Subtle grid lines -->
+  <line x1="0" y1="66" x2="200" y2="66" stroke="#ffffff" stroke-width="0.4" opacity="0.05"/>
+  <line x1="0" y1="133" x2="200" y2="133" stroke="#ffffff" stroke-width="0.4" opacity="0.05"/>
+  <line x1="66" y1="0" x2="66" y2="200" stroke="#ffffff" stroke-width="0.4" opacity="0.05"/>
+  <line x1="133" y1="0" x2="133" y2="200" stroke="#ffffff" stroke-width="0.4" opacity="0.05"/>
+
+  <!-- Two "eye" nodes above the prompt — symmetric, face-like -->
+  <circle cx="72" cy="52" r="4.5" fill="#00d4ff" opacity="0.6" filter="url(#nodeglow)"/>
+  <circle cx="128" cy="52" r="4.5" fill="#00ff88" opacity="0.6" filter="url(#nodeglow)"/>
+
+  <!-- Subtle arc connecting the eyes — brow / crown hint -->
+  <path d="M 60 52 Q 100 38 140 52" fill="none" stroke="#00d4ff" stroke-width="0.8" opacity="0.15"/>
+
+  <!-- Corner nodes — peripheral, structural -->
+  <circle cx="30" cy="30" r="2.5" fill="#00d4ff" opacity="0.3"/>
+  <circle cx="170" cy="30" r="2.5" fill="#00ff88" opacity="0.3"/>
+  <circle cx="30" cy="170" r="2.5" fill="#00d4ff" opacity="0.3"/>
+  <circle cx="170" cy="170" r="2.5" fill="#00ff88" opacity="0.3"/>
+
+  <!-- Corner to eye connections — frame -->
+  <line x1="30" y1="30" x2="72" y2="52" stroke="#00d4ff" stroke-width="0.7" opacity="0.1"/>
+  <line x1="170" y1="30" x2="128" y2="52" stroke="#00ff88" stroke-width="0.7" opacity="0.1"/>
+
+  <!-- Prompt >_ centered, shifted down slightly to sit below eyes like a mouth -->
+  <text x="100" y="130"
+        text-anchor="middle"
+        font-family="'SF Mono','Fira Code','Courier New',monospace"
+        font-size="76" font-weight="700"
+        fill="url(#prompt)" filter="url(#glow)" opacity="0.95">&#62;_</text>
+</svg>
