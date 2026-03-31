@@ -1850,7 +1850,8 @@ def test_sync_push_when_dry_run_then_reports_files(tmp_path, capsys):
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
         with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
-            result = sync_push(["--dry-run"])
+            with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+                result = sync_push(["--dry-run"])
 
     assert result == 0
     output = capsys.readouterr().out
