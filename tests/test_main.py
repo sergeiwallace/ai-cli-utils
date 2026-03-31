@@ -1,10 +1,40 @@
+import json
 import pytest
 import sys
 import time
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from ai_cli.main import build_session_name, cleanup_stale_sessions, _find_project_dir, get_current_project_name
+from ai_cli.main import (
+    build_session_name,
+    check_handoff,
+    claim_handoff,
+    cleanup_stale_sessions,
+    cli,
+    complete_handoff,
+    create_worktree,
+    detect_repo_root,
+    _find_project_dir,
+    get_current_project_name,
+    get_engine_script,
+    get_latest_gemini_session_id,
+    get_project_aliases,
+    get_session_map,
+    get_session_map_path,
+    get_xdg_cache_home,
+    get_xdg_state_home,
+    _get_handoff_queue_dir,
+    _get_main_project_dir,
+    _get_main_project_name,
+    _get_project_prefix_by_name,
+    _get_project_registry_path,
+    _get_projects_dir,
+    load_config,
+    post_handoff,
+    resolve_session,
+    save_session_map,
+    trigger_background_update,
+)
 
 
 # --- _find_project_dir tests ---
@@ -456,3 +486,847 @@ def test_cleanup_when_old_format_session_then_ignores_it():
     panes = _make_list_panes_output(("claude-sw-1", now - 9999, "bash"))
     killed = _cleanup({}, panes, now)
     assert killed == []
+
+
+# --- XDG helpers ---
+
+
+class TestXdgHelpers:
+    def test_get_xdg_state_home_when_called_then_returns_path(self):
+        result = get_xdg_state_home()
+        assert result.name == "ai-cli"
+        assert isinstance(result, Path)
+
+    def test_get_xdg_cache_home_when_called_then_returns_path(self):
+        result = get_xdg_cache_home()
+        assert result.name == "ai-cli"
+        assert isinstance(result, Path)
+
+
+# --- load_config tests ---
+
+
+class TestLoadConfig:
+    def test_load_config_when_no_config_file_then_creates_default(self, tmp_path):
+        config_dir = tmp_path / "ai-cli"
+        with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
+            result = load_config()
+        assert (config_dir / "config.toml").exists()
+        assert isinstance(result, dict)
+
+    def test_load_config_when_bad_toml_then_returns_empty(self, tmp_path):
+        config_dir = tmp_path / "ai-cli"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.toml").write_text("not valid toml [[[")
+        with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
+            result = load_config()
+        assert result == {}
+
+
+# --- Session map tests ---
+
+
+class TestSessionMap:
+    def test_get_session_map_path_when_gemini_then_returns_gemini_path(self, tmp_path):
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            result = get_session_map_path(engine="g")
+        assert "gemini_sessions.json" in str(result)
+
+    def test_get_session_map_when_invalid_json_then_returns_empty(self, tmp_path):
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            path = tmp_path / "gemini_sessions.json"
+            path.write_text("not json {{{")
+            with patch("ai_cli.main.get_session_map_path", return_value=path):
+                result = get_session_map(engine="g")
+        assert result == {}
+
+    def test_save_session_map_when_called_then_writes_json(self, tmp_path):
+        path = tmp_path / "test_sessions.json"
+        with patch("ai_cli.main.get_session_map_path", return_value=path):
+            save_session_map({"sw-1": "uuid123"}, engine="c")
+        assert json.loads(path.read_text()) == {"sw-1": "uuid123"}
+
+
+# --- Project helpers ---
+
+
+class TestProjectHelpers:
+    def test_get_projects_dir_when_custom_configured_then_uses_it(self):
+        with patch("ai_cli.main.load_config", return_value={"project": {"projects_dir": "/tmp/custom"}}):
+            result = _get_projects_dir()
+        assert result == Path("/tmp/custom")
+
+    def test_find_project_dir_when_no_home_arg_then_uses_projects_dir(self):
+        with patch("ai_cli.main._get_projects_dir", return_value=Path("/srv/projects")):
+            result = _find_project_dir("foo")
+        assert result == Path("/srv/projects/foo")
+
+    def test_get_main_project_name_when_exception_then_returns_none(self):
+        with patch("ai_cli.main.load_config", side_effect=RuntimeError("broken")):
+            result = _get_main_project_name()
+        assert result is None
+
+    def test_get_main_project_dir_when_name_configured_then_returns_path(self):
+        with patch("ai_cli.main._get_main_project_name", return_value="sergei"):
+            with patch("ai_cli.main._find_project_dir", return_value=Path("/home/u/projects/sergei")):
+                result = _get_main_project_dir()
+        assert result == Path("/home/u/projects/sergei")
+
+    def test_get_project_registry_path_when_toml_exists_then_returns_it(self, tmp_path):
+        toml_file = tmp_path / "sergei.toml"
+        toml_file.write_text("[projects]\n")
+        with patch("ai_cli.main._get_main_project_dir", return_value=tmp_path):
+            with patch("ai_cli.main._get_main_project_name", return_value="sergei"):
+                result = _get_project_registry_path()
+        assert result == toml_file
+
+    def test_get_handoff_queue_dir_when_main_dir_exists_then_returns_path(self):
+        with patch("ai_cli.main._get_main_project_dir", return_value=Path("/home/u/projects/sergei")):
+            result = _get_handoff_queue_dir()
+        assert result == Path("/home/u/projects/sergei/.handoff-queue")
+
+    def test_get_project_prefix_by_name_when_found_then_returns_prefix(self, tmp_path):
+        toml_file = tmp_path / "sergei.toml"
+        toml_content = b'[[projects]]\nname = "myapp"\ntask_prefix = "MA"\n'
+        toml_file.write_bytes(toml_content)
+        with patch("ai_cli.main._get_project_registry_path", return_value=toml_file):
+            result = _get_project_prefix_by_name("myapp")
+        assert result == "ma"
+
+    def test_get_project_prefix_by_name_when_not_found_then_truncates(self):
+        with patch("ai_cli.main._get_project_registry_path", return_value=None):
+            result = _get_project_prefix_by_name("myproject")
+        assert result == "myp"
+
+    def test_get_project_aliases_when_registry_exists_then_builds_map(self, tmp_path):
+        toml_file = tmp_path / "sergei.toml"
+        toml_content = (
+            b'[[projects]]\nname = "sergei"\ntask_prefix = "SW"\n\n[[projects]]\nname = "ai-dojo"\ntask_prefix = "AD"\n'
+        )
+        toml_file.write_bytes(toml_content)
+        with patch("ai_cli.main._get_project_registry_path", return_value=toml_file):
+            result = get_project_aliases()
+        assert result["sw"] == "sergei"
+        assert result["ad"] == "ai-dojo"
+
+    def test_get_project_aliases_when_no_registry_then_empty(self):
+        with patch("ai_cli.main._get_project_registry_path", return_value=None):
+            result = get_project_aliases()
+        assert result == {}
+
+
+# --- get_latest_gemini_session_id ---
+
+
+class TestGetLatestGeminiSessionId:
+    def test_latest_gemini_id_when_logs_exist_then_returns_last(self, tmp_path):
+        logs_dir = tmp_path / ".gemini" / "tmp" / "testproject"
+        logs_dir.mkdir(parents=True)
+        logs_file = logs_dir / "logs.json"
+        logs_file.write_text('{"sessionId": "abc123"}\n{"sessionId": "def456"}\n')
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "testproject"):
+            with patch("pathlib.Path.home", return_value=tmp_path):
+                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                    result = get_latest_gemini_session_id()
+        assert result == "def456"
+
+    def test_latest_gemini_id_when_no_logs_then_returns_none(self, tmp_path):
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "noproject"):
+            with patch("pathlib.Path.home", return_value=tmp_path):
+                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                    result = get_latest_gemini_session_id()
+        assert result is None
+
+
+# --- resolve_session ---
+
+
+class TestResolveSession:
+    def test_resolve_session_when_name_and_session_exists_then_returns_it(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("subprocess.run", return_value=mock_result):
+            result = resolve_session("c-sw-", "3")
+        assert result == "c-sw-3"
+
+    def test_resolve_session_when_name_not_found_then_finds_recent(self):
+        def mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "has-session" in cmd:
+                m.returncode = 1
+            elif "list-sessions" in cmd:
+                m.returncode = 1
+                m.stdout = ""
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            return m
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = resolve_session("c-sw-", "99")
+        assert result == ""
+
+
+# --- detect_repo_root ---
+
+
+class TestDetectRepoRoot:
+    def test_detect_repo_root_when_in_repo_then_returns_path(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "/home/user/projects/myapp\n"
+        with patch("subprocess.run", return_value=mock_result):
+            result = detect_repo_root()
+        assert result == Path("/home/user/projects/myapp")
+
+    def test_detect_repo_root_when_not_in_repo_then_returns_none(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 128
+        mock_result.stdout = ""
+        with patch("subprocess.run", return_value=mock_result):
+            result = detect_repo_root()
+        assert result is None
+
+
+# --- create_worktree ---
+
+
+class TestCreateWorktree:
+    def test_create_worktree_when_no_repo_then_returns_none(self):
+        with patch("ai_cli.main.detect_repo_root", return_value=None):
+            result = create_worktree("sw-1")
+        assert result is None
+
+    def test_create_worktree_when_existing_valid_wt_then_returns_it(self, tmp_path):
+        wt_dir = tmp_path / ".worktrees" / "sw-1"
+        wt_dir.mkdir(parents=True)
+
+        mock_prune = MagicMock(returncode=0)
+        mock_list = MagicMock(returncode=0, stdout=str(wt_dir))
+
+        def mock_run(cmd, **kwargs):
+            if "prune" in cmd:
+                return mock_prune
+            if "list" in cmd:
+                return mock_list
+            return MagicMock(returncode=0)
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                result = create_worktree("sw-1")
+        assert result == wt_dir
+
+    def test_create_worktree_when_new_then_creates_and_returns(self, tmp_path):
+        wt_dir = tmp_path / ".worktrees" / "sw-2"
+
+        call_log = []
+
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            m = MagicMock(returncode=0)
+            m.stdout = ""
+            if "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            return m
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                result = create_worktree("sw-2")
+        assert result == wt_dir
+
+
+# --- Handoff subcommands ---
+
+
+class TestHandoff:
+    def test_post_handoff_when_called_then_creates_file(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            post_handoff("Fix bug", "P1", "myapp", "Details here")
+        pending_files = list((queue_dir / "pending").glob("*.md"))
+        assert len(pending_files) == 1
+        content = pending_files[0].read_text()
+        assert "Fix bug" in content
+        assert "Details here" in content
+
+    def test_post_handoff_when_no_main_project_then_exits(self):
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
+            with pytest.raises(SystemExit) as exc:
+                post_handoff("title", "P1", "proj", "msg")
+            assert exc.value.code == 1
+
+    def test_check_handoff_when_pending_items_then_prints_best(self, tmp_path, capsys):
+        queue_dir = tmp_path / ".handoff-queue"
+        pending = queue_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "001-task-a.md").write_text("---\npriority: 2\n---\nTask A")
+        (pending / "002-task-b.md").write_text("---\npriority: 0\n---\nTask B")
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            check_handoff()
+        output = capsys.readouterr().out
+        assert "002-task-b.md" in output
+
+    def test_check_handoff_when_no_pending_then_silent(self, tmp_path, capsys):
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            check_handoff()
+        assert capsys.readouterr().out == ""
+
+    def test_claim_handoff_when_file_exists_then_moves_to_claimed(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        pending = queue_dir / "pending"
+        pending.mkdir(parents=True)
+        src = pending / "001-task.md"
+        src.write_text("---\nclaimed_by: null\nclaimed_at: null\n---\nContent")
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            claim_handoff(str(src), claimer="c-sw-1")
+        claimed_files = list((queue_dir / "claimed").glob("*.md"))
+        assert len(claimed_files) == 1
+        content = claimed_files[0].read_text()
+        assert "c-sw-1" in content
+
+    def test_claim_handoff_when_no_main_project_then_exits(self):
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
+            with pytest.raises(SystemExit) as exc:
+                claim_handoff("/tmp/nonexistent.md")
+            assert exc.value.code == 1
+
+    def test_complete_handoff_when_file_exists_then_moves_to_completed(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        claimed = queue_dir / "claimed"
+        claimed.mkdir(parents=True)
+        src = claimed / "001-task.md"
+        src.write_text("---\ntitle: task\n---\n")
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            complete_handoff(str(src))
+        completed = list((queue_dir / "completed").glob("*.md"))
+        assert len(completed) == 1
+
+    def test_complete_handoff_when_no_main_project_then_noop(self):
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
+            complete_handoff("/tmp/nonexistent.md")  # Should not raise
+
+
+# --- trigger_background_update ---
+
+
+class TestTriggerBackgroundUpdate:
+    def test_trigger_update_when_stale_then_runs_upgrade(self, tmp_path):
+        state_file = tmp_path / "update_check.json"
+        state_file.write_text(json.dumps({"last_checked": 0}))
+
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            with patch("subprocess.Popen") as mock_popen:
+                trigger_background_update()
+        mock_popen.assert_called_once()
+        assert "uv" in mock_popen.call_args[0][0]
+
+    def test_trigger_update_when_recent_then_skips(self, tmp_path):
+        state_file = tmp_path / "update_check.json"
+        state_file.write_text(json.dumps({"last_checked": time.time()}))
+
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            with patch("subprocess.Popen") as mock_popen:
+                trigger_background_update()
+        mock_popen.assert_not_called()
+
+    def test_trigger_update_when_no_state_file_then_runs(self, tmp_path):
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            with patch("subprocess.Popen") as mock_popen:
+                trigger_background_update()
+        mock_popen.assert_called_once()
+
+
+# --- CLI dispatch tests ---
+
+
+class TestCliDispatch:
+    def test_cli_when_internal_get_latest_gemini_id_then_calls_function(self):
+        with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id"]):
+            with patch("ai_cli.main.get_latest_gemini_session_id", return_value="abc123"):
+                with patch("ai_cli.main.load_config", return_value={}):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+    def test_cli_when_internal_update_session_map_then_updates(self, tmp_path):
+        with patch("sys.argv", ["ai", "internal", "update-session-map", "g", "sw-1", "uuid123"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_session_map", return_value={}):
+                    with patch("ai_cli.main.save_session_map") as mock_save:
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+                        assert exc.value.code == 0
+                        mock_save.assert_called_once()
+
+    def test_cli_when_internal_cleanup_worktree_then_calls_function(self):
+        with patch("sys.argv", ["ai", "internal", "cleanup-worktree", "sw-1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.cleanup_worktree") as mock_cleanup:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_cleanup.assert_called_once_with("sw-1")
+
+    def test_cli_when_internal_notify_then_calls_notification_manager(self):
+        with patch("sys.argv", ["ai", "internal", "notify", "session1", "hello"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                mock_mgr = MagicMock()
+                with patch("ai_cli.notifications.NotificationManager", return_value=mock_mgr):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+    def test_cli_when_handoff_check_then_calls_check_handoff(self):
+        with patch("sys.argv", ["ai", "handoff", "check"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.check_handoff") as mock_check:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_check.assert_called_once()
+
+    def test_cli_when_memory_bad_args_then_exits_1(self):
+        with patch("sys.argv", ["ai", "memory"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_quota_bad_args_then_exits_1(self):
+        with patch("sys.argv", ["ai", "quota"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_gemini_then_calls_gemini_cli(self):
+        with patch("sys.argv", ["ai", "gemini", "hello", "-m", "flash"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.gemini.gemini_cli", side_effect=SystemExit(0)) as mock_gemini:
+                    with pytest.raises(SystemExit):
+                        cli()
+                    mock_gemini.assert_called_once()
+
+    def test_cli_when_sync_push_then_calls_sync_push(self):
+        with patch("sys.argv", ["ai", "sync", "push"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.sync.sync_push", return_value=0) as mock_push:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_push.assert_called_once()
+
+    def test_cli_when_sync_no_args_then_exits_1(self):
+        with patch("sys.argv", ["ai", "sync"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_upgrade_then_calls_execvp(self):
+        with patch("sys.argv", ["ai", "upgrade"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                    with pytest.raises(SystemExit):
+                        cli()
+                    mock_exec.assert_called_once_with("uv", ["uv", "tool", "upgrade", "ai-cli"])
+
+    def test_cli_when_internal_no_action_then_exits_1(self):
+        with patch("sys.argv", ["ai", "internal"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_telemetry_bad_args_then_exits_1(self):
+        with patch("sys.argv", ["ai", "telemetry"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_update_session_map_missing_args_then_exits_1(self):
+        with patch("sys.argv", ["ai", "internal", "update-session-map"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_cleanup_worktree_missing_args_then_exits_1(self):
+        with patch("sys.argv", ["ai", "internal", "cleanup-worktree"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_notify_missing_args_then_exits_1(self):
+        with patch("sys.argv", ["ai", "internal", "notify"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_publish_event_then_calls_nats(self):
+        with patch("sys.argv", ["ai", "internal", "publish-event", "sess1", "START"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient") as mock_nats:
+                    mock_instance = MagicMock()
+                    mock_nats.return_value = mock_instance
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+    def test_cli_when_internal_publish_heartbeat_then_calls_nats(self):
+        with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", '{"cpu": 50}']):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient") as mock_nats:
+                    mock_instance = MagicMock()
+                    mock_nats.return_value = mock_instance
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+    def test_cli_when_internal_publish_heartbeat_bad_json_then_exits_1(self):
+        with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", "not-json"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_publish_session_event_then_calls_nats(self):
+        with patch("sys.argv", ["ai", "internal", "publish-session-event", "sess1", "started"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient") as mock_nats:
+                    mock_instance = MagicMock()
+                    mock_nats.return_value = mock_instance
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+    def test_cli_when_internal_publish_then_calls_nats(self):
+        with patch("sys.argv", ["ai", "internal", "publish", "test.topic", '{"key": "val"}']):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient") as mock_nats:
+                    mock_instance = MagicMock()
+                    mock_nats.return_value = mock_instance
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+    def test_cli_when_handoff_post_then_calls_post_handoff(self):
+        with patch("sys.argv", ["ai", "handoff", "post", "title", "P1", "proj", "msg"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.post_handoff") as mock_post:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_post.assert_called_once_with("title", "P1", "proj", "msg")
+
+    def test_cli_when_handoff_claim_then_calls_claim_handoff(self):
+        with patch("sys.argv", ["ai", "handoff", "claim", "/tmp/file.md"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.claim_handoff") as mock_claim:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_claim.assert_called_once_with("/tmp/file.md")
+
+    def test_cli_when_handoff_complete_then_calls_complete_handoff(self):
+        with patch("sys.argv", ["ai", "handoff", "complete", "/tmp/file.md"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.complete_handoff") as mock_complete:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_complete.assert_called_once_with("/tmp/file.md")
+
+    def test_cli_when_handoff_no_subcommand_then_exits_1(self):
+        with patch("sys.argv", ["ai", "handoff"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_sync_pull_then_calls_sync_pull(self):
+        with patch("sys.argv", ["ai", "sync", "pull"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.sync.sync_pull", return_value=0) as mock_pull:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_pull.assert_called_once()
+
+    def test_cli_when_sync_conflicts_then_calls_sync_conflicts(self):
+        with patch("sys.argv", ["ai", "sync", "conflicts"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.sync.sync_conflicts", return_value=0) as mock_conflicts:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_conflicts.assert_called_once()
+
+    def test_cli_when_sync_watch_then_calls_sync_watch(self):
+        with patch("sys.argv", ["ai", "sync", "watch"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.sync.sync_watch", return_value=0) as mock_watch:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_watch.assert_called_once()
+
+    def test_cli_when_sync_unknown_action_then_exits_1(self):
+        with patch("sys.argv", ["ai", "sync", "badaction"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_reconnect_with_host_then_lists_sessions(self, capsys):
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
+        probe_result = MagicMock()
+        probe_result.returncode = 0
+        probe_result.stdout = "c-r-sw-1\nc-r-sw-2\nother-session\n"
+
+        with patch("sys.argv", ["ai", "reconnect"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("subprocess.run", return_value=probe_result):
+                    with patch("ai_cli.main.get_project_aliases", return_value={}):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+                        assert exc.value.code == 0
+        output = capsys.readouterr().out
+        assert "2 remote session" in output
+        assert "ai c" in output
+
+    def test_cli_when_reconnect_no_host_then_exits_1(self):
+        config = {"remote": {"host": ""}}
+        with patch("sys.argv", ["ai", "reconnect"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_reconnect_no_sessions_then_exits_0(self, capsys):
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
+        probe_result = MagicMock()
+        probe_result.returncode = 0
+        probe_result.stdout = "other-session\n"
+
+        with patch("sys.argv", ["ai", "reconnect"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("subprocess.run", return_value=probe_result):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+        assert "No remote CC sessions" in capsys.readouterr().out
+
+    def test_cli_when_reconnect_ssh_fails_then_exits_1(self):
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
+        probe_result = MagicMock()
+        probe_result.returncode = 1
+
+        with patch("sys.argv", ["ai", "reconnect"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("subprocess.run", return_value=probe_result):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 1
+
+    def test_cli_when_reconnect_filtered_no_match_then_exits_0(self, capsys):
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
+        probe_result = MagicMock()
+        probe_result.returncode = 0
+        probe_result.stdout = "c-r-sw-1\n"
+
+        with patch("sys.argv", ["ai", "reconnect", "99"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("subprocess.run", return_value=probe_result):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+        assert "No matching" in capsys.readouterr().out
+
+    def test_cli_when_reconnect_with_alias_then_shows_project_flag(self, capsys):
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
+        probe_result = MagicMock()
+        probe_result.returncode = 0
+        probe_result.stdout = "c-r-sw-1\n"
+
+        with patch("sys.argv", ["ai", "reconnect"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("subprocess.run", return_value=probe_result):
+                    with patch("ai_cli.main.get_project_aliases", return_value={"sw": "sergei"}):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+                        assert exc.value.code == 0
+        output = capsys.readouterr().out
+        assert "-p sw" in output
+
+
+# --- Additional coverage for edge cases ---
+
+
+class TestSessionMapEdgeCases:
+    def test_get_session_map_path_when_engine_c_then_returns_claude_path(self, tmp_path):
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            result = get_session_map_path(engine="c")
+        assert "cc-sessions.json" in str(result)
+
+    def test_get_session_map_when_file_not_exists_then_returns_empty(self, tmp_path):
+        path = tmp_path / "nonexistent.json"
+        with patch("ai_cli.main.get_session_map_path", return_value=path):
+            result = get_session_map(engine="c")
+        assert result == {}
+
+
+class TestProjectsDirEdgeCases:
+    def test_get_projects_dir_when_exception_then_returns_default(self):
+        with patch("ai_cli.main.load_config", side_effect=RuntimeError("broken")):
+            result = _get_projects_dir()
+        assert result == Path.home() / "projects"
+
+    def test_get_handoff_queue_dir_when_no_main_project_then_returns_none(self):
+        with patch("ai_cli.main._get_main_project_dir", return_value=None):
+            result = _get_handoff_queue_dir()
+        assert result is None
+
+    def test_get_project_registry_path_when_no_main_dir_then_returns_none(self):
+        with patch("ai_cli.main._get_main_project_dir", return_value=None):
+            result = _get_project_registry_path()
+        assert result is None
+
+    def test_get_main_project_dir_when_not_configured_then_returns_none(self):
+        with patch("ai_cli.main._get_main_project_name", return_value=None):
+            result = _get_main_project_dir()
+        assert result is None
+
+
+class TestGetLatestGeminiEdgeCases:
+    def test_latest_gemini_id_when_main_project_set_then_checks_both_paths(self, tmp_path):
+        main_logs = tmp_path / ".gemini" / "tmp" / "sergei" / "logs.json"
+        main_logs.parent.mkdir(parents=True)
+        main_logs.write_text('{"sessionId": "main-id-123"}\n')
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "otherproject"):
+            with patch("pathlib.Path.home", return_value=tmp_path):
+                with patch("ai_cli.main._get_main_project_name", return_value="sergei"):
+                    result = get_latest_gemini_session_id()
+        assert result == "main-id-123"
+
+    def test_latest_gemini_id_when_large_file_then_seeks_tail(self, tmp_path):
+        logs_dir = tmp_path / ".gemini" / "tmp" / "bigproject"
+        logs_dir.mkdir(parents=True)
+        logs_file = logs_dir / "logs.json"
+        # Create a file > 4096 bytes
+        padding = "x" * 5000 + "\n"
+        logs_file.write_text(padding + '{"sessionId": "tail-id-456"}\n')
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "bigproject"):
+            with patch("pathlib.Path.home", return_value=tmp_path):
+                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                    result = get_latest_gemini_session_id()
+        assert result == "tail-id-456"
+
+
+class TestResolveSessionEdgeCases:
+    def test_resolve_session_when_no_name_and_current_session_matches_then_returns_it(self):
+        def mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "display-message" in cmd:
+                m.returncode = 0
+                m.stdout = "c-sw-5"
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            return m
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = resolve_session("c-sw-", "")
+        assert result == "c-sw-5"
+
+
+class TestGetEngineScript:
+    def test_get_engine_script_when_claude_then_contains_claude_commands(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "claude" in script
+        assert 'engine="c"' in script
+        assert 'ai_name="sw-1"' in script
+        assert "CC_TMUX_SESSION" in script
+
+    def test_get_engine_script_when_gemini_then_contains_gemini_commands(self):
+        script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw")
+        assert "gemini" in script
+        assert 'engine="g"' in script
+        assert "GG_TMUX_SESSION" in script
+
+    def test_get_engine_script_when_worktree_then_cds(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt")
+        assert "cd /tmp/wt" in script
+
+    def test_get_engine_script_when_no_worktree_then_noop_cd(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        # The cd command should be ":" (noop)
+        assert "    :" in script
+
+    def test_get_engine_script_when_notify_then_includes_notify_cmd(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", notify=True)
+        assert "ai internal notify" in script
+
+    def test_get_engine_script_when_no_notify_then_no_notify_cmd(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", notify=False)
+        assert "ai internal notify" not in script
+
+    def test_get_engine_script_when_sandbox_then_has_s_flag(self):
+        script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw", sandbox=True)
+        assert "-s" in script
+
+    def test_get_engine_script_when_no_sandbox_then_no_s_flag(self):
+        script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw", sandbox=False)
+        # The sandbox_flag variable should be empty
+        assert "gemini -y  -r" in script or "gemini -y  -i" in script
+
+    def test_get_engine_script_when_uuid_then_includes_resume(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", session_id_uuid="abc-123")
+        assert 'uuid="abc-123"' in script
+
+    def test_get_engine_script_when_remote_then_execs_shell(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=True)
+        assert "exec $SHELL" in script
+
+    def test_get_engine_script_when_local_then_exits(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=False)
+        assert "exit 0" in script
+
+    def test_get_engine_script_returns_string(self):
+        result = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert isinstance(result, str)
+        assert len(result) > 100
+
+
+class TestCreateWorktreeEdgeCases:
+    def test_create_worktree_when_stale_dir_then_recreates(self, tmp_path):
+        wt_dir = tmp_path / ".worktrees" / "sw-3"
+        wt_dir.mkdir(parents=True)
+
+        call_log = []
+
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            m = MagicMock(returncode=0)
+            if "list" in cmd and "--porcelain" in cmd:
+                m.stdout = ""  # Not registered as valid worktree
+            elif "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                m.stdout = ""
+            return m
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                result = create_worktree("sw-3")
+        assert result == wt_dir

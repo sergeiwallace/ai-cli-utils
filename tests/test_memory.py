@@ -1,8 +1,10 @@
 """Tests for memory watch daemon."""
 
+from unittest.mock import patch
+
 from ai_cli.memory import MemoryFileHandler, _find_memory_dirs
 
-from watchdog.events import FileModifiedEvent
+from watchdog.events import FileCreatedEvent, FileModifiedEvent
 
 
 class TestMemoryFileHandler:
@@ -78,6 +80,18 @@ class TestMemoryFileHandler:
         handler.check_settle()
         assert len(settled) == 0
 
+    def test_on_modified_when_non_file_event_then_returns_early(self):
+        """Line 36: non-FileModifiedEvent triggers early return."""
+        started = []
+        handler = MemoryFileHandler(
+            on_write_start=lambda p: started.append(p),
+            on_write_settle=lambda: None,
+        )
+        event = FileCreatedEvent("/home/user/.claude/projects/abc/memory/MEMORY.md")
+        handler.on_modified(event)
+        assert len(started) == 0
+        assert handler.dreaming is False
+
 
 class TestFindMemoryDirs:
     def test_find_memory_dirs_when_no_cc_dir_then_returns_empty(self, tmp_path):
@@ -107,3 +121,29 @@ class TestFindMemoryDirs:
         with patch.object(Path, "home", return_value=tmp_path):
             result = _find_memory_dirs()
         assert memory_dir in result
+
+    def test_find_memory_dirs_when_file_in_projects_dir_then_skips(self, tmp_path):
+        """Line 60: continue when item is a file, not a directory."""
+        from pathlib import Path
+
+        cc_projects = tmp_path / ".claude" / "projects"
+        cc_projects.mkdir(parents=True)
+        # Create a file (not a directory) inside projects dir
+        (cc_projects / "some-file.txt").write_text("not a dir")
+
+        with patch.object(Path, "home", return_value=tmp_path):
+            result = _find_memory_dirs()
+        assert result == []
+
+    def test_find_memory_dirs_when_no_memory_subdir_but_has_memory_md_then_watches_project_dir(self, tmp_path):
+        """Lines 64-65: project dir has MEMORY.md but no memory/ subdir."""
+        from pathlib import Path
+
+        cc_projects = tmp_path / ".claude" / "projects"
+        project_dir = cc_projects / "test-project"
+        project_dir.mkdir(parents=True)
+        (project_dir / "MEMORY.md").write_text("# Memory")
+
+        with patch.object(Path, "home", return_value=tmp_path):
+            result = _find_memory_dirs()
+        assert project_dir in result

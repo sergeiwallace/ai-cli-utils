@@ -69,3 +69,21 @@ class TestSendNotification:
             _send_notification(90, 92.0)
         args = mock_run.call_args[0][0]
         assert "slow down" in args[2]
+
+    def test_send_notification_when_subprocess_raises_then_no_crash(self):
+        """Lines 138-139: exception path in _send_notification."""
+        with patch("subprocess.run", side_effect=FileNotFoundError("notify-send not found")):
+            _send_notification(75, 78.5)  # Should not raise
+
+
+class TestGetClaudeUsageInvalidJson:
+    def test_usage_when_invalid_json_then_falls_through(self, tmp_path):
+        """Lines 32-33: json.loads raises on invalid JSON."""
+        usage_file = tmp_path / ".claude" / "usage.json"
+        usage_file.parent.mkdir(parents=True)
+        usage_file.write_text("not valid json {{{")
+
+        with patch.object(Path, "home", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=FileNotFoundError):
+                result = _get_claude_usage_percent()
+        assert result is None

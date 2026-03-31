@@ -6,6 +6,11 @@ from ai_cli.sync import (
     normalize_project_path,
     denormalize_project_name,
     get_local_prefix,
+    get_source_machine,
+    _default_remote_bare_url,
+    _parse_flags,
+    _handoff_queue_dir,
+    load_sync_config,
     detect_jsonl_divergence,
     should_sync_file,
     is_memory_file,
@@ -22,6 +27,10 @@ from ai_cli.sync import (
     _detect_foreign_home,
     translate_cwd_paths,
     _pre_pull_push_memories,
+    init_staging_repo,
+    _detect_foreign_home_in_history,
+    _write_jsonl_translated,
+    SyncConfig,
 )
 
 # Fixed prefix strings for tests — mirror what get_local_prefix() would return on each platform
@@ -1374,3 +1383,782 @@ def test_sync_watch_when_nats_available_runs_pull_on_message(tmp_path):
 
     assert result == 0
     assert pull_calls == [["--force"]]
+
+
+# ---------------------------------------------------------------------------
+# get_source_machine
+# ---------------------------------------------------------------------------
+
+
+def test_get_source_machine_when_linux_then_returns_server():
+    with patch("ai_cli.sync._is_mac", return_value=False):
+        assert get_source_machine() == "server"
+
+
+def test_get_source_machine_when_mac_then_returns_mac():
+    with patch("ai_cli.sync._is_mac", return_value=True):
+        assert get_source_machine() == "mac"
+
+
+# ---------------------------------------------------------------------------
+# _default_remote_bare_url
+# ---------------------------------------------------------------------------
+
+
+def test_default_remote_bare_url_when_user_at_host_then_uses_home():
+    result = _default_remote_bare_url("sergei@server.com")
+    assert result == "ssh://sergei@server.com/home/sergei/.claude-sync-staging.git"
+
+
+def test_default_remote_bare_url_when_root_at_host_then_uses_root():
+    result = _default_remote_bare_url("root@server.com")
+    assert result == "ssh://root@server.com/root/.claude-sync-staging.git"
+
+
+def test_default_remote_bare_url_when_no_user_then_uses_root():
+    result = _default_remote_bare_url("server.com")
+    assert result == "ssh://server.com/root/.claude-sync-staging.git"
+
+
+# ---------------------------------------------------------------------------
+# _parse_flags
+# ---------------------------------------------------------------------------
+
+
+def test_parse_flags_when_all_flags_then_all_true():
+    result = _parse_flags(["--memories-only", "--dry-run", "--verbose", "--force", "--prefer-remote"])
+    assert result == (True, True, True, True, True)
+
+
+def test_parse_flags_when_no_flags_then_all_false():
+    result = _parse_flags([])
+    assert result == (False, False, False, False, False)
+
+
+def test_parse_flags_when_partial_flags_then_mixed():
+    result = _parse_flags(["--verbose", "--force"])
+    assert result == (False, False, True, True, False)
+
+
+# ---------------------------------------------------------------------------
+# load_sync_config
+# ---------------------------------------------------------------------------
+
+
+def test_load_sync_config_when_remote_host_set_then_uses_it():
+    config = {
+        "sync": {"remote_host": "user@myhost"},
+        "remote": {},
+    }
+    with patch("ai_cli.main.load_config", return_value=config):
+        cfg = load_sync_config()
+    assert cfg.remote_host == "user@myhost"
+    assert isinstance(cfg, SyncConfig)
+
+
+def test_load_sync_config_when_no_sync_host_then_derives_from_remote():
+    config = {
+        "sync": {},
+        "remote": {"host": "1.2.3.4", "user": "ubuntu"},
+    }
+    with patch("ai_cli.main.load_config", return_value=config):
+        cfg = load_sync_config()
+    assert cfg.remote_host == "ubuntu@1.2.3.4"
+
+
+def test_load_sync_config_when_no_host_at_all_then_exits():
+    config = {"sync": {}, "remote": {}}
+    with patch("ai_cli.main.load_config", return_value=config):
+        import pytest
+
+        with pytest.raises(SystemExit):
+            load_sync_config()
+
+
+def test_load_sync_config_when_server_then_uses_file_url():
+    config = {
+        "sync": {"remote_host": "user@host"},
+        "remote": {},
+    }
+    with patch("ai_cli.main.load_config", return_value=config):
+        with patch("ai_cli.sync._is_mac", return_value=False):
+            cfg = load_sync_config()
+    assert cfg.remote_url.startswith("file://")
+    assert cfg.source_machine == "server"
+
+
+def test_load_sync_config_when_mac_then_uses_ssh_url():
+    config = {
+        "sync": {"remote_host": "user@host"},
+        "remote": {},
+    }
+    with patch("ai_cli.main.load_config", return_value=config):
+        with patch("ai_cli.sync._is_mac", return_value=True):
+            cfg = load_sync_config()
+    assert cfg.remote_url.startswith("ssh://")
+    assert cfg.source_machine == "mac"
+
+
+# ---------------------------------------------------------------------------
+# _handoff_queue_dir
+# ---------------------------------------------------------------------------
+
+
+def test_handoff_queue_dir_when_main_dir_then_returns_path():
+    with patch("ai_cli.main._get_main_project_dir", return_value=Path("/home/u/projects/sergei")):
+        result = _handoff_queue_dir()
+    assert result == Path("/home/u/projects/sergei/.handoff-queue")
+
+
+# ---------------------------------------------------------------------------
+# init_staging_repo
+# ---------------------------------------------------------------------------
+
+
+def test_init_staging_repo_when_already_initialized_then_noop(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / ".git").mkdir()
+
+    with patch("ai_cli.sync._git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0)
+        init_staging_repo(staging, "ssh://host/repo.git")
+    # Should check remote, not re-init
+    assert any("get-url" in str(c) for c in mock_git.call_args_list)
+
+
+def test_init_staging_repo_when_clone_succeeds_then_done(tmp_path):
+    staging = tmp_path / "staging"
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        init_staging_repo(staging, "ssh://host/repo.git")
+    mock_run.assert_called_once()
+    assert "clone" in mock_run.call_args[0][0]
+
+
+def test_init_staging_repo_when_clone_fails_then_inits_fresh(tmp_path):
+    staging = tmp_path / "staging"
+
+    clone_result = MagicMock(returncode=1)
+
+    with patch("subprocess.run", return_value=clone_result):
+        with patch("ai_cli.sync._git") as mock_git:
+            init_staging_repo(staging, "ssh://host/repo.git")
+    # Should have called git init, add, commit
+    assert any("init" in str(c) for c in mock_git.call_args_list)
+    assert any("commit" in str(c) for c in mock_git.call_args_list)
+
+
+# ---------------------------------------------------------------------------
+# _detect_foreign_home_in_history
+# ---------------------------------------------------------------------------
+
+
+def test_detect_foreign_home_in_history_when_foreign_then_detects(tmp_path):
+    history = tmp_path / "history.jsonl"
+    history.write_text('{"project":"/Users/otheruser/projects/myapp","sessionId":"abc"}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = _detect_foreign_home_in_history(history)
+    assert result == "/Users/otheruser"
+
+
+def test_detect_foreign_home_in_history_when_local_then_none(tmp_path):
+    history = tmp_path / "history.jsonl"
+    local_home = str(tmp_path)
+    history.write_text(f'{{"project":"{local_home}/projects/myapp","sessionId":"abc"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = _detect_foreign_home_in_history(history)
+    assert result is None
+
+
+def test_detect_foreign_home_in_history_when_no_project_field_then_none(tmp_path):
+    history = tmp_path / "history.jsonl"
+    history.write_text('{"sessionId":"abc","title":"My Session"}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = _detect_foreign_home_in_history(history)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _write_jsonl_translated
+# ---------------------------------------------------------------------------
+
+
+def test_write_jsonl_translated_when_foreign_home_then_translates(tmp_path):
+    src = tmp_path / "src.jsonl"
+    dst = tmp_path / "dst.jsonl"
+    foreign = "/Users/otheruser"
+    src.write_text(f'{{"cwd":"{foreign}/projects/app"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        _write_jsonl_translated(src, dst)
+
+    content = dst.read_text()
+    assert foreign not in content
+    assert str(tmp_path) in content
+
+
+def test_write_jsonl_translated_when_no_foreign_then_copies(tmp_path):
+    src = tmp_path / "src.jsonl"
+    dst = tmp_path / "dst.jsonl"
+    local_home = str(tmp_path)
+    src.write_text(f'{{"cwd":"{local_home}/projects/app"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        _write_jsonl_translated(src, dst)
+
+    assert dst.read_text() == src.read_text()
+
+
+# ---------------------------------------------------------------------------
+# _get_remote_home
+# ---------------------------------------------------------------------------
+
+
+def test_get_remote_home_when_user_at_host_then_home():
+    from ai_cli.sync import _get_remote_home
+
+    assert _get_remote_home("sergei@server") == "/home/sergei"
+
+
+def test_get_remote_home_when_root_at_host_then_root():
+    from ai_cli.sync import _get_remote_home
+
+    assert _get_remote_home("root@server") == "/root"
+
+
+def test_get_remote_home_when_no_at_then_root():
+    from ai_cli.sync import _get_remote_home
+
+    assert _get_remote_home("server") == "/root"
+
+
+# ---------------------------------------------------------------------------
+# _translate_settings_paths
+# ---------------------------------------------------------------------------
+
+
+def test_translate_settings_paths_to_staging(tmp_path):
+    from ai_cli.sync import _translate_settings_paths
+
+    local_home = str(tmp_path)
+    content = f'{{"path": "{local_home}/projects/foo"}}'
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = _translate_settings_paths(content, "to_staging", "sergei@host")
+    assert "/home/sergei/projects/foo" in result
+
+
+def test_translate_settings_paths_to_local(tmp_path):
+    from ai_cli.sync import _translate_settings_paths
+
+    content = '{"path": "/home/sergei/projects/foo"}'
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = _translate_settings_paths(content, "to_local", "sergei@host")
+    assert str(tmp_path) in result
+
+
+def test_translate_settings_paths_when_same_home_then_noop(tmp_path):
+    from ai_cli.sync import _translate_settings_paths
+
+    # When local and remote are the same, no translation
+    content = '{"path": "/home/sergei/projects/foo"}'
+    with patch("pathlib.Path.home", return_value=Path("/home/sergei")):
+        result = _translate_settings_paths(content, "to_staging", "sergei@host")
+    assert result == content
+
+
+# ---------------------------------------------------------------------------
+# stage_config_files
+# ---------------------------------------------------------------------------
+
+
+def test_stage_config_files_when_files_exist_then_stages(tmp_path):
+    from ai_cli.sync import stage_config_files
+
+    cc_dir = tmp_path / ".claude"
+    cc_dir.mkdir()
+    (cc_dir / "statusline-command.sh").write_text("#!/bin/bash\n")
+    (cc_dir / "settings.json").write_text('{"key": "value"}')
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        count = stage_config_files(staging_dir, verbose=False, dry_run=False, remote_host="user@host")
+    assert count >= 1
+
+
+def test_stage_config_files_when_dry_run_then_no_files(tmp_path):
+    from ai_cli.sync import stage_config_files
+
+    cc_dir = tmp_path / ".claude"
+    cc_dir.mkdir()
+    (cc_dir / "statusline-command.sh").write_text("#!/bin/bash\n")
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        count = stage_config_files(staging_dir, verbose=False, dry_run=True)
+    assert count >= 1
+    # No files should be written in dry_run
+    assert not (staging_dir / "--config").exists()
+
+
+# ---------------------------------------------------------------------------
+# apply_config_files
+# ---------------------------------------------------------------------------
+
+
+def test_apply_config_files_when_staging_has_files_then_applies(tmp_path):
+    from ai_cli.sync import apply_config_files
+
+    staging_dir = tmp_path / "staging"
+    config_dir = staging_dir / "--config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "statusline-command.sh").write_text("#!/bin/bash\necho status")
+    (config_dir / "settings.json").write_text('{"key": "value"}')
+
+    cc_dir = tmp_path / ".claude"
+    cc_dir.mkdir()
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        count = apply_config_files(staging_dir, verbose=False, dry_run=False, remote_host="user@host")
+    assert count >= 1
+    assert (cc_dir / "statusline-command.sh").exists()
+
+
+def test_apply_config_files_when_no_staging_then_returns_zero(tmp_path):
+    from ai_cli.sync import apply_config_files
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        count = apply_config_files(staging_dir, verbose=False, dry_run=False)
+    assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# _detect_foreign_home edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_detect_foreign_home_when_invalid_json_then_skips_line(tmp_path):
+    f = tmp_path / "conv.jsonl"
+    f.write_text('{"cwd": invalid json}\n{"cwd": "/Users/other/projects/x"}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = _detect_foreign_home(f)
+    assert result == "/Users/other"
+
+
+def test_detect_foreign_home_when_exception_then_returns_none(tmp_path):
+    # Non-existent file
+    f = tmp_path / "nonexistent.jsonl"
+    result = _detect_foreign_home(f)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# init_server_bare_repo
+# ---------------------------------------------------------------------------
+
+
+def test_init_server_bare_repo_runs_ssh():
+    from ai_cli.sync import init_server_bare_repo
+
+    with patch("subprocess.run") as mock_run:
+        init_server_bare_repo("user@host")
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args[0][0]
+    assert "ssh" in cmd
+    assert "user@host" in cmd
+
+
+# ---------------------------------------------------------------------------
+# is_cc_active detection
+# ---------------------------------------------------------------------------
+
+
+def test_is_cc_active_on_server_when_running_then_true():
+    with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+        assert is_cc_active_on_server("user@host") is True
+
+
+def test_is_cc_active_on_server_when_not_running_then_false():
+    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+        assert is_cc_active_on_server("user@host") is False
+
+
+def test_is_cc_active_locally_when_running_then_true():
+    with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+        assert is_cc_active_locally() is True
+
+
+def test_is_cc_active_locally_when_not_running_then_false():
+    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+        assert is_cc_active_locally() is False
+
+
+# ---------------------------------------------------------------------------
+# notify_conflicts
+# ---------------------------------------------------------------------------
+
+
+def test_notify_conflicts_when_conflicts_exist_then_writes_log(tmp_path):
+    conflicts = ["project1/memory/MEMORY.md"]
+    with patch("ai_cli.sync.CONFLICT_LOG", tmp_path / "conflicts.log"):
+        with patch("ai_cli.sync._is_mac", return_value=False):
+            notify_conflicts(conflicts)
+    assert (tmp_path / "conflicts.log").exists()
+    content = (tmp_path / "conflicts.log").read_text()
+    assert "project1" in content
+
+
+def test_notify_conflicts_when_empty_then_noop():
+    with patch("ai_cli.sync.CONFLICT_LOG", Path("/tmp/nonexistent-test-log.log")):
+        notify_conflicts([])  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# sync_push integration
+# ---------------------------------------------------------------------------
+
+
+def test_sync_push_when_dry_run_then_reports_files(tmp_path, capsys):
+    from ai_cli.sync import sync_push
+
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+    project_dir = cc_projects_dir / "-home-sergei-projects-myapp"
+    memory_dir = project_dir / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("# Memory")
+
+    staging_dir = tmp_path / "staging"
+    cfg = SyncConfig(
+        staging_dir=staging_dir,
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
+            result = sync_push(["--dry-run"])
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "Would sync" in output
+
+
+def test_sync_push_when_no_cc_dir_then_returns_1(tmp_path):
+    from ai_cli.sync import sync_push
+
+    cfg = SyncConfig(
+        staging_dir=tmp_path / "staging",
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=tmp_path / "nonexistent"):
+                            result = sync_push([])
+    assert result == 1
+
+
+def test_sync_push_when_cc_active_then_aborts(tmp_path):
+    from ai_cli.sync import sync_push
+
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+    cc_projects_dir.mkdir(parents=True)
+
+    cfg = SyncConfig(
+        staging_dir=tmp_path / "staging",
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=True):
+                    result = sync_push([])
+    assert result == 1
+
+
+def test_sync_push_when_success_then_pushes(tmp_path):
+    from ai_cli.sync import sync_push
+
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+    project_dir = cc_projects_dir / "-home-sergei-projects-myapp"
+    memory_dir = project_dir / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("# Memory")
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    cfg = SyncConfig(
+        staging_dir=staging_dir,
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
+                            with patch("ai_cli.sync.git_commit_staged", return_value=True):
+                                with patch("ai_cli.sync._push_to_remote", return_value=True):
+                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch("ai_cli.messaging.NATSClient", side_effect=Exception("no nats")):
+                                                result = sync_push([])
+    assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# sync_pull integration
+# ---------------------------------------------------------------------------
+
+
+def test_sync_pull_when_dry_run_then_succeeds(tmp_path):
+    from ai_cli.sync import sync_pull
+
+    staging_dir = tmp_path / "staging"
+    (staging_dir / "myapp" / "memory").mkdir(parents=True)
+    (staging_dir / "myapp" / "memory" / "MEMORY.md").write_text("# Remote memory")
+
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+
+    cfg = SyncConfig(
+        staging_dir=staging_dir,
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
+            with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+                with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
+                    result = sync_pull(["--dry-run"])
+
+    assert result == 0
+
+
+def test_sync_pull_when_config_error_then_returns_1():
+    from ai_cli.sync import sync_pull
+
+    with patch("ai_cli.sync.load_sync_config", side_effect=RuntimeError("broken")):
+        result = sync_pull([])
+    assert result == 1
+
+
+def test_sync_pull_when_full_run_then_applies_and_translates(tmp_path):
+    from ai_cli.sync import sync_pull
+
+    staging_dir = tmp_path / "staging"
+    (staging_dir / "myapp" / "memory").mkdir(parents=True)
+    (staging_dir / "myapp" / "memory" / "MEMORY.md").write_text("# Remote memory")
+
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+
+    cfg = SyncConfig(
+        staging_dir=staging_dir,
+        remote_url="file:///tmp/test.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
+                            with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
+                                with patch("ai_cli.sync.translate_history_jsonl", return_value=0):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls", return_value=0):
+                                        with patch("ai_cli.sync.replicate_history_to_worktrees", return_value=0):
+                                            result = sync_pull(["--force"])
+
+    assert result == 0
+
+
+def test_sync_push_when_config_error_then_returns_1():
+    from ai_cli.sync import sync_push
+
+    with patch("ai_cli.sync.load_sync_config", side_effect=RuntimeError("broken")):
+        result = sync_push([])
+    assert result == 1
+
+
+def test_sync_push_when_nothing_to_commit_then_returns_0(tmp_path):
+    from ai_cli.sync import sync_push
+
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+    cc_projects_dir.mkdir(parents=True)
+
+    cfg = SyncConfig(
+        staging_dir=tmp_path / "staging",
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
+                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
+                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                        result = sync_push([])
+    assert result == 0
+
+
+def test_sync_push_when_push_fails_then_returns_1(tmp_path):
+    from ai_cli.sync import sync_push
+
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+    cc_projects_dir.mkdir(parents=True)
+
+    cfg = SyncConfig(
+        staging_dir=tmp_path / "staging",
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
+                            with patch("ai_cli.sync.git_commit_staged", return_value=True):
+                                with patch("ai_cli.sync._push_to_remote", return_value=False):
+                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            result = sync_push([])
+    assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# sync_conflicts
+# ---------------------------------------------------------------------------
+
+
+def test_sync_conflicts_when_no_conflicts_then_returns_0(tmp_path, capsys):
+    from ai_cli.sync import sync_conflicts
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+        with patch("ai_cli.sync.CONFLICT_LOG", tmp_path / "nonexistent.log"):
+            result = sync_conflicts([])
+    assert result == 0
+    assert "No unresolved" in capsys.readouterr().out
+
+
+def test_sync_conflicts_when_conflict_files_exist_then_returns_2(tmp_path, capsys):
+    from ai_cli.sync import sync_conflicts
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    proj_dir = cc_dir / "myproject" / "memory"
+    proj_dir.mkdir(parents=True)
+    (proj_dir / "MEMORY.md.conflict").write_text("conflict content")
+
+    log_file = tmp_path / "conflicts.log"
+    log_file.write_text("2026-03-31T12:00:00 CONFLICT myproject/memory/MEMORY.md\n")
+
+    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+        with patch("ai_cli.sync.CONFLICT_LOG", log_file):
+            result = sync_conflicts([])
+    assert result == 2
+    output = capsys.readouterr().out
+    assert "MEMORY.md.conflict" in output
+    assert "Recent conflict log" in output
+
+
+# ---------------------------------------------------------------------------
+# _push_to_remote
+# ---------------------------------------------------------------------------
+
+
+def test_push_to_remote_when_success_then_true(tmp_path):
+    from ai_cli.sync import _push_to_remote
+
+    with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+        assert _push_to_remote(tmp_path, verbose=False) is True
+
+
+def test_push_to_remote_when_rejected_and_rebase_fails_then_false(tmp_path):
+    from ai_cli.sync import _push_to_remote
+
+    def mock_run(cmd, **kwargs):
+        m = MagicMock()
+        if "push" in cmd:
+            m.returncode = 1
+            m.stderr = "non-fast-forward rejected"
+        elif "pull" in cmd:
+            m.returncode = 1
+            m.stderr = "rebase failed"
+        else:
+            m.returncode = 0
+        return m
+
+    with patch("subprocess.run", side_effect=mock_run):
+        assert _push_to_remote(tmp_path, verbose=False) is False
+
+
+def test_push_to_remote_when_rejected_and_rebase_succeeds_then_retries(tmp_path):
+    from ai_cli.sync import _push_to_remote
+
+    call_count = {"push": 0}
+
+    def mock_run(cmd, **kwargs):
+        m = MagicMock()
+        if "push" in cmd:
+            call_count["push"] += 1
+            if call_count["push"] == 1:
+                m.returncode = 1
+                m.stderr = "non-fast-forward"
+            else:
+                m.returncode = 0
+        elif "pull" in cmd:
+            m.returncode = 0
+        else:
+            m.returncode = 0
+        m.stdout = ""
+        return m
+
+    with patch("subprocess.run", side_effect=mock_run):
+        assert _push_to_remote(tmp_path, verbose=False) is True
+    assert call_count["push"] == 2

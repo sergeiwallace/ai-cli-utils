@@ -87,3 +87,35 @@ class TestIsEnabled:
     def test_is_enabled_when_no_config_then_defaults_true(self):
         with patch("ai_cli.main.load_config", return_value={}):
             assert _is_enabled() is True
+
+    def test_is_enabled_when_load_config_raises_then_defaults_true(self):
+        """Lines 44-45: exception path in _is_enabled."""
+        # _is_enabled imports load_config via relative import: from .main import load_config
+        # We need to patch it where it's looked up
+        with patch("ai_cli.main.load_config", side_effect=RuntimeError("broken")):
+            # Force re-evaluation by calling directly
+            result = _is_enabled()
+        assert result is True
+
+
+class TestGetMachineId:
+    def test_get_machine_id_when_called_then_returns_hostname(self):
+        """Line 34: actual body of _get_machine_id."""
+        from ai_cli.telemetry import _get_machine_id
+        import socket
+
+        result = _get_machine_id()
+        assert result == socket.gethostname()
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+
+class TestRecordEventExceptions:
+    def test_record_event_when_init_db_raises_then_still_returns_true(self, tmp_path):
+        """Lines 107-108: SQLite exception path in record_event."""
+        with patch("ai_cli.telemetry._is_enabled", return_value=True):
+            with patch("ai_cli.telemetry.init_db", side_effect=sqlite3.OperationalError("disk full")):
+                with patch("ai_cli.telemetry._get_machine_id", return_value="test"):
+                    with patch("ai_cli.messaging.NATSClient", side_effect=Exception("no nats")):
+                        result = record_event("click", {"button": "save"})
+        assert result is True
