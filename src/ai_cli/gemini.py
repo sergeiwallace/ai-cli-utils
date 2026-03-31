@@ -50,9 +50,11 @@ DEFAULT_OUTPUT_DIR = Path.home() / ".local" / "state" / "ai-cli" / "gemini-outpu
 # Data types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class GeminiResult:
     """Result of a Gemini API call."""
+
     content: str = ""
     model: str = ""
     tier: int = 0
@@ -69,6 +71,7 @@ class GeminiResult:
 @dataclass
 class AttemptLog:
     """Log entry for a single attempt."""
+
     tier: int
     tier_name: str
     model: str
@@ -132,13 +135,17 @@ def _log_to_file(result: GeminiResult, prompt: str, output_path: str | None):
 # Tier 1: gemini CLI (OAuth)
 # ---------------------------------------------------------------------------
 
+
 def _try_gemini_cli(prompt: str, model: str, timeout_s: int, verbose: bool) -> GeminiResult:
     """Try running via gemini CLI (OAuth auth — free tier)."""
     gemini_bin = shutil.which("gemini")
     if not gemini_bin:
         return GeminiResult(
-            model=model, tier=1, tier_name=TIER_NAMES[1],
-            success=False, error="gemini CLI not found in PATH",
+            model=model,
+            tier=1,
+            tier_name=TIER_NAMES[1],
+            success=False,
+            error="gemini CLI not found in PATH",
         )
 
     cmd = [gemini_bin, "-p", prompt, "-m", model, "--yolo"]
@@ -149,7 +156,10 @@ def _try_gemini_cli(prompt: str, model: str, timeout_s: int, verbose: bool) -> G
     start = time.time()
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_s,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
         )
         elapsed_ms = int((time.time() - start) * 1000)
 
@@ -169,21 +179,30 @@ def _try_gemini_cli(prompt: str, model: str, timeout_s: int, verbose: bool) -> G
             content = "\n".join(content_lines).strip()
 
             return GeminiResult(
-                content=content, model=model, tier=1, tier_name=TIER_NAMES[1],
-                success=True, duration_ms=elapsed_ms,
+                content=content,
+                model=model,
+                tier=1,
+                tier_name=TIER_NAMES[1],
+                success=True,
+                duration_ms=elapsed_ms,
             )
 
         # Check stderr for capacity/rate limit errors
         stderr = result.stderr or ""
         if "429" in stderr or "RESOURCE_EXHAUSTED" in stderr or "capacity" in stderr.lower():
             return GeminiResult(
-                model=model, tier=1, tier_name=TIER_NAMES[1],
-                success=False, error="capacity exhausted (429)",
+                model=model,
+                tier=1,
+                tier_name=TIER_NAMES[1],
+                success=False,
+                error="capacity exhausted (429)",
                 duration_ms=elapsed_ms,
             )
 
         return GeminiResult(
-            model=model, tier=1, tier_name=TIER_NAMES[1],
+            model=model,
+            tier=1,
+            tier_name=TIER_NAMES[1],
             success=False,
             error=f"exit code {result.returncode}: {stderr[:200]}",
             duration_ms=elapsed_ms,
@@ -192,8 +211,11 @@ def _try_gemini_cli(prompt: str, model: str, timeout_s: int, verbose: bool) -> G
     except subprocess.TimeoutExpired:
         elapsed_ms = int((time.time() - start) * 1000)
         return GeminiResult(
-            model=model, tier=1, tier_name=TIER_NAMES[1],
-            success=False, error=f"timeout ({timeout_s}s)",
+            model=model,
+            tier=1,
+            tier_name=TIER_NAMES[1],
+            success=False,
+            error=f"timeout ({timeout_s}s)",
             duration_ms=elapsed_ms,
         )
 
@@ -201,6 +223,7 @@ def _try_gemini_cli(prompt: str, model: str, timeout_s: int, verbose: bool) -> G
 # ---------------------------------------------------------------------------
 # Tiers 2 & 3: Gemini REST API (free / paid keys)
 # ---------------------------------------------------------------------------
+
 
 def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose: bool) -> GeminiResult:
     """Try running via Gemini REST API with an API key."""
@@ -211,20 +234,29 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
         api_key = os.environ.get("GOOGLE_API_KEY_FREE_TIER")
         if not api_key:
             return GeminiResult(
-                model=model, tier=tier, tier_name=tier_name,
-                success=False, error="GOOGLE_API_KEY_FREE_TIER not set",
+                model=model,
+                tier=tier,
+                tier_name=tier_name,
+                success=False,
+                error="GOOGLE_API_KEY_FREE_TIER not set",
             )
     elif tier == 3:
         api_key = os.environ.get("GOOGLE_API_KEY_TIER_1") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
             return GeminiResult(
-                model=model, tier=tier, tier_name=tier_name,
-                success=False, error="GOOGLE_API_KEY_TIER_1 not set",
+                model=model,
+                tier=tier,
+                tier_name=tier_name,
+                success=False,
+                error="GOOGLE_API_KEY_TIER_1 not set",
             )
     else:
         return GeminiResult(
-            model=model, tier=tier, tier_name=tier_name,
-            success=False, error=f"unknown tier {tier}",
+            model=model,
+            tier=tier,
+            tier_name=tier_name,
+            success=False,
+            error=f"unknown tier {tier}",
         )
 
     try:
@@ -232,8 +264,11 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
         from google.genai import types
     except ImportError:
         return GeminiResult(
-            model=model, tier=tier, tier_name=tier_name,
-            success=False, error="google-genai package not installed (pip install google-genai)",
+            model=model,
+            tier=tier,
+            tier_name=tier_name,
+            success=False,
+            error="google-genai package not installed (pip install google-genai)",
         )
 
     # Resolve model alias for API
@@ -278,8 +313,11 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
 
     if thread.is_alive():
         return GeminiResult(
-            model=model, tier=tier, tier_name=tier_name,
-            success=False, error=f"timeout ({timeout_s}s)",
+            model=model,
+            tier=tier,
+            tier_name=tier_name,
+            success=False,
+            error=f"timeout ({timeout_s}s)",
             duration_ms=elapsed_ms,
         )
 
@@ -288,7 +326,9 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
         error_msg = str(exc)
         is_quota = "429" in error_msg or "resource exhausted" in error_msg.lower()
         return GeminiResult(
-            model=model, tier=tier, tier_name=tier_name,
+            model=model,
+            tier=tier,
+            tier_name=tier_name,
             success=False,
             error=f"{'capacity exhausted (429)' if is_quota else error_msg[:200]}",
             duration_ms=elapsed_ms,
@@ -296,8 +336,11 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
 
     if "response" not in result_container:
         return GeminiResult(
-            model=model, tier=tier, tier_name=tier_name,
-            success=False, error="no response received",
+            model=model,
+            tier=tier,
+            tier_name=tier_name,
+            success=False,
+            error="no response received",
             duration_ms=elapsed_ms,
         )
 
@@ -313,9 +356,14 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
         total_tokens = getattr(um, "total_token_count", 0) or 0
 
     return GeminiResult(
-        content=content, model=model, tier=tier, tier_name=tier_name,
-        success=True, duration_ms=elapsed_ms,
-        input_tokens=input_tokens, output_tokens=output_tokens,
+        content=content,
+        model=model,
+        tier=tier,
+        tier_name=tier_name,
+        success=True,
+        duration_ms=elapsed_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         total_tokens=total_tokens,
     )
 
@@ -323,6 +371,7 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
 # ---------------------------------------------------------------------------
 # Main: 3-tier fallback chain
 # ---------------------------------------------------------------------------
+
 
 def run_gemini(
     prompt: str,
@@ -355,8 +404,11 @@ def run_gemini(
 
         result = tier_fn()
         attempt = AttemptLog(
-            tier=tier_num, tier_name=tier_name, model=model,
-            success=result.success, error=result.error,
+            tier=tier_num,
+            tier_name=tier_name,
+            model=model,
+            success=result.success,
+            error=result.error,
             duration_ms=result.duration_ms,
         )
         final_result.attempts.append(attempt)
@@ -417,6 +469,7 @@ def run_gemini(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+
 def gemini_cli(args: list[str]):
     """Parse args and run the Gemini fallback chain.
 
@@ -433,7 +486,9 @@ def gemini_cli(args: list[str]):
         description="Run a Gemini prompt with 3-tier auth fallback",
     )
     parser.add_argument("prompt", nargs="?", default=None, help="Prompt text (or pipe via stdin)")
-    parser.add_argument("-m", "--model", default="deep-think", help="Model alias: deep-think, pro, flash, flash-lite, or full model ID")
+    parser.add_argument(
+        "-m", "--model", default="deep-think", help="Model alias: deep-think, pro, flash, flash-lite, or full model ID"
+    )
     parser.add_argument("-o", "--output", default=None, help="Output file path (auto-generated if not specified)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress stdout output (file only)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed tier/model info")
