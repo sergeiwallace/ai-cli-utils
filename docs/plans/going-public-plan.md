@@ -405,8 +405,64 @@ markers = ["integration: requires Hetzner SSH access"]
 Add to `CLAUDE.md` (ai-cli-utils project):
 > If the `integration` CI job is failing, create a P1 task `[AI-CLI-integration-fix]` and investigate before other work.
 
+## AI-CLI-12 Follow-up: Coverage Push 97% → ~99%
+
+**Status:** APPROVED 2026-03-31
+**Baseline:** 539 tests, 97% total, 59 uncovered lines across 7 modules
+
+All groups approved for autonomous implementation.
+
+### Group A — Daemon exception paths (quota.py:80-81, 113-114 | telemetry.py:139-149, 158)
+
+- `quota.py:80-81`: `except Exception: pass` after `connect()` — add test where connect() raises
+- `quota.py:113-114`: `except Exception` in publish loop — add test where publish() raises
+- `telemetry.py:139-149`: `on_event` callback body — test subscribe_durable that invokes the callback
+- `telemetry.py:158`: `return True` after subscribe_durable completes — mock subscribe_durable to return immediately
+
+### Group B — Memory callback bodies (memory.py:99-103, 106-110)
+
+`on_write_start` and `on_write_settle` closures in `memory_watch`. Patch `MemoryFileHandler.__init__` to capture callbacks, invoke them inside a fake `time.sleep`, assert publish calls.
+
+Also add publish-exception path tests (lines 102-103, 109-110).
+
+### Group C — Sync verbose/edge branches (~11 lines)
+
+- `sync.py:592`: empty line in `replicate_history_to_worktrees` — feed history with blank lines
+- `sync.py:658`: non-file path in `retranslate_project_jsonls` — create a dir named `thing.jsonl`
+- `sync.py:831`: no worktrees found in `_replicate_to_worktrees` — project dir exists but no `.worktrees`
+- `sync.py:892`: `continue` for lock dir not in replicated UUIDs
+- `sync.py:1014`: verbose print in apply handoffs — call with `verbose=True` and new handoff
+- `sync.py:1134-1136`: settings unchanged path in `apply_config_files` — dst already has same content
+- `sync.py:1244`: verbose pre-pull push print — sync_pull with verbose=True, committed memory push
+
+### Group D — Dream safety guard (sync.py:1285-1319, 1322-1323)
+
+Test `_wait_for_dream_completion` directly:
+- Pid file exists, cc_projects has recent MEMORY.md → `recent_write=True`
+- Mock NATSClient, mock `asyncio.wait_for` to trigger completion → covers 1298-1313
+- Timeout path → covers 1314-1316
+- `return` after no recent write → covers 1294-1296
+- Dream wait + close → covers 1317-1319, 1322-1323
+
+### Group E — Replication exception (sync.py:868-869)
+
+Test `_replicate_to_worktrees` with unreadable JSONL file (chmod 000) → `except Exception: continue`.
+
+### Group F — Remaining lines
+
+- **F1** `main.py:1270` (`if __name__ == "__main__"`) — `# pragma: no cover`
+- **F2** `main.py:1192` (git pull in new worktree) — mock `create_worktree` returning a tmp path
+- **F3** `gemini.py:254` (unknown tier) — test `_try_gemini_api(..., tier=99, ...)`
+- **F4** `gemini.py:338` (no response received) — mock `threading.Thread` so neither container is populated
+
+### New features (approved same session)
+
+- `ai ls` — list tmux sessions + fzf picker (fall back to plain list if fzf absent)
+- `ai attach <name>` — thin wrapper around `tmux attach-session -t <name>`
+
 ## Approval Log
 
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-03-29 | Plan approved | User approved autonomous implementation |
+| 2026-03-31 | Follow-up approved | All groups A-F + ai ls/attach approved |

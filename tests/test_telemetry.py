@@ -181,3 +181,74 @@ class TestTelemetryWriter:
         assert result == 0
         mock_conn.close.assert_called_once()
         mock_release.assert_called_with("telemetry-writer")
+
+    def test_telemetry_writer_when_event_received_then_writes_to_db(self, tmp_path):
+        """Covers lines 139-149 (on_event body) and 158 (return True after subscribe_durable)."""
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_subscribe_durable(subject, consumer, callback):
+            # Invoke on_event with a valid event — covers lines 139-147
+            await callback(
+                {
+                    "subject": "telemetry.action.click",
+                    "data": {"btn": "ok"},
+                    "machine": "host",
+                    "session": "c-sw-1",
+                    "ts": 1234.0,
+                }
+            )
+            # Returns without blocking — covers line 158 (return True)
+
+        mock_client.connect = fake_connect
+        mock_client.subscribe_durable = fake_subscribe_durable
+
+        db_path = tmp_path / "test.db"
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.telemetry._DB_PATH", db_path),
+        ):
+            from ai_cli.telemetry import telemetry_writer
+
+            result = telemetry_writer()
+
+        assert result == 0
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute("SELECT subject FROM events").fetchone()
+        assert row[0] == "telemetry.action.click"
+        conn.close()
+
+    def test_telemetry_writer_when_write_event_raises_then_logs_error(self, tmp_path, capsys):
+        """Covers lines 148-149: except Exception in on_event."""
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_subscribe_durable(subject, consumer, callback):
+            await callback({"subject": "test"})
+
+        mock_client.connect = fake_connect
+        mock_client.subscribe_durable = fake_subscribe_durable
+
+        db_path = tmp_path / "test.db"
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.telemetry._DB_PATH", db_path),
+            patch("ai_cli.telemetry.write_event", side_effect=Exception("db error")),
+        ):
+            from ai_cli.telemetry import telemetry_writer
+
+            telemetry_writer()
+
+        assert "write error" in capsys.readouterr().err

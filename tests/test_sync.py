@@ -26,7 +26,6 @@ from ai_cli.sync import (
     notify_conflicts,
     _detect_foreign_home,
     translate_cwd_paths,
-    _pre_pull_push_memories,
     init_staging_repo,
     _detect_foreign_home_in_history,
     _write_jsonl_translated,
@@ -42,6 +41,8 @@ from ai_cli.sync import (
     sync_pull,
     _push_to_remote,
     _release_pid_file,
+    _wait_for_dream_completion,
+    _pre_pull_push_memories,
 )
 
 # Fixed prefix strings for tests — mirror what get_local_prefix() would return on each platform
@@ -3595,3 +3596,313 @@ def test_sync_watch_when_keyboard_interrupt_during_run_then_returns_0(capsys):
             with patch("asyncio.run", side_effect=KeyboardInterrupt):
                 result = sync_watch([])
     assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# Group C: sync.py verbose/edge branches (592, 658, 831, 892, 1014, 1134-1136, 1244)
+# ---------------------------------------------------------------------------
+
+
+def test_replicate_history_to_worktrees_when_blank_lines_then_skips(tmp_path):
+    """Covers line 592: continue for empty line in history."""
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    history_path = claude_dir / "history.jsonl"
+    history_path.write_text('{"project": "/home/u/projects/app"}\n\n{"project": "/home/u/projects/app"}\n')
+    projects_base = tmp_path / "projects"
+    app = projects_base / "app"
+    app.mkdir(parents=True)
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = replicate_history_to_worktrees()
+    assert result == 0  # no worktrees → nothing replicated, but blank line branch was exercised
+
+
+def test_retranslate_project_jsonls_when_jsonl_is_dir_then_skips(tmp_path):
+    """Covers line 658: continue when jsonl_path.is_file() is False (it's a directory)."""
+    cc_projects = tmp_path / "cc"
+    proj_dir = cc_projects / "myproj"
+    proj_dir.mkdir(parents=True)
+    # Create a directory with a .jsonl name — rglob finds it, is_file() returns False
+    fake_jsonl_dir = proj_dir / "thing.jsonl"
+    fake_jsonl_dir.mkdir()
+
+    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects):
+        result = retranslate_project_jsonls(verbose=False)
+    assert result == 0
+
+
+def test_replicate_to_worktrees_when_project_has_no_worktrees_then_continues(tmp_path):
+    """Covers line 831: continue when _find_project_worktrees returns []."""
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    myapp.mkdir(parents=True)
+    # No .worktrees dir — _find_project_worktrees returns []
+
+    cc_projects = tmp_path / "cc"
+    cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        count = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+    assert count == 0
+
+
+def test_replicate_to_worktrees_when_unreadable_jsonl_then_continues(tmp_path):
+    """Covers lines 868-869: except Exception: continue when open() raises on JSONL file."""
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    myapp.mkdir(parents=True)
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / ".git").write_text("gitdir")
+
+    cc_projects = tmp_path / "cc"
+    cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    cc_dir.mkdir(parents=True)
+    unreadable = cc_dir / "abc123.jsonl"
+    unreadable.write_text('{"cwd":"/home/sergei/projects/myapp"}')
+    unreadable.chmod(0o000)
+
+    try:
+        with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+            count = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+        assert count == 0  # skipped unreadable file
+    finally:
+        unreadable.chmod(0o644)  # restore so tmp cleanup works
+
+
+def test_replicate_to_worktrees_when_lock_dir_not_in_replicated_then_skips(tmp_path):
+    """Covers line 892: continue when lock dir UUID not in replicated_uuids."""
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    myapp.mkdir(parents=True)
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / ".git").write_text("gitdir")
+
+    cc_projects = tmp_path / "cc"
+    cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    cc_dir.mkdir(parents=True)
+
+    # JSONL that doesn't match worktree (no title/cwd match) → not replicated
+    conv = cc_dir / "abc123.jsonl"
+    conv.write_text('{"cwd":"/somewhere/else"}\n')
+
+    # Lock dir for that UUID — will NOT be in replicated_uuids since conv wasn't copied
+    lock_dir = cc_dir / "abc123"
+    lock_dir.mkdir()
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+    # Lock dir was skipped (UUID not in replicated set)
+    wt_cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    assert not (wt_cc_dir / "abc123").exists()
+
+
+def test_apply_handoff_files_when_verbose_and_new_handoff_then_prints(tmp_path, capsys):
+    """Covers line 1014: verbose print for applied handoff."""
+    from ai_cli.sync import _HANDOFF_STAGING_NAMESPACE
+
+    staging_pending = tmp_path / "staging" / _HANDOFF_STAGING_NAMESPACE / "pending"
+    staging_pending.mkdir(parents=True)
+    handoff_file = staging_pending / "001-test.md"
+    handoff_file.write_text("handoff content")
+
+    handoff_queue_dir = tmp_path / "queue"
+
+    result = apply_handoff_files(
+        staging_dir=tmp_path / "staging",
+        handoff_queue_dir=handoff_queue_dir,
+        verbose=True,
+        dry_run=False,
+    )
+
+    assert result == 1
+    assert "apply handoff" in capsys.readouterr().out
+
+
+def test_apply_config_files_when_settings_identical_to_dst_then_skips_write(tmp_path):
+    """Covers lines 1134-1136: settings dst exists with same content → return early."""
+    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE
+
+    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
+    staging_config.mkdir(parents=True)
+
+    # apply_config_files writes to Path.home() / ".claude"
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    cc_dir = fake_home / ".claude"
+    cc_dir.mkdir()
+
+    settings_content = '{"mcpServers": {}}'
+    (staging_config / "settings.json").write_text(settings_content)
+    # Write identical content to destination
+    (cc_dir / "settings.json").write_text(settings_content)
+
+    with patch("pathlib.Path.home", return_value=fake_home):
+        with patch("ai_cli.sync._translate_settings_paths", return_value=settings_content):
+            result = apply_config_files(
+                staging_dir=tmp_path / "staging",
+                verbose=False,
+                dry_run=False,
+                remote_host="user@host",
+            )
+    assert result == 0  # returned early — content unchanged
+
+
+def test_pre_pull_push_memories_when_committed_and_verbose_then_prints(tmp_path, capsys):
+    """Covers line 1244: verbose print after pre-pull memory push."""
+    cfg = SyncConfig(
+        remote_host="user@host",
+        staging_dir=tmp_path / "staging",
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        source_machine="hetzner",
+    )
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir()
+
+    with (
+        patch("ai_cli.sync.stage_project_files", return_value={"memory_count": 2, "project_names": ["myapp"]}),
+        patch("ai_cli.sync.git_commit_staged", return_value=True),
+        patch("ai_cli.sync._push_to_remote"),
+    ):
+        _pre_pull_push_memories(cfg, cc_projects, verbose=True)
+
+    assert "pre-pull: pushed 2" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Group D: dream safety guard (sync.py:1285-1292, 1298-1319, 1322-1323)
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_dream_completion_when_no_pid_file_then_returns_immediately(tmp_path):
+    """Pid file missing → returns immediately without connecting to NATS."""
+    with patch("ai_cli.sync._pid_file_path", return_value=tmp_path / "nonexistent.pid"):
+        with patch("ai_cli.messaging.NATSClient") as mock_cls:
+            _wait_for_dream_completion(verbose=False)
+    mock_cls.assert_not_called()
+
+
+def test_wait_for_dream_completion_when_no_recent_write_then_closes_and_returns(tmp_path):
+    """Covers lines 1285-1292, 1294-1296: MEMORY.md mtime is old → close and return."""
+    pid_file = tmp_path / "memory-watch.pid"
+    pid_file.write_text("12345")
+
+    mock_client = MagicMock()
+    mock_client.nc = MagicMock()
+
+    async def fake_connect():
+        pass
+
+    async def fake_close():
+        pass
+
+    mock_client.connect = fake_connect
+    mock_client.close = AsyncMock()
+
+    # cc_projects with a MEMORY.md that's old (mtime 60s ago)
+    cc_projects = tmp_path / ".claude" / "projects"
+    cc_projects.mkdir(parents=True)
+    old_mem = cc_projects / "myproj" / "MEMORY.md"
+    old_mem.parent.mkdir()
+    old_mem.write_text("old content")
+    import os as _os
+
+    _os.utime(old_mem, (0, 0))  # epoch — definitely old
+
+    with (
+        patch("ai_cli.sync._pid_file_path", return_value=pid_file),
+        patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        patch("pathlib.Path.home", return_value=tmp_path),
+    ):
+        _wait_for_dream_completion(verbose=False)
+
+    mock_client.close.assert_awaited_once()
+
+
+def test_wait_for_dream_completion_when_recent_write_and_completes_then_returns(tmp_path):
+    """Covers lines 1298-1319, 1322-1323: recent write → subscribe, wait, complete."""
+
+    pid_file = tmp_path / "memory-watch.pid"
+    pid_file.write_text("12345")
+
+    mock_sub = AsyncMock()
+    mock_nc = MagicMock()
+    mock_nc.subscribe = AsyncMock(return_value=mock_sub)
+
+    mock_client = MagicMock()
+    mock_client.nc = mock_nc
+
+    async def fake_connect():
+        pass
+
+    mock_client.connect = fake_connect
+    mock_client.close = AsyncMock()
+
+    # MEMORY.md with current mtime (recent write)
+    cc_projects = tmp_path / ".claude" / "projects"
+    cc_projects.mkdir(parents=True)
+    recent_mem = cc_projects / "myproj" / "MEMORY.md"
+    recent_mem.parent.mkdir()
+    recent_mem.write_text("fresh")
+    # mtime is now (default) — within 5s window
+
+    # wait_for completes immediately (simulate dream done)
+    async def fake_wait_for(coro, timeout):
+        pass  # returns without raising TimeoutError
+
+    with (
+        patch("ai_cli.sync._pid_file_path", return_value=pid_file),
+        patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("asyncio.wait_for", fake_wait_for),
+    ):
+        _wait_for_dream_completion(verbose=True)
+
+    mock_sub.unsubscribe.assert_awaited()
+    mock_client.close.assert_awaited()
+
+
+def test_wait_for_dream_completion_when_recent_write_and_timeout_then_proceeds(tmp_path):
+    """Covers lines 1314-1316: asyncio.TimeoutError path in dream guard."""
+    import asyncio
+
+    pid_file = tmp_path / "memory-watch.pid"
+    pid_file.write_text("12345")
+
+    mock_sub = AsyncMock()
+    mock_nc = MagicMock()
+    mock_nc.subscribe = AsyncMock(return_value=mock_sub)
+
+    mock_client = MagicMock()
+    mock_client.nc = mock_nc
+
+    async def fake_connect():
+        pass
+
+    mock_client.connect = fake_connect
+    mock_client.close = AsyncMock()
+
+    cc_projects = tmp_path / ".claude" / "projects"
+    cc_projects.mkdir(parents=True)
+    recent_mem = cc_projects / "myproj" / "MEMORY.md"
+    recent_mem.parent.mkdir()
+    recent_mem.write_text("fresh")
+
+    async def fake_wait_for_timeout(coro, timeout):
+        raise asyncio.TimeoutError
+
+    with (
+        patch("ai_cli.sync._pid_file_path", return_value=pid_file),
+        patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("asyncio.wait_for", fake_wait_for_timeout),
+    ):
+        _wait_for_dream_completion(verbose=True)
+
+    mock_sub.unsubscribe.assert_awaited()
+    mock_client.close.assert_awaited()

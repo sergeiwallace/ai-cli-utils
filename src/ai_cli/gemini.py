@@ -227,7 +227,7 @@ def _try_gemini_cli(prompt: str, model: str, timeout_s: int, verbose: bool) -> G
 
 def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose: bool) -> GeminiResult:
     """Try running via Gemini REST API with an API key."""
-    tier_name = TIER_NAMES[tier]
+    tier_name = TIER_NAMES.get(tier, f"tier-{tier}")
 
     # Determine which env var to use
     if tier == 2:

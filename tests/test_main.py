@@ -2143,3 +2143,33 @@ class TestCliIsRemotePath:
                                                                 with pytest.raises(SystemExit):
                                                                     cli()
                                                         mock_chdir.assert_called_once_with(project_dir)
+
+
+class TestCliWorktreeGitPull:
+    def test_cli_when_worktree_created_then_runs_git_pull(self, tmp_path):
+        """Covers line 1192: subprocess.run git pull after create_worktree returns a path."""
+        worktree_path = tmp_path / ".worktrees" / "sw-1"
+        worktree_path.mkdir(parents=True)
+
+        git_pull_calls = []
+
+        def fake_subprocess_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "pull" in cmd:
+                git_pull_calls.append(cmd)
+            return MagicMock(returncode=1)
+
+        with patch("sys.argv", ["ai", "c", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.cleanup_stale_sessions"):
+                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.main.create_worktree", return_value=worktree_path):
+                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                                        with patch("ai_cli.main.get_engine_script", return_value="script"):
+                                            with patch("subprocess.run", side_effect=fake_subprocess_run):
+                                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
+
+        assert any("pull" in cmd for cmd in git_pull_calls)

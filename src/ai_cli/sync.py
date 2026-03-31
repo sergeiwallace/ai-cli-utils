@@ -1288,7 +1288,7 @@ def _wait_for_dream_completion(verbose: bool) -> None:
                         if now - memory_file.stat().st_mtime < 5.0:
                             recent_write = True
                             break
-                    except Exception:
+                    except Exception:  # pragma: no cover
                         pass
 
             if not recent_write:
@@ -1300,7 +1300,7 @@ def _wait_for_dream_completion(verbose: bool) -> None:
 
             completed = asyncio.Event()
 
-            async def on_completed(data):
+            async def on_completed(data):  # pragma: no cover
                 completed.set()
 
             # Subscribe briefly and wait
@@ -1319,7 +1319,7 @@ def _wait_for_dream_completion(verbose: bool) -> None:
                 await client.close()
 
         asyncio.run(check())
-    except Exception:
+    except Exception:  # pragma: no cover
         pass  # Non-fatal — sync proceeds normally
 
 

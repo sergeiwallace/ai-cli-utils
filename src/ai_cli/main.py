@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import json
+import shutil
 import time
 import subprocess
 import tomllib
@@ -1101,6 +1102,112 @@ def cli():
         print()
         sys.exit(0)
 
+    if len(sys.argv) > 1 and sys.argv[1] == "attach":
+        if len(sys.argv) < 3:
+            print("Usage: ai attach <session-name>", file=sys.stderr)
+            sys.exit(1)
+        session_name = sys.argv[2]
+        check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True)
+        if check.returncode != 0:
+            print(f"No tmux session named '{session_name}'", file=sys.stderr)
+            sys.exit(1)
+        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+
+    if len(sys.argv) > 1 and sys.argv[1] == "ls":
+        show_all = "--all" in sys.argv
+
+        res = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0:
+            print("No tmux sessions found (is tmux running?)", file=sys.stderr)
+            sys.exit(0)
+
+        now = int(time.time())
+        sessions = []
+        for line in res.stdout.strip().splitlines():
+            if not line:
+                continue
+            parts = line.split()
+            name = parts[0]
+            try:
+                activity = int(parts[1]) if len(parts) > 1 else 0
+            except ValueError:
+                activity = 0
+            if not show_all and not _AI_SESSION_RE.match(name):
+                continue
+            sessions.append((name, activity))
+
+        if not sessions:
+            msg = (
+                "No tmux sessions found."
+                if show_all
+                else "No ai-cli sessions found. Use --all to show all tmux sessions."
+            )
+            print(msg)
+            sys.exit(0)
+
+        sessions.sort(key=lambda x: x[1], reverse=True)
+
+        def _human_age(ts: int) -> str:
+            delta = now - ts
+            if delta < 60:
+                return f"{delta}s"
+            if delta < 3600:
+                return f"{delta // 60}m"
+            if delta < 86400:
+                return f"{delta // 3600}h"
+            return f"{delta // 86400}d"
+
+        def _project_from_session(name: str) -> str:
+            """Extract project prefix from session name: c-sw-1 → sw, c-r-sw-1 → sw."""
+            parts = name.split("-")
+            # Format: {c|g}[-r]-{project}-{index}
+            if len(parts) >= 3 and parts[0] in ("c", "g"):
+                start = 2 if parts[1] == "r" else 1
+                # project is everything between start and last segment
+                return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
+            return name
+
+        fzf = shutil.which("fzf")
+        if fzf is None:
+            # Try to install fzf
+            apt = shutil.which("apt")
+            if apt:
+                print("fzf not found — installing with apt...")
+                subprocess.run(["apt", "install", "-y", "fzf"], check=False)
+                fzf = shutil.which("fzf")
+
+        if fzf:
+            lines = [f"{name}\t{_project_from_session(name)}\t{_human_age(activity)}" for name, activity in sessions]
+            result = subprocess.run(
+                [
+                    fzf,
+                    "--ansi",
+                    "--reverse",
+                    "--prompt=session> ",
+                    "--delimiter=\t",
+                    "--with-nth=1,3",
+                    "--preview-window=hidden",
+                ],
+                input="\n".join(lines),
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                sys.exit(0)
+            selected = result.stdout.strip().split("\t")[0]
+            os.execvp("tmux", ["tmux", "attach-session", "-t", selected])
+        else:
+            # Plain list fallback
+            for i, (name, activity) in enumerate(sessions, 1):
+                project = _project_from_session(name)
+                print(f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
+            print("\nTo attach: ai attach <name>")
+            sys.exit(0)
+
     trigger_background_update()
 
     parser = argparse.ArgumentParser(description="Unified AI CLI for Claude and Gemini")
@@ -1305,5 +1412,5 @@ def cli():
         os.execvp("tmux", ["tmux", "new-session", "-s", session_id, "--", "bash", "-c", script])
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     cli()

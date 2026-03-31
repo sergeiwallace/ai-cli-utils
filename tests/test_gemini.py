@@ -477,6 +477,46 @@ class TestTryGeminiApiVerboseLogging:
         assert "tier 2" in err or "REST API" in err
 
 
+class TestTryGeminiApiUnknownTier:
+    def test_try_gemini_api_when_unknown_tier_then_returns_error(self):
+        """Covers line 254: else branch for tier not in {2, 3}."""
+        result = _try_gemini_api("prompt", "flash", 30, tier=99, verbose=False)
+        assert result.success is False
+        assert "unknown tier" in result.error
+        assert result.tier == 99
+
+
+class TestTryGeminiApiNoResponse:
+    def test_try_gemini_api_when_thread_completes_without_response_then_returns_error(self):
+        """Covers line 338: 'no response received' when thread exits without populating containers."""
+
+        class NoOpThread:
+            def __init__(self, target, daemon):
+                pass  # never runs target — neither container gets populated
+
+            def start(self):
+                pass
+
+            def join(self, timeout):
+                pass
+
+            def is_alive(self):
+                return False
+
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+            modules = {
+                "google": MagicMock(),
+                "google.genai": MagicMock(),
+                "google.genai.types": MagicMock(),
+            }
+            with patch.dict("sys.modules", modules):
+                with patch("threading.Thread", NoOpThread):
+                    result = _try_gemini_api("prompt", "flash", 5, tier=2, verbose=False)
+
+        assert result.success is False
+        assert "no response received" in result.error
+
+
 class TestRunGeminiNoFilePrintsToStdout:
     def test_run_gemini_when_success_and_not_quiet_then_prints_content(self, capsys, tmp_path):
         """Covers line 460: print(final_result.content) when not quiet."""

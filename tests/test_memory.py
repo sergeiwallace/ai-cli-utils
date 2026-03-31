@@ -235,3 +235,113 @@ class TestMemoryWatch:
         mock_observer.stop.assert_called_once()
         mock_observer.join.assert_called_once()
         mock_release.assert_called_with("memory-watch")
+
+    def test_memory_watch_when_callbacks_invoked_then_publishes(self, tmp_path):
+        """Covers lines 99-103, 106-110: on_write_start and on_write_settle callback bodies."""
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_publish(*args, **kwargs):
+            pass
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.publish = MagicMock(side_effect=fake_publish)
+        mock_client.close = MagicMock(side_effect=fake_close)
+
+        mock_observer = MagicMock()
+        captured_callbacks = []
+
+        original_init = MemoryFileHandler.__init__
+
+        def capturing_init(self, on_write_start, on_write_settle):
+            captured_callbacks.append((on_write_start, on_write_settle))
+            original_init(self, on_write_start, on_write_settle)
+
+        call_count = 0
+
+        def fake_sleep(_):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1 and captured_callbacks:
+                on_start, on_settle = captured_callbacks[0]
+                on_start("/path/to/MEMORY.md")
+                on_settle()
+            raise KeyboardInterrupt
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.memory._find_memory_dirs", return_value=[tmp_path]),
+            patch("ai_cli.memory.Observer", return_value=mock_observer),
+            patch("ai_cli.memory.MemoryFileHandler.__init__", capturing_init),
+            patch("time.sleep", fake_sleep),
+        ):
+            from ai_cli.memory import memory_watch
+
+            memory_watch()
+
+        assert mock_client.publish.call_count >= 2
+        subjects = [call.args[0] for call in mock_client.publish.call_args_list]
+        assert "memory.dream.started" in subjects
+        assert "memory.dream.completed" in subjects
+
+    def test_memory_watch_when_publish_raises_then_logs_error(self, tmp_path, capsys):
+        """Covers lines 102-103, 109-110: except Exception in callback publish calls."""
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_publish_raises(*args, **kwargs):
+            raise Exception("publish error")
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.publish = MagicMock(side_effect=fake_publish_raises)
+        mock_client.close = MagicMock(side_effect=fake_close)
+
+        mock_observer = MagicMock()
+        captured_callbacks = []
+
+        original_init = MemoryFileHandler.__init__
+
+        def capturing_init(self, on_write_start, on_write_settle):
+            captured_callbacks.append((on_write_start, on_write_settle))
+            original_init(self, on_write_start, on_write_settle)
+
+        call_count = 0
+
+        def fake_sleep(_):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1 and captured_callbacks:
+                on_start, on_settle = captured_callbacks[0]
+                on_start("/path/to/MEMORY.md")
+                on_settle()
+            raise KeyboardInterrupt
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.memory._find_memory_dirs", return_value=[tmp_path]),
+            patch("ai_cli.memory.Observer", return_value=mock_observer),
+            patch("ai_cli.memory.MemoryFileHandler.__init__", capturing_init),
+            patch("time.sleep", fake_sleep),
+        ):
+            from ai_cli.memory import memory_watch
+
+            memory_watch()
+
+        err = capsys.readouterr().err
+        assert "failed to publish" in err

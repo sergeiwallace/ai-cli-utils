@@ -188,3 +188,64 @@ class TestQuotaWatch:
         subjects = [call.args[0] for call in mock_client.publish.call_args_list]
         assert "quota.threshold.50" in subjects
         assert "quota.threshold.75" in subjects
+
+    def test_quota_watch_when_connect_raises_then_handles_unavailable(self):
+        """Covers lines 80-81: except Exception: pass after loop.run_until_complete(connect())."""
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect_raises():
+            raise Exception("connection error")
+
+        mock_client.connect = fake_connect_raises
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        ):
+            from ai_cli.quota import quota_watch
+
+            result = quota_watch()
+        assert result == 1  # NATS unavailable after connect raised
+
+    def test_quota_watch_when_publish_raises_then_logs_error(self, capsys):
+        """Covers lines 113-114: except Exception in publish block."""
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_publish_raises(*args, **kwargs):
+            raise Exception("publish failed")
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.publish = MagicMock(side_effect=fake_publish_raises)
+        mock_client.close = MagicMock(side_effect=fake_close)
+
+        call_count = 0
+
+        def fake_sleep(_interval):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 1:
+                raise KeyboardInterrupt
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.quota._get_claude_usage_percent", return_value=80.0),
+            patch("ai_cli.quota._send_notification"),
+            patch("time.sleep", fake_sleep),
+        ):
+            from ai_cli.quota import quota_watch
+
+            result = quota_watch()
+
+        assert result == 0
+        assert "failed to publish" in capsys.readouterr().err
