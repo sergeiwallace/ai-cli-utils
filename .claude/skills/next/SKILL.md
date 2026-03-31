@@ -12,10 +12,10 @@ Surface the most critical tasks, recommended autonomous work, and documents awai
 ## Workflow
 
 ### 1. Compile Priorities
-- Query the centralized SQLite database for open `P0` and `P1` tasks across **all** 13 projects using `humanware.services.tasks.get_cross_project_priorities`.
+- Read `docs/roadmap/master-roadmap.md` for this project's open tasks.
 - Sort strictly by priority level (`P0` > `P1` > `P2` > `P3`).
-- Group results by project.
 - Include `Due Date` and recent `Progress Notes` for each item.
+- Do **not** query cross-project tasks — scope is this project only.
 
 ### 2. Identify Autonomous Batches
 - Filter for tasks tagged with `@autonomous` (or `autonomous_eligible=True` in DB).
@@ -24,7 +24,7 @@ Surface the most critical tasks, recommended autonomous work, and documents awai
 - List all available autonomous tasks in a secondary list.
 
 ### 3. Surface Unblocking Reviews
-- Query for documents in `pending_review` or `draft` status across all projects.
+- Scan `docs/` for documents in `pending_review` or `draft` status (check YAML frontmatter `status` field).
 - List "Human Review Queue" items: docs or tasks that require user approval to unblock further implementation.
 
 ### 4. Output Format
