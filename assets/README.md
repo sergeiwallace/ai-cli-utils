@@ -33,7 +33,7 @@ curl https://purge.jsdelivr.net/gh/sergeiwallace/ai-cli-utils@main/assets/logo.p
 1. Go to https://socialify.git.ci/sergeiwallace/ai-cli-utils
 2. Set logo URL to: `https://cdn.jsdelivr.net/gh/sergeiwallace/ai-cli-utils@main/assets/logo.png`
 3. Configure options (description, language, stars, forks, issues)
-4. Download as **JPEG** (keeps background black — PNG background renders white)
+4. Download as **JPEG** — **not PNG**. JPEG preserves the black background; PNG renders with a white background which kills the contrast with the green logo.
 5. Replace `assets/ai-cli-utils_socialify_preview.jpg` with the new file
 
 ### 3. Upload to GitHub
