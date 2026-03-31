@@ -19,6 +19,7 @@ jobs:
       - run: uv sync --dev
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
+      - run: uv run pyright src/
 
   test:
     runs-on: ubuntu-latest
