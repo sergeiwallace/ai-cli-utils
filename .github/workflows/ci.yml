@@ -25,6 +25,11 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    services:
+      nats:
+        image: nats:latest
+        ports:
+          - 4222:4222
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7

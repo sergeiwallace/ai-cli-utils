@@ -1862,3 +1862,284 @@ class TestPostHandoffExistingFilesMultiDir:
         pending_files = list((queue_dir / "pending").glob("*.md"))
         assert len(pending_files) == 1
         assert "011-" in pending_files[0].name
+
+
+# ---------------------------------------------------------------------------
+# get_latest_gemini_session_id — exception branch
+# ---------------------------------------------------------------------------
+
+
+class TestGetLatestGeminiSessionIdException:
+    def test_get_latest_gemini_session_id_when_open_raises_then_returns_none(self, tmp_path):
+        """Covers lines 241-242: exception in open() inside get_latest_gemini_session_id."""
+        import builtins as _builtins
+
+        log_dir = tmp_path / ".gemini" / "tmp" / "testproj"
+        log_dir.mkdir(parents=True)
+        log_file = log_dir / "logs.json"
+        log_file.write_bytes(b'{"sessionId": "abc"}')
+
+        real_open = _builtins.open
+
+        def fail_on_log(path, *args, **kwargs):
+            if str(path).endswith("logs.json"):
+                raise OSError("permission denied")
+            return real_open(path, *args, **kwargs)
+
+        from ai_cli.main import get_latest_gemini_session_id
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            with patch("pathlib.Path.cwd", return_value=tmp_path / "projects" / "testproj"):
+                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                    with patch("builtins.open", side_effect=fail_on_log):
+                        result = get_latest_gemini_session_id()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# get_project_prefix — project found in registry
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectPrefixRegistryMatch:
+    def test_get_project_prefix_when_project_matches_registry_then_returns_prefix(self, tmp_path):
+        """Covers lines 253-255: project name found in registry, returns task_prefix."""
+        registry_file = tmp_path / "sergei.toml"
+        registry_file.write_bytes(b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n')
+
+        with patch("ai_cli.main.get_current_project_name", return_value="myproject"):
+            with patch("ai_cli.main._get_project_registry_path", return_value=registry_file):
+                result = get_project_prefix()
+        assert result == "mp"
+
+
+# ---------------------------------------------------------------------------
+# create_worktree — symlink creation
+# ---------------------------------------------------------------------------
+
+
+class TestCreateWorktreeSymlink:
+    def test_create_worktree_when_venv_exists_then_symlinks(self, tmp_path):
+        """Covers line 455: os.symlink when src exists and dst does not."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        # Create a .venv at repo_root to trigger symlink
+        (repo_root / ".venv").mkdir()
+        wt_dir = repo_root / ".worktrees" / "sw-1"
+        # Do NOT pre-create wt_dir — function creates it via git worktree add
+
+        def fake_run(cmd, *args, **kwargs):
+            # Simulate git worktree add by creating the directory
+            if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("ai_cli.main.detect_repo_root", return_value=repo_root):
+            with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                with patch("subprocess.run", side_effect=fake_run):
+                    result = create_worktree("sw-1")
+
+        assert (wt_dir / ".venv").is_symlink()
+        assert result == wt_dir
+
+
+# ---------------------------------------------------------------------------
+# Daemon dispatch (memory watch / quota watch / telemetry writer)
+# ---------------------------------------------------------------------------
+
+
+class TestCliDaemonDispatch:
+    def test_cli_when_memory_watch_then_calls_memory_watch(self):
+        """Covers lines 976-978: memory watch dispatch."""
+        with patch("sys.argv", ["ai", "memory", "watch"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.memory.memory_watch", return_value=0) as mock_watch:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0
+        mock_watch.assert_called_once()
+
+    def test_cli_when_quota_watch_then_calls_quota_watch(self):
+        """Covers lines 984-986: quota watch dispatch."""
+        with patch("sys.argv", ["ai", "quota", "watch"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.quota.quota_watch", return_value=0) as mock_watch:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0
+        mock_watch.assert_called_once()
+
+    def test_cli_when_telemetry_writer_then_calls_telemetry_writer(self):
+        """Covers lines 992-994: telemetry writer dispatch."""
+        with patch("sys.argv", ["ai", "telemetry", "writer"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.telemetry.telemetry_writer", return_value=0) as mock_writer:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0
+        mock_writer.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# CLI session paths: resume, once, existing session, new session, is_remote
+# ---------------------------------------------------------------------------
+
+
+class TestCliResumePath:
+    def test_cli_when_resume_and_session_found_then_attaches(self):
+        """Covers lines 1181-1186: resume path when session exists."""
+        with patch("sys.argv", ["ai", "c", "-r", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.resolve_session", return_value="c-sw-1"):
+                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                with pytest.raises(SystemExit):
+                                    cli()
+                            assert mock_exec.call_args[0][0] == "tmux"
+                            assert "attach-session" in mock_exec.call_args[0][1]
+
+    def test_cli_when_resume_and_no_session_then_exits_1(self, capsys):
+        """Covers lines 1183-1185: resume path when no session found."""
+        with patch("sys.argv", ["ai", "c", "-r", "nonexistent"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.resolve_session", return_value=None):
+                            with pytest.raises(SystemExit) as exc:
+                                cli()
+                            assert exc.value.code == 1
+
+
+class TestCliOncePath:
+    def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self):
+        """Covers lines 1201-1217: once flag with claude, non-root user."""
+        with patch("sys.argv", ["ai", "c", "-o", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.cleanup_stale_sessions"):
+                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.main.create_worktree", return_value=None):
+                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                                        with patch("os.getuid", return_value=1000):
+                                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                with pytest.raises(SystemExit):
+                                                    cli()
+                                            assert mock_exec.call_args[0][0] == "tmux"
+                                            bash_cmd = mock_exec.call_args[0][1][-1]
+                                            assert "--dangerously-skip-permissions" in bash_cmd
+
+    def test_cli_when_once_and_claude_root_then_execvp_without_perms(self):
+        """Covers lines 1201-1217: once flag with claude, root user (no perms flag)."""
+        with patch("sys.argv", ["ai", "c", "-o", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.cleanup_stale_sessions"):
+                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.main.create_worktree", return_value=None):
+                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                                        with patch("os.getuid", return_value=0):
+                                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                with pytest.raises(SystemExit):
+                                                    cli()
+                                            bash_cmd = mock_exec.call_args[0][1][-1]
+                                            assert "--dangerously-skip-permissions" not in bash_cmd
+
+    def test_cli_when_once_and_gemini_with_uuid_then_resumes(self):
+        """Covers lines 1219-1232: once flag with gemini and existing uuid."""
+        with patch("sys.argv", ["ai", "g", "-o", "research"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.cleanup_stale_sessions"):
+                            with patch("ai_cli.main.build_session_name", return_value=("g-sw-research", "sw-research")):
+                                with patch("ai_cli.main.create_worktree", return_value=None):
+                                    with patch("ai_cli.main.get_session_map", return_value={"sw-research": "uuid123"}):
+                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                            with pytest.raises(SystemExit):
+                                                cli()
+                                        bash_cmd = mock_exec.call_args[0][1][-1]
+                                        assert "uuid123" in bash_cmd
+
+    def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self):
+        """Covers lines 1233-1246: once flag with gemini but no uuid."""
+        with patch("sys.argv", ["ai", "g", "-o", "research"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.cleanup_stale_sessions"):
+                            with patch("ai_cli.main.build_session_name", return_value=("g-sw-research", "sw-research")):
+                                with patch("ai_cli.main.create_worktree", return_value=None):
+                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                            with pytest.raises(SystemExit):
+                                                cli()
+                                        bash_cmd = mock_exec.call_args[0][1][-1]
+                                        assert "resume load" in bash_cmd
+
+
+class TestCliSessionExecvp:
+    def test_cli_when_existing_session_then_attaches_with_detach(self):
+        """Covers line 1264: existing session attach with -d flag."""
+        with patch("sys.argv", ["ai", "c", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.cleanup_stale_sessions"):
+                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.main.create_worktree", return_value=None):
+                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                                        with patch("ai_cli.main.get_engine_script", return_value="script"):
+                                            existing = MagicMock(returncode=0)
+                                            with patch("subprocess.run", return_value=existing):
+                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
+                                                assert "attach-session" in mock_exec.call_args[0][1]
+                                                assert "-d" in mock_exec.call_args[0][1]
+
+    def test_cli_when_no_existing_session_then_creates_new(self):
+        """Covers line 1270: new session via tmux new-session."""
+        with patch("sys.argv", ["ai", "c", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.cleanup_stale_sessions"):
+                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.main.create_worktree", return_value=None):
+                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                                        with patch("ai_cli.main.get_engine_script", return_value="script"):
+                                            not_existing = MagicMock(returncode=1)
+                                            with patch("subprocess.run", return_value=not_existing):
+                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
+                                                assert "new-session" in mock_exec.call_args[0][1]
+
+
+class TestCliIsRemotePath:
+    def test_cli_when_is_remote_and_project_dir_exists_then_chdirs(self, tmp_path):
+        """Covers lines 1163-1169: --is-remote chdir to project directory."""
+        project_dir = tmp_path / "projects" / "myproj"
+        project_dir.mkdir(parents=True)
+
+        with patch("sys.argv", ["ai", "c", "--is-remote", "--project", "myproj"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main.get_project_aliases", return_value={}):
+                            with patch("ai_cli.main._find_project_dir", return_value=project_dir):
+                                with patch("ai_cli.main.cleanup_stale_sessions"):
+                                    with patch("ai_cli.main.build_session_name", return_value=("cr-sw-1", "sw-1")):
+                                        with patch("ai_cli.main.create_worktree", return_value=None):
+                                            with patch("ai_cli.main.get_session_map", return_value={}):
+                                                with patch("ai_cli.main.get_engine_script", return_value="script"):
+                                                    not_existing = MagicMock(returncode=1)
+                                                    with patch("subprocess.run", return_value=not_existing):
+                                                        with patch("os.chdir") as mock_chdir:
+                                                            with patch("os.execvp", side_effect=SystemExit(0)):
+                                                                with pytest.raises(SystemExit):
+                                                                    cli()
+                                                        mock_chdir.assert_called_once_with(project_dir)

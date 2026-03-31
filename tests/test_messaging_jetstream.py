@@ -146,6 +146,108 @@ class TestNATSClientDurableSubscribe:
         assert received == [{"key": "val"}]
 
 
+class TestNATSClientEnsureStream:
+    def test_ensure_stream_when_no_js_then_returns_false(self):
+        client = NATSClient()
+        # js is None by default
+
+        async def run():
+            return await client._ensure_stream("sync.pull.requested")
+
+        result = asyncio.run(run())
+        assert result is False
+
+    def test_ensure_stream_when_stream_already_ensured_then_returns_true(self):
+        client = NATSClient()
+        client.js = MagicMock()
+        client._streams_ensured.add("sync")
+
+        async def run():
+            return await client._ensure_stream("sync.pull.requested")
+
+        result = asyncio.run(run())
+        assert result is True
+
+    def test_ensure_stream_when_find_fails_and_add_succeeds_then_ensured(self):
+        client = NATSClient()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(side_effect=Exception("not found"))
+        mock_js.add_stream = AsyncMock()
+        client.js = mock_js
+
+        async def run():
+            return await client._ensure_stream("sync.pull.requested")
+
+        result = asyncio.run(run())
+        assert result is True
+        assert "sync" in client._streams_ensured
+
+
+class TestNATSClientSubscribeDurableEdgeCases:
+    def test_subscribe_durable_when_nc_unavailable_then_returns_immediately(self):
+        client = NATSClient()
+        # nc stays None — connect() is a no-op
+
+        async def run():
+            with patch.object(client, "connect", new=AsyncMock()):
+                await client.subscribe_durable("sync.pull.requested", "test", AsyncMock())
+
+        asyncio.run(run())  # must not raise
+
+    def test_subscribe_durable_when_ensure_stream_raises_then_falls_back_to_core(self):
+        client = NATSClient()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_nc.jetstream.return_value = mock_js
+        received = []
+
+        async def fake_core_subscribe(subject, cb):
+            msg = MagicMock()
+            msg.data = b'{"key": "fallback"}'
+            await cb(msg)
+
+        mock_nc.subscribe = fake_core_subscribe
+
+        async def on_message(data):
+            received.append(data)
+
+        async def run():
+            with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
+                with patch.object(NATSClient, "_ensure_stream", new=AsyncMock(side_effect=Exception("stream error"))):
+                    with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                        await client.subscribe_durable("sync.pull.requested", "sync-watch", on_message)
+
+        asyncio.run(run())
+        assert received == [{"key": "fallback"}]
+
+    def test_subscribe_durable_when_invalid_json_then_passes_empty_dict(self):
+        client = NATSClient()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="sync")
+        received = []
+
+        async def fake_js_subscribe(subject, durable, cb):
+            msg = MagicMock()
+            msg.data = b"not valid json {{{"
+            msg.ack = AsyncMock()
+            await cb(msg)
+
+        mock_js.subscribe = fake_js_subscribe
+        mock_nc.jetstream.return_value = mock_js
+
+        async def on_message(data):
+            received.append(data)
+
+        async def run():
+            with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
+                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                    await client.subscribe_durable("sync.pull.requested", "sync-watch", on_message)
+
+        asyncio.run(run())
+        assert received == [{}]
+
+
 class TestStreamConfig:
     def test_all_design_doc_streams_have_config(self):
         expected_streams = {"fleet", "sync", "session", "memory", "quota", "telemetry", "aido", "task", "health"}

@@ -1,6 +1,6 @@
 import subprocess
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from ai_cli.sync import (
     normalize_project_path,
@@ -31,6 +31,17 @@ from ai_cli.sync import (
     _detect_foreign_home_in_history,
     _write_jsonl_translated,
     SyncConfig,
+    stage_config_files,
+    apply_config_files,
+    _find_project_worktrees,
+    _replicate_to_worktrees,
+    replicate_history_to_worktrees,
+    retranslate_project_jsonls,
+    sync_watch,
+    sync_push,
+    sync_pull,
+    _push_to_remote,
+    _release_pid_file,
 )
 
 # Fixed prefix strings for tests — mirror what get_local_prefix() would return on each platform
@@ -2477,3 +2488,1110 @@ def test_apply_config_files_when_settings_unchanged_then_skips(tmp_path):
                 remote_host="",
             )
     assert count == 0  # Nothing applied since identical
+
+
+# ---------------------------------------------------------------------------
+# _detect_foreign_home_in_history — exception branches
+# ---------------------------------------------------------------------------
+
+
+def test_detect_foreign_home_in_history_when_json_parse_error_then_skips(tmp_path):
+    """Covers lines 522-523: inner exception (bad JSON line) skipped."""
+    history = tmp_path / "history.jsonl"
+    history.write_bytes(b'"project":invalid json\n')
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = _detect_foreign_home_in_history(history)
+    assert result is None
+
+
+def test_detect_foreign_home_in_history_when_file_unreadable_then_returns_none(tmp_path):
+    """Covers lines 524-525: outer exception (cannot open file) returns None."""
+    history = tmp_path / "history.jsonl"
+    history.write_bytes(b'{"project":"/home/remote/projects/x"}')
+    with patch("builtins.open", side_effect=OSError("permission denied")):
+        result = _detect_foreign_home_in_history(history)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# replicate_history_to_worktrees — uncovered paths
+# ---------------------------------------------------------------------------
+
+
+def test_replicate_history_to_worktrees_when_empty_line_then_skips(tmp_path):
+    """Covers line 592: empty line in history.jsonl is skipped."""
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    # First line is empty, second has no project — no new entries
+    history.write_text("\n{}\n")
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+            result = replicate_history_to_worktrees()
+    assert result == 0
+
+
+def test_replicate_history_to_worktrees_when_json_error_then_skips(tmp_path):
+    """Covers lines 600-601: JSON parse error in loop skipped."""
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text('"project":bad json\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+            result = replicate_history_to_worktrees()
+    assert result == 0
+
+
+def test_replicate_history_to_worktrees_when_project_not_dir_then_skips(tmp_path):
+    """Covers line 609: project path not a directory → skip."""
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    # Note: myapp directory does NOT exist
+    history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+            result = replicate_history_to_worktrees()
+    assert result == 0
+
+
+def test_replicate_history_to_worktrees_when_no_worktrees_dir_then_skips(tmp_path):
+    """Covers line 613: project exists but has no .worktrees dir."""
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    projects_dir = tmp_path / "projects"
+    myapp = projects_dir / "myapp"
+    myapp.mkdir(parents=True)
+    # No .worktrees dir
+    history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+            result = replicate_history_to_worktrees()
+    assert result == 0
+
+
+def test_replicate_history_to_worktrees_when_wt_not_dir_then_skips(tmp_path):
+    """Covers line 617: worktree entry without .git is skipped."""
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    projects_dir = tmp_path / "projects"
+    myapp = projects_dir / "myapp"
+    myapp.mkdir(parents=True)
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+    # No .git → not a valid worktree
+    history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+            result = replicate_history_to_worktrees()
+    assert result == 0
+
+
+def test_replicate_history_to_worktrees_when_wt_already_in_existing_then_skips(tmp_path):
+    """Covers line 620: worktree cwd already in existing_projects → skipped."""
+    projects_dir = tmp_path / "projects"
+    myapp = projects_dir / "myapp"
+    myapp.mkdir(parents=True)
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / ".git").write_text("gitdir: ../.git/worktrees/myapp-1")
+
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    # wt_cwd already in existing_projects → skip (no new entries added)
+    wt_cwd = str(wt_dir)
+    history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n{{"project":"{wt_cwd}"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+            result = replicate_history_to_worktrees()
+    assert result == 0  # wt already present, no new entries
+
+
+def test_replicate_history_to_worktrees_when_verbose_then_prints(tmp_path, capsys):
+    """Covers line 635: verbose print when new entries added."""
+    projects_dir = tmp_path / "projects"
+    myapp = projects_dir / "myapp"
+    myapp.mkdir(parents=True)
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / ".git").write_text("gitdir: ../.git/worktrees/myapp-1")
+
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    main_cwd = f"{tmp_path}/projects/myapp"
+    history.write_text(f'{{"project":"{main_cwd}"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+            result = replicate_history_to_worktrees(verbose=True)
+    assert result == 1
+    assert "replicate history" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# retranslate_project_jsonls — verbose branch
+# ---------------------------------------------------------------------------
+
+
+def test_retranslate_project_jsonls_when_verbose_then_prints(tmp_path, capsys):
+    """Covers line 668: verbose output when file is retranslated."""
+    cc_projects = tmp_path / ".claude" / "projects"
+    cc_projects.mkdir(parents=True)
+    proj_dir = cc_projects / "myproject"
+    proj_dir.mkdir()
+    jsonl = proj_dir / "conv.jsonl"
+    # Write content with a foreign home path
+    foreign_home = "/Users/remote"
+    jsonl.write_bytes(f'{{"cwd":"{foreign_home}/projects/myapp"}}\n'.encode())
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects):
+            with patch("ai_cli.sync._detect_foreign_home", return_value=foreign_home):
+                result = retranslate_project_jsonls(verbose=True)
+    assert result == 1
+    assert "retranslate" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# apply_pull_files — more verbose/path branches
+# ---------------------------------------------------------------------------
+
+
+def test_apply_pull_files_when_ff_remote_verbose_then_prints(tmp_path, capsys):
+    """Covers line 717: verbose print for fast_forward_remote case."""
+    staging = tmp_path / "staging" / "testproj"
+    staging.mkdir(parents=True)
+    staging_jsonl = staging / "conv.jsonl"
+    staging_jsonl.write_text('{"line": 1}\n')
+
+    cc_dir = tmp_path / "cc"
+    cc_proj = cc_dir / f"{_SERVER_PREFIX}testproj"
+    cc_proj.mkdir(parents=True)
+
+    with patch("ai_cli.sync.denormalize_project_name", return_value=f"{_SERVER_PREFIX}testproj"):
+        with patch("ai_cli.sync.detect_jsonl_divergence", return_value="fast_forward_remote"):
+            with patch("ai_cli.sync._write_jsonl_translated"):
+                with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+                    apply_pull_files(
+                        staging_dir=tmp_path / "staging",
+                        cc_projects_dir=cc_dir,
+                        local_prefix=_SERVER_PREFIX,
+                        memories_only=False,
+                        verbose=True,
+                        dry_run=False,
+                    )
+    assert "apply (ff)" in capsys.readouterr().out
+
+
+def test_apply_pull_files_when_prefer_remote_verbose_then_prints(tmp_path, capsys):
+    """Covers line 728: verbose print for diverged+prefer_remote case."""
+    staging = tmp_path / "staging" / "testproj"
+    staging.mkdir(parents=True)
+    staging_jsonl = staging / "conv.jsonl"
+    staging_jsonl.write_text('{"line": 1}\n')
+
+    cc_dir = tmp_path / "cc"
+    cc_proj = cc_dir / f"{_SERVER_PREFIX}testproj"
+    cc_proj.mkdir(parents=True)
+
+    with patch("ai_cli.sync.denormalize_project_name", return_value=f"{_SERVER_PREFIX}testproj"):
+        with patch("ai_cli.sync.detect_jsonl_divergence", return_value="diverged"):
+            with patch("ai_cli.sync._write_jsonl_translated"):
+                with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+                    apply_pull_files(
+                        staging_dir=tmp_path / "staging",
+                        cc_projects_dir=cc_dir,
+                        local_prefix=_SERVER_PREFIX,
+                        memories_only=False,
+                        verbose=True,
+                        dry_run=False,
+                        prefer_remote=True,
+                    )
+    assert "apply (prefer-remote)" in capsys.readouterr().out
+
+
+def test_apply_pull_files_when_identical_text_file_then_skips(tmp_path):
+    """Covers line 745: identical text file (same hash) → continue."""
+    staging = tmp_path / "staging" / "testproj"
+    staging.mkdir(parents=True)
+    (staging / "MEMORY.md").write_text("same content")
+
+    cc_dir = tmp_path / "cc"
+    cc_proj = cc_dir / f"{_SERVER_PREFIX}testproj"
+    cc_proj.mkdir(parents=True)
+    (cc_proj / "MEMORY.md").write_text("same content")
+
+    with patch("ai_cli.sync.denormalize_project_name", return_value=f"{_SERVER_PREFIX}testproj"):
+        with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+            result = apply_pull_files(
+                staging_dir=tmp_path / "staging",
+                cc_projects_dir=cc_dir,
+                local_prefix=_SERVER_PREFIX,
+                memories_only=False,
+                verbose=False,
+                dry_run=False,
+            )
+    assert result["applied_count"] == 0
+
+
+def test_apply_pull_files_when_text_file_changed_verbose_then_prints(tmp_path, capsys):
+    """Covers line 767: verbose print for text file applied."""
+    staging = tmp_path / "staging" / "testproj"
+    staging.mkdir(parents=True)
+    (staging / "MEMORY.md").write_text("new content")
+
+    cc_dir = tmp_path / "cc"
+    cc_proj = cc_dir / f"{_SERVER_PREFIX}testproj"
+    cc_proj.mkdir(parents=True)
+    # dst does not exist → different hash → apply
+
+    with patch("ai_cli.sync.denormalize_project_name", return_value=f"{_SERVER_PREFIX}testproj"):
+        with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+            apply_pull_files(
+                staging_dir=tmp_path / "staging",
+                cc_projects_dir=cc_dir,
+                local_prefix=_SERVER_PREFIX,
+                memories_only=False,
+                verbose=True,
+                dry_run=False,
+            )
+    assert "apply:" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _find_project_worktrees — no worktrees dir
+# ---------------------------------------------------------------------------
+
+
+def test_find_project_worktrees_when_no_worktrees_dir_then_returns_empty(tmp_path):
+    """Covers line 786: return [] when .worktrees/ doesn't exist."""
+    project = tmp_path / "myproject"
+    project.mkdir()
+    # No .worktrees directory
+    result = _find_project_worktrees(project)
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _replicate_to_worktrees — multiple branches
+# ---------------------------------------------------------------------------
+
+
+def test_replicate_to_worktrees_when_non_dir_entry_then_skips(tmp_path):
+    """Covers line 814: non-directory entry in cc_projects_dir is skipped."""
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir()
+    (cc_projects / "file.txt").write_text("not a dir")
+
+    with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+        result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+    assert result == 0
+
+
+def test_replicate_to_worktrees_when_bare_name_none_then_skips(tmp_path):
+    """Covers line 818: bare_name is None (prefix doesn't match) → skip."""
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir()
+    # Dir name doesn't match server prefix → normalize returns None
+    (cc_projects / "other-prefix-myapp").mkdir()
+
+    with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+        result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+    assert result == 0
+
+
+def test_replicate_to_worktrees_when_worktrees_in_name_then_skips(tmp_path):
+    """Covers line 822: skip worktree CC dirs themselves."""
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir()
+    # This is a worktree CC dir — should be skipped
+    wt_cc = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    wt_cc.mkdir()
+
+    with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+        result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+    assert result == 0
+
+
+def test_replicate_to_worktrees_when_project_not_on_disk_then_skips(tmp_path):
+    """Covers line 831 implicitly (no worktrees → continue) via project missing."""
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir()
+    (cc_projects / f"{_SERVER_PREFIX}myapp").mkdir()
+    # projects_base exists but myapp subdir does not
+
+    projects_base = tmp_path / "projects"
+    projects_base.mkdir()
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+    assert result == 0
+
+
+def test_replicate_to_worktrees_when_dst_exists_not_symlink_then_skips(tmp_path):
+    """Covers line 854: dst exists and is not a symlink → skip."""
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    myapp.mkdir(parents=True)
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / ".git").write_text("gitdir")
+
+    cc_projects = tmp_path / "cc"
+    cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    cc_dir.mkdir(parents=True)
+    # Create a JSONL file with a matching title
+    jsonl_content = f'{{"customTitle":"myapp-1","cwd":"{myapp}"}}\n'
+    (cc_dir / "conv.jsonl").write_text(jsonl_content)
+
+    # Pre-create dst (not a symlink) so it gets skipped
+    wt_cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    wt_cc_dir.mkdir(parents=True)
+    (wt_cc_dir / "conv.jsonl").write_text("existing content")
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
+    # File already existed, not a symlink → skipped
+    assert (wt_cc_dir / "conv.jsonl").read_text() == "existing content"
+
+
+def test_replicate_to_worktrees_when_matching_conv_then_replicates(tmp_path, capsys):
+    """Covers lines 868-885, 891-897: full replication with title match and lock dir copy."""
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    myapp.mkdir(parents=True)
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / ".git").write_text("gitdir")
+
+    cc_projects = tmp_path / "cc"
+    cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    cc_dir.mkdir(parents=True)
+
+    # Create a JSONL file with matching customTitle
+    main_cwd = str(myapp)
+    jsonl_content = f'{{"customTitle":"myapp-1","cwd":"{main_cwd}"}}\n'
+    conv_file = cc_dir / "abc123.jsonl"
+    conv_file.write_text(jsonl_content)
+
+    # Create a lock dir that matches the replicated UUID
+    lock_dir = cc_dir / "abc123"
+    lock_dir.mkdir()
+    (lock_dir / "lock").write_text("lock data")
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=True)
+
+    # Should have replicated the JSONL file
+    wt_cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    assert (wt_cc_dir / "abc123.jsonl").exists()
+    # Should have copied the lock dir
+    assert (wt_cc_dir / "abc123").exists()
+    assert result >= 1
+    output = capsys.readouterr().out
+    assert "replicate to worktree" in output
+    assert "replicate dir" in output
+
+
+# ---------------------------------------------------------------------------
+# stage_config_files — verbose branches
+# ---------------------------------------------------------------------------
+
+
+def test_stage_config_files_when_portable_file_exists_verbose_then_prints(tmp_path, capsys):
+    """Covers line 1075: verbose output for portable config file staged."""
+    from ai_cli.sync import _CONFIG_SYNC_FILES
+
+    cc_dir = tmp_path / ".claude"
+    cc_dir.mkdir()
+    # Create the first portable config file
+    first_file = _CONFIG_SYNC_FILES[0]
+    src = cc_dir / first_file
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("content")
+
+    staging = tmp_path / "staging"
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        count = stage_config_files(staging_dir=staging, verbose=True, dry_run=False, remote_host="")
+
+    assert count >= 1
+    assert first_file in capsys.readouterr().out
+
+
+def test_stage_config_files_when_settings_exists_verbose_then_prints(tmp_path, capsys):
+    """Covers line 1088: verbose output for settings.json staged with path translation."""
+    cc_dir = tmp_path / ".claude"
+    cc_dir.mkdir()
+    (cc_dir / "settings.json").write_text('{"key": "value"}')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.sync._translate_settings_paths", return_value='{"key": "value"}'):
+            count = stage_config_files(
+                staging_dir=tmp_path / "staging",
+                verbose=True,
+                dry_run=False,
+                remote_host="host",
+            )
+
+    assert count >= 1
+    assert "settings.json" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# apply_config_files — verbose and skip branches
+# ---------------------------------------------------------------------------
+
+
+def test_apply_config_files_when_portable_file_identical_then_skips(tmp_path):
+    """Covers line 1114: portable config file with same hash → skip."""
+    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE, _CONFIG_SYNC_FILES
+
+    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
+    staging_config.mkdir(parents=True)
+    first_file = _CONFIG_SYNC_FILES[0]
+    src = staging_config / first_file
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("same content")
+
+    cc_dir = tmp_path / ".claude"
+    dst = cc_dir / first_file
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text("same content")
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        count = apply_config_files(
+            staging_dir=tmp_path / "staging",
+            verbose=False,
+            dry_run=False,
+            remote_host="",
+        )
+    assert count == 0
+
+
+def test_apply_config_files_when_portable_file_changed_verbose_then_prints(tmp_path, capsys):
+    """Covers line 1123: verbose output for portable config file applied."""
+    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE, _CONFIG_SYNC_FILES
+
+    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
+    staging_config.mkdir(parents=True)
+    first_file = _CONFIG_SYNC_FILES[0]
+    src = staging_config / first_file
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("new content")
+
+    cc_dir = tmp_path / ".claude"
+    cc_dir.mkdir(parents=True)
+    # dst does not exist → different hash → apply
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        count = apply_config_files(
+            staging_dir=tmp_path / "staging",
+            verbose=True,
+            dry_run=False,
+            remote_host="",
+        )
+    assert count >= 1
+    assert "apply config" in capsys.readouterr().out
+
+
+def test_apply_config_files_when_settings_changed_verbose_then_prints(tmp_path, capsys):
+    """Covers line 1143: verbose print for settings.json applied with path translation."""
+    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE
+
+    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
+    staging_config.mkdir(parents=True)
+    (staging_config / "settings.json").write_text('{"key": "new"}')
+
+    cc_dir = tmp_path / ".claude"
+    cc_dir.mkdir(parents=True)
+    # No existing settings.json → will be applied
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.sync._translate_settings_paths", return_value='{"key": "new"}'):
+            count = apply_config_files(
+                staging_dir=tmp_path / "staging",
+                verbose=True,
+                dry_run=False,
+                remote_host="",
+            )
+    assert count >= 1
+    output = capsys.readouterr().out
+    assert "settings.json" in output
+
+
+# ---------------------------------------------------------------------------
+# _push_to_remote — post-rebase push failure
+# ---------------------------------------------------------------------------
+
+
+def test_push_to_remote_when_rebase_push_fails_then_returns_false(tmp_path, capsys):
+    """Covers lines 1202-1203: push after rebase succeeds but second push fails."""
+    call_count = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "push" in cmd and call_count == 1:
+            # First push fails — triggers rebase
+            return MagicMock(returncode=1, stderr="push rejected")
+        elif "rebase" in cmd or "pull" in cmd:
+            return MagicMock(returncode=0, stderr="")
+        elif "push" in cmd and call_count > 1:
+            # Second push (after rebase) fails
+            return MagicMock(returncode=1, stderr="still rejected")
+        return MagicMock(returncode=0, stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = _push_to_remote(tmp_path, verbose=False)
+    assert result is False
+    assert "after rebase" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# _release_pid_file — exception branch
+# ---------------------------------------------------------------------------
+
+
+def test_release_pid_file_when_unlink_raises_then_silent(tmp_path):
+    """Covers lines 1604-1605: exception in unlink is silently swallowed."""
+    with patch("ai_cli.sync._pid_file_path", return_value=tmp_path / "test.pid"):
+        with patch("pathlib.Path.unlink", side_effect=OSError("busy")):
+            _release_pid_file("test")  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# sync_push — various error and verbose paths
+# ---------------------------------------------------------------------------
+
+
+def test_sync_push_when_init_server_raises_oserror_then_continues(tmp_path, capsys):
+    """Covers lines 1347-1348: init_server_bare_repo raises OSError → non-fatal, continues."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo", side_effect=OSError("no route")):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                            result = sync_push([])
+    assert result == 0
+
+
+def test_sync_push_when_init_staging_raises_then_returns_1(tmp_path, capsys):
+    """Covers lines 1351-1353: init_staging_repo raises → error printed, return 1."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo", side_effect=Exception("connection refused")):
+                result = sync_push([])
+    assert result == 1
+    assert "Error initializing staging repo" in capsys.readouterr().err
+
+
+def test_sync_push_when_cc_active_on_server_then_aborts(tmp_path, capsys):
+    """Covers lines 1357-1363: CC active on server → print warning, return 1."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=True):
+                    result = sync_push([])
+    assert result == 1
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_sync_push_when_cc_check_times_out_then_proceeds(tmp_path, capsys):
+    """Covers lines 1364-1365: is_cc_active_on_server raises TimeoutExpired → warning, continues."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", side_effect=subprocess.TimeoutExpired("ssh", 5)):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                            result = sync_push([])
+    assert result == 0
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_sync_push_when_cc_check_exception_then_proceeds_silently(tmp_path):
+    """Covers lines 1366-1367: other exception from is_cc_active_on_server → silent, continues."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", side_effect=OSError("network gone")):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                            result = sync_push([])
+    assert result == 0
+
+
+def test_sync_push_when_dry_run_with_handoffs_then_prints_count(tmp_path, capsys):
+    """Covers line 1410: dry_run shows handoff count when > 0."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync._wait_for_dream_completion"):
+            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                with patch(
+                    "ai_cli.sync.stage_project_files",
+                    return_value={
+                        "staged_files": [("a", "b")],
+                        "project_names": ["proj"],
+                        "memory_count": 0,
+                        "jsonl_count": 0,
+                    },
+                ):
+                    with patch("ai_cli.sync.stage_handoff_files", return_value=2):
+                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                            result = sync_push(["--dry-run"])
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "handoff" in output
+
+
+def test_sync_push_when_not_committed_verbose_then_prints(tmp_path, capsys):
+    """Covers line 1426: nothing to commit, verbose prints message."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                            result = sync_push(["--verbose"])
+    assert result == 0
+    assert "Nothing to commit" in capsys.readouterr().out
+
+
+def test_sync_push_when_push_succeeds_and_nats_notified_then_returns_0(tmp_path, capsys):
+    """Covers lines 1438, 1443: NATS notify and verbose success message."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    mock_client = MagicMock()
+    mock_client.publish = AsyncMock(return_value=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [("a", "b")],
+                                    "project_names": ["proj"],
+                                    "memory_count": 1,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                        with patch("ai_cli.sync.git_commit_staged", return_value=True):
+                                            with patch("ai_cli.sync._push_to_remote", return_value=True):
+                                                with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+                                                    result = sync_push(["--verbose"])
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "Pushed" in output
+
+
+# ---------------------------------------------------------------------------
+# sync_pull — various paths
+# ---------------------------------------------------------------------------
+
+
+def test_sync_pull_when_cc_active_locally_then_prints_warning(tmp_path, capsys):
+    """Covers lines 1463-1467: CC active locally → print warning, continue."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=True):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files", return_value={"conflicts": [], "applied_count": 0}
+                            ):
+                                with patch("ai_cli.sync.apply_handoff_files", return_value=0):
+                                    with patch("ai_cli.sync.apply_config_files", return_value=0):
+                                        with patch("ai_cli.sync.translate_history_jsonl"):
+                                            with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                                with patch("ai_cli.sync.replicate_history_to_worktrees"):
+                                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
+                                                        result = sync_pull([])
+    assert result == 0
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_sync_pull_when_init_staging_raises_then_returns_1(tmp_path, capsys):
+    """Covers lines 1472-1474: init_staging_repo raises → error, return 1."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo", side_effect=Exception("no connection")):
+                result = sync_pull([])
+    assert result == 1
+    assert "Error initializing staging repo" in capsys.readouterr().err
+
+
+def test_sync_pull_when_fetch_fails_then_returns_1(tmp_path, capsys):
+    """Covers lines 1490-1491: git fetch fails → error, return 1."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("subprocess.run", return_value=MagicMock(returncode=1, stderr="fetch error")):
+                        result = sync_pull([])
+    assert result == 1
+    assert "Error fetching" in capsys.readouterr().err
+
+
+def test_sync_pull_when_verbose_then_prints_applied_count(tmp_path, capsys):
+    """Covers lines 1514, 1524, 1533: verbose output for applied counts."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files", return_value={"conflicts": [], "applied_count": 3}
+                            ):
+                                with patch("ai_cli.sync.apply_handoff_files", return_value=2):
+                                    with patch("ai_cli.sync.apply_config_files", return_value=1):
+                                        with patch("ai_cli.sync.translate_history_jsonl"):
+                                            with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                                with patch("ai_cli.sync.replicate_history_to_worktrees"):
+                                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
+                                                        result = sync_pull(["--verbose"])
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "Applied" in output
+    assert "handoff" in output
+    assert "config" in output
+
+
+def test_sync_pull_when_conflicts_then_notifies_and_returns_2(tmp_path):
+    """Covers lines 1541-1543: conflicts present → notify_conflicts, return 2."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="server",
+        local_prefix=_SERVER_PREFIX,
+    )
+
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files",
+                                return_value={
+                                    "conflicts": ["memory /proj/x.md — .conflict file written"],
+                                    "applied_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync.apply_handoff_files", return_value=0):
+                                    with patch("ai_cli.sync.apply_config_files", return_value=0):
+                                        with patch("ai_cli.sync.translate_history_jsonl"):
+                                            with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                                with patch("ai_cli.sync.replicate_history_to_worktrees"):
+                                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
+                                                        with patch("ai_cli.sync.notify_conflicts") as mock_notify:
+                                                            result = sync_pull([])
+    assert result == 2
+    mock_notify.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# sync_watch — already-running, result variants, verbose, KeyboardInterrupt
+# ---------------------------------------------------------------------------
+
+
+def test_sync_watch_when_already_running_then_returns_2(capsys):
+    """Covers lines 1621-1622: PID guard prevents duplicate instance."""
+    with patch("ai_cli.sync._acquire_pid_file", return_value=False):
+        result = sync_watch([])
+    assert result == 2
+    assert "already running" in capsys.readouterr().err
+
+
+def test_sync_watch_when_pull_returns_2_then_prints_conflict_message(tmp_path, capsys):
+    """Covers lines 1632-1633: sync_pull returns 2 → conflict preserved message."""
+    import asyncio
+    from unittest.mock import AsyncMock as AM
+
+    mock_nc = MagicMock()
+    received_cb = {}
+
+    async def fake_subscribe(subject, cb):
+        received_cb["cb"] = cb
+        msg = MagicMock()
+        msg.data = b'{"machine": "mac"}'
+        await cb(msg)
+
+    mock_nc.subscribe = fake_subscribe
+
+    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+        with patch("ai_cli.sync._release_pid_file"):
+            with patch("nats.connect", new=AM(return_value=mock_nc)):
+                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                    with patch("ai_cli.sync.sync_pull", return_value=2):
+                        result = sync_watch([])
+
+    assert result == 0
+    assert "conflicts preserved" in capsys.readouterr().out
+
+
+def test_sync_watch_when_pull_fails_then_prints_failure_message(tmp_path, capsys):
+    """Covers lines 1634-1635: sync_pull returns non-0/2 → failure message."""
+    import asyncio
+    from unittest.mock import AsyncMock as AM
+
+    mock_nc = MagicMock()
+
+    async def fake_subscribe(subject, cb):
+        msg = MagicMock()
+        msg.data = b'{"machine": "mac"}'
+        await cb(msg)
+
+    mock_nc.subscribe = fake_subscribe
+
+    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+        with patch("ai_cli.sync._release_pid_file"):
+            with patch("nats.connect", new=AM(return_value=mock_nc)):
+                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                    with patch("ai_cli.sync.sync_pull", return_value=1):
+                        result = sync_watch([])
+
+    assert result == 0
+    assert "pull failed" in capsys.readouterr().err
+
+
+def test_sync_watch_when_verbose_then_prints_connected(tmp_path, capsys):
+    """Covers line 1644: verbose print when connected to NATS."""
+    import asyncio
+    from unittest.mock import AsyncMock as AM
+
+    mock_nc = MagicMock()
+
+    async def fake_subscribe(subject, cb):
+        pass  # Don't trigger any messages
+
+    mock_nc.subscribe = fake_subscribe
+
+    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+        with patch("ai_cli.sync._release_pid_file"):
+            with patch("nats.connect", new=AM(return_value=mock_nc)):
+                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                    result = sync_watch(["--verbose"])
+
+    assert result == 0
+    assert "connected to NATS" in capsys.readouterr().out
+
+
+def test_sync_watch_when_keyboard_interrupt_during_run_then_returns_0(capsys):
+    """Covers lines 1651-1652: KeyboardInterrupt during asyncio.run → ok=True, return 0."""
+    with patch("ai_cli.sync._acquire_pid_file", return_value=True):
+        with patch("ai_cli.sync._release_pid_file"):
+            with patch("asyncio.run", side_effect=KeyboardInterrupt):
+                result = sync_watch([])
+    assert result == 0
