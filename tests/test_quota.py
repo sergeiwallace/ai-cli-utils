@@ -87,3 +87,104 @@ class TestGetClaudeUsageInvalidJson:
             with patch("subprocess.run", side_effect=FileNotFoundError):
                 result = _get_claude_usage_percent()
         assert result is None
+
+
+class TestQuotaWatch:
+    def test_quota_watch_when_already_running_then_returns_2(self):
+        with patch("ai_cli.sync._acquire_pid_file", return_value=False):
+            from ai_cli.quota import quota_watch
+
+            result = quota_watch()
+        assert result == 2
+
+    def test_quota_watch_when_nats_unavailable_then_returns_1(self):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            pass  # nc stays None
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        ):
+            from ai_cli.quota import quota_watch
+
+            result = quota_watch()
+        assert result == 1
+
+    def test_quota_watch_when_interrupt_then_returns_0(self):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.close = fake_close
+
+        def fake_sleep(_interval):
+            raise KeyboardInterrupt
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file") as mock_release,
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.quota._get_claude_usage_percent", return_value=None),
+            patch("time.sleep", fake_sleep),
+        ):
+            from ai_cli.quota import quota_watch
+
+            result = quota_watch()
+        assert result == 0
+        mock_release.assert_called_with("quota-watch")
+
+    def test_quota_watch_when_usage_crosses_threshold_then_publishes(self):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_publish(subject, payload):
+            pass
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.publish = MagicMock(side_effect=fake_publish)
+        mock_client.close = MagicMock(side_effect=fake_close)
+
+        call_count = 0
+
+        def fake_sleep(_interval):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 1:
+                raise KeyboardInterrupt
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.quota._get_claude_usage_percent", return_value=80.0),
+            patch("ai_cli.quota._send_notification"),
+            patch("time.sleep", fake_sleep),
+        ):
+            from ai_cli.quota import quota_watch
+
+            result = quota_watch()
+
+        assert result == 0
+        # Should have published for thresholds 50 and 75 (both <= 80)
+        assert mock_client.publish.call_count >= 2
+        subjects = [call.args[0] for call in mock_client.publish.call_args_list]
+        assert "quota.threshold.50" in subjects
+        assert "quota.threshold.75" in subjects

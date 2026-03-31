@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from ai_cli.telemetry import init_db, write_event, record_event, _is_enabled
 
@@ -119,3 +119,65 @@ class TestRecordEventExceptions:
                     with patch("ai_cli.messaging.NATSClient", side_effect=Exception("no nats")):
                         result = record_event("click", {"button": "save"})
         assert result is True
+
+
+class TestTelemetryWriter:
+    def test_telemetry_writer_when_already_running_then_returns_2(self):
+        with patch("ai_cli.sync._acquire_pid_file", return_value=False):
+            from ai_cli.telemetry import telemetry_writer
+
+            result = telemetry_writer()
+        assert result == 2
+
+    def test_telemetry_writer_when_nats_unavailable_then_returns_1(self, tmp_path):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            pass  # nc stays None
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.telemetry.init_db") as mock_init_db,
+        ):
+            mock_conn = MagicMock()
+            mock_init_db.return_value = mock_conn
+
+            from ai_cli.telemetry import telemetry_writer
+
+            result = telemetry_writer()
+        assert result == 1
+        mock_conn.close.assert_called_once()
+
+    def test_telemetry_writer_when_interrupt_then_returns_0(self, tmp_path):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_subscribe(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        mock_client.connect = fake_connect
+        mock_client.subscribe_durable = fake_subscribe
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file") as mock_release,
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.telemetry.init_db") as mock_init_db,
+        ):
+            mock_conn = MagicMock()
+            mock_init_db.return_value = mock_conn
+
+            from ai_cli.telemetry import telemetry_writer
+
+            result = telemetry_writer()
+        assert result == 0
+        mock_conn.close.assert_called_once()
+        mock_release.assert_called_with("telemetry-writer")

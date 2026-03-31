@@ -1,6 +1,6 @@
 """Tests for memory watch daemon."""
 
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from ai_cli.memory import MemoryFileHandler, _find_memory_dirs
 
@@ -147,3 +147,91 @@ class TestFindMemoryDirs:
         with patch.object(Path, "home", return_value=tmp_path):
             result = _find_memory_dirs()
         assert project_dir in result
+
+
+class TestMemoryWatch:
+    def test_memory_watch_when_already_running_then_returns_2(self):
+        with patch("ai_cli.sync._acquire_pid_file", return_value=False):
+            from ai_cli.memory import memory_watch
+
+            result = memory_watch()
+        assert result == 2
+
+    def test_memory_watch_when_nats_unavailable_then_returns_1(self):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            pass  # nc stays None
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file"),
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        ):
+            from ai_cli.memory import memory_watch
+
+            result = memory_watch()
+        assert result == 1
+
+    def test_memory_watch_when_no_memory_dirs_then_returns_1(self):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.close = MagicMock(side_effect=fake_close)
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file") as mock_release,
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.memory._find_memory_dirs", return_value=[]),
+        ):
+            from ai_cli.memory import memory_watch
+
+            result = memory_watch()
+        assert result == 1
+        mock_release.assert_called_with("memory-watch")
+
+    def test_memory_watch_when_interrupt_then_returns_0(self, tmp_path):
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            mock_client.nc = MagicMock()
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.close = MagicMock(side_effect=fake_close)
+
+        mock_observer = MagicMock()
+
+        def fake_sleep(_interval):
+            raise KeyboardInterrupt
+
+        with (
+            patch("ai_cli.sync._acquire_pid_file", return_value=True),
+            patch("ai_cli.sync._release_pid_file") as mock_release,
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.memory._find_memory_dirs", return_value=[tmp_path]),
+            patch("ai_cli.memory.Observer", return_value=mock_observer),
+            patch("time.sleep", fake_sleep),
+        ):
+            from ai_cli.memory import memory_watch
+
+            result = memory_watch()
+        assert result == 0
+        mock_observer.start.assert_called_once()
+        mock_observer.stop.assert_called_once()
+        mock_observer.join.assert_called_once()
+        mock_release.assert_called_with("memory-watch")
