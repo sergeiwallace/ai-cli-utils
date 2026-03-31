@@ -52,7 +52,7 @@
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
 
   <!-- right eye: upward arc like a happy eyelash/squint -->
-  <path d="M 118,88 Q 131,75 144,88"
+  <path d="M 118,88 Q 131,70 144,88"
         fill="none" stroke="#00ff88" stroke-width="9" stroke-linecap="round"
         filter="url(#arcglow)" opacity="0.85"/>
 
