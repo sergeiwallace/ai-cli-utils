@@ -48,10 +48,10 @@
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
 
   <!-- right eye: small _ same style as mouth, aligned with chevron tip -->
-  <text x="131" y="82"
+  <text x="131" y="78"
         text-anchor="middle"
         font-family="'SF Mono','Fira Code','Courier New',monospace"
-        font-size="36" font-weight="700"
+        font-size="44" font-weight="700"
         fill="url(#prompt)" filter="url(#glow)" opacity="0.85">_</text>
 
   <!-- > smaller, tip slightly overlapping left edge of _ -->
