@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "Sergei Wallace", email = "sergeipwallace@gmail.com" },
+    { name = "Sergei Wallace", email = "dev@sergeiwallace.com" },
 ]
 keywords = ["ai", "cli", "claude", "gemini", "tmux", "mosh", "developer-tools"]
 classifiers = [

@@ -3,7 +3,7 @@
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability in ai-cli-utils, please report it
-responsibly by emailing **sergeipwallace@gmail.com**.
+responsibly by emailing **security@sergeiwallace.com**.
 
 Please include:
 
