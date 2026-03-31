@@ -51,6 +51,6 @@
   <text x="48" y="106"
         text-anchor="start"
         font-family="'SF Mono','Fira Code','Courier New',monospace"
-        font-size="76" font-weight="700"
+        font-size="70" font-weight="700"
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">&#62;</text>
 </svg>
