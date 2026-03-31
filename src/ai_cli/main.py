@@ -501,6 +501,16 @@ def _emit_iterm2_profile_setup(ai_name: str, engine: str) -> None:
         sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
         sys.stdout.write(f"\033]0; cc {ai_name}\007")
         sys.stdout.flush()
+        # Write color to shared file — shell panes in this tab read it via precmd hook
+        # to re-emit CC profile/color when focused, preventing icon/color from disappearing.
+        iterm_session_id = os.environ.get("ITERM_SESSION_ID", "")
+        if iterm_session_id:
+            tab_key = iterm_session_id.split("p")[0]  # "w0t0p0:uuid" → "w0t0"
+            try:
+                with open(f"/tmp/iterm2-cc-color-{tab_key}", "w") as f:
+                    f.write(color)
+            except OSError:
+                pass
     elif engine == "g":
         sys.stdout.write("\033]1337;SetProfile=GeminiCLI\007")
         sys.stdout.write(f"\033]0; gemini {ai_name}\007")
@@ -643,6 +653,11 @@ def get_engine_script(
                       "ff5722" "7cb342")
         local idx=$(( (num - 1) % ${{#colors[@]}} ))
         _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
+        # Write color to shared file so other panes in this tab can re-emit it on focus
+        if [[ -n "$ITERM_SESSION_ID" ]]; then
+          local _tab_key="${{ITERM_SESSION_ID%%p*}}"
+          printf '%s' "${{colors[$idx]}}" > "/tmp/iterm2-cc-color-${{_tab_key}}"
+        fi
       fi
 
       # Tab title (leading space separates icon from text)
@@ -674,7 +689,11 @@ def get_engine_script(
     export ITERM2_SESSION_NUM="$_session_num"
     export ITERM2_SESSION_TYPE="$_session_type"
 
-    trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
+    _iterm2_color_file=""
+    if [[ -n "$ITERM_SESSION_ID" ]]; then
+      _iterm2_color_file="/tmp/iterm2-cc-color-${{ITERM_SESSION_ID%%p*}}"
+    fi
+    trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
