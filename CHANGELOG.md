@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- pyright basic mode type checking in CI lint job
+
 ### Security
 
 - iTerm2 session-tracking files moved from `/tmp/` to `~/.local/state/ai-cli/iterm2/` (XDG Base Directory Specification), eliminating symlink attack surface on shared servers

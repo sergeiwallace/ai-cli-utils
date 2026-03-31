@@ -277,7 +277,7 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
 
     if model == "deep-think":
         base_model = "gemini-3.1-pro-preview"
-        thinking_config = types.ThinkingConfig(thinking_level="HIGH")
+        thinking_config = types.ThinkingConfig(thinking_level=types.ThinkingLevel.HIGH)
     elif model in MODEL_ALIASES:
         base_model = MODEL_ALIASES[model]
 

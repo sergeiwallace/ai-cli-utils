@@ -136,7 +136,9 @@ def _cc_projects_dir() -> Path:
 def _handoff_queue_dir() -> Path:
     from .main import _get_main_project_dir
 
-    return _get_main_project_dir() / ".handoff-queue"
+    main_dir = _get_main_project_dir()
+    assert main_dir is not None, "Main project directory not configured"
+    return main_dir / ".handoff-queue"
 
 
 # Namespace in the staging repo for handoff queue files.

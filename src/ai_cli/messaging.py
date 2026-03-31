@@ -106,13 +106,13 @@ class NATSClient:
         subject = f"fleet.worker.{session_id}.heartbeat"
         return await self._publish(subject, data)
 
-    async def publish_event(self, session_id: str, event_type: str, data: dict = None) -> bool:
+    async def publish_event(self, session_id: str, event_type: str, data: dict | None = None) -> bool:
         """Publishes a fleet event."""
         subject = f"fleet.worker.{session_id}.event"
         payload = {"type": event_type, "data": data or {}, "ts": time.time()}
         return await self._publish(subject, payload)
 
-    async def publish(self, subject: str, data: dict = None) -> bool:
+    async def publish(self, subject: str, data: dict | None = None) -> bool:
         """Publishes to an arbitrary subject via JetStream if available."""
         return await self._publish(subject, data or {})
 

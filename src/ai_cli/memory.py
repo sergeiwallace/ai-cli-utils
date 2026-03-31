@@ -34,7 +34,7 @@ class MemoryFileHandler(FileSystemEventHandler):
     def on_modified(self, event):
         if not isinstance(event, FileModifiedEvent):
             return
-        if not event.src_path.endswith("MEMORY.md"):
+        if not str(event.src_path).endswith("MEMORY.md"):
             return
         now = time.time()
         self._last_write = now

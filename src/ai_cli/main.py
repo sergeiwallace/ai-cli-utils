@@ -138,7 +138,7 @@ def _get_projects_dir() -> Path:
     return Path.home() / "projects"
 
 
-def _find_project_dir(name: str, _home: Path = None) -> Path:
+def _find_project_dir(name: str, _home: Path | None = None) -> Path:
     """Find a project directory under the configured projects_dir (default: ~/projects)."""
     if _home is not None:
         return _home / "projects" / name
@@ -368,7 +368,7 @@ def resolve_session(prefix: str, name: str) -> str:
 
 
 def build_session_name(
-    engine_type: str, project_prefix: str, name: str, config: dict = None, is_remote: bool = False
+    engine_type: str, project_prefix: str, name: str, config: dict | None = None, is_remote: bool = False
 ) -> tuple[str, str]:
     """Build tmux session name and ai_name.
 
@@ -750,9 +750,9 @@ def get_engine_script(
     session: str,
     prefix: str,
     project_prefix: str,
-    session_id_uuid: str = None,
+    session_id_uuid: str | None = None,
     sandbox: bool = True,
-    worktree_dir: str = None,
+    worktree_dir: str | None = None,
     notify: bool = False,
     is_remote: bool = False,
 ) -> str:

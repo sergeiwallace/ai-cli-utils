@@ -6,7 +6,7 @@
 - [x] `[P3]` `[AI-CLI-11]` **Logo polish — increase visual weight** — Closed as won't fix; logo is acceptable as-is.
 - [ ] `[P3]` `[AI-CLI-3]` **Terminal demo GIF** — `demo/demo.tape` exists. Split: cc session reviews/updates the tape script; human runs `vhs demo/demo.tape` on Mac (needs display) and embeds GIF in README.
 - [ ] `[P3]` `[AI-CLI-7]` **Release Drafter** — Auto-draft GitHub Release notes from PR labels. Add when project gets regular external PRs.
-- [ ] `[P3]` `[AI-CLI-8]` **pyright type checking in CI** — Add pyright basic mode to CI. Requires type annotation audit first.
+- [x] `[P3]` `[AI-CLI-8]` **pyright type checking in CI** — pyright basic mode added to CI lint job. Fixed 11 type errors across gemini.py, main.py, memory.py, messaging.py, sync.py.
 
 ## Completed
 

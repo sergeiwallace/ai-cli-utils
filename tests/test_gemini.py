@@ -316,7 +316,7 @@ class TestTryGeminiApi:
             with patch.dict("sys.modules", modules):
                 r = _try_gemini_api("hello", "deep-think", 30, 2, False)
         assert r.success is True
-        mock_types.ThinkingConfig.assert_called_once_with(thinking_level="HIGH")
+        mock_types.ThinkingConfig.assert_called_once_with(thinking_level=mock_types.ThinkingLevel.HIGH)
 
 
 # --- run_gemini tests ---

@@ -64,11 +64,19 @@ dev = [
     "ruff>=0.8",
     "pre-commit>=4",
     "pytest-timeout>=2.4.0",
+    "pyright>=1.1.408",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+pythonPlatform = "Linux"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
 
 [tool.ruff]
 line-length = 120
