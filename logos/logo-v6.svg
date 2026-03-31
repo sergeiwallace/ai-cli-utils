@@ -48,7 +48,7 @@
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
 
   <!-- right eye: circle outline, friendly/open -->
-  <circle cx="131" cy="76" r="8"
+  <circle cx="131" cy="82" r="8"
           fill="none" stroke="#00ff88" stroke-width="4"
           filter="url(#glow)" opacity="0.85"/>
 
