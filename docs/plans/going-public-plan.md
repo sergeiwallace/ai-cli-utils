@@ -286,7 +286,7 @@ Three parallel tracks. Do in order — re-evaluate SSH need after NATS CI result
   - Sandbox flag logic — verifies `--dangerously-skip-permissions` conditionally included
   - `--once` mode — verifies tmux new-session args
   - Existing session re-attach — verifies `attach-session -d` called
-- **`# pragma: no cover`** on simple/obvious exec lines where asserting the args would be tautological (e.g. bare `os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])`)
+- **`# pragma: no cover`** — defer until after all tracks complete. Only apply to lines that are genuinely untestable after Tracks A+B+C, not as a shortcut.
 
 Add tests to `tests/test_main.py`. Expected gain: main.py 93% → ~96%, TOTAL ~91% → ~93%.
 
