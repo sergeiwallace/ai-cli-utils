@@ -95,10 +95,10 @@ class TestMemoryFileHandler:
 
 class TestFindMemoryDirs:
     def test_find_memory_dirs_when_no_cc_dir_then_returns_empty(self, tmp_path):
+        from pathlib import Path
         from unittest.mock import patch
 
-        with patch("ai_cli.memory.Path") as MockPath:
-            MockPath.home.return_value = tmp_path
+        with patch.object(Path, "home", return_value=tmp_path):
             result = _find_memory_dirs()
         assert result == []
 
@@ -109,14 +109,8 @@ class TestFindMemoryDirs:
         memory_dir.mkdir(parents=True)
         (memory_dir / "MEMORY.md").write_text("test")
 
-        from unittest.mock import patch
-
-        with patch("ai_cli.memory.Path") as MockPath:
-            MockPath.home.return_value = tmp_path
-            MockPath.home.return_value = tmp_path
-
-        # Direct test — construct the path the function would check
         from pathlib import Path
+        from unittest.mock import patch
 
         with patch.object(Path, "home", return_value=tmp_path):
             result = _find_memory_dirs()

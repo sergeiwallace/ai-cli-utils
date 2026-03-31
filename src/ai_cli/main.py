@@ -477,9 +477,18 @@ def cleanup_worktree(ai_name: str):
 
 # Rolling tab colors (12 slots, one per session number mod 12)
 _ITERM2_TAB_COLORS = [
-    "e74c3c", "e67e22", "f0b429", "2ecc71", "1abc9c",
-    "039be5", "1e88e5", "5e35b1", "d81b60", "00acc1",
-    "ff5722", "7cb342",
+    "e74c3c",
+    "e67e22",
+    "f0b429",
+    "2ecc71",
+    "1abc9c",
+    "039be5",
+    "1e88e5",
+    "5e35b1",
+    "d81b60",
+    "00acc1",
+    "ff5722",
+    "7cb342",
 ]
 
 # Icon color profile per tab color slot, chosen by contrast + complementary harmony:

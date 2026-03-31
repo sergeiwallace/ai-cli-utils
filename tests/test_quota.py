@@ -49,10 +49,27 @@ class TestDedupKey:
     def test_dedup_key_includes_threshold_and_date(self):
         key = _dedup_key(50)
         assert "quota-50-" in key
-        # Should contain today's date
         from datetime import date
 
         assert date.today().isoformat() in key
+
+    def test_dedup_key_is_idempotent_for_same_threshold_same_day(self):
+        assert _dedup_key(75) == _dedup_key(75)
+
+    def test_dedup_key_differs_by_threshold(self):
+        assert _dedup_key(50) != _dedup_key(90)
+
+    def test_dedup_key_differs_by_date(self):
+        from datetime import date
+        from unittest.mock import patch
+
+        with patch("ai_cli.quota.date") as mock_date:
+            mock_date.today.return_value = date(2025, 1, 1)
+            key_jan = _dedup_key(75)
+        with patch("ai_cli.quota.date") as mock_date:
+            mock_date.today.return_value = date(2025, 1, 2)
+            key_feb = _dedup_key(75)
+        assert key_jan != key_feb
 
 
 class TestSendNotification:

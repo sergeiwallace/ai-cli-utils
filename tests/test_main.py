@@ -5,6 +5,7 @@ import time
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import os
 from ai_cli.main import (
     build_session_name,
     check_handoff,
@@ -15,6 +16,7 @@ from ai_cli.main import (
     complete_handoff,
     create_worktree,
     detect_repo_root,
+    _emit_iterm2_profile_setup,
     _find_project_dir,
     find_next_index,
     find_recent_session,
@@ -496,27 +498,44 @@ def test_cleanup_when_old_format_session_then_ignores_it():
 
 
 class TestXdgHelpers:
-    def test_get_xdg_state_home_when_called_then_returns_path(self):
+    def test_get_xdg_state_home_when_env_var_set_then_uses_it(self, monkeypatch):
+        monkeypatch.setenv("XDG_STATE_HOME", "/custom/state")
+        result = get_xdg_state_home()
+        assert str(result) == "/custom/state/ai-cli"
+
+    def test_get_xdg_state_home_when_no_env_var_then_uses_default(self, monkeypatch):
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         result = get_xdg_state_home()
         assert result.name == "ai-cli"
-        assert isinstance(result, Path)
+        assert ".local/state" in str(result)
 
-    def test_get_xdg_cache_home_when_called_then_returns_path(self):
+    def test_get_xdg_cache_home_when_env_var_set_then_uses_it(self, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", "/custom/cache")
+        result = get_xdg_cache_home()
+        assert str(result) == "/custom/cache/ai-cli"
+
+    def test_get_xdg_cache_home_when_no_env_var_then_uses_default(self, monkeypatch):
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         result = get_xdg_cache_home()
         assert result.name == "ai-cli"
-        assert isinstance(result, Path)
+        assert ".cache" in str(result)
 
 
 # --- load_config tests ---
 
 
 class TestLoadConfig:
-    def test_load_config_when_no_config_file_then_creates_default(self, tmp_path):
+    def test_load_config_when_no_config_file_then_creates_default_with_known_keys(self, tmp_path):
         config_dir = tmp_path / "ai-cli"
         with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
             result = load_config()
         assert (config_dir / "config.toml").exists()
-        assert isinstance(result, dict)
+        # Default config has [behavior], [worktree], [session], [messaging] sections
+        assert "behavior" in result
+        assert result["behavior"]["notify_on_exit"] is True
+        assert "worktree" in result
+        assert result["worktree"]["enabled"] is True
+        assert "messaging" in result
 
     def test_load_config_when_bad_toml_then_returns_empty(self, tmp_path):
         config_dir = tmp_path / "ai-cli"
@@ -975,25 +994,25 @@ class TestCliDispatch:
                     cli()
                 assert exc.value.code == 1
 
-    def test_cli_when_internal_publish_event_then_calls_nats(self):
+    def test_cli_when_internal_publish_event_then_instantiates_nats_client(self):
         with patch("sys.argv", ["ai", "internal", "publish-event", "sess1", "START"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_instance = MagicMock()
-                    mock_nats.return_value = mock_instance
+                    mock_nats.return_value = MagicMock()
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
+                    mock_nats.assert_called_once()
 
-    def test_cli_when_internal_publish_heartbeat_then_calls_nats(self):
+    def test_cli_when_internal_publish_heartbeat_then_instantiates_nats_client(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", '{"cpu": 50}']):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_instance = MagicMock()
-                    mock_nats.return_value = mock_instance
+                    mock_nats.return_value = MagicMock()
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
+                    mock_nats.assert_called_once()
 
     def test_cli_when_internal_publish_heartbeat_bad_json_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", "not-json"]):
@@ -1002,25 +1021,25 @@ class TestCliDispatch:
                     cli()
                 assert exc.value.code == 1
 
-    def test_cli_when_internal_publish_session_event_then_calls_nats(self):
+    def test_cli_when_internal_publish_session_event_then_instantiates_nats_client(self):
         with patch("sys.argv", ["ai", "internal", "publish-session-event", "sess1", "started"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_instance = MagicMock()
-                    mock_nats.return_value = mock_instance
+                    mock_nats.return_value = MagicMock()
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
+                    mock_nats.assert_called_once()
 
-    def test_cli_when_internal_publish_then_calls_nats(self):
+    def test_cli_when_internal_publish_then_instantiates_nats_with_subject(self):
         with patch("sys.argv", ["ai", "internal", "publish", "test.topic", '{"key": "val"}']):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_instance = MagicMock()
-                    mock_nats.return_value = mock_instance
+                    mock_nats.return_value = MagicMock()
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
+                    mock_nats.assert_called_once()
 
     def test_cli_when_handoff_post_then_calls_post_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "post", "title", "P1", "proj", "msg"]):
@@ -1305,11 +1324,6 @@ class TestGetEngineScript:
     def test_get_engine_script_when_local_then_exits(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=False)
         assert "exit 0" in script
-
-    def test_get_engine_script_returns_string(self):
-        result = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert isinstance(result, str)
-        assert len(result) > 100
 
 
 class TestCreateWorktreeEdgeCases:
@@ -2173,3 +2187,266 @@ class TestCliWorktreeGitPull:
                                                         cli()
 
         assert any("pull" in cmd for cmd in git_pull_calls)
+
+
+class TestEmitIterm2ProfileSetup:
+    """Tests for _emit_iterm2_profile_setup — lines 496-507."""
+
+    def test_when_not_iterm2_then_writes_nothing(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": ""}, clear=False):
+            _emit_iterm2_profile_setup("sw-1", "c")
+        assert capsys.readouterr().out == ""
+
+    def test_when_lc_terminal_is_iterm2_and_claude_engine_then_emits_profile_and_color(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            _emit_iterm2_profile_setup("sw-3", "c")
+        out = capsys.readouterr().out
+        assert "SetProfile=ClaudeCode" in out
+        assert "SetColors=tab=" in out
+        assert "cc sw-3" in out
+
+    def test_when_lc_terminal_is_iterm2_and_gemini_engine_then_emits_gemini_profile(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            _emit_iterm2_profile_setup("ai-dojo-1", "g")
+        out = capsys.readouterr().out
+        assert "SetProfile=GeminiCLI" in out
+        assert "gemini ai-dojo-1" in out
+        assert "SetColors" not in out  # Gemini path does not set tab color
+
+    def test_when_term_program_is_iterm_app_then_also_activates(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": "iTerm.app"}, clear=False):
+            _emit_iterm2_profile_setup("sw-1", "c")
+        assert "SetProfile=ClaudeCode" in capsys.readouterr().out
+
+    def test_when_session_has_no_trailing_number_then_defaults_to_color_index_1(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            _emit_iterm2_profile_setup("no-number", "c")
+        out = capsys.readouterr().out
+        # num defaults to 1 → index 0 in the color list
+        assert "SetColors=tab=" in out
+
+    def test_when_unknown_engine_then_writes_nothing(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            _emit_iterm2_profile_setup("sw-1", "x")
+        assert capsys.readouterr().out == ""
+
+
+class TestCliAttachDispatch:
+    """Tests for `ai attach` subcommand — lines 1106-1114."""
+
+    def test_when_no_session_name_then_exits_1_with_usage(self, capsys):
+        with patch("sys.argv", ["ai", "attach"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+        assert exc.value.code == 1
+        assert "Usage" in capsys.readouterr().err
+
+    def test_when_session_does_not_exist_then_exits_1_with_message(self, capsys):
+        with patch("sys.argv", ["ai", "attach", "c-sw-99"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 1
+        assert "c-sw-99" in capsys.readouterr().err
+
+    def test_when_session_exists_then_execs_tmux_attach(self):
+        with patch("sys.argv", ["ai", "attach", "c-sw-1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                    with patch("os.execvp") as mock_exec:
+                        mock_exec.side_effect = SystemExit(0)
+                        with pytest.raises(SystemExit):
+                            cli()
+        mock_exec.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", "c-sw-1"])
+
+
+class TestCliLsDispatch:
+    """Tests for `ai ls` subcommand — lines 1116-1209."""
+
+    def _fake_tmux_sessions(self, sessions: list[tuple[str, int]]):
+        """Build a fake `tmux list-sessions` stdout."""
+        lines = "\n".join(f"{name} {ts}" for name, ts in sessions)
+        return MagicMock(returncode=0, stdout=lines)
+
+    def test_when_tmux_not_running_then_exits_0_with_stderr(self, capsys):
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0
+        assert "tmux" in capsys.readouterr().err.lower()
+
+    def test_when_no_ai_sessions_then_exits_0_with_hint(self, capsys):
+        # tmux has non-ai sessions; default filter should find nothing
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=self._fake_tmux_sessions([("random-session", 1000)])):
+                    with patch("shutil.which", return_value=None):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "--all" in out  # should mention --all flag
+
+    def test_when_no_sessions_with_all_flag_then_exits_0_with_no_sessions_message(self, capsys):
+        with patch("sys.argv", ["ai", "ls", "--all"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0
+        assert "tmux" in capsys.readouterr().err.lower()
+
+    def test_when_fzf_unavailable_then_prints_numbered_list(self, capsys):
+        now = int(time.time())
+        sessions = [("c-sw-1", now - 120), ("c-sw-2", now - 3600)]
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=self._fake_tmux_sessions(sessions)):
+                    with patch("shutil.which", return_value=None):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "c-sw-1" in out
+        assert "c-sw-2" in out
+        assert "ai attach" in out  # fallback list should show attach hint
+
+    def test_when_fzf_available_and_selection_made_then_execs_attach(self):
+        now = int(time.time())
+        sessions = [("c-sw-1", now - 60)]
+        fzf_result = MagicMock(returncode=0, stdout="c-sw-1\tsw\t1m\n")
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "tmux" in cmd:
+                return self._fake_tmux_sessions(sessions)
+            return fzf_result  # fzf
+
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", side_effect=fake_run):
+                    with patch("shutil.which", return_value="/usr/bin/fzf"):
+                        with patch("os.execvp") as mock_exec:
+                            mock_exec.side_effect = SystemExit(0)
+                            with pytest.raises(SystemExit):
+                                cli()
+        mock_exec.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", "c-sw-1"])
+
+    def test_when_fzf_cancelled_then_exits_0_without_attaching(self):
+        now = int(time.time())
+        sessions = [("c-sw-1", now - 60)]
+        fzf_cancelled = MagicMock(returncode=130, stdout="")  # fzf exits 130 on Ctrl-C
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "tmux" in cmd:
+                return self._fake_tmux_sessions(sessions)
+            return fzf_cancelled
+
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", side_effect=fake_run):
+                    with patch("shutil.which", return_value="/usr/bin/fzf"):
+                        with patch("os.execvp") as mock_exec:
+                            with pytest.raises(SystemExit) as exc:
+                                cli()
+        assert exc.value.code == 0
+        mock_exec.assert_not_called()
+
+    def test_when_all_flag_set_then_shows_non_ai_sessions_too(self, capsys):
+        now = int(time.time())
+        sessions = [("c-sw-1", now - 60), ("random-session", now - 120)]
+        with patch("sys.argv", ["ai", "ls", "--all"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=self._fake_tmux_sessions(sessions)):
+                    with patch("shutil.which", return_value=None):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "random-session" in out  # non-ai session visible with --all
+
+    def test_when_tmux_output_has_blank_lines_then_skips_them(self, capsys):
+        now = int(time.time())
+        # Output contains a blank line — should be skipped, not crash
+        raw_output = f"c-sw-1 {now - 300}\n\nc-sw-2 {now - 600}\n"
+        tmux_result = MagicMock(returncode=0, stdout=raw_output)
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=tmux_result):
+                    with patch("shutil.which", return_value=None):
+                        with pytest.raises(SystemExit):
+                            cli()
+        out = capsys.readouterr().out
+        assert "c-sw-1" in out
+        assert "c-sw-2" in out
+
+    def test_when_tmux_activity_is_non_integer_then_defaults_to_zero(self, capsys):
+        # Malformed tmux output — activity field is not a number
+        raw_output = "c-sw-1 not-a-number\n"
+        tmux_result = MagicMock(returncode=0, stdout=raw_output)
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=tmux_result):
+                    with patch("shutil.which", return_value=None):
+                        with pytest.raises(SystemExit):
+                            cli()
+        # Session still displayed; age defaults to 0 so delta = now → shows large value
+        assert "c-sw-1" in capsys.readouterr().out
+
+    def test_when_session_age_is_seconds_then_displays_s_suffix(self, capsys):
+        now = int(time.time())
+        raw_output = f"c-sw-1 {now - 10}\n"  # 10 seconds ago
+        tmux_result = MagicMock(returncode=0, stdout=raw_output)
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=tmux_result):
+                    with patch("shutil.which", return_value=None):
+                        with pytest.raises(SystemExit):
+                            cli()
+        assert "10s" in capsys.readouterr().out
+
+    def test_when_session_age_is_days_then_displays_d_suffix(self, capsys):
+        now = int(time.time())
+        raw_output = f"c-sw-1 {now - 90000}\n"  # 25 hours ago
+        tmux_result = MagicMock(returncode=0, stdout=raw_output)
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", return_value=tmux_result):
+                    with patch("shutil.which", return_value=None):
+                        with pytest.raises(SystemExit):
+                            cli()
+        assert "1d" in capsys.readouterr().out
+
+    def test_when_fzf_absent_but_apt_available_then_installs_fzf(self, capsys):
+        now = int(time.time())
+        raw_output = f"c-sw-1 {now - 60}\n"
+        apt_install_calls = []
+
+        def fake_which(cmd):
+            # fzf not found initially; apt is found; fzf still not found after install
+            if cmd == "fzf":
+                return None
+            if cmd == "apt":
+                return "/usr/bin/apt"
+            return None
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "tmux" in cmd:
+                return MagicMock(returncode=0, stdout=raw_output)
+            if isinstance(cmd, list) and "apt" in cmd:
+                apt_install_calls.append(cmd)
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=1)
+
+        with patch("sys.argv", ["ai", "ls"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("subprocess.run", side_effect=fake_run):
+                    with patch("shutil.which", side_effect=fake_which):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0
+        assert any("fzf" in str(cmd) for cmd in apt_install_calls)
+        assert "fzf not found" in capsys.readouterr().out
