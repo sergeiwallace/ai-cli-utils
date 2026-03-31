@@ -387,7 +387,7 @@ def run_gemini(
 
     if not final_result.success:
         final_result.error = "all tiers failed"
-        _log(f"  ✗ all tiers exhausted", quiet=quiet)
+        _log("  ✗ all tiers exhausted", quiet=quiet)
 
     # Write output
     output_path = output
