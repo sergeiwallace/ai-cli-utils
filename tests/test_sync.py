@@ -3088,24 +3088,25 @@ def test_sync_push_when_init_server_raises_oserror_then_continues(tmp_path, caps
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync.init_server_bare_repo", side_effect=OSError("no route")):
-            with patch("ai_cli.sync.init_staging_repo"):
-                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                    with patch("ai_cli.sync._wait_for_dream_completion"):
-                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                            with patch(
-                                "ai_cli.sync.stage_project_files",
-                                return_value={
-                                    "staged_files": [],
-                                    "project_names": [],
-                                    "memory_count": 0,
-                                    "jsonl_count": 0,
-                                },
-                            ):
-                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                            result = sync_push([])
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync.init_server_bare_repo", side_effect=OSError("no route")):
+                with patch("ai_cli.sync.init_staging_repo"):
+                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                        with patch("ai_cli.sync._wait_for_dream_completion"):
+                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                                with patch(
+                                    "ai_cli.sync.stage_project_files",
+                                    return_value={
+                                        "staged_files": [],
+                                        "project_names": [],
+                                        "memory_count": 0,
+                                        "jsonl_count": 0,
+                                    },
+                                ):
+                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                result = sync_push([])
     assert result == 0
 
 
@@ -3166,24 +3167,25 @@ def test_sync_push_when_cc_check_times_out_then_proceeds(tmp_path, capsys):
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync.init_server_bare_repo"):
-            with patch("ai_cli.sync.init_staging_repo"):
-                with patch("ai_cli.sync.is_cc_active_on_server", side_effect=subprocess.TimeoutExpired("ssh", 5)):
-                    with patch("ai_cli.sync._wait_for_dream_completion"):
-                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                            with patch(
-                                "ai_cli.sync.stage_project_files",
-                                return_value={
-                                    "staged_files": [],
-                                    "project_names": [],
-                                    "memory_count": 0,
-                                    "jsonl_count": 0,
-                                },
-                            ):
-                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                            result = sync_push([])
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync.init_server_bare_repo"):
+                with patch("ai_cli.sync.init_staging_repo"):
+                    with patch("ai_cli.sync.is_cc_active_on_server", side_effect=subprocess.TimeoutExpired("ssh", 5)):
+                        with patch("ai_cli.sync._wait_for_dream_completion"):
+                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                                with patch(
+                                    "ai_cli.sync.stage_project_files",
+                                    return_value={
+                                        "staged_files": [],
+                                        "project_names": [],
+                                        "memory_count": 0,
+                                        "jsonl_count": 0,
+                                    },
+                                ):
+                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                result = sync_push([])
     assert result == 0
     assert "WARNING" in capsys.readouterr().err
 
@@ -3204,24 +3206,25 @@ def test_sync_push_when_cc_check_exception_then_proceeds_silently(tmp_path):
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync.init_server_bare_repo"):
-            with patch("ai_cli.sync.init_staging_repo"):
-                with patch("ai_cli.sync.is_cc_active_on_server", side_effect=OSError("network gone")):
-                    with patch("ai_cli.sync._wait_for_dream_completion"):
-                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                            with patch(
-                                "ai_cli.sync.stage_project_files",
-                                return_value={
-                                    "staged_files": [],
-                                    "project_names": [],
-                                    "memory_count": 0,
-                                    "jsonl_count": 0,
-                                },
-                            ):
-                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                            result = sync_push([])
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync.init_server_bare_repo"):
+                with patch("ai_cli.sync.init_staging_repo"):
+                    with patch("ai_cli.sync.is_cc_active_on_server", side_effect=OSError("network gone")):
+                        with patch("ai_cli.sync._wait_for_dream_completion"):
+                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                                with patch(
+                                    "ai_cli.sync.stage_project_files",
+                                    return_value={
+                                        "staged_files": [],
+                                        "project_names": [],
+                                        "memory_count": 0,
+                                        "jsonl_count": 0,
+                                    },
+                                ):
+                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                result = sync_push([])
     assert result == 0
 
 
@@ -3241,20 +3244,21 @@ def test_sync_push_when_dry_run_with_handoffs_then_prints_count(tmp_path, capsys
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._wait_for_dream_completion"):
-            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                with patch(
-                    "ai_cli.sync.stage_project_files",
-                    return_value={
-                        "staged_files": [("a", "b")],
-                        "project_names": ["proj"],
-                        "memory_count": 0,
-                        "jsonl_count": 0,
-                    },
-                ):
-                    with patch("ai_cli.sync.stage_handoff_files", return_value=2):
-                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                            result = sync_push(["--dry-run"])
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync._wait_for_dream_completion"):
+                with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                    with patch(
+                        "ai_cli.sync.stage_project_files",
+                        return_value={
+                            "staged_files": [("a", "b")],
+                            "project_names": ["proj"],
+                            "memory_count": 0,
+                            "jsonl_count": 0,
+                        },
+                    ):
+                        with patch("ai_cli.sync.stage_handoff_files", return_value=2):
+                            with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                result = sync_push(["--dry-run"])
     assert result == 0
     output = capsys.readouterr().out
     assert "handoff" in output
@@ -3276,24 +3280,25 @@ def test_sync_push_when_not_committed_verbose_then_prints(tmp_path, capsys):
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync.init_server_bare_repo"):
-            with patch("ai_cli.sync.init_staging_repo"):
-                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                    with patch("ai_cli.sync._wait_for_dream_completion"):
-                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                            with patch(
-                                "ai_cli.sync.stage_project_files",
-                                return_value={
-                                    "staged_files": [],
-                                    "project_names": [],
-                                    "memory_count": 0,
-                                    "jsonl_count": 0,
-                                },
-                            ):
-                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                        with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                            result = sync_push(["--verbose"])
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync.init_server_bare_repo"):
+                with patch("ai_cli.sync.init_staging_repo"):
+                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                        with patch("ai_cli.sync._wait_for_dream_completion"):
+                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                                with patch(
+                                    "ai_cli.sync.stage_project_files",
+                                    return_value={
+                                        "staged_files": [],
+                                        "project_names": [],
+                                        "memory_count": 0,
+                                        "jsonl_count": 0,
+                                    },
+                                ):
+                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                result = sync_push(["--verbose"])
     assert result == 0
     assert "Nothing to commit" in capsys.readouterr().out
 
@@ -3317,26 +3322,27 @@ def test_sync_push_when_push_succeeds_and_nats_notified_then_returns_0(tmp_path,
     mock_client.publish = AsyncMock(return_value=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync.init_server_bare_repo"):
-            with patch("ai_cli.sync.init_staging_repo"):
-                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                    with patch("ai_cli.sync._wait_for_dream_completion"):
-                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                            with patch(
-                                "ai_cli.sync.stage_project_files",
-                                return_value={
-                                    "staged_files": [("a", "b")],
-                                    "project_names": ["proj"],
-                                    "memory_count": 1,
-                                    "jsonl_count": 0,
-                                },
-                            ):
-                                with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                        with patch("ai_cli.sync.git_commit_staged", return_value=True):
-                                            with patch("ai_cli.sync._push_to_remote", return_value=True):
-                                                with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
-                                                    result = sync_push(["--verbose"])
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync.init_server_bare_repo"):
+                with patch("ai_cli.sync.init_staging_repo"):
+                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                        with patch("ai_cli.sync._wait_for_dream_completion"):
+                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                                with patch(
+                                    "ai_cli.sync.stage_project_files",
+                                    return_value={
+                                        "staged_files": [("a", "b")],
+                                        "project_names": ["proj"],
+                                        "memory_count": 1,
+                                        "jsonl_count": 0,
+                                    },
+                                ):
+                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch("ai_cli.sync.git_commit_staged", return_value=True):
+                                                with patch("ai_cli.sync._push_to_remote", return_value=True):
+                                                    with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+                                                        result = sync_push(["--verbose"])
     assert result == 0
     output = capsys.readouterr().out
     assert "Pushed" in output
