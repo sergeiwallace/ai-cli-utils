@@ -36,12 +36,12 @@
   <circle cx="180" cy="100" r="5" fill="#00ff88" opacity="0.6"/>
 
   <!-- Node connections -->
-  <line x1="30"  y1="30"  x2="100" y2="20"  stroke="#00ff88" stroke-width="1.5" opacity="0.3"/>
-  <line x1="100" y1="20"  x2="170" y2="30"  stroke="#39ff14" stroke-width="1.5" opacity="0.3"/>
-  <line x1="30"  y1="30"  x2="20"  y2="100" stroke="#00ff88" stroke-width="1.5" opacity="0.3"/>
-  <line x1="170" y1="30"  x2="180" y2="100" stroke="#39ff14" stroke-width="1.5" opacity="0.3"/>
-  <line x1="20"  y1="100" x2="30"  y2="170" stroke="#00ff88" stroke-width="1.5" opacity="0.3"/>
-  <line x1="180" y1="100" x2="170" y2="170" stroke="#39ff14" stroke-width="1.5" opacity="0.3"/>
+  <line x1="30"  y1="30"  x2="100" y2="20"  stroke="#00ff88" stroke-width="2.5" opacity="0.3"/>
+  <line x1="100" y1="20"  x2="170" y2="30"  stroke="#39ff14" stroke-width="2.5" opacity="0.3"/>
+  <line x1="30"  y1="30"  x2="20"  y2="100" stroke="#00ff88" stroke-width="2.5" opacity="0.3"/>
+  <line x1="170" y1="30"  x2="180" y2="100" stroke="#39ff14" stroke-width="2.5" opacity="0.3"/>
+  <line x1="20"  y1="100" x2="30"  y2="170" stroke="#00ff88" stroke-width="2.5" opacity="0.3"/>
+  <line x1="180" y1="100" x2="170" y2="170" stroke="#39ff14" stroke-width="2.5" opacity="0.3"/>
 
   <!-- _ centered as the mouth -->
   <text x="100" y="112"
