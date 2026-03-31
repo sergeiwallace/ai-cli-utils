@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- iTerm2 session-tracking files moved from `/tmp/` to `~/.local/state/ai-cli/iterm2/` (XDG Base Directory Specification), eliminating symlink attack surface on shared servers
+- Session runtime files (`cc-exit-*`, `cc-resume-prompt-*`, `ai-watcher-lock-*`) moved from `/tmp/` to `~/.local/state/ai-cli/`
+- `session_id_uuid` validated against UUID regex before bash f-string interpolation in `get_engine_script()`; malformed input is cleared
+- `--project` argument rejects values containing `/` or `\` path separators
+
 ### Added
 
 - CI test matrix (Python 3.11/3.12/3.13) with Codecov coverage reporting
