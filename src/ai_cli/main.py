@@ -581,14 +581,23 @@ def get_engine_script(
 
     # iTerm2 fleet management: set profile, rolling tab color, badge, tab title
     # Only runs under iTerm2 (check LC_TERMINAL which survives tmux, unlike TERM_PROGRAM)
+    # _it2: wraps OSC sequences in DCS passthrough when inside tmux
+    _it2() {{
+      if [[ -n "$TMUX" ]]; then
+        printf '\\033Ptmux;\\033%b\\033\\\\' "$1"
+      else
+        printf '%b' "$1"
+      fi
+    }}
+
     _iterm2_fleet_setup() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local num="$1" stype="$2" sname="$3"
 
       # Profile switch
       case "$stype" in
-        cc)    printf '\\e]1337;SetProfile=ClaudeCode\\a' ;;
-        shell) printf '\\e]1337;SetProfile=ShellUtility\\a' ;;
+        cc)    _it2 '\\033]1337;SetProfile=ClaudeCode\\007' ;;
+        shell) _it2 '\\033]1337;SetProfile=ShellUtility\\007' ;;
         *)     return 0 ;;
       esac
 
@@ -598,24 +607,20 @@ def get_engine_script(
                       "039be5" "1e88e5" "5e35b1" "d81b60" "00acc1"
                       "ff5722" "7cb342")
         local idx=$(( (num - 1) % ${{#colors[@]}} ))
-        printf '\\e]1337;SetColors=tab=%s\\a' "${{colors[$idx]}}"
+        _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
       fi
 
       # User variables for badge interpolation
-      printf '\\e]1337;SetUserVar=%s=%s\\a' \
-        "sessionType" "$(echo -n "$stype" | base64)"
-      printf '\\e]1337;SetUserVar=%s=%s\\a' \
-        "sessionNum" "$(echo -n "$num" | base64)"
-      printf '\\e]1337;SetUserVar=%s=%s\\a' \
-        "tmuxSession" "$(echo -n "$sname" | base64)"
+      _it2 "\\033]1337;SetUserVar=sessionType=$(echo -n "$stype" | base64)\\007"
+      _it2 "\\033]1337;SetUserVar=sessionNum=$(echo -n "$num" | base64)\\007"
+      _it2 "\\033]1337;SetUserVar=tmuxSession=$(echo -n "$sname" | base64)\\007"
 
       # Badge
       local badge_text="$stype sw-$num"
-      printf '\\e]1337;SetBadgeFormat=%s\\a' \
-        "$(echo -n "$badge_text" | base64)"
+      _it2 "\\033]1337;SetBadgeFormat=$(echo -n "$badge_text" | base64)\\007"
 
       # Tab title (leading space separates icon from text)
-      printf '\\e]0; %s sw-%s\\a' "$stype" "$num"
+      _it2 "\\033]0; $stype sw-$num\\007"
     }}
 
     # iTerm2 status updates: badge + tab title (NOT color — color is for identity)
@@ -630,8 +635,8 @@ def get_engine_script(
         error)     badge="✗ ERROR sw-$num";    title=" ✗ ERROR sw-$num" ;;
         resuming)  badge="↻ sw-$num";          title=" ↻ sw-$num" ;;
       esac
-      [[ -n "$badge" ]] && printf '\\e]1337;SetBadgeFormat=%s\\a' "$(echo -n "$badge" | base64)"
-      [[ -n "$title" ]] && printf '\\e]0;%s\\a' "$title"
+      [[ -n "$badge" ]] && _it2 "\\033]1337;SetBadgeFormat=$(echo -n "$badge" | base64)\\007"
+      [[ -n "$title" ]] && _it2 "\\033]0;$title\\007"
     }}
 
     # Extract session number from ai_name (e.g., "sw-3" → "3")
