@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff"/>
+      <stop offset="100%" style="stop-color:#00ff88"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="200" rx="36" fill="#0d1117"/>
+
+  <!-- > as winking eye, _ as mouth — positioned as a face -->
+  <!-- Winking eye: > -->
+  <text x="52" y="108"
+        font-family="'SF Mono','Fira Code','Courier New',monospace"
+        font-size="60" font-weight="700"
+        fill="url(#accent)" filter="url(#glow)">&#62;_</text>
+</svg>
