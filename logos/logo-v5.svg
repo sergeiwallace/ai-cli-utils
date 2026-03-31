@@ -47,10 +47,12 @@
         font-size="86" font-weight="700"
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
 
-  <!-- right eye: short horizontal dash, subtle, at eye height -->
-  <line x1="116" y1="83" x2="134" y2="83"
-        stroke="#00ff88" stroke-width="4" stroke-linecap="round"
-        opacity="0.75"/>
+  <!-- right eye: small _ same style as mouth, aligned with chevron tip -->
+  <text x="131" y="90"
+        text-anchor="middle"
+        font-family="'SF Mono','Fira Code','Courier New',monospace"
+        font-size="28" font-weight="700"
+        fill="url(#prompt)" filter="url(#glow)" opacity="0.85">_</text>
 
   <!-- > smaller, tip slightly overlapping left edge of _ -->
   <text x="48" y="106"
