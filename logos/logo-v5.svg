@@ -49,8 +49,8 @@
 
   <!-- right eye: short horizontal dash, subtle, at eye height -->
   <line x1="128" y1="72" x2="152" y2="72"
-        stroke="url(#prompt)" stroke-width="7" stroke-linecap="round"
-        filter="url(#glow)" opacity="0.75"/>
+        stroke="#00ff88" stroke-width="7" stroke-linecap="round"
+        opacity="0.75"/>
 
   <!-- > smaller, tip slightly overlapping left edge of _ -->
   <text x="48" y="106"
