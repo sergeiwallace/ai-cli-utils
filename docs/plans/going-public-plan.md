@@ -270,7 +270,106 @@ In Settings > Code security and analysis:
 | All Contributors | — | When contributors > 5 |
 | Auto-labeler | — | When PRs > 20/month |
 | pyright CI | AI-CLI-8 | After type annotation audit |
-| Codecov badge in README | — | When coverage > 80% |
+| Codecov badge in README | — | Done (coverage reached 91%) |
+| SSH integration tests | AI-CLI-12 | See below |
+
+## AI-CLI-12: SSH Integration Tests (Hetzner)
+
+Cover `sync.py` SSH paths that can't be unit tested without a real remote host.
+
+**Decision:** Option D — separate CI job with `continue-on-error: true`. Failures get flagged as P0/P1 in the session config and investigated. The CLAUDE.md guardrails mean failures won't be silently ignored.
+
+### Setup steps
+
+#### Step 1: Generate a dedicated CI keypair
+
+On the Hetzner server:
+```bash
+ssh-keygen -t ed25519 -C "ai-cli-utils CI" -f ~/.ssh/ci_integration -N ""
+```
+
+#### Step 2: Restrict the key on the server
+
+In `~/.ssh/authorized_keys` on Hetzner, add the public key with a `command=` restriction:
+```
+command="cd /home/sergei/projects/ai-cli-utils && bash",restrict ssh-ed25519 AAAA... ai-cli-utils CI
+```
+
+This means even if the key leaks, it can only run a constrained shell in the project directory.
+
+#### Step 3: Add secrets to GitHub
+
+In GitHub repo Settings → Secrets and variables → Actions:
+- `INTEGRATION_SSH_KEY` — contents of `~/.ssh/ci_integration` (private key)
+- `INTEGRATION_SSH_HOST` — `178.104.70.139`
+- `INTEGRATION_SSH_USER` — `sergei`
+
+#### Step 4: Add integration workflow
+
+Create `.github/workflows/integration.yml`:
+
+```yaml
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * *'  # daily at 6am UTC
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check SSH reachability
+        id: ssh_check
+        run: |
+          if ! ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+            -i <(echo "${{ secrets.INTEGRATION_SSH_KEY }}") \
+            ${{ secrets.INTEGRATION_SSH_USER }}@${{ secrets.INTEGRATION_SSH_HOST }} \
+            exit 0 2>/dev/null; then
+            echo "reachable=false" >> $GITHUB_OUTPUT
+          else
+            echo "reachable=true" >> $GITHUB_OUTPUT
+          fi
+      - uses: astral-sh/setup-uv@v7
+        if: steps.ssh_check.outputs.reachable == 'true'
+        with:
+          python-version: "3.12"
+      - name: Run integration tests
+        if: steps.ssh_check.outputs.reachable == 'true'
+        env:
+          INTEGRATION_SSH_KEY: ${{ secrets.INTEGRATION_SSH_KEY }}
+          INTEGRATION_SSH_HOST: ${{ secrets.INTEGRATION_SSH_HOST }}
+          INTEGRATION_SSH_USER: ${{ secrets.INTEGRATION_SSH_USER }}
+        run: uv run pytest -m integration --tb=short -q
+      - name: Skip (server unreachable)
+        if: steps.ssh_check.outputs.reachable == 'false'
+        run: echo "Hetzner server unreachable — skipping integration tests"
+```
+
+#### Step 5: Write the integration tests
+
+Add `@pytest.mark.integration` tests to `tests/test_sync_integration.py` covering:
+- `sync_push` over real SSH
+- `sync_pull` over real SSH
+- Conflict detection
+
+Mark with `pytest.ini` or `pyproject.toml`:
+```toml
+[tool.pytest.ini_options]
+markers = ["integration: requires Hetzner SSH access"]
+```
+
+#### Step 6: Session config update
+
+Add to `CLAUDE.md` (ai-cli-utils project):
+> If the `integration` CI job is failing, create a P1 task `[AI-CLI-integration-fix]` and investigate before other work.
 
 ## Approval Log
 

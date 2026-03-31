@@ -2,6 +2,7 @@
 
 ## Open
 
+- [ ] `[P2]` `[AI-CLI-12]` **SSH integration tests (Hetzner)** — Cover sync.py SSH paths with real remote tests. CI job with `continue-on-error: true` + SSH reachability check. Dedicated keypair with `command=` restriction. Plan: `docs/plans/going-public-plan.md` § AI-CLI-12.
 - [ ] `[P3]` `[AI-CLI-11]` **Logo polish — increase visual weight** — All elements (nodes, edges, arc eye, chevron, underscore) appear pencil-thin vs other ecosystem logos (e.g. Python). Increase stroke widths and node radii so the logo holds up at small sizes and alongside other icons.
 - [ ] `[P3]` `[AI-CLI-3]` **Terminal demo GIF** — Record terminal session demo with vhs (`demo/demo.tape` ready). Install vhs, run `vhs demo/demo.tape`, embed in README.
 - [ ] `[P3]` `[AI-CLI-7]` **Release Drafter** — Auto-draft GitHub Release notes from PR labels. Add when project gets regular external PRs.
