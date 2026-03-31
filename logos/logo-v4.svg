@@ -40,10 +40,17 @@
   <line x1="20"  y1="100" x2="30"  y2="170" stroke="#00ff88" stroke-width="0.8" opacity="0.15"/>
   <line x1="180" y1="100" x2="170" y2="170" stroke="#39ff14" stroke-width="0.8" opacity="0.15"/>
 
-  <!-- >_ centered, positioned in lower half like a face expression -->
-  <text x="93" y="112"
+  <!-- _ centered as the mouth -->
+  <text x="100" y="112"
         text-anchor="middle"
         font-family="'SF Mono','Fira Code','Courier New',monospace"
         font-size="76" font-weight="700"
-        fill="url(#prompt)" filter="url(#glow)" opacity="0.95">&#62;_</text>
+        fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
+
+  <!-- > smaller, tip slightly overlapping left edge of _ -->
+  <text x="48" y="112"
+        text-anchor="start"
+        font-family="'SF Mono','Fira Code','Courier New',monospace"
+        font-size="58" font-weight="700"
+        fill="url(#prompt)" filter="url(#glow)" opacity="0.95">&#62;</text>
 </svg>
