@@ -1,3 +1,4 @@
+import builtins
 import json
 import pytest
 import sys
@@ -2203,14 +2204,12 @@ class TestEmitIterm2ProfileSetup:
         out = capsys.readouterr().out
         assert "SetProfile=ClaudeCode" in out
         assert "SetColors=tab=" in out
-        assert "cc sw-3" in out
 
     def test_when_lc_terminal_is_iterm2_and_gemini_engine_then_emits_gemini_profile(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             _emit_iterm2_profile_setup("ai-dojo-1", "g")
         out = capsys.readouterr().out
         assert "SetProfile=GeminiCLI" in out
-        assert "gemini ai-dojo-1" in out
         assert "SetColors" not in out  # Gemini path does not set tab color
 
     def test_when_term_program_is_iterm_app_then_also_activates(self, capsys):
@@ -2231,21 +2230,39 @@ class TestEmitIterm2ProfileSetup:
         assert capsys.readouterr().out == ""
 
     def test_when_iterm_session_id_set_then_writes_color_profile_file(self, tmp_path):
+        color_file = tmp_path / "iterm2-cc-color-w0t0"
+        names_file = tmp_path / "iterm2-cc-names-w0t0"
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
-            with patch("builtins.open", create=True) as mock_open:
-                mock_open.return_value.__enter__ = lambda s: s
-                mock_open.return_value.__exit__ = MagicMock(return_value=False)
-                mock_open.return_value.write = MagicMock()
-                _emit_iterm2_profile_setup("sw-1", "c")
-        # open was called with the tab-key path
-        paths_opened = [str(call.args[0]) for call in mock_open.call_args_list]
-        assert any("iterm2-cc-color-w0t0" in p for p in paths_opened)
+            with patch("ai_cli.main._iterm2_update_window_title"):
+                # Redirect file writes to tmp_path by patching the path construction
+                original_open = builtins.open
+                opened_paths = []
+
+                def tracking_open(path, *args, **kwargs):
+                    opened_paths.append(str(path))
+                    if "iterm2-cc-color-w0t0" in str(path):
+                        return original_open(str(color_file), *args, **kwargs)
+                    if "iterm2-cc-names-w0t0" in str(path):
+                        return original_open(str(names_file), *args, **kwargs)
+                    return original_open(path, *args, **kwargs)
+
+                with patch("builtins.open", side_effect=tracking_open):
+                    _emit_iterm2_profile_setup("sw-1", "c")
+        assert any("iterm2-cc-color-w0t0" in p for p in opened_paths)
 
     def test_when_iterm_color_file_write_raises_oserror_then_silently_passes(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
-            with patch("builtins.open", side_effect=OSError("read-only fs")):
-                # Should not raise — OSError is silently swallowed
-                _emit_iterm2_profile_setup("sw-1", "c")
+            with patch("ai_cli.main._iterm2_update_window_title"):
+                original_open = builtins.open
+
+                def failing_open(path, *args, **kwargs):
+                    if "/tmp/iterm2-" in str(path):
+                        raise OSError("read-only fs")
+                    return original_open(path, *args, **kwargs)
+
+                with patch("builtins.open", side_effect=failing_open):
+                    # Should not raise — OSError is silently swallowed
+                    _emit_iterm2_profile_setup("sw-1", "c")
         # Profile and color still emitted to stdout before the file write
         assert "SetProfile=ClaudeCode" in capsys.readouterr().out
 

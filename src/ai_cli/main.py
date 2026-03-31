@@ -511,7 +511,181 @@ _ITERM2_PROFILE_MAP = [
 ]
 
 
-def _emit_iterm2_profile_setup(ai_name: str, engine: str) -> None:
+def _iterm2_pane_ids(iterm_session_id: str) -> tuple[str, str, str]:
+    """Extract (tab_key, pane_idx, win_key) from ITERM_SESSION_ID.
+    Format: "w{W}t{T}p{P}:UUID" -> tab_key="w{W}t{T}", pane_idx="{P}", win_key="w{W}"
+    """
+    if not iterm_session_id or "p" not in iterm_session_id:
+        return "", "0", ""
+    tab_key = iterm_session_id.split("p")[0]
+    pane_idx = iterm_session_id.split("p", 1)[1].split(":")[0]
+    win_key = iterm_session_id.split("t")[0]
+    return tab_key, pane_idx, win_key
+
+
+def _iterm2_register_session(tab_key: str, pane_idx: str, session_name: str, stype: str, status: str) -> None:
+    """Write or update session entry in /tmp/iterm2-cc-names-{tab_key}.
+    Line format: {pane_idx}:{session_name}:{type}:{status}
+    """
+    path = f"/tmp/iterm2-cc-names-{tab_key}"
+    new_line = f"{pane_idx}:{session_name}:{stype}:{status}"
+    lines: list[str] = []
+    try:
+        with open(path) as f:
+            lines = [l.rstrip("\n") for l in f if l.strip()]
+    except OSError:
+        pass
+    updated = False
+    new_lines = []
+    for l in lines:
+        if l.startswith(f"{pane_idx}:"):
+            new_lines.append(new_line)
+            updated = True
+        else:
+            new_lines.append(l)
+    if not updated:
+        new_lines.append(new_line)
+    try:
+        with open(path, "w") as f:
+            f.write("\n".join(new_lines) + "\n")
+    except OSError:
+        pass
+
+
+_ITERM2_TYPE_SYMBOLS: dict[str, str] = {"cc": "*", "gemini": "✦"}
+_ITERM2_STATUS_SYMBOLS: dict[str, str] = {
+    "running": "▶",
+    "waiting": "⏸",
+    "done": "✓",
+    "error": "✗",
+    "resuming": "↻",
+    "init": "▶",
+}
+
+
+def _iterm2_compute_tab_title(tab_key: str) -> str:
+    """Read names file and return abbreviated tab title string."""
+    path = f"/tmp/iterm2-cc-names-{tab_key}"
+    entries: list[list[str]] = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(":", 3)
+                if len(parts) == 4:
+                    entries.append(parts)  # [pane_idx, name, type, status]
+    except OSError:
+        return ""
+    if not entries:
+        return ""
+    entries.sort(key=lambda e: int(e[0]) if e[0].isdigit() else 0)
+    symbols = "".join(_ITERM2_TYPE_SYMBOLS.get(e[2], "·") for e in entries)
+    if len(entries) == 1:
+        e = entries[0]
+        st = _ITERM2_STATUS_SYMBOLS.get(e[3], "▶")
+        return f"{symbols} {st} {e[1]}"
+    names = [e[1] for e in entries]
+    prefix = os.path.commonprefix(names)
+    if len(prefix) >= 4:
+        parts = []
+        for e in entries:
+            suffix = e[1][len(prefix) :]
+            st = _ITERM2_STATUS_SYMBOLS.get(e[3], "")
+            parts.append(f"{st}{suffix}")
+        return f"{symbols} {prefix}{{{'|'.join(parts)}}}"
+    parts = []
+    for e in entries:
+        st = _ITERM2_STATUS_SYMBOLS.get(e[3], "")
+        parts.append(f"{st}{e[1]}")
+    return f"{symbols} {'  '.join(parts)}"
+
+
+def _iterm2_heuristic_window_title(sessions: list[str]) -> str:
+    """Fast heuristic window title from tmux session names."""
+    if not sessions:
+        return "CC Sessions"
+    projects: set[str] = set()
+    for s in sessions:
+        m = re.match(r"^[cg](?:-r)?-(.+)-\d+$", s)
+        if m:
+            projects.add(m.group(1))
+    project_str = "+".join(sorted(projects)) if projects else "CC"
+    has_remote = any(re.match(r"^[cg]-r-", s) for s in sessions)
+    has_local = any(re.match(r"^[cg]-(?!r-)", s) for s in sessions)
+    if has_remote and not has_local:
+        loc = " Remote"
+    elif has_local and not has_remote:
+        loc = " Local"
+    else:
+        loc = ""
+    return f"{project_str}{loc} CC"
+
+
+def _iterm2_update_window_title(win_key: str, tab_key: str, session_name: str, stype: str) -> None:
+    """Update window registry and spawn async Claude Haiku for window title."""
+    if not win_key:
+        return
+    win_file = f"/tmp/iterm2-win-{win_key}"
+    title_file = f"/tmp/iterm2-win-title-{win_key}"
+    lines: list[str] = []
+    try:
+        with open(win_file) as f:
+            lines = [l.strip() for l in f if l.strip()]
+    except OSError:
+        pass
+    new_line = f"{tab_key}:{session_name}:{stype}"
+    new_lines: list[str] = []
+    updated = False
+    for l in lines:
+        if l.startswith(f"{tab_key}:"):
+            new_lines.append(new_line)
+            updated = True
+        else:
+            new_lines.append(l)
+    if not updated:
+        new_lines.append(new_line)
+    try:
+        with open(win_file, "w") as f:
+            f.write("\n".join(new_lines) + "\n")
+    except OSError:
+        return
+    all_sessions = [l.split(":")[1] for l in new_lines if l.count(":") >= 2]
+    heuristic = _iterm2_heuristic_window_title(all_sessions)
+    sys.stdout.write(f"\033]2;{heuristic}\007")
+    sys.stdout.flush()
+    sessions_str = ", ".join(all_sessions)
+    prompt = (
+        f"2-4 word iTerm2 window title for terminal window containing: {sessions_str}. "
+        f"Concise, descriptive. Examples: 'SW Remote CC', 'Local Dev', 'Aurion CC'. "
+        f"Reply with the title only, no quotes."
+    )
+    try:
+        with open(title_file, "w") as out_f:
+            subprocess.Popen(
+                [
+                    "claude",
+                    "-p",
+                    prompt,
+                    "--model",
+                    "claude-haiku-4-5-20251001",
+                    "--output-format",
+                    "text",
+                ],
+                stdout=out_f,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+    except (OSError, FileNotFoundError):
+        try:
+            with open(title_file, "w") as f:
+                f.write(heuristic)
+        except OSError:
+            pass
+
+
+def _emit_iterm2_profile_setup(ai_name: str, engine: str, session: str = "") -> None:
     """Emit iTerm2 profile/color/title escape sequences directly to stdout.
 
     Called before os.execvp so sequences reach iTerm2 before tmux takes over.
@@ -522,6 +696,10 @@ def _emit_iterm2_profile_setup(ai_name: str, engine: str) -> None:
     if lc_term != "iTerm2" and term_prog != "iTerm.app":
         return
 
+    iterm_session_id = os.environ.get("ITERM_SESSION_ID", "")
+    tab_key, pane_idx, win_key = _iterm2_pane_ids(iterm_session_id)
+    session_name = session or ai_name
+
     if engine == "c":
         m = re.search(r"\d+$", ai_name)
         num = int(m.group()) if m else 1
@@ -530,22 +708,30 @@ def _emit_iterm2_profile_setup(ai_name: str, engine: str) -> None:
         profile = _ITERM2_PROFILE_MAP[idx]
         sys.stdout.write(f"\033]1337;SetProfile={profile}\007")
         sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
-        sys.stdout.write(f"\033]0; cc {ai_name}\007")
         sys.stdout.flush()
-        # Write color:profile to shared file — shell panes in this tab read it
-        # via precmd hook to re-emit CC appearance when focused.
-        iterm_session_id = os.environ.get("ITERM_SESSION_ID", "")
-        if iterm_session_id:
-            tab_key = iterm_session_id.split("p")[0]  # "w0t0p0:uuid" → "w0t0"
+        if tab_key:
             try:
                 with open(f"/tmp/iterm2-cc-color-{tab_key}", "w") as f:
                     f.write(f"{color}:{profile}")
             except OSError:
                 pass
+            _iterm2_register_session(tab_key, pane_idx, session_name, "cc", "init")
+            title = _iterm2_compute_tab_title(tab_key)
+            if title:
+                sys.stdout.write(f"\033]0; {title}\007")
+                sys.stdout.flush()
+        _iterm2_update_window_title(win_key, tab_key, session_name, "cc")
+
     elif engine == "g":
         sys.stdout.write("\033]1337;SetProfile=GeminiCLI\007")
-        sys.stdout.write(f"\033]0; gemini {ai_name}\007")
         sys.stdout.flush()
+        if tab_key:
+            _iterm2_register_session(tab_key, pane_idx, session_name, "gemini", "init")
+            title = _iterm2_compute_tab_title(tab_key)
+            if title:
+                sys.stdout.write(f"\033]0; {title}\007")
+                sys.stdout.flush()
+        _iterm2_update_window_title(win_key, tab_key, session_name, "gemini")
 
 
 # --- Script Generation ---
@@ -669,6 +855,11 @@ def get_engine_script(
     _iterm2_fleet_setup() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local num="$1" stype="$2" sname="$3"
+      local _tab_key="" _pane_idx="0"
+      if [[ -n "$ITERM_SESSION_ID" ]]; then
+        _tab_key="${{ITERM_SESSION_ID%%p*}}"
+        local _pp="${{ITERM_SESSION_ID#*p}}"; _pane_idx="${{_pp%%:*}}"
+      fi
 
       case "$stype" in
         cc)
@@ -685,11 +876,12 @@ def get_engine_script(
           local idx=$(( (num - 1) % ${{#colors[@]}} ))
           _it2 "\\033]1337;SetProfile=${{profiles[$idx]}}\\007"
           _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
-          # Write color:profile to shared file for shell-pane precmd hook
-          if [[ -n "$ITERM_SESSION_ID" ]]; then
-            local _tab_key="${{ITERM_SESSION_ID%%p*}}"
+          if [[ -n "$_tab_key" ]]; then
             printf '%s' "${{colors[$idx]}}:${{profiles[$idx]}}" > "/tmp/iterm2-cc-color-${{_tab_key}}"
           fi
+          ;;
+        gemini)
+          _it2 '\\033]1337;SetProfile=GeminiCLI\\007'
           ;;
         shell)
           _it2 '\\033]1337;SetProfile=ShellUtility\\007'
@@ -699,23 +891,35 @@ def get_engine_script(
           ;;
       esac
 
-      # Tab title (leading space separates icon from text)
-      _it2 "\\033]0; $stype sw-$num\\007"
+      # Update names file status and emit abbreviated tab title
+      if [[ -n "$_tab_key" && ("$stype" == "cc" || "$stype" == "gemini") ]]; then
+        local _title
+        _title=$(ai internal iterm2-update-status "$_tab_key" "$_pane_idx" "$sname" "$stype" "running" 2>/dev/null)
+        [[ -n "$_title" ]] && _it2 "\\033]0; $_title\\007"
+      fi
     }}
 
-    # iTerm2 status updates: tab title only (NOT color — color is for identity)
+    # iTerm2 status updates: update names file + re-emit abbreviated tab title
     _iterm2_status() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
-      local status="$1" num="$2" stype="$3"
-      local title=""
-      case "$status" in
-        running)   title=" ▶ $stype sw-$num" ;;
-        waiting)   title=" ⏸ WAIT sw-$num" ;;
-        done)      title=" ✓ DONE sw-$num" ;;
-        error)     title=" ✗ ERROR sw-$num" ;;
-        resuming)  title=" ↻ sw-$num" ;;
-      esac
-      [[ -n "$title" ]] && _it2 "\\033]0;$title\\007"
+      local status="$1" num="$2" stype="$3" sname="${{4:-}}"
+      [[ -z "$ITERM_SESSION_ID" ]] && return 0
+      local _tab_key="${{ITERM_SESSION_ID%%p*}}"
+      local _pp="${{ITERM_SESSION_ID#*p}}"; local _pane_idx="${{_pp%%:*}}"
+      local _title
+      _title=$(ai internal iterm2-update-status "$_tab_key" "$_pane_idx" "$sname" "$stype" "$status" 2>/dev/null)
+      [[ -n "$_title" ]] && _it2 "\\033]0; $_title\\007"
+    }}
+
+    # iTerm2 cleanup on exit: deregister pane, re-emit remaining title if tab still has sessions
+    _iterm2_exit_cleanup() {{
+      [[ -z "$ITERM_SESSION_ID" ]] && return 0
+      local _tab_key="${{ITERM_SESSION_ID%%p*}}"
+      local _pp="${{ITERM_SESSION_ID#*p}}"; local _pane_idx="${{_pp%%:*}}"
+      local _win_key="${{ITERM_SESSION_ID%%t*}}"
+      local _remaining_title
+      _remaining_title=$(ai internal iterm2-exit-cleanup "$_tab_key" "$_pane_idx" "$_win_key" 2>/dev/null)
+      [[ -n "$_remaining_title" ]] && _it2 "\\033]0; $_remaining_title\\007"
     }}
 
     # Extract session number from ai_name (e.g., "sw-3" → "3")
@@ -732,14 +936,14 @@ def get_engine_script(
     if [[ -n "$ITERM_SESSION_ID" ]]; then
       _iterm2_color_file="/tmp/iterm2-cc-color-${{ITERM_SESSION_ID%%p*}}"
     fi
-    trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
+    trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
       start_ts=$(date +%s)
       # Re-emit iTerm2 setup + set status to running
       _iterm2_fleet_setup "$_session_num" "$_session_type" "$tmux_session"
-      _iterm2_status "running" "$_session_num" "$_session_type"
+      _iterm2_status "running" "$_session_num" "$_session_type" "$tmux_session"
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
@@ -778,10 +982,10 @@ def get_engine_script(
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
       _exit_elapsed=$(( $(date +%s) - start_ts ))
       if (( _exit_elapsed < 3 )); then
-        _iterm2_status "error" "$_session_num" "$_session_type"
+        _iterm2_status "error" "$_session_num" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "error" 2>/dev/null || true) &
       else
-        _iterm2_status "done" "$_session_num" "$_session_type"
+        _iterm2_status "done" "$_session_num" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "completed" 2>/dev/null || true) &
       fi
 
@@ -799,7 +1003,7 @@ def get_engine_script(
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
-      _iterm2_status "resuming" "$_session_num" "$_session_type"
+      _iterm2_status "resuming" "$_session_num" "$_session_type" "$tmux_session"
       echo "Resuming... (Ctrl-C to exit)"
       sleep 0.5 || break
     done
@@ -1036,6 +1240,53 @@ def cli():
                 asyncio.run(client.publish(subject, payload))
             except Exception:
                 pass  # NATS unavailable — non-fatal
+            sys.exit(0)
+        elif action == "iterm2-tab-title":
+            # ai internal iterm2-tab-title <tab_key>
+            if len(sys.argv) >= 4:
+                title = _iterm2_compute_tab_title(sys.argv[3])
+                if title:
+                    print(title)
+            sys.exit(0)
+        elif action == "iterm2-update-status":
+            # ai internal iterm2-update-status <tab_key> <pane_idx> <name> <type> <status>
+            if len(sys.argv) >= 8:
+                tab_key, pane_idx, name, stype, status = sys.argv[3:8]
+                _iterm2_register_session(tab_key, pane_idx, name, stype, status)
+                title = _iterm2_compute_tab_title(tab_key)
+                if title:
+                    print(title)
+            sys.exit(0)
+        elif action == "iterm2-exit-cleanup":
+            # ai internal iterm2-exit-cleanup <tab_key> <pane_idx> <win_key>
+            if len(sys.argv) >= 6:
+                tab_key, pane_idx, win_key = sys.argv[3], sys.argv[4], sys.argv[5]
+                names_file = f"/tmp/iterm2-cc-names-{tab_key}"
+                # Remove this pane's entry
+                try:
+                    with open(names_file) as f:
+                        lines = [l.rstrip("\n") for l in f if l.strip()]
+                    remaining = [l for l in lines if not l.startswith(f"{pane_idx}:")]
+                    if remaining:
+                        with open(names_file, "w") as f:
+                            f.write("\n".join(remaining) + "\n")
+                        title = _iterm2_compute_tab_title(tab_key)
+                        if title:
+                            print(title)
+                    else:
+                        os.unlink(names_file)
+                except OSError:
+                    pass
+                # Remove tab from window registry
+                win_file = f"/tmp/iterm2-win-{win_key}"
+                try:
+                    with open(win_file) as f:
+                        wlines = [l.strip() for l in f if l.strip()]
+                    wlines = [l for l in wlines if not l.startswith(f"{tab_key}:")]
+                    with open(win_file, "w") as f:
+                        f.write("\n".join(wlines) + "\n")
+                except OSError:
+                    pass
             sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] == "upgrade":
@@ -1455,7 +1706,7 @@ def cli():
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
     # for new tabs, split panes, and re-attaches alike.
-    _emit_iterm2_profile_setup(ai_name, engine)
+    _emit_iterm2_profile_setup(ai_name, engine, session_id)
 
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
