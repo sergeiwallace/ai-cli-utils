@@ -273,11 +273,45 @@ In Settings > Code security and analysis:
 | Codecov badge in README | — | Done (coverage reached 91%) |
 | SSH integration tests | AI-CLI-12 | See below |
 
-## AI-CLI-12: SSH Integration Tests (Hetzner)
+## AI-CLI-12: Coverage push to ~97-98%
 
-Cover `sync.py` SSH paths that can't be unit tested without a real remote host.
+Three parallel tracks. Do in order — re-evaluate SSH need after NATS CI results.
 
-**Decision:** Option D — separate CI job with `continue-on-error: true`. Failures get flagged as P0/P1 in the session config and investigated. The CLAUDE.md guardrails mean failures won't be silently ignored.
+### Track A: `os.execvp` coverage (main.py lines 1162-1270)
+
+**Approach:** combination of mocking + `# pragma: no cover`.
+
+- **Mock `os.execvp`** for paths where argument construction is non-trivial and worth asserting:
+  - Remote mode (`-R`) — verifies SSH/mosh args, session name, project path
+  - Sandbox flag logic — verifies `--dangerously-skip-permissions` conditionally included
+  - `--once` mode — verifies tmux new-session args
+  - Existing session re-attach — verifies `attach-session -d` called
+- **`# pragma: no cover`** on simple/obvious exec lines where asserting the args would be tautological (e.g. bare `os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])`)
+
+Add tests to `tests/test_main.py`. Expected gain: main.py 93% → ~96%, TOTAL ~91% → ~93%.
+
+### Track B: NATS CI service container (sync.py bulk gap)
+
+Add a NATS service container to `ci.yml` so unit tests can use a real NATS server. This removes the need to mock NATS in sync/messaging tests, covering the publish/subscribe paths that are currently skipped.
+
+**Change to `ci.yml` test job:**
+```yaml
+services:
+  nats:
+    image: nats:latest
+    ports:
+      - 4222:4222
+```
+
+No code changes needed — tests already have `@pytest.mark.skipif` guards or mock NATS; with a real server available they'll hit the live paths.
+
+**Expected gain:** sync.py 87% → ~92-93%, TOTAL ~93% → ~95%. Re-evaluate SSH integration need after seeing actual numbers.
+
+### Track C: SSH Integration Tests (Hetzner)
+
+**Decision:** Deferred until after Track B. If NATS CI covers most of sync.py, SSH tests may only add 1-2% and may not be worth the operational complexity. Re-evaluate after Track B is implemented.
+
+If proceeding, **Decision:** Option D — separate CI job with `continue-on-error: true`. Failures get flagged as P0/P1 in the session config and investigated. The CLAUDE.md guardrails mean failures won't be silently ignored.
 
 ### Setup steps
 
