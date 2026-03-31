@@ -511,6 +511,13 @@ _ITERM2_PROFILE_MAP = [
 ]
 
 
+def _iterm2_state_dir() -> Path:
+    """Return the XDG state dir for iTerm2 session-tracking files, creating it if needed."""
+    d = get_xdg_state_home() / "iterm2"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _iterm2_pane_ids(iterm_session_id: str) -> tuple[str, str, str]:
     """Extract (tab_key, pane_idx, win_key) from ITERM_SESSION_ID.
     Format: "w{W}t{T}p{P}:UUID" -> tab_key="w{W}t{T}", pane_idx="{P}", win_key="w{W}"
@@ -524,10 +531,10 @@ def _iterm2_pane_ids(iterm_session_id: str) -> tuple[str, str, str]:
 
 
 def _iterm2_register_session(tab_key: str, pane_idx: str, session_name: str, stype: str, status: str) -> None:
-    """Write or update session entry in /tmp/iterm2-cc-names-{tab_key}.
+    """Write or update session entry in the XDG state iterm2 dir.
     Line format: {pane_idx}:{session_name}:{type}:{status}
     """
-    path = f"/tmp/iterm2-cc-names-{tab_key}"
+    path = _iterm2_state_dir() / f"cc-names-{tab_key}"
     new_line = f"{pane_idx}:{session_name}:{stype}:{status}"
     lines: list[str] = []
     try:
@@ -565,7 +572,7 @@ _ITERM2_STATUS_SYMBOLS: dict[str, str] = {
 
 def _iterm2_compute_tab_title(tab_key: str) -> str:
     """Read names file and return abbreviated tab title string."""
-    path = f"/tmp/iterm2-cc-names-{tab_key}"
+    path = _iterm2_state_dir() / f"cc-names-{tab_key}"
     entries: list[list[str]] = []
     try:
         with open(path) as f:
@@ -627,8 +634,8 @@ def _iterm2_update_window_title(win_key: str, tab_key: str, session_name: str, s
     """Update window registry and spawn async Claude Haiku for window title."""
     if not win_key:
         return
-    win_file = f"/tmp/iterm2-win-{win_key}"
-    title_file = f"/tmp/iterm2-win-title-{win_key}"
+    win_file = _iterm2_state_dir() / f"win-{win_key}"
+    title_file = _iterm2_state_dir() / f"win-title-{win_key}"
     lines: list[str] = []
     try:
         with open(win_file) as f:
@@ -711,7 +718,7 @@ def _emit_iterm2_profile_setup(ai_name: str, engine: str, session: str = "") -> 
         sys.stdout.flush()
         if tab_key:
             try:
-                with open(f"/tmp/iterm2-cc-color-{tab_key}", "w") as f:
+                with open(_iterm2_state_dir() / f"cc-color-{tab_key}", "w") as f:
                     f.write(f"{color}:{profile}")
             except OSError:
                 pass
@@ -749,6 +756,9 @@ def get_engine_script(
     notify: bool = False,
     is_remote: bool = False,
 ) -> str:
+    # Validate UUID before interpolating into bash script (defense-in-depth)
+    if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
+        session_id_uuid = ""
     env_var_prefix = "CC" if engine == "c" else "GG"
     sandbox_flag = "-s" if sandbox else ""
     cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"
@@ -762,6 +772,8 @@ def get_engine_script(
     tmux_session="{session}"
     uuid="{session_id_uuid or ""}"
     project_prefix="{project_prefix}"
+    _ai_state_dir="$HOME/.local/state/ai-cli"
+    mkdir -p "$_ai_state_dir/iterm2"
 
     # --dangerously-skip-permissions is blocked when running as root
     if [[ $(id -u) -eq 0 ]]; then
@@ -771,15 +783,15 @@ def get_engine_script(
     fi
 
     if [[ "$engine" == "c" ]]; then
-      signal_file="/tmp/cc-exit-$tmux_session"
-      prompt_file="/tmp/cc-resume-prompt-$tmux_session"
+      signal_file="$_ai_state_dir/cc-exit-$tmux_session"
+      prompt_file="$_ai_state_dir/cc-resume-prompt-$tmux_session"
     else
-      signal_file="/tmp/gg-exit-$tmux_session"
-      reload_file="/tmp/gg-reload-$tmux_session"
-      restart_file="/tmp/gg-restart-$tmux_session"
-      prompt_file="/tmp/gg-resume-prompt-$tmux_session"
+      signal_file="$_ai_state_dir/gg-exit-$tmux_session"
+      reload_file="$_ai_state_dir/gg-reload-$tmux_session"
+      restart_file="$_ai_state_dir/gg-restart-$tmux_session"
+      prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"
     fi
-    lock_file="/tmp/ai-watcher-lock-$tmux_session"
+    lock_file="$_ai_state_dir/ai-watcher-lock-$tmux_session"
     
     export AI_TMUX_SESSION="$tmux_session"
     export {env_var_prefix}_TMUX_SESSION="$tmux_session"
@@ -877,7 +889,7 @@ def get_engine_script(
           _it2 "\\033]1337;SetProfile=${{profiles[$idx]}}\\007"
           _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
           if [[ -n "$_tab_key" ]]; then
-            printf '%s' "${{colors[$idx]}}:${{profiles[$idx]}}" > "/tmp/iterm2-cc-color-${{_tab_key}}"
+            printf '%s' "${{colors[$idx]}}:${{profiles[$idx]}}" > "$_ai_state_dir/iterm2/cc-color-${{_tab_key}}"
           fi
           ;;
         gemini)
@@ -934,7 +946,7 @@ def get_engine_script(
 
     _iterm2_color_file=""
     if [[ -n "$ITERM_SESSION_ID" ]]; then
-      _iterm2_color_file="/tmp/iterm2-cc-color-${{ITERM_SESSION_ID%%p*}}"
+      _iterm2_color_file="$_ai_state_dir/iterm2/cc-color-${{ITERM_SESSION_ID%%p*}}"
     fi
     trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
@@ -1261,7 +1273,7 @@ def cli():
             # ai internal iterm2-exit-cleanup <tab_key> <pane_idx> <win_key>
             if len(sys.argv) >= 6:
                 tab_key, pane_idx, win_key = sys.argv[3], sys.argv[4], sys.argv[5]
-                names_file = f"/tmp/iterm2-cc-names-{tab_key}"
+                names_file = _iterm2_state_dir() / f"cc-names-{tab_key}"
                 # Remove this pane's entry
                 try:
                     with open(names_file) as f:
@@ -1278,7 +1290,7 @@ def cli():
                 except OSError:
                     pass
                 # Remove tab from window registry
-                win_file = f"/tmp/iterm2-win-{win_key}"
+                win_file = _iterm2_state_dir() / f"win-{win_key}"
                 try:
                     with open(win_file) as f:
                         wlines = [l.strip() for l in f if l.strip()]
@@ -1574,6 +1586,9 @@ def cli():
         transport = remote_cfg.get("transport", "mosh")
         aliases = get_project_aliases()
         raw_project = args.project or get_current_project_name()
+        if args.project and ("/" in args.project or "\\" in args.project):
+            print("Error: --project name must not contain path separators", file=sys.stderr)
+            sys.exit(1)
         remote_project = aliases.get(raw_project, raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
         if args.project:
