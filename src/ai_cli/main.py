@@ -1333,13 +1333,13 @@ def cli():
         if args.resume:
             remote_cmd += " --resume"
         if name:
-            remote_cmd += f" {name}"
+            remote_cmd += f" {shlex.quote(name)}"
         if transport == "mosh":
             mosh_args = ["mosh"]
             if port != "22":
-                mosh_args += ["--ssh", f"ssh -p {port}" + (f" -i {os.path.expanduser(id_file)}" if id_file else "")]
+                mosh_args += ["--ssh", f"ssh -p {port}" + (f" -i {shlex.quote(os.path.expanduser(id_file))}" if id_file else "")]
             elif id_file:
-                mosh_args += ["--ssh", f"ssh -i {os.path.expanduser(id_file)}"]
+                mosh_args += ["--ssh", f"ssh -i {shlex.quote(os.path.expanduser(id_file))}"]
             mosh_args.append(f"{user}@{host}")
             mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
             os.execvp("mosh", mosh_args)
