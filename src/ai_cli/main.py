@@ -472,6 +472,40 @@ def cleanup_worktree(ai_name: str):
         subprocess.run(["git", "worktree", "remove", str(wt_dir)], capture_output=True)
 
 
+# --- iTerm2 Pre-Launch Setup ---
+
+_ITERM2_TAB_COLORS = [
+    "e74c3c", "e67e22", "f0b429", "2ecc71", "1abc9c",
+    "039be5", "1e88e5", "5e35b1", "d81b60", "00acc1",
+    "ff5722", "7cb342",
+]
+
+
+def _emit_iterm2_profile_setup(ai_name: str, engine: str) -> None:
+    """Emit iTerm2 profile/color/title escape sequences directly to stdout.
+
+    Called before os.execvp so sequences reach iTerm2 before tmux takes over.
+    No DCS wrapping needed — we're not inside tmux yet at this point.
+    """
+    lc_term = os.environ.get("LC_TERMINAL", "")
+    term_prog = os.environ.get("TERM_PROGRAM", "")
+    if lc_term != "iTerm2" and term_prog != "iTerm.app":
+        return
+
+    if engine == "c":
+        m = re.search(r"\d+$", ai_name)
+        num = int(m.group()) if m else 1
+        color = _ITERM2_TAB_COLORS[(num - 1) % len(_ITERM2_TAB_COLORS)]
+        sys.stdout.write(f"\033]1337;SetProfile=ClaudeCode\007")
+        sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
+        sys.stdout.write(f"\033]0; cc {ai_name}\007")
+        sys.stdout.flush()
+    elif engine == "g":
+        sys.stdout.write("\033]1337;SetProfile=GeminiCLI\007")
+        sys.stdout.write(f"\033]0; gemini {ai_name}\007")
+        sys.stdout.flush()
+
+
 # --- Script Generation ---
 
 
@@ -1253,6 +1287,11 @@ def cli():
         notify=args.notify,
         is_remote=args.is_remote,
     )
+    # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
+    # This fires in the current shell (no DCS wrapping needed) so it works
+    # for new tabs, split panes, and re-attaches alike.
+    _emit_iterm2_profile_setup(ai_name, engine)
+
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
     if existing.returncode == 0:
