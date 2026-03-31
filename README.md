@@ -25,6 +25,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Handoff queue** | `ai handoff post/check/claim/complete` — delegate tasks between sessions |
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
 | **Stale session cleanup** | Automatic detection and cleanup of orphaned sessions |
+| **Gemini with fallback** | `ai gemini "prompt"` — 3-tier auth fallback (OAuth → free API → paid API), auto-retry on capacity errors |
 | **Notifications** | Desktop and push notifications on task completion |
 
 ## Installation
@@ -97,6 +98,27 @@ ai handoff check     # Check for pending handoffs
 ai handoff claim     # Claim a handoff
 ai handoff complete  # Mark a handoff as done
 ```
+
+### Gemini with auth fallback
+
+```bash
+ai gemini "prompt" -m deep-think          # Run with 3-tier fallback, stdout + auto file
+ai gemini "prompt" -m pro -o output.md    # Specify output file
+ai gemini "prompt" -m flash --quiet       # File only, no stdout
+cat prompt.txt | ai gemini -m deep-think  # Pipe from stdin
+ai gemini "prompt" -m flash --no-file     # Stdout only, no file
+```
+
+**Auth fallback chain (automatic on 429/capacity errors):**
+1. Gemini CLI OAuth (free — Google AI subscription)
+2. REST API with `GOOGLE_API_KEY_FREE_TIER`
+3. REST API with `GOOGLE_API_KEY_TIER_1`
+
+**Model aliases:** `deep-think`, `pro`, `flash`, `flash-lite`, or any full Gemini model ID.
+
+**Logs:** `~/.local/state/ai-cli/gemini-logs/` (JSONL). **Auto output:** `~/.local/state/ai-cli/gemini-output/`.
+
+Install with Gemini REST support: `uv tool install "ai-cli-utils[gemini]"`
 
 ### Other commands
 
