@@ -592,10 +592,11 @@ def get_engine_script(
         *)     return 0 ;;
       esac
 
-      # Rolling tab color (10 distinct colors, assigned by session number)
+      # Rolling tab color (12 distinct colors, spread across hue wheel, assigned by session number)
       if [[ "$stype" == "cc" ]]; then
-        local colors=("6440dc" "4a90d9" "2ecc71" "e67e22" "e74c3c"
-                      "1abc9c" "9b59b6" "f39c12" "3498db" "e91e63")
+        local colors=("e74c3c" "e67e22" "f0b429" "2ecc71" "1abc9c"
+                      "039be5" "1e88e5" "5e35b1" "d81b60" "00acc1"
+                      "ff5722" "7cb342")
         local idx=$(( (num - 1) % ${{#colors[@]}} ))
         printf '\\e]1337;SetColors=tab=%s\\a' "${{colors[$idx]}}"
       fi
@@ -613,8 +614,8 @@ def get_engine_script(
       printf '\\e]1337;SetBadgeFormat=%s\\a' \
         "$(echo -n "$badge_text" | base64)"
 
-      # Tab title
-      printf '\\e]0;%s sw-%s\\a' "$stype" "$num"
+      # Tab title (leading space separates icon from text)
+      printf '\\e]0; %s sw-%s\\a' "$stype" "$num"
     }}
 
     # iTerm2 status updates: badge + tab title (NOT color — color is for identity)
@@ -623,11 +624,11 @@ def get_engine_script(
       local status="$1" num="$2" stype="$3"
       local badge="" title=""
       case "$status" in
-        running)   badge="▶ $stype sw-$num";   title="▶ $stype sw-$num" ;;
-        waiting)   badge="⏸ WAIT sw-$num";     title="⏸ WAIT sw-$num" ;;
-        done)      badge="✓ DONE sw-$num";     title="✓ DONE sw-$num" ;;
-        error)     badge="✗ ERROR sw-$num";    title="✗ ERROR sw-$num" ;;
-        resuming)  badge="↻ sw-$num";          title="↻ sw-$num" ;;
+        running)   badge="▶ $stype sw-$num";   title=" ▶ $stype sw-$num" ;;
+        waiting)   badge="⏸ WAIT sw-$num";     title=" ⏸ WAIT sw-$num" ;;
+        done)      badge="✓ DONE sw-$num";     title=" ✓ DONE sw-$num" ;;
+        error)     badge="✗ ERROR sw-$num";    title=" ✗ ERROR sw-$num" ;;
+        resuming)  badge="↻ sw-$num";          title=" ↻ sw-$num" ;;
       esac
       [[ -n "$badge" ]] && printf '\\e]1337;SetBadgeFormat=%s\\a' "$(echo -n "$badge" | base64)"
       [[ -n "$title" ]] && printf '\\e]0;%s\\a' "$title"
