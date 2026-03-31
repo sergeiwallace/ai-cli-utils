@@ -18,8 +18,7 @@
     </filter>
   </defs>
 
-  <!-- Background -->
-  <rect width="200" height="200" rx="32" fill="url(#bg)"/>
+  <!-- Background: transparent -->
 
   <!-- Subtle grid lines -->
   <line x1="0" y1="66" x2="200" y2="66" stroke="#ffffff" stroke-width="0.4" opacity="0.05"/>
