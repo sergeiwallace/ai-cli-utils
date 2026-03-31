@@ -50,7 +50,7 @@
   <!-- right eye: upward arc like a happy eyelash/squint -->
   <path d="M 118,88 Q 131,72 144,88"
         fill="none" stroke="#00ff88" stroke-width="6" stroke-linecap="round"
-        filter="url(#glow)" opacity="0.85"/>
+        opacity="0.85"/>
 
   <!-- > smaller, tip slightly overlapping left edge of _ -->
   <text x="48" y="106"
