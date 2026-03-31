@@ -716,7 +716,7 @@ def get_engine_script(
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
-    {('echo "Session ended. Exit shell to close tmux session."; exec $SHELL') if is_remote else 'exit 0'}
+    {('echo "Session ended. Exit shell to close tmux session."; exec $SHELL') if is_remote else "exit 0"}
     """
     return script
 
