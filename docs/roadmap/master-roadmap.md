@@ -2,6 +2,7 @@
 
 ## Open
 
+- [ ] `[P3]` `[AI-CLI-13]` **Security hardening — /tmp predictable filenames + UUID validation** — From post-public Opus security audit. H1: validate `session_id_uuid` matches UUID regex before bash f-string interpolation in `get_engine_script`. H2/H3: move `/tmp/cc-exit-*`, `/tmp/cc-resume-prompt-*`, `/tmp/ai-watcher-lock-*`, `/tmp/iterm2-*` files from `/tmp/` to `~/.local/state/ai-cli/` (user-private, eliminates symlink attack surface). Matters for shared multi-user servers; acceptable on single-user workstations. Also: validate `--project` arg contains no path separators (S1 finding).
 - [ ] `[P3]` `[AI-CLI-11]` **Logo polish — increase visual weight** — All elements (nodes, edges, arc eye, chevron, underscore) appear pencil-thin vs other ecosystem logos (e.g. Python). Increase stroke widths and node radii so the logo holds up at small sizes and alongside other icons.
 - [ ] `[P3]` `[AI-CLI-3]` **Terminal demo GIF** — Record terminal session demo with vhs (`demo/demo.tape` ready). Install vhs, run `vhs demo/demo.tape`, embed in README.
 - [ ] `[P3]` `[AI-CLI-7]` **Release Drafter** — Auto-draft GitHub Release notes from PR labels. Add when project gets regular external PRs.

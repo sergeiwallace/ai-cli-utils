@@ -36,6 +36,10 @@ from ai_cli.main import (
     _get_project_prefix_by_name,
     _get_project_registry_path,
     _get_projects_dir,
+    _iterm2_register_session,
+    _iterm2_compute_tab_title,
+    _iterm2_heuristic_window_title,
+    _iterm2_update_window_title,
     load_config,
     post_handoff,
     resolve_session,
@@ -2486,3 +2490,361 @@ class TestCliLsDispatch:
         assert exc.value.code == 0
         assert any("fzf" in str(cmd) for cmd in apt_install_calls)
         assert "fzf not found" in capsys.readouterr().out
+
+
+class TestIterm2RegisterSession:
+    """Tests for _iterm2_register_session — lines 526-552."""
+
+    def test_when_file_absent_then_creates_with_new_entry(self, tmp_path):
+        names_file = tmp_path / "iterm2-cc-names-w0t0"
+        _real_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-cc-names-w0t0" in str(path):
+                return _real_open(str(names_file), *a, **kw)
+            return _real_open(path, *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            _iterm2_register_session("w0t0", "0", "sw-1", "cc", "init")
+        assert "0:sw-1:cc:init" in names_file.read_text()
+
+    def test_when_existing_entry_for_same_pane_then_updates_it(self, tmp_path):
+        names_file = tmp_path / "iterm2-cc-names-w0t1"
+        names_file.write_text("0:sw-1:cc:init\n1:sw-2:cc:running\n")
+        _real_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-cc-names-w0t1" in str(path):
+                return _real_open(str(names_file), *a, **kw)
+            return _real_open(path, *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            _iterm2_register_session("w0t1", "0", "sw-1", "cc", "running")
+        content = names_file.read_text()
+        assert "0:sw-1:cc:running" in content
+        assert "0:sw-1:cc:init" not in content
+        assert "1:sw-2:cc:running" in content  # other pane preserved
+
+    def test_when_oserror_on_write_then_silently_passes(self):
+        with patch("builtins.open", side_effect=OSError("read-only")):
+            _iterm2_register_session("w9t9", "0", "sw-1", "cc", "init")  # must not raise
+
+
+class TestIterm2ComputeTabTitle:
+    """Tests for _iterm2_compute_tab_title — lines 566-602."""
+
+    def test_when_file_absent_then_returns_empty(self):
+        with patch("builtins.open", side_effect=OSError("no file")):
+            assert _iterm2_compute_tab_title("w0t0") == ""
+
+    def test_when_file_has_only_blank_lines_then_returns_empty(self, tmp_path):
+        names_file = tmp_path / "names"
+        names_file.write_text("\n   \n\n")
+        _real_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            return _real_open(str(names_file), *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            result = _iterm2_compute_tab_title("w0t0")
+        assert result == ""
+
+    def test_when_single_entry_then_returns_symbol_status_name(self, tmp_path):
+        names_file = tmp_path / "names-single"
+        names_file.write_text("0:sw-1:cc:running\n")
+        _real_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            return _real_open(str(names_file), *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            result = _iterm2_compute_tab_title("w0t2")
+        assert "*" in result  # cc symbol
+        assert "▶" in result  # running status
+        assert "sw-1" in result
+
+    def test_when_multi_entry_with_long_common_prefix_then_uses_prefix_format(self, tmp_path):
+        names_file = tmp_path / "names-prefix"
+        names_file.write_text("0:aiproject-1:cc:running\n1:aiproject-2:cc:waiting\n")
+        _real_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            return _real_open(str(names_file), *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            result = _iterm2_compute_tab_title("w0t3")
+        # prefix "aiproject-" (>=4 chars) → uses prefix{suffix1|suffix2} format
+        assert "aiproject-" in result
+        assert "{" in result
+
+    def test_when_multi_entry_without_common_prefix_then_joins_names(self, tmp_path):
+        names_file = tmp_path / "names-noprefix"
+        names_file.write_text("0:abc-1:cc:running\n1:xyz-2:cc:waiting\n")
+        _real_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            return _real_open(str(names_file), *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            result = _iterm2_compute_tab_title("w0t4")
+        # No long common prefix → all names listed
+        assert "abc-1" in result
+        assert "xyz-2" in result
+        assert "{" not in result
+
+
+class TestIterm2HeuristicWindowTitle:
+    """Tests for _iterm2_heuristic_window_title — lines 605-623."""
+
+    def test_when_empty_sessions_then_returns_cc_sessions(self):
+        assert _iterm2_heuristic_window_title([]) == "CC Sessions"
+
+    def test_when_sessions_match_pattern_then_extracts_project(self):
+        result = _iterm2_heuristic_window_title(["c-myproject-1", "c-myproject-2"])
+        assert "myproject" in result
+
+    def test_when_only_remote_sessions_then_includes_remote(self):
+        result = _iterm2_heuristic_window_title(["c-r-myproject-1"])
+        assert "Remote" in result
+        assert "Local" not in result
+
+    def test_when_only_local_sessions_then_includes_local(self):
+        result = _iterm2_heuristic_window_title(["c-myproject-1"])
+        assert "Local" in result
+        assert "Remote" not in result
+
+    def test_when_both_local_and_remote_then_neither_suffix(self):
+        result = _iterm2_heuristic_window_title(["c-myproject-1", "c-r-myproject-2"])
+        assert "Remote" not in result
+        assert "Local" not in result
+
+
+class TestIterm2UpdateWindowTitle:
+    """Tests for _iterm2_update_window_title — lines 626-685."""
+
+    def test_when_no_win_key_then_returns_early(self, capsys):
+        _iterm2_update_window_title("", "w0t0", "sw-1", "cc")
+        assert capsys.readouterr().out == ""
+
+    def test_when_new_tab_then_creates_win_file_and_emits_heuristic_title(self, tmp_path, capsys):
+        win_file = tmp_path / "iterm2-win-w0"
+        title_file = tmp_path / "iterm2-win-title-w0"
+        original_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-win-w0" in str(path) and "title" not in str(path):
+                return original_open(str(win_file), *a, **kw)
+            if "iterm2-win-title-w0" in str(path):
+                return original_open(str(title_file), *a, **kw)
+            return original_open(path, *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            with patch("subprocess.Popen") as mock_popen:
+                mock_popen.return_value = MagicMock()
+                _iterm2_update_window_title("w0", "w0t0", "sw-1", "cc")
+
+        out = capsys.readouterr().out
+        assert "\033]2;" in out  # heuristic window title emitted
+        assert win_file.exists()
+        assert "w0t0:sw-1:cc" in win_file.read_text()
+
+    def test_when_existing_tab_then_updates_entry(self, tmp_path):
+        win_file = tmp_path / "iterm2-win-w1"
+        title_file = tmp_path / "iterm2-win-title-w1"
+        win_file.write_text("w1t0:sw-1:cc\nw1t1:sw-2:cc\n")
+        original_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-win-w1" in str(path) and "title" not in str(path):
+                return original_open(str(win_file), *a, **kw)
+            if "iterm2-win-title-w1" in str(path):
+                return original_open(str(title_file), *a, **kw)
+            return original_open(path, *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            with patch("subprocess.Popen"):
+                _iterm2_update_window_title("w1", "w1t0", "sw-1-updated", "cc")
+
+        content = win_file.read_text()
+        assert "w1t0:sw-1-updated:cc" in content
+        assert "w1t0:sw-1:cc" not in content
+        assert "w1t1:sw-2:cc" in content
+
+    def test_when_oserror_on_win_file_write_then_returns_early(self, capsys):
+        original_open = builtins.open
+
+        def failing_write(path, mode="r", *a, **kw):
+            if "iterm2-win-" in str(path) and "w" in mode:
+                raise OSError("read-only")
+            return original_open(path, mode, *a, **kw)
+
+        with patch("builtins.open", side_effect=failing_write):
+            _iterm2_update_window_title("wfail", "wfailt0", "sw-1", "cc")
+        # No stdout output expected since we return early after write failure
+        assert "\033]2;" not in capsys.readouterr().out
+
+    def test_when_popen_raises_then_writes_heuristic_to_title_file(self, tmp_path):
+        win_file = tmp_path / "iterm2-win-w2"
+        title_file = tmp_path / "iterm2-win-title-w2"
+        original_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-win-w2" in str(path) and "title" not in str(path):
+                return original_open(str(win_file), *a, **kw)
+            if "iterm2-win-title-w2" in str(path):
+                return original_open(str(title_file), *a, **kw)
+            return original_open(path, *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            with patch("subprocess.Popen", side_effect=FileNotFoundError("claude not found")):
+                _iterm2_update_window_title("w2", "w2t0", "sw-1", "cc")
+
+        assert title_file.exists()
+        assert title_file.read_text() != ""  # heuristic written as fallback
+
+    def test_when_popen_raises_and_title_file_write_fails_then_silently_passes(self, tmp_path):
+        win_file = tmp_path / "iterm2-win-w3"
+        original_open = builtins.open
+
+        def redirected(path, mode="r", *a, **kw):
+            if "iterm2-win-w3" in str(path) and "title" not in str(path):
+                return original_open(str(win_file), mode, *a, **kw)
+            if "iterm2-win-title-w3" in str(path):
+                raise OSError("read-only title file")
+            return original_open(path, mode, *a, **kw)
+
+        with patch("builtins.open", side_effect=redirected):
+            with patch("subprocess.Popen", side_effect=FileNotFoundError("no claude")):
+                # Must not raise — both OSErrors are swallowed
+                _iterm2_update_window_title("w3", "w3t0", "sw-1", "cc")
+
+
+class TestEmitIterm2ProfileSetupGeminiWithTabKey:
+    """Tests for gemini engine + tab_key path in _emit_iterm2_profile_setup — lines 728-733."""
+
+    def test_when_gemini_engine_and_iterm_session_id_set_then_registers_and_emits_title(self, capsys, tmp_path):
+        names_file = tmp_path / "iterm2-cc-names-w0t0"
+        names_file.write_text("0:g-research-1:gemini:init\n")
+        original_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-cc-names-w0t0" in str(path):
+                return original_open(str(names_file), *a, **kw)
+            if "/tmp/iterm2-" in str(path):
+                raise OSError("redirected")
+            return original_open(path, *a, **kw)
+
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
+            with patch("ai_cli.main._iterm2_update_window_title"):
+                with patch("builtins.open", side_effect=redirected):
+                    _emit_iterm2_profile_setup("research-1", "g")
+
+        out = capsys.readouterr().out
+        assert "SetProfile=GeminiCLI" in out
+        assert "\033]0;" in out  # tab title emitted (file had an entry)
+
+
+class TestInternalIterm2Dispatch:
+    """Tests for `ai internal iterm2-*` CLI subcommands — lines 1244-1290."""
+
+    def test_iterm2_tab_title_when_called_with_tab_key_then_prints_title(self, capsys, tmp_path):
+        names_file = tmp_path / "iterm2-cc-names-test-tab"
+        names_file.write_text("0:sw-1:cc:running\n")
+        with patch("sys.argv", ["ai", "internal", "iterm2-tab-title", "test-tab"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main._iterm2_compute_tab_title", return_value="* ▶ sw-1"):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0
+        assert "* ▶ sw-1" in capsys.readouterr().out
+
+    def test_iterm2_tab_title_when_no_tab_key_arg_then_exits_0_silently(self, capsys):
+        with patch("sys.argv", ["ai", "internal", "iterm2-tab-title"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+        assert exc.value.code == 0
+
+    def test_iterm2_update_status_when_called_with_args_then_registers_and_prints_title(self, capsys):
+        with patch("sys.argv", ["ai", "internal", "iterm2-update-status", "w0t0", "0", "sw-1", "cc", "running"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main._iterm2_register_session") as mock_reg:
+                    with patch("ai_cli.main._iterm2_compute_tab_title", return_value="* ▶ sw-1"):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0
+        mock_reg.assert_called_once_with("w0t0", "0", "sw-1", "cc", "running")
+        assert "* ▶ sw-1" in capsys.readouterr().out
+
+    def test_iterm2_exit_cleanup_when_called_then_removes_pane_and_exits_0(self, tmp_path, capsys):
+        names_file = tmp_path / "iterm2-cc-names-w0t0"
+        names_file.write_text("0:sw-1:cc:running\n1:sw-2:cc:running\n")
+        win_file = tmp_path / "iterm2-win-w0"
+        win_file.write_text("w0t0:sw-1:cc\n")
+        original_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-cc-names-w0t0" in str(path):
+                return original_open(str(names_file), *a, **kw)
+            if "iterm2-win-w0" in str(path):
+                return original_open(str(win_file), *a, **kw)
+            return original_open(path, *a, **kw)
+
+        with patch("sys.argv", ["ai", "internal", "iterm2-exit-cleanup", "w0t0", "0", "w0"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("builtins.open", side_effect=redirected):
+                    with patch("ai_cli.main._iterm2_compute_tab_title", return_value="* sw-2"):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0
+        # pane 0 removed, pane 1 still present
+        assert "0:sw-1" not in names_file.read_text()
+        assert "1:sw-2" in names_file.read_text()
+
+    def test_iterm2_exit_cleanup_when_last_pane_then_unlinks_names_file(self, tmp_path):
+        names_file = tmp_path / "iterm2-cc-names-w1t0"
+        names_file.write_text("0:sw-1:cc:running\n")  # only one pane
+        original_open = builtins.open
+        unlinked = []
+
+        def redirected(path, *a, **kw):
+            if "iterm2-cc-names-w1t0" in str(path):
+                return original_open(str(names_file), *a, **kw)
+            return original_open(path, *a, **kw)
+
+        with patch("sys.argv", ["ai", "internal", "iterm2-exit-cleanup", "w1t0", "0", "w1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("builtins.open", side_effect=redirected):
+                    with patch("os.unlink", side_effect=lambda p: unlinked.append(p)):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0
+        assert any("iterm2-cc-names-w1t0" in str(p) for p in unlinked)
+
+    def test_iterm2_exit_cleanup_when_names_file_raises_then_silently_continues(self):
+        with patch("sys.argv", ["ai", "internal", "iterm2-exit-cleanup", "w9t9", "0", "w9"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("builtins.open", side_effect=OSError("no names file")):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0  # OSError swallowed, still exits cleanly
+
+    def test_iterm2_exit_cleanup_when_win_file_absent_then_silently_continues(self, tmp_path):
+        names_file = tmp_path / "iterm2-cc-names-w2t0"
+        names_file.write_text("0:sw-1:cc:running\n1:sw-2:cc:running\n")
+        original_open = builtins.open
+
+        def redirected(path, *a, **kw):
+            if "iterm2-cc-names-w2t0" in str(path):
+                return original_open(str(names_file), *a, **kw)
+            if "iterm2-win-w2" in str(path):
+                raise OSError("no win file")
+            return original_open(path, *a, **kw)
+
+        with patch("sys.argv", ["ai", "internal", "iterm2-exit-cleanup", "w2t0", "0", "w2"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("builtins.open", side_effect=redirected):
+                    with patch("ai_cli.main._iterm2_compute_tab_title", return_value=""):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+        assert exc.value.code == 0  # OSError on win_file silently swallowed

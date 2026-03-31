@@ -1588,7 +1588,10 @@ def cli():
         if transport == "mosh":
             mosh_args = ["mosh"]
             if port != "22":
-                mosh_args += ["--ssh", f"ssh -p {port}" + (f" -i {shlex.quote(os.path.expanduser(id_file))}" if id_file else "")]
+                mosh_args += [
+                    "--ssh",
+                    f"ssh -p {port}" + (f" -i {shlex.quote(os.path.expanduser(id_file))}" if id_file else ""),
+                ]
             elif id_file:
                 mosh_args += ["--ssh", f"ssh -i {shlex.quote(os.path.expanduser(id_file))}"]
             mosh_args.append(f"{user}@{host}")
