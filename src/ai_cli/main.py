@@ -475,10 +475,30 @@ def cleanup_worktree(ai_name: str):
 
 # --- iTerm2 Pre-Launch Setup ---
 
+# Rolling tab colors (12 slots, one per session number mod 12)
 _ITERM2_TAB_COLORS = [
     "e74c3c", "e67e22", "f0b429", "2ecc71", "1abc9c",
     "039be5", "1e88e5", "5e35b1", "d81b60", "00acc1",
     "ff5722", "7cb342",
+]
+
+# Icon color profile per tab color slot, chosen by contrast + complementary harmony:
+#   ClaudeCode   = coral icon  → cool/dark backgrounds (sky blue, blue, purple, pink)
+#   ClaudeCode-W = white icon  → warm/saturated backgrounds (red, orange, deep orange, cyan)
+#   ClaudeCode-D = dark navy icon → bright/light backgrounds (yellow, green, teal, lime)
+_ITERM2_PROFILE_MAP = [
+    "ClaudeCode-W",  # 1: e74c3c  red         warm
+    "ClaudeCode-W",  # 2: e67e22  orange       warm
+    "ClaudeCode-D",  # 3: f0b429  yellow       bright
+    "ClaudeCode-D",  # 4: 2ecc71  green        bright
+    "ClaudeCode-D",  # 5: 1abc9c  teal         bright
+    "ClaudeCode",    # 6: 039be5  sky blue     cool
+    "ClaudeCode",    # 7: 1e88e5  blue         cool
+    "ClaudeCode",    # 8: 5e35b1  purple       dark
+    "ClaudeCode",    # 9: d81b60  pink         dark
+    "ClaudeCode-W",  # 10: 00acc1 cyan         medium
+    "ClaudeCode-W",  # 11: ff5722 deep orange  warm
+    "ClaudeCode-D",  # 12: 7cb342 lime         bright
 ]
 
 
@@ -496,19 +516,21 @@ def _emit_iterm2_profile_setup(ai_name: str, engine: str) -> None:
     if engine == "c":
         m = re.search(r"\d+$", ai_name)
         num = int(m.group()) if m else 1
-        color = _ITERM2_TAB_COLORS[(num - 1) % len(_ITERM2_TAB_COLORS)]
-        sys.stdout.write(f"\033]1337;SetProfile=ClaudeCode\007")
+        idx = (num - 1) % len(_ITERM2_TAB_COLORS)
+        color = _ITERM2_TAB_COLORS[idx]
+        profile = _ITERM2_PROFILE_MAP[idx]
+        sys.stdout.write(f"\033]1337;SetProfile={profile}\007")
         sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
         sys.stdout.write(f"\033]0; cc {ai_name}\007")
         sys.stdout.flush()
-        # Write color to shared file — shell panes in this tab read it via precmd hook
-        # to re-emit CC profile/color when focused, preventing icon/color from disappearing.
+        # Write color:profile to shared file — shell panes in this tab read it
+        # via precmd hook to re-emit CC appearance when focused.
         iterm_session_id = os.environ.get("ITERM_SESSION_ID", "")
         if iterm_session_id:
             tab_key = iterm_session_id.split("p")[0]  # "w0t0p0:uuid" → "w0t0"
             try:
                 with open(f"/tmp/iterm2-cc-color-{tab_key}", "w") as f:
-                    f.write(color)
+                    f.write(f"{color}:{profile}")
             except OSError:
                 pass
     elif engine == "g":
@@ -639,26 +661,34 @@ def get_engine_script(
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local num="$1" stype="$2" sname="$3"
 
-      # Profile switch
       case "$stype" in
-        cc)    _it2 '\\033]1337;SetProfile=ClaudeCode\\007' ;;
-        shell) _it2 '\\033]1337;SetProfile=ShellUtility\\007' ;;
-        *)     return 0 ;;
+        cc)
+          # Rolling tab colors + icon profile chosen by contrast/complementary harmony:
+          #   ClaudeCode   = coral icon  → cool/dark (sky blue, blue, purple, pink)
+          #   ClaudeCode-W = white icon  → warm/saturated (red, orange, deep orange, cyan)
+          #   ClaudeCode-D = dark icon   → bright/light (yellow, green, teal, lime)
+          local colors=("e74c3c" "e67e22" "f0b429" "2ecc71" "1abc9c"
+                        "039be5" "1e88e5" "5e35b1" "d81b60" "00acc1"
+                        "ff5722" "7cb342")
+          local profiles=("ClaudeCode-W" "ClaudeCode-W" "ClaudeCode-D" "ClaudeCode-D" "ClaudeCode-D"
+                          "ClaudeCode" "ClaudeCode" "ClaudeCode" "ClaudeCode" "ClaudeCode-W"
+                          "ClaudeCode-W" "ClaudeCode-D")
+          local idx=$(( (num - 1) % ${{#colors[@]}} ))
+          _it2 "\\033]1337;SetProfile=${{profiles[$idx]}}\\007"
+          _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
+          # Write color:profile to shared file for shell-pane precmd hook
+          if [[ -n "$ITERM_SESSION_ID" ]]; then
+            local _tab_key="${{ITERM_SESSION_ID%%p*}}"
+            printf '%s' "${{colors[$idx]}}:${{profiles[$idx]}}" > "/tmp/iterm2-cc-color-${{_tab_key}}"
+          fi
+          ;;
+        shell)
+          _it2 '\\033]1337;SetProfile=ShellUtility\\007'
+          ;;
+        *)
+          return 0
+          ;;
       esac
-
-      # Rolling tab color (12 distinct colors, spread across hue wheel, assigned by session number)
-      if [[ "$stype" == "cc" ]]; then
-        local colors=("e74c3c" "e67e22" "f0b429" "2ecc71" "1abc9c"
-                      "039be5" "1e88e5" "5e35b1" "d81b60" "00acc1"
-                      "ff5722" "7cb342")
-        local idx=$(( (num - 1) % ${{#colors[@]}} ))
-        _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
-        # Write color to shared file so other panes in this tab can re-emit it on focus
-        if [[ -n "$ITERM_SESSION_ID" ]]; then
-          local _tab_key="${{ITERM_SESSION_ID%%p*}}"
-          printf '%s' "${{colors[$idx]}}" > "/tmp/iterm2-cc-color-${{_tab_key}}"
-        fi
-      fi
 
       # Tab title (leading space separates icon from text)
       _it2 "\\033]0; $stype sw-$num\\007"
