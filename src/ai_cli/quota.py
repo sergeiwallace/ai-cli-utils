@@ -53,11 +53,6 @@ def _get_claude_usage_percent() -> float | None:
     return None
 
 
-def _dedup_key(threshold: int) -> str:
-    """Generate a deduplication key for a threshold on today's date."""
-    return f"quota-{threshold}-{date.today().isoformat()}"
-
-
 def quota_watch(poll_interval: int = 300) -> int:
     """Run the quota watch daemon.
 
@@ -82,6 +77,7 @@ def quota_watch(poll_interval: int = 300) -> int:
 
     if not client.nc:
         print("NATS unavailable — cannot start quota watcher.", file=sys.stderr)
+        loop.close()
         _release_pid_file("quota-watch")
         return 1
 

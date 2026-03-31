@@ -85,13 +85,11 @@ def memory_watch() -> int:
 
     # Verify NATS is available at startup
     loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(client.connect())
-    finally:
-        pass  # keep loop open for later use
+    loop.run_until_complete(client.connect())
 
     if not client.nc:
         print("NATS unavailable — cannot start memory watcher.", file=sys.stderr)
+        loop.close()
         _release_pid_file("memory-watch")
         return 1
 

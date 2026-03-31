@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from ai_cli.telemetry import init_db, write_event, record_event, _is_enabled
 
@@ -132,6 +132,7 @@ class TestTelemetryWriter:
     def test_telemetry_writer_when_nats_unavailable_then_returns_1(self, tmp_path):
         mock_client = MagicMock()
         mock_client.nc = None
+        mock_client.close = AsyncMock()
 
         async def fake_connect():
             pass  # nc stays None
@@ -156,6 +157,7 @@ class TestTelemetryWriter:
     def test_telemetry_writer_when_interrupt_then_returns_0(self, tmp_path):
         mock_client = MagicMock()
         mock_client.nc = None
+        mock_client.close = AsyncMock()
 
         async def fake_connect():
             mock_client.nc = MagicMock()
@@ -186,6 +188,7 @@ class TestTelemetryWriter:
         """Covers lines 139-149 (on_event body) and 158 (return True after subscribe_durable)."""
         mock_client = MagicMock()
         mock_client.nc = None
+        mock_client.close = AsyncMock()
 
         async def fake_connect():
             mock_client.nc = MagicMock()
@@ -228,6 +231,7 @@ class TestTelemetryWriter:
         """Covers lines 148-149: except Exception in on_event."""
         mock_client = MagicMock()
         mock_client.nc = None
+        mock_client.close = AsyncMock()
 
         async def fake_connect():
             mock_client.nc = MagicMock()

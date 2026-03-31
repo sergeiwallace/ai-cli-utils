@@ -67,7 +67,7 @@ def write_event(
     conn.execute(
         "INSERT INTO events (ts, subject, machine, session, data) VALUES (?, ?, ?, ?, ?)",
         (
-            ts or time.time(),
+            ts if ts is not None else time.time(),
             subject,
             machine or _get_machine_id(),
             session or os.environ.get("AI_TMUX_SESSION"),
@@ -102,8 +102,10 @@ def record_event(subject: str, data: dict) -> bool:
     # Write to SQLite directly (foreground)
     try:
         conn = init_db()
-        write_event(conn, full_subject, data, machine=machine, session=session, ts=ts)
-        conn.close()
+        try:
+            write_event(conn, full_subject, data, machine=machine, session=session, ts=ts)
+        finally:
+            conn.close()
     except Exception:
         pass
 
@@ -111,8 +113,14 @@ def record_event(subject: str, data: dict) -> bool:
     try:
         from .messaging import NATSClient
 
-        client = NATSClient()
-        asyncio.run(client.publish(full_subject, payload))
+        async def _publish_and_close(subject: str, payload: dict) -> None:
+            client = NATSClient()
+            try:
+                await client.publish(subject, payload)
+            finally:
+                await client.close()
+
+        asyncio.run(_publish_and_close(full_subject, payload))
     except Exception:
         pass
 
@@ -164,6 +172,7 @@ def telemetry_writer() -> int:
         ok = True
     finally:
         conn.close()
+        asyncio.run(client.close())
         _release_pid_file("telemetry-writer")
 
     return 0 if ok else 1

@@ -29,7 +29,6 @@ from pathlib import Path
 
 # Model aliases for convenience
 MODEL_ALIASES = {
-    "deep-think": "deep-think",  # gemini CLI custom alias (uses gemini-3.1-pro-preview + HIGH thinking)
     "pro": "gemini-3.1-pro-preview",
     "flash": "gemini-3-flash-preview",
     "flash-lite": "gemini-3.1-flash-lite-preview",
