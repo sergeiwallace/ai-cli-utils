@@ -210,7 +210,7 @@ gh api repos/sergeiwallace/ai-cli-utils/rulesets -X POST --input - <<'JSON'
     {
       "type": "required_status_checks",
       "parameters": {
-        "strict_status_checks_policy": false,
+        "strict_required_status_checks_policy": false,
         "required_status_checks": [
           {"context": "lint"},
           {"context": "test (3.12)"}
