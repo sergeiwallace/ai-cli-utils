@@ -48,9 +48,9 @@
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
 
   <!-- > smaller, tip slightly overlapping left edge of _ -->
-  <text x="48" y="112"
+  <text x="48" y="106"
         text-anchor="start"
         font-family="'SF Mono','Fira Code','Courier New',monospace"
-        font-size="58" font-weight="700"
+        font-size="66" font-weight="700"
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">&#62;</text>
 </svg>
