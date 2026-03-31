@@ -6,13 +6,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/sergeiwallace/ai-cli-utils/ci.yml?label=CI)](https://github.com/sergeiwallace/ai-cli-utils/actions)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-Unified AI session manager for Claude Code and Gemini CLI.
+Unified AI session manager and automation toolkit for Claude Code and Gemini CLI.
 
-Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, and cross-machine sync.
+Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, and resilient Gemini API access with automatic auth fallback.
 
 ## What it does
 
-`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Gemini CLI](https://github.com/google-gemini/gemini-cli) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine memory sync, and session lifecycle management. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
+`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Gemini CLI](https://github.com/google-gemini/gemini-cli) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine memory sync, and session lifecycle management. It also provides `ai gemini` — a Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) that automatically retries on capacity errors, so your research prompts keep working even when one auth method is exhausted. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
 
 ## Features
 
