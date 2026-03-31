@@ -579,7 +579,7 @@ def get_engine_script(
     ai sync watch &>/dev/null &
     ai memory watch &>/dev/null &
 
-    # iTerm2 fleet management: set profile, rolling tab color, badge, tab title
+    # iTerm2 fleet management: set profile, rolling tab color, tab title
     # Only runs under iTerm2 (check LC_TERMINAL which survives tmux, unlike TERM_PROGRAM)
     # _it2: wraps OSC sequences in DCS passthrough when inside tmux
     _it2() {{
@@ -610,32 +610,22 @@ def get_engine_script(
         _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
       fi
 
-      # User variables for badge interpolation
-      _it2 "\\033]1337;SetUserVar=sessionType=$(echo -n "$stype" | base64)\\007"
-      _it2 "\\033]1337;SetUserVar=sessionNum=$(echo -n "$num" | base64)\\007"
-      _it2 "\\033]1337;SetUserVar=tmuxSession=$(echo -n "$sname" | base64)\\007"
-
-      # Badge
-      local badge_text="$stype sw-$num"
-      _it2 "\\033]1337;SetBadgeFormat=$(echo -n "$badge_text" | base64)\\007"
-
       # Tab title (leading space separates icon from text)
       _it2 "\\033]0; $stype sw-$num\\007"
     }}
 
-    # iTerm2 status updates: badge + tab title (NOT color — color is for identity)
+    # iTerm2 status updates: tab title only (NOT color — color is for identity)
     _iterm2_status() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local status="$1" num="$2" stype="$3"
-      local badge="" title=""
+      local title=""
       case "$status" in
-        running)   badge="▶ $stype sw-$num";   title=" ▶ $stype sw-$num" ;;
-        waiting)   badge="⏸ WAIT sw-$num";     title=" ⏸ WAIT sw-$num" ;;
-        done)      badge="✓ DONE sw-$num";     title=" ✓ DONE sw-$num" ;;
-        error)     badge="✗ ERROR sw-$num";    title=" ✗ ERROR sw-$num" ;;
-        resuming)  badge="↻ sw-$num";          title=" ↻ sw-$num" ;;
+        running)   title=" ▶ $stype sw-$num" ;;
+        waiting)   title=" ⏸ WAIT sw-$num" ;;
+        done)      title=" ✓ DONE sw-$num" ;;
+        error)     title=" ✗ ERROR sw-$num" ;;
+        resuming)  title=" ↻ sw-$num" ;;
       esac
-      [[ -n "$badge" ]] && _it2 "\\033]1337;SetBadgeFormat=$(echo -n "$badge" | base64)\\007"
       [[ -n "$title" ]] && _it2 "\\033]0;$title\\007"
     }}
 
