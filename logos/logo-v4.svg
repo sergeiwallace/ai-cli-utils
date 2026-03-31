@@ -44,13 +44,13 @@
   <text x="100" y="112"
         text-anchor="middle"
         font-family="'SF Mono','Fira Code','Courier New',monospace"
-        font-size="76" font-weight="700"
+        font-size="86" font-weight="700"
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">_</text>
 
   <!-- > smaller, tip slightly overlapping left edge of _ -->
   <text x="48" y="106"
         text-anchor="start"
         font-family="'SF Mono','Fira Code','Courier New',monospace"
-        font-size="66" font-weight="700"
+        font-size="76" font-weight="700"
         fill="url(#prompt)" filter="url(#glow)" opacity="0.95">&#62;</text>
 </svg>
