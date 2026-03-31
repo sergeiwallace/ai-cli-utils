@@ -70,3 +70,6 @@ SCRATCH.md
 # Node
 node_modules/
 package-lock.json
+
+# Logo archive (working drafts)
+logos/archive/
