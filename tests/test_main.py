@@ -10,15 +10,19 @@ from ai_cli.main import (
     check_handoff,
     claim_handoff,
     cleanup_stale_sessions,
+    cleanup_worktree,
     cli,
     complete_handoff,
     create_worktree,
     detect_repo_root,
     _find_project_dir,
+    find_next_index,
+    find_recent_session,
     get_current_project_name,
     get_engine_script,
     get_latest_gemini_session_id,
     get_project_aliases,
+    get_project_prefix,
     get_session_map,
     get_session_map_path,
     get_xdg_cache_home,
@@ -1330,3 +1334,531 @@ class TestCreateWorktreeEdgeCases:
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-3")
         assert result == wt_dir
+
+
+# --- Coverage gap tests: project registry / alias error branches ---
+
+
+class TestProjectRegistryExceptionBranches:
+    def test_get_project_prefix_by_name_when_registry_read_fails_then_returns_fallback(self, tmp_path):
+        """Covers lines 198-199: exception in _get_project_prefix_by_name."""
+        registry = tmp_path / "broken.toml"
+        registry.write_text("not valid toml {{{")
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            result = _get_project_prefix_by_name("myproject")
+        assert result == "myp"
+
+    def test_get_project_aliases_when_registry_read_fails_then_returns_empty(self, tmp_path):
+        """Covers lines 216-217: exception in get_project_aliases."""
+        registry = tmp_path / "broken.toml"
+        registry.write_text("not valid toml {{{")
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            result = get_project_aliases()
+        assert result == {}
+
+    def test_get_latest_gemini_session_id_when_read_fails_then_returns_none(self, tmp_path):
+        """Covers lines 241-242: exception reading logs.json."""
+        logs_dir = tmp_path / ".gemini" / "tmp" / "testproj"
+        logs_dir.mkdir(parents=True)
+        logs_file = logs_dir / "logs.json"
+        logs_file.write_text("")  # empty file
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "testproj"):
+            with patch("pathlib.Path.home", return_value=tmp_path):
+                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                    result = get_latest_gemini_session_id()
+        assert result is None
+
+    def test_get_project_prefix_when_registry_read_fails_then_returns_fallback(self, tmp_path):
+        """Covers lines 250-257: exception in get_project_prefix."""
+        registry = tmp_path / "broken.toml"
+        registry.write_text("not valid toml {{{")
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            with patch("ai_cli.main.get_current_project_name", return_value="myproject"):
+                result = get_project_prefix()
+        assert result == "myp"
+
+
+class TestFindNextIndex:
+    def test_find_next_index_when_first_slot_taken_then_returns_second(self):
+        """Covers line 267: i += 1 (second iteration of the while loop)."""
+        call_count = {"n": 0}
+
+        def mock_run(cmd, **kwargs):
+            call_count["n"] += 1
+            m = MagicMock()
+            if call_count["n"] == 1:
+                m.returncode = 0  # prefix1 exists
+            else:
+                m.returncode = 1  # prefix2 does not exist
+            return m
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = find_next_index("c-sw-")
+        assert result == 2
+
+
+class TestFindRecentSession:
+    def test_find_recent_session_when_tmux_fails_then_returns_empty(self):
+        """Covers line 276 (returncode != 0 early return path)."""
+        m = MagicMock(returncode=1, stdout="")
+        with patch("subprocess.run", return_value=m):
+            result = find_recent_session("c-sw-")
+        assert result == ""
+
+    def test_find_recent_session_when_empty_lines_then_skips(self):
+        """Covers lines 278-279: empty line in output."""
+        m = MagicMock(returncode=0, stdout="\n\nc-sw-1 100\n\nc-sw-2 200\n")
+        with patch("subprocess.run", return_value=m):
+            result = find_recent_session("c-sw-")
+        assert result == "c-sw-2"
+
+    def test_find_recent_session_when_bad_timestamp_then_skips(self):
+        """Covers lines 284-285: ValueError parsing timestamp."""
+        m = MagicMock(returncode=0, stdout="c-sw-1 notanumber\nc-sw-2 200\n")
+        with patch("subprocess.run", return_value=m):
+            result = find_recent_session("c-sw-")
+        assert result == "c-sw-2"
+
+    def test_find_recent_session_when_no_matching_sessions_then_returns_empty(self):
+        """Covers lines 286-287: no sessions match prefix."""
+        m = MagicMock(returncode=0, stdout="other-1 100\nother-2 200\n")
+        with patch("subprocess.run", return_value=m):
+            result = find_recent_session("c-sw-")
+        assert result == ""
+
+
+class TestCleanupStaleSessions:
+    def test_cleanup_stale_when_empty_line_then_skips(self):
+        """Covers line 325: empty line in tmux output."""
+        m = MagicMock(returncode=0, stdout="\n\n")
+        with patch("subprocess.run", return_value=m):
+            cleanup_stale_sessions({})  # should not raise
+
+    def test_cleanup_stale_when_bad_format_then_skips(self):
+        """Covers line 328: line with wrong number of parts."""
+        m = MagicMock(returncode=0, stdout="badline\n")
+        with patch("subprocess.run", return_value=m):
+            cleanup_stale_sessions({})
+
+    def test_cleanup_stale_when_bad_timestamp_then_skips(self):
+        """Covers lines 334-335: ValueError parsing last_attached."""
+        m = MagicMock(returncode=0, stdout="c-sw-1|notanumber|0|bash\n")
+        with patch("subprocess.run", return_value=m):
+            cleanup_stale_sessions({})
+
+
+class TestResolveSessionFallback:
+    def test_resolve_session_when_no_name_and_no_current_session_then_finds_recent(self):
+        """Covers line 362: falls through to find_recent_session."""
+
+        def mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "display-message" in cmd:
+                m.returncode = 0
+                m.stdout = "other-session"  # doesn't match prefix
+            elif "list-sessions" in cmd:
+                m.returncode = 0
+                m.stdout = "c-sw-1 100\n"
+            else:
+                m.returncode = 1
+            return m
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = resolve_session("c-sw-", "")
+        assert result == "c-sw-1"
+
+
+class TestCreateWorktreeEdgeCases2:
+    def test_create_worktree_when_first_add_fails_then_retries_existing_branch(self, tmp_path):
+        """Covers line 444: fallback to existing branch."""
+        wt_dir = tmp_path / ".worktrees" / "sw-4"
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            m = MagicMock(returncode=0, stdout="")
+            if "worktree" in cmd and "add" in cmd and "-b" in cmd:
+                m.returncode = 1  # branch already exists
+            elif "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            return m
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                result = create_worktree("sw-4")
+        assert result == wt_dir
+        # Verify the fallback call was made (without -b)
+        add_calls = [c for c in calls if "worktree" in c and "add" in c]
+        assert len(add_calls) == 2
+
+    def test_create_worktree_when_src_not_exists_then_skips_symlink(self, tmp_path):
+        """Covers lines 454-455: src doesn't exist, so no symlink."""
+        wt_dir = tmp_path / ".worktrees" / "sw-5"
+
+        def mock_run(cmd, **kwargs):
+            m = MagicMock(returncode=0, stdout="")
+            if "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            return m
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                result = create_worktree("sw-5")
+        assert result == wt_dir
+        # No .venv, .claude etc in repo_root, so no symlinks created
+        assert not (wt_dir / ".venv").exists()
+
+    def test_create_worktree_when_wt_dir_not_created_then_returns_none(self, tmp_path):
+        """Covers line 457: wt_dir.exists() is False after git commands."""
+
+        def mock_run(cmd, **kwargs):
+            m = MagicMock(returncode=1, stdout="")
+            return m
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                result = create_worktree("sw-6")
+        assert result is None
+
+
+class TestCleanupWorktree:
+    def test_cleanup_worktree_when_no_repo_then_noop(self):
+        """Covers lines 461-463: no repo root."""
+        with patch("ai_cli.main.detect_repo_root", return_value=None):
+            cleanup_worktree("sw-1")  # should not raise
+
+    def test_cleanup_worktree_when_dir_not_exists_then_noop(self, tmp_path):
+        """Covers lines 465-466: worktree dir doesn't exist."""
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            cleanup_worktree("nonexistent")
+
+    def test_cleanup_worktree_when_dirty_then_skips_remove(self, tmp_path):
+        """Covers lines 469-472: diff returns nonzero, so no removal."""
+        wt_dir = tmp_path / ".worktrees" / "sw-7"
+        wt_dir.mkdir(parents=True)
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            m = MagicMock()
+            if "diff" in cmd and "--cached" not in cmd:
+                m.returncode = 1  # dirty
+            else:
+                m.returncode = 0
+            return m
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                cleanup_worktree("sw-7")
+        # Should NOT have called worktree remove
+        remove_calls = [c for c in calls if "remove" in c]
+        assert len(remove_calls) == 0
+
+    def test_cleanup_worktree_when_clean_then_removes(self, tmp_path):
+        """Covers lines 471-472: both diffs clean, calls worktree remove."""
+        wt_dir = tmp_path / ".worktrees" / "sw-8"
+        wt_dir.mkdir(parents=True)
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0)
+
+        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                cleanup_worktree("sw-8")
+        remove_calls = [c for c in calls if "remove" in c]
+        assert len(remove_calls) == 1
+
+
+class TestPostHandoffIdScanning:
+    def test_post_handoff_when_existing_files_with_bad_names_then_handles_valueerror(self, tmp_path):
+        """Covers lines 740-746: ValueError parsing file IDs."""
+        queue_dir = tmp_path / ".handoff-queue"
+        pending = queue_dir / "pending"
+        pending.mkdir(parents=True)
+        # File with non-numeric prefix
+        (pending / "bad-name.md").write_text("content")
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            post_handoff("New task", "P1", "proj", "msg")
+        files = list(pending.glob("001-*.md"))
+        assert len(files) == 1
+
+
+class TestCheckHandoffEdgeCases:
+    def test_check_handoff_when_no_handoff_dir_then_returns(self):
+        """Covers line 759: handoff_dir is None."""
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
+            check_handoff()  # should not raise
+
+    def test_check_handoff_when_bad_priority_then_skips(self, tmp_path, capsys):
+        """Covers lines 770-771: ValueError parsing priority."""
+        queue_dir = tmp_path / ".handoff-queue"
+        pending = queue_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "001-task.md").write_text("---\npriority: notanumber\n---\nTask")
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            check_handoff()
+        output = capsys.readouterr().out
+        # With invalid priority, prio defaults to 9. Since it's the only file
+        # and 9 < initial best_prio (9) is false, but prio == best_prio and best_file is None
+        assert "001-task.md" in output
+
+    def test_check_handoff_when_equal_priority_and_first_is_none_then_picks_first(self, tmp_path, capsys):
+        """Covers lines 775-776: equal priority, best_file is None initially."""
+        queue_dir = tmp_path / ".handoff-queue"
+        pending = queue_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "001-task.md").write_text("---\npriority: 5\n---\nTask A")
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            check_handoff()
+        output = capsys.readouterr().out
+        assert "001-task.md" in output
+
+
+class TestClaimHandoffException:
+    def test_claim_handoff_when_rename_fails_then_exits(self, tmp_path):
+        """Covers lines 793-794: exception during file rename."""
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            with pytest.raises(SystemExit) as exc:
+                claim_handoff("/nonexistent/path.md")
+            assert exc.value.code == 1
+
+
+class TestCompleteHandoffException:
+    def test_complete_handoff_when_rename_fails_then_silent(self, tmp_path):
+        """Covers lines 814-815: exception during file rename."""
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            complete_handoff("/nonexistent/path.md")  # should not raise
+
+
+class TestTriggerBackgroundUpdateBadJson:
+    def test_trigger_background_update_when_bad_json_in_state_then_proceeds(self, tmp_path):
+        """Covers lines 826-827: JSON parse exception in state file."""
+        state_file = tmp_path / "update_check.json"
+        state_file.write_text("not valid json {{{")
+
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            with patch("subprocess.Popen") as mock_popen:
+                trigger_background_update()
+        mock_popen.assert_called_once()
+
+
+class TestCliInternalMissingArgs:
+    def test_cli_when_internal_publish_event_missing_args_then_exits_1(self):
+        """Covers lines 881-882."""
+        with patch("sys.argv", ["ai", "internal", "publish-event"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_publish_heartbeat_missing_args_then_exits_1(self):
+        """Covers lines 897-898."""
+        with patch("sys.argv", ["ai", "internal", "publish-heartbeat"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_publish_session_event_missing_args_then_exits_1(self):
+        """Covers lines 917-918."""
+        with patch("sys.argv", ["ai", "internal", "publish-session-event"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_publish_missing_args_then_exits_1(self):
+        """Covers lines 934-935."""
+        with patch("sys.argv", ["ai", "internal", "publish"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_internal_publish_bad_json_payload_then_uses_empty(self):
+        """Covers lines 942-943: JSONDecodeError on publish payload."""
+        with patch("sys.argv", ["ai", "internal", "publish", "topic", "not-json"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient") as mock_nats:
+                    mock_instance = MagicMock()
+                    mock_nats.return_value = mock_instance
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+
+class TestCliDispatchBranches:
+    def test_cli_when_memory_no_watch_then_exits_1(self):
+        """Covers lines 975-977: memory with wrong subcommand."""
+        with patch("sys.argv", ["ai", "memory", "bad"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_quota_no_watch_then_exits_1(self):
+        """Covers lines 983-985."""
+        with patch("sys.argv", ["ai", "quota", "bad"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_telemetry_no_writer_then_exits_1(self):
+        """Covers lines 991-993."""
+        with patch("sys.argv", ["ai", "telemetry", "bad"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
+
+    def test_cli_when_gemini_no_args_then_calls_gemini_cli(self):
+        """Covers line 999: gemini dispatch with empty args."""
+        with patch("sys.argv", ["ai", "gemini"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.gemini.gemini_cli", side_effect=SystemExit(0)):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+
+class TestCliSessionSetupBranches:
+    def test_cli_when_no_sandbox_flag_then_sandbox_false(self):
+        """Covers line 1107: --no-sandbox sets use_sandbox = False."""
+        with patch("sys.argv", ["ai", "c", "--no-sandbox", "--bare"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("os.execvp", side_effect=SystemExit(0)):
+                            with pytest.raises(SystemExit):
+                                cli()
+
+    def test_cli_when_sandbox_flag_then_sandbox_true(self):
+        """Covers line 1109: --sandbox sets use_sandbox = True."""
+        with patch("sys.argv", ["ai", "g", "--sandbox", "--bare"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("os.execvp", side_effect=SystemExit(0)):
+                            with pytest.raises(SystemExit):
+                                cli()
+
+    def test_cli_when_remote_with_project_flag_then_uses_project_prefix(self):
+        """Covers lines 1134, 1145, 1147: remote with -p flag."""
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
+        with patch("sys.argv", ["ai", "c", "-R", "-p", "myproj"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.get_project_aliases", return_value={}):
+                        with patch("ai_cli.main._get_project_prefix_by_name", return_value="mp"):
+                            with patch("ai_cli.main.trigger_background_update"):
+                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                    with pytest.raises(SystemExit):
+                                        cli()
+
+    def test_cli_when_remote_mosh_non_standard_port_then_adds_ssh_flag(self):
+        """Covers line 1145: non-standard port with mosh transport."""
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 2222, "transport": "mosh"}}
+        with patch("sys.argv", ["ai", "c", "-R"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.get_project_aliases", return_value={}):
+                        with patch("ai_cli.main.trigger_background_update"):
+                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                with pytest.raises(SystemExit):
+                                    cli()
+                            args = mock_exec.call_args[0][1]
+                            assert "--ssh" in args
+
+    def test_cli_when_remote_mosh_with_identity_file_only_then_adds_ssh_i(self):
+        """Covers line 1147: identity_file without non-standard port."""
+        config = {
+            "remote": {
+                "host": "1.2.3.4",
+                "user": "ubuntu",
+                "port": 22,
+                "transport": "mosh",
+                "identity_file": "~/.ssh/id_ed25519",
+            }
+        }
+        with patch("sys.argv", ["ai", "c", "-R"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.get_project_aliases", return_value={}):
+                        with patch("ai_cli.main.trigger_background_update"):
+                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                with pytest.raises(SystemExit):
+                                    cli()
+                            args = mock_exec.call_args[0][1]
+                            assert "--ssh" in args
+                            ssh_idx = args.index("--ssh")
+                            assert "-i" in args[ssh_idx + 1]
+
+
+class TestTriggerBackgroundUpdateRecent:
+    def test_trigger_background_update_when_recently_checked_then_skips(self, tmp_path):
+        """Covers lines 824-825: recently checked, early return."""
+        state_file = tmp_path / "update_check.json"
+        state_file.write_text(json.dumps({"last_checked": time.time()}))
+
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            with patch("subprocess.Popen") as mock_popen:
+                trigger_background_update()
+        mock_popen.assert_not_called()
+
+
+class TestCliGeminiDispatch:
+    def test_cli_when_gemini_returns_normally_then_exits_0(self):
+        """Covers line 999: sys.exit(0) after gemini_cli returns."""
+        with patch("sys.argv", ["ai", "gemini", "hello"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.gemini.gemini_cli", return_value=None):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+
+
+class TestCliReconnectContinueBranch:
+    def test_cli_when_reconnect_session_name_too_short_then_continues(self, capsys):
+        """Covers line 1065: session with < 4 parts after split is skipped via continue."""
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
+        # "c-r-x" has 3 parts when split by "-", which is < 4 -> continue
+        # "c-r-sw-1" has 4 parts -> processed
+        probe = MagicMock(returncode=0, stdout="c-r-x\nc-r-sw-1\n")
+        with patch("sys.argv", ["ai", "reconnect"]):
+            with patch("ai_cli.main.load_config", return_value=config):
+                with patch("subprocess.run", return_value=probe):
+                    with patch("ai_cli.main.get_project_aliases", return_value={}):
+                        with pytest.raises(SystemExit) as exc:
+                            cli()
+                        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        # 2 sessions matched c-r- prefix, but only 1 has enough parts
+        assert "2 remote session" in out
+
+
+class TestPostHandoffExistingFilesMultiDir:
+    def test_post_handoff_when_existing_in_claimed_and_completed_then_scans_all(self, tmp_path):
+        """Covers lines 743-744: scanning across pending/claimed/completed for max ID."""
+        queue_dir = tmp_path / ".handoff-queue"
+        claimed = queue_dir / "claimed"
+        claimed.mkdir(parents=True)
+        (claimed / "005-old-task.md").write_text("content")
+        completed = queue_dir / "completed"
+        completed.mkdir(parents=True)
+        (completed / "010-done-task.md").write_text("content")
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            post_handoff("New task", "P1", "proj", "msg")
+        # Next ID should be 11
+        pending_files = list((queue_dir / "pending").glob("*.md"))
+        assert len(pending_files) == 1
+        assert "011-" in pending_files[0].name

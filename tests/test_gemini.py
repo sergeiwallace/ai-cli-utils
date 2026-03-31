@@ -459,3 +459,32 @@ class TestGeminiCli:
             with pytest.raises(SystemExit):
                 gemini_cli(["prompt", "--timeout", "120"])
         assert mock_run.call_args[1]["timeout_s"] == 120
+
+
+# --- Coverage gap tests ---
+
+
+class TestTryGeminiApiVerboseLogging:
+    def test_api_when_verbose_then_logs_tier_info(self, capsys):
+        """Covers line 290: verbose logging in REST API path."""
+        modules, mock_genai, mock_types, mock_client = _make_google_mocks("verbose response")
+
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+            with patch.dict("sys.modules", modules):
+                r = _try_gemini_api("hello", "flash", 30, 2, True)
+        assert r.success is True
+        err = capsys.readouterr().err
+        assert "tier 2" in err or "REST API" in err
+
+
+class TestRunGeminiNoFilePrintsToStdout:
+    def test_run_gemini_when_success_and_not_quiet_then_prints_content(self, capsys, tmp_path):
+        """Covers line 460: print(final_result.content) when not quiet."""
+        ok = GeminiResult(content="output text", model="flash", success=True, tier=1, tier_name="cli")
+
+        with patch("ai_cli.gemini._try_gemini_cli", return_value=ok):
+            with patch("ai_cli.gemini._log_to_file"):
+                result = run_gemini("test", output="/dev/null", quiet=False)
+        assert result.success is True
+        out = capsys.readouterr().out
+        assert "output text" in out

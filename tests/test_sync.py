@@ -2163,3 +2163,317 @@ def test_push_to_remote_when_rejected_and_rebase_succeeds_then_retries(tmp_path)
     with patch("subprocess.run", side_effect=mock_run):
         assert _push_to_remote(tmp_path, verbose=False) is True
     assert call_count["push"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests: sync.py error branches
+# ---------------------------------------------------------------------------
+
+
+def test_detect_jsonl_divergence_when_foreign_home_detected_then_translates(tmp_path):
+    """Covers line 316: translate_cwd_paths called on staging bytes."""
+    local = tmp_path / "local.jsonl"
+    staging = tmp_path / "staging.jsonl"
+    local_home = str(Path.home())
+    foreign_home = "/Users/foreign"
+    # Local has local_home path, staging has foreign path
+    local.write_text(f'{{"cwd":"{local_home}/projects/test"}}\n')
+    staging.write_text(f'{{"cwd":"{foreign_home}/projects/test"}}\n')
+
+    with patch("ai_cli.sync._detect_foreign_home", return_value=foreign_home):
+        with patch("ai_cli.sync.translate_cwd_paths", return_value=local.read_bytes()):
+            result = detect_jsonl_divergence(local, staging)
+    assert result == "identical"
+
+
+def test_init_staging_repo_when_remote_not_set_then_adds_remote(tmp_path):
+    """Covers line 347: remote add when get-url fails."""
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / ".git").mkdir()
+
+    calls = []
+
+    def mock_git(cmd, cwd=None, check=True, **kwargs):
+        calls.append(cmd)
+        m = MagicMock()
+        if "get-url" in cmd:
+            m.returncode = 1  # no remote set
+        else:
+            m.returncode = 0
+        return m
+
+    with patch("ai_cli.sync._git", side_effect=mock_git):
+        init_staging_repo(staging, "git@server:repo.git")
+    add_calls = [c for c in calls if "add" in c and "origin" in c]
+    assert len(add_calls) == 1
+
+
+def test_stage_project_files_when_cc_dir_not_exists_then_returns_empty(tmp_path):
+    """Covers lines 406-412: cc_projects_dir doesn't exist."""
+    result = stage_project_files(
+        staging_dir=tmp_path / "staging",
+        cc_projects_dir=tmp_path / "nonexistent",
+        local_prefix=_SERVER_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+    assert result["staged_files"] == []
+    assert result["memory_count"] == 0
+
+
+def test_stage_project_files_when_non_dir_entry_then_skips(tmp_path):
+    """Covers line 416: non-directory entry in cc_projects_dir."""
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+    # Create a file instead of directory
+    (cc_dir / "somefile.txt").write_text("not a dir")
+
+    result = stage_project_files(
+        staging_dir=tmp_path / "staging",
+        cc_projects_dir=cc_dir,
+        local_prefix=_SERVER_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+    assert result["staged_files"] == []
+
+
+def test_stage_project_files_when_verbose_then_prints(tmp_path, capsys):
+    """Covers line 444: verbose output during staging."""
+    cc_dir = tmp_path / "cc"
+    proj_dir = cc_dir / f"{_SERVER_PREFIX}testproj"
+    memory_dir = proj_dir / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("# Memory")
+
+    staging = tmp_path / "staging"
+
+    result = stage_project_files(
+        staging_dir=staging,
+        cc_projects_dir=cc_dir,
+        local_prefix=_SERVER_PREFIX,
+        memories_only=True,
+        verbose=True,
+        dry_run=False,
+    )
+    assert result["memory_count"] >= 1
+    output = capsys.readouterr().out
+    assert "stage:" in output
+
+
+def test_detect_foreign_home_in_history_when_exception_then_returns_none(tmp_path):
+    """Covers lines 522-525: exception reading history."""
+    # Create a file that will cause parse issues
+    history = tmp_path / "history.jsonl"
+    history.write_text("")
+
+    result = _detect_foreign_home_in_history(history)
+    assert result is None
+
+
+def test_translate_history_jsonl_when_no_changes_then_returns_zero(tmp_path):
+    """Covers line 552: updated == content (no replacements needed)."""
+    from ai_cli.sync import translate_history_jsonl
+
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    local_home = str(Path.home())
+    history.write_text(f'{{"project": "{local_home}/projects/test"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.sync._detect_foreign_home_in_history", return_value="/Users/other"):
+            result = translate_history_jsonl(verbose=False)
+    # File doesn't contain /Users/other, so no replacements
+    assert result == 0
+
+
+def test_translate_history_jsonl_when_verbose_then_prints(tmp_path, capsys):
+    """Covers line 557: verbose output."""
+    from ai_cli.sync import translate_history_jsonl
+
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    foreign_home = "/Users/foreign"
+    history.write_text(f'{{"project": "{foreign_home}/projects/test"}}\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.sync._detect_foreign_home_in_history", return_value=foreign_home):
+            result = translate_history_jsonl(verbose=True)
+    assert result >= 1
+    output = capsys.readouterr().out
+    assert "translate history" in output
+
+
+def test_replicate_history_to_worktrees_when_no_history_then_returns_zero():
+    """Covers line 580: history.jsonl doesn't exist."""
+    from ai_cli.sync import replicate_history_to_worktrees
+
+    with patch("pathlib.Path.home", return_value=Path("/tmp/nonexistent")):
+        result = replicate_history_to_worktrees(verbose=False)
+    assert result == 0
+
+
+def test_replicate_history_to_worktrees_when_worktrees_exist_then_adds_entries(tmp_path):
+    """Covers lines 577-637: full replicate path with worktrees."""
+    import json as _json
+    from ai_cli.sync import replicate_history_to_worktrees
+
+    # Setup history
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    projects_base = tmp_path / "projects"
+    main_cwd = str(projects_base / "myapp")
+    entry = _json.dumps({"project": main_cwd, "sessionId": "s1"})
+    history.write_text(entry + "\n")
+
+    # Setup worktree
+    wt_dir = projects_base / "myapp" / ".worktrees" / "wt-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / ".git").write_text("gitdir: ...")
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+            result = replicate_history_to_worktrees(verbose=False)
+    assert result >= 1
+
+
+def test_retranslate_project_jsonls_when_no_cc_dir_then_returns_zero(tmp_path):
+    """Covers sync retranslate early exit."""
+    from ai_cli.sync import retranslate_project_jsonls
+
+    with patch("ai_cli.sync._cc_projects_dir", return_value=tmp_path / "nonexistent"):
+        result = retranslate_project_jsonls(verbose=False)
+    assert result == 0
+
+
+def test_apply_pull_files_when_staging_dir_has_dotdir_then_skips(tmp_path):
+    """Covers line 691-692: skip entries starting with '.'."""
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    dot_dir = staging / ".git"
+    dot_dir.mkdir(parents=True)
+    (dot_dir / "somefile").write_text("data")
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    result = apply_pull_files(
+        staging_dir=staging,
+        cc_projects_dir=cc_dir,
+        local_prefix=_SERVER_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+    assert result["applied_count"] == 0
+
+
+def test_apply_pull_files_when_verbose_ff_local_then_prints(tmp_path, capsys):
+    """Covers lines 717-720: verbose output for fast_forward_local skip."""
+    staging = tmp_path / "staging" / "testproj"
+    staging.mkdir(parents=True)
+    staging_jsonl = staging / "conv.jsonl"
+    staging_jsonl.write_text('{"line": 1}\n')
+
+    cc_dir = tmp_path / "cc"
+    cc_proj = cc_dir / f"{_SERVER_PREFIX}testproj"
+    cc_proj.mkdir(parents=True)
+    dst = cc_proj / "conv.jsonl"
+    # Local is ahead: has staging content plus more
+    dst.write_text('{"line": 1}\n{"line": 2}\n')
+
+    with patch("ai_cli.sync.denormalize_project_name", return_value=f"{_SERVER_PREFIX}testproj"):
+        with patch("ai_cli.sync.detect_jsonl_divergence", return_value="fast_forward_local"):
+            apply_pull_files(
+                staging_dir=tmp_path / "staging",
+                cc_projects_dir=cc_dir,
+                local_prefix=_SERVER_PREFIX,
+                memories_only=False,
+                verbose=True,
+                dry_run=False,
+            )
+    output = capsys.readouterr().out
+    assert "skip (local ahead)" in output
+
+
+def test_stage_handoff_files_when_verbose_then_prints(tmp_path, capsys):
+    """Covers line 976: verbose handoff staging."""
+    handoff_dir = tmp_path / "handoff"
+    pending = handoff_dir / "pending"
+    pending.mkdir(parents=True)
+    (pending / "001-task.md").write_text("task")
+
+    staging = tmp_path / "staging"
+
+    from ai_cli.sync import stage_handoff_files
+
+    count = stage_handoff_files(
+        staging_dir=staging,
+        handoff_queue_dir=handoff_dir,
+        verbose=True,
+        dry_run=False,
+    )
+    assert count == 1
+    output = capsys.readouterr().out
+    assert "stage handoff:" in output
+
+
+def test_apply_handoff_files_when_verbose_and_known_then_prints_skip(tmp_path, capsys):
+    """Covers line 1007: verbose skip for known handoffs."""
+    from ai_cli.sync import _HANDOFF_STAGING_NAMESPACE
+
+    staging = tmp_path / "staging" / _HANDOFF_STAGING_NAMESPACE / "pending"
+    staging.mkdir(parents=True)
+    (staging / "001-task.md").write_text("task")
+
+    handoff_dir = tmp_path / "handoff"
+    local_pending = handoff_dir / "pending"
+    local_pending.mkdir(parents=True)
+    (local_pending / "001-task.md").write_text("already here")
+
+    count = apply_handoff_files(
+        staging_dir=tmp_path / "staging",
+        handoff_queue_dir=handoff_dir,
+        verbose=True,
+        dry_run=False,
+    )
+    assert count == 0
+    output = capsys.readouterr().out
+    assert "skip handoff" in output
+
+
+def test_translate_settings_paths_when_unknown_direction_then_returns_unchanged():
+    """Covers line 1050: unknown direction returns content unchanged."""
+    from ai_cli.sync import _translate_settings_paths
+
+    content = "/home/test/something"
+    result = _translate_settings_paths(content, "invalid_direction", "host")
+    assert result == content
+
+
+def test_apply_config_files_when_settings_unchanged_then_skips(tmp_path):
+    """Covers lines 1134-1136: settings.json identical after translation."""
+    from ai_cli.sync import apply_config_files
+
+    staging = tmp_path / "staging" / "_config"
+    staging.mkdir(parents=True)
+    settings_src = staging / "settings.json"
+    settings_src.write_text('{"key": "value"}')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        # Create the local settings with same content
+        local_claude = tmp_path / ".claude"
+        local_claude.mkdir(parents=True)
+        (local_claude / "settings.json").write_text('{"key": "value"}')
+
+        with patch("ai_cli.sync._translate_settings_paths", return_value='{"key": "value"}'):
+            count = apply_config_files(
+                staging_dir=tmp_path / "staging",
+                verbose=False,
+                dry_run=False,
+                remote_host="",
+            )
+    assert count == 0  # Nothing applied since identical
