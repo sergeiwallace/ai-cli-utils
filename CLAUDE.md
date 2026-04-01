@@ -26,6 +26,15 @@
 
 **PreCompact hook** fires automatically before compaction — run `/save-state` immediately when you see the `SAVE_STATE_REQUIRED` message. This saves session state to memory files and docs before context is lost.
 
+## CI / Badge Health
+
+After every push to `main`, verify both badges are healthy before presenting a summary to the user:
+
+1. **CI badge** — run `gh run list --repo sergeiwallace/ai-cli-utils --limit 1` and confirm the latest run is `success`. If still `in_progress`, wait and re-check.
+2. **Codecov badge** — run `gh run view <run-id> --log | grep "queued for processing"` to confirm upload succeeded. Codecov typically takes 1-3 minutes to reflect; wait if needed, then check `https://codecov.io/gh/sergeiwallace/ai-cli-utils` via `gh api` or curl.
+
+If CI is failing or Codecov is not 100%, fix before closing out the session. If there is a legitimate reason coverage is below 100% (e.g. an optional dependency path that can't be tested), flag it explicitly in the summary message for discussion — do not silently accept degraded coverage.
+
 ## Common Patterns
 
 - **Scope creep**: Implement only what the spec requires. Do not add features, defensive abstractions, or "nice to have" improvements not in the spec.
