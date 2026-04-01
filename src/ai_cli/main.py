@@ -1437,7 +1437,7 @@ def _cmd_signal_watch_status() -> None:
         from circus.client import CircusClient
 
         result = CircusClient(endpoint, timeout=2.0).send_message("status")
-        statuses = result.get("statuses", {})
+        statuses = result.get("statuses", {}) if isinstance(result, dict) else {}
         sw_watchers = {k: v for k, v in statuses.items() if k.startswith("sw-")}
         if not sw_watchers:
             print("No signal-watch processes running.")
