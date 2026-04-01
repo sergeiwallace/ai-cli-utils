@@ -221,7 +221,7 @@ Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timesta
 
 - `--force` — additionally passes `--reinstall` to reinstall all dependencies (not just ai-cli-utils). Use for corrupt-environment recovery.
 - `deploy` is kept as an alias for backward compatibility.
-- On Mac (`HUMANWARE_HOST=mac`): runs `git pull --rebase` first.
+- On Mac (`AI_CLI_HOST=mac`): runs `git pull --rebase` first.
 
 ### ai setup
 

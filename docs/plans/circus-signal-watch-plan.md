@@ -85,7 +85,7 @@ def _ensure_circusd() -> str:
 7. Poll endpoint up to 10 × 0.3s retries
 8. Return endpoint
 
-**Env note:** `Popen` with `env=None` inherits the caller's env — `HUMANWARE_HOST` etc. reach child processes automatically.
+**Env note:** `Popen` with `env=None` inherits the caller's env — `AI_CLI_HOST` etc. reach child processes automatically.
 
 ### 3. `ai signal-watch start <project> <session>`
 
@@ -100,7 +100,7 @@ def _cmd_signal_watch_start(project: str, session: str) -> None:
 5. `client.send_message("add", name=watcher_name, cmd=cmd, options={...}, start=True)`
 
 Options:
-- `copy_env: True` — inherit `HUMANWARE_HOST`, `HOME`, etc.
+- `copy_env: True` — inherit `AI_CLI_HOST`, `HOME`, etc.
 - `respawn: False` — signal-watch exits on NATS disconnect; don't auto-restart after explicit stop
 - `singleton: True` — one process per watcher
 - `autostart: True`

@@ -248,7 +248,7 @@ After writing the file in `post_handoff()`, publish to subject `"handoff.{projec
 **Batch:** 1
 
 In `NATSClient.connect()`, before attempting connection:
-- If `HUMANWARE_HOST == "mac"` and port 4222 is not reachable locally (1s socket timeout): open tunnel via `subprocess.Popen(["ssh", "-fNL", "4222:localhost:4222", "sergei@178.104.70.139"])`
+- If `AI_CLI_HOST == "mac"` and port 4222 is not reachable locally (1s socket timeout): open tunnel via `subprocess.Popen(["ssh", "-fNL", "4222:localhost:4222", "sergei@178.104.70.139"])`
 - Wait up to 3s for port to become available, then proceed with normal connect
 - Store tunnel PID for cleanup on disconnect
 
@@ -256,7 +256,7 @@ In `NATSClient.connect()`, before attempting connection:
 - `src/ai_cli/messaging.py`
 
 **Acceptance criteria:**
-- [ ] When `HUMANWARE_HOST=mac` and port 4222 unreachable, SSH tunnel is opened
+- [ ] When `AI_CLI_HOST=mac` and port 4222 unreachable, SSH tunnel is opened
 - [ ] Connect proceeds after tunnel is up (port reachable within 3s)
 - [ ] When port already reachable, no tunnel is opened
 - [ ] Non-`mac` hosts: tunnel logic skipped entirely

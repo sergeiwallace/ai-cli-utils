@@ -71,37 +71,44 @@ ai sync push
 ### Session management
 
 ```bash
-ai c <name>          # Start/resume Claude Code session
-ai g <name>          # Start/resume Gemini CLI session
-ai c -r <name>       # Resume existing session explicitly
-ai c -b <name>       # Run bare (no tmux wrapper)
-ai c -o <name>       # Run once (no auto-resume loop)
+ai c <name>            # Start/resume Claude Code session
+ai g <name>            # Start/resume Gemini CLI session
+ai c -r/--resume       # Resume existing session explicitly
+ai c -b/--bare         # Run bare (no tmux wrapper)
+ai c -o/--once         # Run once (no auto-resume loop)
+ai c -n/--notify       # Fire system notifications on task completion
+ai c -s/--sandbox      # Explicitly enable sandboxing
+ai c -S/--no-sandbox   # Explicitly disable sandboxing
+ai c -W/--no-worktree  # Disable git worktree isolation
 ```
 
 ### Remote sessions
 
 ```bash
-ai c -R <name>              # Connect to remote server (uses config)
-ai c -R -p myproject <name> # Specify remote project directory
+ai c -R/--remote <name>            # Connect to remote server (uses config)
+ai c -R -p/--project myproject <name>  # Specify remote project directory
 ```
 
 ### Cross-machine sync
 
 ```bash
-ai sync push         # Push Claude Code state to remote
-ai sync pull         # Pull remote state to local
-ai sync conflicts    # Show unresolved sync conflicts
-ai sync watch        # Watch for sync events via NATS
+ai sync push [-m] [-n] [-v] [-f]   # Push Claude Code state to remote
+ai sync pull [-m] [-n] [-v] [-f]   # Pull remote state to local
+ai sync conflicts                   # Show unresolved sync conflicts
+ai sync watch [-v]                  # Watch for sync events via NATS
 ```
+
+Flags: `-m`/`--memories-only`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force`
 
 ### Gemini with auth fallback
 
 ```bash
 ai gemini "prompt" -m deep-think          # Run with 3-tier fallback, stdout + auto file
 ai gemini "prompt" -m pro -o output.md    # Specify output file
-ai gemini "prompt" -m flash --quiet       # File only, no stdout
+ai gemini "prompt" -m flash -q            # File only, no stdout (-q/--quiet)
 cat prompt.txt | ai gemini -m deep-think  # Pipe from stdin
-ai gemini "prompt" -m flash --no-file     # Stdout only, no file
+ai gemini "prompt" -m flash -F            # Stdout only, no file (-F/--no-file)
+ai gemini "prompt" -m flash -t 120        # 120s timeout (-t/--timeout)
 ```
 
 **Auth fallback chain (automatic on 429/capacity errors):**
@@ -118,9 +125,9 @@ Install with Gemini REST support: `uv tool install "ai-cli-utils[gemini]"`
 ### Session picker
 
 ```bash
-ai ls                # Interactive fzf session picker (installs fzf via apt if absent)
-ai ls --all          # Show all tmux sessions, not just ai-cli sessions
-ai attach <name>     # Attach directly to a named tmux session
+ai ls              # Interactive fzf session picker (installs fzf via apt if absent)
+ai ls -a/--all     # Show all tmux sessions, not just ai-cli sessions
+ai attach <name>   # Attach directly to a named tmux session
 ```
 
 ### SSH tunnels
@@ -128,11 +135,11 @@ ai attach <name>     # Attach directly to a named tmux session
 Keep a reverse tunnel alive across network drops (useful for remote browser automation via CDP):
 
 ```bash
-ai tunnel start 9222            # Reverse tunnel: localhost:9222 → server:9222 (auto-reconnects)
-ai tunnel start 9222 9223       # Different remote port
-ai tunnel start 9222 --forward  # Forward tunnel (-L) instead of reverse (-R)
-ai tunnel stop 9222             # Stop the tunnel
-ai tunnel status                # List all active tunnels
+ai tunnel start 9222              # Reverse tunnel: localhost:9222 → server:9222 (auto-reconnects)
+ai tunnel start 9222 9223         # Different remote port
+ai tunnel start 9222 -L/--forward # Forward tunnel instead of reverse
+ai tunnel stop 9222               # Stop the tunnel
+ai tunnel status                  # List all active tunnels
 ```
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Host/user from `[remote]` config.
@@ -153,8 +160,7 @@ ai signal-watch status   # List Circus-managed signal-watch processes
 ai memory watch          # Watch for Claude Code memory file changes
 ai quota watch           # Monitor API quota usage
 ai telemetry writer      # Run telemetry writer daemon
-ai update                # Update to latest from source (bumps version, reinstalls)
-ai update --force        # Also reinstall all dependencies
+ai update [-f/--force]   # Update to latest from source; --force also reinstalls all deps
 ai reconnect             # Print reconnect commands for remote sessions
 ```
 
@@ -201,6 +207,18 @@ remote_host = "user@host"      # for cross-machine sync
 
 [behavior]
 notify_on_exit = true          # desktop notifications on task completion
+
+[machine]
+# host_id = "mac"              # optional: identify this machine for targeted handoffs (ai handoff --for-machine)
+
+[update]
+# extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
+```
+
+Set `AI_CLI_HOST` in your shell profile (`~/.bashrc` or `~/.zshrc`) above the interactive guard to identify the machine. This is used when posting targeted handoffs (`ai handoff post --for-machine mac ...`):
+
+```bash
+export AI_CLI_HOST=mac    # or "hetzner", "work-laptop", etc.
 ```
 
 ## Requirements

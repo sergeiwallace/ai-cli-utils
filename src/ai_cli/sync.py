@@ -172,10 +172,10 @@ _SETTINGS_FILE = "settings.json"
 def _parse_flags(flags: list[str]) -> tuple[bool, bool, bool, bool, bool]:
     """Parse common sync flags. Returns (memories_only, dry_run, verbose, force, prefer_remote)."""
     return (
-        "--memories-only" in flags,
-        "--dry-run" in flags,
-        "--verbose" in flags,
-        "--force" in flags,
+        "--memories-only" in flags or "-m" in flags,
+        "--dry-run" in flags or "-n" in flags,
+        "--verbose" in flags or "-v" in flags,
+        "--force" in flags or "-f" in flags,
         "--prefer-remote" in flags,
     )
 

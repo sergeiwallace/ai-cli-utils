@@ -475,8 +475,10 @@ def gemini_cli(args: list[str]):
     Usage:
       ai gemini "prompt text" -m deep-think
       ai gemini "prompt text" -m pro -o output.md
-      ai gemini "prompt text" -m flash --quiet
+      ai gemini "prompt text" -m flash -q
       cat prompt.txt | ai gemini -m deep-think -o output.md
+      ai gemini "prompt" -m flash -F           # stdout only, no file
+      ai gemini "prompt" -m flash -t 120       # 120s timeout
     """
     import argparse
 
@@ -491,8 +493,8 @@ def gemini_cli(args: list[str]):
     parser.add_argument("-o", "--output", default=None, help="Output file path (auto-generated if not specified)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress stdout output (file only)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed tier/model info")
-    parser.add_argument("--timeout", type=int, default=600, help="Timeout in seconds (default: 600)")
-    parser.add_argument("--no-file", action="store_true", help="Don't write output to file, stdout only")
+    parser.add_argument("-t", "--timeout", type=int, default=600, help="Timeout in seconds (default: 600)")
+    parser.add_argument("-F", "--no-file", action="store_true", help="Don't write output to file, stdout only")
 
     parsed = parser.parse_args(args)
 

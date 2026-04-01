@@ -76,6 +76,12 @@ stale_session_timeout = 15
 # NATS server URLs for fleet messaging (heartbeats, events)
 nats_servers = ["nats://localhost:4222"]
 
+[machine]
+## Identifier for this machine. Used to target handoffs to a specific host.
+## Set AI_CLI_HOST in your shell environment (~/.bashrc or ~/.zshrc) above the interactive guard.
+## Example values: "mac", "hetzner", "work-laptop"
+# host_id = ""
+
 [update]
 ## Additional venv paths to install ai-cli-utils into after 'ai update'
 ## Useful if you have tools or virtual environments that depend on ai-cli-utils
@@ -1159,7 +1165,7 @@ def _log_handoff_event(event_type: str, **fields) -> None:
 
 def post_handoff(title, priority, project, message, for_machine=None):
     if for_machine is None:
-        for_machine = os.environ.get("HUMANWARE_HOST", "")
+        for_machine = os.environ.get("AI_CLI_HOST", "")
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
         print("Error: [project] main_project not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
@@ -1670,7 +1676,7 @@ def cli():
                 priority = data.get("priority", "")
                 message = data.get("message", "")
                 for_machine = data.get("for_machine", "")
-                if for_machine and for_machine != os.environ.get("HUMANWARE_HOST", ""):
+                if for_machine and for_machine != os.environ.get("AI_CLI_HOST", ""):
                     return  # not intended for this machine
                 print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
                 if sw_handoff_dir is None or not handoff_id:
@@ -1794,7 +1800,7 @@ def cli():
                 priority = data.get("priority", "")
                 message = data.get("message", "")
                 for_machine = data.get("for_machine", "")
-                if for_machine and for_machine != os.environ.get("HUMANWARE_HOST", ""):
+                if for_machine and for_machine != os.environ.get("AI_CLI_HOST", ""):
                     return False  # not intended for this machine
                 if hd_handoff_dir is None or not handoff_id:
                     return False
@@ -1949,17 +1955,22 @@ def cli():
         action = sys.argv[2]
         if action == "post":
             post_args = sys.argv[3:]
-            if "--remote" in post_args:
-                post_args = [a for a in post_args if a != "--remote"]
+            if "--remote" in post_args or "-R" in post_args:
+                post_args = [a for a in post_args if a not in ("--remote", "-R")]
                 remote_cfg = load_config().get("remote", {})
-                remote_host = remote_cfg.get("host", "178.104.70.139")
-                remote_user = remote_cfg.get("user", "sergei")
+                remote_host = remote_cfg.get("host", "")
+                remote_user = remote_cfg.get("user", "ubuntu")
+                if not remote_host:
+                    print("Error: [remote] host not set in config", file=sys.stderr)
+                    sys.exit(1)
                 os.execvp("ssh", ["ssh", f"{remote_user}@{remote_host}", "ai", "handoff", "post"] + post_args)
             for_machine = None
-            if "--for-machine" in post_args:
-                idx = post_args.index("--for-machine")
-                for_machine = post_args[idx + 1]
-                post_args = post_args[:idx] + post_args[idx + 2 :]
+            for flag in ("--for-machine", "-m"):
+                if flag in post_args:
+                    idx = post_args.index(flag)
+                    for_machine = post_args[idx + 1]
+                    post_args = post_args[:idx] + post_args[idx + 2 :]
+                    break
             post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
         elif action == "check":
             check_handoff()
@@ -2007,18 +2018,18 @@ def cli():
     if len(sys.argv) > 1 and sys.argv[1] == "tunnel":
         if len(sys.argv) < 3:
             print(
-                "Usage: ai tunnel [start <local-port> [remote-port] [--forward] | stop <port> | status]",
+                "Usage: ai tunnel [start <local-port> [remote-port] [-L|--forward] | stop <port> | status]",
                 file=sys.stderr,
             )
             sys.exit(1)
         tn_action = sys.argv[2]
         if tn_action == "start":
             if len(sys.argv) < 4:
-                print("Usage: ai tunnel start <local-port> [remote-port] [--forward]", file=sys.stderr)
+                print("Usage: ai tunnel start <local-port> [remote-port] [-L|--forward]", file=sys.stderr)
                 sys.exit(1)
             local_port = int(sys.argv[3])
             args_rest = sys.argv[4:]
-            forward = "--forward" in args_rest
+            forward = "--forward" in args_rest or "-L" in args_rest
             non_flag = [a for a in args_rest if not a.startswith("--")]
             remote_port = int(non_flag[0]) if non_flag else local_port
             _cmd_tunnel_start(local_port, remote_port, forward=forward, config=config)
@@ -2062,7 +2073,9 @@ def cli():
 
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         if len(sys.argv) == 2:
-            print("Usage: ai sync [push|pull|conflicts|watch] [--memories-only] [--dry-run] [--verbose] [--force]")
+            print(
+                "Usage: ai sync [push|pull|conflicts|watch] [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]"
+            )
             sys.exit(1)
         from .sync import sync_push, sync_pull, sync_conflicts, sync_watch
 
@@ -2134,7 +2147,7 @@ def cli():
         sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] in ("update", "deploy"):
-        force_reinstall = "--force" in sys.argv
+        force_reinstall = "--force" in sys.argv or "-f" in sys.argv
         cfg_deploy = config.get("deploy", {})
         project_path_str = cfg_deploy.get("project_path", "")
         project_path = Path(project_path_str).expanduser() if project_path_str else Path.cwd()
@@ -2152,7 +2165,7 @@ def cli():
             sys.exit(1)
         base = re.sub(r"\.post\d+$", "", m.group(2))
         new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
-        is_mac = os.environ.get("HUMANWARE_HOST") == "mac"
+        is_mac = os.environ.get("AI_CLI_HOST") == "mac"
         if is_mac:
             print("Pulling latest from origin...")
             subprocess.run(["git", "pull", "--rebase"], cwd=project_path, check=False)
@@ -2200,7 +2213,7 @@ def cli():
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
     if len(sys.argv) > 1 and sys.argv[1] == "ls":
-        show_all = "--all" in sys.argv
+        show_all = "--all" in sys.argv or "-a" in sys.argv
 
         res = subprocess.run(
             ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
@@ -2304,8 +2317,8 @@ def cli():
     parser.add_argument("-b", "--bare", action="store_true", help="Run bare tool without tmux at all")
     parser.add_argument("-n", "--notify", action="store_true", help="Fire system notifications on task completion")
     parser.add_argument("-s", "--sandbox", action="store_true", help="Explicitly enable sandboxing")
-    parser.add_argument("--no-sandbox", action="store_true", help="Explicitly disable sandboxing")
-    parser.add_argument("--no-worktree", action="store_true", help="Disable git worktree isolation")
+    parser.add_argument("-S", "--no-sandbox", action="store_true", help="Explicitly disable sandboxing")
+    parser.add_argument("-W", "--no-worktree", action="store_true", help="Disable git worktree isolation")
     parser.add_argument(
         "-R", "--remote", action="store_true", help="Run session on remote server (configured in [remote])"
     )

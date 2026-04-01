@@ -837,7 +837,7 @@ class TestHandoff:
     def test_post_handoff_writes_for_machine_from_env(self, tmp_path):
         queue_dir = tmp_path / ".handoff-queue"
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
-            with patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}):
+            with patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}):
                 post_handoff("Task", "P1", "proj", "msg")
         content = list((queue_dir / "pending").glob("*.md"))[0].read_text()
         assert "for_machine: hetzner" in content
@@ -1352,7 +1352,7 @@ class TestSignalWatchCli:
         assert send_keys_calls == [], "startup scan must not send-keys"
 
     def test_signal_watch_when_for_machine_matches_then_claims(self, tmp_path):
-        """Handoff with for_machine matching HUMANWARE_HOST should be claimed."""
+        """Handoff with for_machine matching AI_CLI_HOST should be claimed."""
         handoff_dir = tmp_path / ".handoff-queue"
         (handoff_dir / "pending").mkdir(parents=True)
         file_content = '---\nid: "8"\ntitle: "local task"\nclaimed_by: null\nclaimed_at: null\n---\n'
@@ -1395,7 +1395,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
-            patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1404,7 +1404,7 @@ class TestSignalWatchCli:
         assert (state_dir / "handoff-pending-c-sw-6").exists()
 
     def test_signal_watch_when_for_machine_mismatch_then_skips(self, tmp_path):
-        """Handoff with for_machine not matching HUMANWARE_HOST must be ignored."""
+        """Handoff with for_machine not matching AI_CLI_HOST must be ignored."""
         handoff_dir = tmp_path / ".handoff-queue"
         (handoff_dir / "pending").mkdir(parents=True)
         state_dir = tmp_path / "state"
@@ -1444,7 +1444,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
-            patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1453,7 +1453,7 @@ class TestSignalWatchCli:
         assert not (state_dir / "handoff-pending-c-sw-7").exists()
 
     def test_signal_watch_startup_scan_when_for_machine_mismatch_then_skips(self, tmp_path):
-        """Startup scan must skip files whose for_machine doesn't match HUMANWARE_HOST."""
+        """Startup scan must skip files whose for_machine doesn't match AI_CLI_HOST."""
         handoff_dir = tmp_path / ".handoff-queue"
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
@@ -1483,7 +1483,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
-            patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1498,22 +1498,14 @@ class TestSignalWatchCli:
 
 
 class TestHandoffPostRemote:
-    def test_post_handoff_remote_flag_when_no_remote_config_then_sshs_to_default_host(self):
+    def test_post_handoff_remote_flag_when_no_remote_config_then_exits_1(self):
         with (
             patch("sys.argv", ["ai", "handoff", "post", "--remote", "Fix bug", "P1", "myapp", "Details"]),
             patch("ai_cli.main.load_config", return_value={}),
-            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
-            with pytest.raises(SystemExit):
+            with pytest.raises(SystemExit) as exc:
                 cli()
-
-        mock_exec.assert_called_once()
-        cmd, args = mock_exec.call_args[0]
-        assert cmd == "ssh"
-        assert any("178.104.70.139" in a for a in args)
-        assert "ai" in args
-        assert "handoff" in args
-        assert "post" in args
+        assert exc.value.code == 1
 
     def test_post_handoff_remote_flag_when_remote_config_set_then_sshs_to_configured_host(self):
         config = {"remote": {"host": "9.9.9.9", "user": "alice"}}
@@ -1675,7 +1667,7 @@ class TestDeploy:
             patch("sys.argv", ["ai", "deploy"]),
             patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
-            patch.dict("os.environ", {"HUMANWARE_HOST": "mac"}),
+            patch.dict("os.environ", {"AI_CLI_HOST": "mac"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
