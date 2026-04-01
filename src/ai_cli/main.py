@@ -1339,6 +1339,80 @@ def trigger_background_update():
     )
 
 
+# --- SSH tunnel management (autossh-backed) ---
+
+
+def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = False, config: dict) -> None:
+    autossh_bin = shutil.which("autossh")
+    if not autossh_bin:
+        print(
+            "autossh not found. Install it first:\n  macOS:  brew install autossh\n  Linux:  apt install autossh",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    remote_cfg = config.get("remote", {})
+    host = remote_cfg.get("host", "")
+    user = remote_cfg.get("user", "ubuntu")
+    if not host:
+        print("Error: [remote] host not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+        sys.exit(1)
+
+    direction = "-L" if forward else "-R"
+    cmd = [
+        autossh_bin,
+        "-M",
+        "0",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-N",
+        direction,
+        f"{remote_port}:localhost:{local_port}",
+        f"{user}@{host}",
+    ]
+    proc = subprocess.Popen(cmd, start_new_session=True)
+    state_dir = get_xdg_state_home()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / f"tunnel-{local_port}.pid").write_text(str(proc.pid))
+    print(f"Tunnel started: localhost:{local_port} -> {host}:{remote_port} (PID {proc.pid})")
+
+
+def _cmd_tunnel_stop(local_port: int) -> None:
+    state_dir = get_xdg_state_home()
+    pid_file = state_dir / f"tunnel-{local_port}.pid"
+    if not pid_file.exists():
+        return
+    pid = int(pid_file.read_text().strip())
+    try:
+        os.kill(pid, 15)  # SIGTERM
+    except ProcessLookupError:
+        pass
+    pid_file.unlink(missing_ok=True)
+    print(f"Tunnel stopped: port {local_port}")
+
+
+def _cmd_tunnel_status() -> None:
+    state_dir = get_xdg_state_home()
+    pid_files = sorted(state_dir.glob("tunnel-*.pid"))
+    if not pid_files:
+        print("No tunnels registered.")
+        return
+    for pid_file in pid_files:
+        port = pid_file.stem[len("tunnel-") :]
+        pid = int(pid_file.read_text().strip())
+        try:
+            os.kill(pid, 0)
+            status = "alive"
+        except ProcessLookupError:
+            status = "dead"
+            pid_file.unlink(missing_ok=True)
+        print(f"port {port}: PID {pid} ({status})")
+
+
 # --- Circus / signal-watch process management ---
 
 
@@ -1925,6 +1999,38 @@ def cli():
         gemini_cli(sys.argv[2:])
         sys.exit(0)
 
+    if len(sys.argv) > 1 and sys.argv[1] == "tunnel":
+        if len(sys.argv) < 3:
+            print(
+                "Usage: ai tunnel [start <local-port> [remote-port] [--forward] | stop <port> | status]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        tn_action = sys.argv[2]
+        if tn_action == "start":
+            if len(sys.argv) < 4:
+                print("Usage: ai tunnel start <local-port> [remote-port] [--forward]", file=sys.stderr)
+                sys.exit(1)
+            local_port = int(sys.argv[3])
+            args_rest = sys.argv[4:]
+            forward = "--forward" in args_rest
+            non_flag = [a for a in args_rest if not a.startswith("--")]
+            remote_port = int(non_flag[0]) if non_flag else local_port
+            _cmd_tunnel_start(local_port, remote_port, forward=forward, config=config)
+            sys.exit(0)
+        elif tn_action == "stop":
+            if len(sys.argv) < 4:
+                print("Usage: ai tunnel stop <port>", file=sys.stderr)
+                sys.exit(1)
+            _cmd_tunnel_stop(int(sys.argv[3]))
+            sys.exit(0)
+        elif tn_action == "status":
+            _cmd_tunnel_status()
+            sys.exit(0)
+        else:
+            print(f"Unknown tunnel action: {tn_action}. Use start, stop, or status.", file=sys.stderr)
+            sys.exit(1)
+
     if len(sys.argv) > 1 and sys.argv[1] == "signal-watch":
         if len(sys.argv) < 3:
             print("Usage: ai signal-watch [start <project> <session> | stop <session> | status]", file=sys.stderr)
@@ -2023,6 +2129,7 @@ def cli():
         sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] in ("update", "deploy"):
+        force_reinstall = "--force" in sys.argv
         cfg_deploy = config.get("deploy", {})
         project_path_str = cfg_deploy.get("project_path", "")
         project_path = Path(project_path_str).expanduser() if project_path_str else Path.cwd()
@@ -2048,10 +2155,10 @@ def cli():
         exit_code = 0
         try:
             pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
-            result = subprocess.run(
-                ["uv", "tool", "install", str(project_path), "--force"],
-                cwd=project_path,
-            )
+            uv_cmd = ["uv", "tool", "install", str(project_path), "--force"]
+            if force_reinstall:
+                uv_cmd.append("--reinstall")
+            result = subprocess.run(uv_cmd, cwd=project_path)
             exit_code = result.returncode
         finally:
             pyproject.write_text(original)
@@ -2059,8 +2166,11 @@ def cli():
             # Also install into aido venv if it exists (uses system uv with VIRTUAL_ENV set)
             aido_venv = Path.home() / "projects" / "aido" / ".venv"
             if aido_venv.exists():
+                pip_cmd = ["uv", "pip", "install", str(project_path)]
+                if force_reinstall:
+                    pip_cmd.append("--force-reinstall")
                 subprocess.run(
-                    ["uv", "pip", "install", str(project_path)],
+                    pip_cmd,
                     env={**os.environ, "VIRTUAL_ENV": str(aido_venv)},
                     check=False,
                 )

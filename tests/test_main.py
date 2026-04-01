@@ -58,6 +58,9 @@ from ai_cli.main import (
     _cmd_signal_watch_start,
     _cmd_signal_watch_stop,
     _cmd_signal_watch_status,
+    _cmd_tunnel_start,
+    _cmd_tunnel_stop,
+    _cmd_tunnel_status,
 )
 
 
@@ -4590,6 +4593,107 @@ class TestSignalWatchCircus:
         with (
             patch("sys.argv", ["ai", "signal-watch"]),
             patch("ai_cli.main.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
+
+# --- Tunnel tests ---
+
+_TUNNEL_CONFIG = {"remote": {"host": "178.104.70.139", "user": "sergei"}}
+
+
+class TestTunnel:
+    def test_cmd_tunnel_start_when_autossh_found_then_launches_reverse_tunnel(self, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
+        args = mock_popen.call_args[0][0]
+        assert "-R" in args
+        assert "9222:localhost:9222" in args
+        assert (tmp_path / "tunnel-9222.pid").read_text() == "12345"
+
+    def test_cmd_tunnel_start_when_forward_flag_then_uses_dash_L(self, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.pid = 99
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            _cmd_tunnel_start(8080, 8080, forward=True, config=_TUNNEL_CONFIG)
+        args = mock_popen.call_args[0][0]
+        assert "-L" in args
+        assert "-R" not in args
+
+    def test_cmd_tunnel_start_when_remote_port_omitted_then_defaults_to_local_port(self, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            _cmd_tunnel_start(5000, 5000, config=_TUNNEL_CONFIG)
+        args = mock_popen.call_args[0][0]
+        assert "5000:localhost:5000" in args
+
+    def test_cmd_tunnel_start_when_autossh_missing_then_exits_1(self, tmp_path):
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value=None),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
+            assert exc.value.code == 1
+
+    def test_cmd_tunnel_stop_when_pid_file_exists_then_kills_and_removes(self, tmp_path):
+        (tmp_path / "tunnel-9222.pid").write_text("5678")
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill") as mock_kill,
+        ):
+            _cmd_tunnel_stop(9222)
+        mock_kill.assert_called_once_with(5678, 15)
+        assert not (tmp_path / "tunnel-9222.pid").exists()
+
+    def test_cmd_tunnel_stop_when_no_pid_file_then_silent(self, tmp_path):
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            _cmd_tunnel_stop(9222)  # must not raise
+
+    def test_cmd_tunnel_status_lists_active_tunnels(self, tmp_path, capsys):
+        (tmp_path / "tunnel-9222.pid").write_text("4242")
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill"),  # process exists (no exception)
+        ):
+            _cmd_tunnel_status()
+        out = capsys.readouterr().out
+        assert "9222" in out
+        assert "4242" in out
+        assert "alive" in out
+
+    def test_cli_tunnel_start_dispatches(self, tmp_path):
+        with (
+            patch("sys.argv", ["ai", "tunnel", "start", "9222"]),
+            patch("ai_cli.main._cmd_tunnel_start") as mock_start,
+            patch("ai_cli.main.load_config", return_value=_TUNNEL_CONFIG),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+        mock_start.assert_called_once_with(9222, 9222, forward=False, config=_TUNNEL_CONFIG)
+
+    def test_cli_tunnel_missing_args_exits_1(self):
+        with (
+            patch("sys.argv", ["ai", "tunnel", "start"]),
+            patch("ai_cli.main.load_config", return_value=_TUNNEL_CONFIG),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
