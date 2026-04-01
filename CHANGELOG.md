@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai setup` command: detects humanware platform vs standalone environment and configures `CLAUDE.md` accordingly; marks file `assume-unchanged` in git after swap so external users don't see local modifications
+- `CLAUDE-full.md`: standalone self-contained Claude Code session config for users without the humanware platform; `CLAUDE.md` remains the lean variant for humanware users
 - pyright basic mode type checking in CI lint job
 
 ### Security

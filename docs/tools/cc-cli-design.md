@@ -24,6 +24,7 @@ source: internal
 - [Utility Commands](#utility-commands)
   - [ai gemini](#ai-gemini)
   - [ai handoff](#ai-handoff)
+  - [ai setup](#ai-setup)
   - [ai upgrade](#ai-upgrade)
 - [Internal Commands](#internal-commands)
 
@@ -171,6 +172,19 @@ ai handoff complete <file>
 Cross-session handoff queue. `post` writes a handoff item (add `--remote` to post to Hetzner via SSH); `check` prints the highest-priority pending file; `claim` atomically moves a file to `claimed/`; `complete` moves it to `completed/`.
 
 Queue lives at `~/projects/sergei/.handoff-queue/`. Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
+
+### ai setup
+
+```
+ai setup
+```
+
+Detects the runtime environment and configures the Claude Code session config (`CLAUDE.md`) accordingly.
+
+- **humanware platform detected** (`~/projects/CLAUDE.md` exists): confirms `CLAUDE.md` (lean version) is correct — the shared AI orchestration rules are inherited from `~/projects/CLAUDE.md`. No file changes made.
+- **no humanware platform**: copies `CLAUDE-full.md` → `CLAUDE.md` (standalone config with all rules), then runs `git update-index --assume-unchanged CLAUDE.md` so the swap doesn't show as a local modification.
+
+Run once after cloning or installing. Safe to re-run at any time.
 
 ### ai upgrade
 
