@@ -1142,11 +1142,11 @@ def get_engine_script(
         printf '{{"event":"handoff.while_loop_pickup","session":"%s","ts":%s}}\n' \
           "$tmux_session" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
       fi
-      # Self-update: if ai-cli was reinstalled, regenerate template and restart
+      # Self-update: if ai-cli was reinstalled, note it and continue (exec restart breaks mosh sessions)
       _current_ver=$(ai internal get-version 2>/dev/null || echo "unknown")
       if [[ "$_current_ver" != "unknown" && "$_current_ver" != "$_template_version" ]]; then
-        echo "ai-cli updated ($_template_version → $_current_ver) — restarting session..."
-        exec ai "$engine" "$ai_name"
+        echo "ai-cli updated ($_template_version → $_current_ver) — run 'ai c $ai_name' to get new template"
+        _template_version="$_current_ver"
       fi
       echo "Resuming... (Ctrl-C to exit)"
       sleep 0.5 || break

@@ -1791,11 +1791,12 @@ class TestGetEngineScriptSelfUpdate:
         script = get_engine_script("c", "c-sw-1", "c-sw-1", "c", "myapp")
         assert "_template_version=" in script
 
-    def test_engine_script_contains_version_check_and_exec(self):
+    def test_engine_script_contains_version_check_no_exec(self):
         script = get_engine_script("c", "c-sw-1", "c-sw-1", "c", "myapp")
         assert "ai internal get-version" in script
-        assert "exec ai" in script
         assert "_current_ver" in script
+        # exec restart is intentionally removed — it breaks mosh sessions
+        assert "exec ai" not in script
 
 
 # --- trigger_background_update ---
