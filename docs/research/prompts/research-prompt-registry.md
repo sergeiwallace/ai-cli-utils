@@ -77,6 +77,12 @@ NEVER generate binary images.
 </grounding_instructions>
 ```
 
+## Table of Contents
+
+- [Pending / Ready](#pending--ready)
+- [Completed](#completed)
+- [Deprecated / Archived](#deprecated--archived)
+
 ## Status Overview
 
 ### Pending / Ready
@@ -84,6 +90,11 @@ NEVER generate binary images.
 | # | Type | Topic | Task | Model | Status |
 |---|------|-------|------|-------|--------|
 | R-2 | Research | GitHub repo automation & ecosystem tooling | AI-CLI-3 | opus researcher | Complete |
+
+### Priority and Impact Notes
+
+| # | Prompt | Priority | Model | Tasks Unlocked / Enhanced | Why Now |
+|---|--------|----------|-------|--------------------------|---------|
 
 ### Completed
 
