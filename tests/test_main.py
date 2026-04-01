@@ -2748,6 +2748,53 @@ class TestCliSessionSetupBranches:
                             with pytest.raises(SystemExit):
                                 cli()
 
+    def test_cli_when_no_sandbox_and_session_exists_then_kills_and_recreates(self):
+        """--no-sandbox with existing session: kill old session, create new one with sandbox off."""
+        killed = []
+
+        def _run(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                # Return exists=0 first time, gone=1 after kill
+                return MagicMock(returncode=1 if killed else 0)
+            if cmd[0] == "tmux" and cmd[1] == "kill-session":
+                killed.append(True)
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.argv", ["ai", "g", "1", "--no-sandbox"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main._emit_iterm2_profile_setup"):
+                            with patch("subprocess.run", side_effect=_run):
+                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                    with pytest.raises(SystemExit):
+                                        cli()
+        assert len(killed) == 1
+
+    def test_cli_when_no_explicit_sandbox_and_session_exists_then_attaches_without_kill(self):
+        """No --no-sandbox/--sandbox: existing session is reattached without killing."""
+        killed = []
+
+        def _run(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                return MagicMock(returncode=0)
+            if cmd[0] == "tmux" and cmd[1] == "kill-session":
+                killed.append(True)
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.argv", ["ai", "g", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main._emit_iterm2_profile_setup"):
+                            with patch("subprocess.run", side_effect=_run):
+                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                    with pytest.raises(SystemExit):
+                                        cli()
+        assert len(killed) == 0
+
     def test_cli_when_remote_with_project_flag_then_uses_project_prefix(self):
         """Covers lines 1134, 1145, 1147: remote with -p flag."""
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}

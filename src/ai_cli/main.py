@@ -2524,6 +2524,11 @@ def cli():
 
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
+    explicit_sandbox = args.no_sandbox or args.sandbox
+    if existing.returncode == 0 and explicit_sandbox:
+        # Explicit sandbox flag — kill old session so it recreates with new settings
+        subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
+        existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
     if existing.returncode == 0:
         # Session exists — attach and detach any stale clients (e.g., closed tabs)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
