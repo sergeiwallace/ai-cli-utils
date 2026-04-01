@@ -210,7 +210,7 @@ notify_on_exit = true          # desktop notifications on task completion
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 - [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH)
 - [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`)
-- [NATS](https://nats.io/) (optional, for fleet messaging and sync watch)
+- [NATS](https://nats.io/) (optional — enables real-time handoff delivery, sync watch, and session events; see [NATS Setup Guide](docs/guides/nats-setup.md))
 
 ## Contributing
 

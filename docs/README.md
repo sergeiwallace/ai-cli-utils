@@ -15,6 +15,7 @@
 | `research/` | External investigation with citations and sources |
 | `roadmap/` | Prioritized task lists, epics, milestones |
 | `test/` | Test documentation, coverage reports |
+| `guides/` | User-facing setup guides for optional features (NATS, etc.) |
 | `tools/` | Tool docs, CLI references, integration guides |
 
 **Rules:** When creating a new subdirectory, add a README.md AND update this table. Each subdirectory has its own README.md with detailed guidelines.
