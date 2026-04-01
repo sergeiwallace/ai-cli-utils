@@ -85,10 +85,14 @@ class NATSClient:
         max_retries = 3
         for attempt in range(max_retries):
             try:
+
+                async def _noop_error_cb(e):
+                    pass
+
                 self.nc = await nats.connect(
                     servers=self.servers,
                     max_reconnect_attempts=0,
-                    error_cb=lambda e: None,
+                    error_cb=_noop_error_cb,
                 )
                 self.js = self.nc.jetstream()
                 return
