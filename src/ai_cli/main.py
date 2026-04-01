@@ -2179,10 +2179,8 @@ def cli():
             sys.exit(1)
         base = re.sub(r"\.post\d+$", "", m.group(2))
         new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
-        is_mac = os.environ.get("AI_CLI_HOST") == "mac"
-        if is_mac:
-            print("Pulling latest from origin...")
-            subprocess.run(["git", "pull", "--rebase"], cwd=project_path, check=False)
+        print("Pulling latest from origin...")
+        subprocess.run(["git", "pull", "--rebase"], cwd=project_path, check=False)
         print(f"Updating {m.group(2)} → {new_version}")
         exit_code = 0
         try:

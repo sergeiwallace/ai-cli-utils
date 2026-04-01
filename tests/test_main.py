@@ -1700,8 +1700,8 @@ class TestDeploy:
                 cli()
             assert exc.value.code == 0
 
-    def test_deploy_on_mac_pulls_before_install(self, tmp_path):
-        """On Mac, git pull --rebase must run before uv install."""
+    def test_deploy_always_pulls_before_install(self, tmp_path):
+        """ai update always pulls regardless of machine or flags."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')
         calls = []
@@ -1711,10 +1711,10 @@ class TestDeploy:
             return MagicMock(returncode=0)
 
         with (
-            patch("sys.argv", ["ai", "deploy"]),
+            patch("sys.argv", ["ai", "update"]),
             patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
-            patch.dict("os.environ", {"AI_CLI_HOST": "mac"}),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
