@@ -1882,6 +1882,7 @@ def cli():
         base = re.sub(r"\.post\d+$", "", m.group(2))
         new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
         is_mac = os.environ.get("HUMANWARE_HOST") == "mac"
+        print(f"DEBUG: HUMANWARE_HOST={os.environ.get('HUMANWARE_HOST')!r} is_mac={is_mac}", flush=True)
         if is_mac:
             print("Pulling latest from origin...")
             subprocess.run(["git", "pull", "--rebase"], cwd=project_path, check=False)
