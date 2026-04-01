@@ -1652,7 +1652,7 @@ def cli():
                     await hd_client.connect()
                     if not hd_client.js:
                         return
-                    consumer_name = f"{hd_session}-signal-watcher"
+                    consumer_name = f"{hd_session}-pre-launch"
                     subject = f"handoff.{hd_project}"
                     try:
                         await hd_client._ensure_stream(subject)
