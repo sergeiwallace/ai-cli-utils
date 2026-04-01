@@ -32,6 +32,21 @@
 
 <!-- Problem, goal, scope in 2-3 sentences -->
 
+> **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing from the goal?
+> - <enter feedback here>
+
+<!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
+
+> **AI Response Round N:**
+> - <AI response here>
+
+---
+
+> **Feedback Round N+1:**
+> - <enter feedback here>
+
+-->
+
 ## Options
 
 <!-- Implementation approach options with pros/cons. Always include at least 2 options. -->
@@ -81,6 +96,21 @@
 |-------|-------|-------|------|
 | 1 | T-01 | Foundation | Human approval |
 
+> **Feedback Round 1:** Does the batching make sense? Should any tasks be reordered, split, or merged?
+> - <enter feedback here>
+
+<!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
+
+> **AI Response Round N:**
+> - <AI response here>
+
+---
+
+> **Feedback Round N+1:**
+> - <enter feedback here>
+
+-->
+
 ## Human Gates
 
 | Gate | After | Decision needed |
@@ -91,19 +121,12 @@
 ## Open Questions
 
 1. <!-- Question 1 -->
-> - <approval or feedback>
 2. <!-- Question 2 -->
-> - <approval or feedback>
 
----
-
-> **Feedback Round 1:**
-> - Scope / task breakdown:
->
->    - <approval or feedback>
-> - Batching:
->
->    - <approval or feedback>
+> **Feedback Round 1:** Your thoughts on the open questions:
+> 1. <!-- Response to question 1 -->
+> 2. <!-- Response to question 2 -->
+> - <enter feedback here>
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
@@ -113,7 +136,7 @@
 ---
 
 > **Feedback Round N+1:**
-> - <approval or feedback>
+> - <enter feedback here>
 
 -->
 

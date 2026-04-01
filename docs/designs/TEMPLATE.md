@@ -78,19 +78,10 @@
 
 ---
 
-> **Feedback Round 1:**
-> 1. Decision 1:
->
->    - <approval or feedback>
-> 2. Decision 2:
->
->    - <approval or feedback>
-> - Architecture / design overall:
->
->    - <approval or feedback>
-> - Phasing:
->
->    - <approval or feedback>
+> **Feedback Round 1:** Your approval/feedback on each decision:
+> 1. Decision 1: <approval or feedback>
+> 2. Decision 2: <approval or feedback>
+> - <enter feedback here>
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
@@ -100,13 +91,28 @@
 ---
 
 > **Feedback Round N+1:**
-> - <approval or feedback>
+> - <enter feedback here>
 
 -->
 
 ## [Core System / Component]
 
 <!-- Detailed explanation of the design. Use subsections as needed. -->
+
+> **Feedback Round 1:** Does this approach feel right? What's missing?
+> - <enter feedback here>
+
+<!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
+
+> **AI Response Round N:**
+> - <AI response here>
+
+---
+
+> **Feedback Round N+1:**
+> - <enter feedback here>
+
+-->
 
 ## Data Model
 
@@ -120,6 +126,21 @@
 
 <!-- Phased rollout if applicable -->
 
+> **Feedback Round 1:** Does the phasing feel right — too big, too small? Should anything move earlier or later?
+> - <enter feedback here>
+
+<!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
+
+> **AI Response Round N:**
+> - <AI response here>
+
+---
+
+> **Feedback Round N+1:**
+> - <enter feedback here>
+
+-->
+
 ## Risks and Mitigations
 
 | # | Risk | Impact | Mitigation |
@@ -130,11 +151,26 @@
 ## Open Questions
 
 1. <!-- Question 1 -->
-> - <approval or feedback>
 2. <!-- Question 2 -->
-> - <approval or feedback>
 3. <!-- Question 3 -->
-> - <approval or feedback>
+
+> **Feedback Round 1:** Your thoughts on the open questions:
+> 1. <!-- Response to question 1 -->
+> 2. <!-- Response to question 2 -->
+> 3. <!-- Response to question 3 -->
+> - <enter feedback here>
+
+<!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
+
+> **AI Response Round N:**
+> - <AI response here>
+
+---
+
+> **Feedback Round N+1:**
+> - <enter feedback here>
+
+-->
 
 ## Approval Log
 
