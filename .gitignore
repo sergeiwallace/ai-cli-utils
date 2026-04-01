@@ -20,6 +20,7 @@ venv/
 *.userprefs
 
 # Obsidian (commit config, ignore workspace cache)
+documentation/.vscode/
 documentation/.obsidian/workspace.json
 documentation/.obsidian/workspace-mobile.json
 documentation/.obsidian/plugins/
