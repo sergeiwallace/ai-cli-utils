@@ -1514,7 +1514,7 @@ class TestDeploy:
         assert pull_idx < uv_idx, "git pull must run before uv install"
 
     def test_deploy_on_hetzner_installs_aido_venv_when_present(self, tmp_path):
-        """On non-Mac, also installs into aido venv if it exists."""
+        """Installs into aido venv on any host if it exists."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')
         aido_venv = tmp_path / "projects" / "aido" / ".venv"
@@ -1540,6 +1540,34 @@ class TestDeploy:
 
         cmds = [" ".join(c) for c in calls]
         assert any("pip" in c and "reinstall" in c for c in cmds), "aido venv install not called"
+
+    def test_deploy_on_mac_installs_aido_venv_when_present(self, tmp_path):
+        """Mac also installs into aido venv if it exists — not gated by host."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        aido_venv = tmp_path / "projects" / "aido" / ".venv"
+        aido_venv.mkdir(parents=True)
+        (aido_venv / "bin").mkdir()
+        (aido_venv / "bin" / "uv").touch()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0)
+
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+            patch.dict("os.environ", {"HUMANWARE_HOST": "mac"}),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        cmds = [" ".join(c) for c in calls]
+        assert any("pip" in c and "reinstall" in c for c in cmds), "aido venv install not called on Mac"
 
 
 class TestGetEngineScriptSelfUpdate:

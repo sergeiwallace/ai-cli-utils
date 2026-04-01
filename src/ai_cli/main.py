@@ -1896,7 +1896,7 @@ def cli():
             exit_code = result.returncode
         finally:
             pyproject.write_text(original)
-        if exit_code == 0 and not is_mac:
+        if exit_code == 0:
             # Also install into aido venv if it exists
             aido_venv = Path.home() / "projects" / "aido" / ".venv"
             if aido_venv.exists():
