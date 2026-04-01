@@ -795,7 +795,7 @@ class TestHandoff:
     def test_post_handoff_when_called_then_creates_file(self, tmp_path):
         queue_dir = tmp_path / ".handoff-queue"
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
-            post_handoff("Fix bug", "P1", "myapp", "Details here")
+            post_handoff("Fix bug", "P1", "myapp", "Details here", for_machine="hetzner")
         pending_files = list((queue_dir / "pending").glob("*.md"))
         assert len(pending_files) == 1
         content = pending_files[0].read_text()
@@ -810,7 +810,7 @@ class TestHandoff:
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
-                    post_handoff("Deploy done", "P1", "artelier", "Details")
+                    post_handoff("Deploy done", "P1", "artelier", "Details", for_machine="hetzner")
 
         mock_client.publish.assert_called_once()
         subject, payload = mock_client.publish.call_args[0]
@@ -824,23 +824,20 @@ class TestHandoff:
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient", side_effect=Exception("NATS unavailable")):
-                    post_handoff("Fix bug", "P1", "myapp", "Details")
+                    post_handoff("Fix bug", "P1", "myapp", "Details", for_machine="hetzner")
         pending_files = list((queue_dir / "pending").glob("*.md"))
         assert len(pending_files) == 1
 
     def test_post_handoff_when_no_main_project_then_exits(self):
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
             with pytest.raises(SystemExit) as exc:
-                post_handoff("title", "P1", "proj", "msg")
+                post_handoff("title", "P1", "proj", "msg", for_machine="hetzner")
             assert exc.value.code == 1
 
-    def test_post_handoff_writes_for_machine_from_env(self, tmp_path):
-        queue_dir = tmp_path / ".handoff-queue"
-        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
-            with patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}):
-                post_handoff("Task", "P1", "proj", "msg")
-        content = list((queue_dir / "pending").glob("*.md"))[0].read_text()
-        assert "for_machine: hetzner" in content
+    def test_post_handoff_when_no_for_machine_then_exits(self):
+        with pytest.raises(SystemExit) as exc:
+            post_handoff("title", "P1", "proj", "msg")
+        assert exc.value.code == 1
 
     def test_post_handoff_writes_explicit_for_machine(self, tmp_path):
         queue_dir = tmp_path / ".handoff-queue"
@@ -1004,7 +1001,7 @@ class TestSignalWatchCli:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         (pending / "003-fix-login.md").write_text(
-            '---\nid: "3"\ntitle: "fix login"\nclaimed_by: null\nclaimed_at: null\n---\n'
+            '---\nid: "3"\ntitle: "fix login"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n'
         )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -1022,7 +1019,9 @@ class TestSignalWatchCli:
         async def fake_sleep(_):
             if "cb" in received_callback:
                 msg = MagicMock()
-                msg.data = b'{"id": 3, "title": "fix login", "priority": "P1", "message": "do it"}'
+                msg.data = (
+                    b'{"id": 3, "title": "fix login", "priority": "P1", "message": "do it", "for_machine": "hetzner"}'
+                )
                 msg.ack = AsyncMock()
                 await received_callback["cb"](msg)
             raise asyncio.CancelledError
@@ -1035,6 +1034,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1142,7 +1142,9 @@ class TestSignalWatchCli:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         # No local file — task arrives via NATS payload only (cross-machine delivery)
-        file_content = '---\nid: "4"\ntitle: "nudge task"\nclaimed_by: null\nclaimed_at: null\n---\n'
+        file_content = (
+            '---\nid: "4"\ntitle: "nudge task"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n'
+        )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         mock_nc = MagicMock()
@@ -1176,6 +1178,7 @@ class TestSignalWatchCli:
                         "title": "nudge task",
                         "priority": "P1",
                         "message": "do it",
+                        "for_machine": "hetzner",
                         "content": file_content,
                         "filename": "004-nudge-task.md",
                     }
@@ -1192,6 +1195,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run", side_effect=fake_subprocess_run),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1217,7 +1221,7 @@ class TestSignalWatchCli:
 
         mock_js.subscribe = fake_js_subscribe
 
-        file_content = '---\nid: "7"\ntitle: "remote task"\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+        file_content = '---\nid: "7"\ntitle: "remote task"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
 
         async def fake_sleep(_):
             if "cb" in received_callback:
@@ -1228,6 +1232,7 @@ class TestSignalWatchCli:
                         "title": "remote task",
                         "priority": "P1",
                         "message": "Do this.",
+                        "for_machine": "hetzner",
                         "content": file_content,
                         "filename": "007-remote-task.md",
                     }
@@ -1244,6 +1249,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1262,7 +1268,7 @@ class TestSignalWatchCli:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         (pending / "004-pre-existing-task.md").write_text(
-            '---\nid: "4"\ntitle: "pre-existing task"\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+            '---\nid: "4"\ntitle: "pre-existing task"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
         )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -1287,6 +1293,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1307,7 +1314,7 @@ class TestSignalWatchCli:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         (pending / "005-startup-task.md").write_text(
-            '---\nid: "5"\ntitle: "startup task"\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+            '---\nid: "5"\ntitle: "startup task"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
         )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -1342,6 +1349,7 @@ class TestSignalWatchCli:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run", side_effect=fake_subprocess_run),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1493,6 +1501,45 @@ class TestSignalWatchCli:
         assert (pending / "010-mac-task.md").exists()
         assert not (state_dir / "handoff-pending-c-sw-8").exists()
 
+    def test_signal_watch_startup_scan_when_no_for_machine_then_skips(self, tmp_path):
+        """Startup scan must skip files with empty/missing for_machine (required field)."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "011-unaddressed.md").write_text(
+            '---\nid: "11"\ntitle: "unaddressed"\nclaimed_by: null\nclaimed_at: null\n---\n\nNo machine set.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+
+        async def fake_js_subscribe(subject, durable, cb):
+            pass
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-9"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert not (state_dir / "handoff-pending-c-sw-9").exists()
+
 
 # --- ai handoff post --remote ---
 
@@ -1525,7 +1572,7 @@ class TestHandoffPostRemote:
     def test_post_handoff_without_remote_flag_writes_local_file(self, tmp_path):
         queue_dir = tmp_path / ".handoff-queue"
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
-            post_handoff("Local task", "P1", "myapp", "Details")
+            post_handoff("Local task", "P1", "myapp", "Details", for_machine="hetzner")
         files = list((queue_dir / "pending").glob("*.md"))
         assert len(files) == 1
 
@@ -1548,7 +1595,7 @@ class TestHandoffPostRemote:
             patch("ai_cli.main.load_config", return_value={}),
             patch.object(msg_mod, "NATSClient", FakeNATSClient),
         ):
-            post_handoff("Cross-machine task", "P1", "myapp", "Do this remotely")
+            post_handoff("Cross-machine task", "P1", "myapp", "Do this remotely", for_machine="hetzner")
 
         assert len(published_payloads) == 1
         subject, payload = published_payloads[0]
@@ -1959,13 +2006,20 @@ class TestCliDispatch:
                     mock_nats.assert_called_once()
 
     def test_cli_when_handoff_post_then_calls_post_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "post", "title", "P1", "proj", "msg"]):
+        with patch("sys.argv", ["ai", "handoff", "post", "--for-machine", "hetzner", "title", "P1", "proj", "msg"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.main.post_handoff") as mock_post:
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
-                    mock_post.assert_called_once_with("title", "P1", "proj", "msg", for_machine=None)
+                    mock_post.assert_called_once_with("title", "P1", "proj", "msg", for_machine="hetzner")
+
+    def test_cli_when_handoff_post_without_for_machine_then_exits_1(self):
+        with patch("sys.argv", ["ai", "handoff", "post", "title", "P1", "proj", "msg"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 1
 
     def test_cli_when_handoff_claim_then_calls_claim_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "claim", "/tmp/file.md"]):
@@ -2524,7 +2578,7 @@ class TestPostHandoffIdScanning:
         (pending / "bad-name.md").write_text("content")
 
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
-            post_handoff("New task", "P1", "proj", "msg")
+            post_handoff("New task", "P1", "proj", "msg", for_machine="hetzner")
         files = list(pending.glob("001-*.md"))
         assert len(files) == 1
 
@@ -2799,7 +2853,7 @@ class TestPostHandoffExistingFilesMultiDir:
         (completed / "010-done-task.md").write_text("content")
 
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
-            post_handoff("New task", "P1", "proj", "msg")
+            post_handoff("New task", "P1", "proj", "msg", for_machine="hetzner")
         # Next ID should be 11
         pending_files = list((queue_dir / "pending").glob("*.md"))
         assert len(pending_files) == 1
@@ -3918,7 +3972,7 @@ class TestPostHandoffEventLogging:
             patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "c-sw-1"}),
         ):
-            post_handoff("Test task", "P1", "myapp", "Do this thing")
+            post_handoff("Test task", "P1", "myapp", "Do this thing", for_machine="hetzner")
         log_file = state_dir / "handoff-events.jsonl"
         assert log_file.exists()
         entry = json.loads(log_file.read_text().strip())
@@ -3950,7 +4004,9 @@ class TestSignalWatchEventLogging:
             received_callback["cb"] = cb
 
         mock_js.subscribe = fake_js_subscribe
-        file_content = '---\nid: "5"\ntitle: "test task"\nclaimed_by: null\nclaimed_at: null\n---\n'
+        file_content = (
+            '---\nid: "5"\ntitle: "test task"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n'
+        )
 
         async def fake_sleep(_):
             if "cb" in received_callback:
@@ -3961,6 +4017,7 @@ class TestSignalWatchEventLogging:
                         "title": "test task",
                         "priority": "P1",
                         "message": "do it",
+                        "for_machine": "hetzner",
                         "content": file_content,
                         "filename": "005-test-task.md",
                     }
@@ -3977,6 +4034,7 @@ class TestSignalWatchEventLogging:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -3996,7 +4054,9 @@ class TestSignalWatchEventLogging:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         # Use cross-machine payload to avoid startup scan claiming first
-        file_content = '---\nid: "6"\ntitle: "nudge me"\nclaimed_by: null\nclaimed_at: null\n---\n'
+        file_content = (
+            '---\nid: "6"\ntitle: "nudge me"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n'
+        )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         mock_nc = MagicMock()
@@ -4030,6 +4090,7 @@ class TestSignalWatchEventLogging:
                         "title": "nudge me",
                         "priority": "P1",
                         "message": "do it",
+                        "for_machine": "hetzner",
                         "content": file_content,
                         "filename": "006-nudge-task.md",
                     }
@@ -4046,6 +4107,7 @@ class TestSignalWatchEventLogging:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run", side_effect=fake_subprocess_run),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -4071,7 +4133,7 @@ class TestSignalWatchEventLogging:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         (pending / "007-scan-task.md").write_text(
-            '---\nid: "7"\ntitle: "scan task"\npriority: P2\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+            '---\nid: "7"\ntitle: "scan task"\npriority: P2\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
         )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -4096,6 +4158,7 @@ class TestSignalWatchEventLogging:
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
             patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -4344,7 +4407,7 @@ class TestHandoffDrain:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         (pending / "001-task.md").write_text(
-            '---\nid: "1"\ntitle: "local task"\npriority: P1\nproject: myapp\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+            '---\nid: "1"\ntitle: "local task"\npriority: P1\nproject: myapp\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
         )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -4355,6 +4418,7 @@ class TestHandoffDrain:
             patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -4420,7 +4484,7 @@ class TestHandoffDrain:
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
         (pending / "002-task.md").write_text(
-            '---\nid: "2"\ntitle: "log task"\npriority: P1\nproject: myapp\nclaimed_by: null\nclaimed_at: null\n---\n\nDo it.\n'
+            '---\nid: "2"\ntitle: "log task"\npriority: P1\nproject: myapp\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo it.\n'
         )
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -4431,6 +4495,7 @@ class TestHandoffDrain:
             patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()

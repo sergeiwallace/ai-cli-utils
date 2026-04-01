@@ -1174,8 +1174,9 @@ def _log_handoff_event(event_type: str, **fields) -> None:
 
 
 def post_handoff(title, priority, project, message, for_machine=None):
-    if for_machine is None:
-        for_machine = os.environ.get("AI_CLI_HOST", "")
+    if not for_machine:
+        print("Error: --for-machine is required (e.g. --for-machine mac)", file=sys.stderr)
+        sys.exit(1)
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
         print("Error: [project] main_project not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
@@ -1686,7 +1687,7 @@ def cli():
                 priority = data.get("priority", "")
                 message = data.get("message", "")
                 for_machine = data.get("for_machine", "")
-                if for_machine and for_machine != os.environ.get("AI_CLI_HOST", ""):
+                if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
                     return  # not intended for this machine
                 print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
                 if sw_handoff_dir is None or not handoff_id:
@@ -1810,7 +1811,7 @@ def cli():
                 priority = data.get("priority", "")
                 message = data.get("message", "")
                 for_machine = data.get("for_machine", "")
-                if for_machine and for_machine != os.environ.get("AI_CLI_HOST", ""):
+                if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
                     return False  # not intended for this machine
                 if hd_handoff_dir is None or not handoff_id:
                     return False
@@ -1981,6 +1982,9 @@ def cli():
                     for_machine = post_args[idx + 1]
                     post_args = post_args[:idx] + post_args[idx + 2 :]
                     break
+            if not for_machine:
+                print("Error: --for-machine <machine> is required", file=sys.stderr)
+                sys.exit(1)
             post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
         elif action == "check":
             check_handoff()
