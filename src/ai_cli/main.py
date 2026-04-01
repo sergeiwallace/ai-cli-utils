@@ -1053,25 +1053,11 @@ def get_engine_script(
         python3 scripts/session-broker.py --engine "$engine" 2>/dev/null || true
       fi
 
-      # On first run: claim any pending handoff for this project and queue it
-      # as the first message so CC launches with it immediately (zero user input required)
+      # On first run: synchronously drain local queue + NATS before launching CC.
+      # Writes prompt_file if a pending handoff exists (local or cross-machine via NATS).
+      # CC then launches with --continue on the task — zero user input required.
       if $first_run && [[ "$engine" == "c" && -n "$project_name" && ! -f "$prompt_file" ]]; then
-        _pending_handoff=$(ai handoff check-project "$project_name" 2>/dev/null)
-        if [[ -n "$_pending_handoff" ]]; then
-          _claimed_handoff=$(ai handoff claim "$_pending_handoff" 2>/dev/null)
-          if [[ -n "$_claimed_handoff" ]]; then
-            _hid=$(head -5 "$_claimed_handoff" 2>/dev/null | grep '^id:' | sed 's/id: *"\?//;s/"\?$//')
-            _htitle=$(head -5 "$_claimed_handoff" 2>/dev/null | grep '^title:' | sed 's/title: *"\?//;s/"\?$//')
-            _hprio=$(head -5 "$_claimed_handoff" 2>/dev/null | grep '^priority:' | awk '{{print $2}}')
-            _hbody=$(awk '/^---/{{p++}} p==2{{print}}' "$_claimed_handoff" 2>/dev/null | tail -n +2)
-            _hmsg="Auto-pickup: $_hprio handoff #$_hid — $_htitle. File: $_claimed_handoff
-
-$_hbody"
-            echo "$_hmsg" > "$prompt_file"
-            printf '{{"event":"handoff.session_start_pickup","session":"%s","handoff_id":"%s","ts":%s}}\n' \
-              "$tmux_session" "$_hid" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
-          fi
-        fi
+        ai internal handoff-drain "$project_name" "$tmux_session" 2>/dev/null || true
       fi
 
       if [[ -f "$prompt_file" ]]; then
@@ -1583,6 +1569,114 @@ def cli():
                 asyncio.run(sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff))
             except Exception:
                 pass
+            sys.exit(0)
+        elif action == "handoff-drain":
+            # ai internal handoff-drain <project> <session_id>
+            # Synchronous: drain pending NATS messages + local file scan, then exit.
+            # Called BEFORE CC launches so prompt_file is ready on first invocation.
+            if len(sys.argv) < 5:
+                sys.exit(0)
+            import asyncio
+            from .messaging import NATSClient
+
+            hd_project = sys.argv[3]
+            hd_session = sys.argv[4]
+            hd_handoff_dir = _get_handoff_queue_dir()
+            hd_prompt_file = get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
+            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+            hd_client = NATSClient(servers=nats_servers)
+
+            def _write_pending_if_claimed(data):
+                handoff_id = data.get("id")
+                title = data.get("title", "")
+                priority = data.get("priority", "")
+                message = data.get("message", "")
+                if hd_handoff_dir is None or not handoff_id:
+                    return False
+                # Cross-machine: write file locally from payload if missing
+                content = data.get("content")
+                filename = data.get("filename")
+                if content and filename:
+                    pending_dir = hd_handoff_dir / "pending"
+                    local_file = pending_dir / filename
+                    if not local_file.exists():
+                        pending_dir.mkdir(parents=True, exist_ok=True)
+                        try:
+                            local_file.write_text(content)
+                        except OSError:
+                            return False
+                claimed = _claim_handoff_for_signal(hd_handoff_dir, int(handoff_id), hd_session)
+                if claimed is None:
+                    return False
+                _log_handoff_event(
+                    "handoff.claimed",
+                    handoff_id=handoff_id,
+                    session=hd_session,
+                    layer="pre_launch_drain",
+                )
+                resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
+                hd_prompt_file.parent.mkdir(parents=True, exist_ok=True)
+                hd_prompt_file.write_text(resume_msg)
+                return True
+
+            # 1. Local file scan first (fast, no network)
+            if hd_handoff_dir is not None:
+                pending_dir = hd_handoff_dir / "pending"
+                if pending_dir.exists():
+                    best = _find_best_handoff(pending_dir, project_filter=hd_project)
+                    if best is not None:
+                        try:
+                            fid = int(best.name.split("-")[0])
+                            raw = best.read_text()
+                            fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
+                            fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
+                            body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
+                            _write_pending_if_claimed(
+                                {
+                                    "id": fid,
+                                    "title": fm_title.group(1).strip() if fm_title else best.stem,
+                                    "priority": fm_priority.group(1) if fm_priority else "",
+                                    "message": body,
+                                }
+                            )
+                        except Exception:
+                            pass
+
+            # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
+            if not hd_prompt_file.exists():
+
+                async def _drain():
+                    await hd_client.connect()
+                    if not hd_client.js:
+                        return
+                    consumer_name = f"{hd_session}-signal-watcher"
+                    subject = f"handoff.{hd_project}"
+                    try:
+                        await hd_client._ensure_stream(subject)
+                        sub = await hd_client.js.subscribe(subject, durable=consumer_name, config=None)
+                        while True:
+                            try:
+                                msgs = await sub.fetch(1, timeout=2)
+                                for msg in msgs:
+                                    try:
+                                        data = json.loads(msg.data.decode())
+                                    except Exception:
+                                        data = {}
+                                    await msg.ack()
+                                    if _write_pending_if_claimed(data):
+                                        return
+                            except Exception:
+                                break
+                    except Exception:
+                        pass
+                    finally:
+                        await hd_client.close()
+
+                try:
+                    asyncio.run(_drain())
+                except Exception:
+                    pass
+
             sys.exit(0)
         elif action == "iterm2-tab-title":
             # ai internal iterm2-tab-title <tab_key>

@@ -3968,7 +3968,7 @@ class TestCheckHandoffProject:
 
 
 class TestEngineScriptStartupHandoffPickup:
-    def test_get_engine_script_includes_startup_handoff_check(self):
+    def test_get_engine_script_includes_startup_handoff_drain(self):
         script = get_engine_script(
             "c",
             "ai-cli-2",
@@ -3977,11 +3977,9 @@ class TestEngineScriptStartupHandoffPickup:
             "ai",
             project_name="ai-cli-utils",
         )
-        assert "ai handoff check-project" in script
-        assert "ai handoff claim" in script
-        assert "handoff.session_start_pickup" in script
+        assert "ai internal handoff-drain" in script
 
-    def test_get_engine_script_startup_check_only_on_first_run(self):
+    def test_get_engine_script_startup_drain_only_on_first_run(self):
         script = get_engine_script(
             "c",
             "ai-cli-2",
@@ -3992,7 +3990,7 @@ class TestEngineScriptStartupHandoffPickup:
         )
         assert "$first_run" in script
 
-    def test_get_engine_script_startup_check_uses_project_name(self):
+    def test_get_engine_script_startup_drain_uses_project_name(self):
         script = get_engine_script(
             "c",
             "sw-1",
@@ -4001,7 +3999,7 @@ class TestEngineScriptStartupHandoffPickup:
             "sw",
             project_name="myapp",
         )
-        assert 'check-project "$project_name"' in script
+        assert 'handoff-drain "$project_name"' in script
 
     def test_get_engine_script_startup_check_guarded_by_engine(self):
         # The startup handoff check is in the template for all engines but guarded
@@ -4015,3 +4013,113 @@ class TestEngineScriptStartupHandoffPickup:
             project_name="myapp",
         )
         assert '"c"' in script  # engine guard present in template
+
+
+# ---------------------------------------------------------------------------
+# ai internal handoff-drain
+# ---------------------------------------------------------------------------
+
+
+class TestHandoffDrain:
+    def test_handoff_drain_when_local_file_exists_then_claims_and_writes_prompt_file(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "001-task.md").write_text(
+            '---\nid: "1"\ntitle: "local task"\npriority: P1\nproject: myapp\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        with (
+            patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", side_effect=Exception("no nats")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        prompt_file = state_dir / "cc-resume-prompt-c-sw-1"
+        assert prompt_file.exists()
+        assert "local task" in prompt_file.read_text()
+        assert not (pending / "001-task.md").exists()
+
+    def test_handoff_drain_when_no_local_file_and_nats_unavailable_then_exits_cleanly(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        (handoff_dir / "pending").mkdir(parents=True)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        with (
+            patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", side_effect=Exception("no nats")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert not (state_dir / "cc-resume-prompt-c-sw-1").exists()
+
+    def test_handoff_drain_when_too_few_args_then_exits_cleanly(self):
+        with patch("sys.argv", ["ai", "internal", "handoff-drain"]):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_handoff_drain_filters_by_project(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "001-wrong.md").write_text(
+            '---\nid: "1"\ntitle: "wrong project"\npriority: P0\nproject: other\nclaimed_by: null\nclaimed_at: null\n---\n\nSkip me.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        with (
+            patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", side_effect=Exception("no nats")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # Task for "other" project should NOT be claimed by "myapp" session
+        assert not (state_dir / "cc-resume-prompt-c-sw-1").exists()
+        assert (pending / "001-wrong.md").exists()
+
+    def test_handoff_drain_logs_claimed_event(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "002-task.md").write_text(
+            '---\nid: "2"\ntitle: "log task"\npriority: P1\nproject: myapp\nclaimed_by: null\nclaimed_at: null\n---\n\nDo it.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        with (
+            patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-2"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", side_effect=Exception("no nats")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        log = state_dir / "handoff-events.jsonl"
+        assert log.exists()
+        events = [json.loads(l) for l in log.read_text().strip().split("\n")]
+        claimed = [e for e in events if e["event"] == "handoff.claimed"]
+        assert any(e["layer"] == "pre_launch_drain" for e in claimed)
