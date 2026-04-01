@@ -149,12 +149,13 @@ This repo ships two Claude Code session config files:
 - **`CLAUDE.md`** — lean config for [humanware platform](https://github.com/sergeiwallace/sergei) users, where `~/projects/CLAUDE.md` provides the shared AI orchestration rules.
 - **`CLAUDE-full.md`** — standalone config with all rules included, for everyone else.
 
-If you are **not** on the humanware platform, switch to the full config:
+After installing, run `ai setup` once to automatically detect your environment and configure the right file:
 
 ```bash
-mv CLAUDE.md CLAUDE.md.bak
-mv CLAUDE-full.md CLAUDE.md
+ai setup
 ```
+
+`ai setup` checks for the humanware platform (`~/projects/CLAUDE.md`). If found, it confirms `CLAUDE.md` is correct and takes no action. If not found, it copies `CLAUDE-full.md` → `CLAUDE.md` and marks the file as `assume-unchanged` in git so it won't show as locally modified.
 
 ### Tool Config
 

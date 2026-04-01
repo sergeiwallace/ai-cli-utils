@@ -12,6 +12,9 @@ cd ai-cli-utils
 # Create virtual environment and install dev dependencies
 uv sync --dev
 
+# Configure Claude Code session config for your environment
+uv run ai setup
+
 # Set up pre-commit hooks (optional but recommended)
 uv run pre-commit install
 
@@ -87,6 +90,7 @@ src/ai_cli/
   messaging.py     # NATS client for fleet messaging
   memory.py        # Memory file watcher daemon
   quota.py         # API quota tracking
+  setup.py         # `ai setup` — environment detection and CLAUDE.md configuration
   telemetry.py     # Usage telemetry
   handoff.py       # Cross-session task handoff queue
 
