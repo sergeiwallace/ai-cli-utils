@@ -769,10 +769,12 @@ def get_engine_script(
       prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"
     fi
     lock_file="$_ai_state_dir/ai-watcher-lock-$tmux_session"
-    
+    handoff_pending_file="$_ai_state_dir/handoff-pending-$tmux_session"
+
     export AI_TMUX_SESSION="$tmux_session"
     export {env_var_prefix}_TMUX_SESSION="$tmux_session"
     watcher_pid=""
+    signal_watch_pid=""
 
     start_watcher() {{
       if [[ -n "$watcher_pid" ]]; then
@@ -829,6 +831,12 @@ def get_engine_script(
     # Auto-start sync watch and memory watch (PID files prevent duplicates)
     ai sync watch &>/dev/null &
     ai memory watch &>/dev/null &
+
+    # Auto-start signal-watch for handoff auto-pickup (only for cc engine)
+    if [[ "$engine" == "c" && -n "$project_prefix" ]]; then
+      ai internal signal-watch "$project_prefix" "$tmux_session" &>/dev/null &
+      signal_watch_pid=$!
+    fi
 
     # iTerm2 fleet management: set profile, rolling tab color, tab title
     # Only runs under iTerm2 (check LC_TERMINAL which survives tmux, unlike TERM_PROGRAM)
@@ -925,7 +933,7 @@ def get_engine_script(
     if [[ -n "$ITERM_SESSION_ID" ]]; then
       _iterm2_color_file="$_ai_state_dir/iterm2/cc-color-${{ITERM_SESSION_ID%%p*}}"
     fi
-    trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
+    trap 'kill "$watcher_pid" 2>/dev/null; kill "$signal_watch_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
@@ -993,6 +1001,11 @@ def get_engine_script(
         break
       fi
       _iterm2_status "resuming" "$_session_num" "$_session_type" "$tmux_session"
+      if [[ -f "$handoff_pending_file" ]]; then
+        pending_msg=$(cat "$handoff_pending_file")
+        rm -f "$handoff_pending_file"
+        echo "$pending_msg" > "$prompt_file"
+      fi
       echo "Resuming... (Ctrl-C to exit)"
       sleep 0.5 || break
     done
@@ -1115,6 +1128,30 @@ def complete_handoff(file_path):
         src.rename(dst)
     except Exception:
         pass
+
+
+def _claim_handoff_for_signal(handoff_dir: Path, handoff_id: int, claimer: str) -> "Path | None":
+    """Atomically claim a pending handoff by id. Returns claimed path on success, None if already taken."""
+    pending_dir = handoff_dir / "pending"
+    claimed_dir = handoff_dir / "claimed"
+    claimed_dir.mkdir(parents=True, exist_ok=True)
+    matches = list(pending_dir.glob(f"{handoff_id:03d}-*.md"))
+    if not matches:
+        return None
+    src = matches[0]
+    dst = claimed_dir / src.name
+    try:
+        src.rename(dst)  # atomic on Linux — first session wins, others get OSError
+    except OSError:
+        return None
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    text = (
+        dst.read_text()
+        .replace("claimed_by: null", f"claimed_by: {claimer}")
+        .replace("claimed_at: null", f'claimed_at: "{now}"')
+    )
+    dst.write_text(text)
+    return dst
 
 
 def trigger_background_update():
@@ -1250,6 +1287,58 @@ def cli():
             except Exception:
                 pass  # NATS unavailable — non-fatal
             sys.exit(0)
+        elif action == "signal-watch":
+            # ai internal signal-watch <project> <session_id>
+            if len(sys.argv) < 5:
+                print("Usage: ai internal signal-watch <project> <session_id>", file=sys.stderr)
+                sys.exit(1)
+            import asyncio
+            from .messaging import NATSClient
+
+            sw_project = sys.argv[3]
+            sw_session_id = sys.argv[4]
+            sw_handoff_dir = _get_handoff_queue_dir()
+            sw_pending_file = get_xdg_state_home() / f"handoff-pending-{sw_session_id}"
+            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+            sw_client = NATSClient(servers=nats_servers)
+
+            async def _on_handoff(data):
+                handoff_id = data.get("id")
+                title = data.get("title", "")
+                priority = data.get("priority", "")
+                message = data.get("message", "")
+                print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
+                if sw_handoff_dir is None or not handoff_id:
+                    return
+                claimed = _claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
+                if claimed is None:
+                    return  # another session claimed it first
+                resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
+                sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
+                sw_pending_file.write_text(resume_msg)
+                # Nudge idle pane so while-loop restart picks up prompt_file
+                try:
+                    result = subprocess.run(
+                        ["tmux", "display-message", "-t", sw_session_id, "-p", "#{pane_current_command}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    if result.returncode == 0 and result.stdout.strip() not in ("claude",):
+                        subprocess.run(
+                            ["tmux", "send-keys", "-t", sw_session_id, "", ""],
+                            timeout=2,
+                            check=False,
+                        )
+                except Exception:
+                    pass
+
+            consumer_name = f"{sw_session_id}-signal-watcher"
+            try:
+                asyncio.run(sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff))
+            except Exception:
+                pass
+            sys.exit(0)
         elif action == "iterm2-tab-title":
             # ai internal iterm2-tab-title <tab_key>
             if len(sys.argv) >= 4:
@@ -1308,7 +1397,14 @@ def cli():
             sys.exit(1)
         action = sys.argv[2]
         if action == "post":
-            post_handoff(sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
+            post_args = sys.argv[3:]
+            if "--remote" in post_args:
+                post_args = [a for a in post_args if a != "--remote"]
+                remote_cfg = load_config().get("remote", {})
+                remote_host = remote_cfg.get("host", "178.104.70.139")
+                remote_user = remote_cfg.get("user", "sergei")
+                os.execvp("ssh", ["ssh", f"{remote_user}@{remote_host}", "ai", "handoff", "post"] + post_args)
+            post_handoff(post_args[0], post_args[1], post_args[2], post_args[3])
         elif action == "check":
             check_handoff()
         elif action == "claim":

@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import os
 from ai_cli.main import (
     build_session_name,
+    _claim_handoff_for_signal,
     check_handoff,
     claim_handoff,
     cleanup_stale_sessions,
@@ -865,6 +866,323 @@ class TestHandoff:
     def test_complete_handoff_when_no_main_project_then_noop(self):
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
             complete_handoff("/tmp/nonexistent.md")  # Should not raise
+
+
+# --- _claim_handoff_for_signal ---
+
+
+class TestClaimHandoffForSignal:
+    def _make_pending(self, handoff_dir, handoff_id, title, claimer=None):
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True, exist_ok=True)
+        slug = title.lower().replace(" ", "-")
+        f = pending / f"{handoff_id:03d}-{slug}.md"
+        f.write_text(f'---\nid: "{handoff_id}"\ntitle: "{title}"\nclaimed_by: null\nclaimed_at: null\n---\n')
+        return f
+
+    def test_when_pending_file_exists_then_moves_to_claimed(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        self._make_pending(handoff_dir, 1, "fix-bug")
+
+        result = _claim_handoff_for_signal(handoff_dir, 1, "c-sw-1")
+
+        assert result is not None
+        assert result.parent.name == "claimed"
+        assert result.name == "001-fix-bug.md"
+        assert not (handoff_dir / "pending" / "001-fix-bug.md").exists()
+
+    def test_when_pending_file_exists_then_updates_claimed_by(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        self._make_pending(handoff_dir, 2, "deploy")
+
+        result = _claim_handoff_for_signal(handoff_dir, 2, "c-sw-2")
+
+        assert result is not None
+        text = result.read_text()
+        assert "claimed_by: c-sw-2" in text
+        assert "claimed_at: null" not in text
+
+    def test_when_no_pending_file_then_returns_none(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        (handoff_dir / "pending").mkdir(parents=True)
+
+        result = _claim_handoff_for_signal(handoff_dir, 99, "c-sw-1")
+
+        assert result is None
+
+    def test_when_file_already_claimed_by_other_session_then_returns_none(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        f = self._make_pending(handoff_dir, 1, "task")
+        # Simulate race: another session moved the file first
+        claimed = handoff_dir / "claimed"
+        claimed.mkdir(parents=True)
+        f.rename(claimed / f.name)
+
+        result = _claim_handoff_for_signal(handoff_dir, 1, "c-sw-1")
+
+        assert result is None
+
+    def test_when_rename_raises_oserror_then_returns_none(self, tmp_path):
+        """Covers the concurrent-rename race: another session's mv wins, ours gets OSError."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        self._make_pending(handoff_dir, 1, "task")
+
+        with patch("pathlib.Path.rename", side_effect=OSError("busy")):
+            result = _claim_handoff_for_signal(handoff_dir, 1, "c-sw-1")
+
+        assert result is None
+
+
+# --- ai internal signal-watch CLI dispatch ---
+
+
+class TestSignalWatchCli:
+    def test_signal_watch_when_nats_unavailable_then_exits_cleanly(self):
+        from nats.errors import NoServersError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=None),
+            patch("ai_cli.main.get_xdg_state_home", return_value=Path("/tmp")),
+            patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_signal_watch_when_message_received_and_claim_succeeds_then_writes_pending_file(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "003-fix-login.md").write_text(
+            '---\nid: "3"\ntitle: "fix login"\nclaimed_by: null\nclaimed_at: null\n---\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = b'{"id": 3, "title": "fix login", "priority": "P1", "message": "do it"}'
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        pending_file = state_dir / "handoff-pending-c-sw-1"
+        assert pending_file.exists()
+        content = pending_file.read_text()
+        assert "fix login" in content
+        assert not (pending / "003-fix-login.md").exists()
+
+    def test_signal_watch_when_claim_lost_to_other_session_then_no_pending_file(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        (handoff_dir / "pending").mkdir(parents=True)
+        # pending dir is empty — another session already claimed it
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = b'{"id": 5, "title": "gone", "priority": "P2", "message": "already claimed"}'
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-2"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert not (state_dir / "handoff-pending-c-sw-2").exists()
+
+    def test_signal_watch_when_too_few_args_then_exits_with_error(self):
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "only-one-arg"]),
+            patch("ai_cli.main.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
+    def test_signal_watch_when_handoff_dir_none_and_message_received_then_no_pending_file(self, tmp_path):
+        """Covers the early-return branch when handoff_dir is None but a message is delivered."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = b'{"id": 7, "title": "t", "priority": "P1", "message": "m"}'
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-3"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=None),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert not (state_dir / "handoff-pending-c-sw-3").exists()
+
+    def test_signal_watch_when_pane_is_idle_then_sends_nudge(self, tmp_path):
+        """Covers the nudge branch: tmux reports non-claude command, send-keys called."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "004-nudge-task.md").write_text(
+            '---\nid: "4"\ntitle: "nudge task"\nclaimed_by: null\nclaimed_at: null\n---\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+        send_keys_calls = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            result = MagicMock()
+            if "display-message" in cmd:
+                result.returncode = 0
+                result.stdout = "bash\n"  # pane is idle (not claude)
+            else:
+                send_keys_calls.append(cmd)
+                result.returncode = 0
+            return result
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = b'{"id": 4, "title": "nudge task", "priority": "P1", "message": "do it"}'
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-4"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run", side_effect=fake_subprocess_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert any("send-keys" in cmd for cmd in send_keys_calls)
+
+
+# --- ai handoff post --remote ---
+
+
+class TestHandoffPostRemote:
+    def test_post_handoff_remote_flag_when_no_remote_config_then_sshs_to_default_host(self):
+        with (
+            patch("sys.argv", ["ai", "handoff", "post", "--remote", "Fix bug", "P1", "myapp", "Details"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        mock_exec.assert_called_once()
+        cmd, args = mock_exec.call_args[0]
+        assert cmd == "ssh"
+        assert any("178.104.70.139" in a for a in args)
+        assert "ai" in args
+        assert "handoff" in args
+        assert "post" in args
+
+    def test_post_handoff_remote_flag_when_remote_config_set_then_sshs_to_configured_host(self):
+        config = {"remote": {"host": "9.9.9.9", "user": "alice"}}
+        with (
+            patch("sys.argv", ["ai", "handoff", "post", "--remote", "Task", "P2", "proj", "Msg"]),
+            patch("ai_cli.main.load_config", return_value=config),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        mock_exec.assert_called_once()
+        cmd, args = mock_exec.call_args[0]
+        assert cmd == "ssh"
+        assert "alice@9.9.9.9" in args
+
+    def test_post_handoff_without_remote_flag_writes_local_file(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            post_handoff("Local task", "P1", "myapp", "Details")
+        files = list((queue_dir / "pending").glob("*.md"))
+        assert len(files) == 1
 
 
 # --- trigger_background_update ---

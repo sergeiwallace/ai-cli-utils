@@ -250,5 +250,16 @@ class TestNATSClientSubscribeDurableEdgeCases:
 
 class TestStreamConfig:
     def test_all_design_doc_streams_have_config(self):
-        expected_streams = {"fleet", "sync", "session", "memory", "quota", "telemetry", "aido", "task", "health", "handoff"}
+        expected_streams = {
+            "fleet",
+            "sync",
+            "session",
+            "memory",
+            "quota",
+            "telemetry",
+            "aido",
+            "task",
+            "health",
+            "handoff",
+        }
         assert set(STREAM_CONFIG.keys()) == expected_streams
