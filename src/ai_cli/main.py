@@ -1897,11 +1897,12 @@ def cli():
         finally:
             pyproject.write_text(original)
         if exit_code == 0:
-            # Also install into aido venv if it exists
+            # Also install into aido venv if it exists (uses system uv with VIRTUAL_ENV set)
             aido_venv = Path.home() / "projects" / "aido" / ".venv"
             if aido_venv.exists():
                 subprocess.run(
-                    [str(aido_venv / "bin" / "uv"), "pip", "install", str(project_path), "--force-reinstall"],
+                    ["uv", "pip", "install", str(project_path), "--force-reinstall"],
+                    env={**os.environ, "VIRTUAL_ENV": str(aido_venv)},
                     check=False,
                 )
             # Clear pycache
