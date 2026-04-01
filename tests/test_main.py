@@ -1140,6 +1140,63 @@ class TestSignalWatchCli:
 
         assert any("send-keys" in cmd for cmd in send_keys_calls)
 
+    def test_signal_watch_when_cross_machine_payload_then_writes_file_and_claims(self, tmp_path):
+        """File doesn't exist locally; content in NATS payload should be written before claiming."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        (handoff_dir / "pending").mkdir(parents=True)
+        # No file pre-created — simulates cross-machine delivery
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        file_content = '---\nid: "7"\ntitle: "remote task"\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = json.dumps(
+                    {
+                        "id": 7,
+                        "title": "remote task",
+                        "priority": "P1",
+                        "message": "Do this.",
+                        "content": file_content,
+                        "filename": "007-remote-task.md",
+                    }
+                ).encode()
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-3"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        pending_file = state_dir / "handoff-pending-c-sw-3"
+        assert pending_file.exists()
+        assert "remote task" in pending_file.read_text()
+        # Original file must not remain in pending (claimed)
+        assert not (handoff_dir / "pending" / "007-remote-task.md").exists()
+        assert (handoff_dir / "claimed" / "007-remote-task.md").exists()
+
 
 # --- ai handoff post --remote ---
 
@@ -1183,6 +1240,34 @@ class TestHandoffPostRemote:
             post_handoff("Local task", "P1", "myapp", "Details")
         files = list((queue_dir / "pending").glob("*.md"))
         assert len(files) == 1
+
+    def test_post_handoff_nats_payload_includes_content_and_filename(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        published_payloads = []
+
+        class FakeNATSClient:
+            def __init__(self, servers=None):
+                pass
+
+            async def publish(self, subject, data):
+                published_payloads.append((subject, data))
+                return True
+
+        import ai_cli.messaging as msg_mod
+
+        with (
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch.object(msg_mod, "NATSClient", FakeNATSClient),
+        ):
+            post_handoff("Cross-machine task", "P1", "myapp", "Do this remotely")
+
+        assert len(published_payloads) == 1
+        subject, payload = published_payloads[0]
+        assert "content" in payload
+        assert "filename" in payload
+        assert "Cross-machine task" in payload["content"]
+        assert payload["filename"].endswith(".md")
 
 
 # --- trigger_background_update ---

@@ -1061,6 +1061,8 @@ def post_handoff(title, priority, project, message):
             "priority": priority,
             "message": message,
             "created_by": created_by,
+            "content": out,
+            "filename": filename,
             "ts": time.time(),
         }
         _asyncio.run(_client.publish(f"handoff.{project}", _payload))
@@ -1310,6 +1312,18 @@ def cli():
                 print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
                 if sw_handoff_dir is None or not handoff_id:
                     return
+                # Cross-machine delivery: if file doesn't exist locally but payload carries content, write it
+                content = data.get("content")
+                filename = data.get("filename")
+                if content and filename:
+                    pending_dir = sw_handoff_dir / "pending"
+                    local_file = pending_dir / filename
+                    if not local_file.exists():
+                        pending_dir.mkdir(parents=True, exist_ok=True)
+                        try:
+                            local_file.write_text(content)
+                        except OSError:
+                            pass
                 claimed = _claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
                 if claimed is None:
                     return  # another session claimed it first
