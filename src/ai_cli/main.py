@@ -1551,6 +1551,35 @@ def cli():
         print()
         sys.exit(0)
 
+    if len(sys.argv) > 1 and sys.argv[1] == "deploy":
+        cfg_deploy = config.get("deploy", {})
+        project_path_str = cfg_deploy.get("project_path", "")
+        project_path = Path(project_path_str).expanduser() if project_path_str else Path.cwd()
+        pyproject = project_path / "pyproject.toml"
+        if not pyproject.exists():
+            print(
+                "Error: pyproject.toml not found. Run from project directory or set [deploy] project_path in config.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        original = pyproject.read_text()
+        m = re.search(r'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
+        if not m:
+            print("Error: could not find version in pyproject.toml", file=sys.stderr)
+            sys.exit(1)
+        base = re.sub(r"\.post\d+$", "", m.group(2))
+        new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
+        print(f"Deploying {m.group(2)} → {new_version}")
+        try:
+            pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
+            result = subprocess.run(
+                ["uv", "tool", "install", str(project_path), "--force", "--reinstall"],
+                cwd=project_path,
+            )
+        finally:
+            pyproject.write_text(original)
+        sys.exit(result.returncode)
+
     if len(sys.argv) > 1 and sys.argv[1] == "attach":
         if len(sys.argv) < 3:
             print("Usage: ai attach <session-name>", file=sys.stderr)

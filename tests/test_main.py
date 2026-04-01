@@ -1304,6 +1304,68 @@ class TestGetVersion:
 # --- get_engine_script self-update ---
 
 
+class TestDeploy:
+    def test_deploy_bumps_post_version_and_installs(self, tmp_path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n')
+
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # pyproject.toml restored to original after install
+        assert pyproject.read_text() == '[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n'
+        # uv install was called with --reinstall
+        cmd = mock_run.call_args[0][0]
+        assert "uv" in cmd
+        assert "--reinstall" in cmd
+
+    def test_deploy_strips_existing_post_before_bumping(self, tmp_path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.1.post20260101000000"\n')
+
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+            patch("builtins.print") as mock_print,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        output = " ".join(str(c) for c in mock_print.call_args_list)
+        # New version should be 0.1.1.post<new_ts>, not 0.1.1.post20260101000000.post<ts>
+        assert "0.1.1.post20260101000000.post" not in output
+
+    def test_deploy_when_no_pyproject_then_exits_with_error(self, tmp_path):
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
+    def test_deploy_uses_cwd_when_no_config(self, tmp_path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.2.0"\n')
+
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.Path.cwd", return_value=tmp_path),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+
 class TestGetEngineScriptSelfUpdate:
     def test_engine_script_embeds_template_version(self):
         script = get_engine_script("c", "c-sw-1", "c-sw-1", "c", "myapp")
