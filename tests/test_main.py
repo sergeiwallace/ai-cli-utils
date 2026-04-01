@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 import os
+import ai_cli.main as _main_module
 from ai_cli.main import (
     build_session_name,
     _claim_handoff_for_signal,
@@ -43,12 +44,23 @@ from ai_cli.main import (
     _iterm2_heuristic_window_title,
     _iterm2_state_dir,
     _iterm2_update_window_title,
+    _log_handoff_event,
     load_config,
+    load_project_registry,
     post_handoff,
     resolve_session,
     save_session_map,
     trigger_background_update,
+    validate_registry_completeness,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_registry_cache():
+    """Reset the project registry cache before each test."""
+    _main_module._registry_cache = None
+    yield
+    _main_module._registry_cache = None
 
 
 # --- _find_project_dir tests ---
@@ -3351,3 +3363,515 @@ class TestInternalIterm2Dispatch:
                             with pytest.raises(SystemExit) as exc:
                                 cli()
         assert exc.value.code == 0  # OSError on win_file silently swallowed
+
+
+# ---------------------------------------------------------------------------
+# load_project_registry — caching and validation
+# ---------------------------------------------------------------------------
+
+
+class TestLoadProjectRegistry:
+    def test_load_project_registry_when_valid_then_returns_projects(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            result = load_project_registry(_force=True)
+        assert len(result) == 1
+        assert result[0]["name"] == "app"
+
+    def test_load_project_registry_when_cached_then_returns_same(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            r1 = load_project_registry(_force=True)
+            r2 = load_project_registry()
+        assert r1 is r2
+
+    def test_load_project_registry_when_no_registry_then_returns_empty(self):
+        with patch("ai_cli.main._get_project_registry_path", return_value=None):
+            result = load_project_registry(_force=True)
+        assert result == []
+
+    def test_load_project_registry_when_missing_name_then_exits(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\ntask_prefix = "APP"\n')
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            with pytest.raises(SystemExit) as exc:
+                load_project_registry(_force=True)
+        assert exc.value.code == 1
+
+    def test_load_project_registry_when_missing_task_prefix_then_exits(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\n')
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            with pytest.raises(SystemExit) as exc:
+                load_project_registry(_force=True)
+        assert exc.value.code == 1
+
+    def test_load_project_registry_when_duplicate_name_then_exits(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(
+            b'[[projects]]\nname = "app"\ntask_prefix = "A1"\n[[projects]]\nname = "app"\ntask_prefix = "A2"\n'
+        )
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            with pytest.raises(SystemExit) as exc:
+                load_project_registry(_force=True)
+        assert exc.value.code == 1
+
+    def test_load_project_registry_when_duplicate_prefix_then_exits(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(
+            b'[[projects]]\nname = "app1"\ntask_prefix = "AP"\n[[projects]]\nname = "app2"\ntask_prefix = "AP"\n'
+        )
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            with pytest.raises(SystemExit) as exc:
+                load_project_registry(_force=True)
+        assert exc.value.code == 1
+
+    def test_load_project_registry_when_toml_parse_error_then_returns_empty(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b"not valid toml {{{{")
+        with patch("ai_cli.main._get_project_registry_path", return_value=registry):
+            result = load_project_registry(_force=True)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# validate_registry_completeness
+# ---------------------------------------------------------------------------
+
+
+class TestValidateRegistryCompleteness:
+    def test_validate_when_no_registry_then_returns_true(self):
+        with patch("ai_cli.main._get_project_registry_path", return_value=None):
+            assert validate_registry_completeness(interactive=False) is True
+
+    def test_validate_when_all_registered_then_returns_true(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+        ):
+            assert validate_registry_completeness(interactive=False) is True
+
+    def test_validate_when_unregistered_noninteractive_then_returns_false(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "newapp").mkdir(parents=True)
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+        ):
+            assert validate_registry_completeness(interactive=False) is False
+
+    def test_validate_when_user_registers_then_returns_true(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "newapp").mkdir(parents=True)
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+            patch("builtins.input", return_value="y"),
+        ):
+            assert validate_registry_completeness(interactive=True) is True
+        # Check entry was appended to TOML
+        content = registry.read_text()
+        assert "newapp" in content
+
+    def test_validate_when_user_declines_then_returns_false(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "newapp").mkdir(parents=True)
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+            patch("builtins.input", return_value="n"),
+        ):
+            assert validate_registry_completeness(interactive=True) is False
+
+    def test_validate_when_eof_then_returns_false(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "newapp").mkdir(parents=True)
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            assert validate_registry_completeness(interactive=True) is False
+
+    def test_validate_skips_hidden_dirs(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / ".hidden").mkdir(parents=True)
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+        ):
+            assert validate_registry_completeness(interactive=False) is True
+
+    def test_validate_when_custom_prefix_then_uses_it(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "newapp").mkdir(parents=True)
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+            patch("builtins.input", return_value="CUSTOM"),
+        ):
+            assert validate_registry_completeness(interactive=True) is True
+        content = registry.read_text()
+        assert "CUSTOM" in content
+
+    def test_validate_when_projects_dir_missing_then_returns_true(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        nonexistent = tmp_path / "nonexistent"
+        with (
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=nonexistent),
+        ):
+            assert validate_registry_completeness(interactive=False) is True
+
+
+# ---------------------------------------------------------------------------
+# _log_handoff_event
+# ---------------------------------------------------------------------------
+
+
+class TestLogHandoffEvent:
+    def test_log_event_when_called_then_writes_jsonl(self, tmp_path):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        with patch("ai_cli.main.get_xdg_state_home", return_value=state_dir):
+            _log_handoff_event("handoff.posted", handoff_id=1, project="app")
+        log_file = state_dir / "handoff-events.jsonl"
+        assert log_file.exists()
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["event"] == "handoff.posted"
+        assert entry["handoff_id"] == 1
+        assert "ts" in entry
+
+    def test_log_event_when_dir_missing_then_creates_it(self, tmp_path):
+        state_dir = tmp_path / "deep" / "state"
+        with patch("ai_cli.main.get_xdg_state_home", return_value=state_dir):
+            _log_handoff_event("handoff.claimed", session="c-sw-1")
+        assert (state_dir / "handoff-events.jsonl").exists()
+
+    def test_log_event_appends_multiple(self, tmp_path):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        with patch("ai_cli.main.get_xdg_state_home", return_value=state_dir):
+            _log_handoff_event("handoff.posted", handoff_id=1)
+            _log_handoff_event("handoff.claimed", handoff_id=1)
+        lines = (state_dir / "handoff-events.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 2
+
+
+# ---------------------------------------------------------------------------
+# post_handoff — event logging
+# ---------------------------------------------------------------------------
+
+
+class TestPostHandoffEventLogging:
+    def test_post_handoff_logs_event(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        with (
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch.dict(os.environ, {"AI_TMUX_SESSION": "c-sw-1"}),
+        ):
+            post_handoff("Test task", "P1", "myapp", "Do this thing")
+        log_file = state_dir / "handoff-events.jsonl"
+        assert log_file.exists()
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["event"] == "handoff.posted"
+        assert entry["title"] == "Test task"
+
+
+# ---------------------------------------------------------------------------
+# signal-watch — event logging and actionable nudge
+# ---------------------------------------------------------------------------
+
+
+class TestSignalWatchEventLogging:
+    def test_signal_watch_when_claim_succeeds_then_logs_claimed_event(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        # Don't pre-create the file — use cross-machine delivery payload so the file
+        # is created by _on_handoff itself (avoids startup scan claiming it first)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+        file_content = '---\nid: "5"\ntitle: "test task"\nclaimed_by: null\nclaimed_at: null\n---\n'
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = json.dumps(
+                    {
+                        "id": 5,
+                        "title": "test task",
+                        "priority": "P1",
+                        "message": "do it",
+                        "content": file_content,
+                        "filename": "005-test-task.md",
+                    }
+                ).encode()
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-5"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        log_file = state_dir / "handoff-events.jsonl"
+        assert log_file.exists()
+        events = [json.loads(l) for l in log_file.read_text().strip().split("\n")]
+        claimed = [e for e in events if e["event"] == "handoff.claimed"]
+        assert len(claimed) == 1
+        assert claimed[0]["handoff_id"] == 5
+        assert claimed[0]["layer"] == "nats_realtime"
+
+    def test_signal_watch_when_idle_pane_then_sends_actionable_nudge(self, tmp_path):
+        """Nudge sends actual message (not empty string) when pane is idle."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        # Use cross-machine payload to avoid startup scan claiming first
+        file_content = '---\nid: "6"\ntitle: "nudge me"\nclaimed_by: null\nclaimed_at: null\n---\n'
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+        send_keys_calls = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            result = MagicMock()
+            if "display-message" in cmd:
+                result.returncode = 0
+                result.stdout = "bash\n"
+            else:
+                send_keys_calls.append(cmd)
+                result.returncode = 0
+            return result
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = json.dumps(
+                    {
+                        "id": 6,
+                        "title": "nudge me",
+                        "priority": "P1",
+                        "message": "do it",
+                        "content": file_content,
+                        "filename": "006-nudge-task.md",
+                    }
+                ).encode()
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-6"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run", side_effect=fake_subprocess_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # Verify send-keys sent actionable message (not empty)
+        nudge_calls = [c for c in send_keys_calls if "send-keys" in c]
+        assert len(nudge_calls) == 1
+        # The message should contain task title and be actionable
+        assert "nudge me" in nudge_calls[0][4]
+        assert "Enter" in nudge_calls[0]
+
+        # Verify nudge event logged
+        log_file = state_dir / "handoff-events.jsonl"
+        events = [json.loads(l) for l in log_file.read_text().strip().split("\n")]
+        nudge_events = [e for e in events if e["event"] == "handoff.nudge_sent"]
+        assert len(nudge_events) == 1
+        assert nudge_events[0]["pane_state"] == "bash"
+
+    def test_signal_watch_startup_scan_logs_as_startup_scan_layer(self, tmp_path):
+        """Startup scan claims should be logged with layer=startup_scan."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "007-scan-task.md").write_text(
+            '---\nid: "7"\ntitle: "scan task"\npriority: P2\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+
+        async def fake_js_subscribe(subject, durable, cb):
+            pass
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-7"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        log_file = state_dir / "handoff-events.jsonl"
+        events = [json.loads(l) for l in log_file.read_text().strip().split("\n")]
+        claimed = [e for e in events if e["event"] == "handoff.claimed"]
+        assert len(claimed) == 1
+        assert claimed[0]["layer"] == "startup_scan"
+
+
+# ---------------------------------------------------------------------------
+# get_engine_script — project_name in template
+# ---------------------------------------------------------------------------
+
+
+class TestEngineScriptProjectName:
+    def test_get_engine_script_when_project_name_set_then_included_in_template(self):
+        script = get_engine_script(
+            "c",
+            "sw-1",
+            "c-sw-1",
+            "c-sw-",
+            "sw",
+            project_name="ai-cli-utils",
+        )
+        assert 'project_name="ai-cli-utils"' in script
+
+    def test_get_engine_script_when_project_name_empty_then_signal_watch_not_started(self):
+        script = get_engine_script(
+            "c",
+            "sw-1",
+            "c-sw-1",
+            "c-sw-",
+            "sw",
+            project_name="",
+        )
+        assert 'project_name=""' in script
+
+    def test_get_engine_script_signal_watch_uses_project_name(self):
+        script = get_engine_script(
+            "c",
+            "sw-1",
+            "c-sw-1",
+            "c-sw-",
+            "sw",
+            project_name="my-project",
+        )
+        assert 'ai internal signal-watch "$project_name"' in script
+
+    def test_get_engine_script_exit_trap_cleans_caught_file(self):
+        script = get_engine_script(
+            "c",
+            "sw-1",
+            "c-sw-1",
+            "c-sw-",
+            "sw",
+            project_name="app",
+        )
+        assert "handoff-caught-$tmux_session" in script
+
+    def test_get_engine_script_while_loop_logs_handoff_pickup(self):
+        script = get_engine_script(
+            "c",
+            "sw-1",
+            "c-sw-1",
+            "c-sw-",
+            "sw",
+            project_name="app",
+        )
+        assert "handoff.while_loop_pickup" in script
+
+
+# ---------------------------------------------------------------------------
+# CLI — registry validation on session launch
+# ---------------------------------------------------------------------------
+
+
+class TestCliRegistryValidation:
+    def test_cli_when_registry_incomplete_noninteractive_then_exits(self, tmp_path):
+        registry = tmp_path / "sergei.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "unregistered").mkdir(parents=True)
+
+        with (
+            patch("sys.argv", ["ai", "c", "1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.get_project_prefix", return_value="app"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._get_project_registry_path", return_value=registry),
+            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+            patch("sys.stdin", MagicMock(isatty=MagicMock(return_value=False))),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1

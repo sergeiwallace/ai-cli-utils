@@ -186,36 +186,139 @@ def _get_handoff_queue_dir() -> Path | None:
     return main_dir / ".handoff-queue"
 
 
-def _get_project_prefix_by_name(project_name: str) -> str:
-    """Look up a project's task_prefix from the project registry TOML by directory name."""
-    registry = _get_project_registry_path()
-    if registry is not None:
+# --- Project Registry (cached, validated) ---
+
+_registry_cache: list[dict] | None = None
+
+
+def load_project_registry(*, _force: bool = False) -> list[dict]:
+    """Load and validate the project registry. Caches result after first call.
+
+    Returns list of project dicts. Raises SystemExit on schema violations.
+    Pass _force=True to bypass cache (used in tests).
+    """
+    global _registry_cache
+    if _registry_cache is not None and not _force:
+        return _registry_cache
+
+    registry_path = _get_project_registry_path()
+    if registry_path is None:
+        _registry_cache = []
+        return _registry_cache
+
+    try:
+        with open(registry_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        _registry_cache = []
+        return _registry_cache
+
+    projects = data.get("projects", [])
+
+    # Schema validation: name and task_prefix required, both unique
+    names_seen: set[str] = set()
+    prefixes_seen: set[str] = set()
+    for p in projects:
+        name = p.get("name", "")
+        prefix = p.get("task_prefix", "")
+        if not name or not prefix:
+            print(f"Error: project registry entry missing name or task_prefix: {p}", file=sys.stderr)
+            sys.exit(1)
+        name_lower = name.lower()
+        prefix_lower = prefix.lower()
+        if name_lower in names_seen:
+            print(f"Error: duplicate project name in registry: {name}", file=sys.stderr)
+            sys.exit(1)
+        if prefix_lower in prefixes_seen:
+            print(f"Error: duplicate task_prefix in registry: {prefix}", file=sys.stderr)
+            sys.exit(1)
+        names_seen.add(name_lower)
+        prefixes_seen.add(prefix_lower)
+
+    _registry_cache = projects
+    return _registry_cache
+
+
+def validate_registry_completeness(*, interactive: bool = True) -> bool:
+    """Check that all ~/projects/* directories are registered. Returns True if complete.
+
+    If interactive=True and unregistered dirs found, prompts user to register.
+    Returns False (and prints error) if user declines registration.
+    """
+    # Skip if no registry configured
+    if _get_project_registry_path() is None:
+        return True
+
+    projects_dir = _get_projects_dir()
+    if not projects_dir.exists():
+        return True
+
+    registry = load_project_registry()
+    registered_names = {p.get("name", "").lower() for p in registry}
+
+    # Scan for project directories (skip hidden dirs, .worktrees, etc.)
+    unregistered = []
+    for d in sorted(projects_dir.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        if d.name.lower() not in registered_names:
+            unregistered.append(d.name)
+
+    if not unregistered:
+        return True
+
+    if not interactive:
+        print(f"Error: unregistered project directories: {', '.join(unregistered)}", file=sys.stderr)
+        return False
+
+    registry_path = _get_project_registry_path()
+    for name in unregistered:
+        suggested_prefix = name.upper().replace("-", "_")[:8]
         try:
-            with open(registry, "rb") as f:
-                toml = tomllib.load(f)
-            for p in toml.get("projects", []):
-                if p.get("name") == project_name:
-                    return p.get("task_prefix", project_name[:3]).lower()
-        except Exception:
-            pass
+            answer = input(
+                f'Unregistered project: "{name}" (~/{projects_dir.name}/{name})\n'
+                f"Suggested task_prefix: {suggested_prefix}\n"
+                f"Add to registry? [Y/n, or enter custom prefix]: "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nRegistry incomplete — exiting.", file=sys.stderr)
+            return False
+
+        if answer.lower() == "n":
+            print("Registry incomplete — exiting. All projects must be registered.", file=sys.stderr)
+            return False
+
+        prefix = answer if answer and answer.lower() != "y" else suggested_prefix
+
+        # Append to registry TOML
+        entry = f'\n[[projects]]\nname = "{name}"\ntask_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
+        with open(registry_path, "a") as f:
+            f.write(entry)
+        print(f'Registered "{name}" with prefix "{prefix}"')
+
+    # Force reload after registration
+    global _registry_cache
+    _registry_cache = None
+    load_project_registry(_force=True)
+    return True
+
+
+def _get_project_prefix_by_name(project_name: str) -> str:
+    """Look up a project's task_prefix from the project registry by directory name."""
+    for p in load_project_registry():
+        if p.get("name") == project_name:
+            return p.get("task_prefix", project_name[:3]).lower()
     return project_name[:3].lower()
 
 
 def get_project_aliases() -> dict:
-    """Build project alias map: task_prefix.lower() -> project name from project registry TOML."""
+    """Build project alias map: task_prefix.lower() -> project name from project registry."""
     aliases = {}
-    registry = _get_project_registry_path()
-    if registry is not None:
-        try:
-            with open(registry, "rb") as f:
-                toml = tomllib.load(f)
-            for p in toml.get("projects", []):
-                prefix = p.get("task_prefix", "").lower()
-                name = p.get("name", "")
-                if prefix and name and prefix != name:
-                    aliases[prefix] = name
-        except Exception:
-            pass
+    for p in load_project_registry():
+        prefix = p.get("task_prefix", "").lower()
+        name = p.get("name", "")
+        if prefix and name and prefix != name:
+            aliases[prefix] = name
     return aliases
 
 
@@ -246,16 +349,9 @@ def get_latest_gemini_session_id():
 
 def get_project_prefix():
     project_name = get_current_project_name()
-    registry = _get_project_registry_path()
-    if registry is not None:
-        try:
-            with open(registry, "rb") as f:
-                config = tomllib.load(f)
-            for p in config.get("projects", []):
-                if p.get("name") == project_name:
-                    return p.get("task_prefix", project_name[:3]).lower()
-        except Exception:
-            pass
+    for p in load_project_registry():
+        if p.get("name") == project_name:
+            return p.get("task_prefix", project_name[:3]).lower()
     return project_name[:3].lower()
 
 
@@ -732,6 +828,7 @@ def get_engine_script(
     worktree_dir: str | None = None,
     notify: bool = False,
     is_remote: bool = False,
+    project_name: str = "",
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
@@ -756,6 +853,7 @@ def get_engine_script(
     _template_version="{_template_version}"
     uuid="{session_id_uuid or ""}"
     project_prefix="{project_prefix}"
+    project_name="{project_name}"
     _ai_state_dir="$HOME/.local/state/ai-cli"
     mkdir -p "$_ai_state_dir/iterm2"
 
@@ -840,8 +938,8 @@ def get_engine_script(
     ai memory watch &>/dev/null &
 
     # Auto-start signal-watch for handoff auto-pickup (only for cc engine)
-    if [[ "$engine" == "c" && -n "$project_prefix" ]]; then
-      ai internal signal-watch "$project_prefix" "$tmux_session" &>/dev/null &
+    if [[ "$engine" == "c" && -n "$project_name" ]]; then
+      ai internal signal-watch "$project_name" "$tmux_session" &>/dev/null &
       signal_watch_pid=$!
     fi
 
@@ -940,7 +1038,7 @@ def get_engine_script(
     if [[ -n "$ITERM_SESSION_ID" ]]; then
       _iterm2_color_file="$_ai_state_dir/iterm2/cc-color-${{ITERM_SESSION_ID%%p*}}"
     fi
-    trap 'kill "$watcher_pid" 2>/dev/null; kill "$signal_watch_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
+    trap 'kill "$watcher_pid" 2>/dev/null; kill "$signal_watch_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file" "$_ai_state_dir/handoff-caught-$tmux_session"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
@@ -1012,6 +1110,8 @@ def get_engine_script(
         pending_msg=$(cat "$handoff_pending_file")
         rm -f "$handoff_pending_file"
         echo "$pending_msg" > "$prompt_file"
+        printf '{{"event":"handoff.while_loop_pickup","session":"%s","ts":%s}}\n' \
+          "$tmux_session" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
       fi
       # Self-update: if ai-cli was reinstalled, regenerate template and restart
       _current_ver=$(ai internal get-version 2>/dev/null || echo "unknown")
@@ -1030,6 +1130,18 @@ def get_engine_script(
 
 
 # --- Subcommands ---
+
+
+def _log_handoff_event(event_type: str, **fields) -> None:
+    """Append a JSON event to handoff-events.jsonl for observability."""
+    log_path = get_xdg_state_home() / "handoff-events.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"event": event_type, "ts": time.time(), **fields}
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
 
 
 def post_handoff(title, priority, project, message):
@@ -1059,6 +1171,7 @@ def post_handoff(title, priority, project, message):
     out = f'---\nid: "{next_id}"\ntitle: "{title}"\npriority: {priority}\nproject: {project}\ncreated_by: {created_by}\ncreated_at: "{now}"\nclaimed_by: null\nclaimed_at: null\n---\n\n{message}\n'
     (queue_dir / filename).write_text(out)
     print(queue_dir / filename)
+    _log_handoff_event("handoff.posted", handoff_id=next_id, project=project, title=title, priority=priority)
     # Publish to NATS for real-time delivery (non-fatal — file queue is the durable record)
     try:
         import asyncio as _asyncio
@@ -1348,10 +1461,17 @@ def cli():
                 claimed = _claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
                 if claimed is None:
                     return  # another session claimed it first
+                _log_handoff_event(
+                    "handoff.claimed",
+                    handoff_id=handoff_id,
+                    session=sw_session_id,
+                    layer="nats_realtime" if data.get("_source") != "startup_scan" else "startup_scan",
+                )
                 resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
                 sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
                 sw_pending_file.write_text(resume_msg)
-                # Nudge idle pane so while-loop restart picks up prompt_file
+                # Nudge idle pane so CC picks up the task via Stop hook or while-loop restart
+                pane_state = "unknown"
                 try:
                     result = subprocess.run(
                         ["tmux", "display-message", "-t", sw_session_id, "-p", "#{pane_current_command}"],
@@ -1359,12 +1479,25 @@ def cli():
                         text=True,
                         timeout=2,
                     )
-                    if result.returncode == 0 and result.stdout.strip() not in ("claude",):
-                        subprocess.run(
-                            ["tmux", "send-keys", "-t", sw_session_id, "", ""],
-                            timeout=2,
-                            check=False,
-                        )
+                    if result.returncode == 0:
+                        pane_state = result.stdout.strip()
+                        if pane_state not in ("claude",):
+                            # Pane is idle — send actionable message via send-keys
+                            nudge_msg = (
+                                f"Pick up handoff task #{handoff_id}: {title}. "
+                                f"Run: ai handoff check && ai handoff claim $(ai handoff check)"
+                            )
+                            subprocess.run(
+                                ["tmux", "send-keys", "-t", sw_session_id, nudge_msg, "Enter"],
+                                timeout=2,
+                                check=False,
+                            )
+                            _log_handoff_event(
+                                "handoff.nudge_sent",
+                                handoff_id=handoff_id,
+                                session=sw_session_id,
+                                pane_state=pane_state,
+                            )
                 except Exception:
                     pass
 
@@ -1387,7 +1520,15 @@ def cli():
                         except OSError:
                             scan_title, scan_priority, body = f.stem, "", ""
                         asyncio.run(
-                            _on_handoff({"id": fid, "title": scan_title, "priority": scan_priority, "message": body})
+                            _on_handoff(
+                                {
+                                    "id": fid,
+                                    "title": scan_title,
+                                    "priority": scan_priority,
+                                    "message": body,
+                                    "_source": "startup_scan",
+                                }
+                            )
                         )
 
             consumer_name = f"{sw_session_id}-signal-watcher"
@@ -1827,7 +1968,12 @@ def cli():
             sys.exit(1)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
+    # Registry validation: ensure all projects are registered before launching session
+    if not validate_registry_completeness(interactive=sys.stdin.isatty()):
+        sys.exit(1)
+
     cleanup_stale_sessions(config)
+    current_project_name = get_current_project_name()
     session_id, ai_name = build_session_name(engine, project_prefix, name, config, is_remote=args.is_remote)
 
     # Worktree setup
@@ -1899,6 +2045,7 @@ def cli():
         str(worktree_path) if worktree_path else None,
         notify=args.notify,
         is_remote=args.is_remote,
+        project_name=current_project_name,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
