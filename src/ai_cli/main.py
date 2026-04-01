@@ -1152,7 +1152,9 @@ def _log_handoff_event(event_type: str, **fields) -> None:
         pass
 
 
-def post_handoff(title, priority, project, message):
+def post_handoff(title, priority, project, message, for_machine=None):
+    if for_machine is None:
+        for_machine = os.environ.get("HUMANWARE_HOST", "")
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
         print("Error: [project] main_project not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
@@ -1176,7 +1178,7 @@ def post_handoff(title, priority, project, message):
     slug = "".join(c if c.isalnum() or c == "-" else "-" for c in title.lower().replace(" ", "-"))[:40]
     filename = f"{next_id:03d}-{slug}.md"
     queue_dir.mkdir(parents=True, exist_ok=True)
-    out = f'---\nid: "{next_id}"\ntitle: "{title}"\npriority: {priority}\nproject: {project}\ncreated_by: {created_by}\ncreated_at: "{now}"\nclaimed_by: null\nclaimed_at: null\n---\n\n{message}\n'
+    out = f'---\nid: "{next_id}"\ntitle: "{title}"\npriority: {priority}\nproject: {project}\ncreated_by: {created_by}\ncreated_at: "{now}"\nfor_machine: {for_machine}\nclaimed_by: null\nclaimed_at: null\n---\n\n{message}\n'
     (queue_dir / filename).write_text(out)
     print(queue_dir / filename)
     _log_handoff_event("handoff.posted", handoff_id=next_id, project=project, title=title, priority=priority)
@@ -1195,6 +1197,7 @@ def post_handoff(title, priority, project, message):
             "priority": priority,
             "message": message,
             "created_by": created_by,
+            "for_machine": for_machine,
             "content": out,
             "filename": filename,
             "ts": time.time(),
@@ -1477,6 +1480,9 @@ def cli():
                 title = data.get("title", "")
                 priority = data.get("priority", "")
                 message = data.get("message", "")
+                for_machine = data.get("for_machine", "")
+                if for_machine and for_machine != os.environ.get("HUMANWARE_HOST", ""):
+                    return  # not intended for this machine
                 print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
                 if sw_handoff_dir is None or not handoff_id:
                     return
@@ -1551,11 +1557,13 @@ def cli():
                             raw = f.read_text()
                             fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
                             fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
+                            fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
                             body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
                             scan_title = fm_title.group(1).strip() if fm_title else f.stem
                             scan_priority = fm_priority.group(1) if fm_priority else ""
+                            scan_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
                         except OSError:
-                            scan_title, scan_priority, body = f.stem, "", ""
+                            scan_title, scan_priority, body, scan_for_machine = f.stem, "", "", ""
                         asyncio.run(
                             _on_handoff(
                                 {
@@ -1563,6 +1571,7 @@ def cli():
                                     "title": scan_title,
                                     "priority": scan_priority,
                                     "message": body,
+                                    "for_machine": scan_for_machine,
                                     "_source": "startup_scan",
                                 }
                             )
@@ -1595,6 +1604,9 @@ def cli():
                 title = data.get("title", "")
                 priority = data.get("priority", "")
                 message = data.get("message", "")
+                for_machine = data.get("for_machine", "")
+                if for_machine and for_machine != os.environ.get("HUMANWARE_HOST", ""):
+                    return False  # not intended for this machine
                 if hd_handoff_dir is None or not handoff_id:
                     return False
                 # Cross-machine: write file locally from payload if missing
@@ -1634,6 +1646,7 @@ def cli():
                             raw = best.read_text()
                             fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
                             fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
+                            fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
                             body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
                             _write_pending_if_claimed(
                                 {
@@ -1641,6 +1654,7 @@ def cli():
                                     "title": fm_title.group(1).strip() if fm_title else best.stem,
                                     "priority": fm_priority.group(1) if fm_priority else "",
                                     "message": body,
+                                    "for_machine": fm_for_machine.group(1) if fm_for_machine else "",
                                 }
                             )
                         except Exception:
@@ -1752,7 +1766,12 @@ def cli():
                 remote_host = remote_cfg.get("host", "178.104.70.139")
                 remote_user = remote_cfg.get("user", "sergei")
                 os.execvp("ssh", ["ssh", f"{remote_user}@{remote_host}", "ai", "handoff", "post"] + post_args)
-            post_handoff(post_args[0], post_args[1], post_args[2], post_args[3])
+            for_machine = None
+            if "--for-machine" in post_args:
+                idx = post_args.index("--for-machine")
+                for_machine = post_args[idx + 1]
+                post_args = post_args[:idx] + post_args[idx + 2 :]
+            post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
         elif action == "check":
             check_handoff()
         elif action == "check-project":

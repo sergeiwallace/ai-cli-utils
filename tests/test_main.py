@@ -827,6 +827,32 @@ class TestHandoff:
                 post_handoff("title", "P1", "proj", "msg")
             assert exc.value.code == 1
 
+    def test_post_handoff_writes_for_machine_from_env(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            with patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}):
+                post_handoff("Task", "P1", "proj", "msg")
+        content = list((queue_dir / "pending").glob("*.md"))[0].read_text()
+        assert "for_machine: hetzner" in content
+
+    def test_post_handoff_writes_explicit_for_machine(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            post_handoff("Task", "P1", "proj", "msg", for_machine="mac")
+        content = list((queue_dir / "pending").glob("*.md"))[0].read_text()
+        assert "for_machine: mac" in content
+
+    def test_post_handoff_includes_for_machine_in_nats_payload(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock(return_value=True)
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+                    post_handoff("Task", "P1", "proj", "msg", for_machine="mac")
+        _, payload = mock_client.publish.call_args[0]
+        assert payload["for_machine"] == "mac"
+
     def test_check_handoff_when_pending_items_then_prints_best(self, tmp_path, capsys):
         queue_dir = tmp_path / ".handoff-queue"
         pending = queue_dir / "pending"
@@ -1318,6 +1344,148 @@ class TestSignalWatchCli:
         assert (state_dir / "handoff-pending-c-sw-5").exists()
         assert send_keys_calls == [], "startup scan must not send-keys"
 
+    def test_signal_watch_when_for_machine_matches_then_claims(self, tmp_path):
+        """Handoff with for_machine matching HUMANWARE_HOST should be claimed."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        (handoff_dir / "pending").mkdir(parents=True)
+        file_content = '---\nid: "8"\ntitle: "local task"\nclaimed_by: null\nclaimed_at: null\n---\n'
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = json.dumps(
+                    {
+                        "id": 8,
+                        "title": "local task",
+                        "priority": "P1",
+                        "message": "do it",
+                        "for_machine": "hetzner",
+                        "content": file_content,
+                        "filename": "008-local-task.md",
+                    }
+                ).encode()
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-6"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+            patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert (state_dir / "handoff-pending-c-sw-6").exists()
+
+    def test_signal_watch_when_for_machine_mismatch_then_skips(self, tmp_path):
+        """Handoff with for_machine not matching HUMANWARE_HOST must be ignored."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        (handoff_dir / "pending").mkdir(parents=True)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = json.dumps(
+                    {
+                        "id": 9,
+                        "title": "mac only task",
+                        "priority": "P1",
+                        "message": "mac work",
+                        "for_machine": "mac",
+                    }
+                ).encode()
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-7"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+            patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert not (state_dir / "handoff-pending-c-sw-7").exists()
+
+    def test_signal_watch_startup_scan_when_for_machine_mismatch_then_skips(self, tmp_path):
+        """Startup scan must skip files whose for_machine doesn't match HUMANWARE_HOST."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "010-mac-task.md").write_text(
+            '---\nid: "10"\ntitle: "mac task"\nfor_machine: mac\nclaimed_by: null\nclaimed_at: null\n---\n\nMac only.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+
+        async def fake_js_subscribe(subject, durable, cb):
+            pass
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-8"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+            patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # File must remain in pending — not claimed, not written to state
+        assert (pending / "010-mac-task.md").exists()
+        assert not (state_dir / "handoff-pending-c-sw-8").exists()
+
 
 # --- ai handoff post --remote ---
 
@@ -1796,7 +1964,7 @@ class TestCliDispatch:
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
-                    mock_post.assert_called_once_with("title", "P1", "proj", "msg")
+                    mock_post.assert_called_once_with("title", "P1", "proj", "msg", for_machine=None)
 
     def test_cli_when_handoff_claim_then_calls_claim_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "claim", "/tmp/file.md"]):
