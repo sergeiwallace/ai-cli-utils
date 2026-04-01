@@ -162,15 +162,15 @@ Model aliases: `deep-think`, `pro`, `flash`, `flash-lite`, or any full model ID.
 ### ai handoff
 
 ```
-ai handoff post <from> <to> <subject> <body>
+ai handoff post [--remote] <title> <priority> <project> <message>
 ai handoff check
-ai handoff claim <id>
-ai handoff complete <id>
+ai handoff claim <file>
+ai handoff complete <file>
 ```
 
-Cross-session handoff queue. `post` writes a handoff item; `check` lists pending items for the current session; `claim` marks an item in-progress; `complete` marks it done.
+Cross-session handoff queue. `post` writes a handoff item (add `--remote` to post to Hetzner via SSH); `check` prints the highest-priority pending file; `claim` atomically moves a file to `claimed/`; `complete` moves it to `completed/`.
 
-Queue lives at `~/projects/sergei/.handoff-queue/`.
+Queue lives at `~/projects/sergei/.handoff-queue/`. Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
 
 ### ai upgrade
 
@@ -198,4 +198,7 @@ Used by hooks and scripts — not for direct human use.
 | `send-message` | `session_id msg` | Send message to session via NATS |
 | `notify` | `session_id event_type` | Publish session notification |
 | `publish` | `subject payload` | Raw NATS publish |
-| `session-lifecycle` | `session_id verb` | Publish session started/stopped |
+| `publish-event` | `session_id event_type` | Publish fleet event |
+| `publish-heartbeat` | `session_id json` | Publish worker heartbeat |
+| `publish-session-event` | `session_id verb` | Publish session started/stopped |
+| `signal-watch` | `project session_id` | Subscribe durable to `handoff.{project}`, claim tasks, write pending-file for auto-pickup |
