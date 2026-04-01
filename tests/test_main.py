@@ -54,6 +54,10 @@ from ai_cli.main import (
     save_session_map,
     trigger_background_update,
     validate_registry_completeness,
+    _ensure_circusd,
+    _cmd_signal_watch_start,
+    _cmd_signal_watch_stop,
+    _cmd_signal_watch_status,
 )
 
 
@@ -1609,9 +1613,9 @@ class TestDeploy:
 
         # pyproject.toml restored to original after install
         assert pyproject.read_text() == '[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n'
-        # uv install was called with --reinstall (may not be the last call)
+        # uv tool install was called with --force (no --reinstall)
         all_cmds = [call[0][0] for call in mock_run.call_args_list]
-        uv_cmd = next((c for c in all_cmds if "uv" in c and "--reinstall" in c), None)
+        uv_cmd = next((c for c in all_cmds if "uv" in c and "--force" in c and "--reinstall" not in c), None)
         assert uv_cmd is not None
 
     def test_deploy_strips_existing_post_before_bumping(self, tmp_path):
@@ -1676,7 +1680,7 @@ class TestDeploy:
 
         cmds = [" ".join(c) for c in calls]
         pull_idx = next((i for i, c in enumerate(cmds) if "git" in c and "pull" in c), None)
-        uv_idx = next((i for i, c in enumerate(cmds) if "uv" in c and "reinstall" in c), None)
+        uv_idx = next((i for i, c in enumerate(cmds) if "uv" in c and "tool" in c and "install" in c), None)
         assert pull_idx is not None, "git pull not called"
         assert uv_idx is not None, "uv install not called"
         assert pull_idx < uv_idx, "git pull must run before uv install"
@@ -1707,7 +1711,7 @@ class TestDeploy:
             assert exc.value.code == 0
 
         cmds = [" ".join(c) for c in calls]
-        assert any("pip" in c and "reinstall" in c for c in cmds), "aido venv install not called"
+        assert any("pip" in c and "install" in c for c in cmds), "aido venv install not called"
 
     def test_deploy_on_mac_installs_aido_venv_when_present(self, tmp_path):
         """Mac also installs into aido venv if it exists — not gated by host."""
@@ -1735,7 +1739,7 @@ class TestDeploy:
             assert exc.value.code == 0
 
         cmds = [" ".join(c) for c in calls]
-        assert any("pip" in c and "reinstall" in c for c in cmds), "aido venv install not called on Mac"
+        assert any("pip" in c and "install" in c for c in cmds), "aido venv install not called on Mac"
 
 
 class TestGetEngineScriptSelfUpdate:
@@ -4144,7 +4148,7 @@ class TestEngineScriptProjectName:
             "sw",
             project_name="my-project",
         )
-        assert 'ai internal signal-watch "$project_name"' in script
+        assert 'ai signal-watch start "$project_name"' in script
 
     def test_get_engine_script_exit_trap_cleans_caught_file(self):
         script = get_engine_script(
@@ -4440,3 +4444,153 @@ class TestHandoffDrain:
         events = [json.loads(l) for l in log.read_text().strip().split("\n")]
         claimed = [e for e in events if e["event"] == "handoff.claimed"]
         assert any(e["layer"] == "pre_launch_drain" for e in claimed)
+
+
+# --- Circus / signal-watch tests ---
+
+
+class TestSignalWatchCircus:
+    def _mock_client(self, status_response=None):
+        """Return a MagicMock CircusClient that can send_message."""
+        client = MagicMock()
+        if status_response is not None:
+            client.send_message.return_value = status_response
+        return client
+
+    def test_ensure_circusd_when_already_running_then_no_popen(self, tmp_path):
+        client = self._mock_client()
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", return_value=client),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            endpoint = _ensure_circusd()
+        assert endpoint == f"ipc://{tmp_path}/circus.endpoint"
+        mock_popen.assert_not_called()
+
+    def test_ensure_circusd_when_not_running_then_starts_daemon_and_writes_ini(self, tmp_path):
+        call_count = 0
+
+        def client_factory(endpoint, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ConnectionRefusedError("not running")
+            return self._mock_client()
+
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", side_effect=client_factory),
+            patch("subprocess.Popen") as mock_popen,
+            patch("shutil.which", return_value="/usr/bin/circusd"),
+            patch("time.sleep"),
+        ):
+            endpoint = _ensure_circusd()
+
+        assert endpoint == f"ipc://{tmp_path}/circus.endpoint"
+        mock_popen.assert_called_once()
+        popen_args = mock_popen.call_args[0][0]
+        assert "--daemon" in popen_args
+        assert str(tmp_path / "circus.ini") in popen_args
+        assert (tmp_path / "circus.ini").exists()
+        ini = (tmp_path / "circus.ini").read_text()
+        assert "pubsub_endpoint" in ini
+
+    def test_cmd_signal_watch_start_registers_watcher_with_copy_env(self, tmp_path):
+        client = self._mock_client()
+        with (
+            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("circus.client.CircusClient", return_value=client),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            _cmd_signal_watch_start("myproject", "c-sw-1")
+
+        add_call = next(c for c in client.send_message.call_args_list if c[0][0] == "add")
+        options = add_call[1]["options"]
+        assert options["copy_env"] is True
+        assert add_call[1]["start"] is True
+
+    def test_cmd_signal_watch_start_idempotent_on_second_call(self, tmp_path):
+        client = self._mock_client()
+        # First rm raises (watcher not found) — must be swallowed
+        client.send_message.side_effect = [Exception("not found"), None]
+        with (
+            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("circus.client.CircusClient", return_value=client),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            _cmd_signal_watch_start("myproject", "c-sw-1")
+        # add was still called after rm failed
+        calls = [c[0][0] for c in client.send_message.call_args_list]
+        assert "rm" in calls
+        assert "add" in calls
+
+    def test_cmd_signal_watch_stop_when_circusd_running(self, tmp_path):
+        client = self._mock_client()
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", return_value=client),
+        ):
+            _cmd_signal_watch_stop("c-sw-1")
+        client.send_message.assert_called_once_with("rm", name="sw-c-sw-1")
+
+    def test_cmd_signal_watch_stop_when_circusd_not_running_then_silent(self, tmp_path):
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", side_effect=Exception("zmq error")),
+        ):
+            _cmd_signal_watch_stop("c-sw-1")  # must not raise
+
+    def test_cmd_signal_watch_status_filters_sw_prefix(self, tmp_path, capsys):
+        client = self._mock_client(
+            status_response={"statuses": {"sw-c-sw-1": "active", "other-watcher": "active", "sw-c-sw-2": "stopped"}}
+        )
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", return_value=client),
+        ):
+            _cmd_signal_watch_status()
+        out = capsys.readouterr().out
+        assert "c-sw-1" in out
+        assert "c-sw-2" in out
+        assert "other-watcher" not in out
+
+    def test_cmd_signal_watch_status_when_circusd_not_running_then_message(self, tmp_path, capsys):
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", side_effect=Exception("zmq error")),
+        ):
+            _cmd_signal_watch_status()
+        out = capsys.readouterr().out
+        assert "not running" in out
+
+    def test_cli_signal_watch_start_dispatches(self, tmp_path):
+        with (
+            patch("sys.argv", ["ai", "signal-watch", "start", "myproject", "c-sw-1"]),
+            patch("ai_cli.main._cmd_signal_watch_start") as mock_start,
+            patch("ai_cli.main.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+        mock_start.assert_called_once_with("myproject", "c-sw-1")
+
+    def test_cli_signal_watch_stop_dispatches(self, tmp_path):
+        with (
+            patch("sys.argv", ["ai", "signal-watch", "stop", "c-sw-1"]),
+            patch("ai_cli.main._cmd_signal_watch_stop") as mock_stop,
+            patch("ai_cli.main.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+        mock_stop.assert_called_once_with("c-sw-1")
+
+    def test_cli_signal_watch_missing_args_exits_1(self):
+        with (
+            patch("sys.argv", ["ai", "signal-watch"]),
+            patch("ai_cli.main.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1

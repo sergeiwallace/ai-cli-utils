@@ -940,8 +940,8 @@ def get_engine_script(
 
     # Auto-start signal-watch for handoff auto-pickup (only for cc engine)
     if [[ "$engine" == "c" && -n "$project_name" ]]; then
-      ai internal signal-watch "$project_name" "$tmux_session" &>/dev/null &
-      signal_watch_pid=$!
+      ai signal-watch start "$project_name" "$tmux_session" &>/dev/null
+      signal_watch_pid=""
     fi
 
     # iTerm2 fleet management: set profile, rolling tab color, tab title
@@ -1039,7 +1039,7 @@ def get_engine_script(
     if [[ -n "$ITERM_SESSION_ID" ]]; then
       _iterm2_color_file="$_ai_state_dir/iterm2/cc-color-${{ITERM_SESSION_ID%%p*}}"
     fi
-    trap 'kill "$watcher_pid" 2>/dev/null; kill "$signal_watch_pid" 2>/dev/null; rm -f "$lock_file" "$_iterm2_color_file" "$_ai_state_dir/handoff-caught-$tmux_session"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
+    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_iterm2_color_file" "$_ai_state_dir/handoff-caught-$tmux_session"; _iterm2_exit_cleanup; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
@@ -1337,6 +1337,116 @@ def trigger_background_update():
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+# --- Circus / signal-watch process management ---
+
+
+def _ensure_circusd() -> str:
+    """Start circusd if not already running. Returns the endpoint URI."""
+    import shutil as _shutil
+    import time as _time
+
+    state_dir = get_xdg_state_home()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    endpoint = f"ipc://{state_dir}/circus.endpoint"
+
+    # Try existing daemon first
+    try:
+        from circus.client import CircusClient
+
+        CircusClient(endpoint, timeout=1.0).send_message("status")
+        return endpoint
+    except Exception:
+        pass
+
+    # Write circus.ini
+    ini_path = state_dir / "circus.ini"
+    ini_path.write_text(
+        f"[circus]\n"
+        f"endpoint        = {endpoint}\n"
+        f"pubsub_endpoint = ipc://{state_dir}/circus.pubsub\n"
+        f"logoutput       = {state_dir}/circus.log\n"
+        f"umask           = 0o022\n"
+    )
+
+    circusd_bin = _shutil.which("circusd") or str(Path.home() / ".local" / "bin" / "circusd")
+    pidfile = str(state_dir / "circusd.pid")
+    subprocess.Popen(
+        [circusd_bin, "--daemon", "--pidfile", pidfile, str(ini_path)],
+    )
+
+    # Poll until ready
+    from circus.client import CircusClient
+
+    for _ in range(10):
+        _time.sleep(0.3)
+        try:
+            CircusClient(endpoint, timeout=1.0).send_message("status")
+            return endpoint
+        except Exception:
+            pass
+
+    raise RuntimeError("circusd did not start in time")
+
+
+def _cmd_signal_watch_start(project: str, session: str) -> None:
+    endpoint = _ensure_circusd()
+    from circus.client import CircusClient
+
+    client = CircusClient(endpoint, timeout=5.0)
+    watcher_name = f"sw-{session}"
+    ai_bin = shutil.which("ai") or "ai"
+    cmd = f"{ai_bin} internal signal-watch {project} {session}"
+
+    # Remove existing watcher idempotently
+    try:
+        client.send_message("rm", name=watcher_name)
+    except Exception:
+        pass
+
+    client.send_message(
+        "add",
+        name=watcher_name,
+        cmd=cmd,
+        options={
+            "copy_env": True,
+            "respawn": False,
+            "singleton": True,
+            "autostart": True,
+        },
+        start=True,
+    )
+
+
+def _cmd_signal_watch_stop(session: str) -> None:
+    state_dir = get_xdg_state_home()
+    endpoint = f"ipc://{state_dir}/circus.endpoint"
+    try:
+        from circus.client import CircusClient
+
+        CircusClient(endpoint, timeout=2.0).send_message("rm", name=f"sw-{session}")
+    except Exception:
+        pass
+
+
+def _cmd_signal_watch_status() -> None:
+    state_dir = get_xdg_state_home()
+    endpoint = f"ipc://{state_dir}/circus.endpoint"
+    try:
+        from circus.client import CircusClient
+
+        result = CircusClient(endpoint, timeout=2.0).send_message("status")
+        statuses = result.get("statuses", {})
+        sw_watchers = {k: v for k, v in statuses.items() if k.startswith("sw-")}
+        if not sw_watchers:
+            print("No signal-watch processes running.")
+            return
+        for name, status in sorted(sw_watchers.items()):
+            session = name[len("sw-") :]
+            print(f"{session}: {status}")
+    except Exception:
+        print("circusd not running.")
 
 
 # --- CLI Entry Point ---
@@ -1815,6 +1925,30 @@ def cli():
         gemini_cli(sys.argv[2:])
         sys.exit(0)
 
+    if len(sys.argv) > 1 and sys.argv[1] == "signal-watch":
+        if len(sys.argv) < 3:
+            print("Usage: ai signal-watch [start <project> <session> | stop <session> | status]", file=sys.stderr)
+            sys.exit(1)
+        sw_action = sys.argv[2]
+        if sw_action == "start":
+            if len(sys.argv) < 5:
+                print("Usage: ai signal-watch start <project> <session>", file=sys.stderr)
+                sys.exit(1)
+            _cmd_signal_watch_start(sys.argv[3], sys.argv[4])
+            sys.exit(0)
+        elif sw_action == "stop":
+            if len(sys.argv) < 4:
+                print("Usage: ai signal-watch stop <session>", file=sys.stderr)
+                sys.exit(1)
+            _cmd_signal_watch_stop(sys.argv[3])
+            sys.exit(0)
+        elif sw_action == "status":
+            _cmd_signal_watch_status()
+            sys.exit(0)
+        else:
+            print(f"Unknown signal-watch action: {sw_action}. Use start, stop, or status.", file=sys.stderr)
+            sys.exit(1)
+
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         if len(sys.argv) == 2:
             print("Usage: ai sync [push|pull|conflicts|watch] [--memories-only] [--dry-run] [--verbose] [--force]")
@@ -1888,7 +2022,7 @@ def cli():
         print()
         sys.exit(0)
 
-    if len(sys.argv) > 1 and sys.argv[1] == "deploy":
+    if len(sys.argv) > 1 and sys.argv[1] in ("update", "deploy"):
         cfg_deploy = config.get("deploy", {})
         project_path_str = cfg_deploy.get("project_path", "")
         project_path = Path(project_path_str).expanduser() if project_path_str else Path.cwd()
@@ -1910,12 +2044,12 @@ def cli():
         if is_mac:
             print("Pulling latest from origin...")
             subprocess.run(["git", "pull", "--rebase"], cwd=project_path, check=False)
-        print(f"Deploying {m.group(2)} → {new_version}")
+        print(f"Updating {m.group(2)} → {new_version}")
         exit_code = 0
         try:
             pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
             result = subprocess.run(
-                ["uv", "tool", "install", str(project_path), "--force", "--reinstall"],
+                ["uv", "tool", "install", str(project_path), "--force"],
                 cwd=project_path,
             )
             exit_code = result.returncode
@@ -1926,7 +2060,7 @@ def cli():
             aido_venv = Path.home() / "projects" / "aido" / ".venv"
             if aido_venv.exists():
                 subprocess.run(
-                    ["uv", "pip", "install", str(project_path), "--force-reinstall"],
+                    ["uv", "pip", "install", str(project_path)],
                     env={**os.environ, "VIRTUAL_ENV": str(aido_venv)},
                     check=False,
                 )
