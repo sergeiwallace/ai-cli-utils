@@ -30,7 +30,7 @@ def get_xdg_cache_home():
 #   - docs/tools/cc-cli-design.md (usage reference, session naming, transport, auto-resume)
 #   - README.md (if CLI interface changes)
 #   - Code comments in this file (especially around session naming, resume logic, mosh/transport)
-#   - CLAUDE.md ai-cli deploy note (reinstall in 3 places: Mac uv tool, server uv tool, aido venv)
+#   - CLAUDE.md ai-cli deploy note (reinstall in 3 places: Mac uv tool, server uv tool, extra_venvs)
 
 DEFAULT_CONFIG = """## ai-cli configuration
 
@@ -75,6 +75,11 @@ stale_session_timeout = 15
 [messaging]
 # NATS server URLs for fleet messaging (heartbeats, events)
 nats_servers = ["nats://localhost:4222"]
+
+[update]
+## Additional venv paths to install ai-cli-utils into after 'ai update'
+## Useful if you have tools or virtual environments that depend on ai-cli-utils
+# extra_venvs = ["/home/user/projects/mytool/.venv"]
 """
 
 
@@ -2163,17 +2168,19 @@ def cli():
         finally:
             pyproject.write_text(original)
         if exit_code == 0:
-            # Also install into aido venv if it exists (uses system uv with VIRTUAL_ENV set)
-            aido_venv = Path.home() / "projects" / "aido" / ".venv"
-            if aido_venv.exists():
-                pip_cmd = ["uv", "pip", "install", str(project_path)]
-                if force_reinstall:
-                    pip_cmd.append("--force-reinstall")
-                subprocess.run(
-                    pip_cmd,
-                    env={**os.environ, "VIRTUAL_ENV": str(aido_venv)},
-                    check=False,
-                )
+            # Install into any configured extra venvs (e.g. tool venvs that depend on ai-cli-utils)
+            extra_venvs = config.get("update", {}).get("extra_venvs", [])
+            for venv_path_str in extra_venvs:
+                venv_path = Path(venv_path_str).expanduser()
+                if venv_path.exists():
+                    pip_cmd = ["uv", "pip", "install", str(project_path)]
+                    if force_reinstall:
+                        pip_cmd.append("--force-reinstall")
+                    subprocess.run(
+                        pip_cmd,
+                        env={**os.environ, "VIRTUAL_ENV": str(venv_path)},
+                        check=False,
+                    )
             # Clear pycache
             subprocess.run(
                 ["find", str(project_path), "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
