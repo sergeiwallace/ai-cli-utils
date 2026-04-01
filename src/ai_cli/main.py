@@ -1341,6 +1341,27 @@ def _claim_handoff_for_signal(handoff_dir: Path, handoff_id: int, claimer: str) 
     return dst
 
 
+def _auto_update_if_stale(config: dict) -> None:
+    """Run `ai update --force` if the project has new commits since the last update."""
+    cfg_deploy = config.get("deploy", {})
+    project_path_str = cfg_deploy.get("project_path", "")
+    project_path = Path(project_path_str).expanduser() if project_path_str else Path.cwd()
+    if not (project_path / "pyproject.toml").exists():
+        return
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
+    if head.returncode != 0:
+        return
+    current_hash = head.stdout.strip()
+    stamp_file = get_xdg_state_home() / "last_update_commit.txt"
+    if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
+        return
+    print("ai-cli-utils has new commits — running ai update --force...")
+    ai_bin = shutil.which("ai") or "ai"
+    result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path)
+    if result.returncode != 0:
+        print("Warning: auto-update failed, continuing with current version", file=sys.stderr)
+
+
 def trigger_background_update():
     state_file = get_xdg_state_home() / "update_check.json"
     now = time.time()
@@ -2211,6 +2232,12 @@ def cli():
                 ["find", str(project_path), "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
                 check=False,
             )
+            # Record HEAD hash so session start can detect staleness
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
+            if head.returncode == 0:
+                stamp_file = get_xdg_state_home() / "last_update_commit.txt"
+                stamp_file.parent.mkdir(parents=True, exist_ok=True)
+                stamp_file.write_text(head.stdout.strip())
         sys.exit(exit_code)
 
     if len(sys.argv) > 1 and sys.argv[1] == "attach":
@@ -2320,6 +2347,7 @@ def cli():
             sys.exit(0)
 
     trigger_background_update()
+    _auto_update_if_stale(config)
 
     parser = argparse.ArgumentParser(description="Unified AI CLI for Claude and Gemini")
     parser.add_argument("engine", choices=["c", "g"], help="c for Claude, g for Gemini")

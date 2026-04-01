@@ -52,6 +52,7 @@ from ai_cli.main import (
     post_handoff,
     resolve_session,
     save_session_map,
+    _auto_update_if_stale,
     trigger_background_update,
     validate_registry_completeness,
     _ensure_circusd,
@@ -1647,7 +1648,7 @@ class TestDeploy:
         with (
             patch("sys.argv", ["ai", "deploy"]),
             patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")) as mock_run,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1667,7 +1668,7 @@ class TestDeploy:
         with (
             patch("sys.argv", ["ai", "deploy"]),
             patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
             patch("builtins.print") as mock_print,
         ):
             with pytest.raises(SystemExit):
@@ -1694,7 +1695,7 @@ class TestDeploy:
             patch("sys.argv", ["ai", "deploy"]),
             patch("ai_cli.main.load_config", return_value={}),
             patch("ai_cli.main.Path.cwd", return_value=tmp_path),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1708,7 +1709,7 @@ class TestDeploy:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="")
 
         with (
             patch("sys.argv", ["ai", "update"]),
@@ -1737,7 +1738,7 @@ class TestDeploy:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="")
 
         with (
             patch("sys.argv", ["ai", "update"]),
@@ -1765,7 +1766,7 @@ class TestDeploy:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="")
 
         with (
             patch("sys.argv", ["ai", "update"]),
@@ -1827,6 +1828,109 @@ class TestTriggerBackgroundUpdate:
             with patch("subprocess.Popen") as mock_popen:
                 trigger_background_update()
         mock_popen.assert_called_once()
+
+
+# --- _auto_update_if_stale ---
+
+
+class TestAutoUpdateIfStale:
+    def test_when_hash_matches_then_skips_update(self, tmp_path):
+        """No update when installed hash matches current HEAD."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        stamp = tmp_path / "last_update_commit.txt"
+        stamp.write_text("abc123")
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout="abc123\n")
+
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run) as mock_run,
+        ):
+            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+
+        ai_calls = [c for c in mock_run.call_args_list if "ai" in str(c) and "update" in str(c)]
+        assert len(ai_calls) == 0
+
+    def test_when_hash_differs_then_runs_update(self, tmp_path):
+        """Runs `ai update --force` when HEAD hash differs from stored hash."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        stamp = tmp_path / "last_update_commit.txt"
+        stamp.write_text("old_hash")
+
+        update_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "update" in cmd:
+                update_called.append(cmd)
+            return MagicMock(returncode=0, stdout="new_hash\n")
+
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+
+        assert len(update_called) == 1
+        assert "--force" in update_called[0]
+
+    def test_when_no_stamp_file_then_runs_update(self, tmp_path):
+        """Runs update when no stamp file exists (first time)."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+
+        update_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "update" in cmd:
+                update_called.append(cmd)
+            return MagicMock(returncode=0, stdout="abc123\n")
+
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+
+        assert len(update_called) == 1
+
+    def test_when_no_pyproject_then_skips(self, tmp_path):
+        """Returns without running anything if pyproject.toml is absent."""
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run") as mock_run,
+        ):
+            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+
+        mock_run.assert_not_called()
+
+    def test_deploy_writes_commit_hash_stamp_on_success(self, tmp_path):
+        """ai update writes HEAD hash to last_update_commit.txt after successful install."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "rev-parse"]:
+                return MagicMock(returncode=0, stdout="deadbeef\n")
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        stamp = tmp_path / "last_update_commit.txt"
+        assert stamp.exists()
+        assert stamp.read_text().strip() == "deadbeef"
 
 
 # --- CLI dispatch tests ---
