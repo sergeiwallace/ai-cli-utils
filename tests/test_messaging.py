@@ -279,7 +279,7 @@ class TestSshTunnel:
                     asyncio.run(client._open_ssh_tunnel())
 
         mock_popen.assert_called_once_with(
-            ["ssh", "-fNL", "4222:localhost:4222", "sergei@178.104.70.139"],
+            ["ssh", "-fNL", "4222:localhost:4222", "-p", "22", "sergei@178.104.70.139"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -308,3 +308,67 @@ class TestNATSClientCloseTunnel:
     def test_close_with_no_tunnel_proc_does_not_raise(self):
         client = NATSClient()
         asyncio.run(client.close())  # no tunnel, no nc — should be silent
+
+
+class TestOpenSshTunnel:
+    def test_skips_when_not_mac(self):
+        client = NATSClient()
+        with patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}):
+            with patch("subprocess.Popen") as mock_popen:
+                asyncio.run(client._open_ssh_tunnel())
+        mock_popen.assert_not_called()
+
+    def test_skips_when_port_already_reachable(self):
+        client = NATSClient()
+        with patch.dict("os.environ", {"HUMANWARE_HOST": "mac"}):
+            with patch("socket.create_connection"):  # succeeds — port open
+                with patch("subprocess.Popen") as mock_popen:
+                    asyncio.run(client._open_ssh_tunnel())
+        mock_popen.assert_not_called()
+
+    def test_uses_configured_host_not_hardcoded_ip(self):
+        """Tunnel must use config remote.host (Tailscale IP) not a hardcoded IP."""
+        client = NATSClient()
+        config = {"remote": {"host": "100.106.24.69", "user": "sergei", "port": 22}}
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append(cmd)
+            return MagicMock()
+
+        async def fake_sleep(_):
+            pass
+
+        with patch.dict("os.environ", {"HUMANWARE_HOST": "mac"}):
+            with patch("socket.create_connection", side_effect=OSError):
+                with patch("ai_cli.messaging.NATSClient.__module__"):
+                    pass
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)):
+                        with patch("ai_cli.messaging.load_config", return_value=config, create=True):
+                            with patch("ai_cli.main.load_config", return_value=config):
+                                asyncio.run(client._open_ssh_tunnel())
+
+        assert len(popen_calls) == 1
+        ssh_cmd = popen_calls[0]
+        assert "100.106.24.69" in " ".join(ssh_cmd)
+        assert "178.104.70.139" not in " ".join(ssh_cmd)
+
+    def test_falls_back_to_default_ip_when_config_missing(self):
+        """If config load fails, falls back to hardcoded default."""
+        client = NATSClient()
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append(cmd)
+            return MagicMock()
+
+        with patch.dict("os.environ", {"HUMANWARE_HOST": "mac"}):
+            with patch("socket.create_connection", side_effect=OSError):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch("asyncio.sleep", new=AsyncMock()):
+                        with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
+                            asyncio.run(client._open_ssh_tunnel())
+
+        assert len(popen_calls) == 1
+        assert "178.104.70.139" in " ".join(popen_calls[0])

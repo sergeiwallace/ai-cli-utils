@@ -41,8 +41,24 @@ class NATSClient:
                 return  # already reachable
         except OSError:
             pass
+        # Use configured remote host so Tailscale/direct-IP preference is respected.
+        try:
+            from .main import load_config as _load_config
+
+            _cfg = _load_config()
+            _remote = _cfg.get("remote", {})
+            _user = _remote.get("user", "sergei")
+            _host = _remote.get("host", "178.104.70.139")
+            _port = str(_remote.get("port", 22))
+            _identity = _remote.get("identity_file", "")
+        except Exception:
+            _user, _host, _port, _identity = "sergei", "178.104.70.139", "22", ""
+        ssh_cmd = ["ssh", "-fNL", "4222:localhost:4222"]
+        if _identity:
+            ssh_cmd += ["-i", _identity]
+        ssh_cmd += ["-p", _port, f"{_user}@{_host}"]
         self._tunnel_proc = subprocess.Popen(
-            ["ssh", "-fNL", "4222:localhost:4222", "sergei@178.104.70.139"],
+            ssh_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
