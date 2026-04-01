@@ -69,22 +69,139 @@ A bash `precmd` hook polls the file queue every N seconds and prints a banner wh
 
 ## Auto-Pickup Design
 
-### Two-path approach
+### Layered approach (5 layers)
 
-**Path 1 — Session idle when signal arrives:**
-signal-watch receives NATS message → attempts atomic claim (`mv pending/ → claimed/`) → if claim succeeds, sends a single empty newline to the tmux session via `tmux send-keys "" Enter` to wake CC → CC Stop hook fires → hook reads the claimed file and outputs task content as next prompt → CC continues with the task.
+Auto-pickup uses layered mechanisms so every CC session state is covered. No single mechanism handles all states — they complement each other with graceful fallback.
 
-**Path 2 — Session mid-generation when signal arrives:**
-signal-watch receives NATS message → writes `handoff-pending-$session` marker file (does NOT touch the tmux session) → CC Stop hook fires when generation finishes → hook attempts atomic claim → if claim succeeds, outputs task content → CC continues with the task.
+**CC session states and which layer handles each:**
 
-**Race condition (multiple sessions competing):**
-`mv` (rename) is atomic on Linux. `claim_handoff()` already performs this move. First session to succeed wins; others get ENOENT and skip silently. The Stop hook retries once in case of a brief race window, then gives up cleanly.
+| State | Description | Primary layer | Fallback |
+|-------|-------------|---------------|----------|
+| **Working** | CC mid-agentic-loop | Stop hook (fires after turn) | While-loop (on CC exit) |
+| **Idle (no typing)** | CC at prompt, user away | tmux send-keys nudge | UserPromptSubmit hook (on next interaction) |
+| **User typing** | CC at prompt, user composing | UserPromptSubmit hook (blocks once, shows combined prompt) | Stop hook (after their turn) |
+| **Between runs** | CC exited, bash while-loop active | While-loop reads pending file | — |
+| **Session start** | CC hasn't started yet | Startup scan (already done) | — |
 
-**Fallback (T-08):** If the minimal send-keys nudge proves unreliable in practice, a session-restart approach (signal-watch kills the idle session; bash loop restarts CC with handoff as initial prompt) can replace Path 1. Tracked as a follow-up.
+#### Layer 1: CC Stop hook (primary — Working, User Typing fallback)
 
-### CC Stop hook
+Configured in `~/.claude/settings.json` per-session via the bash template (written on session start, removed on exit). Fires after every CC turn. Checks `handoff-pending-$session` marker file. If found: outputs `{"decision": "block", "reason": "<task content>"}` so CC continues with the queued task as its next message. If absent: exits 0, normal stop proceeds.
 
-Configured in `~/.claude/settings.json` per-session via the bash template (written on session start, removed on exit). Checks `handoff-pending-$session` marker file. Non-fatal if file absent — normal stop proceeds.
+#### Layer 2: UserPromptSubmit hook (Idle → user returns, User Typing)
+
+Same pattern as the existing config-reload hook. On prompt submission, checks for `handoff-pending-$session`. If found:
+- Blocks the prompt (exit 2) with a message containing:
+  1. The user's original prompt text
+  2. Appended instructions to pick up the queued handoff task and remove it from queue
+  3. The combined text is easy to copy-paste and resubmit
+- Sets a "caught" flag so it only blocks **once**. If the user ignores the copy-paste and resubmits their original prompt, it goes through — the Stop hook will catch the pending task after that turn anyway.
+
+#### Layer 3: tmux send-keys nudge (truly Idle, no user activity)
+
+When signal-watch detects CC is running but the pane appears idle (via `tmux display-message` checking foreground command), it injects a message via `tmux send-keys` telling CC to check and pick up the queued handoff task. This is the only racy mechanism — if the user happens to be typing, Layers 1–2 catch it instead.
+
+**Reliability tracking:** Log every send-keys attempt and outcome to `$_ai_state_dir/handoff-nudge-log.jsonl`. Track: timestamp, session, handoff ID, pane state detected, whether CC picked up the task within 60s. Any task pending >5min without pickup → warning logged. Any task pending >30min → P0 alert surfaced to user's session.
+
+**iTerm2 compatibility:** send-keys behavior may differ under iTerm2's tmux integration. Flag for manual testing; rely on observability data to catch issues rather than upfront toy-example testing.
+
+#### Layer 4: While-loop fallback (Between runs)
+
+Already implemented. After CC exits, the bash while-loop checks `handoff_pending_file`, writes content to `prompt_file`, and next CC invocation picks it up via `--continue`.
+
+#### Layer 5: Startup scan (Session start)
+
+Already implemented. signal-watch scans pending queue before NATS subscribe, claims unclaimed files.
+
+### Race condition (multiple sessions competing)
+
+`mv` (rename) is atomic on Linux. `claim_handoff()` already performs this move. First session to succeed wins; others get ENOENT and skip silently.
+
+### Observability
+
+**Single event log:** `$_ai_state_dir/handoff-events.jsonl` — every mechanism that touches the handoff lifecycle logs here. This is the primary testing strategy — production data surfaces failures instead of upfront toy-example testing.
+
+**Event types logged across all layers:**
+
+| Event | Source | Fields |
+|-------|--------|--------|
+| `handoff.posted` | `post_handoff()` | handoff_id, project, title, priority, target_session (if known) |
+| `handoff.claimed` | signal-watch / startup scan | handoff_id, session, layer (startup_scan / nats_realtime), ts |
+| `handoff.nudge_sent` | signal-watch send-keys | handoff_id, session, pane_state_detected, ts |
+| `handoff.stop_hook_fired` | Stop hook script | handoff_id, session, pending_file_found (bool), ts |
+| `handoff.prompt_hook_caught` | UserPromptSubmit hook | handoff_id, session, user_prompt_length, ts |
+| `handoff.while_loop_pickup` | Bash while-loop | handoff_id, session, cc_exit_elapsed, ts |
+| `handoff.session_start` | `ai c` launch | session, pending_count, ts |
+| `handoff.session_restart` | While-loop auto-restart | session, restart_reason, pending_task_exists (bool), ts |
+| `handoff.completed` | `ai handoff complete` | handoff_id, session, time_to_complete (from posted to completed), ts |
+| `handoff.stale_warning` | Periodic check | handoff_id, session, pending_duration_min, ts |
+
+**Gap detection:** A periodic check in signal-watch (every 60s) computes:
+- Time since handoff was claimed but not completed
+- Time since handoff was posted but not claimed
+- Time since last session restart where a pending task existed but wasn't picked up within 2 minutes
+- Time since a nudge was sent but no `stop_hook_fired` or `prompt_hook_caught` followed within 2 minutes
+
+**Alert thresholds and mechanism:**
+- Pending >5 minutes without pickup → warning banner in target session terminal
+- Pending >30 minutes without pickup → **P0 alert banner in ALL sw-\* sessions** via NATS `handoff.stale` event (signal-watch in every session subscribes and prints the banner)
+- Session restart with pending task that isn't picked up within 2 minutes → warning banner in that session
+- Nudge sent but no pickup within 2 minutes → warning banner (send-keys may have failed)
+
+**Banner format (stale alert):**
+```
+==========================================
+⚠ STALE HANDOFF: #42 "Fix login regression"
+  Pending 32 min — not picked up by c-sw-1
+  
+  To resolve: direct the target CC session to
+  create a P0 task in its project roadmap with
+  due date today, or manually run:
+    ai handoff check
+==========================================
+```
+
+The alert fires repeatedly (every 5 min after the 30-min threshold) until the task is claimed or manually dismissed. Dial back aggressiveness once observability data confirms reliability.
+
+**`ai handoff status` command:** On-demand report showing all recent events, pending tasks, pickup latencies, and any gap warnings. Reads from `handoff-events.jsonl`.
+
+## Prerequisites
+
+### Project registry as hard requirement
+
+All CC sessions MUST be launched via `ai c` (not bare `claude`). `ai c` is the enforcement point for registry completeness and handoff routing reliability.
+
+**On every `ai c` launch:**
+
+1. **Load registry** — parse `sergei.toml`
+2. **Schema validation** — every `[[projects]]` entry must have `name` and `task_prefix`. Both must be unique (case-insensitive). Fail with error if violated.
+3. **Completeness scan** — diff `~/projects/*/` directories against registered `name` fields
+4. **Unregistered directory found** → interactive prompt:
+   ```
+   Unregistered project: "menos" (~/projects/menos)
+   Suggested task_prefix: MENOS
+   Add to registry? [Y/n, or enter custom prefix]:
+   ```
+   - User confirms → append entry to `sergei.toml` with sensible defaults (type, active, etc.)
+   - User declines → **exit to shell**. Hard requirement — no session launch with incomplete registry.
+5. **Proceed** — registry is guaranteed complete and valid for this session
+
+**Handoff routing uses project directory name (not task_prefix) as the unique key.** NATS subjects: `handoff.{project_name}` (e.g., `handoff.ai-cli-utils`). Task prefix is only for tmux session naming and task display IDs. The registry provides the bidirectional mapping.
+
+**Single load point:** Replace the current 4+ separate TOML parse calls with a single `load_project_registry()` that validates once and caches. All callers use the cached result.
+
+## Known Bugs (fix before T-05)
+
+### B-01: `subscribe_durable` doesn't block
+
+`NATSClient.subscribe_durable()` in `messaging.py` sets up a JetStream callback but returns immediately — unlike `subscribe()` which has a `while True: await asyncio.sleep(1)` blocking loop. signal-watch exits after startup scan; the NATS subscription dies with the process. Real-time handoff delivery via NATS has never worked.
+
+**Fix:** Add the same blocking loop to `subscribe_durable`.
+
+### B-02: signal-watch uses task_prefix instead of project name for NATS subject
+
+signal-watch subscribes to `handoff.{project_prefix}` (e.g., `handoff.ai-cli`) but handoffs are posted with `project: ai-cli-utils`. Subject mismatch → signal-watch never receives handoffs.
+
+**Fix:** Pass `project_name` (directory name) to signal-watch instead of `project_prefix`. Update bash template to pass both values. NATS subjects use `handoff.{project_name}`.
 
 ## Task Breakdown
 
@@ -188,27 +305,38 @@ Non-fatal if NATS unavailable — exits cleanly with no output.
 
 ---
 
-### T-05: Stop hook + launch signal-watch in bash template
+### T-05: Layered auto-pickup hooks + signal-watch nudge fix
 
-**Size:** M
+**Size:** L
 **Batch:** 2
 
-Two changes to `get_engine_script()`:
+Three sub-tasks implementing the layered auto-pickup design:
 
-**5a — Stop hook:** Write a per-session `~/.claude/settings.json` entry (or append to existing) on session start that registers a `Stop` hook. The hook script: checks for `handoff-pending-$session` marker → if found, reads the claimed file, removes the marker, outputs task content → CC continues with it as the next prompt. Remove hook entry on session EXIT.
+**5a — CC Stop hook (Layer 1):** Write a per-session hook script to `$_ai_state_dir/stop-hook-$tmux_session.sh` at session start. Register it in `~/.claude/settings.json` under `hooks.Stop`. The script: checks for `handoff-pending-$session` marker → if found, reads content, removes marker, outputs `{"decision": "block", "reason": "<content>"}` → CC continues with the task. If absent: exits 0 silently. Remove hook entry and script on EXIT trap.
 
-**5b — Launch signal-watch:** Alongside `start_watcher()`, launch `ai internal signal-watch "$project_prefix" "$tmux_session"` as a background process. Store PID and kill on EXIT trap.
+**5b — UserPromptSubmit hook (Layer 2):** Add a per-session hook script `$_ai_state_dir/handoff-prompt-hook-$tmux_session.sh` registered under `hooks.UserPromptSubmit`. On prompt submission: checks for `handoff-pending-$session`. If found AND not already caught (no caught-flag file): blocks prompt (exit 2), outputs message containing user's original prompt + appended instructions to pick up the queued task + how to remove it from queue. Sets caught-flag so next submission goes through normally. If caught-flag already set: clears it, exits 0. Remove hook entry, script, and caught-flag on EXIT trap.
+
+**5c — tmux send-keys nudge fix (Layer 3):** Fix signal-watch `_on_handoff()` to send an actual actionable message via `tmux send-keys` when pane is idle (CC at prompt, not `claude` as foreground). The message tells CC to check and pick up the queued task. Log every nudge attempt to `$_ai_state_dir/handoff-events.jsonl` with timestamp, session, handoff ID, pane state, and outcome.
+
+**5d — Observability:** Log all pickup events (claim, nudge, Stop hook fire, UserPromptSubmit catch) to `$_ai_state_dir/handoff-events.jsonl`. Startup scan or periodic check flags tasks pending >5min (warning) or >30min (P0 alert to user).
 
 **Deliverables:**
-- `src/ai_cli/main.py` (bash template)
+- `src/ai_cli/main.py` (bash template for hook registration/cleanup, signal-watch nudge fix)
+- Hook scripts (written dynamically at session start, not static files)
 
 **Acceptance criteria:**
-- [ ] `ai internal signal-watch` launched as background process at session start
-- [ ] Stop hook registered for session on start, removed on exit
-- [ ] Stop hook reads marker file and outputs task content when present
-- [ ] Stop hook exits silently (no output) when marker absent
-- [ ] signal-watch PID killed in EXIT trap
-- [ ] If signal-watch exits (NATS unavailable), session continues normally
+- [ ] Stop hook registered on session start, removed on exit
+- [ ] Stop hook outputs `{"decision": "block", ...}` when pending file present
+- [ ] Stop hook exits 0 silently when no pending file
+- [ ] UserPromptSubmit hook blocks once with combined prompt + task instructions
+- [ ] UserPromptSubmit hook allows second submission through (clears caught flag)
+- [ ] signal-watch sends actionable message via send-keys for idle panes
+- [ ] signal-watch does NOT send-keys when CC is busy (foreground = `claude`)
+- [ ] All pickup events logged to handoff-events.jsonl
+- [ ] Pending >5min logged as warning, >30min as P0
+- [ ] Hook entries and scripts cleaned up in EXIT trap
+- [ ] `ai internal signal-watch` launched as background process at session start (already done)
+- [ ] signal-watch PID killed in EXIT trap (already done)
 
 **Dependencies:** T-04
 
@@ -264,21 +392,21 @@ Usage: `ai handoff post --remote <project> "<title>" <priority> "<message>"`
 
 ---
 
-### T-08 (follow-up, not in scope): Session-restart fallback for idle pickup
+### T-08 (follow-up, not in scope): Send-keys reliability hardening
 
 **Size:** M
-**Batch:** — (implement only if T-04 Path 1 proves unreliable)
+**Batch:** — (implement when observability data shows send-keys failures)
 
-Replace the minimal send-keys nudge for idle sessions with a session-restart approach: signal-watch kills the idle CC session via the existing exit signal mechanism; the bash loop restarts CC with the handoff file content as the initial prompt. Eliminates any reliance on tmux send-keys for the idle path.
+Analyze `handoff-events.jsonl` for send-keys nudge failures. Potential fixes: `capture-pane` pre-check for empty input line, iTerm2-specific send-keys flags, longer delay between pane state check and key injection. Driven by production data, not speculation.
 
-**Dependencies:** T-04, T-05
+**Dependencies:** T-05
 
 ## Batch Plan
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
 | 1 | T-01, T-02, T-03 | NATS stream + publish + Mac tunnel | No gate (no user-visible change) |
-| 2 | T-04, T-05, T-06, T-07 | signal-watch, Stop hook, bash template, --remote, tests | UAT + human approval before ship |
+| 2 | T-04, T-05, T-06, T-07 | signal-watch, layered hooks, bash template, --remote, tests | UAT + human approval before ship |
 
 ## Human Gates
 
@@ -314,4 +442,7 @@ Replace the minimal send-keys nudge for idle sessions with a session-restart app
 |------|----------|-------|
 | 2026-04-01 | OQ1: plain ASCII banner | emoji rendering unreliable in tmux |
 | 2026-04-01 | OQ2: durable consumer with replay | reliability over simplicity |
-| 2026-04-01 | Auto-pickup: two-path approach | Stop hook for mid-gen, minimal send-keys nudge for idle; T-08 as fallback if nudge unreliable |
+| 2026-04-01 | Auto-pickup: two-path approach | Original design — superseded by layered approach |
+| 2026-04-01 | Auto-pickup: 5-layer approach | Stop hook (L1), UserPromptSubmit hook (L2), send-keys nudge (L3), while-loop (L4), startup scan (L5). Observability-driven testing over toy examples. |
+| 2026-04-01 | Project registry hard requirement | Registry validation + completeness scan on every `ai c` launch. Unregistered project → interactive prompt → exit to shell if declined. Handoff routing uses project directory name, not task_prefix. |
+| 2026-04-01 | Bugs B-01/B-02 identified | subscribe_durable doesn't block (signal-watch exits immediately); signal-watch uses wrong key for NATS subject. Both must be fixed before T-05. |
