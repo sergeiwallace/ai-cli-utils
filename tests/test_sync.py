@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -652,6 +653,165 @@ def test_stage_project_files_when_multiple_projects_then_all_staged(tmp_path):
     )
 
     assert set(result["project_names"]) == {"sergei", "aurion", "aido"}
+
+
+def test_stage_project_files_when_worktree_cc_dir_then_stages_with_bare_name(tmp_path):
+    """Worktree CC dirs (containing '--worktrees-') are staged like any other CC dir.
+
+    The prefix strip removes the machine-local home prefix; the '--worktrees-' suffix
+    stays in the bare name so the staging dir has the full worktree identifier.
+    """
+    cc_projects_dir = tmp_path / "cc_projects"
+    wt_dir = cc_projects_dir / "-home-sergei-projects-ai-cli-utils--worktrees-ai-cli-1"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / "abc123.jsonl").write_text('{"cwd":"/home/sergei/projects/ai-cli-utils/.worktrees/ai-cli-1"}\n')
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    result = stage_project_files(
+        staging_dir=staging_dir,
+        cc_projects_dir=cc_projects_dir,
+        local_prefix=_SERVER_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+
+    assert "ai-cli-utils--worktrees-ai-cli-1" in result["project_names"]
+    staged = staging_dir / "ai-cli-utils--worktrees-ai-cli-1" / "abc123.jsonl"
+    assert staged.exists()
+
+
+def test_stage_project_files_when_worktree_cc_dir_multiple_machines_then_both_staged(tmp_path):
+    """Both main project and worktree CC dirs from the same project get staged."""
+    cc_projects_dir = tmp_path / "cc_projects"
+    for name in [
+        "-home-sergei-projects-ai-cli-utils",
+        "-home-sergei-projects-ai-cli-utils--worktrees-ai-cli-1",
+    ]:
+        d = cc_projects_dir / name
+        d.mkdir(parents=True)
+        (d / "conv.jsonl").write_text('{"cwd":"/home/sergei/projects/ai-cli-utils"}\n')
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    result = stage_project_files(
+        staging_dir=staging_dir,
+        cc_projects_dir=cc_projects_dir,
+        local_prefix=_SERVER_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+
+    assert "ai-cli-utils" in result["project_names"]
+    assert "ai-cli-utils--worktrees-ai-cli-1" in result["project_names"]
+
+
+# ---------------------------------------------------------------------------
+# apply_pull_files — worktree CC dir cross-machine sync
+# ---------------------------------------------------------------------------
+
+
+def test_apply_pull_files_when_worktree_staged_then_creates_correct_cc_dir(tmp_path):
+    """Applying a staged worktree CC dir creates the correct machine-local CC dir name.
+
+    When Hetzner pushes 'ai-cli-utils--worktrees-ai-cli-1' and Mac pulls,
+    it should land in '-Users-sergeiwallace-projects-ai-cli-utils--worktrees-ai-cli-1'.
+    """
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    staged_wt = staging_dir / "ai-cli-utils--worktrees-ai-cli-1"
+    staged_wt.mkdir(parents=True)
+    (staged_wt / "abc123.jsonl").write_text('{"cwd":"/home/sergei/projects/ai-cli-utils/.worktrees/ai-cli-1"}\n')
+
+    with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
+
+    expected_dir = cc_projects_dir / "-Users-sergeiwallace-projects-ai-cli-utils--worktrees-ai-cli-1"
+    assert expected_dir.is_dir()
+    assert result["applied_count"] == 1
+
+
+def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
+    """JSONL files in worktree CC dirs have foreign home paths translated on apply.
+
+    Uses _FOREIGN_HOME (/home/foreign-user) as the simulated remote machine's home
+    so the test passes on any CI runner regardless of its own home path.
+    """
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    staged_wt = staging_dir / "myproject--worktrees-sw-1"
+    staged_wt.mkdir(parents=True)
+    (staged_wt / "conv.jsonl").write_text(f'{{"cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1"}}\n')
+
+    with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+        apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
+
+    dst = cc_projects_dir / "-Users-sergeiwallace-projects-myproject--worktrees-sw-1" / "conv.jsonl"
+    assert dst.exists()
+    content = dst.read_text()
+    assert _FOREIGN_HOME not in content
+    assert str(Path.home()) in content
+
+
+def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
+    """Full roundtrip: foreign machine stages worktree CC dir, local machine applies with correct names and cwd."""
+    _foreign_prefix = re.sub(r"[^a-zA-Z0-9]", "-", _FOREIGN_HOME) + "-projects-"
+
+    # Remote has worktree CC dir with conversation
+    remote_cc = tmp_path / "remote_cc"
+    wt_cc = remote_cc / f"{_foreign_prefix}foo--worktrees-sw-2"
+    wt_cc.mkdir(parents=True)
+    (wt_cc / "session.jsonl").write_text(f'{{"cwd":"{_FOREIGN_HOME}/projects/foo/.worktrees/sw-2","type":"user"}}\n')
+
+    # Remote stages
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    stage_project_files(
+        staging_dir=staging_dir,
+        cc_projects_dir=remote_cc,
+        local_prefix=_foreign_prefix,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+    assert (staging_dir / "foo--worktrees-sw-2" / "session.jsonl").exists()
+
+    # Local machine applies with MAC_PREFIX
+    local_cc = tmp_path / "local_cc"
+    local_cc.mkdir()
+    with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
+        apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=local_cc,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
+
+    mac_wt_dir = local_cc / "-Users-sergeiwallace-projects-foo--worktrees-sw-2"
+    assert mac_wt_dir.is_dir()
+    applied = (mac_wt_dir / "session.jsonl").read_text()
+    assert _FOREIGN_HOME not in applied
+    assert str(Path.home()) in applied
 
 
 # ---------------------------------------------------------------------------
