@@ -24,6 +24,9 @@ source: internal
 - [Utility Commands](#utility-commands)
   - [ai gemini](#ai-gemini)
   - [ai handoff](#ai-handoff)
+  - [ai signal-watch](#ai-signal-watch)
+  - [ai tunnel](#ai-tunnel)
+  - [ai update](#ai-update)
   - [ai setup](#ai-setup)
   - [ai upgrade](#ai-upgrade)
 - [Internal Commands](#internal-commands)
@@ -133,8 +136,9 @@ Acquires PID file `telemetry-writer`.
 ## ai sync
 
 ```
-ai sync pull [--verbose] [--dry-run] [--remote-host HOST]
-ai sync push [--verbose] [--dry-run] [--remote-host HOST]
+ai sync push [--memories-only] [--dry-run] [--verbose] [--force]
+ai sync pull [--memories-only] [--dry-run] [--verbose] [--force]
+ai sync conflicts
 ai sync watch [--verbose]
 ```
 
@@ -172,6 +176,52 @@ ai handoff complete <file>
 Cross-session handoff queue. `post` writes a handoff item (add `--remote` to post to Hetzner via SSH); `check` prints the highest-priority pending file; `claim` atomically moves a file to `claimed/`; `complete` moves it to `completed/`.
 
 Queue lives at `~/projects/sergei/.handoff-queue/`. Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
+
+### ai signal-watch
+
+```
+ai signal-watch start <project> <session>
+ai signal-watch stop <session>
+ai signal-watch status
+```
+
+Manages signal-watch processes via Circus process manager (`circusd`). Signal-watch subscribes to NATS `handoff.{project}` for a CC session and writes pending marker files on arrival.
+
+- `start` — registers a Circus watcher named `sw-{session}` and starts it. Idempotent (removes existing watcher first). Auto-starts `circusd` via `_ensure_circusd()` if not running.
+- `stop` — removes the Circus watcher. Silent if circusd is not running (EXIT trap calls this unconditionally).
+- `status` — lists all `sw-*` watchers and their status.
+
+Circus uses IPC (not TCP) at `~/.local/state/ai-cli/circus.endpoint`. Config written to `~/.local/state/ai-cli/circus.ini`. Launched automatically by the bash session template at session start; stopped at EXIT.
+
+### ai tunnel
+
+```
+ai tunnel start <local-port> [remote-port] [--forward]
+ai tunnel stop <port>
+ai tunnel status
+```
+
+Persistent SSH reverse tunnel backed by autossh. Automatically reconnects on network drop or broken pipe.
+
+- `start` — launches `autossh -M 0 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -N -R {remote}:localhost:{local} {user}@{host}`. Writes PID to `~/.local/state/ai-cli/tunnel-{port}.pid`.
+- `--forward` — use `-L` (forward) instead of `-R` (reverse, default).
+- `remote-port` — defaults to `local-port` if omitted.
+- `stop` — sends SIGTERM, removes PID file. Silent if not running.
+- `status` — lists alive/dead tunnels, cleans stale PID files.
+
+Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/user from `[remote]` config section.
+
+### ai update
+
+```
+ai update [--force]
+```
+
+Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timestamp}` so uv sees it as a new package, runs `uv tool install --force`, also installs into the aido venv if present, then restores `pyproject.toml`.
+
+- `--force` — additionally passes `--reinstall` to reinstall all dependencies (not just ai-cli-utils). Use for corrupt-environment recovery.
+- `deploy` is kept as an alias for backward compatibility.
+- On Mac (`HUMANWARE_HOST=mac`): runs `git pull --rebase` first.
 
 ### ai setup
 

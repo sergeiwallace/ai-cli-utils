@@ -9,7 +9,7 @@
 
 Unified AI session manager and automation toolkit for Claude Code and Gemini CLI.
 
-Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, and resilient Gemini API access with automatic auth fallback.
+Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, resilient Gemini API access with automatic auth fallback, and persistent SSH tunnels via autossh.
 
 ## What it does
 
@@ -28,6 +28,8 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
 | **Stale session cleanup** | Automatic detection and cleanup of orphaned sessions |
 | **Gemini with fallback** | `ai gemini "prompt"` — 3-tier auth fallback (OAuth → free API → paid API), auto-retry on capacity errors |
+| **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
+| **Signal-watch** | Handoff delivery via Circus-managed background process — isolated from CC session lifecycle |
 | **Notifications** | Desktop and push notifications on task completion |
 
 ## Installation
@@ -92,15 +94,6 @@ ai sync conflicts    # Show unresolved sync conflicts
 ai sync watch        # Watch for sync events via NATS
 ```
 
-### Handoff queue
-
-```bash
-ai handoff post      # Post a task for another session to pick up
-ai handoff check     # Check for pending handoffs
-ai handoff claim     # Claim a handoff
-ai handoff complete  # Mark a handoff as done
-```
-
 ### Gemini with auth fallback
 
 ```bash
@@ -130,14 +123,39 @@ ai ls --all          # Show all tmux sessions, not just ai-cli sessions
 ai attach <name>     # Attach directly to a named tmux session
 ```
 
+### SSH tunnels
+
+Keep a reverse tunnel alive across network drops (useful for remote browser automation via CDP):
+
+```bash
+ai tunnel start 9222            # Reverse tunnel: localhost:9222 → server:9222 (auto-reconnects)
+ai tunnel start 9222 9223       # Different remote port
+ai tunnel start 9222 --forward  # Forward tunnel (-L) instead of reverse (-R)
+ai tunnel stop 9222             # Stop the tunnel
+ai tunnel status                # List all active tunnels
+```
+
+Requires `autossh` (`brew install autossh` / `apt install autossh`). Host/user from `[remote]` config.
+
+### Handoff queue
+
+```bash
+ai handoff post      # Post a task for another session to pick up
+ai handoff check     # Check for pending handoffs
+ai handoff claim     # Claim a handoff
+ai handoff complete  # Mark a handoff as done
+```
+
 ### Other commands
 
 ```bash
-ai memory watch      # Watch for Claude Code memory file changes
-ai quota watch       # Monitor API quota usage
-ai telemetry writer  # Run telemetry writer daemon
-ai upgrade           # Self-upgrade the tool
-ai reconnect         # Print reconnect commands for remote sessions
+ai signal-watch status   # List Circus-managed signal-watch processes
+ai memory watch          # Watch for Claude Code memory file changes
+ai quota watch           # Monitor API quota usage
+ai telemetry writer      # Run telemetry writer daemon
+ai update                # Update to latest from source (bumps version, reinstalls)
+ai update --force        # Also reinstall all dependencies
+ai reconnect             # Print reconnect commands for remote sessions
 ```
 
 ## Configuration
@@ -191,6 +209,7 @@ notify_on_exit = true          # desktop notifications on task completion
 - [tmux](https://github.com/tmux/tmux)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 - [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH)
+- [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`)
 - [NATS](https://nats.io/) (optional, for fleet messaging and sync watch)
 
 ## Contributing
