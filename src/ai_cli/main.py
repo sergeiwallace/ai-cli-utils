@@ -1053,6 +1053,27 @@ def get_engine_script(
         python3 scripts/session-broker.py --engine "$engine" 2>/dev/null || true
       fi
 
+      # On first run: claim any pending handoff for this project and queue it
+      # as the first message so CC launches with it immediately (zero user input required)
+      if $first_run && [[ "$engine" == "c" && -n "$project_name" && ! -f "$prompt_file" ]]; then
+        _pending_handoff=$(ai handoff check-project "$project_name" 2>/dev/null)
+        if [[ -n "$_pending_handoff" ]]; then
+          _claimed_handoff=$(ai handoff claim "$_pending_handoff" 2>/dev/null)
+          if [[ -n "$_claimed_handoff" ]]; then
+            _hid=$(head -5 "$_claimed_handoff" 2>/dev/null | grep '^id:' | sed 's/id: *"\?//;s/"\?$//')
+            _htitle=$(head -5 "$_claimed_handoff" 2>/dev/null | grep '^title:' | sed 's/title: *"\?//;s/"\?$//')
+            _hprio=$(head -5 "$_claimed_handoff" 2>/dev/null | grep '^priority:' | awk '{{print $2}}')
+            _hbody=$(awk '/^---/{{p++}} p==2{{print}}' "$_claimed_handoff" 2>/dev/null | tail -n +2)
+            _hmsg="Auto-pickup: $_hprio handoff #$_hid — $_htitle. File: $_claimed_handoff
+
+$_hbody"
+            echo "$_hmsg" > "$prompt_file"
+            printf '{{"event":"handoff.session_start_pickup","session":"%s","handoff_id":"%s","ts":%s}}\n' \
+              "$tmux_session" "$_hid" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
+          fi
+        fi
+      fi
+
       if [[ -f "$prompt_file" ]]; then
         resume_msg=$(cat "$prompt_file")
         rm -f "$prompt_file"
@@ -1196,17 +1217,25 @@ def post_handoff(title, priority, project, message):
         pass
 
 
-def check_handoff():
-    handoff_dir = _get_handoff_queue_dir()
-    if handoff_dir is None:
-        return
-    queue_dir = handoff_dir / "pending"
+def _find_best_handoff(queue_dir: Path, project_filter: str | None = None) -> "Path | None":
+    """Return the highest-priority pending handoff file, optionally filtered by project name."""
     if not queue_dir.exists():
-        return
+        return None
     best_file, best_prio = None, 9
     for f in queue_dir.glob("*.md"):
+        text = f.read_text()
+        if project_filter is not None:
+            project_match = False
+            for line in text.splitlines():
+                if line.startswith("project:"):
+                    val = line.split(":", 1)[1].strip()
+                    if val == project_filter:
+                        project_match = True
+                    break
+            if not project_match:
+                continue
         prio = 9
-        for line in f.read_text().splitlines():
+        for line in text.splitlines():
             if line.startswith("priority:"):
                 try:
                     prio = int(line.split(":", 1)[1].strip().replace("P", ""))
@@ -1217,6 +1246,24 @@ def check_handoff():
             best_prio, best_file = prio, f
         elif prio == best_prio and best_file is None:
             best_file = f
+    return best_file
+
+
+def check_handoff():
+    handoff_dir = _get_handoff_queue_dir()
+    if handoff_dir is None:
+        return
+    best_file = _find_best_handoff(handoff_dir / "pending")
+    if best_file:
+        print(best_file)
+
+
+def check_handoff_project(project_name: str):
+    """Like check_handoff but filtered to a specific project directory name."""
+    handoff_dir = _get_handoff_queue_dir()
+    if handoff_dir is None:
+        return
+    best_file = _find_best_handoff(handoff_dir / "pending", project_filter=project_name)
     if best_file:
         print(best_file)
 
@@ -1605,6 +1652,11 @@ def cli():
             post_handoff(post_args[0], post_args[1], post_args[2], post_args[3])
         elif action == "check":
             check_handoff()
+        elif action == "check-project":
+            if len(sys.argv) < 4:
+                print("Usage: ai handoff check-project <project_name>", file=sys.stderr)
+                sys.exit(1)
+            check_handoff_project(sys.argv[3])
         elif action == "claim":
             claim_handoff(sys.argv[3])
         elif action == "complete":

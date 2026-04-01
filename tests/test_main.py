@@ -44,7 +44,9 @@ from ai_cli.main import (
     _iterm2_heuristic_window_title,
     _iterm2_state_dir,
     _iterm2_update_window_title,
+    _find_best_handoff,
     _log_handoff_event,
+    check_handoff_project,
     load_config,
     load_project_registry,
     post_handoff,
@@ -3875,3 +3877,141 @@ class TestCliRegistryValidation:
             with pytest.raises(SystemExit) as exc:
                 cli()
             assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# _find_best_handoff — project filtering
+# ---------------------------------------------------------------------------
+
+
+class TestFindBestHandoff:
+    def test_find_best_handoff_when_no_filter_returns_highest_priority(self, tmp_path):
+        queue_dir = tmp_path / "pending"
+        queue_dir.mkdir()
+        (queue_dir / "001-low.md").write_text("---\npriority: P3\nproject: app\n---\n")
+        (queue_dir / "002-high.md").write_text("---\npriority: P1\nproject: other\n---\n")
+        result = _find_best_handoff(queue_dir)
+        assert result is not None
+        assert result.name == "002-high.md"
+
+    def test_find_best_handoff_when_project_filter_returns_only_matching(self, tmp_path):
+        queue_dir = tmp_path / "pending"
+        queue_dir.mkdir()
+        (queue_dir / "001-other.md").write_text("---\npriority: P0\nproject: other\n---\n")
+        (queue_dir / "002-mine.md").write_text("---\npriority: P2\nproject: myapp\n---\n")
+        result = _find_best_handoff(queue_dir, project_filter="myapp")
+        assert result is not None
+        assert result.name == "002-mine.md"
+
+    def test_find_best_handoff_when_no_match_for_project_returns_none(self, tmp_path):
+        queue_dir = tmp_path / "pending"
+        queue_dir.mkdir()
+        (queue_dir / "001-other.md").write_text("---\npriority: P1\nproject: other\n---\n")
+        result = _find_best_handoff(queue_dir, project_filter="myapp")
+        assert result is None
+
+    def test_find_best_handoff_when_dir_missing_returns_none(self, tmp_path):
+        result = _find_best_handoff(tmp_path / "nonexistent")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# check_handoff_project
+# ---------------------------------------------------------------------------
+
+
+class TestCheckHandoffProject:
+    def test_check_handoff_project_when_match_then_prints_path(self, tmp_path, capsys):
+        handoff_dir = tmp_path / ".handoff-queue"
+        queue_dir = handoff_dir / "pending"
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "001-task.md").write_text("---\npriority: P1\nproject: myapp\n---\n")
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir):
+            check_handoff_project("myapp")
+        out = capsys.readouterr().out.strip()
+        assert "001-task.md" in out
+
+    def test_check_handoff_project_when_no_match_then_silent(self, tmp_path, capsys):
+        handoff_dir = tmp_path / ".handoff-queue"
+        queue_dir = handoff_dir / "pending"
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "001-task.md").write_text("---\npriority: P1\nproject: other\n---\n")
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir):
+            check_handoff_project("myapp")
+        assert capsys.readouterr().out == ""
+
+    def test_check_handoff_project_when_no_handoff_dir_then_returns(self, capsys):
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
+            check_handoff_project("myapp")
+        assert capsys.readouterr().out == ""
+
+    def test_cli_when_handoff_check_project_then_calls_function(self, capsys):
+        with (
+            patch("sys.argv", ["ai", "handoff", "check-project", "myapp"]),
+            patch("ai_cli.main.check_handoff_project") as mock_check,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+        mock_check.assert_called_once_with("myapp")
+
+    def test_cli_when_handoff_check_project_no_args_then_exits(self):
+        with patch("sys.argv", ["ai", "handoff", "check-project"]):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# bash template — startup handoff pickup before first CC launch
+# ---------------------------------------------------------------------------
+
+
+class TestEngineScriptStartupHandoffPickup:
+    def test_get_engine_script_includes_startup_handoff_check(self):
+        script = get_engine_script(
+            "c",
+            "ai-cli-2",
+            "c-ai-cli-2",
+            "c-ai-cli-",
+            "ai",
+            project_name="ai-cli-utils",
+        )
+        assert "ai handoff check-project" in script
+        assert "ai handoff claim" in script
+        assert "handoff.session_start_pickup" in script
+
+    def test_get_engine_script_startup_check_only_on_first_run(self):
+        script = get_engine_script(
+            "c",
+            "ai-cli-2",
+            "c-ai-cli-2",
+            "c-ai-cli-",
+            "ai",
+            project_name="ai-cli-utils",
+        )
+        assert "$first_run" in script
+
+    def test_get_engine_script_startup_check_uses_project_name(self):
+        script = get_engine_script(
+            "c",
+            "sw-1",
+            "c-sw-1",
+            "c-sw-",
+            "sw",
+            project_name="myapp",
+        )
+        assert 'check-project "$project_name"' in script
+
+    def test_get_engine_script_startup_check_guarded_by_engine(self):
+        # The startup handoff check is in the template for all engines but guarded
+        # by a bash [[ "$engine" == "c" ]] condition so it only runs for cc sessions
+        script = get_engine_script(
+            "c",
+            "sw-1",
+            "c-sw-1",
+            "c-sw-",
+            "sw",
+            project_name="myapp",
+        )
+        assert '"c"' in script  # engine guard present in template
