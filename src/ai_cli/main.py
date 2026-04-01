@@ -1733,6 +1733,11 @@ def cli():
         print("Upgrading ai-cli...", file=sys.stderr)
         os.execvp("uv", ["uv", "tool", "upgrade", "ai-cli"])
 
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        from .setup import run_setup
+
+        sys.exit(run_setup())
+
     if len(sys.argv) > 1 and sys.argv[1] == "handoff":
         if len(sys.argv) == 2:
             print("Usage: ai handoff [post|check|claim|complete]")
