@@ -740,6 +740,12 @@ def get_engine_script(
     sandbox_flag = "-s" if sandbox else ""
     cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"
     notify_cmd = 'ai internal notify "$tmux_session" "Agent Finished Task" 2>/dev/null || true' if notify else "true"
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        _template_version = _pkg_version("ai-cli-utils")
+    except Exception:
+        _template_version = "unknown"
 
     script = f"""
     {cd_cmd}
@@ -747,6 +753,7 @@ def get_engine_script(
     ai_name="{ai_name}"
     engine="{engine}"
     tmux_session="{session}"
+    _template_version="{_template_version}"
     uuid="{session_id_uuid or ""}"
     project_prefix="{project_prefix}"
     _ai_state_dir="$HOME/.local/state/ai-cli"
@@ -1006,6 +1013,12 @@ def get_engine_script(
         rm -f "$handoff_pending_file"
         echo "$pending_msg" > "$prompt_file"
       fi
+      # Self-update: if ai-cli was reinstalled, regenerate template and restart
+      _current_ver=$(ai internal get-version 2>/dev/null || echo "unknown")
+      if [[ "$_current_ver" != "unknown" && "$_current_ver" != "$_template_version" ]]; then
+        echo "ai-cli updated ($_template_version → $_current_ver) — restarting session..."
+        exec ai "$engine" "$ai_name"
+      fi
       echo "Resuming... (Ctrl-C to exit)"
       sleep 0.5 || break
     done
@@ -1206,6 +1219,14 @@ def cli():
                 print("Usage: ai internal cleanup-worktree <ai_name>", file=sys.stderr)
                 sys.exit(1)
             cleanup_worktree(sys.argv[3])
+            sys.exit(0)
+        elif action == "get-version":
+            try:
+                from importlib.metadata import version as _pkg_version
+
+                print(_pkg_version("ai-cli-utils"))
+            except Exception:
+                print("unknown")
             sys.exit(0)
         elif action == "notify":
             if len(sys.argv) < 5:

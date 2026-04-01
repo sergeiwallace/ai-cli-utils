@@ -1270,6 +1270,52 @@ class TestHandoffPostRemote:
         assert payload["filename"].endswith(".md")
 
 
+# --- ai internal get-version ---
+
+
+class TestGetVersion:
+    def test_get_version_when_package_installed_then_prints_version(self, capsys):
+        with (
+            patch("sys.argv", ["ai", "internal", "get-version"]),
+            patch("ai_cli.main.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+        out = capsys.readouterr().out.strip()
+        assert out  # non-empty
+        assert "." in out  # looks like a version string
+
+    def test_get_version_when_package_missing_then_prints_unknown(self, capsys):
+        from importlib.metadata import PackageNotFoundError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "get-version"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("importlib.metadata.version", side_effect=PackageNotFoundError("ai-cli-utils")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+        out = capsys.readouterr().out.strip()
+        assert out == "unknown"
+
+
+# --- get_engine_script self-update ---
+
+
+class TestGetEngineScriptSelfUpdate:
+    def test_engine_script_embeds_template_version(self):
+        script = get_engine_script("c", "c-sw-1", "c-sw-1", "c", "myapp")
+        assert "_template_version=" in script
+
+    def test_engine_script_contains_version_check_and_exec(self):
+        script = get_engine_script("c", "c-sw-1", "c-sw-1", "c", "myapp")
+        assert "ai internal get-version" in script
+        assert "exec ai" in script
+        assert "_current_ver" in script
+
+
 # --- trigger_background_update ---
 
 
