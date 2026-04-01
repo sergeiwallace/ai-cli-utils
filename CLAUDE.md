@@ -1,19 +1,18 @@
 # Instructions
 
+<!--
+  Lean config — for humanware platform users where ~/projects/CLAUDE.md provides shared rules.
+  If you are NOT on the humanware platform, use CLAUDE-full.md instead:
+    1. Delete or rename this file
+    2. Rename CLAUDE-full.md to CLAUDE.md
+-->
+
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
 | Core | Python |
-
 | AI orchestration | Claude Code CLI + Gemini CLI |
-
-
-## Terminology
-
-- **Session config** — files that shape every Claude Code session: `CLAUDE.md`, `MEMORY.md`, `.claude/settings.json`, `.claude/hooks/`
-- **Orchestration config** — files that define multi-agent team setup: `.claude/agents/*.md`, `docs/designs/orchestration.md`, `.githooks/`
-
 
 ## Memory Management
 
@@ -35,17 +34,7 @@ After every push to `main`, verify both badges are healthy before presenting a s
 
 If CI is failing or Codecov is not 100%, fix before closing out the session. If there is a legitimate reason coverage is below 100% (e.g. an optional dependency path that can't be tested), flag it explicitly in the summary message for discussion — do not silently accept degraded coverage.
 
-## Common Patterns
-
-- **Scope creep**: Implement only what the spec requires. Do not add features, defensive abstractions, or "nice to have" improvements not in the spec.
-- **Config over code**: Prefer configuration files over hardcoded values.
-- **Test behavior, not implementation**: Tests assert outcomes through the public API.
-- **Persist research**: When doing research (API comparisons, architecture spikes, technology evaluations), save findings to `docs/research/{topic-slug}.md`. Update existing docs rather than creating duplicates.
-
 ## Test Requirements
-
-
-
 
 ### Python
 
@@ -53,8 +42,6 @@ If CI is failing or Codecov is not 100%, fix before closing out the session. If 
 - Use pytest fixtures for shared setup
 - `reviewer` audits test quality on every review (see `.claude/agents/reviewer.md`)
 - Run: `pytest`
-
-
 
 ## Development Workflow
 
@@ -69,7 +56,6 @@ Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR �
 - All dev work branches from `main`: `feature/short-description`
 - Never push feature branches directly to `main` — always PR
 - Atomic commits
-
 - Non-dev changes (docs, tooling, markdown) commit directly to `main`
 
 ### Implementation Pipeline
@@ -83,21 +69,7 @@ Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR �
 | **UAT** | **Human approves** before PR |
 | **PR** | Open PR to `main` |
 
-### AI Slop Checklist (enforced by /simplify)
-
-Before presenting for UAT, verify none of these exist:
-
-- Unnecessary wrapper types or abstractions not in the spec
-- Builder patterns where a simple constructor suffices
-- Error types that will only ever have one variant
-- Defensive code for scenarios the spec explicitly excludes
-- Verbose comments restating what the code already says
-- Feature flags or configuration for things that don't vary
-- TODO/FIXME comments used as placeholders
-
 ### UAT Presentation Format
-
-When presenting for UAT, always use this template:
 
 ```
 ## UAT Summary
@@ -109,10 +81,9 @@ When presenting for UAT, always use this template:
 ### Acceptance criteria status — [x] Criterion 1 ...
 ```
 
-
 ## Document Structure
 
-All markdown docs with 3+ sections must include a `## Table of Contents` as the first section — immediately after the title/header block, before any other content. Use anchor links to all `##` and `###` headings. Plan docs must include an `## Approval Log` section tracking decisions. Update plan docs as work progresses — they are living documents.
+All markdown docs with 3+ sections must include a `## Table of Contents` as the first section. Use anchor links to all `##` and `###` headings. Plan docs must include an `## Approval Log` section.
 
 ## File Naming
 
@@ -123,63 +94,12 @@ All markdown docs with 3+ sections must include a `## Table of Contents` as the 
 
 Required: `github`, `gemini-cli`.
 
+## Gemini CLI
 
-## AI Orchestration
-
-Claude is the lead — it owns the conversation, writes code, uses tools, and makes final decisions. Gemini is a specialist invoked via `mcp__gemini-cli__ask-gemini` for research, review, and analysis. Agent teams coordinate multiple Claude agents for parallel work.
-
-### Operating principles
-
-1. **Single responsibility.** Each agent does one thing. Research agents research. Engineers write code. Reviewers review.
-2. **Read-write separation.** Only `engineer` can modify code. All others are read-only. This makes parallel agents safe.
-3. **Research before implementation.** Launch research first. Wait for findings. Then implement. Two-phase workflows beat jumping straight to code.
-4. **Cross-validation for high-stakes decisions.** Get independent perspectives (multiple agents, or Claude + Gemini) and synthesize. Different models catch different gaps.
-5. **External context once at the start.** Read Jira, docs, or API specs once. Store it. Don't re-fetch from external sources in every agent.
-6. **Human gates at decision points.** Pause for approval before committing, PRs, or architecture changes. Automate work between gates, not the gates.
-7. **Tasks as the coordination primitive.** Agents coordinate through a shared task list with owners, statuses, and dependencies — not free-form chat.
-8. **Right-size your team.** Start with 2-3 agents. Only add more for genuinely parallel, independent work.
-9. **Fail fast.** Report blockers immediately. Don't retry silently or loop.
-10. **Clean up.** Shut down teammates and delete team resources when done.
-
-### Gemini CLI
-
-**Always pass an explicit `model` argument.** Do not rely on defaults. On quota exhaustion, fall down the tier list. `gemini-3.0-flash` is the universal safety net.
+**Always pass an explicit `model` argument.** Do not rely on defaults. `gemini-3.0-flash` is the universal safety net.
 
 ```
 mcp__gemini-cli__ask-gemini(prompt="...", model="gemini-3.0-flash")
 ```
 
-Models ranked by capability: `gemini-3.1-pro-preview` (preview, high quota risk) → `gemini-3.0-pro` (flagship, high) → `gemini-3.0-flash` (workhorse, low) → `gemini-2.5-pro` (previous gen, moderate) → `gemini-2.5-flash` (bulk, low) → `gemini-2.5-flash-lite` (simple extraction, minimal).
-
-### Agents
-
-Custom agents in `.claude/agents/` — each file defines its role, tools, model, and Gemini fallback chain. Agent teams enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`.
-
-| Agent | Claude Model | Role | Edits Code |
-|-------|-------------|------|:---:|
-| `researcher` | `opus` | Deep research, API docs, library comparisons | No |
-| `architect` | `opus` | System design, tradeoff analysis, design docs | No |
-| `engineer` | `opus` | Write code, run tests, fix bugs, commit | Yes |
-| `reviewer` | `sonnet` | Code review, quality audit, security review | No |
-| `planner` | `sonnet` | Scope estimation, task breakdown, dependencies | No |
-| `analyst` | `sonnet` | Data extraction, summarization, SQL queries | No |
-
-### Team compositions
-
-| Task | Team Name | Teammates | Flow |
-|------|-----------|-----------|------|
-| Feature implementation | `feature` | researcher, engineer, reviewer | researcher finds docs → engineer implements → reviewer audits diff |
-| Architecture / design | `design` | researcher, architect, planner | researcher explores alternatives → architect designs → planner writes stories |
-| Code review | `review-PR-NNN` | reviewer, researcher | both review in parallel → lead merges findings |
-| Bug investigation | `fix` | researcher, engineer | both investigate in parallel → engineer applies fix |
-| Sprint planning | `sprint-planning` | planner, analyst | analyst summarizes state → planner writes and links stories |
-
-### Context management & team workflow
-
-Summarize context before spawning teams. Spawn prompts are self-contained (teammates don't inherit conversation). After each phase, persist decisions to files. See `docs/designs/orchestration.md` § Context Management.
-
-1. **Create team** → **Spawn teammates** → **Create tasks** with dependencies
-2. **Teammates work** — claim tasks, complete them, report back
-3. **Lead synthesizes** — merge findings, approve next steps
-4. **Shutdown** — `SendMessage` shutdown to each teammate, then `TeamDelete`
-
+Models ranked by capability: `gemini-3.1-pro-preview` → `gemini-3.0-pro` → `gemini-3.0-flash` → `gemini-2.5-pro` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`.

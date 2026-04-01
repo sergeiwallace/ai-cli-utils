@@ -142,6 +142,22 @@ ai reconnect         # Print reconnect commands for remote sessions
 
 ## Configuration
 
+### Claude Code Session Config
+
+This repo ships two Claude Code session config files:
+
+- **`CLAUDE.md`** — lean config for [humanware platform](https://github.com/sergeiwallace/sergei) users, where `~/projects/CLAUDE.md` provides the shared AI orchestration rules.
+- **`CLAUDE-full.md`** — standalone config with all rules included, for everyone else.
+
+If you are **not** on the humanware platform, switch to the full config:
+
+```bash
+mv CLAUDE.md CLAUDE.md.bak
+mv CLAUDE-full.md CLAUDE.md
+```
+
+### Tool Config
+
 Configuration lives in `~/.config/ai-cli/config.toml`. A default config is created on first run.
 
 ```toml
