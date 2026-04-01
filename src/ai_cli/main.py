@@ -236,7 +236,7 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
         prefixes_seen.add(prefix_lower)
 
     _registry_cache = projects
-    return _registry_cache
+    return projects
 
 
 def validate_registry_completeness(*, interactive: bool = True) -> bool:
@@ -272,6 +272,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
         return False
 
     registry_path = _get_project_registry_path()
+    assert registry_path is not None
     for name in unregistered:
         suggested_prefix = name.upper().replace("-", "_")[:8]
         try:
