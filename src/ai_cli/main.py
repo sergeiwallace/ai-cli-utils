@@ -1503,36 +1503,39 @@ def cli():
                 resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
                 sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
                 sw_pending_file.write_text(resume_msg)
-                # Nudge idle pane so CC picks up the task via Stop hook or while-loop restart
-                pane_state = "unknown"
-                try:
-                    result = subprocess.run(
-                        ["tmux", "display-message", "-t", sw_session_id, "-p", "#{pane_current_command}"],
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                    )
-                    if result.returncode == 0:
-                        pane_state = result.stdout.strip()
-                        if pane_state not in ("claude",):
-                            # Pane is idle — send actionable message via send-keys
-                            nudge_msg = (
-                                f"Pick up handoff task #{handoff_id}: {title}. "
-                                f"Run: ai handoff check && ai handoff claim $(ai handoff check)"
-                            )
-                            subprocess.run(
-                                ["tmux", "send-keys", "-t", sw_session_id, nudge_msg, "Enter"],
-                                timeout=2,
-                                check=False,
-                            )
-                            _log_handoff_event(
-                                "handoff.nudge_sent",
-                                handoff_id=handoff_id,
-                                session=sw_session_id,
-                                pane_state=pane_state,
-                            )
-                except Exception:
-                    pass
+                # Only nudge via send-keys for real-time NATS delivery.
+                # Startup scan fires before CC is ready — sending keys at that point
+                # causes multiple text injections without submission.
+                if data.get("_source") != "startup_scan":
+                    pane_state = "unknown"
+                    try:
+                        result = subprocess.run(
+                            ["tmux", "display-message", "-t", sw_session_id, "-p", "#{pane_current_command}"],
+                            capture_output=True,
+                            text=True,
+                            timeout=2,
+                        )
+                        if result.returncode == 0:
+                            pane_state = result.stdout.strip()
+                            if pane_state not in ("claude",):
+                                # Pane is idle — send actionable message via send-keys
+                                nudge_msg = (
+                                    f"Pick up handoff task #{handoff_id}: {title}. "
+                                    f"Run: ai handoff check && ai handoff claim $(ai handoff check)"
+                                )
+                                subprocess.run(
+                                    ["tmux", "send-keys", "-t", sw_session_id, nudge_msg, "Enter"],
+                                    timeout=2,
+                                    check=False,
+                                )
+                                _log_handoff_event(
+                                    "handoff.nudge_sent",
+                                    handoff_id=handoff_id,
+                                    session=sw_session_id,
+                                    pane_state=pane_state,
+                                )
+                    except Exception:
+                        pass
 
             # Startup scan: pick up any unclaimed files already in the pending queue
             if sw_handoff_dir is not None:
@@ -1653,7 +1656,7 @@ def cli():
                     subject = f"handoff.{hd_project}"
                     try:
                         await hd_client._ensure_stream(subject)
-                        sub = await hd_client.js.subscribe(subject, durable=consumer_name, config=None)
+                        sub = await hd_client.js.pull_subscribe(subject, durable=consumer_name)
                         while True:
                             try:
                                 msgs = await sub.fetch(1, timeout=2)

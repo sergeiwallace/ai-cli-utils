@@ -1100,13 +1100,16 @@ class TestSignalWatchCli:
         assert not (state_dir / "handoff-pending-c-sw-3").exists()
 
     def test_signal_watch_when_pane_is_idle_then_sends_nudge(self, tmp_path):
-        """Covers the nudge branch: tmux reports non-claude command, send-keys called."""
+        """Covers the nudge branch: tmux reports non-claude command, send-keys called.
+
+        Uses cross-machine payload (no local file pre-created) so startup scan does not
+        claim the task first — only the real-time NATS path fires, which should nudge.
+        """
         handoff_dir = tmp_path / ".handoff-queue"
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
-        (pending / "004-nudge-task.md").write_text(
-            '---\nid: "4"\ntitle: "nudge task"\nclaimed_by: null\nclaimed_at: null\n---\n'
-        )
+        # No local file — task arrives via NATS payload only (cross-machine delivery)
+        file_content = '---\nid: "4"\ntitle: "nudge task"\nclaimed_by: null\nclaimed_at: null\n---\n'
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         mock_nc = MagicMock()
@@ -1134,7 +1137,16 @@ class TestSignalWatchCli:
         async def fake_sleep(_):
             if "cb" in received_callback:
                 msg = MagicMock()
-                msg.data = b'{"id": 4, "title": "nudge task", "priority": "P1", "message": "do it"}'
+                msg.data = json.dumps(
+                    {
+                        "id": 4,
+                        "title": "nudge task",
+                        "priority": "P1",
+                        "message": "do it",
+                        "content": file_content,
+                        "filename": "004-nudge-task.md",
+                    }
+                ).encode()
                 msg.ack = AsyncMock()
                 await received_callback["cb"](msg)
             raise asyncio.CancelledError
@@ -1251,6 +1263,60 @@ class TestSignalWatchCli:
         assert pending_file.exists()
         assert not (pending / "004-pre-existing-task.md").exists()
         assert (handoff_dir / "claimed" / "004-pre-existing-task.md").exists()
+
+    def test_signal_watch_startup_scan_does_not_send_keys(self, tmp_path):
+        """Startup scan must never send-keys — only write the pending marker.
+
+        Sending keys during startup fires before CC is ready and causes multiple
+        text injections without submission. Only real-time NATS delivery nudges.
+        """
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "005-startup-task.md").write_text(
+            '---\nid: "5"\ntitle: "startup task"\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+
+        async def fake_js_subscribe(subject, durable, cb):
+            pass
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            raise asyncio.CancelledError
+
+        send_keys_calls = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if "send-keys" in cmd:
+                send_keys_calls.append(cmd)
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "bash\n"
+            return result
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-5"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run", side_effect=fake_subprocess_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # Pending marker written — but no send-keys
+        assert (state_dir / "handoff-pending-c-sw-5").exists()
+        assert send_keys_calls == [], "startup scan must not send-keys"
 
 
 # --- ai handoff post --remote ---
