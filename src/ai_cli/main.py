@@ -37,7 +37,7 @@ def get_xdg_cache_home():
 
 # --- Configuration Management ---
 # MAINTENANCE: when editing ai-cli, also update:
-#   - docs/tools/cc-cli-design.md (usage reference, session naming, transport, auto-resume)
+#   - docs/tools/ai-cli-usage.md (usage reference, session naming, transport, auto-resume)
 #   - README.md (if CLI interface changes)
 #   - Code comments in this file (especially around session naming, resume logic, mosh/transport)
 #   - CLAUDE.md ai-cli deploy note (reinstall in 3 places: Mac uv tool, server uv tool, extra_venvs)
