@@ -1197,6 +1197,47 @@ class TestSignalWatchCli:
         assert not (handoff_dir / "pending" / "007-remote-task.md").exists()
         assert (handoff_dir / "claimed" / "007-remote-task.md").exists()
 
+    def test_signal_watch_startup_scan_picks_up_existing_pending_files(self, tmp_path):
+        """Files already in pending queue at startup should be claimed without a NATS trigger."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "004-pre-existing-task.md").write_text(
+            '---\nid: "4"\ntitle: "pre-existing task"\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+
+        async def fake_js_subscribe(subject, durable, cb):
+            pass
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-4"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        pending_file = state_dir / "handoff-pending-c-sw-4"
+        assert pending_file.exists()
+        assert not (pending / "004-pre-existing-task.md").exists()
+        assert (handoff_dir / "claimed" / "004-pre-existing-task.md").exists()
+
 
 # --- ai handoff post --remote ---
 

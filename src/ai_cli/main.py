@@ -1368,6 +1368,28 @@ def cli():
                 except Exception:
                     pass
 
+            # Startup scan: pick up any unclaimed files already in the pending queue
+            if sw_handoff_dir is not None:
+                pending_dir = sw_handoff_dir / "pending"
+                if pending_dir.exists():
+                    for f in sorted(pending_dir.glob("*.md")):
+                        try:
+                            fid = int(f.name.split("-")[0])
+                        except ValueError:
+                            continue
+                        try:
+                            raw = f.read_text()
+                            fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
+                            fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
+                            body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
+                            scan_title = fm_title.group(1).strip() if fm_title else f.stem
+                            scan_priority = fm_priority.group(1) if fm_priority else ""
+                        except OSError:
+                            scan_title, scan_priority, body = f.stem, "", ""
+                        asyncio.run(
+                            _on_handoff({"id": fid, "title": scan_title, "priority": scan_priority, "message": body})
+                        )
+
             consumer_name = f"{sw_session_id}-signal-watcher"
             try:
                 asyncio.run(sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff))
