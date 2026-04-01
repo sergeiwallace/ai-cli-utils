@@ -1441,10 +1441,10 @@ class TestDeploy:
 
         # pyproject.toml restored to original after install
         assert pyproject.read_text() == '[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n'
-        # uv install was called with --reinstall
-        cmd = mock_run.call_args[0][0]
-        assert "uv" in cmd
-        assert "--reinstall" in cmd
+        # uv install was called with --reinstall (may not be the last call)
+        all_cmds = [call[0][0] for call in mock_run.call_args_list]
+        uv_cmd = next((c for c in all_cmds if "uv" in c and "--reinstall" in c), None)
+        assert uv_cmd is not None
 
     def test_deploy_strips_existing_post_before_bumping(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"
@@ -1485,6 +1485,61 @@ class TestDeploy:
             with pytest.raises(SystemExit) as exc:
                 cli()
             assert exc.value.code == 0
+
+    def test_deploy_on_mac_pulls_before_install(self, tmp_path):
+        """On Mac, git pull --rebase must run before uv install."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0)
+
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+            patch.dict("os.environ", {"HUMANWARE_HOST": "mac"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        cmds = [" ".join(c) for c in calls]
+        pull_idx = next((i for i, c in enumerate(cmds) if "git" in c and "pull" in c), None)
+        uv_idx = next((i for i, c in enumerate(cmds) if "uv" in c and "reinstall" in c), None)
+        assert pull_idx is not None, "git pull not called"
+        assert uv_idx is not None, "uv install not called"
+        assert pull_idx < uv_idx, "git pull must run before uv install"
+
+    def test_deploy_on_hetzner_installs_aido_venv_when_present(self, tmp_path):
+        """On non-Mac, also installs into aido venv if it exists."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        aido_venv = tmp_path / "projects" / "aido" / ".venv"
+        aido_venv.mkdir(parents=True)
+        (aido_venv / "bin").mkdir()
+        (aido_venv / "bin" / "uv").touch()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0)
+
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+            patch.dict("os.environ", {"HUMANWARE_HOST": "hetzner"}),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        cmds = [" ".join(c) for c in calls]
+        assert any("pip" in c and "reinstall" in c for c in cmds), "aido venv install not called"
 
 
 class TestGetEngineScriptSelfUpdate:

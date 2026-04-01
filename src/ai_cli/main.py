@@ -1881,16 +1881,35 @@ def cli():
             sys.exit(1)
         base = re.sub(r"\.post\d+$", "", m.group(2))
         new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
+        is_mac = os.environ.get("HUMANWARE_HOST") == "mac"
+        if is_mac:
+            print("Pulling latest from origin...")
+            subprocess.run(["git", "pull", "--rebase"], cwd=project_path, check=False)
         print(f"Deploying {m.group(2)} → {new_version}")
+        exit_code = 0
         try:
             pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
             result = subprocess.run(
                 ["uv", "tool", "install", str(project_path), "--force", "--reinstall"],
                 cwd=project_path,
             )
+            exit_code = result.returncode
         finally:
             pyproject.write_text(original)
-        sys.exit(result.returncode)
+        if exit_code == 0 and not is_mac:
+            # Also install into aido venv if it exists
+            aido_venv = Path.home() / "projects" / "aido" / ".venv"
+            if aido_venv.exists():
+                subprocess.run(
+                    [str(aido_venv / "bin" / "uv"), "pip", "install", str(project_path), "--force-reinstall"],
+                    check=False,
+                )
+            # Clear pycache
+            subprocess.run(
+                ["find", str(project_path), "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
+                check=False,
+            )
+        sys.exit(exit_code)
 
     if len(sys.argv) > 1 and sys.argv[1] == "attach":
         if len(sys.argv) < 3:
