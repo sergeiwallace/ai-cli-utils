@@ -1,3 +1,4 @@
+import asyncio
 import builtins
 import json
 import pytest
@@ -5,7 +6,7 @@ import sys
 import time
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 import os
 from ai_cli.main import (
     build_session_name,
@@ -778,6 +779,32 @@ class TestHandoff:
         content = pending_files[0].read_text()
         assert "Fix bug" in content
         assert "Details here" in content
+
+    def test_post_handoff_publishes_to_nats_with_correct_subject(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        mock_client = MagicMock()
+        mock_client.publish = AsyncMock(return_value=True)
+
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+                    post_handoff("Deploy done", "P1", "artelier", "Details")
+
+        mock_client.publish.assert_called_once()
+        subject, payload = mock_client.publish.call_args[0]
+        assert subject == "handoff.artelier"
+        assert payload["title"] == "Deploy done"
+        assert payload["project"] == "artelier"
+        assert payload["priority"] == "P1"
+
+    def test_post_handoff_when_nats_fails_then_file_still_written(self, tmp_path):
+        queue_dir = tmp_path / ".handoff-queue"
+        with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.messaging.NATSClient", side_effect=Exception("NATS unavailable")):
+                    post_handoff("Fix bug", "P1", "myapp", "Details")
+        pending_files = list((queue_dir / "pending").glob("*.md"))
+        assert len(pending_files) == 1
 
     def test_post_handoff_when_no_main_project_then_exits(self):
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):

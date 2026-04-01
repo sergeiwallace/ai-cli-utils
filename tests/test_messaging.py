@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -231,3 +232,79 @@ class TestNATSClientSubscribe:
         asyncio.run(run())
         # Malformed JSON produces empty dict, callback still called
         assert received == [{}]
+
+
+class TestSshTunnel:
+    """Tests for NATSClient._open_ssh_tunnel Mac auto-tunnel logic."""
+
+    def test_when_not_mac_then_no_tunnel_opened(self, monkeypatch):
+        monkeypatch.setenv("HUMANWARE_HOST", "hetzner")
+        client = NATSClient()
+        with patch("ai_cli.messaging.subprocess.Popen") as mock_popen:
+            asyncio.run(client._open_ssh_tunnel())
+        mock_popen.assert_not_called()
+        assert client._tunnel_proc is None
+
+    def test_when_mac_and_port_reachable_then_no_tunnel_opened(self, monkeypatch):
+        monkeypatch.setenv("HUMANWARE_HOST", "mac")
+        client = NATSClient()
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        with patch("ai_cli.messaging.socket.create_connection", return_value=mock_conn):
+            with patch("ai_cli.messaging.subprocess.Popen") as mock_popen:
+                asyncio.run(client._open_ssh_tunnel())
+        mock_popen.assert_not_called()
+        assert client._tunnel_proc is None
+
+    def test_when_mac_and_port_unreachable_then_tunnel_opened(self, monkeypatch):
+        monkeypatch.setenv("HUMANWARE_HOST", "mac")
+        client = NATSClient()
+        mock_proc = MagicMock()
+        call_count = 0
+
+        def mock_create_connection(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("refused")  # initial reachability check
+            mock_conn = MagicMock()
+            mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+            mock_conn.__exit__ = MagicMock(return_value=False)
+            return mock_conn  # tunnel up on retry
+
+        with patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection):
+            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen:
+                with patch("asyncio.sleep", new=AsyncMock()):
+                    asyncio.run(client._open_ssh_tunnel())
+
+        mock_popen.assert_called_once_with(
+            ["ssh", "-fNL", "4222:localhost:4222", "sergei@178.104.70.139"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        assert client._tunnel_proc is mock_proc
+
+    def test_when_mac_and_tunnel_never_comes_up_then_exits_gracefully(self, monkeypatch):
+        monkeypatch.setenv("HUMANWARE_HOST", "mac")
+        client = NATSClient()
+        mock_proc = MagicMock()
+        with patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")):
+            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
+                with patch("asyncio.sleep", new=AsyncMock()):
+                    asyncio.run(client._open_ssh_tunnel())
+        assert client._tunnel_proc is mock_proc  # proc stored even if port never came up
+
+
+class TestNATSClientCloseTunnel:
+    def test_close_terminates_tunnel_proc_if_present(self):
+        client = NATSClient()
+        mock_proc = MagicMock()
+        client._tunnel_proc = mock_proc
+        asyncio.run(client.close())
+        mock_proc.terminate.assert_called_once()
+        assert client._tunnel_proc is None
+
+    def test_close_with_no_tunnel_proc_does_not_raise(self):
+        client = NATSClient()
+        asyncio.run(client.close())  # no tunnel, no nc — should be silent

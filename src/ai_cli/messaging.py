@@ -1,5 +1,8 @@
 import asyncio
 import json
+import os
+import socket
+import subprocess
 import time
 import nats
 from nats.errors import TimeoutError, NoServersError
@@ -15,6 +18,7 @@ STREAM_CONFIG = {
     "aido": ["aido.>"],
     "task": ["task.>"],
     "health": ["health.>"],
+    "handoff": ["handoff.>"],
 }
 
 
@@ -26,6 +30,29 @@ class NATSClient:
         self.nc = None
         self.js = None
         self._streams_ensured = set()
+        self._tunnel_proc: subprocess.Popen | None = None
+
+    async def _open_ssh_tunnel(self) -> None:
+        """Open SSH tunnel to Hetzner NATS when running on Mac and port 4222 is unreachable."""
+        if os.environ.get("HUMANWARE_HOST") != "mac":
+            return
+        try:
+            with socket.create_connection(("localhost", 4222), timeout=1):
+                return  # already reachable
+        except OSError:
+            pass
+        self._tunnel_proc = subprocess.Popen(
+            ["ssh", "-fNL", "4222:localhost:4222", "sergei@178.104.70.139"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(6):
+            await asyncio.sleep(0.5)
+            try:
+                with socket.create_connection(("localhost", 4222), timeout=1):
+                    return
+            except OSError:
+                pass
 
     async def connect(self):
         """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts.
@@ -37,6 +64,7 @@ class NATSClient:
         error_cb silences the nats library's verbose per-attempt tracebacks — connection
         failures are expected when NATS is not running locally (e.g. on Mac).
         """
+        await self._open_ssh_tunnel()
         retry_delay = 1
         max_retries = 3
         for attempt in range(max_retries):
@@ -179,6 +207,9 @@ class NATSClient:
             pass
 
     async def close(self):
-        """Closes the connection."""
+        """Closes the connection and any SSH tunnel opened for Mac."""
         if self.nc:
             await self.nc.close()
+        if self._tunnel_proc:
+            self._tunnel_proc.terminate()
+            self._tunnel_proc = None

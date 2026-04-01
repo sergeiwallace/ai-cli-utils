@@ -1033,6 +1033,26 @@ def post_handoff(title, priority, project, message):
     out = f'---\nid: "{next_id}"\ntitle: "{title}"\npriority: {priority}\nproject: {project}\ncreated_by: {created_by}\ncreated_at: "{now}"\nclaimed_by: null\nclaimed_at: null\n---\n\n{message}\n'
     (queue_dir / filename).write_text(out)
     print(queue_dir / filename)
+    # Publish to NATS for real-time delivery (non-fatal — file queue is the durable record)
+    try:
+        import asyncio as _asyncio
+        from .messaging import NATSClient as _NATSClient
+
+        _cfg = load_config()
+        _servers = _cfg.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+        _client = _NATSClient(servers=_servers)
+        _payload = {
+            "id": next_id,
+            "title": title,
+            "project": project,
+            "priority": priority,
+            "message": message,
+            "created_by": created_by,
+            "ts": time.time(),
+        }
+        _asyncio.run(_client.publish(f"handoff.{project}", _payload))
+    except Exception:
+        pass
 
 
 def check_handoff():
