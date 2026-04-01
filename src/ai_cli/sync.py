@@ -1578,8 +1578,10 @@ def sync_conflicts(flags: list[str]) -> int:
 
 
 def _pid_file_path(name: str) -> Path:
-    """Return path for a daemon PID file under ~/.ai-cli/."""
-    return Path.home() / ".ai-cli" / f"{name}.pid"
+    """Return path for a daemon PID file under XDG state dir."""
+    from .main import get_xdg_state_home
+
+    return get_xdg_state_home() / f"{name}.pid"
 
 
 def _acquire_pid_file(name: str) -> bool:

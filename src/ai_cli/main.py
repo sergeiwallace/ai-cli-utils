@@ -13,16 +13,26 @@ from pathlib import Path
 # --- XDG Directory Support ---
 
 
+def _migrate_xdg_dir(old: Path, new: Path) -> Path:
+    """Rename old XDG dir to new name if old exists and new does not."""
+    if old.exists() and not new.exists():
+        old.rename(new)
+    return new
+
+
 def get_xdg_config_home():
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ai-cli"
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
 def get_xdg_state_home():
-    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "ai-cli"
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
 def get_xdg_cache_home():
-    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ai-cli"
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
 # --- Configuration Management ---
@@ -32,7 +42,7 @@ def get_xdg_cache_home():
 #   - Code comments in this file (especially around session naming, resume logic, mosh/transport)
 #   - CLAUDE.md ai-cli deploy note (reinstall in 3 places: Mac uv tool, server uv tool, extra_venvs)
 
-DEFAULT_CONFIG = """## ai-cli configuration
+DEFAULT_CONFIG = """## ai-cli-utils configuration
 
 [gemini]
 ## Projects that should NOT be sandboxed by default
@@ -866,7 +876,7 @@ def get_engine_script(
     uuid="{session_id_uuid or ""}"
     project_prefix="{project_prefix}"
     project_name="{project_name}"
-    _ai_state_dir="$HOME/.local/state/ai-cli"
+    _ai_state_dir="$HOME/.local/state/ai-cli-utils"
     mkdir -p "$_ai_state_dir/iterm2"
 
     # --dangerously-skip-permissions is blocked when running as root
@@ -1168,7 +1178,7 @@ def post_handoff(title, priority, project, message, for_machine=None):
         for_machine = os.environ.get("AI_CLI_HOST", "")
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
-        print("Error: [project] main_project not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+        print("Error: [project] main_project not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
         sys.exit(1)
     queue_dir = handoff_dir / "pending"
     created_by = os.environ.get("AI_TMUX_SESSION", "unknown")
@@ -1274,7 +1284,7 @@ def claim_handoff(file_path, claimer=None):
         claimer = os.environ.get("AI_TMUX_SESSION", "unknown")
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
-        print("Error: [project] main_project not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+        print("Error: [project] main_project not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
         sys.exit(1)
     claimed_dir = handoff_dir / "claimed"
     claimed_dir.mkdir(parents=True, exist_ok=True)
@@ -1343,7 +1353,7 @@ def trigger_background_update():
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps({"last_checked": now}))
     subprocess.Popen(
-        ["uv", "tool", "upgrade", "ai-cli"],
+        ["uv", "tool", "upgrade", "ai-cli-utils"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -1366,7 +1376,7 @@ def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = Fals
     host = remote_cfg.get("host", "")
     user = remote_cfg.get("user", "ubuntu")
     if not host:
-        print("Error: [remote] host not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+        print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
         sys.exit(1)
 
     direction = "-L" if forward else "-R"
@@ -1940,8 +1950,8 @@ def cli():
             sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] == "upgrade":
-        print("Upgrading ai-cli...", file=sys.stderr)
-        os.execvp("uv", ["uv", "tool", "upgrade", "ai-cli"])
+        print("Upgrading ai-cli-utils...", file=sys.stderr)
+        os.execvp("uv", ["uv", "tool", "upgrade", "ai-cli-utils"])
 
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
         from .setup import run_setup
@@ -2101,7 +2111,7 @@ def cli():
         host = remote_cfg.get("host", "")
         user = remote_cfg.get("user", "ubuntu")
         if not host:
-            print("Error: [remote] host not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+            print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
             sys.exit(1)
 
         requested = [int(x) for x in sys.argv[2:] if x.isdigit()] if len(sys.argv) > 2 else None
@@ -2356,7 +2366,7 @@ def cli():
         remote_cfg = config.get("remote", {})
         host = remote_cfg.get("host", "")
         if not host:
-            print("Error: [remote] host not set in ~/.config/ai-cli/config.toml", file=sys.stderr)
+            print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
             sys.exit(1)
         user = remote_cfg.get("user", "ubuntu")
         port = str(remote_cfg.get("port", 22))

@@ -45,6 +45,7 @@ class TestPidFileGuard:
             with patch("ai_cli.sync._pid_file_path", return_value=Path(tmpdir) / "nonexistent.pid"):
                 _release_pid_file("test")  # Should not raise
 
-    def test_pid_file_path_returns_expected_location(self):
+    def test_pid_file_path_returns_expected_location(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
         path = _pid_file_path("sync-watch")
-        assert path == Path.home() / ".ai-cli" / "sync-watch.pid"
+        assert path == tmp_path / "ai-cli-utils" / "sync-watch.pid"

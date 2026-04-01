@@ -530,23 +530,23 @@ class TestXdgHelpers:
     def test_get_xdg_state_home_when_env_var_set_then_uses_it(self, monkeypatch):
         monkeypatch.setenv("XDG_STATE_HOME", "/custom/state")
         result = get_xdg_state_home()
-        assert str(result) == "/custom/state/ai-cli"
+        assert str(result) == "/custom/state/ai-cli-utils"
 
     def test_get_xdg_state_home_when_no_env_var_then_uses_default(self, monkeypatch):
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         result = get_xdg_state_home()
-        assert result.name == "ai-cli"
+        assert result.name == "ai-cli-utils"
         assert ".local/state" in str(result)
 
     def test_get_xdg_cache_home_when_env_var_set_then_uses_it(self, monkeypatch):
         monkeypatch.setenv("XDG_CACHE_HOME", "/custom/cache")
         result = get_xdg_cache_home()
-        assert str(result) == "/custom/cache/ai-cli"
+        assert str(result) == "/custom/cache/ai-cli-utils"
 
     def test_get_xdg_cache_home_when_no_env_var_then_uses_default(self, monkeypatch):
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         result = get_xdg_cache_home()
-        assert result.name == "ai-cli"
+        assert result.name == "ai-cli-utils"
         assert ".cache" in str(result)
 
 
@@ -555,7 +555,7 @@ class TestXdgHelpers:
 
 class TestLoadConfig:
     def test_load_config_when_no_config_file_then_creates_default_with_known_keys(self, tmp_path):
-        config_dir = tmp_path / "ai-cli"
+        config_dir = tmp_path / "ai-cli-utils"
         with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
             result = load_config()
         assert (config_dir / "config.toml").exists()
@@ -567,7 +567,7 @@ class TestLoadConfig:
         assert "messaging" in result
 
     def test_load_config_when_bad_toml_then_returns_empty(self, tmp_path):
-        config_dir = tmp_path / "ai-cli"
+        config_dir = tmp_path / "ai-cli-utils"
         config_dir.mkdir(parents=True)
         (config_dir / "config.toml").write_text("not valid toml [[[")
         with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
@@ -1874,7 +1874,7 @@ class TestCliDispatch:
                 with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                     with pytest.raises(SystemExit):
                         cli()
-                    mock_exec.assert_called_once_with("uv", ["uv", "tool", "upgrade", "ai-cli"])
+                    mock_exec.assert_called_once_with("uv", ["uv", "tool", "upgrade", "ai-cli-utils"])
 
     def test_cli_when_internal_no_action_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal"]):
@@ -3487,12 +3487,12 @@ class TestIterm2StateDir:
     def test_returns_xdg_state_iterm2_subdir(self, monkeypatch, tmp_path):
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
         result = _iterm2_state_dir()
-        assert result == tmp_path / "ai-cli" / "iterm2"
+        assert result == tmp_path / "ai-cli-utils" / "iterm2"
         assert result.is_dir()
 
     def test_creates_directory_if_absent(self, monkeypatch, tmp_path):
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        target = tmp_path / "ai-cli" / "iterm2"
+        target = tmp_path / "ai-cli-utils" / "iterm2"
         assert not target.exists()
         _iterm2_state_dir()
         assert target.is_dir()
