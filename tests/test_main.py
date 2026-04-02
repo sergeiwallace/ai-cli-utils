@@ -2998,6 +2998,41 @@ class TestCliSessionSetupBranches:
                                         cli()
         assert len(killed) == 0
 
+    def test_cli_when_iterm2_env_set_then_passes_to_tmux_new_session(self):
+        """tmux new-session receives -e flags for ITERM_SESSION_ID/LC_TERMINAL/TERM_PROGRAM."""
+        execvp_calls = []
+
+        with patch("sys.argv", ["ai", "g", "1"]):
+            with patch("ai_cli.main.load_config", return_value={}):
+                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.main._emit_iterm2_profile_setup"):
+                            with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
+                                with patch.dict(
+                                    os.environ,
+                                    {
+                                        "ITERM_SESSION_ID": "w0t1p0:abc",
+                                        "LC_TERMINAL": "iTerm2",
+                                        "TERM_PROGRAM": "iTerm.app",
+                                    },
+                                    clear=False,
+                                ):
+                                    with patch(
+                                        "os.execvp",
+                                        side_effect=lambda *a: (
+                                            execvp_calls.append(a) or (_ for _ in ()).throw(SystemExit(0))
+                                        ),
+                                    ):
+                                        with pytest.raises(SystemExit):
+                                            cli()
+
+        assert execvp_calls, "os.execvp was not called"
+        cmd = execvp_calls[-1][1]
+        assert "-e" in cmd
+        assert any("ITERM_SESSION_ID=w0t1p0:abc" in a for a in cmd)
+        assert any("LC_TERMINAL=iTerm2" in a for a in cmd)
+        assert any("TERM_PROGRAM=iTerm.app" in a for a in cmd)
+
     def test_cli_when_remote_with_project_flag_then_uses_project_prefix(self):
         """Covers lines 1134, 1145, 1147: remote with -p flag."""
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
@@ -3918,16 +3953,13 @@ class TestEmitIterm2ProfileSetupGeminiWithTabKey:
     """Tests for gemini engine + tab_key path in _emit_iterm2_profile_setup."""
 
     def test_when_gemini_engine_and_iterm_session_id_set_then_registers_and_emits_title(self, capsys, tmp_path):
-        (tmp_path / "cc-names-w0t0").write_text("0:g-research-1:gemini:init\n")
-        live = MagicMock(returncode=0)
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
             with patch("ai_cli.main._iterm2_update_window_title"):
                 with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                    with patch("subprocess.run", return_value=live):
-                        _emit_iterm2_profile_setup("research-1", "g")
+                    _emit_iterm2_profile_setup("research-1", "g")
         out = capsys.readouterr().out
         assert "SetProfile=GeminiCLI" in out
-        assert "\033]0;" in out  # tab title emitted (file had an entry)
+        assert "\033]0;" in out  # tab title always emitted (no longer gated on names file)
 
 
 class TestInternalIterm2Dispatch:

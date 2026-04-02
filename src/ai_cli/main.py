@@ -832,10 +832,13 @@ def _emit_iterm2_profile_setup(ai_name: str, engine: str, session: str = "") -> 
             except OSError:
                 pass
             _iterm2_register_session(tab_key, pane_idx, session_name, "cc", "init")
-            title = _iterm2_compute_tab_title(tab_key)
-            if title:
-                sys.stdout.write(f"\033]0; {title}\007")
-                sys.stdout.flush()
+            # Emit the new session title directly — the tmux session doesn't exist yet
+            # so _iterm2_compute_tab_title would filter it out via tmux validation.
+            # Bash's _iterm2_fleet_setup sets the full combined title once the session is live.
+            type_sym = _ITERM2_TYPE_SYMBOLS.get("cc", "·")
+            st = _ITERM2_STATUS_SYMBOLS.get("init", "▶")
+            sys.stdout.write(f"\033]0; {type_sym} {st} {session_name}\007")
+            sys.stdout.flush()
         _iterm2_update_window_title(win_key, tab_key, session_name, "cc")
 
     elif engine == "g":
@@ -843,10 +846,10 @@ def _emit_iterm2_profile_setup(ai_name: str, engine: str, session: str = "") -> 
         sys.stdout.flush()
         if tab_key:
             _iterm2_register_session(tab_key, pane_idx, session_name, "gemini", "init")
-            title = _iterm2_compute_tab_title(tab_key)
-            if title:
-                sys.stdout.write(f"\033]0; {title}\007")
-                sys.stdout.flush()
+            type_sym = _ITERM2_TYPE_SYMBOLS.get("gemini", "·")
+            st = _ITERM2_STATUS_SYMBOLS.get("init", "▶")
+            sys.stdout.write(f"\033]0; {type_sym} {st} {session_name}\007")
+            sys.stdout.flush()
         _iterm2_update_window_title(win_key, tab_key, session_name, "gemini")
 
 
@@ -2614,51 +2617,37 @@ def cli():
     d = get_session_map(engine)
     uuid = d.get(ai_name)
 
+    # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
+    # so _iterm2_fleet_setup inside the bash script would silently no-op without them.
+    _iterm_env_flags: list[str] = []
+    for _var in ("ITERM_SESSION_ID", "LC_TERMINAL", "TERM_PROGRAM"):
+        if _val := os.environ.get(_var):
+            _iterm_env_flags += ["-e", f"{_var}={_val}"]
+
     if args.once:
         cd_pref = f"cd {worktree_path} && " if worktree_path else ""
         if engine == "c":
             perms = "" if os.getuid() == 0 else "--dangerously-skip-permissions"
             os.execvp(
                 "tmux",
-                [
-                    "tmux",
-                    "new-session",
-                    "-s",
-                    session_id,
-                    "--",
-                    "bash",
-                    "-c",
-                    f"{cd_pref}claude {perms} --name {ai_name}".strip(),
-                ],
+                ["tmux", "new-session", "-s", session_id]
+                + _iterm_env_flags
+                + ["--", "bash", "-c", f"{cd_pref}claude {perms} --name {ai_name}".strip()],
             )
         else:
             if uuid:
                 os.execvp(
                     "tmux",
-                    [
-                        "tmux",
-                        "new-session",
-                        "-s",
-                        session_id,
-                        "--",
-                        "bash",
-                        "-c",
-                        f"{cd_pref}gemini -y {sandbox_flag} -r {uuid}",
-                    ],
+                    ["tmux", "new-session", "-s", session_id]
+                    + _iterm_env_flags
+                    + ["--", "bash", "-c", f"{cd_pref}gemini -y {sandbox_flag} -r {uuid}"],
                 )
             else:
                 os.execvp(
                     "tmux",
-                    [
-                        "tmux",
-                        "new-session",
-                        "-s",
-                        session_id,
-                        "--",
-                        "bash",
-                        "-c",
-                        f"{cd_pref}gemini -y {sandbox_flag} -i '/resume load {ai_name}'",
-                    ],
+                    ["tmux", "new-session", "-s", session_id]
+                    + _iterm_env_flags
+                    + ["--", "bash", "-c", f"{cd_pref}gemini -y {sandbox_flag} -i '/resume load {ai_name}'"],
                 )
 
     script = get_engine_script(
@@ -2692,9 +2681,9 @@ def cli():
     elif args.is_remote:
         # Create session attached (not -d) so Claude gets a proper PTY.
         # The script's tmux detach-client at loop end drops us back to the SSH/mosh shell.
-        os.execvp("tmux", ["tmux", "new-session", "-s", session_id, "--", "bash", "-c", script])
+        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "bash", "-c", script])
     else:
-        os.execvp("tmux", ["tmux", "new-session", "-s", session_id, "--", "bash", "-c", script])
+        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "bash", "-c", script])
 
 
 if __name__ == "__main__":  # pragma: no cover
