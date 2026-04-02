@@ -81,6 +81,8 @@ NEVER generate binary images.
 
 - [Pending / Ready](#pending--ready)
 - [Completed](#completed)
+  - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672)
+  - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
 - [Deprecated / Archived](#deprecated--archived)
 
 ## Status Overview
@@ -89,7 +91,6 @@ NEVER generate binary images.
 
 | # | Type | Topic | Task | Model | Status |
 |---|------|-------|------|-------|--------|
-| R-2 | Research | GitHub repo automation & ecosystem tooling | AI-CLI-3 | opus researcher | Complete |
 
 ### Priority and Impact Notes
 
@@ -100,14 +101,45 @@ NEVER generate binary images.
 
 | # | Type | Topic | Task | Model | Results Doc |
 |---|------|-------|------|-------|-------------|
+| R-1 | opus | Open-source Python CLI package best practices | SW-672 | `opus researcher` | [`open-source-package-best-practices.md`](../open-source-package-best-practices.md) |
+| R-2 | opus | GitHub repo automation & ecosystem tooling | AI-CLI-3 | `opus researcher` | [`github-repo-automation.md`](../github-repo-automation.md) |
 
 ---
 
 ## Pending / Ready
 
+---
+
+## Completed
+
+### R-1: Open-Source Python CLI Package Best Practices — SW-672
+
+**Status:** ✅ Complete
+**Task:** SW-672 (Extract ai-cli to standalone repo)
+**Results:** [`docs/research/open-source-package-best-practices.md`](../open-source-package-best-practices.md)
+**Model:** `opus researcher`
+**Date:** 2026-03-29
+
+<details>
+<summary>Prompt (R-1)</summary>
+
+```
+Research best practices for maintaining a professional open-source Python CLI
+package on GitHub + PyPI. The package is `ai-cli-utils` (command: `ai`), a
+unified CLI for managing Claude Code and Gemini CLI sessions with tmux, mosh,
+git worktrees, and cross-machine sync. Cover: README structure and badges,
+GitHub project configuration (CI, releases, community files, security), Python
+packaging conventions (pyproject.toml, type hints, docs), and exemplary Python
+CLI projects to emulate (1K-50K stars range).
+```
+
+</details>
+
+---
+
 ### R-2: GitHub Repository Automation & Ecosystem Tooling
 
-**Status:** Complete
+**Status:** ✅ Complete
 **Task:** AI-CLI-3 (extended to cover full remaining professionalization gaps)
 **Target doc:** `docs/research/github-repo-automation.md`
 **Model:** `opus researcher`

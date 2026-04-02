@@ -13,7 +13,7 @@ source: "opus-researcher-2026-03-29"
 **Created:** 2026-03-29
 
 **Task:** SW-672
-**Prompt:** R-35 in `~/projects/sergei/docs/research/prompts/research-prompt-registry.md`
+**Prompt:** R-1 in `docs/research/prompts/research-prompt-registry.md`
 
 ## Summary
 
@@ -483,7 +483,7 @@ These projects demonstrate professional open-source practices that a solo mainta
 
 ## Appendix: Research Prompt
 
-**Registry ID:** R-35
+**Registry ID:** R-1 (in `docs/research/prompts/research-prompt-registry.md`)
 **Model:** opus researcher (claude-opus-4-6)
 **Date:** 2026-03-29
 
