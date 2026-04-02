@@ -1866,10 +1866,37 @@ class TestFindAicliProjectPath:
             result = _find_aicli_project_path({})
         assert result == tmp_path
 
-    def test_when_package_not_found_then_returns_none(self):
+    def test_when_in_project_dir_then_cwd_fallback_works(self, tmp_path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('name = "ai-cli-utils"\nversion = "0.1.0"\n')
         import importlib.util as _ilu
 
-        with patch.object(_ilu, "find_spec", return_value=None):
+        with (
+            patch.object(_ilu, "find_spec", return_value=None),
+            patch("ai_cli.main.Path.cwd", return_value=tmp_path),
+        ):
+            result = _find_aicli_project_path({})
+        assert result == tmp_path
+
+    def test_when_in_wrong_dir_then_cwd_fallback_skipped(self, tmp_path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('name = "other-project"\nversion = "0.1.0"\n')
+        import importlib.util as _ilu
+
+        with (
+            patch.object(_ilu, "find_spec", return_value=None),
+            patch("ai_cli.main.Path.cwd", return_value=tmp_path),
+        ):
+            result = _find_aicli_project_path({})
+        assert result is None
+
+    def test_when_package_not_found_and_no_cwd_match_then_returns_none(self):
+        import importlib.util as _ilu
+
+        with (
+            patch.object(_ilu, "find_spec", return_value=None),
+            patch("ai_cli.main.Path.cwd", return_value=Path("/nonexistent/path")),
+        ):
             result = _find_aicli_project_path({})
         assert result is None
 
