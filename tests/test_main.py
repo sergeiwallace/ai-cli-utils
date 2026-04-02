@@ -4731,6 +4731,115 @@ class TestHandoffDrain:
         claimed = [e for e in events if e["event"] == "handoff.claimed"]
         assert any(e["layer"] == "pre_launch_drain" for e in claimed)
 
+    def test_handoff_drain_logs_started_event(self, tmp_path):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        with (
+            patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-3"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=tmp_path / ".handoff-queue"),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", side_effect=Exception("no nats")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        log = state_dir / "handoff-events.jsonl"
+        assert log.exists()
+        events = [json.loads(l) for l in log.read_text().strip().split("\n")]
+        assert any(e["event"] == "handoff.drain.started" for e in events)
+
+    def test_handoff_drain_logs_local_found_event(self, tmp_path):
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "003-task.md").write_text(
+            '---\nid: "3"\ntitle: "found task"\npriority: P1\nproject: myapp\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo it.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        with (
+            patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-4"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", side_effect=Exception("no nats")),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        log = state_dir / "handoff-events.jsonl"
+        events = [json.loads(l) for l in log.read_text().strip().split("\n")]
+        local_found = [e for e in events if e["event"] == "handoff.drain.local_found"]
+        assert local_found
+        assert local_found[0]["handoff_id"] == 3
+
+    def test_handoff_drain_skips_nats_file_already_in_claimed(self, tmp_path):
+        """NATS payload for a handoff already in claimed/ should not be re-claimed."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        claimed_dir = handoff_dir / "claimed"
+        claimed_dir.mkdir(parents=True)
+        # Simulate file already claimed from a previous session
+        (claimed_dir / "005-already.md").write_text(
+            '---\nid: "5"\ntitle: "already claimed"\npriority: P1\nproject: myapp\nfor_machine: mac\nclaimed_by: prev-session\nclaimed_at: "2026-04-01T00:00:00Z"\n---\n\nDone.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        from unittest.mock import AsyncMock
+
+        nats_payload = {
+            "id": 5,
+            "title": "already claimed",
+            "project": "myapp",
+            "priority": "P1",
+            "message": "Done.",
+            "for_machine": "mac",
+            "content": '---\nid: "5"\ntitle: "already claimed"\n---\n\nDone.\n',
+            "filename": "005-already.md",
+            "ts": 1234567890.0,
+        }
+        mock_msg = AsyncMock()
+        mock_msg.data = json.dumps(nats_payload).encode()
+        mock_sub = AsyncMock()
+        mock_sub.fetch.side_effect = [
+            [mock_msg],
+            Exception("timeout"),
+        ]
+        mock_js = AsyncMock()
+        mock_js.pull_subscribe = AsyncMock(return_value=mock_sub)
+
+        async def fake_ensure_stream(_subject):
+            pass
+
+        mock_nc = AsyncMock()
+        mock_nc.js = mock_js
+        mock_nc.close = AsyncMock()
+        mock_nc._ensure_stream = fake_ensure_stream
+
+        with (
+            patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-5"]),
+            patch("ai_cli.main.load_config", return_value={"messaging": {"nats_servers": ["nats://localhost:4222"]}}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.messaging.NATSClient") as mock_client_cls,
+            patch.dict("os.environ", {"AI_CLI_HOST": "mac"}),
+        ):
+            mock_client_cls.return_value = mock_nc
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # Prompt file must NOT be written — handoff was already claimed
+        assert not (state_dir / "cc-resume-prompt-c-sw-5").exists()
+        # File must NOT be re-created in pending
+        assert not (handoff_dir / "pending" / "005-already.md").exists()
+
 
 # --- Circus / signal-watch tests ---
 

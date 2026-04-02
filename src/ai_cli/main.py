@@ -1897,6 +1897,7 @@ def cli():
             hd_prompt_file = get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
             nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
             hd_client = NATSClient(servers=nats_servers)
+            _log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
 
             def _write_pending_if_claimed(data):
                 handoff_id = data.get("id")
@@ -1913,7 +1914,11 @@ def cli():
                 filename = data.get("filename")
                 if content and filename:
                     pending_dir = hd_handoff_dir / "pending"
+                    claimed_dir = hd_handoff_dir / "claimed"
                     local_file = pending_dir / filename
+                    # Skip if already claimed in a previous session
+                    if (claimed_dir / filename).exists():
+                        return False
                     if not local_file.exists():
                         pending_dir.mkdir(parents=True, exist_ok=True)
                         try:
@@ -1947,13 +1952,20 @@ def cli():
                             fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
                             fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
                             body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
+                            local_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
+                            _log_handoff_event(
+                                "handoff.drain.local_found",
+                                session=hd_session,
+                                handoff_id=fid,
+                                for_machine=local_for_machine,
+                            )
                             _write_pending_if_claimed(
                                 {
                                     "id": fid,
                                     "title": fm_title.group(1).strip() if fm_title else best.stem,
                                     "priority": fm_priority.group(1) if fm_priority else "",
                                     "message": body,
-                                    "for_machine": fm_for_machine.group(1) if fm_for_machine else "",
+                                    "for_machine": local_for_machine,
                                 }
                             )
                         except Exception:
