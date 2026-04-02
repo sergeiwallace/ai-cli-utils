@@ -2,15 +2,17 @@
 title: "[BUG-001] iTerm2 tab title and color system — multiple bugs"
 category: bugs
 tags: [iterm2, tab-title, tab-color, session-title, gemini, remote, mosh]
-status: investigating
+status: fix-shipped
 severity: P1
 related_docs:
+  - docs/designs/iterm2-title-color-system.md
+  - docs/test/uat-iterm2-title-color-redesign.md
   - docs/plans/iterm2-smart-titles-plan.md
 ---
 
 # [BUG-001] iTerm2 Tab Title and Color System — Multiple Bugs
 
-**Status:** investigating
+**Status:** fix-shipped — awaiting UAT (`[AI-CLI-18]`, `docs/test/uat-iterm2-title-color-redesign.md`)
 
 **Severity:** P1
 

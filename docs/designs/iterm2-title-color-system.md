@@ -14,6 +14,7 @@ source: ai-cli-utils
 
 **Related:**
 - `docs/bugs/iterm2-title-color-system.md` — 7 bugs this design addresses
+- `docs/test/uat-iterm2-title-color-redesign.md` — UAT test cases (`[AI-CLI-18]`)
 - `docs/plans/iterm2-smart-titles-plan.md` — prior approved plan (partially superseded)
 - `docs/research/iterm2-terminal-customization-research.md` — technical findings (R-50)
 
