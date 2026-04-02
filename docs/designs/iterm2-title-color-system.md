@@ -27,6 +27,7 @@ source: ai-cli-utils
   - [Gemini Remote (mosh)](#gemini-remote-mosh)
   - [Shell Pane](#shell-pane)
 - [Color Assignment Strategy](#color-assignment-strategy)
+- [Configuration](#configuration)
 - [Icon Color System](#icon-color-system)
 - [OSC/DCS Sequence Reference](#oscdcs-sequence-reference)
 - [Gemini Chats Directory](#gemini-chats-directory)
@@ -216,6 +217,77 @@ The current implementation uses `(num - 1) % 12` where `num` is the trailing dig
 
 ---
 
+## Configuration
+
+The iTerm2 system is configured via a TOML file at `~/.config/ai-cli-utils/iterm2.toml`. This enables/disables features independently and makes the system configurable for external open-source users who may have different preferences or terminal setups.
+
+### Feature Flags
+
+```toml
+[iterm2]
+enabled = true                  # master switch — set false to disable all iTerm2 integration
+
+[iterm2.tab_title]
+show_type_symbol = true         # include *, ✦ type prefix in tab/pane title (e.g. "* ▶ c-sw-5")
+show_status_symbol = true       # include ▶ ✓ ✗ ↻ ⏸ status prefix in tab/pane title
+
+[iterm2.color]
+enabled = true                  # set tab/pane background color on session launch
+collision_avoidance = true      # use lease-file-based slot assignment (vs. simple modulo)
+```
+
+### Color Palette
+
+The palette lives in the same config file. Named colors participate in the auto-rotation system. Users can add their own — they will be appended to the rotation pool. The `color_schemes` section (below) maps each color to a contrasting icon profile variant.
+
+```toml
+[iterm2.palette]
+# Built-in preset colors (modify hex values or add/remove entries freely)
+red         = "#e74c3c"
+orange      = "#e67e22"
+yellow      = "#f0b429"
+green       = "#2ecc71"
+teal        = "#1abc9c"
+sky_blue    = "#039be5"
+blue        = "#1e88e5"
+purple      = "#5e35b1"
+pink        = "#d81b60"
+cyan        = "#00acc1"
+deep_orange = "#ff5722"
+lime        = "#7cb342"
+# Add your own — will be included in auto-rotation:
+# midnight    = "#1a1a2e"
+# rose        = "#f43f5e"
+```
+
+### Color Schemes
+
+Each palette color maps to a `[claude_profile, gemini_profile]` pair that provides good contrast between the icon color and the tab background. These pairings were derived using color theory (complementary/contrasting hue selection). The scheme ensures icons are never combined with poorly contrasting backgrounds.
+
+```toml
+[iterm2.color_schemes]
+# palette_name = [claude_profile, gemini_profile]
+red         = ["ClaudeCode-White",  "GeminiCLI-White"]
+orange      = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
+yellow      = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+green       = ["ClaudeCode-Purple", "GeminiCLI-Navy"]
+teal        = ["ClaudeCode-Coral",  "GeminiCLI-Navy"]
+sky_blue    = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
+blue        = ["ClaudeCode-Coral",  "GeminiCLI-Gold"]
+purple      = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
+pink        = ["ClaudeCode-Teal",   "GeminiCLI-White"]
+cyan        = ["ClaudeCode-White",  "GeminiCLI-White"]
+deep_orange = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
+lime        = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+# Custom color entries added above need corresponding scheme entries here
+```
+
+**Default config:** The TOML file ships as part of ai-cli-utils at `src/ai_cli/data/iterm2-defaults.toml` and is copied to `~/.config/ai-cli-utils/iterm2.toml` on first run if missing. Users edit their local copy; the shipped defaults are never modified.
+
+> **Feedback:**
+
+---
+
 ## Icon Color System
 
 ### Problem
@@ -281,6 +353,23 @@ The 12-color palette is divided into groups by warmth/brightness, and each group
 Each variant inherits everything from the `ClaudeCode` base profile and only overrides the icon path. The base `ClaudeCode` profile must NOT set `"Title Components"` (this key is confirmed to break key mappings and title management).
 
 **Icon generation:** Pre-render tinted PNGs from the Claude SVG source (`~/.config/iterm2/icons/claude-logo.svg`) using a Python script with Pillow. The script takes the base SVG, renders it at 128x128, and applies a color tint. This is a one-time asset generation step, not a runtime operation. The same approach for Gemini using the Gemini logo source.
+
+**PNG storage:** Pre-rendered PNGs are checked into the repo at `assets/iterm2-icons/`. 11 PNGs (8 Claude + 3 Gemini) at ~10–20 KB each is negligible. Users can regenerate at any time if they want custom colors.
+
+**Generation script:** `scripts/generate_iterm2_icons.py`. Reads the palette and color scheme config from `iterm2.toml`, renders each variant, and writes to `assets/iterm2-icons/`. Options:
+
+```
+python scripts/generate_iterm2_icons.py            # regenerate all from config
+python scripts/generate_iterm2_icons.py --outline  # add white/black outline for contrast
+python scripts/generate_iterm2_icons.py --size 256 # output resolution (default 128)
+```
+
+**Outline option:** A white or black outline around the icon improves legibility on backgrounds where the icon color is close to the tab background color. The script auto-selects outline color (white for dark icons, black for light) based on computed luminance contrast. This is an explicit flag rather than always-on because some users may prefer clean logomarks without outlines. This is included in the initial implementation of the script (not a follow-up).
+
+**Color theory for pairings:** The `color_schemes` config in `iterm2.toml` encodes the contrasting pairings. Pairing rules:
+- Warm tab backgrounds (red, orange, deep orange, pink) → cool icon colors (cyan, teal, white)
+- Cool tab backgrounds (blue, purple, cyan, sky blue) → warm icon colors (coral, gold)
+- Neutral/natural (green, teal, yellow, lime) → contrasting by hue rotation (purple, navy, coral)
 
 > **Feedback:**
 
@@ -351,6 +440,8 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 
 **Session UUID tracking:** The `get_session_map` / `update-session-map` system tracks Gemini session UUIDs by `ai_name` (e.g., `art-1`). When resuming, the UUID is passed via `-r {uuid}`. But the UUID is associated with a specific chats directory path inside Gemini's internal state. If the UUID was created from one directory and the resume happens from a different directory, Gemini cannot find the session. The directory must match.
 
+**Clarification on recoverability:** Gemini sessions launched from the wrong directory are NOT permanently broken. Running `ai g 1 -p artelier` from `~/projects/artelier/` (the correct root) will successfully resume the session — Gemini finds the right chats directory because the working directory now matches. The bug is a UX issue: `ai g N -p PROJECT` should work from ANY directory (not just the project root), which is what the `os.chdir()` fix provides. No session-map cleanup is required.
+
 > **Feedback:**
 
 ---
@@ -406,15 +497,15 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 
 ## Open Questions and Constraints
 
-### Unresolved
+### Resolved
 
-1. **OSC 0 sets both tab and pane title identically.** iTerm2 does not provide separate sequences for tab-title-only vs. pane-header-only. This means the type symbol (`*`, `✦`) either appears in both places or neither. The current design includes it in both (set via OSC 0), which means the tab bar shows `* ▶ c-sw-5` alongside the Claude logo icon — mild redundancy. The alternative is to omit the type symbol entirely and rely on the profile icon alone. User preference needed.
+1. **OSC 0 type symbol in tab title.** ✅ **Decision:** Include type symbols (`*`, `✦`) by default — enabled via `show_type_symbol = true` in `iterm2.toml`. Users can set `show_type_symbol = false` to disable. See [Configuration](#configuration).
 
-2. **`_ai_iterm2_precmd` race condition with remote launches.** When launching a remote session, the flow is: pre-launch SetProfile fires -> local zsh prompt returns briefly -> precmd fires SetProfile=ShellUtility -> mosh connects. The precmd override may be the root cause of Bug 2 (shell icon on remote tabs). Possible fixes: (a) set an env var flag before execvp that precmd checks, (b) add a small delay/suppression window, (c) restructure so execvp happens without returning to the prompt. Option (c) is what happens in practice (execvp replaces the process), so this race should NOT actually occur — the pre-launch code runs and then `os.execvp` immediately replaces the process. If the bug persists despite this, the cause is elsewhere (possibly the mosh client resetting the profile on connection). Needs debugging to confirm.
+2. **`_ai_iterm2_precmd` race condition with remote launches.** Defer to debugging post-implementation. In principle, `os.execvp` replaces the process immediately, so precmd should not fire after the pre-launch emit. If Bug 2 persists after the other fixes, the root cause is elsewhere and will be diagnosed with real sessions. Unit and integration tests will be written during implementation to catch regressions.
 
-3. **Icon PNG generation pipeline.** The 8 Claude + 3 Gemini icon variants need to be pre-rendered. The SVG source exists at `~/.config/iterm2/icons/claude-logo.svg`. A one-time Python script using Pillow can generate the tinted PNGs. This is a build step, not a runtime concern. The question is where to store the generation script and whether to check the PNGs into a repo or regenerate on demand.
+3. **Icon PNG generation pipeline.** ✅ **Decision:** PNGs checked into repo at `assets/iterm2-icons/`. Generation script at `scripts/generate_iterm2_icons.py`, reads from `iterm2.toml`, supports `--outline` and `--size` flags. See [Icon Color System](#icon-color-system).
 
-4. **Gemini `--resume` with wrong chats directory is unrecoverable.** If a session UUID was created from directory A and the user tries to resume from directory B, Gemini's internal state cannot find it. The fix (ensuring correct `os.chdir`) prevents this going forward, but existing broken sessions may need manual cleanup (deleting stale UUID entries from the session map).
+4. **Gemini `--resume` with wrong chats directory.** ✅ **Correction:** Sessions are NOT permanently broken — running `ai g N -p PROJECT` from the correct project root successfully resumes the session. The fix (`os.chdir()` for local `-p` sessions) is a UX improvement so the command works from ANY directory, not a recovery mechanism for broken sessions. No session-map cleanup needed.
 
 ### Hard Constraints
 
@@ -430,4 +521,4 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 
 | Date | Round | Decisions |
 |------|-------|-----------|
-| | | |
+| 2026-04-02 | Round 1 | OQ-1: type symbols enabled by default, TOML config file for all feature flags + color palette. OQ-2: tests during implementation, debug race condition post-impl. OQ-3: PNGs in repo, generation script with `--outline` flag, color scheme config with color theory pairings. OQ-4: corrected — sessions not permanently broken; `os.chdir` fix is UX improvement only. |
