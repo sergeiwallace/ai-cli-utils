@@ -1879,8 +1879,9 @@ class TestFindAicliProjectPath:
         assert result == tmp_path
 
     def test_when_in_wrong_dir_then_cwd_fallback_skipped(self, tmp_path):
+        # Project that merely depends on ai-cli-utils — must not match
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('name = "other-project"\nversion = "0.1.0"\n')
+        pyproject.write_text('name = "other-project"\nversion = "0.1.0"\ndependencies = ["ai-cli-utils"]\n')
         import importlib.util as _ilu
 
         with (

@@ -1363,11 +1363,15 @@ def _find_aicli_project_path(config: dict) -> "Path | None":
                     return candidate
     except Exception:
         pass
-    # cwd fallback — valid when the user is already in the project directory
+    # cwd fallback — valid when the user is already in the project directory.
+    # Check the project name specifically to avoid matching projects that merely
+    # depend on ai-cli-utils.
     cwd = Path.cwd()
     cwd_pyproject = cwd / "pyproject.toml"
-    if cwd_pyproject.exists() and "ai-cli-utils" in cwd_pyproject.read_text():
-        return cwd
+    if cwd_pyproject.exists():
+        content = cwd_pyproject.read_text()
+        if re.search(r'^name\s*=\s*["\']ai-cli-utils["\']', content, re.MULTILINE):
+            return cwd
     return None
 
 
