@@ -1385,7 +1385,21 @@ def trigger_background_update():
 # --- SSH tunnel management (autossh-backed) ---
 
 
-def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = False, config: dict) -> None:
+def _cmd_tunnel_start(
+    local_port: int, remote_port: int, *, forward: bool = True, config: dict, quiet: bool = False
+) -> None:
+    state_dir = get_xdg_state_home()
+    pid_file = state_dir / f"tunnel-{local_port}.pid"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # 0 = check existence only
+            if not quiet:
+                print(f"Tunnel already running: localhost:{local_port} (PID {pid})")
+            return
+        except (ProcessLookupError, ValueError):
+            pid_file.unlink(missing_ok=True)
+
     autossh_bin = shutil.which("autossh")
     if not autossh_bin:
         print(
@@ -1417,11 +1431,22 @@ def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = Fals
         f"{remote_port}:localhost:{local_port}",
         f"{user}@{host}",
     ]
-    proc = subprocess.Popen(cmd, start_new_session=True)
-    state_dir = get_xdg_state_home()
+    proc = subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / f"tunnel-{local_port}.pid").write_text(str(proc.pid))
-    print(f"Tunnel started: localhost:{local_port} -> {host}:{remote_port} (PID {proc.pid})")
+    pid_file.write_text(str(proc.pid))
+    if not quiet:
+        print(f"Tunnel started: localhost:{local_port} -> {host}:{remote_port} (PID {proc.pid})")
+
+
+def _ensure_nats_tunnel(config: dict) -> None:
+    """Auto-start NATS tunnel if [messaging] tunnel_port is configured and tunnel isn't running."""
+    tunnel_port = config.get("messaging", {}).get("tunnel_port")
+    if not tunnel_port:
+        return
+    try:
+        _cmd_tunnel_start(int(tunnel_port), int(tunnel_port), forward=True, config=config, quiet=True)
+    except SystemExit:
+        pass  # missing autossh or remote config — skip silently
 
 
 def _cmd_tunnel_stop(local_port: int) -> None:
@@ -2348,6 +2373,7 @@ def cli():
 
     trigger_background_update()
     _auto_update_if_stale(config)
+    _ensure_nats_tunnel(config)
 
     parser = argparse.ArgumentParser(description="Unified AI CLI for Claude and Gemini")
     parser.add_argument("engine", choices=["c", "g"], help="c for Claude, g for Gemini")

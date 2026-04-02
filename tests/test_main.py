@@ -2,6 +2,7 @@ import asyncio
 import builtins
 import json
 import pytest
+import subprocess
 import sys
 import time
 import tempfile
@@ -62,6 +63,7 @@ from ai_cli.main import (
     _cmd_tunnel_start,
     _cmd_tunnel_stop,
     _cmd_tunnel_status,
+    _ensure_nats_tunnel,
 )
 
 
@@ -4816,7 +4818,7 @@ _TUNNEL_CONFIG = {"remote": {"host": "178.104.70.139", "user": "sergei"}}
 
 
 class TestTunnel:
-    def test_cmd_tunnel_start_when_autossh_found_then_launches_reverse_tunnel(self, tmp_path):
+    def test_cmd_tunnel_start_when_default_then_launches_forward_tunnel(self, tmp_path):
         mock_proc = MagicMock()
         mock_proc.pid = 12345
         with (
@@ -4826,11 +4828,12 @@ class TestTunnel:
         ):
             _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
         args = mock_popen.call_args[0][0]
-        assert "-R" in args
+        assert "-L" in args
+        assert "-R" not in args
         assert "9222:localhost:9222" in args
         assert (tmp_path / "tunnel-9222.pid").read_text() == "12345"
 
-    def test_cmd_tunnel_start_when_forward_flag_then_uses_dash_L(self, tmp_path):
+    def test_cmd_tunnel_start_when_reverse_flag_then_uses_dash_R(self, tmp_path):
         mock_proc = MagicMock()
         mock_proc.pid = 99
         with (
@@ -4838,10 +4841,48 @@ class TestTunnel:
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
         ):
-            _cmd_tunnel_start(8080, 8080, forward=True, config=_TUNNEL_CONFIG)
+            _cmd_tunnel_start(8080, 8080, forward=False, config=_TUNNEL_CONFIG)
         args = mock_popen.call_args[0][0]
-        assert "-L" in args
-        assert "-R" not in args
+        assert "-R" in args
+        assert "-L" not in args
+
+    def test_cmd_tunnel_start_when_already_running_then_skips(self, tmp_path):
+        (tmp_path / "tunnel-9222.pid").write_text("5555")
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill"),  # process alive
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
+        mock_popen.assert_not_called()
+
+    def test_cmd_tunnel_start_when_stale_pid_then_starts_new(self, tmp_path):
+        (tmp_path / "tunnel-9222.pid").write_text("5555")
+        mock_proc = MagicMock()
+        mock_proc.pid = 7777
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill", side_effect=ProcessLookupError),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
+        mock_popen.assert_called_once()
+        assert (tmp_path / "tunnel-9222.pid").read_text() == "7777"
+
+    def test_cmd_tunnel_start_suppresses_autossh_output(self, tmp_path):
+        """autossh stdout/stderr are redirected to DEVNULL to suppress macOS noise."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            _cmd_tunnel_start(4222, 4222, config=_TUNNEL_CONFIG)
+        kwargs = mock_popen.call_args[1]
+        assert kwargs.get("stdout") == subprocess.DEVNULL
+        assert kwargs.get("stderr") == subprocess.DEVNULL
 
     def test_cmd_tunnel_start_when_remote_port_omitted_then_defaults_to_local_port(self, tmp_path):
         mock_proc = MagicMock()
@@ -4900,6 +4941,32 @@ class TestTunnel:
                 cli()
             assert exc.value.code == 0
         mock_start.assert_called_once_with(9222, 9222, forward=False, config=_TUNNEL_CONFIG)
+
+    def test_ensure_nats_tunnel_when_tunnel_port_configured_then_starts_tunnel(self, tmp_path):
+        cfg = {**_TUNNEL_CONFIG, "messaging": {"tunnel_port": 4222}}
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+            patch("subprocess.Popen", return_value=MagicMock(pid=999)) as mock_popen,
+        ):
+            _ensure_nats_tunnel(cfg)
+        mock_popen.assert_called_once()
+
+    def test_ensure_nats_tunnel_when_no_tunnel_port_then_skips(self, tmp_path):
+        with patch("subprocess.Popen") as mock_popen:
+            _ensure_nats_tunnel({"messaging": {}})
+        mock_popen.assert_not_called()
+
+    def test_ensure_nats_tunnel_when_already_running_then_skips(self, tmp_path):
+        (tmp_path / "tunnel-4222.pid").write_text("9999")
+        cfg = {**_TUNNEL_CONFIG, "messaging": {"tunnel_port": 4222}}
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill"),  # alive
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            _ensure_nats_tunnel(cfg)
+        mock_popen.assert_not_called()
 
     def test_cli_tunnel_missing_args_exits_1(self):
         with (
