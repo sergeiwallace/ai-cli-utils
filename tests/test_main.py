@@ -5376,3 +5376,36 @@ class TestLocalProjectChdir:
             with pytest.raises(SystemExit):
                 cli()
         mock_chdir.assert_not_called()
+
+    def test_when_local_project_flag_then_prefix_derived_from_target_project(self, tmp_path):
+        """ai c 1 -p humanware-mobile must use target project's prefix (hm-), not cwd prefix (sw-)."""
+        project_dir = tmp_path / "projects" / "humanware-mobile"
+        project_dir.mkdir(parents=True)
+        captured = {}
+
+        def capture_build(engine, prefix, name, config, **kwargs):
+            captured["prefix"] = prefix
+            return ("c-hm-1", "hm-1")
+
+        with (
+            patch("sys.argv", ["ai", "c", "1", "-p", "humanware-mobile"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.main._find_project_dir", return_value=project_dir),
+            patch("ai_cli.main._get_project_prefix_by_name", return_value="hm"),
+            patch("ai_cli.main.validate_registry_completeness", return_value=True),
+            patch("ai_cli.main.cleanup_stale_sessions"),
+            patch("ai_cli.main.get_current_project_name", return_value="sergei"),
+            patch("ai_cli.main.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.build_session_name", side_effect=capture_build),
+            patch("ai_cli.main.get_session_map", return_value={}),
+            patch("ai_cli.main.create_worktree", return_value=None),
+            patch("ai_cli.main._load_iterm2_config", return_value={}),
+            patch("ai_cli.main._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.main._emit_iterm2_profile_setup"),
+            patch("os.execvp", side_effect=SystemExit(0)),
+            patch("os.chdir"),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        assert captured.get("prefix") == "hm", f"Expected 'hm' prefix but got '{captured.get('prefix')}'"

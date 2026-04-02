@@ -2422,7 +2422,15 @@ def cli():
 
     args, unknown = parser.parse_known_args()
     engine = args.engine
-    project_prefix = args.project_prefix if args.project_prefix else get_project_prefix()
+    if args.project_prefix:
+        project_prefix = args.project_prefix
+    elif args.project and not args.remote:
+        # Local -p flag: derive prefix from the target project, not cwd
+        _lp_aliases = get_project_aliases()
+        _lp_name = _lp_aliases.get(args.project, args.project)
+        project_prefix = _get_project_prefix_by_name(_lp_name)
+    else:
+        project_prefix = get_project_prefix()
     engine_short = "c" if engine == "c" else "g"
     remote_seg = "-r" if args.is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
