@@ -2456,10 +2456,10 @@ class TestGetEngineScript:
         script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw", sandbox=True)
         assert "-s" in script
 
-    def test_get_engine_script_when_no_sandbox_then_no_s_flag(self):
+    def test_get_engine_script_when_no_sandbox_then_explicit_no_sandbox_flag(self):
         script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw", sandbox=False)
-        # The sandbox_flag variable should be empty
-        assert "gemini -y  -r" in script or "gemini -y  -i" in script
+        assert "--no-sandbox" in script
+        assert "gemini -y --no-sandbox" in script
 
     def test_get_engine_script_when_valid_uuid_then_includes_it(self):
         valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
@@ -3735,28 +3735,51 @@ class TestIterm2ComputeTabTitle:
 
     def test_when_single_entry_then_returns_symbol_status_name(self, tmp_path):
         (tmp_path / "cc-names-w0t2").write_text("0:sw-1:cc:running\n")
+        live = MagicMock(returncode=0)
         with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-            result = _iterm2_compute_tab_title("w0t2")
+            with patch("subprocess.run", return_value=live):
+                result = _iterm2_compute_tab_title("w0t2")
         assert "*" in result  # cc symbol
         assert "▶" in result  # running status
         assert "sw-1" in result
 
     def test_when_multi_entry_with_long_common_prefix_then_uses_prefix_format(self, tmp_path):
         (tmp_path / "cc-names-w0t3").write_text("0:aiproject-1:cc:running\n1:aiproject-2:cc:waiting\n")
+        live = MagicMock(returncode=0)
         with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-            result = _iterm2_compute_tab_title("w0t3")
+            with patch("subprocess.run", return_value=live):
+                result = _iterm2_compute_tab_title("w0t3")
         # prefix "aiproject-" (>=4 chars) → uses prefix{suffix1|suffix2} format
         assert "aiproject-" in result
         assert "{" in result
 
     def test_when_multi_entry_without_common_prefix_then_joins_names(self, tmp_path):
         (tmp_path / "cc-names-w0t4").write_text("0:abc-1:cc:running\n1:xyz-2:cc:waiting\n")
+        live = MagicMock(returncode=0)
         with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-            result = _iterm2_compute_tab_title("w0t4")
+            with patch("subprocess.run", return_value=live):
+                result = _iterm2_compute_tab_title("w0t4")
         # No long common prefix → all names listed
         assert "abc-1" in result
         assert "xyz-2" in result
         assert "{" not in result
+
+    def test_when_stale_tmux_session_then_filters_it_and_rewrites_file(self, tmp_path):
+        names_file = tmp_path / "cc-names-w0t5"
+        names_file.write_text("0:stale-1:cc:init\n1:live-1:cc:running\n")
+
+        def tmux_side_effect(cmd, **_kwargs):
+            m = MagicMock()
+            m.returncode = 0 if "live-1" in cmd else 1
+            return m
+
+        with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=tmux_side_effect):
+                result = _iterm2_compute_tab_title("w0t5")
+
+        assert "live-1" in result
+        assert "stale-1" not in result
+        assert "stale-1" not in names_file.read_text()
 
 
 class TestIterm2StateDir:
@@ -3869,10 +3892,12 @@ class TestEmitIterm2ProfileSetupGeminiWithTabKey:
 
     def test_when_gemini_engine_and_iterm_session_id_set_then_registers_and_emits_title(self, capsys, tmp_path):
         (tmp_path / "cc-names-w0t0").write_text("0:g-research-1:gemini:init\n")
+        live = MagicMock(returncode=0)
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
             with patch("ai_cli.main._iterm2_update_window_title"):
                 with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                    _emit_iterm2_profile_setup("research-1", "g")
+                    with patch("subprocess.run", return_value=live):
+                        _emit_iterm2_profile_setup("research-1", "g")
         out = capsys.readouterr().out
         assert "SetProfile=GeminiCLI" in out
         assert "\033]0;" in out  # tab title emitted (file had an entry)

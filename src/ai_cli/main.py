@@ -705,6 +705,20 @@ def _iterm2_compute_tab_title(tab_key: str) -> str:
         return ""
     if not entries:
         return ""
+    # Filter out entries whose tmux session no longer exists (self-healing for sessions that
+    # exited without cleanup, e.g. killed via tmux kill-session or SIGKILL)
+    live = [
+        e for e in entries if subprocess.run(["tmux", "has-session", "-t", e[1]], capture_output=True).returncode == 0
+    ]
+    if len(live) < len(entries):
+        try:
+            with open(path, "w") as f:
+                f.write("\n".join(f"{e[0]}:{e[1]}:{e[2]}:{e[3]}" for e in live) + ("\n" if live else ""))
+        except OSError:
+            pass
+    entries = live
+    if not entries:
+        return ""
     entries.sort(key=lambda e: int(e[0]) if e[0].isdigit() else 0)
     symbols = "".join(_ITERM2_TYPE_SYMBOLS.get(e[2], "·") for e in entries)
     if len(entries) == 1:
@@ -856,7 +870,7 @@ def get_engine_script(
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
     env_var_prefix = "CC" if engine == "c" else "GG"
-    sandbox_flag = "-s" if sandbox else ""
+    sandbox_flag = "-s" if sandbox else "--no-sandbox"
     cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"
     notify_cmd = 'ai internal notify "$tmux_session" "Agent Finished Task" 2>/dev/null || true' if notify else "true"
     try:
@@ -2549,9 +2563,7 @@ def cli():
             perms = [] if os.getuid() == 0 else ["--dangerously-skip-permissions"]
             os.execvp("claude", ["claude"] + perms + unknown)
         else:
-            gemini_args = ["gemini", "-y"]
-            if use_sandbox:
-                gemini_args.append("-s")
+            gemini_args = ["gemini", "-y", "-s" if use_sandbox else "--no-sandbox"]
             os.execvp("gemini", gemini_args + unknown)
 
     if args.resume:
