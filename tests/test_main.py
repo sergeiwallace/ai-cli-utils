@@ -3086,6 +3086,55 @@ class TestCliSessionSetupBranches:
                             assert "-i" in args[ssh_idx + 1]
 
 
+class TestRemoteSessionIterm2Emit:
+    """Verify iTerm2 profile/color is emitted before mosh/ssh execvp for remote sessions."""
+
+    def _run_remote(self, argv, transport="mosh"):
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": transport}}
+        with (
+            patch("sys.argv", argv),
+            patch("ai_cli.main.load_config", return_value=config),
+            patch("ai_cli.main.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch(
+                "ai_cli.main._assign_iterm2_color_slot", return_value=("ff0000", "ClaudeCode-Coral", "GeminiCLI-White")
+            ) as mock_slot,
+            patch("ai_cli.main._emit_iterm2_profile_setup") as mock_emit,
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            call_order = []
+            mock_emit.side_effect = lambda *a, **kw: call_order.append("emit")
+            mock_exec.side_effect = lambda *a, **kw: (call_order.append("exec"), (_ for _ in ()).throw(SystemExit(0)))[
+                1
+            ]
+            with pytest.raises(SystemExit):
+                cli()
+        return mock_slot, mock_emit, mock_exec, call_order
+
+    def test_when_remote_mosh_then_emit_called_before_execvp(self):
+        _, mock_emit, _, call_order = self._run_remote(["ai", "c", "4", "--remote"], transport="mosh")
+        assert mock_emit.called
+        assert call_order.index("emit") < call_order.index("exec")
+
+    def test_when_remote_ssh_then_emit_called_before_execvp(self):
+        _, mock_emit, _, call_order = self._run_remote(["ai", "c", "4", "--remote"], transport="ssh")
+        assert mock_emit.called
+        assert call_order.index("emit") < call_order.index("exec")
+
+    def test_when_remote_then_slot_uses_remote_session_name(self):
+        mock_slot, _, _, _ = self._run_remote(["ai", "c", "4", "--remote"])
+        slot_ai_name = mock_slot.call_args[0][0]
+        assert "r" in slot_ai_name  # remote segment present
+        assert "4" in slot_ai_name  # session number preserved
+
+    def test_when_remote_gemini_then_emit_called_with_gemini_engine(self):
+        _, mock_emit, _, _ = self._run_remote(["ai", "g", "2", "--remote"])
+        assert mock_emit.called
+        emit_engine = mock_emit.call_args[0][1]
+        assert emit_engine == "g"
+
+
 class TestTriggerBackgroundUpdateRecent:
     def test_trigger_background_update_when_recently_checked_then_skips(self, tmp_path):
         """Covers lines 824-825: recently checked, early return."""

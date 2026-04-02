@@ -2467,6 +2467,14 @@ def cli():
             remote_cmd += " --resume"
         if name:
             remote_cmd += f" {shlex.quote(name)}"
+        # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
+        # mosh blocks all \033]1337; sequences from the remote side, so this
+        # is the only opportunity to set the profile and tab color.
+        _r_engine_short = "c" if engine == "c" else "g"
+        _r_ai_name = f"{_r_engine_short}-r-{remote_prefix}-{name or '1'}"
+        _iterm2_remote_slot = _assign_iterm2_color_slot(_r_ai_name, engine)
+        _emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
+
         if transport == "mosh":
             mosh_args = ["mosh"]
             if port != "22":
