@@ -1,0 +1,55 @@
+## ai-cli-utils iTerm2 integration configuration
+## Edit this file at ~/.config/ai-cli-utils/iterm2.toml to customize.
+
+[iterm2]
+## Master switch — set false to disable all iTerm2 integration
+enabled = true
+
+[iterm2.tab_title]
+## Include type symbol (* for CC, ✦ for Gemini) in tab and pane titles
+show_type_symbol = true
+## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
+show_status_symbol = true
+
+[iterm2.color]
+## Set tab/pane background color on session launch
+enabled = true
+## Use lease-file-based collision-free slot assignment (recommended).
+## Set false to use simple session-number modulo (may collide across projects).
+collision_avoidance = true
+
+[iterm2.palette]
+## Named tab background colors available for auto-rotation.
+## Add your own entries — they are included in the rotation pool.
+## For each custom color, add a matching entry in [iterm2.color_schemes] below.
+red         = "#e74c3c"
+orange      = "#e67e22"
+yellow      = "#f0b429"
+green       = "#2ecc71"
+teal        = "#1abc9c"
+sky_blue    = "#039be5"
+blue        = "#1e88e5"
+purple      = "#5e35b1"
+pink        = "#d81b60"
+cyan        = "#00acc1"
+deep_orange = "#ff5722"
+lime        = "#7cb342"
+# indigo    = "#4f46e5"
+# rose      = "#f43f5e"
+
+[iterm2.color_schemes]
+## Maps each palette color to [claude_profile, gemini_profile].
+## Pairings chosen by color theory: warm tab → cool icon, cool tab → warm icon.
+red         = ["ClaudeCode-White",  "GeminiCLI-White"]
+orange      = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
+yellow      = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+green       = ["ClaudeCode-Purple", "GeminiCLI-Navy"]
+teal        = ["ClaudeCode-Coral",  "GeminiCLI-Navy"]
+sky_blue    = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
+blue        = ["ClaudeCode-Coral",  "GeminiCLI-Gold"]
+purple      = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
+pink        = ["ClaudeCode-Teal",   "GeminiCLI-White"]
+cyan        = ["ClaudeCode-White",  "GeminiCLI-White"]
+deep_orange = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
+lime        = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+

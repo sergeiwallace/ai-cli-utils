@@ -8,6 +8,7 @@ import subprocess
 import tomllib
 import re
 import shlex
+import fcntl
 from pathlib import Path
 
 # --- XDG Directory Support ---
@@ -593,40 +594,64 @@ def cleanup_worktree(ai_name: str):
 
 # --- iTerm2 Pre-Launch Setup ---
 
-# Rolling tab colors (12 slots, one per session number mod 12)
-_ITERM2_TAB_COLORS = [
-    "e74c3c",
-    "e67e22",
-    "f0b429",
-    "2ecc71",
-    "1abc9c",
-    "039be5",
-    "1e88e5",
-    "5e35b1",
-    "d81b60",
-    "00acc1",
-    "ff5722",
-    "7cb342",
-]
+# Default iTerm2 config written to ~/.config/ai-cli-utils/iterm2.toml on first use.
+# Also shipped as docs/reference/iterm2-defaults.toml for documentation.
+_DEFAULT_ITERM2_CONFIG = """\
+## ai-cli-utils iTerm2 integration configuration
+## Edit this file at ~/.config/ai-cli-utils/iterm2.toml to customize.
 
-# Icon color profile per tab color slot, chosen by contrast + complementary harmony:
-#   ClaudeCode   = coral icon  → cool/dark backgrounds (sky blue, blue, purple, pink)
-#   ClaudeCode-W = white icon  → warm/saturated backgrounds (red, orange, deep orange, cyan)
-#   ClaudeCode-D = dark navy icon → bright/light backgrounds (yellow, green, teal, lime)
-_ITERM2_PROFILE_MAP = [
-    "ClaudeCode-W",  # 1: e74c3c  red         warm
-    "ClaudeCode-W",  # 2: e67e22  orange       warm
-    "ClaudeCode-D",  # 3: f0b429  yellow       bright
-    "ClaudeCode-D",  # 4: 2ecc71  green        bright
-    "ClaudeCode-D",  # 5: 1abc9c  teal         bright
-    "ClaudeCode",  # 6: 039be5  sky blue     cool
-    "ClaudeCode",  # 7: 1e88e5  blue         cool
-    "ClaudeCode",  # 8: 5e35b1  purple       dark
-    "ClaudeCode",  # 9: d81b60  pink         dark
-    "ClaudeCode-W",  # 10: 00acc1 cyan         medium
-    "ClaudeCode-W",  # 11: ff5722 deep orange  warm
-    "ClaudeCode-D",  # 12: 7cb342 lime         bright
-]
+[iterm2]
+## Master switch — set false to disable all iTerm2 integration
+enabled = true
+
+[iterm2.tab_title]
+## Include type symbol (* for CC, ✦ for Gemini) in tab and pane titles
+show_type_symbol = true
+## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
+show_status_symbol = true
+
+[iterm2.color]
+## Set tab/pane background color on session launch
+enabled = true
+## Use lease-file-based collision-free slot assignment (recommended).
+## Set false to use simple session-number modulo (may collide across projects).
+collision_avoidance = true
+
+[iterm2.palette]
+## Named tab background colors available for auto-rotation.
+## Add your own entries — they are included in the rotation pool.
+## For each custom color, add a matching entry in [iterm2.color_schemes] below.
+red         = "#e74c3c"
+orange      = "#e67e22"
+yellow      = "#f0b429"
+green       = "#2ecc71"
+teal        = "#1abc9c"
+sky_blue    = "#039be5"
+blue        = "#1e88e5"
+purple      = "#5e35b1"
+pink        = "#d81b60"
+cyan        = "#00acc1"
+deep_orange = "#ff5722"
+lime        = "#7cb342"
+# indigo    = "#4f46e5"
+# rose      = "#f43f5e"
+
+[iterm2.color_schemes]
+## Maps each palette color to [claude_profile, gemini_profile].
+## Pairings chosen by color theory: warm tab → cool icon, cool tab → warm icon.
+red         = ["ClaudeCode-White",  "GeminiCLI-White"]
+orange      = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
+yellow      = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+green       = ["ClaudeCode-Purple", "GeminiCLI-Navy"]
+teal        = ["ClaudeCode-Coral",  "GeminiCLI-Navy"]
+sky_blue    = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
+blue        = ["ClaudeCode-Coral",  "GeminiCLI-Gold"]
+purple      = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
+pink        = ["ClaudeCode-Teal",   "GeminiCLI-White"]
+cyan        = ["ClaudeCode-White",  "GeminiCLI-White"]
+deep_orange = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
+lime        = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+"""
 
 
 def _iterm2_state_dir() -> Path:
@@ -636,32 +661,166 @@ def _iterm2_state_dir() -> Path:
     return d
 
 
-def _emit_iterm2_profile_setup(ai_name: str, engine: str, session: str = "") -> None:
+def _is_iterm2() -> bool:
+    return os.environ.get("LC_TERMINAL") == "iTerm2" or os.environ.get("TERM_PROGRAM") == "iTerm.app"
+
+
+def _load_iterm2_config() -> dict:
+    """Load iTerm2 config from ~/.config/ai-cli-utils/iterm2.toml, writing defaults on first use."""
+    config_path = get_xdg_config_home() / "iterm2.toml"
+    if not config_path.exists():
+        get_xdg_config_home().mkdir(parents=True, exist_ok=True)
+        config_path.write_text(_DEFAULT_ITERM2_CONFIG)
+    try:
+        with open(config_path, "rb") as f:
+            return tomllib.load(f)
+    except Exception:
+        try:
+            return tomllib.loads(_DEFAULT_ITERM2_CONFIG)
+        except Exception:
+            return {}
+
+
+def _iterm2_palette(cfg: dict) -> list[tuple[str, str]]:
+    """Return ordered list of (name, hex_no_hash) from config palette."""
+    raw = cfg.get("iterm2", {}).get("palette", {})
+    return [(name, val.lstrip("#")) for name, val in raw.items()]
+
+
+def _iterm2_color_schemes(cfg: dict) -> dict[str, tuple[str, str]]:
+    """Return dict mapping color name to (claude_profile, gemini_profile)."""
+    raw = cfg.get("iterm2", {}).get("color_schemes", {})
+    return {name: (p[0], p[1]) for name, p in raw.items() if isinstance(p, list) and len(p) == 2}
+
+
+def _assign_iterm2_color_slot(ai_name: str, engine: str) -> tuple[str, str, str] | None:
+    """Assign a collision-free tab color slot for this session.
+
+    Returns (color_hex, claude_profile, gemini_profile) or None if not in iTerm2.
+    Writes a PID-keyed lease entry to color-leases.json.  Stale leases (dead PIDs)
+    are pruned on each call so the pool stays clean across crashes.
+    """
+    if not _is_iterm2():
+        return None
+    cfg = _load_iterm2_config()
+    if not cfg.get("iterm2", {}).get("enabled", True):
+        return None
+    if not cfg.get("iterm2", {}).get("color", {}).get("enabled", True):
+        return None
+
+    palette = _iterm2_palette(cfg)
+    schemes = _iterm2_color_schemes(cfg)
+    if not palette:
+        return None
+
+    lease_file = _iterm2_state_dir() / "color-leases.json"
+    lock_path = _iterm2_state_dir() / "color-leases.lock"
+
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            leases: dict = {}
+            if lease_file.exists():
+                try:
+                    leases = json.loads(lease_file.read_text()).get("leases", {})
+                except Exception:
+                    leases = {}
+
+            # Prune stale leases (dead PIDs)
+            active: dict = {}
+            for name, info in leases.items():
+                pid = info.get("pid", 0)
+                try:
+                    os.kill(pid, 0)
+                    active[name] = info
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+            use_avoidance = cfg.get("iterm2", {}).get("color", {}).get("collision_avoidance", True)
+            if use_avoidance:
+                occupied = {info["slot"] for info in active.values()}
+                slot_idx = next((i for i in range(len(palette)) if i not in occupied), 0)
+            else:
+                m = re.search(r"\d+$", ai_name)
+                num = int(m.group()) if m else 1
+                slot_idx = (num - 1) % len(palette)
+
+            slot_name, color_hex = palette[slot_idx]
+            active[ai_name] = {"slot": slot_idx, "pid": os.getpid(), "ts": str(time.time())}
+            lease_file.write_text(json.dumps({"leases": active}, indent=2))
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
+    claude_profile, gemini_profile = schemes.get(slot_name, ("ClaudeCode-Coral", "GeminiCLI-White"))
+    return (color_hex, claude_profile, gemini_profile)
+
+
+def _release_iterm2_color_slot(ai_name: str) -> None:
+    """Remove the color lease for ai_name (called on session EXIT)."""
+    lease_file = _iterm2_state_dir() / "color-leases.json"
+    if not lease_file.exists():
+        return
+    lock_path = _iterm2_state_dir() / "color-leases.lock"
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            leases: dict = {}
+            try:
+                leases = json.loads(lease_file.read_text()).get("leases", {})
+            except Exception:
+                pass
+            leases.pop(ai_name, None)
+            lease_file.write_text(json.dumps({"leases": leases}, indent=2))
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
+
+def _emit_iterm2_profile_setup(
+    ai_name: str,
+    engine: str,
+    session: str = "",
+    slot: tuple[str, str, str] | None = None,
+) -> None:
     """Emit iTerm2 profile/color/title escape sequences directly to stdout.
 
     Called before os.execvp so sequences reach iTerm2 before tmux takes over.
     No DCS wrapping needed — we're not inside tmux yet at this point.
+
+    slot: (color_hex, claude_profile, gemini_profile) from _assign_iterm2_color_slot.
     """
-    lc_term = os.environ.get("LC_TERMINAL", "")
-    term_prog = os.environ.get("TERM_PROGRAM", "")
-    if lc_term != "iTerm2" and term_prog != "iTerm.app":
+    if not _is_iterm2():
         return
 
+    cfg = _load_iterm2_config()
+    show_type = cfg.get("iterm2", {}).get("tab_title", {}).get("show_type_symbol", True)
+    show_status = cfg.get("iterm2", {}).get("tab_title", {}).get("show_status_symbol", True)
     session_name = session or ai_name
 
+    type_sym = ""
+    if show_type:
+        type_sym = "* " if engine == "c" else "✦ " if engine == "g" else ""
+    status_sym = "▶ " if show_status else ""
+
     if engine == "c":
-        m = re.search(r"\d+$", ai_name)
-        num = int(m.group()) if m else 1
-        idx = (num - 1) % len(_ITERM2_TAB_COLORS)
-        color = _ITERM2_TAB_COLORS[idx]
-        profile = _ITERM2_PROFILE_MAP[idx]
+        if slot:
+            color, profile, _ = slot
+        else:
+            # Fallback: use first palette entry (should not happen in normal operation)
+            palette = _iterm2_palette(cfg)
+            color, profile = (palette[0][1], "ClaudeCode-Coral") if palette else ("e74c3c", "ClaudeCode-Coral")
         sys.stdout.write(f"\033]1337;SetProfile={profile}\007")
         sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
-        sys.stdout.write(f"\033]0; * ▶ {session_name}\007")
+        sys.stdout.write(f"\033]0; {type_sym}{status_sym}{session_name}\007")
         sys.stdout.flush()
     elif engine == "g":
-        sys.stdout.write("\033]1337;SetProfile=GeminiCLI\007")
-        sys.stdout.write(f"\033]0; ✦ ▶ {session_name}\007")
+        if slot:
+            color, _, g_profile = slot
+        else:
+            palette = _iterm2_palette(cfg)
+            color, g_profile = (palette[0][1], "GeminiCLI-White") if palette else ("e74c3c", "GeminiCLI-White")
+        sys.stdout.write(f"\033]1337;SetProfile={g_profile}\007")
+        sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
+        sys.stdout.write(f"\033]0; {type_sym}{status_sym}{session_name}\007")
         sys.stdout.flush()
 
 
@@ -680,6 +839,8 @@ def get_engine_script(
     notify: bool = False,
     is_remote: bool = False,
     project_name: str = "",
+    iterm2_slot: tuple[str, str, str] | None = None,
+    iterm2_cfg: dict | None = None,
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
@@ -695,6 +856,15 @@ def get_engine_script(
     except Exception:
         _template_version = "unknown"
 
+    # Resolve iTerm2 slot values for embedding in bash template
+    _cfg = iterm2_cfg or {}
+    if iterm2_slot:
+        _it2_color, _it2_claude_profile, _it2_gemini_profile = iterm2_slot
+    else:
+        _it2_color, _it2_claude_profile, _it2_gemini_profile = ("e74c3c", "ClaudeCode-Coral", "GeminiCLI-White")
+    _it2_show_type = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_type_symbol", True) else "0"
+    _it2_show_status = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_status_symbol", True) else "0"
+
     script = f"""
     {cd_cmd}
     first_run=true
@@ -707,6 +877,14 @@ def get_engine_script(
     project_name="{project_name}"
     _ai_state_dir="$HOME/.local/state/ai-cli-utils"
     mkdir -p "$_ai_state_dir/iterm2"
+
+    # iTerm2 slot assigned by Python at launch time (collision-free lease system).
+    # These variables are constant for the lifetime of this session.
+    _iterm2_color="{_it2_color}"
+    _iterm2_claude_profile="{_it2_claude_profile}"
+    _iterm2_gemini_profile="{_it2_gemini_profile}"
+    _iterm2_show_type_sym="{_it2_show_type}"
+    _iterm2_show_status_sym="{_it2_show_status}"
 
     # --dangerously-skip-permissions is blocked when running as root
     if [[ $(id -u) -eq 0 ]]; then
@@ -794,9 +972,9 @@ def get_engine_script(
       signal_watch_pid=""
     fi
 
-    # iTerm2 fleet management: set profile, rolling tab color, tab title
-    # Only runs under iTerm2 (check LC_TERMINAL which survives tmux, unlike TERM_PROGRAM)
-    # _it2: wraps OSC sequences in DCS passthrough when inside tmux
+    # iTerm2 fleet management: set profile, tab color, pane title.
+    # Color slot was assigned by Python before tmux launched (collision-free lease).
+    # _it2: wraps OSC sequences in DCS passthrough when inside tmux.
     _it2() {{
       if [[ -n "$TMUX" ]]; then
         printf '\\033Ptmux;\\033%b\\033\\\\' "$1"
@@ -807,71 +985,62 @@ def get_engine_script(
 
     _iterm2_fleet_setup() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
-      local num="$1" stype="$2" sname="$3"
-      local type_sym="·"
+      local stype="$1" sname="$2"
+      local type_sym="" status_sym=""
+      [[ "$_iterm2_show_type_sym" == "1" ]] && {{
+        [[ "$stype" == "cc" ]]     && type_sym="* "
+        [[ "$stype" == "gemini" ]] && type_sym="✦ "
+      }}
+      [[ "$_iterm2_show_status_sym" == "1" ]] && status_sym="▶ "
       case "$stype" in
-        cc)
-          type_sym="*"
-          # Rolling tab colors + icon profile chosen by contrast/complementary harmony:
-          #   ClaudeCode   = coral icon  → cool/dark (sky blue, blue, purple, pink)
-          #   ClaudeCode-W = white icon  → warm/saturated (red, orange, deep orange, cyan)
-          #   ClaudeCode-D = dark icon   → bright/light (yellow, green, teal, lime)
-          local colors=("e74c3c" "e67e22" "f0b429" "2ecc71" "1abc9c"
-                        "039be5" "1e88e5" "5e35b1" "d81b60" "00acc1"
-                        "ff5722" "7cb342")
-          local profiles=("ClaudeCode-W" "ClaudeCode-W" "ClaudeCode-D" "ClaudeCode-D" "ClaudeCode-D"
-                          "ClaudeCode" "ClaudeCode" "ClaudeCode" "ClaudeCode" "ClaudeCode-W"
-                          "ClaudeCode-W" "ClaudeCode-D")
-          local idx=$(( (num - 1) % ${{#colors[@]}} ))
-          _it2 "\\033]1337;SetProfile=${{profiles[$idx]}}\\007"
-          _it2 "\\033]1337;SetColors=tab=${{colors[$idx]}}\\007"
-          ;;
-        gemini)
-          type_sym="✦"
-          _it2 '\\033]1337;SetProfile=GeminiCLI\\007'
-          ;;
-        *)
-          return 0
-          ;;
+        cc)     _it2 "\\033]1337;SetProfile=$_iterm2_claude_profile\\007" ;;
+        gemini) _it2 "\\033]1337;SetProfile=$_iterm2_gemini_profile\\007" ;;
+        *) return 0 ;;
       esac
-      _it2 "\\033]0; $type_sym ▶ $sname\\007"
+      _it2 "\\033]1337;SetColors=tab=$_iterm2_color\\007"
+      _it2 "\\033]0; ${{type_sym}}${{status_sym}}$sname\\007"
     }}
 
-    # iTerm2 status updates: emit per-pane title directly
+    # iTerm2 status updates: re-emit pane title with updated status symbol.
     _iterm2_status() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
-      local status="$1" stype="$3" sname="${{4:-}}"
-      local type_sym="·"
-      [[ "$stype" == "cc" ]] && type_sym="*"
-      [[ "$stype" == "gemini" ]] && type_sym="✦"
-      local sym="▶"
-      case "$status" in
-        done) sym="✓" ;;
-        error) sym="✗" ;;
-        resuming) sym="↻" ;;
-        waiting) sym="⏸" ;;
-      esac
-      _it2 "\\033]0; $type_sym $sym $sname\\007"
+      local status="$1" stype="$2" sname="$3"
+      local type_sym="" sym=""
+      [[ "$_iterm2_show_type_sym" == "1" ]] && {{
+        [[ "$stype" == "cc" ]]     && type_sym="* "
+        [[ "$stype" == "gemini" ]] && type_sym="✦ "
+      }}
+      if [[ "$_iterm2_show_status_sym" == "1" ]]; then
+        sym="▶"
+        case "$status" in
+          done)     sym="✓" ;;
+          error)    sym="✗" ;;
+          resuming) sym="↻" ;;
+          waiting)  sym="⏸" ;;
+        esac
+        sym="$sym "
+      fi
+      _it2 "\\033]0; ${{type_sym}}${{sym}}$sname\\007"
     }}
 
-    # Extract session number from ai_name (e.g., "sw-3" → "3")
+    # Extract session number from ai_name (e.g., "sw-3" → "3") for downstream hooks.
     _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
-    _iterm2_fleet_setup "$_session_num" "$_session_type" "$tmux_session"
+    _iterm2_fleet_setup "$_session_type" "$tmux_session"
 
     # Export for CC Notification hook to use
     export ITERM2_SESSION_NUM="$_session_num"
     export ITERM2_SESSION_TYPE="$_session_type"
 
-    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session"; ai internal cleanup-worktree "$ai_name" 2>/dev/null' EXIT
+    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
       start_ts=$(date +%s)
       # Re-emit iTerm2 setup + set status to running
-      _iterm2_fleet_setup "$_session_num" "$_session_type" "$tmux_session"
-      _iterm2_status "running" "$_session_num" "$_session_type" "$tmux_session"
+      _iterm2_fleet_setup "$_session_type" "$tmux_session"
+      _iterm2_status "running" "$_session_type" "$tmux_session"
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
@@ -917,10 +1086,10 @@ def get_engine_script(
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
       _exit_elapsed=$(( $(date +%s) - start_ts ))
       if (( _exit_elapsed < 3 )); then
-        _iterm2_status "error" "$_session_num" "$_session_type" "$tmux_session"
+        _iterm2_status "error" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "error" 2>/dev/null || true) &
       else
-        _iterm2_status "done" "$_session_num" "$_session_type" "$tmux_session"
+        _iterm2_status "done" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "completed" 2>/dev/null || true) &
       fi
 
@@ -938,7 +1107,7 @@ def get_engine_script(
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
-      _iterm2_status "resuming" "$_session_num" "$_session_type" "$tmux_session"
+      _iterm2_status "resuming" "$_session_type" "$tmux_session"
       if [[ -f "$handoff_pending_file" ]]; then
         pending_msg=$(cat "$handoff_pending_file")
         rm -f "$handoff_pending_file"
@@ -1472,6 +1641,12 @@ def cli():
                 print("Usage: ai internal cleanup-worktree <ai_name>", file=sys.stderr)
                 sys.exit(1)
             cleanup_worktree(sys.argv[3])
+            sys.exit(0)
+        elif action == "release-color-slot":
+            if len(sys.argv) < 4:
+                print("Usage: ai internal release-color-slot <ai_name>", file=sys.stderr)
+                sys.exit(1)
+            _release_iterm2_color_slot(sys.argv[3])
             sys.exit(0)
         elif action == "get-version":
             try:
@@ -2322,6 +2497,15 @@ def cli():
             project_dir = _find_project_dir(project_name)
             if project_dir.exists():
                 os.chdir(project_dir)
+    elif args.project:
+        # Local session with explicit -p PROJECT: cd to the project directory so that
+        # git worktrees and Gemini chats directories resolve relative to the correct root.
+        # Mirrors the is_remote path above.
+        aliases = get_project_aliases()
+        _local_project = aliases.get(args.project, args.project)
+        _local_project_dir = _find_project_dir(_local_project)
+        if _local_project_dir.exists():
+            os.chdir(_local_project_dir)
 
     if args.bare:
         if engine == "c":
@@ -2390,6 +2574,11 @@ def cli():
                     + ["--", "bash", "-c", f"{cd_pref}gemini -y {sandbox_flag} -i '/resume load {ai_name}'"],
                 )
 
+    # Assign iTerm2 color slot before generating the script so both the pre-launch
+    # emission and the embedded bash variables use the same slot.
+    _iterm2_cfg = _load_iterm2_config()
+    _iterm2_slot = _assign_iterm2_color_slot(ai_name, engine)
+
     script = get_engine_script(
         engine,
         ai_name,
@@ -2402,11 +2591,13 @@ def cli():
         notify=args.notify,
         is_remote=args.is_remote,
         project_name=current_project_name,
+        iterm2_slot=_iterm2_slot,
+        iterm2_cfg=_iterm2_cfg,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
     # for new tabs, split panes, and re-attaches alike.
-    _emit_iterm2_profile_setup(ai_name, engine, session_id)
+    _emit_iterm2_profile_setup(ai_name, engine, session_id, slot=_iterm2_slot)
 
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
