@@ -131,6 +131,45 @@ def _log_to_file(result: GeminiResult, prompt: str, output_path: str | None):
 
 
 # ---------------------------------------------------------------------------
+# Secrets loading
+# ---------------------------------------------------------------------------
+
+_DOPPLER_KEYS = ["GOOGLE_API_KEY_FREE_TIER", "GOOGLE_API_KEY_TIER_1", "GEMINI_API_KEY"]
+
+
+def _load_doppler_secrets() -> None:
+    """Inject missing API keys from Doppler into os.environ.
+
+    Only runs if at least one key is absent — skips entirely if all are set.
+    Silently no-ops if doppler is not installed or the project is not configured.
+    """
+    if all(os.environ.get(k) for k in _DOPPLER_KEYS[:2]):
+        return  # both keys already present — nothing to do
+
+    doppler_bin = shutil.which("doppler")
+    if not doppler_bin:
+        return
+
+    try:
+        result = subprocess.run(
+            [doppler_bin, "run", "--project", "sergei", "--config", "dev", "--", "env"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return
+        for line in result.stdout.splitlines():
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key in _DOPPLER_KEYS and not os.environ.get(key):
+                os.environ[key] = value
+    except Exception:
+        pass  # non-fatal — fallback tiers will report their own errors
+
+
+# ---------------------------------------------------------------------------
 # Tier 1: gemini CLI (OAuth)
 # ---------------------------------------------------------------------------
 
@@ -388,6 +427,7 @@ def run_gemini(
 
     Returns GeminiResult with content and metadata.
     """
+    _load_doppler_secrets()
     _log(f"[ai gemini] model={model} prompt={len(prompt)} chars", quiet=quiet)
 
     final_result = GeminiResult(model=model)
