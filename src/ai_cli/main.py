@@ -2133,12 +2133,31 @@ def cli():
         sys.exit(memory_watch())
 
     if len(sys.argv) > 1 and sys.argv[1] == "quota":
-        if len(sys.argv) < 3 or sys.argv[2] != "watch":
-            print("Usage: ai quota watch", file=sys.stderr)
+        if len(sys.argv) < 3:
+            print("Usage: ai quota [watch|status|history|scrape]", file=sys.stderr)
             sys.exit(1)
-        from .quota import quota_watch
+        subcmd = sys.argv[2]
+        if subcmd == "watch":
+            from .quota import quota_watch
 
-        sys.exit(quota_watch())
+            sys.exit(quota_watch())
+        elif subcmd == "status":
+            from .quota import quota_status
+
+            sys.exit(quota_status())
+        elif subcmd == "history":
+            from .quota import quota_history
+
+            sys.exit(quota_history())
+        elif subcmd == "scrape":
+            from .quota import quota_scrape
+
+            pane = sys.argv[3] if len(sys.argv) > 3 else None
+            sys.exit(quota_scrape(target_pane=pane))
+        else:
+            print(f"Unknown quota subcommand: {subcmd}", file=sys.stderr)
+            print("Usage: ai quota [watch|status|history|scrape]", file=sys.stderr)
+            sys.exit(1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "telemetry":
         if len(sys.argv) < 3 or sys.argv[2] != "writer":
