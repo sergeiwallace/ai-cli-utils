@@ -1341,12 +1341,35 @@ def _claim_handoff_for_signal(handoff_dir: Path, handoff_id: int, claimer: str) 
     return dst
 
 
+def _find_aicli_project_path(config: dict) -> "Path | None":
+    """Locate the ai-cli-utils source tree regardless of cwd.
+
+    Priority:
+    1. [deploy] project_path from config
+    2. Package __file__ location (dev-editable install)
+    """
+    cfg_path = config.get("deploy", {}).get("project_path", "")
+    if cfg_path:
+        return Path(cfg_path).expanduser()
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("ai_cli")
+        if spec and spec.origin:
+            pkg_dir = Path(spec.origin).parent  # …/ai_cli/
+            for candidate in (pkg_dir.parent, pkg_dir.parent.parent):
+                pyproject = candidate / "pyproject.toml"
+                if pyproject.exists() and "ai-cli-utils" in pyproject.read_text():
+                    return candidate
+    except Exception:
+        pass
+    return None
+
+
 def _auto_update_if_stale(config: dict) -> None:
     """Run `ai update --force` if the project has new commits since the last update."""
-    cfg_deploy = config.get("deploy", {})
-    project_path_str = cfg_deploy.get("project_path", "")
-    project_path = Path(project_path_str).expanduser() if project_path_str else Path.cwd()
-    if not (project_path / "pyproject.toml").exists():
+    project_path = _find_aicli_project_path(config)
+    if project_path is None or not (project_path / "pyproject.toml").exists():
         return
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
     if head.returncode != 0:
@@ -1443,10 +1466,25 @@ def _ensure_nats_tunnel(config: dict) -> None:
     tunnel_port = config.get("messaging", {}).get("tunnel_port")
     if not tunnel_port:
         return
+    port = int(tunnel_port)
+    # Check if already running before starting — no sleep needed if already up
+    state_dir = get_xdg_state_home()
+    pid_file = state_dir / f"tunnel-{port}.pid"
+    already_running = False
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            already_running = True
+        except (ProcessLookupError, ValueError):
+            pass
     try:
-        _cmd_tunnel_start(int(tunnel_port), int(tunnel_port), forward=True, config=config, quiet=True)
+        _cmd_tunnel_start(port, port, forward=True, config=config, quiet=True)
     except SystemExit:
-        pass  # missing autossh or remote config — skip silently
+        return  # missing autossh or remote config — skip silently
+    if not already_running:
+        # Give SSH time to establish before handoff-drain tries to connect
+        time.sleep(3)
 
 
 def _cmd_tunnel_stop(local_port: int) -> None:
@@ -1914,10 +1952,16 @@ def cli():
 
             # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
             if not hd_prompt_file.exists():
+                _log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
 
                 async def _drain():
-                    await hd_client.connect()
+                    try:
+                        await hd_client.connect()
+                    except Exception as e:
+                        _log_handoff_event("handoff.drain.nats_connect_failed", session=hd_session, error=str(e))
+                        return
                     if not hd_client.js:
+                        _log_handoff_event("handoff.drain.nats_no_js", session=hd_session)
                         return
                     consumer_name = f"{hd_session}-pre-launch"
                     subject = f"handoff.{hd_project}"
@@ -1937,15 +1981,15 @@ def cli():
                                         return
                             except Exception:
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log_handoff_event("handoff.drain.nats_subscribe_failed", session=hd_session, error=str(e))
                     finally:
                         await hd_client.close()
 
                 try:
                     asyncio.run(_drain())
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
             sys.exit(0)
         elif action == "iterm2-tab-title":
@@ -2208,13 +2252,17 @@ def cli():
 
     if len(sys.argv) > 1 and sys.argv[1] in ("update", "deploy"):
         force_reinstall = "--force" in sys.argv or "-f" in sys.argv
-        cfg_deploy = config.get("deploy", {})
-        project_path_str = cfg_deploy.get("project_path", "")
-        project_path = Path(project_path_str).expanduser() if project_path_str else Path.cwd()
+        project_path = _find_aicli_project_path(config)
+        if project_path is None:
+            print(
+                "Error: could not locate ai-cli-utils source. Set [deploy] project_path in config.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         pyproject = project_path / "pyproject.toml"
         if not pyproject.exists():
             print(
-                "Error: pyproject.toml not found. Run from project directory or set [deploy] project_path in config.",
+                f"Error: pyproject.toml not found at {project_path}. Set [deploy] project_path in config.",
                 file=sys.stderr,
             )
             sys.exit(1)

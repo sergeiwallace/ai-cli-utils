@@ -54,6 +54,7 @@ from ai_cli.main import (
     resolve_session,
     save_session_map,
     _auto_update_if_stale,
+    _find_aicli_project_path,
     trigger_background_update,
     validate_registry_completeness,
     _ensure_circusd,
@@ -1689,19 +1690,32 @@ class TestDeploy:
                 cli()
             assert exc.value.code == 1
 
-    def test_deploy_uses_cwd_when_no_config(self, tmp_path):
+    def test_deploy_uses_package_location_when_no_config(self, tmp_path):
+        """When no [deploy] project_path configured, auto-detects from package __file__."""
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[project]\nversion = "0.2.0"\n')
+        pyproject.write_text('[project]\nname = "ai-cli-utils"\nversion = "0.2.0"\n')
 
         with (
             patch("sys.argv", ["ai", "deploy"]),
             patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main.Path.cwd", return_value=tmp_path),
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
             assert exc.value.code == 0
+
+    def test_deploy_exits_when_source_not_found(self, tmp_path, capsys):
+        """When project path can't be located, exits with clear error."""
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._find_aicli_project_path", return_value=None),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+        assert "could not locate" in capsys.readouterr().err
 
     def test_deploy_always_pulls_before_install(self, tmp_path):
         """ai update always pulls regardless of machine or flags."""
@@ -1830,6 +1844,34 @@ class TestTriggerBackgroundUpdate:
             with patch("subprocess.Popen") as mock_popen:
                 trigger_background_update()
         mock_popen.assert_called_once()
+
+
+# --- _find_aicli_project_path ---
+
+
+class TestFindAicliProjectPath:
+    def test_when_config_has_project_path_then_returns_it(self, tmp_path):
+        result = _find_aicli_project_path({"deploy": {"project_path": str(tmp_path)}})
+        assert result == tmp_path
+
+    def test_when_no_config_then_detects_via_package_file(self, tmp_path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('name = "ai-cli-utils"\nversion = "0.1.0"\n')
+        fake_origin = str(tmp_path / "ai_cli" / "main.py")
+        import importlib.util as _ilu
+
+        mock_spec = MagicMock()
+        mock_spec.origin = fake_origin
+        with patch.object(_ilu, "find_spec", return_value=mock_spec):
+            result = _find_aicli_project_path({})
+        assert result == tmp_path
+
+    def test_when_package_not_found_then_returns_none(self):
+        import importlib.util as _ilu
+
+        with patch.object(_ilu, "find_spec", return_value=None):
+            result = _find_aicli_project_path({})
+        assert result is None
 
 
 # --- _auto_update_if_stale ---
