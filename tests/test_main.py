@@ -1744,6 +1744,33 @@ class TestDeploy:
         assert uv_idx is not None, "uv install not called"
         assert pull_idx < uv_idx, "git pull must run before uv install"
 
+    def test_deploy_pull_uses_autostash_and_restores_pyproject_first(self, tmp_path):
+        """pull uses --autostash and git checkout -- pyproject.toml runs before pull."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        cmds = [" ".join(c) for c in calls]
+        checkout_idx = next((i for i, c in enumerate(cmds) if "checkout" in c and "pyproject.toml" in c), None)
+        pull_idx = next((i for i, c in enumerate(cmds) if "git" in c and "pull" in c), None)
+        assert checkout_idx is not None, "git checkout -- pyproject.toml not called"
+        assert pull_idx is not None, "git pull not called"
+        assert checkout_idx < pull_idx, "checkout must run before pull"
+        assert "--autostash" in cmds[pull_idx], "pull must use --autostash"
+
     def test_deploy_installs_into_extra_venvs_when_configured(self, tmp_path):
         """Installs into any venv paths listed in [update] extra_venvs."""
         pyproject = tmp_path / "pyproject.toml"

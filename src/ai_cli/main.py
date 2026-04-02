@@ -2301,6 +2301,11 @@ def cli():
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
+        subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, check=False)
+        print("Pulling latest from origin...")
+        subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=project_path, check=False)
+        # Read version after pull so the bump applies to the current remote state
         original = pyproject.read_text()
         m = re.search(r'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
         if not m:
@@ -2308,8 +2313,6 @@ def cli():
             sys.exit(1)
         base = re.sub(r"\.post\d+$", "", m.group(2))
         new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
-        print("Pulling latest from origin...")
-        subprocess.run(["git", "pull", "--rebase"], cwd=project_path, check=False)
         print(f"Updating {m.group(2)} → {new_version}")
         exit_code = 0
         try:
