@@ -345,7 +345,38 @@ def get_project_aliases() -> dict:
     return aliases
 
 
-def get_latest_gemini_session_id():
+def _find_latest_gemini_uuid(ai_name: str) -> str | None:
+    """Return the sessionId from the most recently modified chat file for ai_name.
+
+    Gemini stores sessions in ~/.gemini/tmp/{ai_name}/chats/*.json.  Each file
+    contains a top-level "sessionId" field with the full UUID needed for --resume.
+    """
+    chats_dir = Path.home() / ".gemini" / "tmp" / ai_name / "chats"
+    if not chats_dir.exists():
+        return None
+    json_files = sorted(chats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for f in json_files:
+        try:
+            session_id = json.loads(f.read_text()).get("sessionId")
+            if session_id:
+                return session_id
+        except Exception:
+            continue
+    return None
+
+
+def get_latest_gemini_session_id(ai_name: str | None = None) -> str | None:
+    """Return the most recent Gemini session ID.
+
+    If ai_name is provided, scans ~/.gemini/tmp/{ai_name}/chats/ directly —
+    the authoritative source regardless of current working directory.
+    Falls back to scanning logs.json in the project tmp directory.
+    """
+    if ai_name:
+        uuid = _find_latest_gemini_uuid(ai_name)
+        if uuid:
+            return uuid
+
     cwd = Path.cwd()
     project_name = cwd.name
     paths = [
@@ -1095,7 +1126,7 @@ def get_engine_script(
 
       {notify_cmd}
 
-      new_uuid=$(ai internal get-latest-gemini-id 2>/dev/null)
+      new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)
       if [[ -n "$new_uuid" ]]; then
         uuid="$new_uuid"
         ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null
@@ -1623,7 +1654,8 @@ def cli():
             sys.exit(1)
         action = sys.argv[2]
         if action == "get-latest-gemini-id":
-            res = get_latest_gemini_session_id()
+            _ai_name_arg = sys.argv[3] if len(sys.argv) > 3 else None
+            res = get_latest_gemini_session_id(_ai_name_arg)
             if res:
                 print(res)
             sys.exit(0)
@@ -2556,6 +2588,14 @@ def cli():
 
     d = get_session_map(engine)
     uuid = d.get(ai_name)
+    # For Gemini, always check the chats directory for the latest session — the
+    # session map may be stale if the user exited and restarted directly via gemini CLI.
+    if engine == "g":
+        latest = _find_latest_gemini_uuid(ai_name)
+        if latest and latest != uuid:
+            uuid = latest
+            d[ai_name] = uuid
+            save_session_map(d, engine)
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
     # so _iterm2_fleet_setup inside the bash script would silently no-op without them.

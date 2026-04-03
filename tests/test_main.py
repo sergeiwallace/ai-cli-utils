@@ -26,6 +26,7 @@ from ai_cli.main import (
     find_recent_session,
     get_current_project_name,
     get_engine_script,
+    _find_latest_gemini_uuid,
     get_latest_gemini_session_id,
     get_project_aliases,
     get_project_prefix,
@@ -672,10 +673,77 @@ class TestProjectHelpers:
         assert result == {}
 
 
+# --- _find_latest_gemini_uuid ---
+
+
+class TestFindLatestGeminiUuid:
+    def test_when_chats_dir_has_session_then_returns_session_id(self, tmp_path):
+        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
+        chats.mkdir(parents=True)
+        (chats / "session-2026-01-01T00-00-abc.json").write_text('{"sessionId": "abc-full-uuid-here"}')
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result == "abc-full-uuid-here"
+
+    def test_when_multiple_files_then_returns_most_recent(self, tmp_path):
+        import time
+
+        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
+        chats.mkdir(parents=True)
+        old_file = chats / "session-old.json"
+        new_file = chats / "session-new.json"
+        old_file.write_text('{"sessionId": "old-uuid"}')
+        time.sleep(0.01)
+        new_file.write_text('{"sessionId": "new-uuid"}')
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result == "new-uuid"
+
+    def test_when_no_chats_dir_then_returns_none(self, tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result is None
+
+    def test_when_file_has_no_session_id_then_skips_it(self, tmp_path):
+        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
+        chats.mkdir(parents=True)
+        (chats / "session-bad.json").write_text('{"otherKey": "value"}')
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result is None
+
+    def test_when_file_is_invalid_json_then_skips_it(self, tmp_path):
+        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
+        chats.mkdir(parents=True)
+        (chats / "session-corrupt.json").write_text("not json {{{")
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result is None
+
+
 # --- get_latest_gemini_session_id ---
 
 
 class TestGetLatestGeminiSessionId:
+    def test_latest_gemini_id_when_ai_name_provided_then_scans_chats_first(self, tmp_path):
+        chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
+        chats.mkdir(parents=True)
+        (chats / "session-abc.json").write_text('{"sessionId": "chats-uuid"}')
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            with patch("ai_cli.main._get_main_project_name", return_value=None):
+                result = get_latest_gemini_session_id("art-1")
+        assert result == "chats-uuid"
+
+    def test_latest_gemini_id_when_ai_name_provided_but_no_chats_then_falls_back_to_logs(self, tmp_path):
+        logs_dir = tmp_path / ".gemini" / "tmp" / "artelier"
+        logs_dir.mkdir(parents=True)
+        (logs_dir / "logs.json").write_text('{"sessionId": "logs-uuid"}')
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "artelier"):
+            with patch("pathlib.Path.home", return_value=tmp_path):
+                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                    result = get_latest_gemini_session_id("art-1")
+        assert result == "logs-uuid"
+
     def test_latest_gemini_id_when_logs_exist_then_returns_last(self, tmp_path):
         logs_dir = tmp_path / ".gemini" / "tmp" / "testproject"
         logs_dir.mkdir(parents=True)
@@ -2039,11 +2107,21 @@ class TestAutoUpdateIfStale:
 class TestCliDispatch:
     def test_cli_when_internal_get_latest_gemini_id_then_calls_function(self):
         with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id"]):
-            with patch("ai_cli.main.get_latest_gemini_session_id", return_value="abc123"):
+            with patch("ai_cli.main.get_latest_gemini_session_id", return_value="abc123") as mock_fn:
                 with patch("ai_cli.main.load_config", return_value={}):
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
+                    mock_fn.assert_called_once_with(None)
+
+    def test_cli_when_internal_get_latest_gemini_id_with_ai_name_then_passes_it(self):
+        with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id", "art-1"]):
+            with patch("ai_cli.main.get_latest_gemini_session_id", return_value="uuid") as mock_fn:
+                with patch("ai_cli.main.load_config", return_value={}):
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+                    assert exc.value.code == 0
+                    mock_fn.assert_called_once_with("art-1")
 
     def test_cli_when_internal_update_session_map_then_updates(self, tmp_path):
         with patch("sys.argv", ["ai", "internal", "update-session-map", "g", "sw-1", "uuid123"]):
