@@ -29,3 +29,16 @@ When using Gemini CLI for quick lookups, always pass `model: "gemini-3.0-flash"`
 - No TODO/FIXME placeholders — implement it or leave it out
 - Run `pytest` after making changes
 
+- Follow the project's dev workflow (steps 4-15). Always run `/review` before first ship (step 8).
+
+## Reasoning checkpoints
+
+Before each of these operations, pause and run the relevant checkpoint from `docs/procedures/reasoning-checkpoints.md`:
+
+```xml
+<engineer_checkpoints>
+- DB migration: Read current schema. Grep all callers. Write rollback first. Full test suite after.
+- Multi-file edit (3+ files or shared state): Map dependency chain. Sequence for valid intermediate states. Run tests after each logical unit.
+- Test writing: Read full AC list first. Map ACs to tests 1:1. Include failure-path tests. Verify each test fails with `pass` body.
+</engineer_checkpoints>
+```

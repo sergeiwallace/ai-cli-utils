@@ -246,22 +246,43 @@ NEVER generate binary images.
 
 <!-- Add prompts here using this format:
 
-### R-N: [Topic]
+### R-N: [Topic] — [TASK-ID]
 
-**Status:** Ready to run
-**Task:** [TASK-ID]
-**Target doc:** `docs/research/[topic].md`
+**Status:** Ready to run / Pending approval / Approved — run with opus researcher
 **Model:** `opus researcher`
+**Task:** [TASK-ID]
+**Output:** `docs/research/[topic].md`
 
 <details>
 <summary>Prompt (R-N)</summary>
 
 ```
-[Full prompt text here, including grounding_instructions block at the end]
+[Full prompt text here. Must include grounding_instructions block at the end.]
 ```
 
 </details>
 
+<details>
+<summary>Context & questions</summary>
+
+**Context:** [1-3 sentences explaining why this research is needed and what it unblocks]
+
+**Questions to answer:**
+
+1. **[Question title]**: [question text]
+2. **[Question title]**: [question text]
+...
+
+</details>
+
+> **Feedback:** <enter feedback here>
+
 ---
 
 -->
+
+## Completed
+
+<!-- Completed prompt sections go here after being moved from Pending / Ready -->
+
+## Deprecated / Archived

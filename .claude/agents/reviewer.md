@@ -50,3 +50,16 @@ Every review must audit test quality. Flag any of these:
 - **Naming violations**: test names must follow project convention
 - **Excessive mocking**: mocks that hide real behavior, especially for internal modules
 - **Missing edge cases**: only happy path tested, no boundary or error conditions
+
+## Reasoning verification
+
+When reviewing implementation against a plan:
+
+```xml
+<reviewer_verification>
+- Read the full plan doc AC list, not just the diff
+- Verify each AC has a corresponding test
+- Check that tests fail with `pass` or `return None` function bodies
+- Flag any implementation that goes beyond the plan scope
+</reviewer_verification>
+```

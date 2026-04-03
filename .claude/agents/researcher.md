@@ -64,3 +64,16 @@ When reporting back to the team lead, provide:
 - When comparing options, use a table with clear criteria
 - Only write or edit markdown files (`.md`) — never modify code files
 
+
+## Verification steps
+
+Before finalizing any research output:
+
+```xml
+<researcher_verification>
+- Verify the top 3 factual claims against their cited source documents
+- Classify each finding: [VERIFIABLE FACT], [INDUSTRY HEURISTIC], or [SYNTHESIZED INFERENCE]
+- Check for contradictions between sources
+- If a claim lacks a verifiable source, mark it [NO SOURCE FOUND] rather than omitting or guessing
+</researcher_verification>
+```
