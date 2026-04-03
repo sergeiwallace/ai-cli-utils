@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 from datetime import date
-from pathlib import Path
 
 
 def _find_claude_pane() -> str | None:
@@ -90,43 +89,10 @@ def _scrape_usage_tmux(target_pane: str | None = None) -> float | None:
 def _get_claude_usage_percent() -> float | None:
     """Attempt to read Claude usage percentage.
 
-    Tries tmux scraping first, then falls back to usage file and CLI.
-    Returns a float 0-100 or None if unavailable.
+    Currently returns None — active-pane scraping disabled pending AI-CLI-22
+    (hidden tmux window implementation). quota_watch will skip threshold checks
+    until the proper implementation lands.
     """
-    # Try tmux scraping first
-    result = _scrape_usage_tmux()
-    if result is not None:
-        return result
-
-    # Check for usage file
-    usage_file = Path.home() / ".claude" / "usage.json"
-    if usage_file.exists():
-        try:
-            data = json.loads(usage_file.read_text())
-            used = data.get("used", 0)
-            limit = data.get("limit", 0)
-            if limit > 0:
-                return (used / limit) * 100
-        except Exception:
-            pass
-
-    # Try `claude usage` command
-    try:
-        result = subprocess.run(
-            ["claude", "usage"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            import re
-
-            match = re.search(r"(\d+(?:\.\d+)?)%", result.stdout)
-            if match:
-                return float(match.group(1))
-    except Exception:
-        pass
-
     return None
 
 

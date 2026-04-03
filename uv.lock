@@ -8,6 +8,7 @@ version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "circus" },
+    { name = "google-genai" },
     { name = "libtmux" },
     { name = "nats-py" },
     { name = "watchdog" },
@@ -19,9 +20,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-]
-gemini = [
-    { name = "google-genai" },
 ]
 
 [package.dev-dependencies]
@@ -37,7 +35,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "circus", specifier = ">=0.18.0" },
-    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0.0" },
+    { name = "google-genai", specifier = ">=1.0.0" },
     { name = "libtmux", specifier = ">=0.30.0" },
     { name = "nats-py", specifier = ">=2.9.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4" },
@@ -46,7 +44,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "watchdog", specifier = ">=4.0.0" },
 ]
-provides-extras = ["gemini", "dev"]
+provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
