@@ -2,7 +2,7 @@
 title: "[BUG-001] iTerm2 tab title and color system — multiple bugs"
 category: bugs
 tags: [iterm2, tab-title, tab-color, session-title, gemini, remote, mosh]
-status: fix-shipped
+status: uat-in-progress
 severity: P1
 related_docs:
   - docs/designs/iterm2-title-color-system.md
@@ -12,7 +12,7 @@ related_docs:
 
 # [BUG-001] iTerm2 Tab Title and Color System — Multiple Bugs
 
-**Status:** fix-shipped — awaiting UAT (`[AI-CLI-18]`, `docs/test/uat-iterm2-title-color-redesign.md`)
+**Status:** UAT in progress — Bugs 8/9 and UX feedback added 2026-04-03. Bugs 1–7 fix shipped; awaiting full UAT (`[AI-CLI-18]`, `docs/test/uat-iterm2-title-color-redesign.md`)
 
 **Severity:** P1
 
@@ -30,6 +30,8 @@ related_docs:
 - [Bug 5 — Gemini launched from wrong directory with no existing session: blank screen](#bug-5--gemini-launched-from-wrong-directory-with-no-existing-session-blank-screen)
 - [Bug 6 — Remote gemini sessions: same invalid session identifier error](#bug-6--remote-gemini-sessions-same-invalid-session-identifier-error)
 - [Bug 7 — Only three icon color variants for Claude and Gemini logos](#bug-7--only-three-icon-color-variants-for-claude-and-gemini-logos)
+- [Bug 8 — Session Name reverts to "Default" after Edit Session interaction](#bug-8--session-name-reverts-to-default-after-edit-session-interaction)
+- [Bug 9 — `ai c` launch drops session into tmux copy mode](#bug-9--ai-c-launch-drops-session-into-tmux-copy-mode)
 - [Diagnosis Approach](#diagnosis-approach)
 
 ---
@@ -199,6 +201,54 @@ Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4d
 5. for remote gemini sessions that are in different directory than the target direct you want to launch gemini session from, you get same can't resume existing gemini session error from 4b. it exiting me back to a `sw-1` git worktree root on dev server once (the tab title was the usual "[mosh] ..." and other times it kicked me back to local machine shell. not sure what to make of that inconsistency.
 
 review this and create a bug doc (create a `docs/bugs` directory if needed) and in your words write out all the bugs/behaviors I identified and what the fixed behaviors should be (not how to fix, but just what the corrected tab/session titles & color system should be). then also propose how you might go about diagnosing the root causes of the bugs and potential ways to fix them (it's okay if this is a high level outline since you'll need to actually debug etc to identify it). i'll review to make sure you understand each of the bugs/incorrect behaviors and understand what the behaviors should actually be before you start working on diagnosing and fixing the bugs (root cause). we need a more robust and systematic implementation to do this robustly (appropriate tab/session title naming that dynamically changes depending on whether it's a cc / gemini session on either local or remote or a local shell or remote shell etc). right now it's still very buggy and the auto-color rotation to make sure colors between neighboring tabs in a iterm2 window or neighboring split terminal panes within a tab are always different and contrasting colors. also, I want more colors for the claude/gemini logos than orange (claude logo), black, and white. we should have a number of different templates for different colors to have better and more colorful contrast. sometimes black and white with a color background is fine but i want more variety. we should have templates. and ideally we don't have to rely on creating a bunch of different profiles unless that's the only way to have different color logo icons in the tab title.
+
+---
+
+## Bug 8 — Session Name reverts to "Default" after Edit Session interaction
+
+### Symptom
+
+After `ai c N` launches and the tab title correctly shows `c-sw-N`, opening the Edit Session dialog reveals that the **Session Name field still reads "Default"**. Closing the dialog (even without making changes) causes the tab title to revert to "Default", overwriting the correct session name that was set at launch.
+
+### Expected behavior
+
+The Session Name field should be permanently set to the tmux session name (e.g., `c-sw-6`) at launch time, so that it persists through Edit Session interactions and is stable as the ground truth for the tab title. The Session Title dropdown should be set to `Name` (not `Shell`) so the tab always displays the Session Name value without any shell-controlled overrides.
+
+---
+
+## Bug 9 — `ai c` launch drops session into tmux copy mode
+
+### Symptom
+
+Running `ai c 7` and `ai c 8` from the sergei project root results in the new pane getting stuck in tmux copy mode immediately after launch. The session name and tab color apply correctly, but the terminal is unresponsive until the user manually exits copy mode. Not observed with `ai c 6` or `ai c 9 -R`.
+
+### Expected behavior
+
+`ai c N` should always land in a normal interactive shell/CC prompt, never in tmux copy mode.
+
+---
+
+## UX Feedback — Ad hoc color and icon control
+
+### Current limitation
+
+The auto-rotating color system assigns a color slot at launch time and locks it. There is no mechanism to change the tab color or icon color after a session has started without restarting the session. The user has no way to override the assigned color ad hoc.
+
+### Desired behavior
+
+A way to reassign the tab color or switch between color profiles for an already-running session — ideally a command like `ai color <name>` or via a simple UI mechanism. The color assignment should feel like a user-controllable preference, not an immutable system decision made at launch.
+
+---
+
+## UX Feedback — Custom `"Shell"` Session Title option disappears
+
+### Current limitation
+
+When a ClaudeCode-* or GeminiCLI profile is applied to a session, the Session Title dropdown shows a custom `"Shell"` option. Once the user switches to any built-in option (Name, Profile Name, etc.), the `"Shell"` option permanently disappears and cannot be restored without re-applying the profile.
+
+### Desired behavior
+
+Nice-to-have: the `"Shell"` option should remain available as a persistent dropdown choice so users can toggle between it and built-in options freely. Not a priority for the redesign — flagged as a known limitation.
 
 ---
 
