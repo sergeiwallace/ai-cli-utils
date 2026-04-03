@@ -1,99 +1,144 @@
 """Quota tracking — monitors Claude usage and publishes threshold events.
 
-Polls Claude usage data and publishes quota.threshold.{50,75,90} events
-when thresholds are crossed. Uses JetStream deduplication to avoid
-re-alerting the same threshold within a calendar day.
+Polls Claude usage data via a hidden tmux window and publishes
+quota.threshold.{50,75,90} events when thresholds are crossed.
+Uses JetStream deduplication to avoid re-alerting the same threshold
+within a calendar day. Stores snapshots and usage records in local SQLite
+at ~/.local/state/ai-cli/quota.db (no external server dependency).
 """
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import date
 
 
-def _find_claude_pane() -> str | None:
-    """Find the tmux pane most likely running Claude Code."""
-    try:
-        result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_current_command} #{session_name}"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        for line in result.stdout.splitlines():
-            parts = line.split(" ", 2)
-            if len(parts) >= 2 and parts[1].lower() in ("claude", "node"):
-                return parts[0]
-        # Fall back: look for pane in a session named like cc/sw/c-*
-        for line in result.stdout.splitlines():
-            parts = line.split(" ", 2)
-            if len(parts) >= 3:
-                sess = parts[2]
-                if sess.startswith("c-"):
-                    return parts[0]
-    except Exception:
-        pass
-    return None
+@dataclass
+class QuotaSnapshot:
+    """All metrics from a single /usage scrape."""
+
+    weekly_all_models_pct: float  # primary quota metric — "Current week (all models)"
+    session_pct: float | None = None  # "Current session"
+    weekly_sonnet_pct: float | None = None  # "Current week (Sonnet only)"
+    extra_pct: float | None = None  # "Extra usage: X%" or 0.0 if "not enabled"
 
 
-def _scrape_usage_tmux(target_pane: str | None = None) -> float | None:
-    """Scrape /usage percentage from an active Claude Code tmux pane.
+def _parse_usage_output(output: str) -> QuotaSnapshot | None:
+    """Parse the text output of /usage into a QuotaSnapshot.
 
-    If target_pane is None, searches for a pane likely running Claude Code
-    by checking pane titles/commands. Returns float 0-100 or None.
+    Expected output contains lines like:
+      Current session: 12% used
+      Current week (all models): 86% used
+      Current week (Sonnet only): 49% used
+      Extra usage not enabled
     """
-    import re
-
-    if target_pane is None:
-        target_pane = _find_claude_pane()
-    if target_pane is None:
+    weekly_all_match = re.search(r"Current week \(all models\)[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
+    if not weekly_all_match:
         return None
 
+    session_match = re.search(r"Current session[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
+    sonnet_match = re.search(r"Current week \(Sonnet only\)[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
+    extra_match = re.search(r"Extra usage[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
+    extra_not_enabled = bool(re.search(r"Extra usage not enabled", output, re.IGNORECASE))
+
+    return QuotaSnapshot(
+        weekly_all_models_pct=float(weekly_all_match.group(1)),
+        session_pct=float(session_match.group(1)) if session_match else None,
+        weekly_sonnet_pct=float(sonnet_match.group(1)) if sonnet_match else None,
+        extra_pct=float(extra_match.group(1)) if extra_match else (0.0 if extra_not_enabled else None),
+    )
+
+
+def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
+    """Scrape /usage from a hidden tmux window running a bare CC session.
+
+    Spins up a detached tmux window, starts claude --dangerously-skip-permissions,
+    waits for the prompt, injects /usage, captures the output, and kills the window.
+    The user never sees it.
+    """
+    window_name = "ai-quota-scrape"
     try:
-        # Clear the screen to avoid matching stale output
+        # Create a detached background window
+        result = subprocess.run(
+            ["tmux", "new-window", "-d", "-n", window_name],
+            capture_output=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            return None
+
+        # Start CC with no-op permissions (read-only scraping, never runs tools)
         subprocess.run(
-            ["tmux", "send-keys", "-t", target_pane, "C-l", ""],
+            ["tmux", "send-keys", "-t", f"={window_name}", "claude --dangerously-skip-permissions", "Enter"],
             capture_output=True,
             timeout=2,
         )
-        time.sleep(0.3)
 
-        # Inject /usage command
-        subprocess.run(
-            ["tmux", "send-keys", "-t", target_pane, "/usage", "Enter"],
-            capture_output=True,
-            timeout=2,
-        )
-
-        # Poll capture-pane until "Usage:" appears (max 10s)
-        for _ in range(50):
+        # Poll for the CC prompt indicator (❯) — startup takes ~4s
+        ready = False
+        for _ in range(75):  # up to 15s
             time.sleep(0.2)
-            result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", target_pane, "-J"],
+            cap = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-t", f"={window_name}", "-J"],
                 capture_output=True,
                 text=True,
                 timeout=3,
             )
-            if result.returncode == 0:
-                match = re.search(r"Usage[:\s]+(\d+(?:\.\d+)?)\s*%", result.stdout, re.IGNORECASE)
-                if match:
-                    return float(match.group(1))
+            if cap.returncode == 0 and "❯" in cap.stdout:
+                ready = True
+                break
 
-        return None
+        if not ready:
+            return None
+
+        # Inject /usage
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"={window_name}", "/usage", "Enter"],
+            capture_output=True,
+            timeout=2,
+        )
+
+        # Poll for the usage output (max 5s)
+        snapshot = None
+        for _ in range(25):
+            time.sleep(0.2)
+            cap = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-t", f"={window_name}", "-J"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if cap.returncode == 0 and "% used" in cap.stdout:
+                snapshot = _parse_usage_output(cap.stdout)
+                if snapshot:
+                    break
+
+        # Dismiss the dialog
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"={window_name}", "Escape", ""],
+            capture_output=True,
+            timeout=2,
+        )
+        return snapshot
+
     except Exception:
         return None
+    finally:
+        # Always clean up the window
+        subprocess.run(
+            ["tmux", "kill-window", "-t", f"={window_name}"],
+            capture_output=True,
+            timeout=3,
+        )
 
 
-def _get_claude_usage_percent() -> float | None:
-    """Attempt to read Claude usage percentage.
-
-    Currently returns None — active-pane scraping disabled pending AI-CLI-22
-    (hidden tmux window implementation). quota_watch will skip threshold checks
-    until the proper implementation lands.
-    """
-    return None
+def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
+    """Return a QuotaSnapshot from a hidden tmux window, or None if unavailable."""
+    return _scrape_usage_hidden_pane()
 
 
 def quota_watch(poll_interval: int = 300) -> int:
@@ -131,8 +176,9 @@ def quota_watch(poll_interval: int = 300) -> int:
 
     try:
         while True:
-            usage = _get_claude_usage_percent()
-            if usage is not None:
+            snapshot = _get_claude_usage_snapshot()
+            if snapshot is not None:
+                usage = snapshot.weekly_all_models_pct
                 today = date.today().isoformat()
                 for threshold in thresholds:
                     if usage >= threshold and alerted_today.get(threshold) != today:
@@ -146,9 +192,7 @@ def quota_watch(poll_interval: int = 300) -> int:
                             loop.run_until_complete(client.publish(subject, payload))
                             alerted_today[threshold] = today
                             print(f"[quota-watch] threshold {threshold}% crossed (usage: {usage:.1f}%)")
-
-                            # Fire OS notification
-                            _send_notification(threshold, usage)
+                            _send_notification(threshold, snapshot)
                         except Exception as e:
                             print(f"[quota-watch] failed to publish: {e}", file=sys.stderr)
 
@@ -163,11 +207,27 @@ def quota_watch(poll_interval: int = 300) -> int:
     return 0
 
 
-def _send_notification(threshold: int, usage: float) -> None:
-    """Send OS notification for quota threshold."""
+def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
+    """Send alert for quota threshold via Slack webhook (if configured) or notify-send."""
+    usage = snapshot.weekly_all_models_pct
     msg = f"Claude usage at {usage:.0f}% (threshold: {threshold}%)"
     if threshold >= 90:
         msg += " — slow down!"
+
+    # Try Slack webhook first if configured
+    try:
+        from .main import load_config
+
+        cfg = load_config().get("quota", {})
+        webhook_url = cfg.get("slack_webhook_url", "")
+    except Exception:
+        webhook_url = ""
+
+    if webhook_url:
+        _send_slack_notification(webhook_url, threshold, snapshot)
+        return
+
+    # Fallback: OS notification via notify-send
     try:
         subprocess.run(
             ["notify-send", "ai-cli quota", msg],
@@ -178,84 +238,128 @@ def _send_notification(threshold: int, usage: float) -> None:
         pass
 
 
-def quota_status(receiver_url: str = "http://localhost:8080") -> int:
-    """Print current quota status from the telemetry receiver."""
-    import urllib.request
-    import urllib.error
-
-    try:
-        req = urllib.request.urlopen(f"{receiver_url}/api/v1/quota/status", timeout=5)
-        data = json.loads(req.read())
-        snap = data.get("latest_snapshot")
-        if snap:
-            pct = snap.get("usage_percent", 0)
-            ts = snap.get("snapshotted_at", "?")
-            print(f"Quota: {pct:.1f}% used  (last snapshot: {ts})")
-        else:
-            print("Quota: no snapshots yet")
-        burn = data.get("burn_rate", {})
-        if burn and burn.get("expected_pct_per_day", 0) > 0:
-            actual = burn.get("actual_pct_per_day", 0)
-            expected = burn.get("expected_pct_per_day", 0)
-            mult = burn.get("multiplier", 0)
-            print(f"Burn rate: {actual:.2f}%/day actual vs {expected:.2f}%/day expected ({mult:.1f}x)")
-        days = data.get("days_remaining")
-        if days is not None:
-            print(f"Days to reset: {days:.1f}")
-        alerts = data.get("alerts", [])
-        for alert in alerts:
-            print(f"  {alert}")
-        return 0
-    except Exception as e:
-        print(f"Could not reach telemetry receiver: {e}", file=sys.stderr)
-        return 1
-
-
-def quota_history(receiver_url: str = "http://localhost:8080") -> int:
-    """Print weekly quota usage history."""
-    import urllib.request
-    import urllib.error
-
-    try:
-        req = urllib.request.urlopen(f"{receiver_url}/api/v1/quota/history", timeout=5)
-        history = json.loads(req.read())
-        if not history:
-            print("No history yet.")
-            return 0
-        print(f"{'Week':24} {'Peak %':8} {'Tokens':>12} {'Snapshots':>10}")
-        print("-" * 58)
-        for week in history:
-            print(
-                f"{week['week_start']:24} {week.get('peak_percent', 0):7.1f}% "
-                f"{week.get('total_consumed', 0):12,} {week.get('snapshot_count', 0):10}"
-            )
-        return 0
-    except Exception as e:
-        print(f"Could not reach telemetry receiver: {e}", file=sys.stderr)
-        return 1
-
-
-def quota_scrape(receiver_url: str = "http://localhost:8080", target_pane: str | None = None) -> int:
-    """Scrape /usage from active CC session and POST to receiver."""
+def _send_slack_notification(webhook_url: str, threshold: int, snapshot: QuotaSnapshot) -> None:
+    """POST a Slack webhook message for a quota threshold crossing."""
     import urllib.request
 
-    print("Scraping /usage from Claude Code session...")
-    pct = _scrape_usage_tmux(target_pane)
-    if pct is None:
-        print("Could not extract usage percentage.", file=sys.stderr)
-        return 1
-    print(f"Scraped: {pct:.1f}%")
+    usage = snapshot.weekly_all_models_pct
+    emoji = ":rotating_light:" if threshold >= 90 else ":warning:" if threshold >= 75 else ":information_source:"
+    text = f"{emoji} *Claude quota {threshold}% threshold crossed*\nWeekly (all models): {usage:.1f}%"
+    if snapshot.weekly_sonnet_pct is not None:
+        text += f" | Sonnet: {snapshot.weekly_sonnet_pct:.1f}%"
+    if snapshot.session_pct is not None:
+        text += f" | Session: {snapshot.session_pct:.1f}%"
+    if threshold >= 90:
+        text += "\n*Slow down — quota nearly exhausted.*"
+
+    payload = json.dumps({"text": text}).encode()
     try:
-        body = json.dumps({"usage_percent": pct}).encode()
         req = urllib.request.Request(
-            f"{receiver_url}/api/v1/quota/snapshot",
-            data=body,
+            webhook_url,
+            data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         urllib.request.urlopen(req, timeout=5)
-        print("Posted snapshot to receiver.")
+    except Exception:
+        pass
+
+
+def quota_status() -> int:
+    """Print current quota status from local SQLite."""
+    from .quota_db import get_current_status
+
+    data = get_current_status()
+    snap = data.get("latest_snapshot")
+    if snap:
+        pct = snap.get("usage_percent", 0)
+        ts = snap.get("snapshotted_at", "?")
+        print(f"Quota: {pct:.1f}% used  (last snapshot: {ts})")
+    else:
+        print("Quota: no snapshots yet")
+
+    burn = data.get("burn_rate", {})
+    if burn and burn.get("expected_pct_per_day", 0) > 0:
+        actual = burn.get("actual_pct_per_day", 0)
+        expected = burn.get("expected_pct_per_day", 0)
+        mult = burn.get("multiplier", 0)
+        print(f"Burn rate: {actual:.2f}%/day actual vs {expected:.2f}%/day expected ({mult:.1f}x)")
+
+    days = data.get("days_remaining")
+    if days is not None:
+        print(f"Days to reset: {days:.1f}")
+
+    alerts = data.get("alerts", [])
+    for alert in alerts:
+        print(f"  {alert}")
+
+    return 0
+
+
+def quota_history() -> int:
+    """Print weekly quota usage history from local SQLite."""
+    from .quota_db import get_weekly_history
+
+    history = get_weekly_history()
+    if not history:
+        print("No history yet.")
         return 0
-    except Exception as e:
-        print(f"Could not post to receiver: {e}", file=sys.stderr)
+
+    print(f"{'Week':24} {'Peak %':8} {'Tokens':>12} {'Snapshots':>10}")
+    print("-" * 58)
+    for week in history:
+        print(
+            f"{week['week_start']:24} {week.get('peak_percent', 0):7.1f}% "
+            f"{week.get('total_consumed', 0):12,} {week.get('snapshot_count', 0):10}"
+        )
+    return 0
+
+
+def quota_scrape() -> int:
+    """Scrape /usage from a hidden CC session and store in local SQLite."""
+    from .quota_db import record_quota_snapshot
+
+    print("Scraping /usage from Claude Code session (hidden tmux window)...")
+    snapshot = _scrape_usage_hidden_pane()
+    if snapshot is None:
+        print("Could not extract usage percentage.", file=sys.stderr)
         return 1
+
+    print(f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%", end="")
+    if snapshot.weekly_sonnet_pct is not None:
+        print(f", Sonnet {snapshot.weekly_sonnet_pct:.1f}%", end="")
+    if snapshot.session_pct is not None:
+        print(f", session {snapshot.session_pct:.1f}%", end="")
+    print()
+
+    record_quota_snapshot(
+        usage_percent=snapshot.weekly_all_models_pct,
+        session_pct=snapshot.session_pct,
+        weekly_sonnet_pct=snapshot.weekly_sonnet_pct,
+        extra_pct=snapshot.extra_pct,
+    )
+    print("Stored snapshot in local quota DB.")
+    return 0
+
+
+def quota_record(
+    session_id: str,
+    machine_id: str,
+    model: str,
+    total_tokens: int,
+    cost_usd: float | None = None,
+) -> int:
+    """Record a session usage event into local SQLite.
+
+    Called by the statusLine hook (ai quota record SESSION MACHINE MODEL TOKENS [COST]).
+    """
+    from .quota_db import record_usage
+
+    record_usage(
+        session_id=session_id,
+        machine_id=machine_id,
+        model=model,
+        total_tokens=total_tokens,
+        cost_usd=cost_usd,
+    )
+    return 0

@@ -2059,7 +2059,7 @@ def cli():
 
     if len(sys.argv) > 1 and sys.argv[1] == "quota":
         if len(sys.argv) < 3:
-            print("Usage: ai quota [watch|status|history|scrape]", file=sys.stderr)
+            print("Usage: ai quota [watch|status|history|scrape|record]", file=sys.stderr)
             sys.exit(1)
         subcmd = sys.argv[2]
         if subcmd == "watch":
@@ -2077,11 +2077,22 @@ def cli():
         elif subcmd == "scrape":
             from .quota import quota_scrape
 
-            pane = sys.argv[3] if len(sys.argv) > 3 else None
-            sys.exit(quota_scrape(target_pane=pane))
+            sys.exit(quota_scrape())
+        elif subcmd == "record":
+            if len(sys.argv) < 7:
+                print("Usage: ai quota record SESSION_ID MACHINE_ID MODEL TOTAL_TOKENS [COST_USD]", file=sys.stderr)
+                sys.exit(1)
+            from .quota import quota_record
+
+            _session_id = sys.argv[3]
+            _machine_id = sys.argv[4]
+            _model = sys.argv[5]
+            _total_tokens = int(sys.argv[6])
+            _cost_usd = float(sys.argv[7]) if len(sys.argv) > 7 else None
+            sys.exit(quota_record(_session_id, _machine_id, _model, _total_tokens, _cost_usd))
         else:
             print(f"Unknown quota subcommand: {subcmd}", file=sys.stderr)
-            print("Usage: ai quota [watch|status|history|scrape]", file=sys.stderr)
+            print("Usage: ai quota [watch|status|history|scrape|record]", file=sys.stderr)
             sys.exit(1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "telemetry":
