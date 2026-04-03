@@ -3010,9 +3010,9 @@ class TestCliDispatchBranches:
 
 
 class TestCliSessionSetupBranches:
-    def test_cli_when_no_sandbox_flag_then_sandbox_false(self):
-        """Covers line 1107: --no-sandbox sets use_sandbox = False."""
-        with patch("sys.argv", ["ai", "c", "--no-sandbox", "--bare"]):
+    def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self):
+        """Default: no sandbox."""
+        with patch("sys.argv", ["ai", "c", "--bare"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.main.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
@@ -3030,8 +3030,8 @@ class TestCliSessionSetupBranches:
                             with pytest.raises(SystemExit):
                                 cli()
 
-    def test_cli_when_no_sandbox_and_session_exists_then_kills_and_recreates(self):
-        """--no-sandbox with existing session: kill old session, create new one with sandbox off."""
+    def test_cli_when_sandbox_and_session_exists_then_kills_and_recreates(self):
+        """--sandbox with existing session: kill old session, create new one with sandbox on."""
         killed = []
 
         def _run(cmd, **kwargs):
@@ -3043,7 +3043,7 @@ class TestCliSessionSetupBranches:
                 return MagicMock(returncode=0)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("sys.argv", ["ai", "g", "1", "--no-sandbox"]):
+        with patch("sys.argv", ["ai", "g", "1", "--sandbox"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.main.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):

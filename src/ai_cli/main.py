@@ -865,7 +865,7 @@ def get_engine_script(
     prefix: str,
     project_prefix: str,
     session_id_uuid: str | None = None,
-    sandbox: bool = True,
+    sandbox: bool = False,
     worktree_dir: str | None = None,
     notify: bool = False,
     is_remote: bool = False,
@@ -2437,8 +2437,7 @@ def cli():
     parser.add_argument("-o", "--once", action="store_true", help="Run once without tmux auto-resume loop")
     parser.add_argument("-b", "--bare", action="store_true", help="Run bare tool without tmux at all")
     parser.add_argument("-n", "--notify", action="store_true", help="Fire system notifications on task completion")
-    parser.add_argument("-s", "--sandbox", action="store_true", help="Explicitly enable sandboxing")
-    parser.add_argument("-S", "--no-sandbox", action="store_true", help="Explicitly disable sandboxing")
+    parser.add_argument("-s", "--sandbox", action="store_true", help="Enable sandboxing (default: off)")
     parser.add_argument("-W", "--no-worktree", action="store_true", help="Disable git worktree isolation")
     parser.add_argument(
         "-R", "--remote", action="store_true", help="Run session on remote server (configured in [remote])"
@@ -2467,15 +2466,9 @@ def cli():
     remote_seg = "-r" if args.is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
 
-    whitelist = config.get("gemini", {}).get("sandbox_whitelist", ["sw"])
-    if args.no_sandbox:
-        use_sandbox = False
-    elif args.sandbox:
-        use_sandbox = True
-    else:
-        use_sandbox = project_prefix not in whitelist
+    use_sandbox = args.sandbox
 
-    sandbox_flag = "-s" if use_sandbox else ""
+    sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
 
     name = args.name
     if not name and unknown:
@@ -2657,7 +2650,7 @@ def cli():
 
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
-    explicit_sandbox = args.no_sandbox or args.sandbox
+    explicit_sandbox = args.sandbox
     if existing.returncode == 0 and explicit_sandbox:
         # Explicit sandbox flag — kill old session so it recreates with new settings
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
