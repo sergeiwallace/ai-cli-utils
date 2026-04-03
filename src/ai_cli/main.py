@@ -2438,6 +2438,7 @@ def cli():
     parser.add_argument("-b", "--bare", action="store_true", help="Run bare tool without tmux at all")
     parser.add_argument("-n", "--notify", action="store_true", help="Fire system notifications on task completion")
     parser.add_argument("-s", "--sandbox", action="store_true", help="Enable sandboxing (default: off)")
+    # parser.add_argument("-S", "--no-sandbox", action="store_true", help="Explicitly disable sandboxing")
     parser.add_argument("-W", "--no-worktree", action="store_true", help="Disable git worktree isolation")
     parser.add_argument(
         "-R", "--remote", action="store_true", help="Run session on remote server (configured in [remote])"
@@ -2466,6 +2467,8 @@ def cli():
     remote_seg = "-r" if args.is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
 
+    # whitelist = config.get("gemini", {}).get("sandbox_whitelist", ["sw"])
+    # use_sandbox = False if args.no_sandbox else (True if args.sandbox else project_prefix not in whitelist)
     use_sandbox = args.sandbox
 
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
