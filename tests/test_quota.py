@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from ai_cli.quota import _get_claude_usage_percent, _send_notification
+from ai_cli.quota import _get_claude_usage_percent, _send_notification, _find_claude_pane
 
 
 class TestGetClaudeUsage:
@@ -77,6 +77,49 @@ class TestGetClaudeUsageInvalidJson:
             with patch("subprocess.run", side_effect=FileNotFoundError):
                 result = _get_claude_usage_percent()
         assert result is None
+
+
+class TestFindClaudePane:
+    def _make_tmux_result(self, lines):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "\n".join(lines) + "\n"
+        return result
+
+    def test_find_claude_pane_when_session_starts_with_c_dash_then_matches(self):
+        """c-sw-5, c-art-2, c-hm-1 must all match — the c- prefix is the convention."""
+        lines = [
+            "%10 bash c-sw-5",
+            "%11 bash unrelated-session",
+        ]
+        with patch("subprocess.run", return_value=self._make_tmux_result(lines)):
+            pane = _find_claude_pane()
+        assert pane == "%10"
+
+    def test_find_claude_pane_when_remote_session_then_matches(self):
+        """c-r-sw-1 (remote Hetzner sessions) must match since they start with c-."""
+        lines = ["%20 bash c-r-sw-1"]
+        with patch("subprocess.run", return_value=self._make_tmux_result(lines)):
+            pane = _find_claude_pane()
+        assert pane == "%20"
+
+    def test_find_claude_pane_when_no_c_prefix_session_then_returns_none(self):
+        """Sessions not starting with c- (e.g. plain bash, other tools) must not match."""
+        lines = [
+            "%30 bash sw-1",
+            "%31 bash cc-myapp",
+            "%32 bash someothersession",
+        ]
+        with patch("subprocess.run", return_value=self._make_tmux_result(lines)):
+            pane = _find_claude_pane()
+        assert pane is None
+
+    def test_find_claude_pane_when_node_process_then_matches_command(self):
+        """Primary path: pane running node/claude process takes priority over session name."""
+        lines = ["%40 node other-session", "%41 bash c-sw-1"]
+        with patch("subprocess.run", return_value=self._make_tmux_result(lines)):
+            pane = _find_claude_pane()
+        assert pane == "%40"
 
 
 class TestQuotaWatch:

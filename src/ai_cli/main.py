@@ -1824,39 +1824,10 @@ def cli():
                 resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
                 sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
                 sw_pending_file.write_text(resume_msg)
-                # Only nudge via send-keys for real-time NATS delivery.
-                # Startup scan fires before CC is ready — sending keys at that point
-                # causes multiple text injections without submission.
-                if data.get("_source") != "startup_scan":
-                    pane_state = "unknown"
-                    try:
-                        result = subprocess.run(
-                            ["tmux", "display-message", "-t", sw_session_id, "-p", "#{pane_current_command}"],
-                            capture_output=True,
-                            text=True,
-                            timeout=2,
-                        )
-                        if result.returncode == 0:
-                            pane_state = result.stdout.strip()
-                            if pane_state not in ("claude",):
-                                # Pane is idle — send actionable message via send-keys
-                                nudge_msg = (
-                                    f"Pick up handoff task #{handoff_id}: {title}. "
-                                    f"Run: ai handoff check && ai handoff claim $(ai handoff check)"
-                                )
-                                subprocess.run(
-                                    ["tmux", "send-keys", "-t", sw_session_id, nudge_msg, "Enter"],
-                                    timeout=2,
-                                    check=False,
-                                )
-                                _log_handoff_event(
-                                    "handoff.nudge_sent",
-                                    handoff_id=handoff_id,
-                                    session=sw_session_id,
-                                    pane_state=pane_state,
-                                )
-                    except Exception:
-                        pass
+                # Pending file is the pickup mechanism — while loop reads it on CC exit.
+                # pane_current_command is always bash on Linux (CC is a child of bash,
+                # not the foreground process), so command-based nudging is unreliable
+                # and could inject text while CC is actively running.
 
             # Startup scan: pick up any unclaimed files already in the pending queue
             if sw_handoff_dir is not None:

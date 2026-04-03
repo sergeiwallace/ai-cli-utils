@@ -32,7 +32,7 @@ def _find_claude_pane() -> str | None:
             parts = line.split(" ", 2)
             if len(parts) >= 3:
                 sess = parts[2]
-                if any(sess.startswith(p) for p in ("sw-", "c-r-", "cc-")):
+                if sess.startswith("c-"):
                     return parts[0]
     except Exception:
         pass

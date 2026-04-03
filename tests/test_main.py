@@ -1205,16 +1205,16 @@ class TestSignalWatchCli:
 
         assert not (state_dir / "handoff-pending-c-sw-3").exists()
 
-    def test_signal_watch_when_pane_is_idle_then_sends_nudge(self, tmp_path):
-        """Covers the nudge branch: tmux reports non-claude command, send-keys called.
+    def test_signal_watch_when_realtime_delivery_then_never_sends_nudge(self, tmp_path):
+        """signal-watch must never call tmux send-keys.
 
-        Uses cross-machine payload (no local file pre-created) so startup scan does not
-        claim the task first — only the real-time NATS path fires, which should nudge.
+        pane_current_command is always bash on Linux (CC is a child of bash, not the
+        foreground process), so send-keys nudging is unreliable and can inject text
+        while CC is actively running. Pickup is handled via pending file + while loop.
         """
         handoff_dir = tmp_path / ".handoff-queue"
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
-        # No local file — task arrives via NATS payload only (cross-machine delivery)
         file_content = (
             '---\nid: "4"\ntitle: "nudge task"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n'
         )
@@ -1230,16 +1230,13 @@ class TestSignalWatchCli:
             received_callback["cb"] = cb
 
         mock_js.subscribe = fake_js_subscribe
-        send_keys_calls = []
+        subprocess_calls = []
 
         def fake_subprocess_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
             result = MagicMock()
-            if "display-message" in cmd:
-                result.returncode = 0
-                result.stdout = "bash\n"  # pane is idle (not claude)
-            else:
-                send_keys_calls.append(cmd)
-                result.returncode = 0
+            result.returncode = 0
+            result.stdout = "bash\n"
             return result
 
         async def fake_sleep(_):
@@ -1274,7 +1271,9 @@ class TestSignalWatchCli:
                 cli()
             assert exc.value.code == 0
 
-        assert any("send-keys" in cmd for cmd in send_keys_calls)
+        assert not any("send-keys" in str(cmd) for cmd in subprocess_calls), (
+            "send-keys must never be called — pending file is the pickup mechanism"
+        )
 
     def test_signal_watch_when_cross_machine_payload_then_writes_file_and_claims(self, tmp_path):
         """File doesn't exist locally; content in NATS payload should be written before claiming."""
@@ -4316,12 +4315,15 @@ class TestSignalWatchEventLogging:
         assert claimed[0]["handoff_id"] == 5
         assert claimed[0]["layer"] == "nats_realtime"
 
-    def test_signal_watch_when_idle_pane_then_sends_actionable_nudge(self, tmp_path):
-        """Nudge sends actual message (not empty string) when pane is idle."""
+    def test_signal_watch_when_claim_succeeds_then_no_send_keys_nudge(self, tmp_path):
+        """Realtime NATS delivery: pending file written, no send-keys nudge.
+
+        pane_current_command is unreliable on Linux (always bash), so nudge was
+        removed. Pickup is handled by the pending file + while loop on CC exit.
+        """
         handoff_dir = tmp_path / ".handoff-queue"
         pending = handoff_dir / "pending"
         pending.mkdir(parents=True)
-        # Use cross-machine payload to avoid startup scan claiming first
         file_content = (
             '---\nid: "6"\ntitle: "nudge me"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n'
         )
@@ -4337,16 +4339,13 @@ class TestSignalWatchEventLogging:
             received_callback["cb"] = cb
 
         mock_js.subscribe = fake_js_subscribe
-        send_keys_calls = []
+        subprocess_calls = []
 
         def fake_subprocess_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
             result = MagicMock()
-            if "display-message" in cmd:
-                result.returncode = 0
-                result.stdout = "bash\n"
-            else:
-                send_keys_calls.append(cmd)
-                result.returncode = 0
+            result.returncode = 0
+            result.stdout = "bash\n"
             return result
 
         async def fake_sleep(_):
@@ -4381,19 +4380,14 @@ class TestSignalWatchEventLogging:
                 cli()
             assert exc.value.code == 0
 
-        # Verify send-keys sent actionable message (not empty)
-        nudge_calls = [c for c in send_keys_calls if "send-keys" in c]
-        assert len(nudge_calls) == 1
-        # The message should contain task title and be actionable
-        assert "nudge me" in nudge_calls[0][4]
-        assert "Enter" in nudge_calls[0]
-
-        # Verify nudge event logged
+        # Pending file written (the real pickup mechanism)
+        assert (state_dir / "handoff-pending-c-sw-6").exists()
+        # No send-keys nudge emitted
+        assert not any("send-keys" in str(cmd) for cmd in subprocess_calls)
+        # No nudge event logged
         log_file = state_dir / "handoff-events.jsonl"
         events = [json.loads(l) for l in log_file.read_text().strip().split("\n")]
-        nudge_events = [e for e in events if e["event"] == "handoff.nudge_sent"]
-        assert len(nudge_events) == 1
-        assert nudge_events[0]["pane_state"] == "bash"
+        assert not any(e["event"] == "handoff.nudge_sent" for e in events)
 
     def test_signal_watch_startup_scan_logs_as_startup_scan_layer(self, tmp_path):
         """Startup scan claims should be logged with layer=startup_scan."""
