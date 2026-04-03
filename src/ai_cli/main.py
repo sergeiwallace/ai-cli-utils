@@ -1801,7 +1801,11 @@ def cli():
                 filename = data.get("filename")
                 if content and filename:
                     pending_dir = sw_handoff_dir / "pending"
+                    claimed_dir = sw_handoff_dir / "claimed"
                     local_file = pending_dir / filename
+                    # Skip if already claimed in a previous session
+                    if (claimed_dir / filename).exists():
+                        return
                     if not local_file.exists():
                         pending_dir.mkdir(parents=True, exist_ok=True)
                         try:

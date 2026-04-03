@@ -1613,6 +1613,72 @@ class TestSignalWatchCli:
 
         assert not (state_dir / "handoff-pending-c-sw-9").exists()
 
+    def test_signal_watch_when_nats_delivers_already_claimed_file_then_skips(self, tmp_path):
+        """NATS re-delivers a message for a handoff already in claimed/ — must not re-dispatch.
+
+        Regression test for bug where NATS durable consumer re-delivered an old message
+        and signal-watch re-wrote the file to pending/, causing mis-routing to wrong session.
+        """
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        claimed = handoff_dir / "claimed"
+        pending.mkdir(parents=True)
+        claimed.mkdir(parents=True)
+        file_content = (
+            '---\nid: "4"\ntitle: "test-drain-4"\nfor_machine: mac\n'
+            'claimed_by: "c-ai-cli-2"\nclaimed_at: "2026-04-01T21:23:40Z"\n---\n\nAlready done.\n'
+        )
+        # File exists in claimed/, not pending/ (already picked up by a previous session)
+        (claimed / "004-test-drain-4.md").write_text(file_content)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = json.dumps(
+                    {
+                        "id": 4,
+                        "title": "test-drain-4",
+                        "priority": "P1",
+                        "message": "Already done.",
+                        "for_machine": "mac",
+                        "content": file_content,
+                        "filename": "004-test-drain-4.md",
+                    }
+                ).encode()
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "ai-cli-utils", "c-mobile-1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "mac"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # Must NOT re-dispatch — file in claimed/ should block re-write to pending/
+        assert not (pending / "004-test-drain-4.md").exists()
+        assert not (state_dir / "handoff-pending-c-mobile-1").exists()
+
 
 # --- ai handoff post --remote ---
 
