@@ -105,3 +105,16 @@ Use when a task touches 3+ files or involves shared state across modules:
 - Specify the expected output format and success criteria
 </agent_spawn_checkpoint>
 ```
+
+### 7. Post-Implementation Architecture Doc Update
+
+Trigger: completing work that adds or changes a service, MCP tool, data model, subsystem, or cross-machine integration.
+
+```xml
+<architecture_update_checkpoint>
+- Determine whether the completed work changes any external interface, component, or system integration
+- If yes: identify which sections of docs/designs/architecture.md need updating and make the update
+- If no change needed: state explicitly why (e.g., "internal refactor, no interface or component changes")
+- Ship the update in the same commit as implementation, or immediately after — never batch it for later
+</architecture_update_checkpoint>
+```

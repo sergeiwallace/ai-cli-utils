@@ -40,5 +40,6 @@ Before each of these operations, pause and run the relevant checkpoint from `doc
 - DB migration: Read current schema. Grep all callers. Write rollback first. Full test suite after.
 - Multi-file edit (3+ files or shared state): Map dependency chain. Sequence for valid intermediate states. Run tests after each logical unit.
 - Test writing: Read full AC list first. Map ACs to tests 1:1. Include failure-path tests. Verify each test fails with `pass` body.
+- Architecture doc update (new service/tool/model/subsystem/integration): follow docs/procedures/reasoning-checkpoints.md §7. If no change needed, state why explicitly — don't silently skip.
 </engineer_checkpoints>
 ```
