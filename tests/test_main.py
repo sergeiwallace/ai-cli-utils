@@ -44,7 +44,6 @@ from ai_cli.main import (
     _is_iterm2,
     _load_iterm2_config,
     _iterm2_palette,
-    _iterm2_color_schemes,
     _assign_iterm2_color_slot,
     _release_iterm2_color_slot,
     _find_best_handoff,
@@ -3658,75 +3657,73 @@ class TestEmitIterm2ProfileSetup:
             _emit_iterm2_profile_setup("sw-1", "c")
         assert capsys.readouterr().out == ""
 
-    def test_when_lc_terminal_is_iterm2_and_claude_engine_then_emits_profile_and_color(self, capsys):
+    def test_when_lc_terminal_is_iterm2_and_claude_engine_then_emits_dynamic_profile_and_color(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("sw-3", "c")
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        _emit_iterm2_profile_setup("sw-3", "c")
         out = capsys.readouterr().out
-        assert "SetProfile=ClaudeCode" in out
+        assert "SetProfile=ai-cli:sw-3" in out
         assert "SetColors=tab=" in out
 
-    def test_when_lc_terminal_is_iterm2_and_gemini_engine_then_emits_gemini_profile(self, capsys):
+    def test_when_lc_terminal_is_iterm2_and_gemini_engine_then_emits_dynamic_profile(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("ai-dojo-1", "g")
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        _emit_iterm2_profile_setup("ai-dojo-1", "g")
         out = capsys.readouterr().out
-        assert "SetProfile=GeminiCLI" in out
-        assert "SetColors=tab=" in out  # Gemini now also gets a dynamic tab color
+        assert "SetProfile=ai-cli:ai-dojo-1" in out
+        assert "SetColors=tab=" in out
 
     def test_when_term_program_is_iterm_app_then_also_activates(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": "iTerm.app"}, clear=False):
             with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("sw-1", "c")
-        assert "SetProfile=ClaudeCode" in capsys.readouterr().out
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        _emit_iterm2_profile_setup("sw-1", "c")
+        assert "SetProfile=ai-cli:sw-1" in capsys.readouterr().out
 
-    def test_when_session_has_no_trailing_number_then_defaults_to_color_index_1(self, capsys):
+    def test_when_session_arg_provided_then_profile_uses_ai_name_not_session(self, capsys):
+        # profile name is always ai-cli:{ai_name}; session arg only affects OSC 1 title
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("no-number", "c")
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
         out = capsys.readouterr().out
+        assert "SetProfile=ai-cli:sw-1" in out
         assert "SetColors=tab=" in out
 
-    def test_when_unknown_engine_then_writes_nothing(self, capsys):
+    def test_uses_osc1_not_osc0_for_title(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("sw-1", "x")
-        assert capsys.readouterr().out == ""
-
-    def test_when_iterm2_and_cc_engine_then_emits_osc0_title_with_session_name(self, capsys):
-        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
         out = capsys.readouterr().out
-        assert "\033]0;" in out
-        assert "c-sw-1" in out
-        assert "*" in out  # cc type symbol (show_type_symbol defaults True)
+        assert "\033]1;" in out  # OSC 1 — iTerm2 Name field
+        assert "\033]0;" not in out  # OSC 0 not used
 
-    def test_when_slot_provided_then_uses_slot_color_and_profile(self, capsys):
-        slot = ("1abc9c", "ClaudeCode-Teal", "GeminiCLI-Navy")
+    def test_when_slot_provided_then_uses_slot_color(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("sw-5", "c", session="c-sw-5", slot=slot)
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        _emit_iterm2_profile_setup("sw-5", "c", session="c-sw-5", slot="#1abc9c")
         out = capsys.readouterr().out
-        assert "SetProfile=ClaudeCode-Teal" in out
+        assert "SetProfile=ai-cli:sw-5" in out
         assert "SetColors=tab=1abc9c" in out
 
-    def test_when_show_type_symbol_false_then_no_type_symbol_in_title(self, capsys):
-        cfg = {"iterm2": {"tab_title": {"show_type_symbol": False, "show_status_symbol": True}}}
+    def test_icon_generation_failure_does_not_block_launch(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
-                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+                with patch("ai_cli.icon_generator.generate_session_icon", side_effect=RuntimeError("fail")):
+                    _emit_iterm2_profile_setup("sw-1", "c")
+        # Should still emit profile/color/title despite icon error
         out = capsys.readouterr().out
-        assert "\033]0;" in out
-        assert "* " not in out  # type symbol suppressed
-
-    def test_when_show_status_symbol_false_then_no_status_symbol_in_title(self, capsys):
-        cfg = {"iterm2": {"tab_title": {"show_type_symbol": True, "show_status_symbol": False}}}
-        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
-                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        out = capsys.readouterr().out
-        assert "▶" not in out  # status symbol suppressed
+        assert "SetProfile=ai-cli:sw-1" in out
 
 
 class TestProjectPathSeparatorValidation:
@@ -3995,14 +3992,15 @@ class TestIterm2StateDir:
 class TestEmitIterm2ProfileSetupGeminiWithIterm2Env:
     """Tests for gemini engine + ITERM_SESSION_ID in _emit_iterm2_profile_setup."""
 
-    def test_when_gemini_engine_and_iterm_session_id_set_then_emits_profile_and_title(self, capsys):
+    def test_when_gemini_engine_and_iterm_session_id_set_then_emits_dynamic_profile(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
             with patch("ai_cli.main._load_iterm2_config", return_value={}):
-                _emit_iterm2_profile_setup("research-1", "g")
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        _emit_iterm2_profile_setup("research-1", "g")
         out = capsys.readouterr().out
-        assert "SetProfile=GeminiCLI" in out
-        assert "\033]0;" in out
-        assert "✦" in out
+        assert "SetProfile=ai-cli:research-1" in out
+        assert "\033]1;" in out
         assert "research-1" in out
 
 
@@ -5257,75 +5255,40 @@ class TestIterm2Palette:
         assert _iterm2_palette({}) == []
 
 
-class TestIterm2ColorSchemes:
-    def test_returns_dict_with_claude_and_gemini_profiles(self):
-        cfg = {
-            "iterm2": {
-                "color_schemes": {
-                    "red": ["ClaudeCode-White", "GeminiCLI-White"],
-                    "blue": ["ClaudeCode-Coral", "GeminiCLI-Gold"],
-                }
-            }
-        }
-        result = _iterm2_color_schemes(cfg)
-        assert result["red"] == ("ClaudeCode-White", "GeminiCLI-White")
-        assert result["blue"] == ("ClaudeCode-Coral", "GeminiCLI-Gold")
-
-    def test_when_schemes_missing_then_returns_empty_dict(self):
-        assert _iterm2_color_schemes({}) == {}
-
-    def test_skips_entries_with_wrong_length(self):
-        cfg = {
-            "iterm2": {
-                "color_schemes": {
-                    "good": ["ClaudeCode-White", "GeminiCLI-White"],
-                    "bad": ["OnlyOne"],
-                }
-            }
-        }
-        result = _iterm2_color_schemes(cfg)
-        assert "good" in result
-        assert "bad" not in result
-
-
 # ---------------------------------------------------------------------------
 # Color lease system
 # ---------------------------------------------------------------------------
 
 
 class TestAssignIterm2ColorSlot:
-    def _make_cfg(self, palette=None, schemes=None, collision=True):
+    def _make_cfg(self, palette=None, collision=True, project_colors=None):
         p = palette or {"red": "#e74c3c", "blue": "#1e88e5", "green": "#2ecc71"}
-        s = schemes or {
-            "red": ["ClaudeCode-White", "GeminiCLI-White"],
-            "blue": ["ClaudeCode-Coral", "GeminiCLI-Gold"],
-            "green": ["ClaudeCode-Purple", "GeminiCLI-Navy"],
-        }
-        return {
+        cfg: dict = {
             "iterm2": {
                 "enabled": True,
                 "color": {"enabled": True, "collision_avoidance": collision},
                 "palette": p,
-                "color_schemes": s,
             }
         }
+        if project_colors:
+            cfg["iterm2"]["project_colors"] = project_colors
+        return cfg
 
     def test_when_not_iterm2_then_returns_none(self, tmp_path):
         with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": ""}, clear=False):
             result = _assign_iterm2_color_slot("sw-1", "c")
         assert result is None
 
-    def test_when_iterm2_then_returns_slot_tuple(self, tmp_path):
+    def test_when_iterm2_then_returns_hex_string(self, tmp_path):
         cfg = self._make_cfg()
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
                     result = _assign_iterm2_color_slot("sw-1", "c")
         assert result is not None
-        color, claude_prof, gemini_prof = result
-        assert isinstance(color, str) and len(color) == 6
-        assert claude_prof.startswith("ClaudeCode")
-        assert gemini_prof.startswith("GeminiCLI")
+        assert isinstance(result, str)
+        # Result should be a hex string (with or without #)
+        assert len(result.lstrip("#")) == 6
 
     def test_when_collision_avoidance_assigns_unique_slots(self, tmp_path):
         cfg = self._make_cfg()
@@ -5335,34 +5298,27 @@ class TestAssignIterm2ColorSlot:
                     slot1 = _assign_iterm2_color_slot("sw-1", "c")
                     slot2 = _assign_iterm2_color_slot("sw-2", "c")
                     slot3 = _assign_iterm2_color_slot("sw-3", "c")
-        colors = {s[0] for s in [slot1, slot2, slot3]}
-        assert len(colors) == 3  # all three get different colors
+        assert len({slot1, slot2, slot3}) == 3  # all three get different colors
 
     def test_when_all_slots_occupied_wraps_to_first(self, tmp_path):
         # Only 2 colors in palette, 3 sessions — third wraps
-        cfg = self._make_cfg(
-            palette={"red": "#e74c3c", "blue": "#1e88e5"},
-            schemes={"red": ["ClaudeCode-White", "GeminiCLI-White"], "blue": ["ClaudeCode-Coral", "GeminiCLI-Gold"]},
-        )
+        cfg = self._make_cfg(palette={"red": "#e74c3c", "blue": "#1e88e5"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
                     _assign_iterm2_color_slot("sw-1", "c")
                     _assign_iterm2_color_slot("sw-2", "c")
                     slot3 = _assign_iterm2_color_slot("sw-3", "c")
-        # Wraps back to slot 0 (first available when none free)
         assert slot3 is not None
 
     def test_stale_lease_pruned_on_assignment(self, tmp_path):
         cfg = self._make_cfg()
-        # Write a lease with a dead PID
         lease_file = tmp_path / "color-leases.json"
         lease_file.write_text(json.dumps({"leases": {"sw-dead": {"slot": 0, "pid": 999999999, "ts": "0"}}}))
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
                     slot = _assign_iterm2_color_slot("sw-1", "c")
-        # Slot 0 should be available again after stale lease pruned
         leases = json.loads(lease_file.read_text())["leases"]
         assert "sw-dead" not in leases
         assert "sw-1" in leases
@@ -5376,7 +5332,27 @@ class TestAssignIterm2ColorSlot:
                     slot = _assign_iterm2_color_slot("sw-2", "c")
         # sw-2 → num=2 → (2-1) % 3 = 1 → blue
         assert slot is not None
-        assert slot[0] == "1e88e5"  # blue hex
+        assert slot.lstrip("#") == "1e88e5"  # blue hex
+
+    def test_project_colors_pins_preferred_slot(self, tmp_path):
+        cfg = self._make_cfg(project_colors={"myproject": "green"})
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+                    slot = _assign_iterm2_color_slot("sw-1", "c", project_name="myproject")
+        assert slot is not None
+        assert slot.lstrip("#") == "2ecc71"  # green hex
+
+    def test_project_colors_falls_back_when_preferred_occupied(self, tmp_path):
+        cfg = self._make_cfg(project_colors={"myproject": "red"})
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+                    _assign_iterm2_color_slot("other-session", "c")  # occupies slot 0 (red)
+                    slot = _assign_iterm2_color_slot("sw-1", "c", project_name="myproject")
+        # red is occupied, falls back to next free
+        assert slot is not None
+        assert slot.lstrip("#") != "e74c3c"  # not red
 
 
 class TestReleaseIterm2ColorSlot:
@@ -5424,8 +5400,7 @@ class TestReleaseColorSlotCommand:
 
 
 class TestGetEngineScriptIterm2Slot:
-    def test_when_slot_provided_then_embedded_in_script(self):
-        slot = ("ff5722", "ClaudeCode-Cyan", "GeminiCLI-Gold")
+    def test_when_slot_provided_then_color_embedded_in_script(self):
         cfg = {"iterm2": {"tab_title": {"show_type_symbol": True, "show_status_symbol": True}}}
         script = get_engine_script(
             "c",
@@ -5433,12 +5408,14 @@ class TestGetEngineScriptIterm2Slot:
             "c-sw-1",
             "c-sw-",
             "sw",
-            iterm2_slot=slot,
+            iterm2_slot="#ff5722",
             iterm2_cfg=cfg,
         )
         assert '_iterm2_color="ff5722"' in script
-        assert '_iterm2_claude_profile="ClaudeCode-Cyan"' in script
-        assert '_iterm2_gemini_profile="GeminiCLI-Gold"' in script
+
+    def test_slot_with_hash_prefix_stripped_in_script(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", iterm2_slot="#1e88e5")
+        assert '_iterm2_color="1e88e5"' in script
 
     def test_when_show_type_symbol_false_then_flag_is_0_in_script(self):
         cfg = {"iterm2": {"tab_title": {"show_type_symbol": False, "show_status_symbol": True}}}
@@ -5450,18 +5427,33 @@ class TestGetEngineScriptIterm2Slot:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", iterm2_cfg=cfg)
         assert '_iterm2_show_status_sym="0"' in script
 
-    def test_when_no_slot_then_fallback_defaults_embedded(self):
+    def test_when_no_slot_then_fallback_color_embedded(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert '_iterm2_color="e74c3c"' in script
-        assert '_iterm2_claude_profile="ClaudeCode-Coral"' in script
 
-    def test_script_calls_fleet_setup_with_session_type_and_name(self):
+    def test_no_static_profile_vars_in_script(self):
+        # Profile is always derived as ai-cli:$ai_name — never static names
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert '_iterm2_fleet_setup "$_session_type" "$tmux_session"' in script
+        assert "_iterm2_claude_profile" not in script
+        assert "_iterm2_gemini_profile" not in script
+
+    def test_script_calls_fleet_setup_with_session_name(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert '_iterm2_fleet_setup "$tmux_session"' in script
 
     def test_script_release_color_slot_in_exit_trap(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert 'ai internal release-color-slot "$ai_name"' in script
+
+    def test_script_cleanup_session_files_in_exit_trap(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert 'ai internal cleanup-session-files "$ai_name"' in script
+
+    def test_fleet_setup_uses_osc1_not_osc0(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        # OSC 1 (\033]1;) sets iTerm2 Name field; mosh does not intercept it
+        assert "\\033]1;" in script
+        assert "\\033]0;" not in script
 
 
 # ---------------------------------------------------------------------------

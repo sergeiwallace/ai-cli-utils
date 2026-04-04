@@ -651,7 +651,8 @@ collision_avoidance = true
 [iterm2.palette]
 ## Named tab background colors available for auto-rotation.
 ## Add your own entries — they are included in the rotation pool.
-## For each custom color, add a matching entry in [iterm2.color_schemes] below.
+## Icon tint is auto-derived from each tab color via HSL color theory.
+## Override per-entry with: color_name.icon_color = "#hex"
 red         = "#e74c3c"
 orange      = "#e67e22"
 yellow      = "#f0b429"
@@ -664,24 +665,33 @@ pink        = "#d81b60"
 cyan        = "#00acc1"
 deep_orange = "#ff5722"
 lime        = "#7cb342"
-# indigo    = "#4f46e5"
-# rose      = "#f43f5e"
+indigo      = "#3949ab"
+rose        = "#f43f5e"
+amber       = "#ffb300"
+emerald     = "#059669"
 
-[iterm2.color_schemes]
-## Maps each palette color to [claude_profile, gemini_profile].
-## Pairings chosen by color theory: warm tab → cool icon, cool tab → warm icon.
-red         = ["ClaudeCode-White",  "GeminiCLI-White"]
-orange      = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
-yellow      = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
-green       = ["ClaudeCode-Purple", "GeminiCLI-Navy"]
-teal        = ["ClaudeCode-Coral",  "GeminiCLI-Navy"]
-sky_blue    = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
-blue        = ["ClaudeCode-Coral",  "GeminiCLI-Gold"]
-purple      = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
-pink        = ["ClaudeCode-Teal",   "GeminiCLI-White"]
-cyan        = ["ClaudeCode-White",  "GeminiCLI-White"]
-deep_orange = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
-lime        = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
+[iterm2.icon_color_overrides]
+## Optional: override the auto-derived icon tint for specific palette entries.
+## If omitted, tint is computed automatically (complementary hue + contrast).
+# red    = "#ffffff"
+# purple = "#ffd700"
+
+[iterm2.project_colors]
+## Pin specific projects or session names to a fixed palette color slot.
+## If the preferred slot is occupied, falls back to lowest free slot.
+# sergei    = "purple"
+# artelier  = "teal"
+# ai-cli-1  = "blue"
+
+[iterm2.base_profiles]
+## iTerm2 base profiles for each session type.
+## The generated Dynamic Profile inherits from these.
+cc         = "ClaudeCode"
+gemini     = "GeminiCLI"
+shell      = "ShellUtility"
+chrome     = "ChromeDebug"
+caffeinate = "Caffeinate"
+ssh        = "SSHForward"
 """
 
 
@@ -718,18 +728,15 @@ def _iterm2_palette(cfg: dict) -> list[tuple[str, str]]:
     return [(name, val.lstrip("#")) for name, val in raw.items()]
 
 
-def _iterm2_color_schemes(cfg: dict) -> dict[str, tuple[str, str]]:
-    """Return dict mapping color name to (claude_profile, gemini_profile)."""
-    raw = cfg.get("iterm2", {}).get("color_schemes", {})
-    return {name: (p[0], p[1]) for name, p in raw.items() if isinstance(p, list) and len(p) == 2}
+def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "") -> str | None:
+    """Assign a collision-free tab color for this session.
 
-
-def _assign_iterm2_color_slot(ai_name: str, engine: str) -> tuple[str, str, str] | None:
-    """Assign a collision-free tab color slot for this session.
-
-    Returns (color_hex, claude_profile, gemini_profile) or None if not in iTerm2.
-    Writes a PID-keyed lease entry to color-leases.json.  Stale leases (dead PIDs)
+    Returns the color hex string (e.g. "e74c3c") or None if not in iTerm2.
+    Writes a PID-keyed lease entry to color-leases.json. Stale leases (dead PIDs)
     are pruned on each call so the pool stays clean across crashes.
+
+    project_colors config can pin specific project/session names to a fixed
+    palette color name; falls back to lowest free slot if that slot is occupied.
     """
     if not _is_iterm2():
         return None
@@ -740,9 +747,15 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str) -> tuple[str, str, str]
         return None
 
     palette = _iterm2_palette(cfg)
-    schemes = _iterm2_color_schemes(cfg)
     if not palette:
         return None
+
+    palette_names = [name for name, _ in palette]
+    palette_dict = dict(palette)
+
+    # Check project_colors preference
+    project_colors = cfg.get("iterm2", {}).get("project_colors", {})
+    preferred_color_name = project_colors.get(project_name) or project_colors.get(ai_name)
 
     lease_file = _iterm2_state_dir() / "color-leases.json"
     lock_path = _iterm2_state_dir() / "color-leases.lock"
@@ -767,23 +780,32 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str) -> tuple[str, str, str]
                 except (ProcessLookupError, PermissionError):
                     pass
 
+            occupied = {info["slot"] for info in active.values()}
+
             use_avoidance = cfg.get("iterm2", {}).get("color", {}).get("collision_avoidance", True)
             if use_avoidance:
-                occupied = {info["slot"] for info in active.values()}
-                slot_idx = next((i for i in range(len(palette)) if i not in occupied), 0)
+                # Try preferred color first (project_colors pin)
+                if preferred_color_name and preferred_color_name in palette_names:
+                    preferred_idx = palette_names.index(preferred_color_name)
+                    if preferred_idx not in occupied:
+                        slot_idx = preferred_idx
+                    else:
+                        slot_idx = next((i for i in range(len(palette)) if i not in occupied), 0)
+                else:
+                    slot_idx = next((i for i in range(len(palette)) if i not in occupied), 0)
             else:
                 m = re.search(r"\d+$", ai_name)
                 num = int(m.group()) if m else 1
                 slot_idx = (num - 1) % len(palette)
 
-            slot_name, color_hex = palette[slot_idx]
+            slot_name = palette_names[slot_idx]
+            color_hex = palette_dict[slot_name]
             active[ai_name] = {"slot": slot_idx, "pid": os.getpid(), "ts": str(time.time())}
             lease_file.write_text(json.dumps({"leases": active}, indent=2))
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
-    claude_profile, gemini_profile = schemes.get(slot_name, ("ClaudeCode-Coral", "GeminiCLI-White"))
-    return (color_hex, claude_profile, gemini_profile)
+    return color_hex
 
 
 def _release_iterm2_color_slot(ai_name: str) -> None:
@@ -806,53 +828,66 @@ def _release_iterm2_color_slot(ai_name: str) -> None:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
 
+def _iterm2_session_type(engine: str) -> str:
+    """Map engine string to icon_generator session_type."""
+    return "cc" if engine == "c" else "gemini" if engine == "g" else "shell"
+
+
 def _emit_iterm2_profile_setup(
     ai_name: str,
     engine: str,
     session: str = "",
-    slot: tuple[str, str, str] | None = None,
+    slot: str | None = None,
 ) -> None:
     """Emit iTerm2 profile/color/title escape sequences directly to stdout.
 
     Called before os.execvp so sequences reach iTerm2 before tmux takes over.
     No DCS wrapping needed — we're not inside tmux yet at this point.
 
-    slot: (color_hex, claude_profile, gemini_profile) from _assign_iterm2_color_slot.
+    Also generates the per-session Dynamic Profile JSON (with tinted icon) so
+    iTerm2 can hot-reload it.  The generated profile name is ai-cli:{ai_name}.
+
+    slot: color hex string from _assign_iterm2_color_slot, e.g. "#5e35b1".
     """
     if not _is_iterm2():
         return
 
     cfg = _load_iterm2_config()
-    show_type = cfg.get("iterm2", {}).get("tab_title", {}).get("show_type_symbol", True)
-    show_status = cfg.get("iterm2", {}).get("tab_title", {}).get("show_status_symbol", True)
     session_name = session or ai_name
+    session_type = _iterm2_session_type(engine)
 
-    type_sym = ""
-    if show_type:
-        type_sym = "* " if engine == "c" else "✦ " if engine == "g" else ""
-    status_sym = "▶ " if show_status else ""
+    # Resolve color
+    if slot:
+        color_hex = slot if slot.startswith("#") else f"#{slot}"
+    else:
+        palette = _iterm2_palette(cfg)
+        color_hex = f"#{palette[0][1]}" if palette else "#e74c3c"
 
-    if engine == "c":
-        if slot:
-            color, profile, _ = slot
-        else:
-            # Fallback: use first palette entry (should not happen in normal operation)
-            palette = _iterm2_palette(cfg)
-            color, profile = (palette[0][1], "ClaudeCode-Coral") if palette else ("e74c3c", "ClaudeCode-Coral")
-        sys.stdout.write(f"\033]1337;SetProfile={profile}\007")
-        sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
-        sys.stdout.write(f"\033]0; {type_sym}{status_sym}{session_name}\007")
-        sys.stdout.flush()
-    elif engine == "g":
-        if slot:
-            color, _, g_profile = slot
-        else:
-            palette = _iterm2_palette(cfg)
-            color, g_profile = (palette[0][1], "GeminiCLI-White") if palette else ("e74c3c", "GeminiCLI-White")
-        sys.stdout.write(f"\033]1337;SetProfile={g_profile}\007")
-        sys.stdout.write(f"\033]1337;SetColors=tab={color}\007")
-        sys.stdout.write(f"\033]0; {type_sym}{status_sym}{session_name}\007")
-        sys.stdout.flush()
+    # Generate icon + Dynamic Profile
+    try:
+        from . import icon_generator as _ig
+
+        icon_color_overrides = cfg.get("iterm2", {}).get("icon_color_overrides", {})
+        # Find which palette slot name this color maps to for override lookup
+        palette_name = next(
+            (n for n, h in _iterm2_palette(cfg) if f"#{h}" == color_hex or h == color_hex.lstrip("#")),
+            None,
+        )
+        icon_color = icon_color_overrides.get(palette_name) if palette_name else None
+
+        icon_path = _ig.generate_session_icon(ai_name, color_hex, session_type, icon_color)
+        _ig.generate_dynamic_profile(ai_name, color_hex, session_type, icon_path)
+    except Exception:
+        pass  # Icon generation failure must never block session launch
+
+    # Emit profile/color/title sequences
+    profile_name = f"ai-cli:{ai_name}"
+    color_no_hash = color_hex.lstrip("#")
+    sys.stdout.write(f"\033]1337;SetProfile={profile_name}\007")
+    sys.stdout.write(f"\033]1337;SetColors=tab={color_no_hash}\007")
+    # OSC 1 sets the iTerm2 "Name" field — mosh does not intercept it
+    sys.stdout.write(f"\033]1;{session_name}\007")
+    sys.stdout.flush()
 
 
 # --- Script Generation ---
@@ -870,7 +905,7 @@ def get_engine_script(
     notify: bool = False,
     is_remote: bool = False,
     project_name: str = "",
-    iterm2_slot: tuple[str, str, str] | None = None,
+    iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
     config_reload_idle_secs: int = 90,
 ) -> str:
@@ -890,10 +925,7 @@ def get_engine_script(
 
     # Resolve iTerm2 slot values for embedding in bash template
     _cfg = iterm2_cfg or {}
-    if iterm2_slot:
-        _it2_color, _it2_claude_profile, _it2_gemini_profile = iterm2_slot
-    else:
-        _it2_color, _it2_claude_profile, _it2_gemini_profile = ("e74c3c", "ClaudeCode-Coral", "GeminiCLI-White")
+    _it2_color = (iterm2_slot.lstrip("#") if iterm2_slot else None) or "e74c3c"
     _it2_show_type = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_type_symbol", True) else "0"
     _it2_show_status = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_status_symbol", True) else "0"
 
@@ -912,9 +944,8 @@ def get_engine_script(
 
     # iTerm2 slot assigned by Python at launch time (collision-free lease system).
     # These variables are constant for the lifetime of this session.
+    # Profile name is deterministic: ai-cli:$ai_name (generated Dynamic Profile).
     _iterm2_color="{_it2_color}"
-    _iterm2_claude_profile="{_it2_claude_profile}"
-    _iterm2_gemini_profile="{_it2_gemini_profile}"
     _iterm2_show_type_sym="{_it2_show_type}"
     _iterm2_show_status_sym="{_it2_show_status}"
 
@@ -1048,23 +1079,16 @@ def get_engine_script(
 
     _iterm2_fleet_setup() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
-      local stype="$1" sname="$2"
-      local type_sym="" status_sym=""
-      [[ "$_iterm2_show_type_sym" == "1" ]] && {{
-        [[ "$stype" == "cc" ]]     && type_sym="* "
-        [[ "$stype" == "gemini" ]] && type_sym="✦ "
-      }}
-      [[ "$_iterm2_show_status_sym" == "1" ]] && status_sym="▶ "
-      case "$stype" in
-        cc)     _it2 "\\033]1337;SetProfile=$_iterm2_claude_profile\\007" ;;
-        gemini) _it2 "\\033]1337;SetProfile=$_iterm2_gemini_profile\\007" ;;
-        *) return 0 ;;
-      esac
+      local sname="$1"
+      # Profile name is deterministic — matches the Dynamic Profile generated by Python
+      local _profile="ai-cli:$ai_name"
+      _it2 "\\033]1337;SetProfile=$_profile\\007"
       _it2 "\\033]1337;SetColors=tab=$_iterm2_color\\007"
-      _it2 "\\033]0; ${{type_sym}}${{status_sym}}$sname\\007"
+      # OSC 1 sets the iTerm2 "Name" field; mosh does not intercept it
+      _it2 "\\033]1;$sname\\007"
     }}
 
-    # iTerm2 status updates: re-emit pane title with updated status symbol.
+    # iTerm2 status updates: re-emit pane title with optional status symbol.
     _iterm2_status() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local status="$1" stype="$2" sname="$3"
@@ -1083,26 +1107,26 @@ def get_engine_script(
         esac
         sym="$sym "
       fi
-      _it2 "\\033]0; ${{type_sym}}${{sym}}$sname\\007"
+      _it2 "\\033]1;${{type_sym}}${{sym}}$sname\\007"
     }}
 
     # Extract session number from ai_name (e.g., "sw-3" → "3") for downstream hooks.
     _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
-    _iterm2_fleet_setup "$_session_type" "$tmux_session"
+    _iterm2_fleet_setup "$tmux_session"
 
     # Export for CC Notification hook to use
     export ITERM2_SESSION_NUM="$_session_num"
     export ITERM2_SESSION_TYPE="$_session_type"
 
-    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session" "$config_hash_file" "$config_changed_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null' EXIT
+    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session" "$config_hash_file" "$config_changed_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null; ai internal cleanup-session-files "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
       start_ts=$(date +%s)
       # Re-emit iTerm2 setup + set status to running
-      _iterm2_fleet_setup "$_session_type" "$tmux_session"
+      _iterm2_fleet_setup "$tmux_session"
       _iterm2_status "running" "$_session_type" "$tmux_session"
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
@@ -1712,6 +1736,14 @@ def cli():
                 sys.exit(1)
             _release_iterm2_color_slot(sys.argv[3])
             sys.exit(0)
+        elif action == "cleanup-session-files":
+            if len(sys.argv) < 4:
+                print("Usage: ai internal cleanup-session-files <ai_name>", file=sys.stderr)
+                sys.exit(1)
+            from . import icon_generator as _ig_cs
+
+            _ig_cs.cleanup_session_files(sys.argv[3])
+            sys.exit(0)
         elif action == "get-version":
             try:
                 from importlib.metadata import version as _pkg_version
@@ -2155,6 +2187,55 @@ def cli():
             if idx + 1 < len(sys.argv):
                 project_filter = sys.argv[idx + 1]
         sys.exit(run_copier_update(dry_run=dry_run, project_filter=project_filter))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "layout":
+        from .layout import run_layout_command
+
+        sys.exit(run_layout_command(sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "color":
+        # ai color <palette_name_or_hex> — reassign iTerm2 color for the current session
+        if len(sys.argv) < 3:
+            print("Usage: ai color <palette-color-name-or-hex>", file=sys.stderr)
+            sys.exit(1)
+        _color_arg = sys.argv[2]
+        _ai_name_env = os.environ.get("AI_TMUX_SESSION", "")
+        if not _ai_name_env:
+            print("ai color: not inside an ai session (AI_TMUX_SESSION not set)", file=sys.stderr)
+            sys.exit(1)
+        # Resolve color arg: named palette entry or raw hex
+        _iterm2_cfg_c = _load_iterm2_config()
+        _palette_c = dict(_iterm2_palette(_iterm2_cfg_c))
+        if _color_arg.startswith("#"):
+            _new_hex = _color_arg
+        elif _color_arg in _palette_c:
+            _new_hex = f"#{_palette_c[_color_arg]}"
+        else:
+            print(f"ai color: unknown color '{_color_arg}'. Use a palette name or #RRGGBB.", file=sys.stderr)
+            sys.exit(1)
+        # Determine engine from session name convention
+        _engine_c = "g" if _ai_name_env.startswith("g-") else "c"
+        _session_type_c = _iterm2_session_type(_engine_c)
+        try:
+            from . import icon_generator as _ig_c
+
+            _icon_color_overrides_c = _iterm2_cfg_c.get("iterm2", {}).get("icon_color_overrides", {})
+            _pname_c = next(
+                (n for n, h in _iterm2_palette(_iterm2_cfg_c) if f"#{h}" == _new_hex or h == _new_hex.lstrip("#")), None
+            )
+            _icon_color_c = _icon_color_overrides_c.get(_pname_c) if _pname_c else None
+            _ig_c.cleanup_session_files(_ai_name_env)
+            _icon_path_c = _ig_c.generate_session_icon(_ai_name_env, _new_hex, _session_type_c, _icon_color_c)
+            _ig_c.generate_dynamic_profile(_ai_name_env, _new_hex, _session_type_c, _icon_path_c)
+        except Exception as e:
+            print(f"ai color: icon generation failed: {e}", file=sys.stderr)
+        _color_no_hash_c = _new_hex.lstrip("#")
+        _profile_name_c = f"ai-cli:{_ai_name_env}"
+        sys.stdout.write(f"\033]1337;SetProfile={_profile_name_c}\007")
+        sys.stdout.write(f"\033]1337;SetColors=tab={_color_no_hash_c}\007")
+        sys.stdout.flush()
+        print(f"Color updated to {_new_hex}")
+        sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] == "tunnel":
         if len(sys.argv) < 3:
@@ -2662,7 +2743,7 @@ def cli():
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
     _iterm2_cfg = _load_iterm2_config()
-    _iterm2_slot = _assign_iterm2_color_slot(ai_name, engine)
+    _iterm2_slot = _assign_iterm2_color_slot(ai_name, engine, project_name=current_project_name)
 
     _config_reload_idle_secs = int(config.get("session", {}).get("config_reload_idle_secs", 90))
     script = get_engine_script(

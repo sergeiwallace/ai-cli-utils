@@ -30,6 +30,7 @@ dependencies = [
     "watchdog>=4.0.0",
     "google-genai>=1.0.0",
     "pyyaml>=6.0",
+    "pillow>=10.0",
 ]
 
 [project.urls]
@@ -47,6 +48,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_cli"]
+artifacts = ["src/ai_cli/data/**"]
 
 [project.optional-dependencies]
 dev = [
