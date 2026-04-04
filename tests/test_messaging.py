@@ -273,10 +273,12 @@ class TestSshTunnel:
             mock_conn.__exit__ = MagicMock(return_value=False)
             return mock_conn  # tunnel up on retry
 
+        fake_cfg = {"remote": {"host": "178.104.70.139", "user": "sergei", "port": 22}}
         with patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection):
             with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen:
                 with patch("asyncio.sleep", new=AsyncMock()):
-                    asyncio.run(client._open_ssh_tunnel())
+                    with patch("ai_cli.main.load_config", return_value=fake_cfg):
+                        asyncio.run(client._open_ssh_tunnel())
 
         mock_popen.assert_called_once_with(
             ["ssh", "-fNL", "4222:localhost:4222", "-p", "22", "sergei@178.104.70.139"],

@@ -872,6 +872,7 @@ def get_engine_script(
     project_name: str = "",
     iterm2_slot: tuple[str, str, str] | None = None,
     iterm2_cfg: dict | None = None,
+    config_reload_idle_secs: int = 90,
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
@@ -935,6 +936,12 @@ def get_engine_script(
     fi
     lock_file="$_ai_state_dir/ai-watcher-lock-$tmux_session"
     handoff_pending_file="$_ai_state_dir/handoff-pending-$tmux_session"
+    config_hash_file="$_ai_state_dir/config-hash-$tmux_session"
+    config_changed_file="$_ai_state_dir/config-changed-$tmux_session"
+    _config_reload_idle_secs={config_reload_idle_secs}
+
+    # Write initial config hash baseline for change detection
+    cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1 > "$config_hash_file"
 
     export AI_TMUX_SESSION="$tmux_session"
     export {env_var_prefix}_TMUX_SESSION="$tmux_session"
@@ -973,6 +980,31 @@ def get_engine_script(
           fi
           tmux send-keys -t "$tmux_session" '/exit' C-m
           break
+        fi
+
+        # Config change detection (CC only, every 10s)
+        if [[ "$engine" == "c" ]] && (( counter % 10 == 0 )); then
+          _current_hash=$(cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1)
+          _last_hash=$(cat "$config_hash_file" 2>/dev/null || echo "")
+          if [[ -n "$_current_hash" && "$_current_hash" != "$_last_hash" && ! -f "$config_changed_file" ]]; then
+            date +%s > "$config_changed_file"
+          fi
+        fi
+
+        # Auto-restart when config changed and session has been idle long enough
+        if [[ -f "$config_changed_file" && ! -f "$signal_file" ]]; then
+          _changed_at=$(cat "$config_changed_file" 2>/dev/null || echo 0)
+          _idle_secs=$(( $(date +%s) - _changed_at ))
+          if (( _idle_secs >= _config_reload_idle_secs )); then
+            # Only fire if no text after the CC prompt (user is not mid-typing)
+            _last_line=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
+            if ! echo "$_last_line" | grep -qE '^[[:space:]]*>[[:space:]]+\\S'; then
+              _new_hash=$(cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1)
+              echo "$_new_hash" > "$config_hash_file"
+              rm -f "$config_changed_file"
+              touch "$signal_file"
+            fi
+          fi
         fi
         if [[ "$engine" == "g" && -f "$reload_file" ]]; then
           rm -f "$reload_file"
@@ -1064,7 +1096,7 @@ def get_engine_script(
     export ITERM2_SESSION_NUM="$_session_num"
     export ITERM2_SESSION_TYPE="$_session_type"
 
-    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null' EXIT
+    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session" "$config_hash_file" "$config_changed_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null' EXIT
 
     while true; do
       start_watcher
@@ -2109,6 +2141,21 @@ def cli():
         gemini_cli(sys.argv[2:])
         sys.exit(0)
 
+    if len(sys.argv) > 1 and sys.argv[1] == "copier-update":
+        host = os.environ.get("AI_CLI_HOST", config.get("machine", {}).get("host", ""))
+        if host and host != "mac":
+            print("copier-update: runs on Mac only", file=sys.stderr)
+            sys.exit(1)
+        from .copier_update import run_copier_update
+
+        dry_run = "--dry-run" in sys.argv
+        project_filter = None
+        if "--project" in sys.argv:
+            idx = sys.argv.index("--project")
+            if idx + 1 < len(sys.argv):
+                project_filter = sys.argv[idx + 1]
+        sys.exit(run_copier_update(dry_run=dry_run, project_filter=project_filter))
+
     if len(sys.argv) > 1 and sys.argv[1] == "tunnel":
         if len(sys.argv) < 3:
             print(
@@ -2617,6 +2664,7 @@ def cli():
     _iterm2_cfg = _load_iterm2_config()
     _iterm2_slot = _assign_iterm2_color_slot(ai_name, engine)
 
+    _config_reload_idle_secs = int(config.get("session", {}).get("config_reload_idle_secs", 90))
     script = get_engine_script(
         engine,
         ai_name,
@@ -2631,6 +2679,7 @@ def cli():
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
+        config_reload_idle_secs=_config_reload_idle_secs,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
