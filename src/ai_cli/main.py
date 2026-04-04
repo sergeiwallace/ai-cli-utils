@@ -2678,36 +2678,49 @@ def cli():
         ssh_args.append(f"{user}@{host}")
         ssh_args.append(f"bash -l -c {shlex.quote(remote_cmd)}")
 
-        if transport == "mosh" and not _is_vpn_active():
-            mosh_args = ["mosh"]
-            if port != "22":
-                mosh_args += [
-                    "--ssh",
-                    f"ssh -p {port}" + (f" -i {shlex.quote(os.path.expanduser(id_file))}" if id_file else ""),
-                ]
-            elif id_file:
-                mosh_args += ["--ssh", f"ssh -i {shlex.quote(os.path.expanduser(id_file))}"]
-            mosh_args.append(f"{user}@{host}")
-            mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
-            import time as _time
+        # Build mosh_args unconditionally — needed for both initial connection
+        # and for reconnecting after a VPN drop while on SSH.
+        mosh_args = ["mosh"]
+        if port != "22":
+            mosh_args += [
+                "--ssh",
+                f"ssh -p {port}" + (f" -i {shlex.quote(os.path.expanduser(id_file))}" if id_file else ""),
+            ]
+        elif id_file:
+            mosh_args += ["--ssh", f"ssh -i {shlex.quote(os.path.expanduser(id_file))}"]
+        mosh_args.append(f"{user}@{host}")
+        mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
 
-            _mosh_start = _time.monotonic()
-            _mosh_ret = subprocess.run(mosh_args).returncode
-            _mosh_elapsed = _time.monotonic() - _mosh_start
-            # Fast non-zero exit = connection failure (e.g. VPN blocks UDP). Fall
-            # back to SSH so active CC sessions remain reachable.
-            if _mosh_ret != 0 and _mosh_elapsed < 10:
-                print(
-                    f"\nmosh failed (exit {_mosh_ret}, {_mosh_elapsed:.1f}s) — falling back to ssh...",
-                    file=sys.stderr,
-                )
-                subprocess.run(ssh_args)
+        import time as _time
+
+        if transport == "mosh":
+            if _is_vpn_active():
+                # VPN active — skip mosh (UDP blocked), use SSH.
+                # Reconnect via mosh automatically when VPN drops.
+                print("VPN detected — using ssh instead of mosh", file=sys.stderr)
+                _ssh_ret = subprocess.run(ssh_args).returncode
+                if _ssh_ret != 0 and not _is_vpn_active():
+                    print("\nVPN disconnected — reconnecting via mosh...", file=sys.stderr)
+                    subprocess.run(mosh_args)
+            else:
+                _mosh_start = _time.monotonic()
+                _mosh_ret = subprocess.run(mosh_args).returncode
+                _mosh_elapsed = _time.monotonic() - _mosh_start
+                # Fast non-zero exit = connection failure (e.g. VPN blocks UDP).
+                # Fall back to SSH and reconnect via mosh if VPN later drops.
+                if _mosh_ret != 0 and _mosh_elapsed < 10:
+                    print(
+                        f"\nmosh failed (exit {_mosh_ret}, {_mosh_elapsed:.1f}s) — falling back to ssh...",
+                        file=sys.stderr,
+                    )
+                    _ssh_ret = subprocess.run(ssh_args).returncode
+                    if _ssh_ret != 0 and not _is_vpn_active():
+                        print("\nVPN disconnected — reconnecting via mosh...", file=sys.stderr)
+                        subprocess.run(mosh_args)
             subprocess.run(_cleanup_cmd, capture_output=True)
             sys.exit(0)
         else:
-            if transport == "mosh":
-                # VPN detected — skip mosh (UDP blocked), go straight to SSH.
-                print("VPN detected — using ssh instead of mosh", file=sys.stderr)
+            # Pure SSH transport — no mosh fallback or reconnect.
             os.execvp("bash", ["bash", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
 
     # When running as the remote side of an --remote session, cd into the project directory

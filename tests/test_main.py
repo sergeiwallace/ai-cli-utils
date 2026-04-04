@@ -3406,11 +3406,87 @@ class TestMoshVpnFallback:
 
     def test_when_vpn_active_then_ssh_is_used_directly(self):
         mock_run, mock_exec = self._run_mosh_remote(vpn_active=True)
+        # VPN path uses subprocess.run for SSH (not execvp) so reconnect can happen after
         mosh_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "mosh"]
         assert not mosh_calls, "mosh should be skipped when VPN is active"
-        assert mock_exec.called
-        cmd = mock_exec.call_args[0][1][2]
-        assert "ssh" in cmd
+        ssh_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "ssh"]
+        assert ssh_calls, "ssh should be called when VPN is active"
+
+
+class TestMoshReconnectAfterVpnDrop:
+    """After SSH exits non-zero (connection dropped), reconnect via mosh if VPN is gone."""
+
+    def _run_with_vpn_sequence(self, vpn_sequence: list[bool]):
+        """vpn_sequence: return values for successive _is_vpn_active() calls."""
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
+        vpn_iter = iter(vpn_sequence)
+
+        run_calls = []
+
+        def fake_run(args, **kwargs):
+            run_calls.append(args[0] if args else None)
+            if kwargs.get("capture_output"):
+                return MagicMock(returncode=0)
+            # SSH exits non-zero (dropped), mosh exits 0 (success)
+            if args and args[0] == "ssh":
+                return MagicMock(returncode=255)
+            return MagicMock(returncode=0)
+
+        with (
+            patch("sys.argv", ["ai", "c", "-R"]),
+            patch("ai_cli.main.load_config", return_value=config),
+            patch("ai_cli.main.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._is_vpn_active", side_effect=vpn_iter),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("sys.exit", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        return run_calls
+
+    def test_when_vpn_on_then_drops_then_reconnects_via_mosh(self):
+        # VPN on at launch → SSH; then VPN off when SSH exits → reconnect via mosh
+        run_calls = self._run_with_vpn_sequence([True, False])
+        assert "ssh" in run_calls, "SSH should run while VPN is on"
+        assert "mosh" in run_calls, "mosh should reconnect after VPN drops"
+        assert run_calls.index("ssh") < run_calls.index("mosh")
+
+    def test_when_vpn_on_then_still_on_after_ssh_exits_then_no_mosh_reconnect(self):
+        # VPN still on after SSH exits → don't try mosh (would fail anyway)
+        run_calls = self._run_with_vpn_sequence([True, True])
+        assert "ssh" in run_calls
+        assert "mosh" not in run_calls
+
+    def test_when_no_vpn_and_mosh_fails_fast_then_ssh_runs(self):
+        # No VPN → try mosh → mosh fails fast → SSH fallback
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
+        run_calls = []
+
+        def fake_run(args, **kwargs):
+            run_calls.append(args[0] if args else None)
+            if kwargs.get("capture_output"):
+                return MagicMock(returncode=0)
+            if args and args[0] == "mosh":
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0)
+
+        with (
+            patch("sys.argv", ["ai", "c", "-R"]),
+            patch("ai_cli.main.load_config", return_value=config),
+            patch("ai_cli.main.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._is_vpn_active", return_value=False),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("sys.exit", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        assert "mosh" in run_calls
+        assert "ssh" in run_calls
+        assert run_calls.index("mosh") < run_calls.index("ssh")
 
 
 class TestTriggerBackgroundUpdateRecent:
