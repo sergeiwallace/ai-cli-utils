@@ -90,7 +90,7 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 | `tests/test_session.py:419,425` | `"sergei"` in `.gemini/tmp/` path | `"user"` |
 | `docs/bugs/` | Session names like `c-aido-2`, `c-art-2` in bug reports | Leave as-is (historical bug docs, not public API) |
 
-**Note on `setup.py` and `test_setup.py`:** `humanware` appears as the feature name throughout (e.g. `_is_humanware_platform()`, "humanware platform detected"). This is a public user-facing feature name, not a private implementation detail. Decision needed: rename to something generic (e.g. `_is_managed_platform()`, "managed platform detected") or keep as-is as a named integration point. See [Open Questions](#open-questions).
+**Note on `setup.py` and `test_setup.py`:** `humanware` appears as the feature name throughout (e.g. `_is_humanware_platform()`, "humanware platform detected"). **Decision (2026-04-04):** rename to generic — `_is_managed_platform()` / "managed platform detected". All references in `setup.py`, `test_setup.py`, and any docs updated accordingly.
 
 **Audit command to verify clean:**
 ```bash
@@ -198,10 +198,7 @@ These tasks are intentionally deferred until after the release:
 
 ## Open Questions
 
-1. **`humanware` rename in setup.py** — `_is_humanware_platform()` and the "humanware platform detected" output are user-facing. Options:
-   - **A) Keep as-is** — it's a named integration point, documented in README. Users who aren't on the humanware platform just don't trigger this path.
-   - **B) Rename to generic** — `_is_managed_platform()` / "managed platform detected" / check for `~/projects/CLAUDE.md`. Cleaner for public users.
-   - **Recommendation:** B. The current output "humanware platform detected" is opaque to public users and leaks a private platform name. Renaming to a generic description is low-effort and cleaner.
+~~1. **`humanware` rename in setup.py**~~ — **Resolved 2026-04-04:** rename to `_is_managed_platform()` / "managed platform detected".
 
 > **Feedback Round 1:**
 > - <enter feedback here>
