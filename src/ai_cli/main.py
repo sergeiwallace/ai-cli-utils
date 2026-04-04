@@ -1178,7 +1178,9 @@ def get_engine_script(
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 
       if [[ -f "scripts/session-broker.py" ]] && $first_run; then
-        python3 scripts/session-broker.py --engine "$engine" 2>/dev/null || true
+        # Run async so CC launches immediately. Context file written in background;
+        # available by the time the first real prompt is processed.
+        timeout 20 python3 scripts/session-broker.py --engine "$engine" &>/dev/null &
       fi
 
       # On first run: synchronously drain local queue + NATS before launching CC.
