@@ -7,17 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    yaml = None  # type: ignore[assignment]
+import yaml
 
 
 def _find_copier_projects(projects_dir: Path) -> list[Path]:
     """Return project dirs under projects_dir that use project-template via copier."""
-    if yaml is None:
-        print("Error: PyYAML not installed. Install with: uv add pyyaml", file=sys.stderr)
-        return []
     result = []
     for answers_file in sorted(projects_dir.glob("*/.copier-answers.yml")):
         try:

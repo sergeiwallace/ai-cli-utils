@@ -64,24 +64,6 @@ def test_find_copier_projects_returns_sorted(tmp_path):
     assert [p.name for p in result] == ["apple", "mango", "zebra"]
 
 
-def test_find_copier_projects_yaml_not_installed(tmp_path):
-    """Returns empty list and prints error when PyYAML is missing."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / ".copier-answers.yml").write_text("_src_path: /projects/project-template\n")
-
-    import ai_cli.copier_update as mod
-
-    original = mod.yaml
-    mod.yaml = None
-    try:
-        result = _find_copier_projects(tmp_path)
-    finally:
-        mod.yaml = original
-
-    assert result == []
-
-
 # ---------------------------------------------------------------------------
 # _conflict_files
 # ---------------------------------------------------------------------------
