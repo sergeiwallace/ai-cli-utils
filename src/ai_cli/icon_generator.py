@@ -210,6 +210,7 @@ def generate_dynamic_profile(
         "Tab Color": _hex_to_iterm2_color(tab_hex),
         "Use Tab Color": True,
         "Use Separate Colors for Light and Dark Mode": True,
+        "Icon": 2,  # 2 = custom icon; must be explicit — not reliably inherited
     }
     if background_hex:
         profile["Background Color"] = _hex_to_iterm2_color(background_hex)
