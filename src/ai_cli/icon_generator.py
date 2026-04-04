@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
     _PILLOW_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -134,19 +134,6 @@ def _hex_to_iterm2_color(hex_color: str) -> dict:
 
 
 # ── Icon generation ────────────────────────────────────────────────────────────
-
-
-def _create_placeholder_icon(session_type: str, size: int = _ICON_SIZE) -> "Image.Image":
-    """Create a simple white shape icon when no source logo is available."""
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    m = size // 8
-    draw.rounded_rectangle(
-        [m, m, size - m, size - m],
-        radius=size // 4,
-        fill=(255, 255, 255, 230),
-    )
-    return img
 
 
 def _tint_image(img: "Image.Image", tint_hex: str) -> "Image.Image":
