@@ -3239,9 +3239,7 @@ class TestRemoteSessionIterm2Emit:
             patch("ai_cli.main.get_project_prefix", return_value="sw"),
             patch("ai_cli.main.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch(
-                "ai_cli.main._assign_iterm2_color_slot", return_value=("ff0000", "ClaudeCode-Coral", "GeminiCLI-White")
-            ) as mock_slot,
+            patch("ai_cli.main._assign_iterm2_color_slot", return_value="#ff0000") as mock_slot,
             patch("ai_cli.main._emit_iterm2_profile_setup") as mock_emit,
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):

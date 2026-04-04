@@ -30,12 +30,18 @@ _ICON_SIZE = 128
 _DYNAMIC_PROFILE_SUBDIR = "ai-cli-generated"
 
 _BASE_PROFILES: dict[str, str] = {
-    "cc": "ClaudeCode",
-    "gemini": "GeminiCLI",
+    "cc": "ClaudeCode-Coral",
+    "gemini": "GeminiCLI-White",
     "shell": "ShellUtility",
     "chrome": "ChromeDebug",
     "caffeinate": "Caffeinate",
     "ssh": "SSHForward",
+}
+
+# Default icon tint per session type (used when no explicit icon_color is given).
+# Falls back to compute_contrast_tint(tab_hex) for session types not listed here.
+_DEFAULT_ICON_TINTS: dict[str, str] = {
+    "cc": "#da7756",  # Claude / Anthropic brand orange
 }
 
 # Source logo filenames under src/ai_cli/data/icons/
@@ -176,15 +182,15 @@ def generate_session_icon(
     if not _PILLOW_AVAILABLE:
         return None
 
-    tint = icon_color or compute_contrast_tint(tab_hex)
-
     source = _source_logo_path(session_type)
-    if source:
-        base_img = Image.open(source).convert("RGBA")
-        if base_img.size != (_ICON_SIZE, _ICON_SIZE):
-            base_img = base_img.resize((_ICON_SIZE, _ICON_SIZE), Image.LANCZOS)
-    else:
-        base_img = _create_placeholder_icon(session_type)
+    if not source:
+        return None  # No source logo — parent profile's icon will show instead
+
+    tint = icon_color or _DEFAULT_ICON_TINTS.get(session_type) or compute_contrast_tint(tab_hex)
+
+    base_img = Image.open(source).convert("RGBA")
+    if base_img.size != (_ICON_SIZE, _ICON_SIZE):
+        base_img = base_img.resize((_ICON_SIZE, _ICON_SIZE), Image.LANCZOS)
 
     tinted = _tint_image(base_img, tint)
     out_path = _icon_cache_dir() / f"{session_name}.png"

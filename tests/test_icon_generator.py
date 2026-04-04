@@ -130,13 +130,13 @@ class TestGenerateDynamicProfile:
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
         data = json.loads(out.read_text())
-        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "ClaudeCode"
+        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "ClaudeCode-Coral"
 
     def test_inherits_from_geminicli_for_gemini(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("g-art-1", "#2ecc71", "gemini")
         data = json.loads(out.read_text())
-        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "GeminiCLI"
+        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "GeminiCLI-White"
 
     def test_tab_color_set_in_profile(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
@@ -215,19 +215,24 @@ class TestGenerateSessionIcon:
         assert result is None
 
     def test_generates_png_file(self, tmp_path):
+        from PIL import Image
+
+        logo_path = tmp_path / "claude-logo.png"
+        img = Image.new("RGBA", (64, 64), (255, 255, 255, 200))
+        img.save(logo_path)
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
+            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 result = generate_session_icon("sw-5", "#5e35b1", "cc")
         assert result is not None
         assert result.exists()
         assert result.suffix == ".png"
         assert result.name == "sw-5.png"
 
-    def test_uses_placeholder_when_no_source_logo(self, tmp_path):
+    def test_returns_none_when_no_source_logo(self, tmp_path):
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
                 result = generate_session_icon("sw-5", "#5e35b1", "cc")
-        assert result is not None and result.stat().st_size > 0
+        assert result is None
 
     def test_uses_source_logo_when_available(self, tmp_path):
         from PIL import Image
@@ -241,13 +246,29 @@ class TestGenerateSessionIcon:
                 result = generate_session_icon("sw-5", "#5e35b1", "cc")
         assert result is not None and result.exists()
 
-    def test_auto_derives_tint_from_tab_color(self, tmp_path):
+    def test_uses_default_brand_tint_for_cc(self, tmp_path):
+        from PIL import Image
+
+        logo_path = tmp_path / "claude-logo.png"
+        Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
+        tint_used = []
+        original = __import__("ai_cli.icon_generator", fromlist=["_tint_image"])._tint_image
+
+        def capture(img, tint_hex):
+            tint_used.append(tint_hex)
+            return original(img, tint_hex)
+
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
-                result = generate_session_icon("sw-5", "#5e35b1", "cc")
-        assert result is not None
+            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
+                with patch("ai_cli.icon_generator._tint_image", side_effect=capture):
+                    generate_session_icon("sw-5", "#5e35b1", "cc")
+        assert tint_used and tint_used[0] == "#da7756"
 
     def test_explicit_icon_color_overrides_auto_tint(self, tmp_path):
+        from PIL import Image
+
+        logo_path = tmp_path / "claude-logo.png"
+        Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
         tint_used = []
         original_tint = __import__("ai_cli.icon_generator", fromlist=["_tint_image"])._tint_image
 
@@ -256,7 +277,7 @@ class TestGenerateSessionIcon:
             return original_tint(img, tint_hex)
 
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
+            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 with patch("ai_cli.icon_generator._tint_image", side_effect=capture_tint):
                     generate_session_icon("sw-5", "#5e35b1", "cc", icon_color="#ff0000")
         assert tint_used and tint_used[0] == "#ff0000"
@@ -264,8 +285,10 @@ class TestGenerateSessionIcon:
     def test_output_is_valid_png(self, tmp_path):
         from PIL import Image
 
+        logo_path = tmp_path / "claude-logo.png"
+        Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
+            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 result = generate_session_icon("sw-5", "#5e35b1", "cc")
         img = Image.open(result)
         assert img.format == "PNG"
@@ -274,8 +297,10 @@ class TestGenerateSessionIcon:
     def test_output_is_correct_size(self, tmp_path):
         from PIL import Image
 
+        logo_path = tmp_path / "claude-logo.png"
+        Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
+            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 result = generate_session_icon("sw-5", "#5e35b1", "cc")
         img = Image.open(result)
         assert img.size == (128, 128)
