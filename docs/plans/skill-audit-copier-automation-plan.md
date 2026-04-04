@@ -70,8 +70,8 @@ Four problems solved together:
 1. **Delete `propagate/`** — remove the entire skill directory.
 2. **`direct/SKILL.md`** — replace `gemini-3.0-flash` → `gemini-3-flash-preview`, `gemini-3.0-pro` → `gemini-3.1-pro-preview`.
 3. **`review/SKILL.md`** — replace `gemini-3-pro-preview` → `gemini-3.1-pro-preview` in both fallback chains.
-4. **`next/SKILL.md`** — replace cross-project SQLite query with local roadmap read (same as ai-cli-utils per-project version). Sergei's own SKILL.md override keeps the cross-project query.
-5. **`persist/SKILL.md`** — update line limits to match CLAUDE.md: "projects-wide ~250 lines; project-specific ~100 lines (~350 combined)".
+4. **`next/SKILL.md.jinja`** (rename from `SKILL.md`) — default content is local roadmap read. Add copier variable `use_cross_project_next` (bool, default `false`) to `copier.yaml`. When `true`, render the cross-project SQLite query variant instead. Sergei's `.copier-answers.yml` sets `use_cross_project_next: true` — copier re-renders correctly on every `ai copier-update` run with no manual step required.
+5. **`persist/SKILL.md`** — update line limits to: "projects-wide ~250 lines; project-specific ~100 lines (~350 combined)". Line limits are a quality/attention heuristic, not a token budget — keep them tight to preserve instruction recall.
 
 Run `cd ~/projects/project-template && uv run --extra test pytest tests/ -q`. Commit and push.
 
