@@ -50,8 +50,9 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 - **No proprietary names** — never reference humanware, aido, or any private platform/tool names in code, docs, comments, or tests
 - **No personal identifiers** — no personal names (first or last), usernames, private server IPs/hostnames, or account-specific paths. Use generic placeholders: `user`, `myproject`, `example.com`, `192.0.2.x`
-- **No private project names** — don't hardcode project names from personal workflow (artelier, aur, apt, dojo, job, etc.) in source, docs, or tests. Use generic names like `myproject`, `myapp`
-- **Generic examples throughout** — session names in tests/docs use generic values (`sw-1`, `myproject-1`, `test-session`); config examples use placeholder values
+- **No private project names or prefixes** — don't hardcode any project names or session prefixes from personal workflow in source, docs, or tests. Use only fully generic names: `myproject`, `myapp`, `session-1`, `test-session`
+- **Generic examples throughout** — all session names, project names, and config values in tests/docs must be obviously placeholder. Nothing that could be mistaken for a real personal workflow artifact.
+- **OS portability** — all code must account for Windows, macOS, and Linux differences. No macOS-only assumptions (e.g. `~/Library/`, `pbcopy`, `open`). Use `sys.platform`, `pathlib`, and `os` abstractions. Flag any unavoidably platform-specific code with a comment.
 - **Commit messages are public** — same rules apply to git commit messages
 - If you catch an existing violation while working, flag it immediately rather than letting it accumulate
 
