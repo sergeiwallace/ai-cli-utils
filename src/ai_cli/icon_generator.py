@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _ICON_SIZE = 128
-_DYNAMIC_PROFILE_SUBDIR = "ai-cli-generated"
+_DYNAMIC_PROFILE_PREFIX = "ai-cli-session-"
 
 _BASE_PROFILES: dict[str, str] = {
     "cc": "ClaudeCode",
@@ -65,8 +65,8 @@ def _icon_cache_dir() -> Path:
 
 
 def _dynamic_profile_dir() -> Path:
-    """~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/"""
-    d = Path.home() / "Library" / "Application Support" / "iTerm2" / "DynamicProfiles" / _DYNAMIC_PROFILE_SUBDIR
+    """~/Library/Application Support/iTerm2/DynamicProfiles/"""
+    d = Path.home() / "Library" / "Application Support" / "iTerm2" / "DynamicProfiles"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -217,8 +217,7 @@ def generate_dynamic_profile(
         profile["Custom Icon Path"] = str(icon_path)
 
     data = {"Profiles": [profile]}
-    out_dir = _dynamic_profile_dir()
-    out_path = out_dir / f"{session_name}.json"
+    out_path = _dynamic_profile_dir() / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json"
     out_path.write_text(json.dumps(data, indent=2))
     return out_path
 
@@ -233,6 +232,6 @@ def cleanup_session_files(session_name: str) -> None:
     except Exception:
         pass
     try:
-        (_dynamic_profile_dir() / f"{session_name}.json").unlink(missing_ok=True)
+        (_dynamic_profile_dir() / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json").unlink(missing_ok=True)
     except Exception:
         pass

@@ -637,9 +637,9 @@ enabled = true
 
 [iterm2.tab_title]
 ## Include type symbol (* for CC, ✦ for Gemini) in tab and pane titles
-show_type_symbol = true
+show_type_symbol = false
 ## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
-show_status_symbol = true
+show_status_symbol = false
 
 [iterm2.color]
 ## Set tab/pane background color on session launch

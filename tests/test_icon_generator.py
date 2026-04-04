@@ -108,39 +108,40 @@ class TestHexToIterm2Color:
 class TestGenerateDynamicProfile:
     def test_creates_json_file(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         assert out.exists()
         assert out.suffix == ".json"
+        assert out.name == "ai-cli-session-test-session.json"
 
     def test_profile_name_is_ai_cli_session(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         data = json.loads(out.read_text())
-        assert data["Profiles"][0]["Name"] == "ai-cli:sw-5"
+        assert data["Profiles"][0]["Name"] == "ai-cli:test-session"
 
     def test_guid_is_deterministic(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out1 = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
-            out2 = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
+            out1 = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+            out2 = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         d1 = json.loads(out1.read_text())
         d2 = json.loads(out2.read_text())
-        assert d1["Profiles"][0]["Guid"] == d2["Profiles"][0]["Guid"] == "ai-cli-sw-5"
+        assert d1["Profiles"][0]["Guid"] == d2["Profiles"][0]["Guid"] == "ai-cli-test-session"
 
     def test_inherits_from_claudecode_for_cc(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "ClaudeCode"
 
     def test_inherits_from_geminicli_for_gemini(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("g-art-1", "#2ecc71", "gemini")
+            out = generate_dynamic_profile("gemini-session", "#2ecc71", "gemini")
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "GeminiCLI"
 
     def test_tab_color_set_in_profile(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#ff0000", "cc")
+            out = generate_dynamic_profile("test-session", "#ff0000", "cc")
         data = json.loads(out.read_text())
         profile = data["Profiles"][0]
         assert "Tab Color" in profile
@@ -148,13 +149,13 @@ class TestGenerateDynamicProfile:
 
     def test_use_tab_color_true(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Use Tab Color"] is True
 
     def test_no_title_keys_set(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         data = json.loads(out.read_text())
         profile = data["Profiles"][0]
         # Must not set title-related keys — preserves user's Session Title dropdown
@@ -162,42 +163,42 @@ class TestGenerateDynamicProfile:
         assert "Title Format" not in profile
 
     def test_icon_path_included_when_provided(self, tmp_path):
-        icon = tmp_path / "sw-5.png"
+        icon = tmp_path / "test-session.png"
         icon.write_bytes(b"fake")
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc", icon_path=icon)
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc", icon_path=icon)
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Custom Icon Path"] == str(icon)
 
     def test_icon_path_omitted_when_missing(self, tmp_path):
         missing = tmp_path / "nope.png"
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc", icon_path=missing)
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc", icon_path=missing)
         data = json.loads(out.read_text())
         assert "Custom Icon Path" not in data["Profiles"][0]
 
     def test_icon_path_omitted_when_none(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc", icon_path=None)
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc", icon_path=None)
         data = json.loads(out.read_text())
         assert "Custom Icon Path" not in data["Profiles"][0]
 
     def test_custom_base_profile_override(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc", base_profile="MyCustomBase")
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc", base_profile="MyCustomBase")
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "MyCustomBase"
 
     def test_background_color_included_when_provided(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out = generate_dynamic_profile("sw-5", "#5e35b1", "cc", background_hex="#0d0d1f")
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc", background_hex="#0d0d1f")
         data = json.loads(out.read_text())
         assert "Background Color" in data["Profiles"][0]
 
     def test_rerun_is_idempotent(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
-            out1 = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
-            out2 = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
+            out1 = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+            out2 = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         assert out1 == out2
         assert len(list(tmp_path.glob("*.json"))) == 1
 
@@ -211,7 +212,7 @@ class TestGenerateSessionIcon:
     def test_returns_none_when_pillow_unavailable(self, tmp_path):
         with patch("ai_cli.icon_generator._PILLOW_AVAILABLE", False):
             with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-                result = generate_session_icon("sw-5", "#5e35b1", "cc")
+                result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is None
 
     def test_generates_png_file(self, tmp_path):
@@ -222,16 +223,16 @@ class TestGenerateSessionIcon:
         img.save(logo_path)
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("sw-5", "#5e35b1", "cc")
+                result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is not None
         assert result.exists()
         assert result.suffix == ".png"
-        assert result.name == "sw-5.png"
+        assert result.name == "test-session.png"
 
     def test_returns_none_when_no_source_logo(self, tmp_path):
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
-                result = generate_session_icon("sw-5", "#5e35b1", "cc")
+                result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is None
 
     def test_uses_source_logo_when_available(self, tmp_path):
@@ -243,7 +244,7 @@ class TestGenerateSessionIcon:
         img.save(logo_path)
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("sw-5", "#5e35b1", "cc")
+                result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is not None and result.exists()
 
     def test_auto_derives_contrast_tint_from_tab_color(self, tmp_path):
@@ -263,7 +264,7 @@ class TestGenerateSessionIcon:
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 with patch("ai_cli.icon_generator._tint_image", side_effect=capture):
-                    generate_session_icon("sw-5", "#5e35b1", "cc")
+                    generate_session_icon("test-session", "#5e35b1", "cc")
         assert tint_used and tint_used[0] == compute_contrast_tint("#5e35b1")
 
     def test_no_tab_color_uses_brand_orange(self, tmp_path):
@@ -281,7 +282,7 @@ class TestGenerateSessionIcon:
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 with patch("ai_cli.icon_generator._tint_image", side_effect=capture):
-                    generate_session_icon("sw-5", None, "cc")
+                    generate_session_icon("test-session", None, "cc")
         assert tint_used and tint_used[0] == "#da7756"
 
     def test_explicit_icon_color_overrides_auto_tint(self, tmp_path):
@@ -299,7 +300,7 @@ class TestGenerateSessionIcon:
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 with patch("ai_cli.icon_generator._tint_image", side_effect=capture_tint):
-                    generate_session_icon("sw-5", "#5e35b1", "cc", icon_color="#ff0000")
+                    generate_session_icon("test-session", "#5e35b1", "cc", icon_color="#ff0000")
         assert tint_used and tint_used[0] == "#ff0000"
 
     def test_output_is_valid_png(self, tmp_path):
@@ -309,7 +310,7 @@ class TestGenerateSessionIcon:
         Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("sw-5", "#5e35b1", "cc")
+                result = generate_session_icon("test-session", "#5e35b1", "cc")
         img = Image.open(result)
         assert img.format == "PNG"
         assert img.mode == "RGBA"
@@ -321,7 +322,7 @@ class TestGenerateSessionIcon:
         Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
         with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("sw-5", "#5e35b1", "cc")
+                result = generate_session_icon("test-session", "#5e35b1", "cc")
         img = Image.open(result)
         assert img.size == (128, 128)
 
@@ -333,15 +334,15 @@ class TestGenerateSessionIcon:
 
 class TestCleanupSessionFiles:
     def test_removes_icon_and_profile_json(self, tmp_path):
-        icon = tmp_path / "sw-5.png"
-        profile = tmp_path / "sw-5.json"
+        icon = tmp_path / "test-session.png"
+        profile = tmp_path / "ai-cli-session-test-session.json"
         icon.write_bytes(b"png")
         profile.write_bytes(b"json")
         with (
             patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
             patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path),
         ):
-            cleanup_session_files("sw-5")
+            cleanup_session_files("test-session")
         assert not icon.exists()
         assert not profile.exists()
 
@@ -353,15 +354,15 @@ class TestCleanupSessionFiles:
             cleanup_session_files("nonexistent")  # must not raise
 
     def test_does_not_remove_other_sessions(self, tmp_path):
-        icon_a = tmp_path / "sw-5.png"
-        icon_b = tmp_path / "sw-6.png"
+        icon_a = tmp_path / "test-session.png"
+        icon_b = tmp_path / "other-session.png"
         icon_a.write_bytes(b"a")
         icon_b.write_bytes(b"b")
         with (
             patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
             patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path),
         ):
-            cleanup_session_files("sw-5")
+            cleanup_session_files("test-session")
         assert not icon_a.exists()
         assert icon_b.exists()
 
@@ -373,14 +374,14 @@ class TestCleanupSessionFiles:
 
 class TestCleanupSessionFilesCommand:
     def test_cleanup_session_files_internal_command(self, tmp_path):
-        icon = tmp_path / "sw-5.png"
-        profile = tmp_path / "sw-5.json"
+        icon = tmp_path / "test-session.png"
+        profile = tmp_path / "ai-cli-session-test-session.json"
         icon.write_bytes(b"x")
         profile.write_bytes(b"x")
         from ai_cli.main import cli
 
         with (
-            patch("sys.argv", ["ai", "internal", "cleanup-session-files", "sw-5"]),
+            patch("sys.argv", ["ai", "internal", "cleanup-session-files", "test-session"]),
             patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
             patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path),
             pytest.raises(SystemExit) as exc,
