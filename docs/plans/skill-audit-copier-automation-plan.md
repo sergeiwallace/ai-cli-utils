@@ -8,7 +8,7 @@ source: ai-cli-utils
 
 # Skill Audit, Copier Automation, and Session Config Drift Prevention
 
-**Status:** IN PROGRESS
+**Status:** COMPLETE
 
 **Created:** 2026-04-04
 
@@ -187,18 +187,18 @@ Commit and push `~/projects/CLAUDE.md` directly (it's the projects-wide file, no
 
 ## Acceptance Criteria
 
-- [ ] `propagate` skill deleted from project-template
-- [ ] `direct`, `review`, `next`, `persist` skills fixed in project-template
-- [ ] `ai copier-update` subcommand: auto-discovers projects, `--dry-run`, `--project`, Mac guard
-- [ ] `ai copier-update` picks up new projects automatically (no hardcoded list)
-- [ ] Watcher loop detects config hash change and auto-injects `/exit` after idle threshold
-- [ ] Auto-restart respects idle threshold (default 90s, configurable)
-- [ ] Auto-restart does not fire when user has text in the prompt box
-- [ ] Projects-wide config change triggers all sessions; project-specific triggers only that project's sessions
-- [ ] Copier run across all 14 projects; no conflict markers remain
-- [ ] Sergei gets `next` SKILL.md override restoring cross-project query
-- [ ] Drift prevention rule added to `~/projects/CLAUDE.md`
-- [ ] All tests pass (`ruff check`, `ruff format --check`, `pytest`)
+- [x] `propagate` skill deleted from project-template
+- [x] `direct`, `review`, `next`, `persist` skills fixed in project-template
+- [x] `ai copier-update` subcommand: auto-discovers projects, `--dry-run`, `--project`, Mac guard
+- [x] `ai copier-update` picks up new projects automatically (no hardcoded list)
+- [x] Watcher loop detects config hash change and auto-injects `/exit` after idle threshold
+- [x] Auto-restart respects idle threshold (default 90s, configurable)
+- [x] Auto-restart does not fire when user has text in the prompt box
+- [x] Projects-wide config change triggers all sessions; project-specific triggers only that project's sessions
+- [x] Copier run across all 14 projects; no conflict markers remain
+- [x] Sergei gets `next` SKILL.md with cross-project query (via `use_cross_project_next: true` in `.copier-answers.yml`)
+- [x] Drift prevention rule added to `~/projects/CLAUDE.md`
+- [x] All tests pass (`ruff check`, `ruff format --check`, `pytest`)
 
 ---
 
@@ -207,3 +207,4 @@ Commit and push `~/projects/CLAUDE.md` directly (it's the projects-wide file, no
 | Date | Round | Decisions |
 |------|-------|-----------|
 | 2026-04-04 | Round 1 | propagate=delete; next=local roadmap default (sergei overrides); copier automation=ai copier-update subcommand; auto-restart on idle added as Phase 3; idle threshold=90s configurable; hook block stays as safety net. |
+| 2026-04-04 | Complete | All 5 phases shipped. 14/14 projects updated. Template H1/MD025 fixes added. markdownlint-cli2 ignores added to job-pilot/menos/personal-site for procedure/template dirs. |
