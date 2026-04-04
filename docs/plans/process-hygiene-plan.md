@@ -282,11 +282,25 @@ Single batch — all tasks are tightly coupled; no value in shipping detection w
 
 4. **Cache location:** `~/.local/state/ai-cli/remote-ps-cache.json` — does this fit with existing XDG state dir usage, or should it go elsewhere?
 
-> **Feedback Round 2:** Your thoughts on the remaining open questions:
-> - <enter feedback here>
+> **Feedback Round 2:**
+> 1. Thresholds fine. How would suspect flagging actually surface to the user?
+> 2. Unsure.
+> 3. Termius sessions are fleeting — user closes Termius when done. `ai c` sessions from iOS are rare; user resumes from MacBook. Orphaned Termius mosh-servers with persisting tmux sessions are fine to leave as suspect (manual clean).
+> 4. (no feedback)
+
+> **AI Response Round 2:**
+>
+> **1 — Suspect flagging:** Two touchpoints only — no intrusive alerts. At session start (`ai c`), orphaned processes (≥ 80) are auto-killed silently and logged. For suspects (40–79), one line is printed: `[ai ps] 1 suspect process(es). Run 'ai ps clean' to review.` The explicit `ai ps` command always shows the full picture with scores. That's it.
+>
+> **2 — Remote auto-clean:** Recommend yes — also clean Hetzner orphans when launching `ai c --remote`. Already connecting there; zero extra SSH calls needed (cache refreshed as part of the mosh/ssh flow). Local `ai c` cleans local only; `ai c --remote` cleans both.
+>
+> **3 — Termius scoring confirmed correct:** Disconnected Termius mosh-server scores +50 (no client) +10 (>6h) = 60 suspect, then +20 (>24h) = 70 suspect. Never reaches 80 (orphaned/auto-kill) because the tmux session persists on Hetzner, so "no matching tmux session" (+10) doesn't fire. Correctly becomes a suspect flagged at session start, never auto-killed. No scoring changes needed.
+>
+> **4 — Cache location:** `~/.local/state/ai-cli/remote-ps-cache.json` consistent with existing XDG usage. Proceeding as specified.
 
 ## Approval Log
 
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-04 | Round 1 approved | Connection-based detection; score-gated auto-clean; remote cache with 30m TTL; new `process_hygiene.py` module; ai-managed scope only |
+| 2026-04-04 | Round 2 approved | Suspect flagging: one-line nudge at session start; auto-clean `ai c --remote` cleans both machines; Termius scoring confirmed correct as-is; cache location confirmed |
