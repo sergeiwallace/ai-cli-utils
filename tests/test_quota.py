@@ -82,13 +82,13 @@ class TestScrapeUsageHiddenPane:
         no_prompt = self._make_cap_result("Starting claude...\n")
         ok = MagicMock()
         ok.returncode = 0
-
-        call_count = 0
+        killed = []
 
         def fake_run(cmd, **kwargs):
-            nonlocal call_count
-            call_count += 1
             if cmd[0] == "tmux" and cmd[1] == "new-window":
+                return ok
+            if cmd[0] == "tmux" and cmd[1] == "kill-window":
+                killed.append(True)
                 return ok
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 return no_prompt
@@ -97,12 +97,14 @@ class TestScrapeUsageHiddenPane:
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             result = _scrape_usage_hidden_pane()
         assert result is None
+        assert killed, "kill-window must be called on timeout path"
 
     def test_when_usage_output_captured_then_returns_snapshot(self):
         """Happy path: prompt appears, /usage output appears, snapshot returned."""
         ok = MagicMock()
         ok.returncode = 0
 
+        prompt_only = self._make_cap_result("❯\n")
         usage_output = (
             "❯\n"
             "Current session: 12% used\n"
@@ -110,23 +112,29 @@ class TestScrapeUsageHiddenPane:
             "Current week (Sonnet only): 49% used\n"
             "Extra usage not enabled\n"
         )
-        cap_with_prompt = self._make_cap_result(usage_output)
+        cap_with_usage = self._make_cap_result(usage_output)
+
+        call_count = 0
 
         def fake_run(cmd, **kwargs):
+            nonlocal call_count
             if cmd[0] == "tmux" and cmd[1] == "new-window":
                 return ok
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
-                # First series: return prompt; second series (after /usage): return usage
-                if "% used" in cap_with_prompt.stdout:
-                    return cap_with_prompt
-                return cap_with_prompt
+                call_count += 1
+                if call_count <= 1:
+                    return prompt_only
+                return cap_with_usage
             return ok
 
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             result = _scrape_usage_hidden_pane()
 
-        # kill-window is always called — result depends on output parsing
-        assert result is None or isinstance(result, QuotaSnapshot)
+        assert isinstance(result, QuotaSnapshot)
+        assert result.session_pct == 12.0
+        assert result.weekly_all_models_pct == 86.0
+        assert result.weekly_sonnet_pct == 49.0
+        assert result.extra_pct == 0.0
 
     def test_when_exception_raised_then_returns_none_and_kills_window(self):
         """Exception mid-scrape must not propagate; kill-window must still fire."""

@@ -198,7 +198,7 @@ class TestAssignIterm2ColorSlot:
                     _assign_iterm2_color_slot("sw-1", "c")
                     _assign_iterm2_color_slot("sw-2", "c")
                     slot3 = _assign_iterm2_color_slot("sw-3", "c")
-        assert slot3 is not None
+        assert slot3 == "e74c3c"
 
     def test_stale_lease_pruned_on_assignment(self, tmp_path):
         cfg = make_iterm2_config()
