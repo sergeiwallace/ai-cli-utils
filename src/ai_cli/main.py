@@ -1097,7 +1097,7 @@ def get_engine_script(
           tmux send-keys -t "$tmux_session" C-u
           tmux send-keys -t "$tmux_session" "R"
         fi
-        sleep 1
+        read -t 1 -r < /dev/null 2>/dev/null || true
       done) &
       watcher_pid=$!
     }}
