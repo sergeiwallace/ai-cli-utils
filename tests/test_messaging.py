@@ -343,8 +343,6 @@ class TestOpenSshTunnel:
 
         with patch.dict("os.environ", {"AI_CLI_HOST": "mac"}):
             with patch("socket.create_connection", side_effect=OSError):
-                with patch("ai_cli.messaging.NATSClient.__module__"):
-                    pass
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)):
                         with patch("ai_cli.messaging.load_config", return_value=config, create=True):

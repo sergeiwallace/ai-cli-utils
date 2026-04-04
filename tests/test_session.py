@@ -113,7 +113,9 @@ def test_build_session_name_with_double_hyphens_when_called_then_cleans_up():
 
 
 def test_build_session_name_with_index_when_called_then_respects_index():
-    session_id, ai_name = build_session_name("c", "sw", "3")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1)
+        session_id, ai_name = build_session_name("c", "sw", "3")
     assert session_id == "c-sw-3"
     assert ai_name == "sw-3"
 
@@ -333,15 +335,16 @@ class TestFindLatestGeminiUuid:
         assert result == "abc-full-uuid-here"
 
     def test_when_multiple_files_then_returns_most_recent(self, tmp_path):
-        import time as _time
-
         chats = tmp_path / ".gemini" / "tmp" / "art-1" / "chats"
         chats.mkdir(parents=True)
         old_file = chats / "session-old.json"
         new_file = chats / "session-new.json"
         old_file.write_text('{"sessionId": "old-uuid"}')
-        _time.sleep(0.01)
         new_file.write_text('{"sessionId": "new-uuid"}')
+        # Set explicit mtimes to avoid sleep: old=1000, new=2000
+        import os as _os
+        _os.utime(old_file, (1000.0, 1000.0))
+        _os.utime(new_file, (2000.0, 2000.0))
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _find_latest_gemini_uuid("art-1")
         assert result == "new-uuid"

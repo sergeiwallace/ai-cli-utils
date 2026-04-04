@@ -6,6 +6,7 @@ import pytest
 
 from ai_cli.quota import (
     QuotaSnapshot,
+    _get_claude_usage_snapshot,
     _parse_usage_output,
     _scrape_usage_hidden_pane,
     _send_notification,
@@ -153,6 +154,22 @@ class TestScrapeUsageHiddenPane:
 
         assert result is None
         assert killed, "kill-window must be called even on exception"
+
+
+# --- _get_claude_usage_snapshot ---
+
+
+class TestGetClaudeUsageSnapshot:
+    def test_when_scraper_returns_snapshot_then_returns_it(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=72.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
+        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap):
+            result = _get_claude_usage_snapshot()
+        assert result is snap
+
+    def test_when_scraper_returns_none_then_returns_none(self):
+        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
+            result = _get_claude_usage_snapshot()
+        assert result is None
 
 
 # --- _send_notification ---

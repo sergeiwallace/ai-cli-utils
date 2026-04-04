@@ -158,25 +158,35 @@ class TestCliDispatch:
                     cli()
                 assert exc.value.code == 1
 
-    def test_cli_when_internal_publish_event_then_instantiates_nats_client(self):
+    def test_cli_when_internal_publish_event_then_publishes_event(self):
         with patch("sys.argv", ["ai", "internal", "publish-event", "sess1", "START"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_nats.return_value = MagicMock()
+                    mock_client = MagicMock()
+                    mock_nats.return_value = mock_client
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
                     mock_nats.assert_called_once()
+                    mock_client.publish_event.assert_called_once()
+                    call_args = mock_client.publish_event.call_args[0]
+                    assert call_args[0] == "sess1"
+                    assert call_args[1] == "START"
 
-    def test_cli_when_internal_publish_heartbeat_then_instantiates_nats_client(self):
+    def test_cli_when_internal_publish_heartbeat_then_publishes_heartbeat(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", '{"cpu": 50}']):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_nats.return_value = MagicMock()
+                    mock_client = MagicMock()
+                    mock_nats.return_value = mock_client
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
                     mock_nats.assert_called_once()
+                    mock_client.publish_heartbeat.assert_called_once()
+                    call_args = mock_client.publish_heartbeat.call_args[0]
+                    assert call_args[0] == "sess1"
+                    assert call_args[1] == {"cpu": 50}
 
     def test_cli_when_internal_publish_heartbeat_bad_json_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", "not-json"]):
@@ -185,25 +195,36 @@ class TestCliDispatch:
                     cli()
                 assert exc.value.code == 1
 
-    def test_cli_when_internal_publish_session_event_then_instantiates_nats_client(self):
+    def test_cli_when_internal_publish_session_event_then_publishes_with_subject(self):
         with patch("sys.argv", ["ai", "internal", "publish-session-event", "sess1", "started"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_nats.return_value = MagicMock()
+                    mock_client = MagicMock()
+                    mock_nats.return_value = mock_client
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
                     mock_nats.assert_called_once()
+                    mock_client.publish.assert_called_once()
+                    subject, payload = mock_client.publish.call_args[0]
+                    assert subject == "session.sess1.started"
+                    assert payload["session_id"] == "sess1"
+                    assert payload["event"] == "started"
 
-    def test_cli_when_internal_publish_then_instantiates_nats_with_subject(self):
+    def test_cli_when_internal_publish_then_publishes_to_given_subject(self):
         with patch("sys.argv", ["ai", "internal", "publish", "test.topic", '{"key": "val"}']):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
-                    mock_nats.return_value = MagicMock()
+                    mock_client = MagicMock()
+                    mock_nats.return_value = mock_client
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
                     mock_nats.assert_called_once()
+                    mock_client.publish.assert_called_once()
+                    subject, payload = mock_client.publish.call_args[0]
+                    assert subject == "test.topic"
+                    assert payload == {"key": "val"}
 
     def test_cli_when_handoff_post_then_calls_post_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "post", "--for-machine", "hetzner", "title", "P1", "proj", "msg"]):
