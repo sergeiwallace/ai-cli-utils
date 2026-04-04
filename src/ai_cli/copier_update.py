@@ -24,13 +24,21 @@ def _find_copier_projects(projects_dir: Path) -> list[Path]:
     return result
 
 
+_EXCLUDE_DIRS = (".venv", "node_modules", "target", ".worktrees", ".git", "__pycache__")
+
+
 def _conflict_files(project_dir: Path) -> list[str]:
-    """Return list of files containing git conflict markers in project_dir."""
-    result = subprocess.run(
-        ["grep", "-rl", "<<<<<<<", str(project_dir)],
-        capture_output=True,
-        text=True,
-    )
+    """Return list of text files containing git conflict markers in project_dir."""
+    cmd = [
+        "grep",
+        "-rl",
+        "--binary-files=without-match",
+        "<<<<<<<",
+        str(project_dir),
+    ]
+    for d in _EXCLUDE_DIRS:
+        cmd += ["--exclude-dir", d]
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip().splitlines()
     return []
