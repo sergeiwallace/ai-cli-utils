@@ -833,6 +833,45 @@ def _iterm2_session_type(engine: str) -> str:
     return "cc" if engine == "c" else "gemini" if engine == "g" else "shell"
 
 
+def _is_vpn_active() -> bool:
+    """Return True if a VPN (Mullvad or any tunnel interface) is currently active.
+
+    Checks Mullvad CLI first (fast, authoritative). Falls back to scanning
+    network interfaces for active tunnel devices (utun*, tun*) which covers
+    other VPN clients.  Returns False on any error so mosh is never
+    blocked by a detection failure.
+    """
+    try:
+        mullvad = shutil.which("mullvad")
+        if mullvad:
+            result = subprocess.run(
+                ["mullvad", "status"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return "Connected" in result.stdout
+        # Fallback: check for active tunnel interfaces via ifconfig
+        result = subprocess.run(
+            ["ifconfig"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        import re as _re
+
+        # Look for utun/tun interfaces that have an inet address (i.e. are up)
+        iface_blocks = _re.split(r"^(\S+)", result.stdout, flags=_re.MULTILINE)
+        for i in range(1, len(iface_blocks) - 1, 2):
+            name = iface_blocks[i]
+            body = iface_blocks[i + 1]
+            if (name.startswith("utun") or name.startswith("tun")) and "inet " in body:
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _emit_iterm2_profile_setup(
     ai_name: str,
     engine: str,
@@ -2632,8 +2671,14 @@ def cli():
         _iterm2_remote_slot = _assign_iterm2_color_slot(_r_ai_name, engine)
         _emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 
-        _cleanup = f"ai internal cleanup-session-files {shlex.quote(_r_ai_name)} 2>/dev/null"
-        if transport == "mosh":
+        _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
+        ssh_args = ["ssh", "-t", "-p", port]
+        if id_file:
+            ssh_args += ["-i", os.path.expanduser(id_file)]
+        ssh_args.append(f"{user}@{host}")
+        ssh_args.append(f"bash -l -c {shlex.quote(remote_cmd)}")
+
+        if transport == "mosh" and not _is_vpn_active():
             mosh_args = ["mosh"]
             if port != "22":
                 mosh_args += [
@@ -2644,14 +2689,26 @@ def cli():
                 mosh_args += ["--ssh", f"ssh -i {shlex.quote(os.path.expanduser(id_file))}"]
             mosh_args.append(f"{user}@{host}")
             mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
-            os.execvp("bash", ["bash", "-c", f"{shlex.join(mosh_args)}; {_cleanup}"])
+            import time as _time
+
+            _mosh_start = _time.monotonic()
+            _mosh_ret = subprocess.run(mosh_args).returncode
+            _mosh_elapsed = _time.monotonic() - _mosh_start
+            # Fast non-zero exit = connection failure (e.g. VPN blocks UDP). Fall
+            # back to SSH so active CC sessions remain reachable.
+            if _mosh_ret != 0 and _mosh_elapsed < 10:
+                print(
+                    f"\nmosh failed (exit {_mosh_ret}, {_mosh_elapsed:.1f}s) — falling back to ssh...",
+                    file=sys.stderr,
+                )
+                subprocess.run(ssh_args)
+            subprocess.run(_cleanup_cmd, capture_output=True)
+            sys.exit(0)
         else:
-            ssh_args = ["ssh", "-t", "-p", port]
-            if id_file:
-                ssh_args += ["-i", os.path.expanduser(id_file)]
-            ssh_args.append(f"{user}@{host}")
-            ssh_args.append(f"bash -l -c {shlex.quote(remote_cmd)}")
-            os.execvp("bash", ["bash", "-c", f"{shlex.join(ssh_args)}; {_cleanup}"])
+            if transport == "mosh":
+                # VPN detected — skip mosh (UDP blocked), go straight to SSH.
+                print("VPN detected — using ssh instead of mosh", file=sys.stderr)
+            os.execvp("bash", ["bash", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
 
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
