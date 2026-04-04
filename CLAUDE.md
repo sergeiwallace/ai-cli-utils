@@ -42,6 +42,12 @@ If CI is failing or Codecov is not 100%, fix before closing out the session. If 
 - Use pytest fixtures for shared setup
 - `reviewer` audits test quality on every review (see `.claude/agents/reviewer.md`)
 - Run: `pytest`
+- **`# pragma: no cover` is a hard human gate** — never add it autonomously. If a line cannot be covered, document it in the UAT report with the specific line, why it can't be mocked, and options. Wait for explicit user approval before adding any pragma.
+
+## CLI Conventions
+
+- **All options must have both short and long forms** — e.g. `-f`/`--force`, `-d`/`--dry-run`. No long-only flags (except hidden internal `SUPPRESS` flags passed machine-to-machine).
+- When adding a new CLI option, add both forms simultaneously. Do not ship long-only flags.
 
 ## Development Workflow
 

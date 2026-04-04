@@ -2226,12 +2226,14 @@ def cli():
             sys.exit(1)
         from .copier_update import run_copier_update
 
-        dry_run = "--dry-run" in sys.argv
+        dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
         project_filter = None
-        if "--project" in sys.argv:
-            idx = sys.argv.index("--project")
-            if idx + 1 < len(sys.argv):
-                project_filter = sys.argv[idx + 1]
+        for _pflag in ("--project", "-p"):
+            if _pflag in sys.argv:
+                idx = sys.argv.index(_pflag)
+                if idx + 1 < len(sys.argv):
+                    project_filter = sys.argv[idx + 1]
+                break
         sys.exit(run_copier_update(dry_run=dry_run, project_filter=project_filter))
 
     if len(sys.argv) > 1 and sys.argv[1] == "layout":
