@@ -1,6 +1,6 @@
 # Test Quality Audit and Coverage Recovery — Implementation Plan
 
-**Status:** DRAFT
+**Status:** APPROVED
 **Created:** 2026-04-04
 **Task:** `[AI-CLI-17]`
 
@@ -652,13 +652,36 @@ Flat function names like `test_build_session_name_no_name_when_no_sessions_then_
 
 ---
 
+### T-07: Documentation Updates
+
+**Size:** S
+**Batch:** 1
+
+Update all docs affected by the test suite changes.
+
+**Deliverables:**
+- `docs/roadmap/master-roadmap.md`: mark `[AI-CLI-17]` complete
+- `CLAUDE.md` (project-level): update test file list if it references test_main.py as the monolith
+- `docs/tools/ai-cli-usage.md`: no changes expected (CLI interface unchanged)
+- `README.md`: update coverage badge % if it references a specific number
+- Any architecture or design docs that mention test structure or coverage numbers
+
+**Acceptance criteria:**
+- [ ] AI-CLI-17 marked `[x]` in roadmap
+- [ ] No docs reference stale test structure (monolithic test_main.py)
+- [ ] Coverage % in any docs reflects new baseline
+
+**Dependencies:** T-00–T-06 complete
+
+---
+
 ## Batch Plan
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
-| 1 | T-00–T-06 | Helpers, quality fixes, coverage recovery | Human UAT |
+| 1 | T-00–T-07 | Helpers, quality fixes, coverage recovery, docs | Human UAT |
 
-T-00 is done first (helpers enable cleaner T-01–T-06). T-01–T-06 are otherwise independent and can run in any order.
+T-00 first (helpers needed by T-01–T-06). T-07 last (docs updated after code complete). T-01–T-06 independent.
 
 > **Feedback Round 1:** Does the batching make sense?
 > - <enter feedback here>
@@ -715,3 +738,4 @@ Both candidates identified earlier are mockable and get real tests in T-04:
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-04 | Round 1 approved | 100% coverage target; no lazy pragmas; T-00 conftest helpers (run_cli, make_subprocess_result, make_iterm2_config); proceed without gate on T-05 reads |
+| 2026-04-04 | Round 2 approved | Add T-07 doc updates; confirmed full autonomous implementation |
