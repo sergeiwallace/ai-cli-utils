@@ -130,13 +130,13 @@ class TestGenerateDynamicProfile:
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("sw-5", "#5e35b1", "cc")
         data = json.loads(out.read_text())
-        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "ClaudeCode-Coral"
+        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "ClaudeCode"
 
     def test_inherits_from_geminicli_for_gemini(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("g-art-1", "#2ecc71", "gemini")
         data = json.loads(out.read_text())
-        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "GeminiCLI-White"
+        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "GeminiCLI"
 
     def test_tab_color_set_in_profile(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):

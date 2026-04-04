@@ -30,8 +30,8 @@ _ICON_SIZE = 128
 _DYNAMIC_PROFILE_SUBDIR = "ai-cli-generated"
 
 _BASE_PROFILES: dict[str, str] = {
-    "cc": "ClaudeCode-Coral",
-    "gemini": "GeminiCLI-White",
+    "cc": "ClaudeCode",
+    "gemini": "GeminiCLI",
     "shell": "ShellUtility",
     "chrome": "ChromeDebug",
     "caffeinate": "Caffeinate",

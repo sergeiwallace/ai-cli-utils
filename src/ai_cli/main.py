@@ -686,8 +686,8 @@ emerald     = "#059669"
 [iterm2.base_profiles]
 ## iTerm2 base profiles for each session type.
 ## The generated Dynamic Profile inherits from these.
-cc         = "ClaudeCode-Coral"
-gemini     = "GeminiCLI-White"
+cc         = "ClaudeCode"
+gemini     = "GeminiCLI"
 shell      = "ShellUtility"
 chrome     = "ChromeDebug"
 caffeinate = "Caffeinate"
