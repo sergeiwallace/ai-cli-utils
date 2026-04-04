@@ -877,6 +877,13 @@ def _emit_iterm2_profile_setup(
 
         icon_path = _ig.generate_session_icon(ai_name, color_hex, session_type, icon_color)
         _ig.generate_dynamic_profile(ai_name, color_hex, session_type, icon_path)
+        # Give iTerm2 time to FSEvents-reload the Dynamic Profile before SetProfile
+        # is sent. Without this delay the profile may not exist yet when the escape
+        # sequence arrives, which is unrecoverable for remote (mosh) sessions where
+        # there is no second SetProfile from inside tmux.
+        import time as _time
+
+        _time.sleep(0.3)
     except Exception:
         pass  # Icon generation failure must never block session launch
 
