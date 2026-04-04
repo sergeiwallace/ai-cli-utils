@@ -170,7 +170,7 @@ Same mosh constraints and design responses as CC Remote. The pre-launch layer se
 | **Pane header** | Same |
 | **Status updates** | None — static title, refreshed on each prompt via `_ai_iterm2_precmd` |
 
-No changes from current behavior. The `_ai_iterm2_precmd` function in `~/.zshrc` handles this correctly today.
+Title update behavior is unchanged — `_ai_iterm2_precmd` in `~/.zshrc` handles that. The shell icon is now also dynamically tinted to contrast with the grey tab background via the same runtime PNG pipeline as all other session types.
 
 > **Feedback:**
 
@@ -261,28 +261,6 @@ lime        = "#7cb342"
 # rose        = "#f43f5e"
 ```
 
-### Color Schemes
-
-Each palette color maps to a `[claude_profile, gemini_profile]` pair that provides good contrast between the icon color and the tab background. These pairings were derived using color theory (complementary/contrasting hue selection). The scheme ensures icons are never combined with poorly contrasting backgrounds.
-
-```toml
-[iterm2.color_schemes]
-# palette_name = [claude_profile, gemini_profile]
-red         = ["ClaudeCode-White",  "GeminiCLI-White"]
-orange      = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
-yellow      = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
-green       = ["ClaudeCode-Purple", "GeminiCLI-Navy"]
-teal        = ["ClaudeCode-Coral",  "GeminiCLI-Navy"]
-sky_blue    = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
-blue        = ["ClaudeCode-Coral",  "GeminiCLI-Gold"]
-purple      = ["ClaudeCode-Gold",   "GeminiCLI-Gold"]
-pink        = ["ClaudeCode-Teal",   "GeminiCLI-White"]
-cyan        = ["ClaudeCode-White",  "GeminiCLI-White"]
-deep_orange = ["ClaudeCode-Cyan",   "GeminiCLI-White"]
-lime        = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
-# Custom color entries added above need corresponding scheme entries here
-```
-
 **Default config:** The TOML file ships as part of ai-cli-utils at `src/ai_cli/data/iterm2-defaults.toml` and is copied to `~/.config/ai-cli-utils/iterm2.toml` on first run if missing. Users edit their local copy; the shipped defaults are never modified.
 
 > **Feedback:**
@@ -291,86 +269,87 @@ lime        = ["ClaudeCode-Navy",   "GeminiCLI-Navy"]
 
 ## Icon Color System
 
-### Problem
+### Design: Runtime PNG generation — fully dynamic, any color
 
-Currently only 3 Claude icon color variants exist (coral, white, dark navy) and 1 Gemini variant. This limits visual variety — many tabs look similar.
+Icons are generated at session launch time using Pillow. The base Claude or Gemini SVG/PNG logo is recolored to any arbitrary hex value and written to a per-session cache path. A Dynamic Profile JSON referencing that path is generated simultaneously. iTerm2 hot-reloads Dynamic Profiles from the watched directory — no restart required.
 
-### Design: 8 Claude variants + 3 Gemini variants
+This approach eliminates the fixed-variant problem entirely. The color palette can have any number of entries; each gets a correctly-tinted icon automatically.
 
-Each variant is a separate Dynamic Profile entry with a differently-tinted PNG icon. Runtime icon color mutation is confirmed impossible by the research doc — static profiles with pre-rendered PNGs is the only path.
+**No pre-baked PNG assets.** Runtime generation replaces any static variant approach. Source logos live at:
+- `src/ai_cli/data/icons/claude-logo.png` — canonical Claude logo (neutral/white base)
+- `src/ai_cli/data/icons/gemini-logo.png` — canonical Gemini logo (neutral/white base)
+- `src/ai_cli/data/icons/shell-logo.png` — terminal/shell icon (neutral base)
+- `src/ai_cli/data/icons/chrome-logo.png` — Chrome icon (neutral base)
+- `src/ai_cli/data/icons/caffeinate-logo.png` — caffeinate icon (neutral base)
+- `src/ai_cli/data/icons/ssh-logo.png` — SSH/network icon (neutral base)
 
-**Claude icon color variants:**
+Every profile type — not just Claude and Gemini — uses the runtime generation system. All icons are tinted to contrast with their assigned tab color using the same color-theory pipeline. There are no hardcoded icon colors anywhere in the system.
 
-| # | Profile Name | Icon Color | Best With Background Colors | Hex Example |
-|---|-------------|------------|----------------------------|-------------|
-| 1 | `ClaudeCode-Coral` | Coral/salmon (brand) | Cool/dark (blue, purple, navy) | `#E87461` |
-| 2 | `ClaudeCode-White` | White | Warm/saturated (red, orange, deep orange) | `#FFFFFF` |
-| 3 | `ClaudeCode-Navy` | Dark navy | Bright/light (yellow, lime, light green) | `#1A1A2E` |
-| 4 | `ClaudeCode-Purple` | Purple | Green, teal, amber backgrounds | `#8B5CF6` |
-| 5 | `ClaudeCode-Gold` | Gold/amber | Blue, purple, dark teal backgrounds | `#F59E0B` |
-| 6 | `ClaudeCode-Cyan` | Cyan/aqua | Red, orange, pink, warm backgrounds | `#06B6D4` |
-| 7 | `ClaudeCode-Teal` | Teal | Red, orange, pink, magenta backgrounds | `#14B8A6` |
-| 8 | `ClaudeCode-Green` | Green | Purple, magenta, red, dark blue backgrounds | `#22C55E` |
+**Icon generation (per-session, at launch):**
 
-**Gemini icon color variants:**
+1. Read the assigned color hex (e.g. `#8B5CF6` for the purple slot)
+2. Compute contrasting icon tint color (see color theory below)
+3. Load the base logo PNG with Pillow
+4. Apply hue/color substitution: replace the logo's primary color channel with the tint hex
+5. Write output PNG to `~/.local/state/ai-cli-utils/iterm2-icons/{session-name}.png`
+6. Generate Dynamic Profile JSON at `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/{session-name}.json`
 
-| # | Profile Name | Icon Color | Best With Background Colors |
-|---|-------------|------------|----------------------------|
-| 1 | `GeminiCLI-White` | White | Dark/saturated backgrounds |
-| 2 | `GeminiCLI-Navy` | Dark navy | Bright/light backgrounds |
-| 3 | `GeminiCLI-Gold` | Gold | Cool/dark backgrounds |
-
-**Mapping from tab color to icon profile:**
-
-The 12-color palette is divided into groups by warmth/brightness, and each group is assigned an icon color that contrasts well:
-
-| Slot | Tab Color | Tab Hex | Claude Profile | Gemini Profile |
-|------|-----------|---------|----------------|----------------|
-| 0 | Red | `e74c3c` | ClaudeCode-White | GeminiCLI-White |
-| 1 | Orange | `e67e22` | ClaudeCode-Cyan | GeminiCLI-White |
-| 2 | Yellow | `f0b429` | ClaudeCode-Navy | GeminiCLI-Navy |
-| 3 | Green | `2ecc71` | ClaudeCode-Purple | GeminiCLI-Navy |
-| 4 | Teal | `1abc9c` | ClaudeCode-Coral | GeminiCLI-Navy |
-| 5 | Sky Blue | `039be5` | ClaudeCode-Gold | GeminiCLI-Gold |
-| 6 | Blue | `1e88e5` | ClaudeCode-Coral | GeminiCLI-Gold |
-| 7 | Purple | `5e35b1` | ClaudeCode-Gold | GeminiCLI-Gold |
-| 8 | Pink | `d81b60` | ClaudeCode-Teal | GeminiCLI-White |
-| 9 | Cyan | `00acc1` | ClaudeCode-White | GeminiCLI-White |
-| 10 | Deep Orange | `ff5722` | ClaudeCode-Cyan | GeminiCLI-White |
-| 11 | Lime | `7cb342` | ClaudeCode-Navy | GeminiCLI-Navy |
-
-**Dynamic Profile JSON structure (one example variant):**
+**Dynamic Profile JSON (generated per-session):**
 
 ```json
 {
-  "Name": "ClaudeCode-Purple",
-  "Guid": "humanware-claude-code-purple",
-  "Dynamic Profile Parent Name": "ClaudeCode",
-  "Icon": 2,
-  "Custom Icon Path": "/Users/sergeiwallace/.config/iterm2/icons/claude-icon-purple.png"
+  "Profiles": [{
+    "Name": "ai-cli:c-sw-5",
+    "Guid": "ai-cli-c-sw-5",
+    "Dynamic Profile Parent Name": "ClaudeCode",
+    "Custom Icon Path": "/Users/sergeiwallace/.local/state/ai-cli-utils/iterm2-icons/c-sw-5.png"
+  }]
 }
 ```
 
-Each variant inherits everything from the `ClaudeCode` base profile and only overrides the icon path. The base `ClaudeCode` profile must NOT set `"Title Components"` (this key is confirmed to break key mappings and title management).
+GUIDs are deterministic per session name — re-launching a session regenerates the same GUID, so iTerm2 updates the existing profile in place rather than accumulating duplicates.
 
-**Icon generation:** Pre-render tinted PNGs from the Claude SVG source (`~/.config/iterm2/icons/claude-logo.svg`) using a Python script with Pillow. The script takes the base SVG, renders it at 128x128, and applies a color tint. This is a one-time asset generation step, not a runtime operation. The same approach for Gemini using the Gemini logo source.
+**Icon tint color selection (automatic contrast):**
 
-**PNG storage:** Pre-rendered PNGs are checked into the repo at `assets/iterm2-icons/`. 11 PNGs (8 Claude + 3 Gemini) at ~10–20 KB each is negligible. Users can regenerate at any time if they want custom colors.
+Each palette entry specifies a tab background hex. The icon tint is computed automatically:
+1. Convert tab background hex to HSL
+2. Rotate hue by 180° (complementary) and boost lightness/saturation for visibility
+3. Clamp to a legible range — never too close to the background in perceived luminance
 
-**Generation script:** `scripts/generate_iterm2_icons.py`. Reads the palette and color scheme config from `iterm2.toml`, renders each variant, and writes to `assets/iterm2-icons/`. Options:
+This replaces the hand-crafted `color_schemes` mapping. The palette only needs `name → tab_hex`; icon tint is derived automatically. Users can override the auto-tint with an explicit `icon_color` per palette entry if they want exact control.
 
+```toml
+[iterm2.palette]
+# name = tab_background_hex
+# icon_color is optional — auto-computed from tab color if omitted
+red         = "#e74c3c"
+orange      = "#e67e22"
+yellow      = "#f0b429"
+green       = "#2ecc71"
+teal        = "#1abc9c"
+sky_blue    = "#039be5"
+blue        = "#1e88e5"
+purple      = "#5e35b1"
+pink        = "#d81b60"
+cyan        = "#00acc1"
+deep_orange = "#ff5722"
+lime        = "#7cb342"
+indigo      = "#3949ab"
+rose        = "#f43f5e"
+amber       = "#ffb300"
+emerald     = "#059669"
+# Add any color — icon tint auto-derived, no other config needed:
+# midnight   = "#1a1a2e"
+# lavender   = "#7c3aed"
 ```
-python scripts/generate_iterm2_icons.py            # regenerate all from config
-python scripts/generate_iterm2_icons.py --outline  # add white/black outline for contrast
-python scripts/generate_iterm2_icons.py --size 256 # output resolution (default 128)
-```
 
-**Outline option:** A white or black outline around the icon improves legibility on backgrounds where the icon color is close to the tab background color. The script auto-selects outline color (white for dark icons, black for light) based on computed luminance contrast. This is an explicit flag rather than always-on because some users may prefer clean logomarks without outlines. This is included in the initial implementation of the script (not a follow-up).
+**Palette size:** 16+ entries by default. No upper limit — add any color to the palette and it works immediately. The lease-file system handles collision avoidance regardless of palette size.
 
-**Color theory for pairings:** The `color_schemes` config in `iterm2.toml` encodes the contrasting pairings. Pairing rules:
-- Warm tab backgrounds (red, orange, deep orange, pink) → cool icon colors (cyan, teal, white)
-- Cool tab backgrounds (blue, purple, cyan, sky blue) → warm icon colors (coral, gold)
-- Neutral/natural (green, teal, yellow, lime) → contrasting by hue rotation (purple, navy, coral)
+**Cleanup:** When a session exits, the EXIT trap removes the generated PNG and Dynamic Profile JSON. This prevents accumulation of orphaned profiles.
+
+**Pillow dependency:** Added to `pyproject.toml` as a required dependency. Icon generation is fast (~50ms per icon at 128×128) — imperceptible during session launch.
+
+**No badge overlays.** Never used for any status display. Off the table.
 
 > **Feedback:**
 
@@ -459,7 +438,7 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 | `_it2` DCS wrapper helper | Unchanged |
 | `_ai_iterm2_precmd` in zshrc for shell panes | Unchanged (with one race-condition fix, see below) |
 | iTerm2 env var propagation into tmux | `_iterm_env_flags` mechanism retained |
-| ShellUtility, Caffeinate, ChromeDebug, SSHForward profiles | Unchanged |
+| ShellUtility, Caffeinate, ChromeDebug, SSHForward profiles | Base profile config unchanged; icons now runtime-generated with auto-contrast tint |
 
 ### Fixed (bug repairs, no architectural change)
 
@@ -475,8 +454,8 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 | Component | Old | New | Rationale |
 |-----------|-----|-----|-----------|
 | Color assignment | `(num-1) % 12` modulo | Lease-file with collision-free slot assignment | Eliminates color collision across projects |
-| Icon color profiles | 3 Claude variants (coral/white/dark) + 1 Gemini | 8 Claude variants + 3 Gemini variants | Richer visual variety per user requirement |
-| Profile map | 12-slot array mapping to 3 profiles | 12-slot array mapping to 8+ profiles | More distinct icon/background pairings |
+| Icon color profiles | 3 Claude variants (coral/white/dark) + 1 Gemini | Runtime-generated PNG per session, any color, all profile types | Unlimited colors, no pre-baked variants, auto-contrast for every tab background |
+| Profile map | 12-slot array mapping to 3 profiles | Palette entry → tab hex; icon tint auto-derived, no profile map needed | Eliminates manual color scheme config |
 | Tab title format | `* ▶ {name}` (type sym always included) | `▶ {name}` in tab; `* ▶ {name}` in pane header only | Type symbol is redundant with profile icon in tab bar |
 | Gemini tab color | Static blue from profile JSON | Rolling color from shared palette | Gemini sessions get distinct colors like CC |
 | Multi-pane combined titles | Abbreviation/aggregation logic | Dropped entirely | Each pane owns its title; tab shows focused pane |
@@ -490,7 +469,7 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 | Multi-pane abbreviation logic (`c-r-sw-{▶1|⏸2}`) | Requirement 1: no combined titles |
 | Window title via Claude Haiku subprocess | Was causing freezes; dropped from scope |
 | Window registry files (`/tmp/iterm2-win-{win_key}`) | Only needed for window titles |
-| Badge text updates | Not used for status display in this design |
+| Badge text overlays | Never used — off the table entirely (aesthetic decision, not a tradeoff) |
 
 > **Feedback:**
 
@@ -504,7 +483,7 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 
 2. **`_ai_iterm2_precmd` race condition with remote launches.** Defer to debugging post-implementation. In principle, `os.execvp` replaces the process immediately, so precmd should not fire after the pre-launch emit. If Bug 2 persists after the other fixes, the root cause is elsewhere and will be diagnosed with real sessions. Unit and integration tests will be written during implementation to catch regressions.
 
-3. **Icon PNG generation pipeline.** ✅ **Decision:** PNGs checked into repo at `assets/iterm2-icons/`. Generation script at `scripts/generate_iterm2_icons.py`, reads from `iterm2.toml`, supports `--outline` and `--size` flags. See [Icon Color System](#icon-color-system).
+3. **Icon PNG generation pipeline.** ✅ **Decision (revised):** Runtime Pillow generation at session launch — no pre-baked PNGs in repo. All profile types (Claude, Gemini, shell, Chrome, caffeinate, SSH) use the same pipeline. Tint auto-derived from tab background via HSL color theory; user can override per palette entry with explicit `icon_color`. See [Icon Color System](#icon-color-system).
 
 4. **Gemini `--resume` with wrong chats directory.** ✅ **Correction:** Sessions are NOT permanently broken — running `ai g N -p PROJECT` from the correct project root successfully resumes the session. The fix (`os.chdir()` for local `-p` sessions) is a UX improvement so the command works from ANY directory, not a recovery mechanism for broken sessions. No session-map cleanup needed.
 
@@ -512,7 +491,6 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 
 - Mosh filters all `\033]1337;` sequences — this is architectural, not configurable
 - Mosh prepends `[mosh] ` to all OSC 0 titles — this is hardcoded in mosh source
-- Runtime icon color mutation is impossible in iTerm2 — static profiles with pre-rendered PNGs only
 - Gemini CLI has no `--chats-dir` flag — working directory at launch is the sole determinant
 - `"Title Components"` key in Dynamic Profiles breaks key mappings — must not be set
 
@@ -523,3 +501,4 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 | Date | Round | Decisions |
 |------|-------|-----------|
 | 2026-04-02 | Round 1 | OQ-1: type symbols enabled by default, TOML config file for all feature flags + color palette. OQ-2: tests during implementation, debug race condition post-impl. OQ-3: PNGs in repo, generation script with `--outline` flag, color scheme config with color theory pairings. OQ-4: corrected — sessions not permanently broken; `os.chdir` fix is UX improvement only. |
+| 2026-04-04 | Round 2 | Icon system redesigned: runtime Pillow PNG generation replaces static variants. Auto-contrast tint (HSL hue rotation) applies to ALL profile types (Claude, Gemini, shell, caffeinate, chrome, SSH). No pre-baked assets. Palette is `name → tab_hex` only; tint derived automatically. Optional `icon_color` per entry for manual override. Badge overlays permanently removed from design. |
