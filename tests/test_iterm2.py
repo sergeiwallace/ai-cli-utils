@@ -2,6 +2,8 @@ import json
 import os
 from unittest.mock import patch
 
+from conftest import make_iterm2_config
+
 from ai_cli.main import (
     _assign_iterm2_color_slot,
     _emit_iterm2_profile_setup,
@@ -163,26 +165,13 @@ class TestIterm2Palette:
 
 
 class TestAssignIterm2ColorSlot:
-    def _make_cfg(self, palette=None, collision=True, project_colors=None):
-        p = palette or {"red": "#e74c3c", "blue": "#1e88e5", "green": "#2ecc71"}
-        cfg: dict = {
-            "iterm2": {
-                "enabled": True,
-                "color": {"enabled": True, "collision_avoidance": collision},
-                "palette": p,
-            }
-        }
-        if project_colors:
-            cfg["iterm2"]["project_colors"] = project_colors
-        return cfg
-
     def test_when_not_iterm2_then_returns_none(self, tmp_path):
         with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": ""}, clear=False):
             result = _assign_iterm2_color_slot("sw-1", "c")
         assert result is None
 
     def test_when_iterm2_then_returns_hex_string(self, tmp_path):
-        cfg = self._make_cfg()
+        cfg = make_iterm2_config()
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
@@ -192,7 +181,7 @@ class TestAssignIterm2ColorSlot:
         assert len(result.lstrip("#")) == 6
 
     def test_when_collision_avoidance_assigns_unique_slots(self, tmp_path):
-        cfg = self._make_cfg()
+        cfg = make_iterm2_config()
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
@@ -202,7 +191,7 @@ class TestAssignIterm2ColorSlot:
         assert len({slot1, slot2, slot3}) == 3
 
     def test_when_all_slots_occupied_wraps_to_first(self, tmp_path):
-        cfg = self._make_cfg(palette={"red": "#e74c3c", "blue": "#1e88e5"})
+        cfg = make_iterm2_config(palette={"red": "#e74c3c", "blue": "#1e88e5"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
@@ -212,7 +201,7 @@ class TestAssignIterm2ColorSlot:
         assert slot3 is not None
 
     def test_stale_lease_pruned_on_assignment(self, tmp_path):
-        cfg = self._make_cfg()
+        cfg = make_iterm2_config()
         lease_file = tmp_path / "color-leases.json"
         lease_file.write_text(json.dumps({"leases": {"sw-dead": {"slot": 0, "pid": 999999999, "ts": "0"}}}))
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
@@ -225,7 +214,7 @@ class TestAssignIterm2ColorSlot:
         assert slot is not None
 
     def test_when_collision_avoidance_disabled_uses_modulo(self, tmp_path):
-        cfg = self._make_cfg(collision=False)
+        cfg = make_iterm2_config(collision_avoidance=False)
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
@@ -234,7 +223,7 @@ class TestAssignIterm2ColorSlot:
         assert slot.lstrip("#") == "1e88e5"
 
     def test_project_colors_pins_preferred_slot(self, tmp_path):
-        cfg = self._make_cfg(project_colors={"myproject": "green"})
+        cfg = make_iterm2_config(project_colors={"myproject": "green"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
@@ -243,7 +232,7 @@ class TestAssignIterm2ColorSlot:
         assert slot.lstrip("#") == "2ecc71"
 
     def test_project_colors_falls_back_when_preferred_occupied(self, tmp_path):
-        cfg = self._make_cfg(project_colors={"myproject": "red"})
+        cfg = make_iterm2_config(project_colors={"myproject": "red"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
