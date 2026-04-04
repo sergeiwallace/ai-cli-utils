@@ -209,6 +209,7 @@ def generate_dynamic_profile(
         "Dynamic Profile Parent Name": resolved_base,
         "Tab Color": _hex_to_iterm2_color(tab_hex),
         "Use Tab Color": True,
+        "Use Separate Colors for Light and Dark Mode": True,
     }
     if background_hex:
         profile["Background Color"] = _hex_to_iterm2_color(background_hex)
