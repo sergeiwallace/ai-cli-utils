@@ -2,13 +2,13 @@
 title: "iTerm2 Tab Title and Color System — Design"
 category: design
 tags: [iterm2, tab-title, tab-color, session-title, fleet, gemini, remote, mosh]
-status: draft
+status: implemented
 source: ai-cli-utils
 ---
 
 # iTerm2 Tab Title and Color System — Design
 
-**Status:** DRAFT
+**Status:** IMPLEMENTED — 2026-04-04
 
 **Created:** 2026-04-02
 

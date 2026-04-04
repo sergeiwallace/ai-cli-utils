@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai layout` command: YAML-driven iTerm2 window/tab/pane layout system. Subcommands: `list`, `validate <name>`, `profiles <name>`, `<name>` (apply). Layout files at `~/.config/iterm2/layouts/*.yaml`. Nested pane split model (vertical/horizontal). Dynamic Profile generation + runtime tinted icon per tab. See `docs/designs/iterm2-layout-system.md`.
+- `icon_generator` module: runtime PNG icon generation with Pillow. Auto-contrast tint derived from tab background color via HSL color theory (180° hue rotation + lightness adaptation). Explicit `icon_color` override supported. Source logos at `src/ai_cli/data/icons/`. Falls back to Claude brand orange (`#da7756`) when no tab color is set.
+- Per-session Dynamic Profile generation: each session gets a `ai-cli:{ai_name}` Dynamic Profile JSON (inherits from base profile, sets tab color + icon) written to `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/` at launch and cleaned up on exit.
+- Lease-file-based collision-free iTerm2 tab color assignment. Replaces modulo-based system; any palette size supported. Lease files at `~/.local/state/ai-cli/iterm2/color-leases.json`.
+- `[iterm2.base_profiles]` config section: configure which iTerm2 base profile each session type inherits from.
+- `[iterm2.project_colors]` config section: pin project/session names to preferred palette color slots.
+- `[iterm2.icon_color_overrides]` config section: explicit icon tint override per palette color slot.
+- `ai color <name|#hex>` command: ad hoc tab color reassignment for the current session.
+- `ai internal cleanup-session-files <ai_name>`: remove session icon PNG and Dynamic Profile JSON; called by EXIT trap.
+- OSC 1 title fix: session name now set via `\033]1;` instead of `\033]0;` so mosh on remote sessions does not prepend `[mosh] ` to the tab title.
 - `ai setup` command: detects humanware platform vs standalone environment and configures `CLAUDE.md` accordingly; marks file `assume-unchanged` in git after swap so external users don't see local modifications
 - `CLAUDE-full.md`: standalone self-contained Claude Code session config for users without the humanware platform; `CLAUDE.md` remains the lean variant for humanware users
 - pyright basic mode type checking in CI lint job

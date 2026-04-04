@@ -109,45 +109,44 @@ Without this, none of the fleet management features (rolling tab colors, badges,
 
 When `ai c N` launches a CC session, ai-cli automatically configures iTerm2 via escape sequences (requires `TERM_PROGRAM=iTerm.app`):
 
-1. **Profile switch** — activates `ClaudeCode` Dynamic Profile (sets icon, base color scheme, badge template)
-2. **Rolling tab color** — assigns a distinct color from a 10-color palette based on session number:
+1. **Profile switch** — generates a per-session Dynamic Profile JSON (`ai-cli:{ai_name}`) that inherits from the base profile (e.g. `ClaudeCode`) and writes it to `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/`. iTerm2 hot-reloads it instantly. Profile is activated via `SetProfile` escape sequence.
+2. **Collision-free tab color** — assigns a color from the configured palette using lease files at `~/.local/state/ai-cli/iterm2/color-leases.json`. Each session holds a lease on its slot; expired leases are reclaimed automatically. Color is set via `SetColors=tab=` escape.
+3. **Runtime tinted icon** — at session launch, `icon_generator.py` tints the source logo PNG (`src/ai_cli/data/icons/{type}-logo.png`) using a contrast color derived from the tab hex (180° HSL hue rotation + lightness adaptation). Written to `~/.local/state/ai-cli-utils/iterm2-icons/{ai_name}.png` and referenced in the Dynamic Profile. Falls back to Claude brand orange (`#da7756`) when no tab color is set.
+4. **Tab title** — set to the session name (e.g. `c-sw-1`) via OSC 1 (`\033]1;`). OSC 1 is used instead of OSC 0 so mosh does not prepend `[mosh] ` to the title on remote sessions.
+5. **Cleanup on exit** — the session EXIT trap calls `ai internal cleanup-session-files {ai_name}`, which removes the icon PNG and Dynamic Profile JSON so iTerm2 doesn't accumulate stale profiles.
 
-| # | Color | Hex | Session |
-|---|-------|-----|---------|
-| 1 | Purple (Anthropic) | `#6440dc` | sw-1 |
-| 2 | Blue | `#4a90d9` | sw-2 |
-| 3 | Green | `#2ecc71` | sw-3 |
-| 4 | Orange | `#e67e22` | sw-4 |
-| 5 | Red | `#e74c3c` | sw-5 |
-| 6 | Teal | `#1abc9c` | sw-6 |
-| 7 | Violet | `#9b59b6` | sw-7 |
-| 8 | Amber | `#f39c12` | sw-8 |
-| 9 | Sky blue | `#3498db` | sw-9 |
-| 10 | Pink | `#e91e63` | sw-10 |
+### Color Preferences
 
-3. **Badge** — shows session type and number (e.g., "cc sw-3") as faint overlay in top-right
-4. **User variables** — sets `sessionType`, `sessionNum`, `tmuxSession` for badge interpolation
-5. **Tab title** — sets to "cc sw-N"
+Pin a project or session to a specific palette color in `~/.config/ai-cli-utils/iterm2.toml`:
 
-Colors and badges re-emit on each session restart (reconnect restores visual identity).
+```toml
+[iterm2.project_colors]
+myproject = "purple"
+research  = "teal"
+```
+
+If the preferred slot is already occupied, ai-cli falls back to the lowest free slot.
 
 ## Dynamic Profiles (Mac-local)
 
-**Location:** `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-profiles.json`
+**Base profiles:** `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-profiles.json`
 
-Profiles defined:
+These are static base profiles. Per-session profiles are generated at runtime by ai-cli and inherit from these.
 
-| Profile | Icon | Base Tab Color | Badge | Use Case |
-|---------|------|---------------|-------|----------|
-| ClaudeCode | Claude logo | Purple | `\(user.sessionType) sw-\(user.sessionNum)` | CC agent sessions |
-| ShellUtility | Terminal icon | Grey | `\(user.sessionType)` | Shell, git, monitoring |
-| Caffeinate | Coffee icon | Amber | — | `caffeinate` keep-alive |
-| ChromeDebug | Chrome icon | Blue | — | Chrome CDP debug |
-| SSHForward | SSH icon | Green | — | Port forwarding |
+| Profile | Icon | Use Case |
+|---------|------|----------|
+| ClaudeCode | `claude-icon-v3.png` | CC agent sessions |
+| GeminiCLI | `gemini-logo.png` | Gemini CLI sessions |
+| ShellUtility | Terminal icon | Shell, git, monitoring |
+| Caffeinate | Coffee icon | `caffeinate` keep-alive |
+| ChromeDebug | Chrome icon | Chrome CDP debug |
+| SSHForward | SSH key icon | Port forwarding |
 
-**Icons location:** `~/.config/iterm2/icons/` (64x64 PNG with transparent bg)
+**Generated per-session profiles** live at `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/{ai_name}.json`. Each inherits from the base profile above and adds the session's tab color and tinted icon path. These are created at session start and deleted at session end.
 
-Profiles are hot-reloaded by iTerm2 — edit the JSON and changes apply immediately.
+**Source logos** for runtime icon generation: `src/ai_cli/data/icons/` in the ai-cli-utils repo (128×128 RGBA PNG).
+
+Profiles are hot-reloaded by iTerm2 — no restart required.
 
 ## Escape Sequences Reference
 
@@ -173,39 +172,20 @@ printf '\e]1337;SetUserVar=%s=%s\a' "sessionType" "$(echo -n 'cc' | base64)"
 printf '\e]0;CC sw-3\a'
 ```
 
-## Smart Tab & Window Titles (ai-cli)
+## Tab & Window Titles (ai-cli)
 
-Tab and window titles are managed dynamically by ai-cli via OSC escape sequences emitted on each shell prompt (`_ai_iterm2_precmd` in `~/.zshrc`).
+Tab title is set to the session name (e.g. `c-sw-1`) via OSC 1 at session launch and updated on each shell prompt via `_ai_iterm2_precmd` in `~/.zshrc`.
 
-### Tab Title Format
+OSC 1 (`\033]1;`) is used — not OSC 0 — so that mosh on remote sessions does not prepend `[mosh] ` to the title.
 
-Tab title = tmux session name, prefixed by pane-type symbols when in a multi-pane layout:
-
-| Symbol | Meaning |
-|--------|---------|
-| `*` | Claude Code pane |
-| `✦` | Gemini CLI pane |
-| `$` | Plain shell pane |
-
-Status suffix appended on task events:
-
-| Symbol | Meaning |
-|--------|---------|
-| `▶` | Running |
-| `⏸` | Waiting for input |
-| `✓` | Done |
-| `✗` | Error |
-| `↻` | Resuming |
-
-Multi-pane example: `* c-sw-5` (single CC pane) or `* ✦ $ c-sw-5` (CC + Gemini + shell).
-
-Window title uses a heuristic derived from the set of active tmux session names (common prefix abbreviated).
+Window title uses a heuristic derived from the active tmux session names (common prefix abbreviated).
 
 ### Known Constraints
 
 - **Do NOT add `"Title Components"` key to Dynamic Profiles** — breaks all key mappings in that profile. This key conflicts with humanware's dynamic title management. Test confirmed 2026-04-01.
 - **Do NOT add `_ai_zshrc_autoreload` to `precmd_functions`** — causes infinite sourcing loop inside CC sessions (source → mtime changes → source again). Attempted and reverted 2026-04-01.
 - Window title no longer uses `claude -p` subprocess — was spawning a headless CC process from within an active CC session, causing freezes. Fixed in ai-cli-utils commit `add120f` (heuristic only, written directly to file).
+- **Do NOT use badge overlays** — `"Badge Text"` in Dynamic Profiles creates an ugly text overlay. Tab colors + tinted icons + tab title carry all identity information.
 
 ## ntfy → iTerm2 Bridge
 
@@ -231,17 +211,16 @@ macOS notification body uses the ntfy event `message` field if present, falls ba
 
 iTerm2 looks for scripts in `~/Library/Application Support/iTerm2/Scripts/`. The `~/.config/iterm2/scripts/` path is a secondary backup only — edits must be made to (or copied to) the `~/Library/` path to take effect.
 
-## Window Arrangements
+## Layout System
 
-Save a fleet monitoring layout via **Window → Save Window Arrangement**. Restore via **Window → Restore Window Arrangement** or `Cmd+Shift+R`.
+For repeatable multi-tab/pane window configurations, use the YAML layout system instead of Window Arrangements:
 
-Recommended 4-pane layout:
+```bash
+ai layout list              # see available layouts
+ai layout <name>            # open a new window with the defined tabs/panes
+ai layout validate <name>   # check YAML schema
 ```
-┌──────────────────┬──────────┐
-│                  │ sw-2     │
-│     sw-1         │          │
-│   (main CC)      ├──────────┤
-│                  │ sw-3     │
-│                  │          │
-└──────────────────┴──────────┘
-```
+
+Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Supports nested pane splits, per-tab colors, icons, and startup commands. See `docs/designs/iterm2-layout-system.md`.
+
+**Window Arrangements** (iTerm2 built-in) are still available via **Window → Save/Restore Window Arrangement** (`Cmd+Shift+R`) for one-off snapshots, but YAML layouts are preferred for named, version-controlled configurations.

@@ -2,13 +2,13 @@
 title: "iTerm2 YAML Layout Templating System — Design"
 category: design
 tags: [iterm2, layout, yaml, dynamic-profiles, panes, tmux, templates]
-status: draft
+status: implemented
 source: ai-cli-utils
 ---
 
 # iTerm2 YAML Layout Templating System — Design
 
-**Status:** DRAFT
+**Status:** IMPLEMENTED — 2026-04-04
 
 **Created:** 2026-04-04
 

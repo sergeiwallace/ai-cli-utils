@@ -31,6 +31,9 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Signal-watch** | Handoff delivery via Circus-managed background process — isolated from CC session lifecycle |
 | **Notifications** | Desktop and push notifications on task completion |
+| **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
+| **Runtime tinted icons** | Pillow-based PNG icon generation at session launch; auto-contrast tint derived from tab color via HSL color theory |
+| **Collision-free tab colors** | Lease-file-based color slot assignment; each session gets a unique color from a configurable palette |
 
 ## Installation
 
@@ -153,6 +156,17 @@ ai handoff claim     # Claim a handoff
 ai handoff complete  # Mark a handoff as done
 ```
 
+### iTerm2 layouts
+
+```bash
+ai layout list                   # List available layouts in ~/.config/iterm2/layouts/
+ai layout validate <name>        # Validate YAML schema
+ai layout profiles <name>        # Regenerate Dynamic Profiles without relaunching window
+ai layout <name>                 # Apply layout: open new iTerm2 window with tabs/panes as defined
+```
+
+Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define a base profile, tab color, icon tint, and a root pane with optional nested vertical/horizontal splits, each with a startup directory and command.
+
 ### Other commands
 
 ```bash
@@ -214,6 +228,29 @@ notify_on_exit = true          # desktop notifications on task completion
 [update]
 # extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
 ```
+
+### iTerm2 Config
+
+iTerm2 visual identity settings live in `~/.config/ai-cli-utils/iterm2.toml` (created on first use):
+
+```toml
+[iterm2.base_profiles]
+# Base Dynamic Profile each session type inherits from
+cc         = "ClaudeCode"
+gemini     = "GeminiCLI"
+shell      = "ShellUtility"
+
+[iterm2.project_colors]
+# Pin specific projects/sessions to preferred palette colors
+# myproject = "purple"
+# research  = "teal"
+
+[iterm2.icon_color_overrides]
+# Override auto-contrast icon tint per palette color slot
+# purple = "#da7756"
+```
+
+The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. Each session gets a collision-free slot via lease files. When a tab color is set, the session icon is automatically tinted with a contrasting color (180° HSL hue rotation). When no color is set, the Claude brand orange (`#da7756`) is used as fallback.
 
 Set `AI_CLI_HOST` in your shell profile (`~/.bashrc` or `~/.zshrc`) above the interactive guard to identify the machine. This is used when posting targeted handoffs (`ai handoff post --for-machine mac ...`):
 

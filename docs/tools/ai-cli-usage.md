@@ -24,6 +24,8 @@ source: internal
 - [Utility Commands](#utility-commands)
   - [ai gemini](#ai-gemini)
   - [ai handoff](#ai-handoff)
+  - [ai layout](#ai-layout)
+  - [ai color](#ai-color)
   - [ai signal-watch](#ai-signal-watch)
   - [ai tunnel](#ai-tunnel)
   - [ai update](#ai-update)
@@ -177,6 +179,32 @@ Cross-session handoff queue. `post` writes a handoff item (add `--remote` to pos
 
 Queue lives at `~/projects/sergei/.handoff-queue/`. Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
 
+### ai layout
+
+```
+ai layout list
+ai layout validate <name>
+ai layout profiles <name>
+ai layout <name>
+```
+
+YAML-driven iTerm2 window/tab/pane layout system. Layout files live at `~/.config/iterm2/layouts/<name>.yaml`.
+
+- `list` — list available layout files, showing tab names and description for each
+- `validate <name>` — validate YAML schema without applying (exits 0 on success, 1 on error)
+- `profiles <name>` — regenerate Dynamic Profile JSON files for all tabs in the layout without rebuilding the window (useful after color or icon changes)
+- `<name>` — apply a layout: generates Dynamic Profiles, then launches a new iTerm2 window via the Python API with tabs and pane splits as defined
+
+Layout YAML schema supports nested pane splits (vertical/horizontal), per-tab base profiles, tab colors, icon color overrides, and arbitrary startup commands per pane. See `docs/designs/iterm2-layout-system.md`.
+
+### ai color
+
+```
+ai color <palette-name|#hex>
+```
+
+Ad hoc reassignment of the current session's iTerm2 tab color. Takes a palette color name (e.g., `purple`, `teal`) or a hex value (e.g., `#5e35b1`). Updates the tab color immediately via `SetColors` escape sequence and rewrites the session's Dynamic Profile JSON.
+
 ### ai signal-watch
 
 ```
@@ -266,3 +294,4 @@ Used by hooks and scripts — not for direct human use.
 | `publish-heartbeat` | `session_id json` | Publish worker heartbeat |
 | `publish-session-event` | `session_id verb` | Publish session started/stopped |
 | `signal-watch` | `project session_id` | Subscribe durable to `handoff.{project}`, claim tasks, write pending-file for auto-pickup |
+| `cleanup-session-files` | `ai_name` | Remove session-specific icon PNG and Dynamic Profile JSON; called by EXIT trap on session end |
