@@ -1,7 +1,8 @@
-# Pre-Release Checklist — Implementation Plan
+# Pre-Release v0.2.0 — Implementation Plan
 
 **Status:** DRAFT
 **Created:** 2026-04-04
+**Target version:** `0.2.0` (current: `0.1.1`)
 
 ## Table of Contents
 

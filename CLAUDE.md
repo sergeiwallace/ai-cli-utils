@@ -86,6 +86,15 @@ Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR �
 | **Automated Checks** | **Hard gate** — `ruff check src/ tests/ && ruff format --check src/ tests/ && pytest` must pass. Always run **after** `/simplify` (it modifies code). |
 | **UAT** | **Human approves** before PR |
 | **PR** | Open PR to `main` |
+| **Version bump** | After any P0/P1 feature task reaches `done`: bump minor version, update CHANGELOG, tag, publish to PyPI. After a bug fix: bump patch. Don't batch — ship when ready. |
+
+### Versioning Convention (semver)
+
+- **Minor bump (`0.x.0`)** — any new user-facing feature or command. Ship as soon as the feature's task is `done`.
+- **Patch bump (`0.1.x`)** — bug fixes only, no new features.
+- **CHANGELOG is required** with every bump — one entry per task completed, not summarized. Reference the task ID.
+- **Version bump + CHANGELOG + PyPI publish** is part of the task `done` definition for P0/P1 features, not a deferred ceremony.
+- **Tag format:** `vX.Y.Z` — push tag to trigger the GH Release workflow.
 
 ### UAT Presentation Format
 
