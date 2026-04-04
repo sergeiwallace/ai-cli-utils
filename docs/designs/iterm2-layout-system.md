@@ -153,13 +153,7 @@ Each layout YAML specifies a `base_profile` (e.g. `"Claude Base"`). The generate
 
 ---
 
-> **Feedback Round 1:** Your approval/feedback on each decision:
-> 1. Decision 1 (location): <approval or feedback>
-> 2. Decision 2 (color mechanism): <approval or feedback>
-> 3. Decision 3 (pane model): <approval or feedback>
-> 4. Decision 4 (auto-apply): <approval or feedback>
-> 5. Decision 5 (profile inheritance): <approval or feedback>
-> - <enter feedback here>
+> **Feedback Round 1 (2026-04-04):** All 5 decisions approved. Additional context: layouts use a single maximized window, tabs as workflow tiers (active multi-pane work / back burner sessions / utilities). Open questions resolved: (1) single window only, (2) create new window if layout already open, (3) leaf pane `name` field deferred to Phase 3.
 
 ---
 
@@ -355,11 +349,7 @@ The `ai c N` → layout integration happens in `main.py`'s session launch path. 
 2. **Layout update vs create**: If a layout with matching name is already open, should `ai layout <name>` add tabs to the existing window or create a new window?
 3. **Pane naming**: Should leaf panes support a `name` field that sets the session name (feeds into the color/title system from AI-CLI-20)?
 
-> **Feedback Round 1:** Your thoughts on the open questions:
-> 1. <!-- windows vs tabs -->
-> 2. <!-- update vs create -->
-> 3. <!-- pane naming -->
-> - <enter feedback here>
+> **Feedback Round 1 (2026-04-04):** (1) Single window only — user maximizes one window full-screen, tabs are workflow tiers. (2) Create new window if layout already open. (3) Pane `name` field deferred to Phase 3.
 
 ---
 
@@ -367,3 +357,4 @@ The `ai c N` → layout integration happens in `main.py`'s session launch path. 
 
 | Date | Round | Key Decisions |
 |------|-------|---------------|
+| 2026-04-04 | Round 1 | All 5 decisions approved. Single window, tabs as workflow tiers. Layout-already-open → create new window. Pane `name` field deferred to Phase 3. Icon generation uses shared Pillow pipeline from color system. |
