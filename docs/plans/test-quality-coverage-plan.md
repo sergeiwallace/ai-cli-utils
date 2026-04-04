@@ -23,6 +23,64 @@ Comprehensive test suite quality audit and coverage recovery following the test_
 
 ## Task Breakdown
 
+### T-00: Expand conftest.py with Shared Test Helpers
+
+**Size:** S
+**Batch:** 1
+
+Add three targeted factory functions to `conftest.py`. Done first — all other tasks use them.
+
+**`run_cli(argv, config=None, env=None) → tuple[int, str, str]`**
+
+Replaces the 119-instance pattern of nested `patch("sys.argv") + patch("load_config") + pytest.raises(SystemExit)`. Current `_run_cli_with_args` returns `mock_exec` only (useful for SSH tests that need to inspect execvp calls, not for dispatch tests). New helper returns `(exit_code, stdout, stderr)` for clean dispatch assertions:
+
+```python
+# Before (repeated 100+ times):
+with patch("sys.argv", ["ai", "quota", "status"]):
+    with patch("ai_cli.main.load_config", return_value={}):
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 0
+
+# After:
+code, out, err = run_cli(["ai", "quota", "status"])
+assert code == 0
+```
+
+Keep `_run_cli_with_args` as-is for the SSH/execvp tests that need it.
+
+**`make_subprocess_result(returncode=0, stdout="", stderr="") → MagicMock`**
+
+Replaces 29+ scattered `MagicMock(); m.returncode = 0; m.stdout = "..."` constructions:
+
+```python
+# Before:
+result = MagicMock()
+result.returncode = 0
+result.stdout = "abc123\n"
+
+# After:
+result = make_subprocess_result(stdout="abc123\n")
+```
+
+**`make_iterm2_config(palette=None, enabled=True, color_enabled=True, project_colors=None, icon_color_overrides=None) → dict`**
+
+Promotes the `_make_cfg()` local helper already in `test_iterm2.py` to conftest so T-04/T-05 iterm2 coverage tests don't duplicate it again.
+
+**Deliverables:**
+- `tests/conftest.py`: add `run_cli`, `make_subprocess_result`, `make_iterm2_config`
+- Refactor existing tests in `test_cli.py` to use `run_cli` where applicable (reduces ~600 lines of boilerplate)
+- Remove local `_make_cfg` from `test_iterm2.py`, replace with `make_iterm2_config`
+
+**Acceptance criteria:**
+- [ ] `run_cli` correctly captures exit code and stdout/stderr
+- [ ] All existing CLI dispatch tests pass after refactor
+- [ ] `test_iterm2.py` uses shared `make_iterm2_config` with no local duplicate
+
+**Dependencies:** None
+
+---
+
 ### T-01: Fix High-Severity Test Quality Issues
 
 **Size:** S
@@ -598,9 +656,9 @@ Flat function names like `test_build_session_name_no_name_when_no_sessions_then_
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
-| 1 | T-01–T-06 | All test quality + coverage | Human UAT |
+| 1 | T-00–T-06 | Helpers, quality fixes, coverage recovery | Human UAT |
 
-Single batch — all tasks are independent test-only changes. No ordering dependency. Can run in parallel.
+T-00 is done first (helpers enable cleaner T-01–T-06). T-01–T-06 are otherwise independent and can run in any order.
 
 > **Feedback Round 1:** Does the batching make sense?
 > - <enter feedback here>
@@ -635,14 +693,25 @@ Both candidates identified earlier are mockable and get real tests in T-04:
 
 ## Open Questions
 
-1. **Coverage target:** Is ~100% the right goal, or is 98%+ acceptable? Some of the CLI dispatch branches (e.g. `ai color` inner branches) involve deep iTerm2 escape sequences — they're testable but require significant mock scaffolding. Set a floor?
+1. **Coverage target:** Is ~100% the right goal, or is 98%+ acceptable?
 
-2. **T-05 reads:** Several T-05 items are marked "read before implementing" (icon_generator.py line 78, copier_update.py line 54, messaging.py lines 58/90). These are straightforward once read — flagging them here in case you want to approve those before implementation starts.
+2. **T-05 reads:** Several T-05 items marked "read before implementing" (icon_generator.py:78, copier_update.py:54, messaging.py:58/90). Proceed without a second review gate, or pause for approval?
 
 > **Feedback Round 1:**
+> 1. 100% target. Pragmas only as last resort with explicit approval. "Significant mock scaffolding" is not a sufficient reason — use conftest.py helpers.
+> 2. Proceed. No pause needed for those reads.
+
+> **AI Response Round 1:**
+> 1. Confirmed — 100% target. T-00 helpers eliminate the scaffolding concern. All coverage gaps get real tests.
+> 2. Confirmed — will read inline during implementation, no gate.
+
+---
+
+> **Feedback Round 2:**
 > - <enter feedback here>
 
 ## Approval Log
 
 | Date | Decision | Notes |
 |------|----------|-------|
+| 2026-04-04 | Round 1 approved | 100% coverage target; no lazy pragmas; T-00 conftest helpers (run_cli, make_subprocess_result, make_iterm2_config); proceed without gate on T-05 reads |
