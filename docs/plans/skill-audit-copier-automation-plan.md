@@ -1,35 +1,33 @@
 ---
 title: "Skill Audit, Copier Automation, and Session Config Drift Prevention"
 category: plan
-tags: [session-config, skills, copier, project-template, automation]
-status: draft
+tags: [session-config, skills, copier, project-template, automation, auto-restart]
+status: in_progress
 source: ai-cli-utils
 ---
 
 # Skill Audit, Copier Automation, and Session Config Drift Prevention
 
-**Status:** DRAFT — awaiting approval
+**Status:** IN PROGRESS
 
 **Created:** 2026-04-04
 
 **Related:**
 - `~/projects/project-template/` — template source
-- `~/projects/CLAUDE.md` — global session config
+- `~/projects/CLAUDE.md` — projects-wide session config (symlinked from `sergei/docs/projects-dir-session-config/CLAUDE.md`)
 - `src/ai_cli/main.py` — ai-cli subcommand implementation
+- `~/.claude/hooks/config-reload-check.sh` — UserPromptSubmit hook (config change detection)
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Skill Audit Findings](#skill-audit-findings)
-- [Option A — ai copier-update subcommand](#option-a--ai-copier-update-subcommand)
-- [Option B — Standalone script in sergei](#option-b--standalone-script-in-sergei)
-- [Recommended Approach](#recommended-approach)
-- [Implementation Plan](#implementation-plan)
-  - [Phase 1: Skill fixes in project-template](#phase-1-skill-fixes-in-project-template)
-  - [Phase 2: Copier automation](#phase-2-copier-automation)
-  - [Phase 3: Run copier across all projects](#phase-3-run-copier-across-all-projects)
-  - [Phase 4: Session config drift prevention](#phase-4-session-config-drift-prevention)
-- [Open Questions](#open-questions)
+- [Implementation Phases](#implementation-phases)
+  - [Phase 1: Fix skills in project-template](#phase-1-fix-skills-in-project-template)
+  - [Phase 2: ai copier-update subcommand](#phase-2-ai-copier-update-subcommand)
+  - [Phase 3: Auto-restart on config change](#phase-3-auto-restart-on-config-change)
+  - [Phase 4: Run copier across all projects](#phase-4-run-copier-across-all-projects)
+  - [Phase 5: Add drift prevention rule to session config](#phase-5-add-drift-prevention-rule-to-session-config)
 - [Acceptance Criteria](#acceptance-criteria)
 - [Approval Log](#approval-log)
 
@@ -37,172 +35,170 @@ source: ai-cli-utils
 
 ## Overview
 
-Three related problems to solve in one plan:
+Four problems solved together:
 
-1. **Skills are drifting from the workflow they're supposed to invoke.** The `implement` skill in this project was showing a 7-step workflow instead of the 16-step workflow in CLAUDE.md. Root cause: copier hasn't been run in a while, and project-template skills have been updated but not propagated.
+1. **Skills drifting from the workflow they invoke.** The `implement` skill in downstream projects showed a 7-step workflow instead of the 16-step CLAUDE.md workflow. Copier hasn't been run in a while.
 
-2. **No automation for running copier across all projects.** Running `copier update --defaults --trust` in 14 projects is currently a manual, error-prone task that gets skipped or forgotten.
+2. **No automation for running copier across all projects.** Running `copier update --defaults --trust` in 14 projects is manual and gets skipped.
 
-3. **No session config guidance to prevent future skill drift.** Without an explicit rule, CC sessions will keep drifting skill files from the workflow they're meant to execute.
+3. **Auto-restart on session config change requires user input.** The `UserPromptSubmit` hook detects changes and blocks prompts, but the user has to submit a prompt to trigger the block, then manually type `/exit`. Sessions should self-restart when idle.
+
+4. **No rule to prevent future drift.** Without an explicit session config rule, skills will drift again after the next workflow update.
 
 ---
 
 ## Skill Audit Findings
 
-Reviewed all 13 skills in `project-template/template/.claude/skills/`. Status of each:
-
-| Skill | Status | Issue |
+| Skill | Action | Issue |
 |-------|--------|-------|
-| `implement` | **OK in template, stale in projects** | Template has full 16-step workflow. Downstream projects are behind — copier update will fix. |
-| `direct` | **Needs fix** | References `gemini-3.0-flash` and `gemini-3.0-pro` — outdated model names. Should be `gemini-3-flash-preview` and `gemini-3.1-pro-preview`. |
-| `review` | **Minor fix** | `gemini-3-pro-preview` → `gemini-3.1-pro-preview` in fallback chain. |
-| `propagate` | **Needs clarification** | Describes managing copier-managed files (skills, hooks, agents, procedure docs) as part of its workflow, but CLAUDE.md says copier now handles those. Propagate's scope should be narrowed to CLAUDE.md/GEMINI.md cross-project propagation only. Reference the new copier automation for copier-managed files. |
-| `next` | **Needs fix** | Template version uses `get_cross_project_priorities` (scopeless cross-project SQLite query, 83KB–255KB). Per CLAUDE.md: "Never call `get_cross_project_priorities` without scoping." The per-project override in ai-cli-utils reads the local roadmap correctly. The template should default to local roadmap read, not the cross-project query. |
-| `persist` | **Minor fix** | States "CLAUDE.md ~400-line soft heuristic" but CLAUDE.md says "projects-wide ~250 lines; project-specific ~100 lines." Needs alignment. |
-| `spec` | **OK** | Lightweight planning prompt. Still accurate. |
-| `save-state` | **OK** | References CC_TMUX_SESSION and auto-exit mechanism — current. |
-| `status` | **OK** | Clean, no drift. |
-| `honest` | **OK** | Timeless. |
-| `audit-docs` | **OK** | No workflow dependencies. |
-| `handoff` | **OK** | References `ai handoff post` CLI — current. |
-| `spend` | **OK** | aido-specific, accurate. |
+| `implement` | **Copier update** | Template already has 16-step workflow. Downstream projects are stale — copier will fix. |
+| `propagate` | **Delete** | No remaining use case. Projects-wide config = one symlinked file. Copier handles template-managed files. `/persist` handles per-project CLAUDE.md. Nothing left for propagate to do. |
+| `direct` | **Fix model names** | References `gemini-3.0-flash`/`gemini-3.0-pro` — outdated. Should be `gemini-3-flash-preview`/`gemini-3.1-pro-preview`. |
+| `review` | **Fix model name** | `gemini-3-pro-preview` → `gemini-3.1-pro-preview` in fallback chain. |
+| `next` | **Fix scope** | Template version calls `get_cross_project_priorities` (83–255KB, scopeless). Default should be local roadmap read (per per-project override in ai-cli-utils). Sergei can override with cross-project query in its own SKILL.md. |
+| `persist` | **Fix line limits** | States "CLAUDE.md ~400-line limit" — should be "projects-wide ~250 lines; project-specific ~100 lines". |
+| `spec`, `save-state`, `status`, `honest`, `audit-docs`, `handoff`, `spend` | **No change** | All current. |
 
 ---
 
-## Option A — `ai copier-update` subcommand
+## Implementation Phases
 
-Add `ai copier-update` as a subcommand in ai-cli-utils. It:
-1. Discovers all `~/projects/*/` dirs with `.copier-answers.yml` referencing `project-template`
-2. Runs `copier update --defaults --trust` in each
-3. Scans for conflict markers (`<<<<<<<`) in updated files
-4. Reports per-project result
+### Phase 1: Fix skills in project-template
 
-**Pros:**
-- Available on all machines where ai-cli is installed
-- Discoverable via `ai --help`
-- Consistent with the ecosystem's "ai is the CLI tool" pattern
-- Version-controlled and testable
+**Directory:** `~/projects/project-template/template/.claude/skills/`
 
-**Cons:**
-- Adds a subcommand to ai-cli that's really a dev/orchestration concern, not an AI session management concern
-- Copier updates only make sense on Mac (projects don't live on Hetzner)
-- Adds scope to ai-cli-utils
+1. **Delete `propagate/`** — remove the entire skill directory.
+2. **`direct/SKILL.md`** — replace `gemini-3.0-flash` → `gemini-3-flash-preview`, `gemini-3.0-pro` → `gemini-3.1-pro-preview`.
+3. **`review/SKILL.md`** — replace `gemini-3-pro-preview` → `gemini-3.1-pro-preview` in both fallback chains.
+4. **`next/SKILL.md`** — replace cross-project SQLite query with local roadmap read (same as ai-cli-utils per-project version). Sergei's own SKILL.md override keeps the cross-project query.
+5. **`persist/SKILL.md`** — update line limits to match CLAUDE.md: "projects-wide ~250 lines; project-specific ~100 lines (~350 combined)".
+
+Run `cd ~/projects/project-template && uv run --extra test pytest tests/ -q`. Commit and push.
+
+Also update `~/projects/CLAUDE.md`: remove the `/propagate is deprecated` note and replace with a note about `ai copier-update`.
 
 ---
 
-## Option B — Standalone script in sergei
-
-Add `~/projects/sergei/scripts/copier-update-all.sh`. It does the same discovery + update + conflict scan.
-
-**Pros:**
-- Lives in sergei (the orchestration project) where it belongs conceptually
-- Doesn't pollute ai-cli with platform tooling
-- Simpler — no Python packaging overhead, just bash
-
-**Cons:**
-- Not available via `ai` CLI (less discoverable, requires knowing the path)
-- Must be invoked with full path or alias
-- Not version-controlled alongside ai-cli — two places to check for tooling
-
----
-
-## Recommended Approach
-
-**Option A (ai copier-update) for the command surface; it calls a shared script.**
-
-Rationale: The `ai` CLI is the canonical way CC sessions invoke tools across the ecosystem. Making it `ai copier-update` means any CC session can run it without knowing where scripts live. The implementation can be thin — a Python wrapper that calls the discovery logic and execs copier. The Mac-only concern is handled by a guard (`if AI_CLI_HOST != "mac": print error and exit`).
-
-The script logic lives in `src/ai_cli/copier_update.py`, keeping main.py clean.
-
----
-
-## Implementation Plan
-
-### Phase 1: Skill fixes in project-template
-
-**Files:** `~/projects/project-template/template/.claude/skills/`
-
-1. **`direct/SKILL.md`**: Replace `gemini-3.0-flash` → `gemini-3-flash-preview`, `gemini-3.0-pro` → `gemini-3.1-pro-preview`.
-
-2. **`review/SKILL.md`**: Replace `gemini-3-pro-preview` → `gemini-3.1-pro-preview` in both fallback chains.
-
-3. **`next/SKILL.md`**: Replace cross-project SQLite query with local roadmap read (matching the working per-project version in ai-cli-utils). The global `/next` should default to project-scoped, not cross-project.
-
-4. **`propagate/SKILL.md`**: Narrow scope — remove copier-managed files (skills, hooks, agents, procedure docs) from the manual propagation workflow. Add a note that copier handles those via `ai copier-update`. Keep the CLAUDE.md/GEMINI.md cross-project propagation workflow intact.
-
-5. **`persist/SKILL.md`**: Update CLAUDE.md line limit from "~400 lines" to match CLAUDE.md: "projects-wide ~250 lines; project-specific ~100 lines (~350 combined)."
-
-Commit to project-template, run template tests.
-
-### Phase 2: Copier automation
+### Phase 2: ai copier-update subcommand
 
 **Files:** `src/ai_cli/main.py`, `src/ai_cli/copier_update.py` (new), `tests/test_copier_update.py` (new)
-
-**`ai copier-update` subcommand:**
 
 ```
 ai copier-update [--dry-run] [--project PROJECT]
 ```
 
-- `--dry-run`: print what would be updated without running copier
-- `--project PROJECT`: update a single project instead of all
+**Discovery:** scan `Path("~/projects").expanduser().glob("*/.copier-answers.yml")`, parse YAML, filter where `_src_path` contains `project-template`. No hardcoded list — new projects are picked up automatically.
 
-**Discovery logic (`copier_update.py`):**
-1. Scan `~/projects/*/` for `.copier-answers.yml`
-2. Parse YAML, check `_src_path` contains `project-template`
-3. For each match: `subprocess.run(["copier", "update", "--defaults", "--trust"], cwd=project_dir)`
-4. After each update: `grep -r "<<<<<<<" project_dir` to detect conflicts
-5. Report: `✓ updated`, `✓ no changes`, or `✗ conflicts found` per project
+**Per project:**
+1. `subprocess.run(["copier", "update", "--defaults", "--trust"], cwd=project_dir)`
+2. Scan updated files for `<<<<<<<` conflict markers
+3. Report `✓ updated`, `✓ no changes`, or `✗ conflicts` per project
 
-**Guard:** If `AI_CLI_HOST` is not `mac`, print "copier-update runs on Mac only" and exit.
+**Flags:**
+- `--dry-run` — print discovered projects and what would run, no copier invocation
+- `--project PROJECT` — single project by name instead of all
 
-**Tests:** mock subprocess calls, verify discovery logic, verify conflict detection, verify dry-run output.
+**Guard:** `if os.environ.get("AI_CLI_HOST") != "mac": sys.exit("copier-update: runs on Mac only")`.
 
-### Phase 3: Run copier across all projects
+**Tests:** mock subprocess, verify discovery, verify conflict detection, verify dry-run, verify single-project filter, verify Mac guard.
 
-After Phase 1 and 2 are complete:
-1. Run `ai copier-update` across all 14 projects
-2. Review any conflict markers
+---
+
+### Phase 3: Auto-restart on config change
+
+**Goal:** CC sessions self-restart when session config changes and the session has been idle for a configurable period, without requiring user input and without interrupting active work or typed prompts.
+
+**Scope:**
+- Projects-wide CLAUDE.md change (`~/projects/CLAUDE.md`) → all active CC sessions restart
+- Project-specific CLAUDE.md change (`$(pwd)/CLAUDE.md`) → only sessions for that project restart
+- Both already covered by the existing per-session watcher (each watcher monitors both files)
+
+**Two components:**
+
+#### A. Watcher loop change (`main.py` bash template)
+
+Add a config change check inside the watcher's `while true; do ... sleep 1; done` loop. The watcher already polls every second and has access to the tmux session name, lock file, and state dir.
+
+Every 10 seconds (not every second — reduce overhead):
+1. Compute current hash of `~/projects/CLAUDE.md` + `$(pwd)/CLAUDE.md`
+2. Compare against a baseline hash written at session start (`$_ai_state_dir/config-hash-$tmux_session`)
+3. If hash changed: write a `$_ai_state_dir/config-changed-$tmux_session` flag with timestamp
+
+Then, every second (existing poll cadence), check:
+```
+if [[ -f "$config_changed_file" ]]; then
+    changed_at=$(cat "$config_changed_file")
+    now=$(date +%s)
+    idle_secs=$(( now - changed_at ))
+    if (( idle_secs >= IDLE_THRESHOLD )); then
+        # Check pane content — don't interrupt if user is typing
+        last_line=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | tail -1)
+        # CC idle prompt ends with bare "> " — user typing looks like "> sometext"
+        if ! echo "$last_line" | grep -qE '^>\s+\S'; then
+            rm -f "$config_changed_file"
+            touch "$signal_file"  # triggers existing /exit injection
+        fi
+    fi
+fi
+```
+
+`IDLE_THRESHOLD` defaults to 90 seconds, configurable via `config.toml`:
+```toml
+[session]
+config_reload_idle_secs = 90   # seconds to wait before auto-restarting idle session
+```
+
+#### B. `config-reload-check.sh` (no change needed)
+
+The UserPromptSubmit hook already blocks and tells the user to `/exit` when config changes. This remains as the safety net for when: (a) the watcher's idle check hasn't triggered yet, or (b) the user submits a prompt before the auto-restart fires. No changes required.
+
+The watcher's auto-restart is the primary path; the hook block is the fallback.
+
+**Files changed:**
+- `src/ai_cli/main.py` (bash template section)
+- `~/.config/ai-cli-utils/config.toml` schema (new `[session]` section with `config_reload_idle_secs`)
+
+---
+
+### Phase 4: Run copier across all projects
+
+After Phases 1–2 are shipped:
+1. `ai copier-update` — runs across all 14 projects
+2. Review any conflict markers reported
 3. Commit and push each project that was modified
 
 **14 projects:** acn-automation, agora, ai-cli-utils, aido, apt-switch, artelier, aurion, hegemony, humanware-mobile, humanware, job-pilot, menos, personal-site, sergei.
 
-### Phase 4: Session config drift prevention
-
-**File:** `~/projects/CLAUDE.md` (global)
-
-Add to "Common Patterns → Operational Rules":
-
-```
-- **Skill maintenance**: When modifying the dev workflow, session config procedures, or any
-  content that skills invoke (e.g., test requirements, automated checks), also update the
-  corresponding skill in `~/projects/project-template/template/.claude/skills/` and run
-  `ai copier-update` to propagate to all projects.
-```
-
-Propagate this rule to all project CLAUDE.md files via `/propagate`.
+Note: `sergei` gets a project-specific `next/SKILL.md` override keeping the cross-project SQLite query — add this after copier runs.
 
 ---
 
-## Open Questions
+### Phase 5: Add drift prevention rule to session config
 
-1. **`propagate` skill — keep or deprecate?** CLAUDE.md says `/propagate is deprecated — use /persist instead`. But the propagate skill still handles the CLAUDE.md cross-project propagation workflow that `/persist` doesn't cover. Should we: (a) keep propagate as-is but narrow its scope to CLAUDE.md/GEMINI.md only, (b) merge it into persist with a `--all-projects` flag, or (c) fully deprecate it since copier now handles the copier-managed files and persist handles per-project CLAUDE.md?
+**File:** `~/projects/CLAUDE.md`
 
-2. **`next` skill — cross-project query or local-only?** The template version queries cross-project SQLite. The project-specific override reads local roadmap. Should the TEMPLATE default be cross-project (for the sergei orchestration context) or local (for all project sessions)? Cross-project makes sense in sergei but is wrong in ai-cli-utils, aido, etc.
+Add to "Common Patterns → Operational Rules":
 
-3. **copier automation location** — confirmed as `ai copier-update` per recommendation, but flagging in case you prefer the standalone script approach.
+> `**Skill maintenance**: When modifying dev workflow steps, test requirements, or any session config procedure that a skill references, also update the corresponding skill in `~/projects/project-template/template/.claude/skills/` and run `ai copier-update` to propagate to all projects.`
+
+Commit and push `~/projects/CLAUDE.md` directly (it's the projects-wide file, no copier needed).
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] All skill issues in project-template are fixed and committed
-- [ ] `ai copier-update` subcommand exists with `--dry-run` and `--project` flags
-- [ ] `ai copier-update` auto-discovers projects via `.copier-answers.yml` — no hardcoded project list
-- [ ] New projects added to `~/projects/` are automatically picked up without script changes
-- [ ] Copier update run across all 14 projects; no conflict markers remain
-- [ ] Session config rule added to CLAUDE.md and propagated to all projects
-- [ ] Tests pass (including new `ai copier-update` tests)
+- [ ] `propagate` skill deleted from project-template
+- [ ] `direct`, `review`, `next`, `persist` skills fixed in project-template
+- [ ] `ai copier-update` subcommand: auto-discovers projects, `--dry-run`, `--project`, Mac guard
+- [ ] `ai copier-update` picks up new projects automatically (no hardcoded list)
+- [ ] Watcher loop detects config hash change and auto-injects `/exit` after idle threshold
+- [ ] Auto-restart respects idle threshold (default 90s, configurable)
+- [ ] Auto-restart does not fire when user has text in the prompt box
+- [ ] Projects-wide config change triggers all sessions; project-specific triggers only that project's sessions
+- [ ] Copier run across all 14 projects; no conflict markers remain
+- [ ] Sergei gets `next` SKILL.md override restoring cross-project query
+- [ ] Drift prevention rule added to `~/projects/CLAUDE.md`
+- [ ] All tests pass (`ruff check`, `ruff format --check`, `pytest`)
 
 ---
 
@@ -210,3 +206,4 @@ Propagate this rule to all project CLAUDE.md files via `/propagate`.
 
 | Date | Round | Decisions |
 |------|-------|-----------|
+| 2026-04-04 | Round 1 | propagate=delete; next=local roadmap default (sergei overrides); copier automation=ai copier-update subcommand; auto-restart on idle added as Phase 3; idle threshold=90s configurable; hook block stays as safety net. |
