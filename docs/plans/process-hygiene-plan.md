@@ -69,11 +69,16 @@ Each process gets a **staleness score** (0–100). Score determines action:
 | No `mosh-client` with matching UDP port (`lsof -i UDP`) | +50 |
 | Age > 24h | +20 |
 | Age > 6h | +10 |
-| No tmux session name matching the process args | +10 |
+| Matching tmux session unattached for > 2h | +5 |
+| No matching tmux session at all | +10 |
+| Matching tmux session **currently attached** | -10 |
 | `lsof` unavailable and age > 48h | +60 (fallback) |
 
-Example: orphaned mosh-server from March with no client = 50+20+10+10 = **90 → auto-kill**.
-Example: new mosh-server from Termius session active 2h = 0 → **active**.
+**Note:** killing a mosh-server is safe regardless — it only drops the mosh tunnel, not the tmux session. The tmux session persists and all work is intact. The user can always reconnect (mosh starts a fresh server). The -10 for an actively-attached session is purely a conservative guard, not a safety necessity.
+
+Example: orphaned mosh-server from March with no client, no tmux = 50+20+10+10 = **90 → auto-kill**.
+Example: Termius orphan, no client, tmux unattached 8h, age 26h = 50+20+10+5 = **85 → auto-kill**.
+Example: mosh-server 1h old, client connected, tmux attached = 0-10 = **0 → active**.
 
 ### signal-watch scoring
 
@@ -298,9 +303,17 @@ Single batch — all tasks are tightly coupled; no value in shipping detection w
 >
 > **4 — Cache location:** `~/.local/state/ai-cli/remote-ps-cache.json` consistent with existing XDG usage. Proceeding as specified.
 
+> **Feedback Round 3:**
+> 3. Termius sessions are fleeting — user closes Termius when done. Don't want to manually kill stale Termius mosh-server orphans. Is there any harm in eventually auto-killing them if we're confident they're stale?
+
+> **AI Response Round 3:**
+>
+> **3 — Termius auto-kill:** No harm — killing a mosh-server only drops the mosh tunnel; the tmux session on Hetzner persists untouched. All work is safe. Updated scoring: added `+5` for "matching tmux session unattached > 2h" and `-10` for "matching tmux session currently attached". Result: Termius orphan with no client, tmux unattached 8h, age 26h = 50+20+10+5 = **85 → auto-kill** (reaches threshold without needing "no tmux session at all"). Active session with tmux attached still scores -10, safely stays **active**.
+
 ## Approval Log
 
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-04 | Round 1 approved | Connection-based detection; score-gated auto-clean; remote cache with 30m TTL; new `process_hygiene.py` module; ai-managed scope only |
 | 2026-04-04 | Round 2 approved | Suspect flagging: one-line nudge at session start; auto-clean `ai c --remote` cleans both machines; Termius scoring confirmed correct as-is; cache location confirmed |
+| 2026-04-04 | Round 3 approved | Termius auto-kill approved: +5 for tmux unattached > 2h; -10 for tmux attached; Termius orphan now reaches 85 → auto-kill after 24h+ |
