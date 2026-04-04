@@ -307,10 +307,11 @@ def test_remote_flag_when_host_configured_then_sshs_to_host():
     mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)
     mock_exec.assert_called_once()
     cmd, args = mock_exec.call_args[0]
-    assert cmd == "ssh"
-    assert "ubuntu@1.2.3.4" in args
-    assert "-t" in args
-    assert any("--is-remote" in a and "1" in a for a in args)
+    assert cmd == "bash"
+    bash_cmd = args[2]
+    assert "ubuntu@1.2.3.4" in bash_cmd
+    assert "-t" in bash_cmd
+    assert "--is-remote" in bash_cmd and "1" in bash_cmd
 
 
 def test_remote_flag_when_host_configured_then_passes_is_remote_flag():
@@ -318,8 +319,9 @@ def test_remote_flag_when_host_configured_then_passes_is_remote_flag():
     mock_exec = _run_cli_with_args(["ai", "g", "research", "--remote"], config)
     mock_exec.assert_called_once()
     _, args = mock_exec.call_args[0]
-    assert "ubuntu@hetzner-dev" in args
-    assert any("ai g --is-remote" in a and "research" in a for a in args)
+    bash_cmd = args[2]
+    assert "ubuntu@hetzner-dev" in bash_cmd
+    assert "ai g --is-remote" in bash_cmd and "research" in bash_cmd
 
 
 def test_remote_flag_when_called_then_passes_project_prefix_to_server():
@@ -370,8 +372,8 @@ def test_remote_flag_when_identity_file_set_then_passes_i_flag():
     }
     mock_exec = _run_cli_with_args(["ai", "c", "--remote"], config)
     mock_exec.assert_called_once()
-    _, args = mock_exec.call_args[0]
-    assert "-i" in args
+    bash_cmd = mock_exec.call_args[0][1][2]
+    assert "-i" in bash_cmd
 
 
 def test_remote_flag_when_host_not_configured_then_exits_with_error():
@@ -3200,8 +3202,8 @@ class TestCliSessionSetupBranches:
                             with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                 with pytest.raises(SystemExit):
                                     cli()
-                            args = mock_exec.call_args[0][1]
-                            assert "--ssh" in args
+                            bash_cmd = mock_exec.call_args[0][1][2]
+                            assert "--ssh" in bash_cmd
 
     def test_cli_when_remote_mosh_with_identity_file_only_then_adds_ssh_i(self):
         """Covers line 1147: identity_file without non-standard port."""
@@ -3222,10 +3224,9 @@ class TestCliSessionSetupBranches:
                             with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                 with pytest.raises(SystemExit):
                                     cli()
-                            args = mock_exec.call_args[0][1]
-                            assert "--ssh" in args
-                            ssh_idx = args.index("--ssh")
-                            assert "-i" in args[ssh_idx + 1]
+                            bash_cmd = mock_exec.call_args[0][1][2]
+                            assert "--ssh" in bash_cmd
+                            assert "-i" in bash_cmd
 
 
 class TestRemoteSessionIterm2Emit:

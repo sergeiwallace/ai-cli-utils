@@ -2625,6 +2625,7 @@ def cli():
         _iterm2_remote_slot = _assign_iterm2_color_slot(_r_ai_name, engine)
         _emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 
+        _cleanup = f"ai internal cleanup-session-files {shlex.quote(_r_ai_name)} 2>/dev/null"
         if transport == "mosh":
             mosh_args = ["mosh"]
             if port != "22":
@@ -2636,14 +2637,14 @@ def cli():
                 mosh_args += ["--ssh", f"ssh -i {shlex.quote(os.path.expanduser(id_file))}"]
             mosh_args.append(f"{user}@{host}")
             mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
-            os.execvp("mosh", mosh_args)
+            os.execvp("bash", ["bash", "-c", f"{shlex.join(mosh_args)}; {_cleanup}"])
         else:
             ssh_args = ["ssh", "-t", "-p", port]
             if id_file:
                 ssh_args += ["-i", os.path.expanduser(id_file)]
             ssh_args.append(f"{user}@{host}")
             ssh_args.append(f"bash -l -c {shlex.quote(remote_cmd)}")
-            os.execvp("ssh", ssh_args)
+            os.execvp("bash", ["bash", "-c", f"{shlex.join(ssh_args)}; {_cleanup}"])
 
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
