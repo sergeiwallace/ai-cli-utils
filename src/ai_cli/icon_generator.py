@@ -38,12 +38,6 @@ _BASE_PROFILES: dict[str, str] = {
     "ssh": "SSHForward",
 }
 
-# Default icon tint per session type (used when no explicit icon_color is given).
-# Falls back to compute_contrast_tint(tab_hex) for session types not listed here.
-_DEFAULT_ICON_TINTS: dict[str, str] = {
-    "cc": "#da7756",  # Claude / Anthropic brand orange
-}
-
 # Source logo filenames under src/ai_cli/data/icons/
 _SOURCE_LOGOS: dict[str, str] = {
     "cc": "claude-logo.png",
@@ -186,7 +180,7 @@ def generate_session_icon(
     if not source:
         return None  # No source logo — parent profile's icon will show instead
 
-    tint = icon_color or _DEFAULT_ICON_TINTS.get(session_type) or compute_contrast_tint(tab_hex)
+    tint = icon_color or compute_contrast_tint(tab_hex)
 
     base_img = Image.open(source).convert("RGBA")
     if base_img.size != (_ICON_SIZE, _ICON_SIZE):
