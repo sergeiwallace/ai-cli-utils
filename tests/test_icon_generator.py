@@ -249,6 +249,8 @@ class TestGenerateSessionIcon:
     def test_auto_derives_contrast_tint_from_tab_color(self, tmp_path):
         from PIL import Image
 
+        from ai_cli.icon_generator import compute_contrast_tint
+
         logo_path = tmp_path / "claude-logo.png"
         Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
         tint_used = []
@@ -262,9 +264,25 @@ class TestGenerateSessionIcon:
             with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
                 with patch("ai_cli.icon_generator._tint_image", side_effect=capture):
                     generate_session_icon("sw-5", "#5e35b1", "cc")
-        from ai_cli.icon_generator import compute_contrast_tint
-
         assert tint_used and tint_used[0] == compute_contrast_tint("#5e35b1")
+
+    def test_no_tab_color_uses_brand_orange(self, tmp_path):
+        from PIL import Image
+
+        logo_path = tmp_path / "claude-logo.png"
+        Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
+        tint_used = []
+        original = __import__("ai_cli.icon_generator", fromlist=["_tint_image"])._tint_image
+
+        def capture(img, tint_hex):
+            tint_used.append(tint_hex)
+            return original(img, tint_hex)
+
+        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
+            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
+                with patch("ai_cli.icon_generator._tint_image", side_effect=capture):
+                    generate_session_icon("sw-5", None, "cc")
+        assert tint_used and tint_used[0] == "#da7756"
 
     def test_explicit_icon_color_overrides_auto_tint(self, tmp_path):
         from PIL import Image

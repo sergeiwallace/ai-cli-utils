@@ -38,6 +38,9 @@ _BASE_PROFILES: dict[str, str] = {
     "ssh": "SSHForward",
 }
 
+# Default icon tint when no tab color is assigned (session has no color set).
+_CLAUDE_BRAND_ORANGE = "#da7756"
+
 # Source logo filenames under src/ai_cli/data/icons/
 _SOURCE_LOGOS: dict[str, str] = {
     "cc": "claude-logo.png",
@@ -159,7 +162,7 @@ def _tint_image(img: "Image.Image", tint_hex: str) -> "Image.Image":
 
 def generate_session_icon(
     session_name: str,
-    tab_hex: str,
+    tab_hex: Optional[str],
     session_type: str,
     icon_color: Optional[str] = None,
 ) -> Optional[Path]:
@@ -180,7 +183,7 @@ def generate_session_icon(
     if not source:
         return None  # No source logo — parent profile's icon will show instead
 
-    tint = icon_color or compute_contrast_tint(tab_hex)
+    tint = icon_color or (compute_contrast_tint(tab_hex) if tab_hex else _CLAUDE_BRAND_ORANGE)
 
     base_img = Image.open(source).convert("RGBA")
     if base_img.size != (_ICON_SIZE, _ICON_SIZE):
