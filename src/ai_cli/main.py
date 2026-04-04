@@ -503,6 +503,44 @@ def cleanup_stale_sessions(config: dict) -> None:
         if dead_shell or abandoned:
             subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
 
+    _sweep_stale_iterm2_profiles()
+
+
+def _sweep_stale_iterm2_profiles() -> None:
+    """Remove Dynamic Profile files for sessions that no longer exist in tmux.
+
+    Profiles accumulate when sessions are killed without running the EXIT trap
+    (e.g. SIGKILL, mosh disconnect). Called at every session launch so stale
+    profiles don't pollute iTerm2's profile list.
+    """
+    try:
+        from .icon_generator import _dynamic_profile_dir, _DYNAMIC_PROFILE_PREFIX
+
+        profile_dir = _dynamic_profile_dir()
+        if not profile_dir.exists():
+            return
+
+        # Get current tmux sessions
+        res = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+        )
+        active_sessions = set(res.stdout.strip().splitlines()) if res.returncode == 0 else set()
+
+        for profile_file in profile_dir.glob(f"{_DYNAMIC_PROFILE_PREFIX}*.json"):
+            session_name = profile_file.stem[len(_DYNAMIC_PROFILE_PREFIX):]
+            # Map ai_name back to possible tmux session names (c-{name} or g-{name})
+            possible_sessions = {
+                session_name,
+                f"c-{session_name}",
+                f"g-{session_name}",
+            }
+            if not possible_sessions & active_sessions:
+                profile_file.unlink(missing_ok=True)
+    except Exception:
+        pass  # non-fatal
+
 
 def resolve_session(prefix: str, name: str) -> str:
     if not name:
@@ -782,6 +820,11 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
 
             occupied = {info["slot"] for info in active.values()}
 
+            # Fallback when all slots occupied: distribute by name hash so
+            # different sessions get different colors instead of all piling on slot 0.
+            import hashlib as _hashlib
+            _fallback_idx = int(_hashlib.md5(ai_name.encode()).hexdigest(), 16) % len(palette)
+
             use_avoidance = cfg.get("iterm2", {}).get("color", {}).get("collision_avoidance", True)
             if use_avoidance:
                 # Try preferred color first (project_colors pin)
@@ -790,9 +833,9 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
                     if preferred_idx not in occupied:
                         slot_idx = preferred_idx
                     else:
-                        slot_idx = next((i for i in range(len(palette)) if i not in occupied), 0)
+                        slot_idx = next((i for i in range(len(palette)) if i not in occupied), _fallback_idx)
                 else:
-                    slot_idx = next((i for i in range(len(palette)) if i not in occupied), 0)
+                    slot_idx = next((i for i in range(len(palette)) if i not in occupied), _fallback_idx)
             else:
                 m = re.search(r"\d+$", ai_name)
                 num = int(m.group()) if m else 1
