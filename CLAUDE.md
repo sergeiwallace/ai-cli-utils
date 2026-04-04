@@ -44,6 +44,17 @@ If CI is failing or Codecov is not 100%, fix before closing out the session. If 
 - Run: `pytest`
 - **`# pragma: no cover` is a hard human gate** — never add it autonomously. If a line cannot be covered, document it in the UAT report with the specific line, why it can't be mocked, and options. Wait for explicit user approval before adding any pragma.
 
+## Public Open-Source Package Standards
+
+This is a **public open-source package**. All code, docs, comments, tests, and commit messages must be written for a general audience.
+
+- **No proprietary names** — never reference humanware, aido, or any private platform/tool names in code, docs, comments, or tests
+- **No personal identifiers** — no personal names (first or last), usernames, private server IPs/hostnames, or account-specific paths. Use generic placeholders: `user`, `myproject`, `example.com`, `192.0.2.x`
+- **No private project names** — don't hardcode project names from personal workflow (artelier, aur, apt, dojo, job, etc.) in source, docs, or tests. Use generic names like `myproject`, `myapp`
+- **Generic examples throughout** — session names in tests/docs use generic values (`sw-1`, `myproject-1`, `test-session`); config examples use placeholder values
+- **Commit messages are public** — same rules apply to git commit messages
+- If you catch an existing violation while working, flag it immediately rather than letting it accumulate
+
 ## CLI Conventions
 
 - **All options must have both short and long forms** — e.g. `-f`/`--force`, `-d`/`--dry-run`. No long-only flags (except hidden internal `SUPPRESS` flags passed machine-to-machine).
