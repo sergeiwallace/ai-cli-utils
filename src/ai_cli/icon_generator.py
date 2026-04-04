@@ -187,7 +187,7 @@ def generate_session_icon(
 
     base_img = Image.open(source).convert("RGBA")
     if base_img.size != (_ICON_SIZE, _ICON_SIZE):
-        base_img = base_img.resize((_ICON_SIZE, _ICON_SIZE), Image.LANCZOS)
+        base_img = base_img.resize((_ICON_SIZE, _ICON_SIZE), Image.Resampling.LANCZOS)
 
     tinted = _tint_image(base_img, tint)
     out_path = _icon_cache_dir() / f"{session_name}.png"
