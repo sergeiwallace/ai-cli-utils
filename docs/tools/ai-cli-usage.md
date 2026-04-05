@@ -26,6 +26,7 @@ source: internal
   - [ai handoff](#ai-handoff)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
+  - [ai cdp](#ai-cdp)
   - [ai signal-watch](#ai-signal-watch)
   - [ai tunnel](#ai-tunnel)
   - [ai update](#ai-update)
@@ -220,6 +221,47 @@ Manages signal-watch processes via Circus process manager (`circusd`). Signal-wa
 - `status` — lists all `sw-*` watchers and their status.
 
 Circus uses IPC (not TCP) at `~/.local/state/ai-cli/circus.endpoint`. Config written to `~/.local/state/ai-cli/circus.ini`. Launched automatically by the bash session template at session start; stopped at EXIT.
+
+### ai cdp
+
+```
+ai cdp start [-p|--port N] [-I|--no-incognito]
+ai cdp stop  [-p|--port N]
+ai cdp status
+```
+
+Launches and manages a Chrome/Chromium instance with the Chrome DevTools Protocol (CDP)
+remote debugging endpoint exposed. Useful for attaching Playwright, agent-browser, or
+any CDP-capable tool to a browser session without managing Chrome flags manually.
+
+- `start` — launches Chrome in the background with `--remote-debugging-port=<port>` and
+  `--user-data-dir=/tmp/chrome-debug-<port>` (required to force a fresh process). Adds
+  `--incognito` by default (disable with `--no-incognito` / `-I`). Waits up to 5 s for
+  `localhost:<port>/json/version` to respond, then prints `CDP ready at localhost:<port>`.
+  Idempotent — prints "already running" if a live process is registered on that port.
+  Writes PID to `~/.local/state/ai-cli-utils/cdp-<port>.pid`.
+- `stop` — sends SIGTERM to the registered process and removes the PID file.
+  Silent if no process is registered on that port.
+- `status` — lists all registered CDP processes with port, PID, and alive/dead state.
+  Cleans up stale PID files for dead processes.
+
+**Flags:**
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--port` | `-p` | `9222` | CDP port |
+| `--no-incognito` | `-I` | off | Disable `--incognito` flag |
+
+**Config (`[cdp]` section in `config.toml`):**
+
+```toml
+[cdp]
+# binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# port = 9222
+```
+
+Chrome binary auto-detected in this order: `binary_path` config key → well-known macOS/Linux/Windows
+paths → `shutil.which` across common executable names.
 
 ### ai tunnel
 

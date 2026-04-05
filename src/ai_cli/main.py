@@ -3,12 +3,14 @@ import sys
 import os
 import json
 import shutil
+import tempfile
 import time
 import subprocess
 import tomllib
 import re
 import shlex
 import fcntl
+import urllib.request
 from pathlib import Path
 
 # --- XDG Directory Support ---
@@ -97,6 +99,12 @@ nats_servers = ["nats://localhost:4222"]
 ## Additional venv paths to install ai-cli-utils into after 'ai update'
 ## Useful if you have tools or virtual environments that depend on ai-cli-utils
 # extra_venvs = ["/home/user/projects/mytool/.venv"]
+
+[cdp]
+## Chrome/Chromium binary path for CDP debug server (auto-detected if not set)
+# binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+## Default port for the Chrome DevTools Protocol endpoint
+# port = 9222
 """
 
 
@@ -1680,6 +1688,126 @@ def _cmd_tunnel_status() -> None:
         print(f"port {port}: PID {pid} ({status})")
 
 
+# --- CDP (Chrome DevTools Protocol) browser management ---
+
+
+def _find_chrome_binary(config: dict) -> str | None:
+    """Return path to Chrome/Chromium binary, or None if not found."""
+    configured = config.get("cdp", {}).get("binary_path", "")
+    if configured:
+        return str(configured) if Path(configured).exists() else None
+
+    if sys.platform == "darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+    elif sys.platform == "win32":
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+    else:
+        candidates = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+
+    for c in candidates:
+        found = shutil.which(c)
+        if found:
+            return found
+        if Path(c).exists():
+            return c
+    return None
+
+
+def _cmd_cdp_start(port: int, incognito: bool, config: dict) -> None:
+    state_dir = get_xdg_state_home()
+    pid_file = state_dir / f"cdp-{port}.pid"
+
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            print(f"CDP already running on port {port} (PID {pid})")
+            return
+        except (ProcessLookupError, ValueError):
+            pid_file.unlink(missing_ok=True)
+
+    chrome = _find_chrome_binary(config)
+    if not chrome:
+        print(
+            "Chrome/Chromium not found. Install it or set [cdp] binary_path in config.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    user_data_dir = Path(tempfile.gettempdir()) / f"chrome-debug-{port}"
+    cmd = [
+        chrome,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data_dir}",
+    ]
+    if incognito:
+        cmd.append("--incognito")
+
+    proc = subprocess.Popen(
+        cmd,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    state_dir.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(proc.pid))
+
+    url = f"http://localhost:{port}/json/version"
+    deadline = time.monotonic() + 5.0
+    ready = False
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=0.5)  # noqa: S310
+            ready = True
+            break
+        except Exception:
+            time.sleep(0.25)
+
+    if ready:
+        print(f"CDP ready at localhost:{port}")
+    else:
+        print(f"CDP started (PID {proc.pid}) — endpoint not yet responding on port {port}")
+
+
+def _cmd_cdp_stop(port: int) -> None:
+    state_dir = get_xdg_state_home()
+    pid_file = state_dir / f"cdp-{port}.pid"
+    if not pid_file.exists():
+        print(f"No CDP process registered on port {port}.")
+        return
+    pid = int(pid_file.read_text().strip())
+    try:
+        os.kill(pid, 15)  # SIGTERM
+    except ProcessLookupError:
+        pass
+    pid_file.unlink(missing_ok=True)
+    print(f"CDP stopped: port {port}")
+
+
+def _cmd_cdp_status() -> None:
+    state_dir = get_xdg_state_home()
+    pid_files = sorted(state_dir.glob("cdp-*.pid"))
+    if not pid_files:
+        print("No CDP processes registered.")
+        return
+    for pid_file in pid_files:
+        port = pid_file.stem[len("cdp-") :]
+        pid = int(pid_file.read_text().strip())
+        try:
+            os.kill(pid, 0)
+            status = "alive"
+        except ProcessLookupError:
+            status = "dead"
+            pid_file.unlink(missing_ok=True)
+        print(f"port {port}: PID {pid} ({status})")
+
+
 # --- Circus / signal-watch process management ---
 
 
@@ -2385,6 +2513,35 @@ def cli():
             sys.exit(0)
         else:
             print(f"Unknown signal-watch action: {sw_action}. Use start, stop, or status.", file=sys.stderr)
+            sys.exit(1)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "cdp":
+        if len(sys.argv) < 3:
+            print(
+                "Usage: ai cdp [start [--port N] [--no-incognito] | stop [--port N] | status]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        cdp_action = sys.argv[2]
+        _cdp_default_port = config.get("cdp", {}).get("port", 9222)
+        if cdp_action == "start":
+            _cdp_parser = argparse.ArgumentParser(prog="ai cdp start")
+            _cdp_parser.add_argument("-p", "--port", type=int, default=_cdp_default_port)
+            _cdp_parser.add_argument("-I", "--no-incognito", action="store_true")
+            _cdp_args = _cdp_parser.parse_args(sys.argv[3:])
+            _cmd_cdp_start(_cdp_args.port, not _cdp_args.no_incognito, config)
+            sys.exit(0)
+        elif cdp_action == "stop":
+            _cdp_parser = argparse.ArgumentParser(prog="ai cdp stop")
+            _cdp_parser.add_argument("-p", "--port", type=int, default=_cdp_default_port)
+            _cdp_args = _cdp_parser.parse_args(sys.argv[3:])
+            _cmd_cdp_stop(_cdp_args.port)
+            sys.exit(0)
+        elif cdp_action == "status":
+            _cmd_cdp_status()
+            sys.exit(0)
+        else:
+            print(f"Unknown cdp action: {cdp_action}. Use start, stop, or status.", file=sys.stderr)
             sys.exit(1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
