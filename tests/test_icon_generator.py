@@ -446,5 +446,6 @@ class TestSourceLogoPath:
     def test_when_unknown_session_type_then_returns_none(self):
         """line 78: unknown session_type has no filename in _SOURCE_LOGOS → returns None."""
         from ai_cli.icon_generator import _source_logo_path
+
         result = _source_logo_path("unknown_type_xyz")
         assert result is None

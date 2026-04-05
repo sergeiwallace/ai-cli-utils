@@ -333,6 +333,7 @@ class TestGetResetAtEdgeCases:
     def test_when_reset_equals_now_then_advances_by_one_week(self):
         """Line 121: when computed reset == now, it must advance by one week."""
         from datetime import timedelta
+
         anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
         # now is exactly one week before anchor:
         # diff = WEEK_SECONDS, periods = 1, reset = anchor - 1w = now → reset <= now

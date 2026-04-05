@@ -560,7 +560,6 @@ class TestCliDispatchExtended:
             assert exc.value.code == 0  # exception is caught, execution continues
             assert "icon generation failed" in capsys.readouterr().err
 
-
     def test_when_project_prefix_flag_then_uses_it(self):
         """line 2665: --project-prefix arg is used directly as project_prefix."""
         with (

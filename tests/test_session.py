@@ -343,6 +343,7 @@ class TestFindLatestGeminiUuid:
         new_file.write_text('{"sessionId": "new-uuid"}')
         # Set explicit mtimes to avoid sleep: old=1000, new=2000
         import os as _os
+
         _os.utime(old_file, (1000.0, 1000.0))
         _os.utime(new_file, (2000.0, 2000.0))
         with patch("pathlib.Path.home", return_value=tmp_path):

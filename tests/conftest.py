@@ -69,9 +69,14 @@ def make_subprocess_result(returncode=0, stdout="", stderr=""):
     return m
 
 
-def make_iterm2_config(palette=None, enabled=True, color_enabled=True,
-                        collision_avoidance=True,
-                        project_colors=None, icon_color_overrides=None):
+def make_iterm2_config(
+    palette=None,
+    enabled=True,
+    color_enabled=True,
+    collision_avoidance=True,
+    project_colors=None,
+    icon_color_overrides=None,
+):
     """Factory for iterm2 config dicts."""
     palette = palette or {"red": "#e74c3c", "blue": "#1e88e5", "green": "#2ecc71"}
     cfg = {

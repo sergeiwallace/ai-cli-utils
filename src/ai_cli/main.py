@@ -529,7 +529,7 @@ def _sweep_stale_iterm2_profiles() -> None:
         active_sessions = set(res.stdout.strip().splitlines()) if res.returncode == 0 else set()
 
         for profile_file in profile_dir.glob(f"{_DYNAMIC_PROFILE_PREFIX}*.json"):
-            session_name = profile_file.stem[len(_DYNAMIC_PROFILE_PREFIX):]
+            session_name = profile_file.stem[len(_DYNAMIC_PROFILE_PREFIX) :]
             # Map ai_name back to possible tmux session names (c-{name} or g-{name})
             possible_sessions = {
                 session_name,
@@ -823,6 +823,7 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
             # Fallback when all slots occupied: distribute by name hash so
             # different sessions get different colors instead of all piling on slot 0.
             import hashlib as _hashlib
+
             _fallback_idx = int(_hashlib.md5(ai_name.encode()).hexdigest(), 16) % len(palette)
 
             use_avoidance = cfg.get("iterm2", {}).get("color", {}).get("collision_avoidance", True)

@@ -474,12 +474,14 @@ class TestLayoutDirHelpers:
     def test_layouts_dir_returns_path(self):
         """line 111: _layouts_dir() returns a Path object."""
         from ai_cli.layout import _layouts_dir
+
         result = _layouts_dir()
         assert isinstance(result, Path)
 
     def test_dynamic_profile_dir_creates_and_returns_path(self, tmp_path):
         """lines 128-130: _dynamic_profile_dir creates the directory and returns it."""
         from ai_cli.layout import _dynamic_profile_dir
+
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _dynamic_profile_dir()
         assert result.exists()
@@ -495,6 +497,7 @@ class TestLoadLayoutNonMapping:
     def test_when_yaml_is_a_list_then_raises_value_error(self, tmp_path):
         """line 159: YAML content that is not a dict raises ValueError."""
         from ai_cli.layout import load_layout
+
         layout_file = tmp_path / "bad.yaml"
         layout_file.write_text("- item1\n- item2\n")
         with patch("ai_cli.layout._layouts_dir", return_value=tmp_path):
@@ -510,7 +513,9 @@ class TestLoadLayoutNonMapping:
 class TestGenerateLayoutProfilesExtended:
     """Covers session type branches (lines 191, 193, 195) and color fields (214, 216)."""
 
-    def _make_tab(self, base_profile: str, tab_color: str = "#1e88e5", bg: str | None = None, fg: str | None = None) -> dict:
+    def _make_tab(
+        self, base_profile: str, tab_color: str = "#1e88e5", bg: str | None = None, fg: str | None = None
+    ) -> dict:
         tab = {
             "name": "tab1",
             "base_profile": base_profile,
@@ -572,6 +577,7 @@ class TestCmdLayoutApply:
     def test_when_layout_not_found_then_returns_1(self, tmp_path, capsys):
         """lines 283-287: FileNotFoundError prints error and returns 1."""
         from ai_cli.layout import cmd_layout_apply
+
         with patch("ai_cli.layout._layouts_dir", return_value=tmp_path):
             result = cmd_layout_apply("nonexistent")
         assert result == 1
@@ -580,6 +586,7 @@ class TestCmdLayoutApply:
     def test_when_layout_valid_then_runs_script_and_returns_code(self, tmp_path):
         """lines 289-298: valid layout generates profiles and runs the launch script."""
         from ai_cli.layout import cmd_layout_apply
+
         _write_layout(tmp_path, "myapp", _MINIMAL_LAYOUT)
         fake_proc = MagicMock()
         fake_proc.returncode = 0
@@ -602,6 +609,7 @@ class TestWriteLaunchScript:
     def test_generates_temp_python_file_with_iterm2_content(self, tmp_path):
         """lines 350-399: generates a .py file importing iterm2 with tab setup."""
         from ai_cli.layout import _write_launch_script
+
         layout = Layout(**_MINIMAL_LAYOUT)
         script_path = _write_launch_script(layout)
         try:
@@ -617,6 +625,7 @@ class TestWriteLaunchScript:
     def test_multi_tab_layout_generates_create_tab_calls(self):
         """lines 381-388: each non-first tab generates async_create_tab in the script."""
         from ai_cli.layout import _write_launch_script
+
         multi_tab = {
             "name": "multi",
             "tabs": [
