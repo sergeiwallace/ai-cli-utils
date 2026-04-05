@@ -1072,6 +1072,11 @@ def get_engine_script(
     # Write initial config hash baseline for change detection
     cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1 > "$config_hash_file"
 
+    # Clean up any stale exit signals from a previous killed session.
+    # Without this, a leftover signal_file causes the watcher to inject /exit
+    # while CC is still showing its startup UI on the very next launch.
+    rm -f "$signal_file" "$config_changed_file"
+
     export AI_TMUX_SESSION="$tmux_session"
     export {env_var_prefix}_TMUX_SESSION="$tmux_session"
     watcher_pid=""
@@ -1095,20 +1100,30 @@ def get_engine_script(
         (( counter++ ))
         
         if [[ -f "$signal_file" ]]; then
-          rm -f "$signal_file"
-          sleep 1
-          tmux send-keys -t "$tmux_session" Escape
-          sleep 0.5
-          tmux send-keys -t "$tmux_session" C-u
-          sleep 0.2
-          tmux send-keys -t "$tmux_session" Escape
-          sleep 0.3
-          if [[ "$engine" == "g" ]]; then
-            tmux send-keys -t "$tmux_session" "/resume save $ai_name" C-m
-            sleep 2
+          # Only inject /exit when the user is not mid-typing.
+          # The config-change creation path already has this guard, but the
+          # processing path did not — leaving a window where C-u could wipe
+          # the user's in-progress prompt if they started typing between the
+          # signal_file being written and the watcher's next check.
+          _sig_last=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
+          if echo "$_sig_last" | grep -qE '^[[:space:]]*>[[:space:]]+\\S'; then
+            : # user is mid-typing — keep signal_file, retry next cycle
+          else
+            rm -f "$signal_file"
+            sleep 1
+            tmux send-keys -t "$tmux_session" Escape
+            sleep 0.5
+            tmux send-keys -t "$tmux_session" C-u
+            sleep 0.2
+            tmux send-keys -t "$tmux_session" Escape
+            sleep 0.3
+            if [[ "$engine" == "g" ]]; then
+              tmux send-keys -t "$tmux_session" "/resume save $ai_name" C-m
+              sleep 2
+            fi
+            tmux send-keys -t "$tmux_session" '/exit' C-m
+            break
           fi
-          tmux send-keys -t "$tmux_session" '/exit' C-m
-          break
         fi
 
         # Config change detection (CC only, every 10s)

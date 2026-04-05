@@ -227,6 +227,39 @@ class TestGetEngineScript:
             )
         assert "unknown" in result
 
+    def _make_script(self, **kwargs):
+        defaults = dict(
+            engine="c",
+            ai_name="session-1",
+            session="c-session-1",
+            prefix="c-session-",
+            project_prefix="session",
+            session_id_uuid="",
+            sandbox=False,
+            notify=False,
+            project_name="myproject",
+        )
+        defaults.update(kwargs)
+        return get_engine_script(**defaults)
+
+    def test_stale_signal_files_cleaned_on_session_start(self):
+        """Stale signal_file/config_changed_file from a previous killed session
+        must be removed at startup — otherwise the watcher immediately injects
+        /exit while CC is showing its startup UI (conversation rewind options)."""
+        script = self._make_script()
+        assert 'rm -f "$signal_file" "$config_changed_file"' in script
+
+    def test_signal_file_processing_has_idle_check(self):
+        """The signal_file processing path must guard against mid-typing injection.
+        Without this check, C-u wipes the user's in-progress prompt if they
+        started typing between signal_file creation and the watcher's next cycle."""
+        script = self._make_script()
+        # Verify the idle check regex is present in the signal_file block
+        assert "grep -qE" in script
+        # Verify the 'defer' comment is present (distinguishes this guard from the
+        # config-reload idle check)
+        assert "mid-typing" in script
+
 
 # --- Group 8: _log_handoff_event OSError ---
 
