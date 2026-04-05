@@ -419,7 +419,7 @@ class TestProjectPathSeparatorValidation:
                 with patch("ai_cli.main.get_project_aliases", return_value={}):
                     with patch("ai_cli.main.get_current_project_name", return_value=""):
                         with patch("ai_cli.main._get_project_prefix_by_name", return_value="my"):
-                            with patch("os.execvp", side_effect=SystemExit(0)):
+                            with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                                 with pytest.raises(SystemExit) as exc:
                                     from ai_cli.main import cli
 
