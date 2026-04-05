@@ -1,7 +1,8 @@
 # Pre-Release v0.2.0 — Implementation Plan
 
-**Status:** DRAFT
+**Status:** IN PROGRESS
 **Created:** 2026-04-04
+**Updated:** 2026-04-05
 **Target version:** `0.2.0` (current: `0.1.1`)
 
 ## Table of Contents
@@ -31,7 +32,7 @@ Full pre-release sequence for the next version bump and PyPI publish. Covers tes
 
 **Task:** `[AI-CLI-17]`
 **Plan:** `docs/plans/test-quality-coverage-plan.md`
-**Status:** In progress
+**Status:** Awaiting pragma approval (see gate below)
 
 Comprehensive test suite quality audit and coverage recovery following the test_main.py split. Target: ~100% coverage, no lazily-added pragmas, vacuous assertions fixed, all conftest helpers in place.
 
@@ -40,15 +41,67 @@ Comprehensive test suite quality audit and coverage recovery following the test_
 | Task | Description | Status |
 |------|-------------|--------|
 | T-00 | Expand conftest.py with shared helpers (run_cli, make_subprocess_result, make_iterm2_config) | Done |
-| T-01 | Fix vacuous assertions in quota and iterm2 tests | In progress |
-| T-02 | Fix medium issues (patch targets, dead code, weak publish assertions, real subprocess) | In progress |
-| T-03 | Remove 3 stale sync.py `# pragma: no cover`, add real mocked tests | In progress |
-| T-04 | Cover 155 missing lines in main.py | Pending |
-| T-05 | Cover gaps in quota/layout/gemini/icon_generator/messaging | Pending |
-| T-06 | Low-severity cleanup | Pending |
-| T-07 | Update docs (usage reference, README, code comments) | Pending |
+| T-01 | Fix vacuous assertions in quota and iterm2 tests | Done |
+| T-02 | Fix medium issues (patch targets, dead code, weak publish assertions, real subprocess) | Done |
+| T-03 | Remove 3 stale sync.py `# pragma: no cover`, add real mocked tests | Done |
+| T-04 | Cover missing lines in main.py | Done — 99% total, 32 lines remaining (see gate) |
+| T-05 | Cover gaps in quota/layout/gemini/icon_generator/messaging | Done — all at 100% |
+| T-06 | Low-severity cleanup | Done |
+| T-07 | Update docs (usage reference, README, code comments) | Pending (after pragma gate) |
 
-**Gate:** CI badge green on `main`, Codecov at target. Any remaining uncovered lines presented with options/pros/cons/recommendation for explicit approval before adding any `# pragma: no cover`.
+**Results:** 1052 tests pass (2 skipped), 99% total line coverage (32 of 3889 statements uncovered).
+CI badge: green. Codecov upload: queued on commit `ed3334d`.
+
+**Gate — pragma approval required:** 32 uncovered lines remain. All are infrastructure-dependent
+callbacks that cannot be tested without a live NATS server or real mosh binary. Presented below
+for explicit approval.
+
+#### Pragma Candidates
+
+**Group A — `main.py`: async NATS closures inside `cli()` (30 lines)**
+
+These are closures (`_on_handoff`, `_write_pending_if_claimed`, `_drain`) defined inside `cli()`
+that capture outer-scope variables and are only called when a live NATS JetStream message arrives.
+
+| Lines | Description |
+|-------|-------------|
+| 1969–1970 | `except OSError: pass` in `_on_handoff` — file write error handler |
+| 1995–1996 | `except ValueError: continue` in startup scan — malformed filename |
+| 2006–2007 | `except OSError:` in startup scan — file read error |
+| 2024–2025 | `except Exception: pass` wrapping `subscribe_durable` call |
+| 2051 | `_write_pending_if_claimed` — `not for_machine` early return |
+| 2053 | `_write_pending_if_claimed` — `hd_handoff_dir is None` early return |
+| 2064–2069 | Cross-machine file write path inside `_write_pending_if_claimed` |
+| 2072 | `claimed is None` early return in `_write_pending_if_claimed` |
+| 2113–2114 | `except Exception: pass` in local-scan try block |
+| 2127–2128 | `_drain()` — `not hd_client.js` early return |
+| 2140–2141 | `except Exception: data = {}` in `_drain()` message loop |
+| 2144 | `if _write_pending_if_claimed(data): return` in `_drain()` |
+| 2147–2148 | `except Exception` for JetStream subscribe failure |
+| 2154–2155 | `except Exception` for `asyncio.run(_drain())` |
+
+**Group B — `main.py`: VPN mosh reconnect fallback (2 lines)**
+
+| Lines | Description |
+|-------|-------------|
+| 2766–2767 | "SSH failed + VPN dropped → reconnect via mosh" branch — requires mosh + network state |
+
+**Group C — `messaging.py` line 90: NATS error callback (1 line)**
+
+| Lines | Description |
+|-------|-------------|
+| 90 | `async def _noop_error_cb(e): pass` — only invoked by NATS library on connection error |
+
+**Options:**
+
+| Option | Summary | Rec |
+|--------|---------|-----|
+| A | `# pragma: no cover` on all 32 lines | **Recommended** |
+| B | Extract closures to module-level, test with injected deps | Architecture change — deferred |
+| C | Add NATS server to CI matrix | CI complexity + still can't unit-test closures in isolation |
+
+**Recommendation: Option A.** All 32 are genuine infrastructure boundaries. Option B is a valid
+refactor but adds scope beyond this release. Option C solves Group A but not B or C.
 
 ---
 
@@ -221,3 +274,5 @@ These tasks are intentionally deferred until after the release:
 
 | Date | Round | Decision |
 |------|-------|----------|
+| 2026-04-04 | 1 | Phases 1–3 approved for autonomous execution. Human gate before Phase 4. |
+| 2026-04-05 | 2 | Phase 1 implementation complete (99% coverage, 1052 tests). Pragma approval for 32 lines pending. |
