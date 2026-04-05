@@ -56,6 +56,12 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 - **Commit messages are public** — same rules apply to git commit messages
 - If you catch an existing violation while working, flag it immediately rather than letting it accumulate
 
+## Documentation Maintenance
+
+- **Update docs when shipping features** — after any feature lands, update `docs/tools/ai-cli-usage.md` (usage reference), inline code comments in `main.py` for changed commands, and `README.md` if the CLI interface changed. Doc staleness is a bug.
+- **Same commit rule** — doc updates ship in the same commit as the feature, not as a follow-up.
+- **Plan docs are living docs** — update status, decisions, and approval log as work progresses.
+
 ## CLI Conventions
 
 - **All options must have both short and long forms** — e.g. `-f`/`--force`, `-d`/`--dry-run`. No long-only flags (except hidden internal `SUPPRESS` flags passed machine-to-machine).

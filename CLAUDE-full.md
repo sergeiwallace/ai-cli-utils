@@ -50,6 +50,28 @@ If CI is failing or Codecov is not 100%, fix before closing out the session. If 
 - **Test behavior, not implementation**: Tests assert outcomes through the public API.
 - **Persist research**: When doing research (API comparisons, architecture spikes, technology evaluations), save findings to `docs/research/{topic-slug}.md`. Update existing docs rather than creating duplicates.
 
+## Public Open-Source Package Standards
+
+This is a **public open-source package**. All code, docs, comments, tests, and commit messages must be written for a general audience.
+
+- **No proprietary names** — do not reference private platform or tool names in code, docs, comments, or tests
+- **No personal identifiers** — no personal names, usernames, private server IPs/hostnames, or account-specific paths. Use generic placeholders: `user`, `myproject`, `example.com`, `192.0.2.x`
+- **Generic examples throughout** — all session names, project names, and config values in tests/docs must be obviously placeholder
+- **OS portability** — all code must account for Windows, macOS, and Linux differences. Use `sys.platform`, `pathlib`, and `os` abstractions. Flag any unavoidably platform-specific code with a comment.
+- **Commit messages are public** — same rules apply to git commit messages
+- If you catch an existing violation while working, flag it immediately
+
+## Documentation Maintenance
+
+- **Update docs when shipping features** — after any feature lands, update `docs/tools/ai-cli-usage.md` (usage reference), inline code comments in `main.py` for changed commands, and `README.md` if the CLI interface changed. Doc staleness is a bug.
+- **Same commit rule** — doc updates ship in the same commit as the feature, not as a follow-up.
+- **Plan docs are living docs** — update status, decisions, and approval log as work progresses.
+
+## CLI Conventions
+
+- **All options must have both short and long forms** — e.g. `-f`/`--force`, `-d`/`--dry-run`. No long-only flags (except hidden internal `SUPPRESS` flags passed machine-to-machine).
+- When adding a new CLI option, add both forms simultaneously. Do not ship long-only flags.
+
 ## Test Requirements
 
 ### Python
@@ -58,6 +80,7 @@ If CI is failing or Codecov is not 100%, fix before closing out the session. If 
 - Use pytest fixtures for shared setup
 - `reviewer` audits test quality on every review (see `.claude/agents/reviewer.md`)
 - Run: `pytest`
+- **`# pragma: no cover` is a hard human gate** — never add it autonomously. If a line cannot be covered, document it with the specific line, why it can't be mocked, and options. Wait for explicit user approval before adding any pragma.
 
 ## Development Workflow
 
@@ -84,6 +107,15 @@ Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR �
 | **Automated Checks** | **Hard gate** — `ruff check src/ tests/ && ruff format --check src/ tests/ && pytest` must pass. Always run **after** `/simplify` (it modifies code). |
 | **UAT** | **Human approves** before PR |
 | **PR** | Open PR to `main` |
+| **Version bump** | After any P0/P1 feature task reaches `done`: bump minor version, update CHANGELOG, tag, publish to PyPI. After a bug fix: bump patch. Don't batch — ship when ready. |
+
+### Versioning Convention (semver)
+
+- **Minor bump (`0.x.0`)** — any new user-facing feature or command. Ship as soon as the feature's task is `done`.
+- **Patch bump (`0.1.x`)** — bug fixes only, no new features.
+- **CHANGELOG is required** with every bump — one entry per task completed, not summarized. Reference the task ID.
+- **Version bump + CHANGELOG + PyPI publish** is part of the task `done` definition for P0/P1 features, not a deferred ceremony.
+- **Tag format:** `vX.Y.Z` — push tag to trigger the GH Release workflow.
 
 ### AI Slop Checklist (enforced by /simplify)
 

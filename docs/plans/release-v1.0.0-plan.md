@@ -30,12 +30,12 @@ All of the following must be true before tagging v1.0.0:
 | # | Criterion | Tracking |
 |---|-----------|---------|
 | C1 | Test coverage ≥95%, no lazily-added `# pragma: no cover` | `[AI-CLI-17]` |
-| C2 | Handoff queue: same-machine and cross-machine scenarios tested and reliable | `[AI-CLI-16]`, `[AI-CLI-21]` |
+| C2 | Handoff queue: same-machine and cross-machine scenarios tested and reliable | `[AI-CLI-16]` (AI-CLI-21 folded in) |
 | C3 | Claude usage telemetry working end-to-end (quota scrape → DB → Slack alert) | `[AI-CLI-25]` |
 | C4 | Windows out-of-box: installs and runs without manual env var config | `[AI-CLI-29]` |
 | C5 | Privacy clean: zero proprietary/personal identifiers in src/ and tests/ | `[AI-CLI-30]` |
 | C6 | CLI interface stable — no known planned breaking changes post-1.0 | — |
-| C7 | All commands documented in README / usage reference | `[AI-CLI-3]` area |
+| C7 | First-run UX: new user can install and use core commands from README alone | `[AI-CLI-32]` |
 | C8 | Demo GIF in README | `[AI-CLI-3]` |
 | C9 | No known P0/P1 bugs | — |
 | C10 | Security hardening complete | `[AI-CLI-13]` ✅ |
@@ -45,11 +45,11 @@ All of the following must be true before tagging v1.0.0:
 ```
 0.1.1 (current)
   ↓
-0.2.0  Test quality · Process hygiene · Privacy audit · Git squash
-         [AI-CLI-17] [AI-CLI-28] [AI-CLI-30]
+0.2.0  Test quality · Process hygiene · Privacy audit · CLAUDE/GEMINI alignment · Git squash
+         [AI-CLI-17] [AI-CLI-28] [AI-CLI-30] [AI-CLI-31]
   ↓
 0.3.0  Handoff queue reliability + testing
-         [AI-CLI-16] [AI-CLI-21]
+         [AI-CLI-16]  (AI-CLI-21 folded in)
   ↓
 0.4.0  Usage telemetry complete
          [AI-CLI-25] [AI-CLI-23]
@@ -57,11 +57,10 @@ All of the following must be true before tagging v1.0.0:
 0.5.0  Windows + cross-platform
          [AI-CLI-29]
   ↓
-0.6.0  Polish + docs
-         [AI-CLI-3] [AI-CLI-11] CLI ergonomics audit
+0.6.0  Polish + UX
+         [AI-CLI-3] [AI-CLI-11] [AI-CLI-32]
   ↓
 1.0.0  Stability declaration — all criteria met
-         [AI-CLI-31] CLAUDE/GEMINI alignment enforcement
 ```
 
 ## Milestone Breakdown
@@ -69,14 +68,14 @@ All of the following must be true before tagging v1.0.0:
 ### v0.2.0 — Foundations
 **Plan:** `docs/plans/pre-release-v0.2.0-plan.md`
 
-Test quality recovery (T-00–T-07), process hygiene (`ai ps`), privacy audit (scrub all personal/proprietary references, rename `_is_managed_platform()`), git history squash, PyPI publish.
+Test quality recovery (T-00–T-07), process hygiene (`ai ps`), privacy audit (scrub all personal/proprietary references, rename `_is_managed_platform()`), CLAUDE.md/GEMINI.md alignment lint script, git history squash, PyPI publish.
 
 **Criteria unlocked:** C1 (partial), C5, C10 (already done)
 
 ---
 
 ### v0.3.0 — Handoff Queue Reliability
-**Tasks:** `[AI-CLI-16]`, `[AI-CLI-21]`
+**Tasks:** `[AI-CLI-16]` (AI-CLI-21 folded in)
 
 End-to-end testing and hardening of the 5-layer handoff pickup system. Unit and integration tests for same-machine and cross-machine scenarios. All pickup layers verified with layer attribution in `handoff-events.jsonl`. Fix any gaps found during testing.
 
@@ -104,22 +103,20 @@ Windows out-of-box support: OS-aware default paths, Windows-compatible subproces
 
 ---
 
-### v0.6.0 — Polish and Docs
-**Tasks:** `[AI-CLI-3]`, `[AI-CLI-11]`
+### v0.6.0 — Polish and UX
+**Tasks:** `[AI-CLI-3]`, `[AI-CLI-11]`, `[AI-CLI-32]`
 
 - Demo GIF: update `demo/demo.tape` to show current feature set, human runs `vhs` and embeds in README
 - Logo polish: increase stroke weight so logo holds up at small sizes
-- CLI ergonomics audit: walk through the tool as a new user, identify any confusing command names, missing help text, or awkward flows
-- Usage reference (`docs/tools/ai-cli-usage.md`) fully current with all commands
+- CLI ergonomics + first-run UX audit: walk through the tool as a new user on each platform, verify `ai setup` end-to-end from a fresh install, fix any gaps
 
 **Criteria unlocked:** C7, C8
 
 ---
 
 ### v1.0.0 — Stability Declaration
-**Tasks:** `[AI-CLI-31]`
 
-All criteria C1–C10 verified. CLAUDE.md/GEMINI.md alignment enforcement shipped. Explicit API stability commitment added to README ("v1.0.0+ CLI interface is stable — no breaking changes without a major version bump"). Final review pass on all public-facing docs.
+All criteria C1–C10 verified. Explicit API stability commitment added to README ("v1.0.0+ CLI interface is stable — no breaking changes without a major version bump"). Final review pass on all public-facing docs.
 
 ---
 

@@ -66,7 +66,7 @@ Add `ai ps` command showing all ai-cli-managed processes (mosh-server orphans, s
 
 ### Phase 3 — Privacy Audit
 
-**Task:** New — `[AI-CLI-30]` (to be added to roadmap)
+**Task:** `[AI-CLI-30]`
 **Status:** Not started
 
 Scrub all proprietary and personal references from code, tests, docs, and comments. Must conform to Public Open-Source Package Standards in `CLAUDE.md`.
@@ -101,6 +101,17 @@ git grep -rn "humanware\|aido\|\bsergei\b\|sergeiwallace\|178\.104" -- src/ test
 Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (where these names appear in their correct context as rule definitions), and `setup.py`/`test_setup.py` pending the humanware rename decision.
 
 **Gate:** `git grep` returns zero hits in `src/` and `tests/`. CI green.
+
+---
+
+### Phase 3.5 — CLAUDE.md / GEMINI.md Alignment
+
+**Task:** `[AI-CLI-31]`
+**Status:** Not started
+
+Write a lint script that extracts shared sections from both `CLAUDE.md` and `GEMINI.md` and fails if they differ. Wire to CI. Small lift — shared sections are already defined, GEMINI.md was just synced with CLAUDE.md additions in this release.
+
+**Gate:** Lint script passes in CI on clean files; fails demonstrably on an intentional drift.
 
 ---
 
@@ -169,6 +180,8 @@ Phase 2 (Process Hygiene)
     ↓ CI green
 Phase 3 (Privacy Audit)
     ↓ git grep clean + CI green
+Phase 3.5 (CLAUDE/GEMINI Alignment)
+    ↓ lint script passing in CI
 Phase 4 (Backup + Squash)   ← human executes
     ↓ backup confirmed on both local + private GitHub
 Phase 5 (Version Bump + Publish)
@@ -182,7 +195,7 @@ Done
 | Any new `# pragma: no cover` | Phase 1 | Human approval required |
 | CI green | Phase 2 complete | Automated |
 | `git grep` returns zero hits in src/+tests/ | Phase 3 complete | CI + human verify |
-| humanware rename decision | Phase 3 start | Human (see Open Questions) |
+| Alignment lint script passing in CI | Phase 3.5 complete | Automated |
 | Backup confirmed before squash | Phase 4 | Human |
 | PyPI installable | Phase 5 | Human |
 
@@ -199,7 +212,7 @@ These tasks are intentionally deferred until after the release:
 
 ## Open Questions
 
-~~1. **`humanware` rename in setup.py**~~ — **Resolved 2026-04-04:** rename to `_is_managed_platform()` / "managed platform detected".
+1. ~~**`humanware` rename in setup.py**~~ — **Resolved 2026-04-04:** rename to `_is_managed_platform()` / "managed platform detected".
 
 > **Feedback Round 1:**
 > - <enter feedback here>
