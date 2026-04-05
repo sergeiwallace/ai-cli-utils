@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -463,3 +463,193 @@ class TestLayoutCliDispatch:
         ):
             cli()
         assert exc.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# _layouts_dir and _dynamic_profile_dir helpers
+# ---------------------------------------------------------------------------
+
+
+class TestLayoutDirHelpers:
+    def test_layouts_dir_returns_path(self):
+        """line 111: _layouts_dir() returns a Path object."""
+        from ai_cli.layout import _layouts_dir
+        result = _layouts_dir()
+        assert isinstance(result, Path)
+
+    def test_dynamic_profile_dir_creates_and_returns_path(self, tmp_path):
+        """lines 128-130: _dynamic_profile_dir creates the directory and returns it."""
+        from ai_cli.layout import _dynamic_profile_dir
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _dynamic_profile_dir()
+        assert result.exists()
+        assert result.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# load_layout — non-mapping YAML
+# ---------------------------------------------------------------------------
+
+
+class TestLoadLayoutNonMapping:
+    def test_when_yaml_is_a_list_then_raises_value_error(self, tmp_path):
+        """line 159: YAML content that is not a dict raises ValueError."""
+        from ai_cli.layout import load_layout
+        layout_file = tmp_path / "bad.yaml"
+        layout_file.write_text("- item1\n- item2\n")
+        with patch("ai_cli.layout._layouts_dir", return_value=tmp_path):
+            with pytest.raises(ValueError, match="YAML mapping"):
+                load_layout("bad")
+
+
+# ---------------------------------------------------------------------------
+# generate_layout_profiles — session type detection and color fields
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateLayoutProfilesExtended:
+    """Covers session type branches (lines 191, 193, 195) and color fields (214, 216)."""
+
+    def _make_tab(self, base_profile: str, tab_color: str = "#1e88e5", bg: str | None = None, fg: str | None = None) -> dict:
+        tab = {
+            "name": "tab1",
+            "base_profile": base_profile,
+            "colors": {"tab_color": tab_color},
+            "root": {"dir": "~"},
+        }
+        if bg:
+            tab["colors"]["background"] = bg
+        if fg:
+            tab["colors"]["foreground"] = fg
+        return tab
+
+    def _run(self, base_profile: str, tmp_path: Path, **color_kwargs) -> dict:
+        layout_data = {
+            "name": "test",
+            "tabs": [self._make_tab(base_profile, **color_kwargs)],
+        }
+        layout = Layout(**layout_data)
+        with (
+            patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
+            patch("ai_cli.layout.generate_session_icon", return_value=None),
+        ):
+            generate_layout_profiles(layout)
+        profile_file = tmp_path / "layout-test-tab1.json"
+        return json.loads(profile_file.read_text())["Profiles"][0]
+
+    def test_chrome_base_profile_sets_session_type(self, tmp_path):
+        """line 191: 'Chrome' in base_profile → session_type = 'chrome'."""
+        profile = self._run("ChromeTab", tmp_path)
+        assert profile["Dynamic Profile Parent Name"] == "ChromeTab"
+
+    def test_caffeinate_base_profile_sets_session_type(self, tmp_path):
+        """line 193: 'Caffeinate' in base_profile → session_type = 'caffeinate'."""
+        profile = self._run("CaffeinateTab", tmp_path)
+        assert profile["Dynamic Profile Parent Name"] == "CaffeinateTab"
+
+    def test_ssh_base_profile_sets_session_type(self, tmp_path):
+        """line 195: 'SSH' in base_profile → session_type = 'ssh'."""
+        profile = self._run("SSHTab", tmp_path)
+        assert profile["Dynamic Profile Parent Name"] == "SSHTab"
+
+    def test_background_color_included_when_set(self, tmp_path):
+        """line 214: bg_hex present → profile has 'Background Color' key."""
+        profile = self._run("ClaudeCode", tmp_path, bg="#111111")
+        assert "Background Color" in profile
+
+    def test_foreground_color_included_when_set(self, tmp_path):
+        """line 216: foreground present → profile has 'Foreground Color' key."""
+        profile = self._run("ClaudeCode", tmp_path, fg="#ffffff")
+        assert "Foreground Color" in profile
+
+
+# ---------------------------------------------------------------------------
+# cmd_layout_apply
+# ---------------------------------------------------------------------------
+
+
+class TestCmdLayoutApply:
+    def test_when_layout_not_found_then_returns_1(self, tmp_path, capsys):
+        """lines 283-287: FileNotFoundError prints error and returns 1."""
+        from ai_cli.layout import cmd_layout_apply
+        with patch("ai_cli.layout._layouts_dir", return_value=tmp_path):
+            result = cmd_layout_apply("nonexistent")
+        assert result == 1
+        assert "Error:" in capsys.readouterr().err
+
+    def test_when_layout_valid_then_runs_script_and_returns_code(self, tmp_path):
+        """lines 289-298: valid layout generates profiles and runs the launch script."""
+        from ai_cli.layout import cmd_layout_apply
+        _write_layout(tmp_path, "myapp", _MINIMAL_LAYOUT)
+        fake_proc = MagicMock()
+        fake_proc.returncode = 0
+        with (
+            patch("ai_cli.layout._layouts_dir", return_value=tmp_path),
+            patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
+            patch("ai_cli.layout.generate_session_icon", return_value=None),
+            patch("subprocess.run", return_value=fake_proc),
+        ):
+            result = cmd_layout_apply("myapp")
+        assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# _write_launch_script
+# ---------------------------------------------------------------------------
+
+
+class TestWriteLaunchScript:
+    def test_generates_temp_python_file_with_iterm2_content(self, tmp_path):
+        """lines 350-399: generates a .py file importing iterm2 with tab setup."""
+        from ai_cli.layout import _write_launch_script
+        layout = Layout(**_MINIMAL_LAYOUT)
+        script_path = _write_launch_script(layout)
+        try:
+            assert script_path.exists()
+            assert script_path.suffix == ".py"
+            content = script_path.read_text()
+            assert "import iterm2" in content
+            assert "async def main" in content
+            assert "iterm2.run_until_complete" in content
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_multi_tab_layout_generates_create_tab_calls(self):
+        """lines 381-388: each non-first tab generates async_create_tab in the script."""
+        from ai_cli.layout import _write_launch_script
+        multi_tab = {
+            "name": "multi",
+            "tabs": [
+                {"name": "tab-a", "base_profile": "ClaudeCode", "root": {"dir": "~"}},
+                {"name": "tab-b", "base_profile": "GeminiTab", "root": {"dir": "~"}},
+            ],
+        }
+        layout = Layout(**multi_tab)
+        script_path = _write_launch_script(layout)
+        try:
+            content = script_path.read_text()
+            assert "async_create_tab" in content
+            assert "tab-b" in content
+        finally:
+            script_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# run_layout_command default (apply)
+# ---------------------------------------------------------------------------
+
+
+class TestRunLayoutCommandApply:
+    def test_unknown_subcommand_applies_layout_by_name(self, tmp_path):
+        """line 426: unrecognized sub = layout name → calls cmd_layout_apply."""
+        _write_layout(tmp_path, "myapp", _MINIMAL_LAYOUT)
+        fake_proc = MagicMock()
+        fake_proc.returncode = 0
+        with (
+            patch("ai_cli.layout._layouts_dir", return_value=tmp_path),
+            patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
+            patch("ai_cli.layout.generate_session_icon", return_value=None),
+            patch("subprocess.run", return_value=fake_proc),
+        ):
+            result = run_layout_command(["myapp"])
+        assert result == 0

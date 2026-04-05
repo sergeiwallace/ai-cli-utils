@@ -205,7 +205,7 @@ Done
 
 These tasks are intentionally deferred until after the release:
 
-- **`[AI-CLI-16]`** — Handoff observability checkpoint (NATS handoff reliability, layer attribution, fix gaps)
+- **`[AI-CLI-16]`** — Handoff queue reliability + testing (same-machine and cross-machine scenarios, all 5 pickup layers)
 - **`[AI-CLI-29]`** — Windows out-of-box support (OS-aware paths, Windows-compatible subprocess calls, CI matrix expansion)
 
 ---

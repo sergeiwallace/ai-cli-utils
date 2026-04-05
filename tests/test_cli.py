@@ -1543,6 +1543,66 @@ class TestAutoUpdateIfStale:
 
         mock_run.assert_not_called()
 
+    def test_when_pyproject_has_no_version_field_then_exits_1(self, tmp_path, capsys):
+        """lines 2488-2489: pyproject.toml exists but has no version = "..." pattern."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "ai-cli-utils"\n')  # no version field
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+        assert exc.value.code == 1
+        assert "could not find version" in capsys.readouterr().err
+
+    def test_when_force_flag_then_adds_reinstall_to_uv_cmd(self, tmp_path):
+        """line 2498: --force flag → --reinstall appended to uv install command."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.1"\n')
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "deploy", "--force"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+        assert exc.value.code == 0
+        assert any("--reinstall" in c for c in calls if isinstance(c, list))
+
+    def test_when_force_and_extra_venvs_then_adds_force_reinstall_to_pip(self, tmp_path):
+        """line 2511: --force + extra_venvs → --force-reinstall in pip install command."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.1"\n')
+        extra_venv = tmp_path / "my-tool" / ".venv"
+        extra_venv.mkdir(parents=True)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return MagicMock(returncode=0, stdout="")
+
+        config = {
+            "deploy": {"project_path": str(tmp_path)},
+            "update": {"extra_venvs": [str(extra_venv)]},
+        }
+        with (
+            patch("sys.argv", ["ai", "deploy", "--force"]),
+            patch("ai_cli.main.load_config", return_value=config),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+        assert exc.value.code == 0
+        assert any("pip" in c and "--force-reinstall" in c for c in calls if isinstance(c, list))
+
     def test_deploy_writes_commit_hash_stamp_on_success(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')

@@ -257,3 +257,16 @@ def test_run_copier_update_partial_failure(tmp_path, capsys):
     assert result == 1
     out = capsys.readouterr().out
     assert "errors or conflicts" in out
+
+
+def test_run_copier_update_when_projects_dir_none_then_uses_home_projects(tmp_path):
+    """line 54: projects_dir=None defaults to Path.home() / 'projects'."""
+    fake_home = tmp_path
+    # Create a 'projects' directory under fake home
+    projects = fake_home / "projects"
+    projects.mkdir()
+    with patch("pathlib.Path.home", return_value=fake_home):
+        with patch("shutil.which", return_value=None):  # no copier binary
+            result = run_copier_update(projects_dir=None)
+    # copier not found → returns non-zero, but the default path was used (not crash)
+    assert result != 0  # copier not found error

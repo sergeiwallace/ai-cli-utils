@@ -1,6 +1,7 @@
 """Tests for gemini module — 3-tier auth fallback."""
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -528,3 +529,77 @@ class TestRunGeminiNoFilePrintsToStdout:
         assert result.success is True
         out = capsys.readouterr().out
         assert "output text" in out
+
+
+class TestLoadDopplerSecrets:
+    """Tests for _load_doppler_secrets (lines 140-169)."""
+
+    def _get_fn(self):
+        from ai_cli.gemini import _load_doppler_secrets
+        return _load_doppler_secrets
+
+    def test_when_all_keys_present_then_skips_doppler(self):
+        """When both API keys are in env, doppler is never called."""
+        env = {"GOOGLE_API_KEY_FREE_TIER": "key1", "GOOGLE_API_KEY_TIER_1": "key2"}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which") as mock_which:
+                self._get_fn()()
+        mock_which.assert_not_called()
+
+    def test_when_doppler_not_in_path_then_noop(self):
+        """When doppler binary not found, nothing is injected (line 151)."""
+        # Clear the two keys that trigger the early-exit check at line 146
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("GOOGLE_API_KEY_FREE_TIER", "GOOGLE_API_KEY_TIER_1")}
+        with patch.dict("os.environ", clean_env, clear=True):
+            with patch("shutil.which", return_value=None):
+                with patch("subprocess.run") as mock_run:
+                    self._get_fn()()
+        mock_run.assert_not_called()
+
+    def test_when_doppler_returns_nonzero_then_noop(self):
+        """Non-zero returncode from doppler → no keys injected."""
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("GOOGLE_API_KEY_FREE_TIER", "GOOGLE_API_KEY_TIER_1", "GEMINI_API_KEY")}
+        fake_result = MagicMock()
+        fake_result.returncode = 1
+        fake_result.stdout = ""
+        with patch.dict("os.environ", clean_env, clear=True):
+            with patch("shutil.which", return_value="/usr/bin/doppler"):
+                with patch("subprocess.run", return_value=fake_result):
+                    self._get_fn()()
+            assert "GOOGLE_API_KEY_FREE_TIER" not in os.environ
+
+    def test_when_doppler_succeeds_then_injects_missing_keys(self):
+        """Successful doppler run injects keys that were absent from env."""
+        import os as _os
+        env_before = {k: v for k, v in _os.environ.items() if k not in ("GOOGLE_API_KEY_FREE_TIER", "GOOGLE_API_KEY_TIER_1")}
+        fake_stdout = "GOOGLE_API_KEY_FREE_TIER=injected-key\nOTHER_VAR=foo\n"
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = fake_stdout
+        with patch.dict("os.environ", env_before, clear=True):
+            with patch("shutil.which", return_value="/usr/bin/doppler"):
+                with patch("subprocess.run", return_value=fake_result):
+                    self._get_fn()()
+            assert _os.environ.get("GOOGLE_API_KEY_FREE_TIER") == "injected-key"
+
+    def test_when_subprocess_raises_then_noop(self):
+        """Exception during subprocess.run is silently swallowed (lines 168-169)."""
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("GOOGLE_API_KEY_FREE_TIER", "GOOGLE_API_KEY_TIER_1")}
+        with patch.dict("os.environ", clean_env, clear=True):
+            with patch("shutil.which", return_value="/usr/bin/doppler"):
+                with patch("subprocess.run", side_effect=OSError("spawn error")):
+                    self._get_fn()()  # must not raise
+
+    def test_when_doppler_output_has_lines_without_equals_then_skips_them(self):
+        """line 164: lines without '=' in doppler output are skipped."""
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("GOOGLE_API_KEY_FREE_TIER", "GOOGLE_API_KEY_TIER_1")}
+        # Include a header line (no '=') before the key=value line
+        fake_stdout = "Doppler output:\nGOOGLE_API_KEY_FREE_TIER=injected-key\n"
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = fake_stdout
+        with patch.dict("os.environ", clean_env, clear=True):
+            with patch("shutil.which", return_value="/usr/bin/doppler"):
+                with patch("subprocess.run", return_value=fake_result):
+                    self._get_fn()()
+            assert os.environ.get("GOOGLE_API_KEY_FREE_TIER") == "injected-key"

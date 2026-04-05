@@ -219,6 +219,17 @@ class TestSendNotification:
             _send_notification(75, snap)
         mock_slack.assert_called_once()
 
+    def test_when_load_config_raises_then_falls_back_to_notify_send(self):
+        """lines 223-224: load_config exception → webhook_url="" → uses notify-send."""
+        snap = self._make_snapshot(78.5)
+        with (
+            patch("ai_cli.main.load_config", side_effect=Exception("no config")),
+            patch("subprocess.run") as mock_run,
+        ):
+            _send_notification(75, snap)
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0][0] == "notify-send"
+
 
 # --- _send_slack_notification ---
 
@@ -360,6 +371,21 @@ class TestQuotaStatus:
         out = capsys.readouterr().out
         assert "65.0%" in out
         assert "Days to reset" in out
+
+    def test_when_alerts_present_then_prints_them(self, capsys):
+        """line 294: alerts list in status data gets printed."""
+        status_data = {
+            "latest_snapshot": {"usage_percent": 78.5, "snapshotted_at": "2026-04-04T06:00:00Z"},
+            "burn_rate": {},
+            "days_remaining": None,
+            "alerts": ["Approaching weekly limit", "Consider slowing down"],
+        }
+        with patch("ai_cli.quota_db.get_current_status", return_value=status_data):
+            result = quota_status()
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Approaching weekly limit" in out
+        assert "Consider slowing down" in out
 
 
 # --- quota_history ---

@@ -1,6 +1,7 @@
 """Tests for ai_cli.icon_generator — runtime Pillow icon generation + Dynamic Profile."""
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -404,3 +405,46 @@ class TestCleanupSessionFilesCommand:
             with pytest.raises(SystemExit) as exc:
                 cli()
         assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Cleanup — error handling paths
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupSessionFilesErrors:
+    def test_when_icon_unlink_raises_then_continues_to_profile_cleanup(self, tmp_path):
+        """lines 233-234: exception in icon unlink is silently caught; profile is still cleaned."""
+        profile = tmp_path / "ai-cli-session-test-session.json"
+        profile.write_bytes(b"json")
+
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path),
+            patch.object(Path, "unlink", side_effect=[OSError("disk error"), None]),
+        ):
+            cleanup_session_files("test-session")  # must not raise
+
+    def test_when_profile_unlink_raises_then_no_crash(self, tmp_path):
+        """lines 237-238: exception in profile unlink is silently caught."""
+        icon = tmp_path / "test-session.png"
+        icon.write_bytes(b"png")
+
+        def fake_unlink(self_path, **kwargs):
+            if self_path.name.endswith(".json"):
+                raise OSError("profile error")
+
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path),
+            patch.object(Path, "unlink", fake_unlink),
+        ):
+            cleanup_session_files("test-session")  # must not raise
+
+
+class TestSourceLogoPath:
+    def test_when_unknown_session_type_then_returns_none(self):
+        """line 78: unknown session_type has no filename in _SOURCE_LOGOS → returns None."""
+        from ai_cli.icon_generator import _source_logo_path
+        result = _source_logo_path("unknown_type_xyz")
+        assert result is None

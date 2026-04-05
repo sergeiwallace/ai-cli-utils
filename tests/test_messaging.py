@@ -372,3 +372,33 @@ class TestOpenSshTunnel:
 
         assert len(popen_calls) == 1
         assert "178.104.70.139" in " ".join(popen_calls[0])
+
+    def test_includes_identity_file_when_configured(self):
+        """identity_file in remote config adds -i flag to SSH command (line 58)."""
+        client = NATSClient()
+        config = {
+            "remote": {
+                "host": "192.0.2.1",
+                "user": "user",
+                "port": 22,
+                "identity_file": "/home/user/.ssh/id_rsa",
+            }
+        }
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append(cmd)
+            return MagicMock()
+
+        with patch.dict("os.environ", {"AI_CLI_HOST": "mac"}):
+            with patch("socket.create_connection", side_effect=OSError):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch("asyncio.sleep", new=AsyncMock()):
+                        with patch("ai_cli.messaging.load_config", return_value=config, create=True):
+                            with patch("ai_cli.main.load_config", return_value=config):
+                                asyncio.run(client._open_ssh_tunnel())
+
+        assert len(popen_calls) == 1
+        ssh_cmd = " ".join(popen_calls[0])
+        assert "-i" in ssh_cmd
+        assert "/home/user/.ssh/id_rsa" in ssh_cmd

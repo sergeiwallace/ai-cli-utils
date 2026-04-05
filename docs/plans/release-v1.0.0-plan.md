@@ -38,6 +38,7 @@ All of the following must be true before tagging v1.0.0:
 | C7 | First-run UX: new user can install and use core commands from README alone | `[AI-CLI-32]` |
 | C8 | Demo GIF in README | `[AI-CLI-3]` |
 | C9 | No known P0/P1 bugs | — |
+| C11 | AI provider support is config-driven — adding a new provider requires no code changes | `[AI-CLI-33]` |
 | C10 | Security hardening complete | `[AI-CLI-13]` ✅ |
 
 ## Version Milestone Map
@@ -57,8 +58,8 @@ All of the following must be true before tagging v1.0.0:
 0.5.0  Windows + cross-platform
          [AI-CLI-29]
   ↓
-0.6.0  Polish + UX
-         [AI-CLI-3] [AI-CLI-11] [AI-CLI-32]
+0.6.0  Polish + UX + provider extensibility
+         [AI-CLI-3] [AI-CLI-11] [AI-CLI-32] [AI-CLI-33]
   ↓
 1.0.0  Stability declaration — all criteria met
 ```
@@ -143,11 +144,6 @@ It's only useful when there are regular external PRs. Not a v1.0.0 blocker.
 
 - `[AI-CLI-7]` Release Drafter — post-1.0, needs external contributor volume
 - Web dashboard — not part of this package's scope
-- Major new features not currently in roadmap
-
-## Post-v1.0.0 Candidates
-
-- `[AI-CLI-33]` **Configurable AI provider support** — extend to OpenAI, GitHub Copilot, etc. Provider config block drives icon, tab color, session naming, and launch command. Adding a new provider requires only config, not code changes. Deferred post-1.0 because it requires a clean abstraction layer — worth doing right rather than bolting on.
 
 ---
 

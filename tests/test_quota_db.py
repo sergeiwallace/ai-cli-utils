@@ -275,3 +275,68 @@ class TestGetWeeklyHistory:
         assert result[0]["week_start"] == "2026-04-04T06:00:00Z"
         assert result[0]["peak_percent"] == 55.0
         assert result[0]["snapshot_count"] == 2
+
+
+# --- _get_reset_anchor_utc ---
+
+
+class TestGetResetAnchorUtc:
+    def test_when_load_config_raises_then_uses_default(self):
+        """Exception in load_config falls back to _DEFAULT_RESET_ANCHOR (lines 27-28)."""
+        with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
+            result = quota_db._get_reset_anchor_utc()
+        assert result == datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+
+
+# --- _get_quota_db_path ---
+
+
+class TestGetQuotaDbPath:
+    def test_when_no_override_then_uses_home_state_dir(self, tmp_path):
+        """Lines 44-46: default path is ~/.local/state/ai-cli/quota.db."""
+        # Temporarily clear the module-level override set by autouse fixture
+        with patch.object(quota_db, "_DB_PATH_OVERRIDE", None):
+            with patch("pathlib.Path.home", return_value=tmp_path):
+                result = quota_db._get_quota_db_path()
+        expected = tmp_path / ".local" / "state" / "ai-cli" / "quota.db"
+        assert result == expected
+        assert (tmp_path / ".local" / "state" / "ai-cli").exists()
+
+
+# --- _get_current_week_start now=None ---
+
+
+class TestGetCurrentWeekStartNowNone:
+    def test_when_now_is_none_then_returns_valid_iso_string(self):
+        """Line 98: now=None path uses datetime.now(). Verifies the branch runs."""
+        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
+            result = quota_db._get_current_week_start()  # no now arg
+        assert result.endswith("Z")
+        parsed = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ")
+        assert parsed is not None
+
+
+# --- _get_reset_at now=None and reset <= now edge case ---
+
+
+class TestGetResetAtEdgeCases:
+    def test_when_now_is_none_then_returns_valid_iso_string(self):
+        """Line 114: now=None path uses datetime.now(). Verifies the branch runs."""
+        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
+            result = quota_db._get_reset_at()  # no now arg
+        assert result.endswith("Z")
+        parsed = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ")
+        assert parsed is not None
+
+    def test_when_reset_equals_now_then_advances_by_one_week(self):
+        """Line 121: when computed reset == now, it must advance by one week."""
+        from datetime import timedelta
+        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+        # now is exactly one week before anchor:
+        # diff = WEEK_SECONDS, periods = 1, reset = anchor - 1w = now → reset <= now
+        now = anchor - timedelta(seconds=quota_db._WEEK_SECONDS)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
+            result = quota_db._get_reset_at(now=now)
+        assert result == "2026-04-04T06:00:00Z"

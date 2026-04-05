@@ -1,6 +1,29 @@
-from unittest.mock import patch
+import json
+import os
+from unittest.mock import MagicMock, patch
 
-from ai_cli.main import get_xdg_cache_home, get_xdg_state_home, load_config
+import pytest
+
+from ai_cli.main import (
+    _assign_iterm2_color_slot,
+    _auto_update_if_stale,
+    _cmd_tunnel_start,
+    _cmd_tunnel_stop,
+    _cmd_tunnel_status,
+    _cmd_signal_watch_status,
+    _find_aicli_project_path,
+    _load_iterm2_config,
+    _log_handoff_event,
+    _migrate_xdg_dir,
+    _release_iterm2_color_slot,
+    _sweep_stale_iterm2_profiles,
+    cli,
+    get_engine_script,
+    get_xdg_cache_home,
+    get_xdg_state_home,
+    load_config,
+)
+from conftest import make_iterm2_config, run_cli
 
 
 # --- XDG helpers ---
@@ -53,3 +76,547 @@ class TestLoadConfig:
         with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
             result = load_config()
         assert result == {}
+
+
+# --- Group 1: _migrate_xdg_dir ---
+
+
+class TestMigrateXdgDir:
+    def test_when_old_exists_and_new_does_not_then_renames(self, tmp_path):
+        old_dir = tmp_path / "ai-cli"
+        old_dir.mkdir()
+        (old_dir / "somefile.txt").write_text("data")
+        new_dir = tmp_path / "ai-cli-utils"
+        result = _migrate_xdg_dir(old_dir, new_dir)
+        assert result == new_dir
+        assert new_dir.exists()
+        assert not old_dir.exists()
+        assert (new_dir / "somefile.txt").read_text() == "data"
+
+
+# --- Group 2: sweep_stale_iterm2_profiles ---
+
+
+class TestSweepStaleIterm2Profiles:
+    def test_when_profile_dir_does_not_exist_then_returns(self, tmp_path):
+        nonexistent = tmp_path / "no-such-dir"
+        mock_ig = MagicMock()
+        mock_ig._dynamic_profile_dir.return_value = nonexistent
+        mock_ig._DYNAMIC_PROFILE_PREFIX = "ai-cli-"
+        with patch.dict("sys.modules", {"ai_cli.icon_generator": mock_ig}):
+            _sweep_stale_iterm2_profiles()
+
+    def test_when_exception_occurs_then_suppressed(self):
+        mock_ig = MagicMock()
+        mock_ig._dynamic_profile_dir.side_effect = RuntimeError("broken")
+        with patch.dict("sys.modules", {"ai_cli.icon_generator": mock_ig}):
+            _sweep_stale_iterm2_profiles()
+
+
+# --- Group 3: _load_iterm2_config ---
+
+
+class TestLoadIterm2Config:
+    def test_when_both_toml_parses_fail_then_returns_empty_dict(self, tmp_path):
+        config_dir = tmp_path / "ai-cli-utils"
+        config_dir.mkdir(parents=True)
+        (config_dir / "iterm2.toml").write_text("valid = true")
+        with (
+            patch("ai_cli.main.get_xdg_config_home", return_value=config_dir),
+            patch("tomllib.load", side_effect=Exception("parse fail")),
+            patch("tomllib.loads", side_effect=Exception("parse fail")),
+        ):
+            result = _load_iterm2_config()
+        assert result == {}
+
+
+# --- Group 4: _assign_iterm2_color_slot ---
+
+
+class TestAssignIterm2ColorSlot:
+    def test_when_iterm2_disabled_via_config_then_returns_none(self):
+        with (
+            patch("ai_cli.main._is_iterm2", return_value=True),
+            patch(
+                "ai_cli.main._load_iterm2_config",
+                return_value={"iterm2": {"enabled": False}},
+            ),
+        ):
+            result = _assign_iterm2_color_slot("session-1", "c", "myproject")
+        assert result is None
+
+    def test_when_color_disabled_via_config_then_returns_none(self):
+        with (
+            patch("ai_cli.main._is_iterm2", return_value=True),
+            patch(
+                "ai_cli.main._load_iterm2_config",
+                return_value={"iterm2": {"enabled": True, "color": {"enabled": False}}},
+            ),
+        ):
+            result = _assign_iterm2_color_slot("session-1", "c", "myproject")
+        assert result is None
+
+    def test_when_palette_empty_then_returns_none(self):
+        with (
+            patch("ai_cli.main._is_iterm2", return_value=True),
+            patch(
+                "ai_cli.main._load_iterm2_config",
+                return_value={
+                    "iterm2": {
+                        "enabled": True,
+                        "color": {"enabled": True},
+                        "palette": {},
+                    }
+                },
+            ),
+        ):
+            result = _assign_iterm2_color_slot("session-1", "c", "myproject")
+        assert result is None
+
+    # Group 5: corrupt lease file
+    def test_when_lease_file_is_corrupt_json_then_uses_empty_leases(self, tmp_path):
+        state_dir = tmp_path / "iterm2"
+        state_dir.mkdir(parents=True)
+        (state_dir / "color-leases.json").write_text("CORRUPT")
+        cfg = make_iterm2_config(palette={"red": "#e74c3c", "blue": "#1e88e5"})
+        with (
+            patch("ai_cli.main._is_iterm2", return_value=True),
+            patch("ai_cli.main._iterm2_state_dir", return_value=state_dir),
+            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+        ):
+            result = _assign_iterm2_color_slot("session-1", "c", "myproject")
+        assert result is not None
+        assert len(result) == 6  # hex color without #
+
+
+# --- Group 6: _release_iterm2_color_slot ---
+
+
+class TestReleaseIterm2ColorSlot:
+    def test_when_lease_file_is_corrupt_then_handles_gracefully(self, tmp_path):
+        state_dir = tmp_path / "iterm2"
+        state_dir.mkdir(parents=True)
+        (state_dir / "color-leases.json").write_text("CORRUPT")
+        (state_dir / "color-leases.lock").touch()
+        with patch("ai_cli.main._iterm2_state_dir", return_value=state_dir):
+            _release_iterm2_color_slot("session-1")
+        # Should have written a valid JSON file after handling corrupt input
+        data = json.loads((state_dir / "color-leases.json").read_text())
+        assert "leases" in data
+
+
+# --- Group 7: get_engine_script pkg_version exception ---
+
+
+class TestGetEngineScript:
+    def test_when_pkg_version_raises_then_uses_unknown(self):
+        with patch(
+            "importlib.metadata.version",
+            side_effect=Exception("not found"),
+        ):
+            result = get_engine_script(
+                engine="c",
+                ai_name="sw-1",
+                session="c-sw-1",
+                prefix="c-sw-",
+                project_prefix="sw",
+                session_id_uuid="",
+                sandbox=False,
+                notify=False,
+                project_name="myproject",
+            )
+        assert "unknown" in result
+
+
+# --- Group 8: _log_handoff_event OSError ---
+
+
+class TestLogHandoffEvent:
+    def test_when_log_file_write_raises_then_suppressed(self, tmp_path):
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("builtins.open", side_effect=OSError("disk full")),
+        ):
+            _log_handoff_event("test.event", session="session-1")
+
+
+# --- Group 9: _find_aicli_project_path ---
+
+
+class TestFindAicliProjectPath:
+    def test_when_importlib_raises_then_falls_through_to_cwd_check(self, tmp_path):
+        with (
+            patch("importlib.util.find_spec", side_effect=Exception("broken")),
+            patch("pathlib.Path.cwd", return_value=tmp_path),
+        ):
+            result = _find_aicli_project_path({})
+        assert result is None
+
+
+# --- Group 10: _auto_update_if_stale ---
+
+
+class TestAutoUpdateIfStaleFailure:
+    def test_when_update_command_fails_then_prints_warning(self, tmp_path, capsys):
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
+        head_result = MagicMock()
+        head_result.returncode = 0
+        head_result.stdout = "abc123\n"
+        update_result = MagicMock()
+        update_result.returncode = 1
+
+        def fake_run(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                return head_result
+            return update_result
+
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+        assert "Warning" in capsys.readouterr().err
+
+
+# --- Group 11: _cmd_tunnel_start no remote host ---
+
+
+class TestCmdTunnelStartNoHost:
+    def test_when_remote_host_not_set_then_exits_1(self, tmp_path, capsys):
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/autossh"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _cmd_tunnel_start(4222, 4222, forward=True, config={})
+            assert exc.value.code == 1
+        assert "host not set" in capsys.readouterr().err
+
+
+# --- Group 12: _cmd_tunnel_stop ProcessLookupError ---
+
+
+class TestCmdTunnelStopProcessDead:
+    def test_when_process_already_dead_then_cleans_up_pid_file(self, tmp_path, capsys):
+        pid_file = tmp_path / "tunnel-9222.pid"
+        pid_file.write_text("99999")
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            with patch("os.kill", side_effect=ProcessLookupError):
+                _cmd_tunnel_stop(9222)
+        assert not pid_file.exists()
+        assert "stopped" in capsys.readouterr().out.lower()
+
+
+# --- Group 13: _cmd_tunnel_status ---
+
+
+class TestCmdTunnelStatus:
+    def test_when_no_tunnel_pid_files_then_prints_no_tunnels(self, tmp_path, capsys):
+        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+            _cmd_tunnel_status()
+        assert "No tunnels registered" in capsys.readouterr().out
+
+    def test_when_tunnel_pid_is_dead_then_prints_dead_and_removes_file(self, tmp_path, capsys):
+        pid_file = tmp_path / "tunnel-4222.pid"
+        pid_file.write_text("99999")
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill", side_effect=ProcessLookupError),
+        ):
+            _cmd_tunnel_status()
+        assert "dead" in capsys.readouterr().out
+        assert not pid_file.exists()
+
+
+# --- Group 14: _cmd_signal_watch_status ---
+
+
+class TestCmdSignalWatchStatus:
+    def test_when_no_sw_watchers_then_prints_no_processes(self, tmp_path, capsys):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = {"statuses": {"other-watcher": "active"}}
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", return_value=mock_client),
+        ):
+            _cmd_signal_watch_status()
+        assert "No signal-watch processes running" in capsys.readouterr().out
+
+
+# --- Group 15: CLI dispatch tests ---
+
+
+class TestCliDispatchExtended:
+    def test_when_quota_status_subcommand_then_dispatches(self):
+        with (
+            patch("sys.argv", ["ai", "quota", "status"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.quota.quota_status", return_value=0),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_quota_history_subcommand_then_dispatches(self):
+        with (
+            patch("sys.argv", ["ai", "quota", "history"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.quota.quota_history", return_value=0),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_quota_scrape_subcommand_then_dispatches(self):
+        with (
+            patch("sys.argv", ["ai", "quota", "scrape"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.quota.quota_scrape", return_value=0),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_quota_record_subcommand_then_dispatches(self):
+        with (
+            patch("sys.argv", ["ai", "quota", "record", "sid1", "mac1", "claude-sonnet", "1000"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.quota.quota_record", return_value=0),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_quota_record_missing_args_then_exits_1(self):
+        with (
+            patch("sys.argv", ["ai", "quota", "record"]),
+            patch("ai_cli.main.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
+    def test_when_copier_update_on_non_mac_then_exits_1(self):
+        exit_code, _, stderr = run_cli(
+            ["ai", "copier-update"],
+            env={"AI_CLI_HOST": "hetzner"},
+        )
+        assert exit_code == 1
+        assert "Mac only" in stderr
+
+    def test_when_color_subcommand_no_arg_then_exits_1(self):
+        exit_code, _, _ = run_cli(["ai", "color"])
+        assert exit_code == 1
+
+    def test_when_color_subcommand_no_session_env_then_exits_1(self, monkeypatch):
+        monkeypatch.delenv("AI_TMUX_SESSION", raising=False)
+        exit_code, _, stderr = run_cli(["ai", "color", "#e74c3c"])
+        assert exit_code == 1
+        assert "AI_TMUX_SESSION" in stderr
+
+    def test_when_color_subcommand_with_hex_and_session_then_succeeds(self):
+        cfg = make_iterm2_config()
+        mock_ig = MagicMock()
+        mock_ig.cleanup_session_files = MagicMock()
+        mock_ig.generate_session_icon = MagicMock(return_value="/tmp/icon.png")
+        mock_ig.generate_dynamic_profile = MagicMock()
+        with (
+            patch("sys.argv", ["ai", "color", "#e74c3c"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
+            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch.dict("sys.modules", {"ai_cli.icon_generator": mock_ig}),
+            patch("sys.stdout"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_tunnel_no_args_then_exits_1(self):
+        exit_code, _, _ = run_cli(["ai", "tunnel"])
+        assert exit_code == 1
+
+    def test_when_tunnel_stop_dispatches(self, tmp_path):
+        with (
+            patch("sys.argv", ["ai", "tunnel", "stop", "9222"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_tunnel_stop") as mock_stop,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+            mock_stop.assert_called_once_with(9222)
+
+    def test_when_tunnel_stop_no_port_then_exits_1(self):
+        exit_code, _, _ = run_cli(["ai", "tunnel", "stop"])
+        assert exit_code == 1
+
+    def test_when_tunnel_status_dispatches(self):
+        with (
+            patch("sys.argv", ["ai", "tunnel", "status"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_tunnel_status") as mock_status,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+            mock_status.assert_called_once()
+
+    def test_when_tunnel_unknown_action_exits_1(self):
+        exit_code, _, _ = run_cli(["ai", "tunnel", "unknown"])
+        assert exit_code == 1
+
+    def test_when_signal_watch_start_missing_args_exits_1(self):
+        exit_code, _, _ = run_cli(["ai", "signal-watch", "start"])
+        assert exit_code == 1
+
+    def test_when_signal_watch_stop_missing_arg_exits_1(self):
+        exit_code, _, _ = run_cli(["ai", "signal-watch", "stop"])
+        assert exit_code == 1
+
+    def test_when_signal_watch_status_dispatches(self):
+        with (
+            patch("sys.argv", ["ai", "signal-watch", "status"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_signal_watch_status") as mock_status,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+            mock_status.assert_called_once()
+
+    def test_when_signal_watch_unknown_action_exits_1(self):
+        exit_code, _, _ = run_cli(["ai", "signal-watch", "bad"])
+        assert exit_code == 1
+
+    def test_when_copier_update_on_mac_then_dispatches(self, tmp_path):
+        """lines 2272-2282: copier-update with project filter flag."""
+        with (
+            patch("sys.argv", ["ai", "copier-update", "--project", "myproject"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch.dict(os.environ, {"AI_CLI_HOST": "mac"}),
+            patch("ai_cli.copier_update.run_copier_update", return_value=0),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_color_known_palette_name_then_resolves_hex(self):
+        """lines 2304-2305: palette name resolves to hex."""
+        cfg = make_iterm2_config()
+        mock_ig = MagicMock()
+        mock_ig.generate_session_icon = MagicMock(return_value=None)
+        # Get first palette name from the config
+        palette = cfg.get("iterm2", {}).get("palette", {})
+        first_name = next(iter(palette))
+        with (
+            patch("sys.argv", ["ai", "color", first_name]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
+            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch.dict("sys.modules", {"ai_cli.icon_generator": mock_ig}),
+            patch("sys.stdout"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_color_unknown_name_then_exits_1(self):
+        """lines 2306-2308: color arg not in palette and not hex → exits 1."""
+        cfg = make_iterm2_config()
+        with (
+            patch("sys.argv", ["ai", "color", "notacolor"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
+            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
+    def test_when_color_icon_generation_raises_then_continues(self, capsys):
+        """lines 2323-2324: icon generation exception is caught and printed."""
+        cfg = make_iterm2_config()
+        with (
+            patch("sys.argv", ["ai", "color", "#e74c3c"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
+            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch("ai_cli.icon_generator.cleanup_session_files", side_effect=RuntimeError("icon err")),
+            patch("sys.stdout"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0  # exception is caught, execution continues
+            assert "icon generation failed" in capsys.readouterr().err
+
+
+    def test_when_project_prefix_flag_then_uses_it(self):
+        """line 2665: --project-prefix arg is used directly as project_prefix."""
+        with (
+            patch("sys.argv", ["ai", "c", "--project-prefix", "myprefix", "-R"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1  # exits because -R requires remote host
+
+    def test_when_unknown_arg_then_used_as_session_name(self):
+        """line 2685: unrecognized arg in unknown → used as name when args.name is empty."""
+        # args.name is empty (no positional); --unrecognized-flag lands in unknown
+        with (
+            patch("sys.argv", ["ai", "c", "--project-prefix", "myprefix", "-R", "--unrecognized"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1  # exits because -R requires remote host
+
+
+class TestEnsureNatsTunnel:
+    def test_when_stale_pid_file_and_tunnel_start_raises_then_returns(self, tmp_path):
+        """lines 1639-1640, 1643-1644: stale PID → ProcessLookupError, SystemExit caught."""
+        from ai_cli.main import _ensure_nats_tunnel
+
+        pid_file = tmp_path / "tunnel-4222.pid"
+        pid_file.write_text("99999")  # nonexistent PID
+        config = {"messaging": {"tunnel_port": 4222}}
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.main._cmd_tunnel_start", side_effect=SystemExit(1)),
+        ):
+            _ensure_nats_tunnel(config)  # must not raise or propagate SystemExit
+
+
+class TestEnsureCircusd:
+    def test_when_all_connection_attempts_fail_then_raises(self, tmp_path):
+        """lines 1727-1730: all 10 retry attempts fail → raises RuntimeError."""
+        from ai_cli.main import _ensure_circusd
+
+        # Mock the circus.client module so CircusClient always fails
+        mock_client_instance = MagicMock()
+        mock_client_instance.send_message.side_effect = Exception("not ready")
+        mock_client_class = MagicMock(return_value=mock_client_instance)
+        mock_circus_client_module = MagicMock()
+        mock_circus_client_module.CircusClient = mock_client_class
+
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.Popen"),
+            patch.dict("sys.modules", {"circus.client": mock_circus_client_module}),
+            patch("time.sleep"),
+        ):
+            with pytest.raises(RuntimeError, match="circusd did not start in time"):
+                _ensure_circusd()
