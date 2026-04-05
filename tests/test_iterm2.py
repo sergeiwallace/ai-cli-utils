@@ -190,7 +190,9 @@ class TestAssignIterm2ColorSlot:
                     slot3 = _assign_iterm2_color_slot("sw-3", "c")
         assert len({slot1, slot2, slot3}) == 3
 
-    def test_when_all_slots_occupied_wraps_to_first(self, tmp_path):
+    def test_when_all_slots_occupied_uses_hash_based_fallback(self, tmp_path):
+        # When all palette slots are occupied, fallback is MD5(ai_name) % len(palette)
+        # md5("sw-3") % 2 == 1, so slot 1 = blue (#1e88e5)
         cfg = make_iterm2_config(palette={"red": "#e74c3c", "blue": "#1e88e5"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
@@ -198,7 +200,7 @@ class TestAssignIterm2ColorSlot:
                     _assign_iterm2_color_slot("sw-1", "c")
                     _assign_iterm2_color_slot("sw-2", "c")
                     slot3 = _assign_iterm2_color_slot("sw-3", "c")
-        assert slot3 == "e74c3c"
+        assert slot3 == "1e88e5"
 
     def test_stale_lease_pruned_on_assignment(self, tmp_path):
         cfg = make_iterm2_config()

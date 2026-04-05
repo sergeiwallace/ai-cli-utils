@@ -145,6 +145,10 @@ It's only useful when there are regular external PRs. Not a v1.0.0 blocker.
 - Web dashboard — not part of this package's scope
 - Major new features not currently in roadmap
 
+## Post-v1.0.0 Candidates
+
+- `[AI-CLI-33]` **Configurable AI provider support** — extend to OpenAI, GitHub Copilot, etc. Provider config block drives icon, tab color, session naming, and launch command. Adding a new provider requires only config, not code changes. Deferred post-1.0 because it requires a clean abstraction layer — worth doing right rather than bolting on.
+
 ---
 
 ## Open Questions

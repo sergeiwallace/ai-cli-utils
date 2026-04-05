@@ -4072,3 +4072,111 @@ def test_wait_for_dream_completion_when_recent_write_and_timeout_then_proceeds(t
 
     mock_sub.unsubscribe.assert_awaited()
     mock_client.close.assert_awaited()
+
+
+def test_wait_for_dream_completion_when_stat_raises_then_continues(tmp_path):
+    """Line 1293: stat() raises in rglob loop — recent_write stays False, returns early."""
+    pid_file = tmp_path / "memory-watch.pid"
+    pid_file.write_text("12345")
+
+    mock_client = MagicMock()
+    mock_client.nc = MagicMock()
+
+    async def fake_connect():
+        pass
+
+    mock_client.connect = fake_connect
+    mock_client.close = AsyncMock()
+
+    # Create a MEMORY.md so rglob finds it, then make stat() raise
+    cc_projects = tmp_path / ".claude" / "projects"
+    cc_projects.mkdir(parents=True)
+    mem = cc_projects / "myproj" / "MEMORY.md"
+    mem.parent.mkdir()
+    mem.write_text("content")
+
+    # Only break stat on MEMORY.md files, not on directories (needed for .exists())
+    _real_stat = Path.stat.__wrapped__ if hasattr(Path.stat, "__wrapped__") else None
+
+    def broken_stat(self):
+        if self.name == "MEMORY.md":
+            raise PermissionError("no access")
+        return type(self).stat.__wrapped__(self) if _real_stat else Path.stat(self)
+
+    # Use a simpler approach: patch at module level within the async function
+    import os as _os
+
+    original_os_stat = _os.stat
+
+    def broken_os_stat(path, *args, **kwargs):
+        if str(path).endswith("MEMORY.md"):
+            raise PermissionError("no access")
+        return original_os_stat(path, *args, **kwargs)
+
+    with (
+        patch("ai_cli.sync._pid_file_path", return_value=pid_file),
+        patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("os.stat", broken_os_stat),
+    ):
+        _wait_for_dream_completion(verbose=False)
+
+    # recent_write stays False → closes and returns
+    mock_client.close.assert_awaited_once()
+
+
+def test_wait_for_dream_completion_when_on_completed_fires_then_event_set(tmp_path):
+    """Line 1305-1306: on_completed callback fires via subscribe, sets completed event."""
+    pid_file = tmp_path / "memory-watch.pid"
+    pid_file.write_text("12345")
+
+    mock_sub = AsyncMock()
+
+    # Capture the subscribe callback and invoke it immediately
+    captured_cb = None
+
+    async def fake_subscribe(subject, cb):
+        nonlocal captured_cb
+        captured_cb = cb
+        # Immediately invoke the callback to simulate a NATS message arriving
+        msg = MagicMock()
+        msg.data = b"{}"
+        await cb(msg)
+        return mock_sub
+
+    mock_nc = MagicMock()
+    mock_nc.subscribe = fake_subscribe
+
+    mock_client = MagicMock()
+    mock_client.nc = mock_nc
+
+    async def fake_connect():
+        pass
+
+    mock_client.connect = fake_connect
+    mock_client.close = AsyncMock()
+
+    # MEMORY.md with current mtime (recent write)
+    cc_projects = tmp_path / ".claude" / "projects"
+    cc_projects.mkdir(parents=True)
+    recent_mem = cc_projects / "myproj" / "MEMORY.md"
+    recent_mem.parent.mkdir()
+    recent_mem.write_text("fresh")
+
+    with (
+        patch("ai_cli.sync._pid_file_path", return_value=pid_file),
+        patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+        patch("pathlib.Path.home", return_value=tmp_path),
+    ):
+        _wait_for_dream_completion(verbose=True)
+
+    mock_sub.unsubscribe.assert_awaited()
+    mock_client.close.assert_awaited()
+
+
+def test_wait_for_dream_completion_when_asyncio_run_raises_then_nonfatal():
+    """Line 1324: outermost except catches asyncio.run failure."""
+    with patch("ai_cli.sync._pid_file_path", return_value=Path("/tmp/fake.pid")):
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("asyncio.run", side_effect=RuntimeError("event loop broken")):
+                _wait_for_dream_completion(verbose=False)  # must not raise
