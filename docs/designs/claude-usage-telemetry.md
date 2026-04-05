@@ -513,6 +513,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - **tmux**: status bar integration for at-a-glance burn rate
 - **sergei CLI / humanware MCP**: future integration for quota state in priority guidance (so session startup can show "67% of weekly quota used, 3 days remaining")
 - **aido** (`AIDO-1`): aido-spawned CC sessions should be captured by the shared statusLine hook; validate in test harness
+- **hw-scheduling workers** (`SW-746`): workers read `quota.claude.weekly` from NATS KV (written by this telemetry system) before executing AI-tagged jobs. Currently enforced worker-side (Decision 5 in scheduling design doc). **Future consideration:** if quota enforcement logic grows substantially in complexity (multi-model arbitrage, cross-worker priority queuing, cost forecasting), extract a dedicated quota gateway process that sits between JetStream and the workers. At that point, the telemetry system's NATS KV writes become the input to the gateway rather than being read directly by workers. See `docs/designs/scheduling-system.md` D5 for the full analysis of when this extraction is warranted.
 
 ## Implementation Phases
 
