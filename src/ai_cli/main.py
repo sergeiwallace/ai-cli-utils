@@ -1168,6 +1168,11 @@ def get_engine_script(
       watcher_pid=$!
     }}
 
+    # Auto-clean orphaned processes at session start (score >= 80, local only).
+    # Runs in foreground so orphans are gone before CC launches. Suppressed
+    # when process_hygiene.auto_clean is false in config.toml.
+    ai ps cron 2>/dev/null || true
+
     # Auto-start sync watch and memory watch (PID files prevent duplicates)
     ai sync watch &>/dev/null &
     ai memory watch &>/dev/null &
@@ -2579,6 +2584,12 @@ def cli():
         else:
             print(f"Unknown cdp action: {cdp_action}. Use start, stop, or status.", file=sys.stderr)
             sys.exit(1)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "ps":
+        from .process_hygiene import cmd_ps
+
+        _ps_exit = cmd_ps(sys.argv[2:], config)
+        sys.exit(_ps_exit)
 
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         if len(sys.argv) == 2:

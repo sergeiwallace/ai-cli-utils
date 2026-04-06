@@ -242,6 +242,11 @@ class TestGetEngineScript:
         defaults.update(kwargs)
         return get_engine_script(**defaults)
 
+    def test_ps_cron_runs_at_session_start(self):
+        """Auto-hygiene must run at session start via 'ai ps cron'."""
+        script = self._make_script()
+        assert "ai ps cron" in script
+
     def test_stale_signal_files_cleaned_on_session_start(self):
         """Stale signal_file/config_changed_file from a previous killed session
         must be removed at startup — otherwise the watcher immediately injects
