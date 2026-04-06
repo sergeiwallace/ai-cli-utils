@@ -152,10 +152,13 @@ def test_run_copier_update_project_filter_found(tmp_path, capsys):
                 result = run_copier_update(projects_dir=tmp_path, project_filter="alpha")
 
     assert result == 0
-    # copier should be called exactly once, for alpha
+    # copier should be called exactly once, for alpha, with --vcs-ref HEAD
     copier_calls = [c for c in mock_run.call_args_list if "copier" in str(c)]
     assert len(copier_calls) == 1
+    call_args = copier_calls[0][0][0]  # positional args list
     assert str(tmp_path / "alpha") in str(copier_calls[0])
+    assert "--vcs-ref" in call_args
+    assert "HEAD" in call_args
 
 
 def test_run_copier_update_project_filter_not_found(tmp_path, capsys):
@@ -181,13 +184,38 @@ def test_run_copier_update_success(tmp_path, capsys):
     mock_result.stderr = ""
 
     with patch("shutil.which", return_value="/usr/bin/copier"):
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 result = run_copier_update(projects_dir=tmp_path)
 
     assert result == 0
     out = capsys.readouterr().out
     assert "✓" in out
+    # Verify --vcs-ref HEAD is passed so untagged template commits are picked up
+    cmd = mock_run.call_args[0][0]
+    assert "--vcs-ref" in cmd
+    assert "HEAD" in cmd
+
+
+def test_run_copier_update_uses_vcs_ref_head(tmp_path):
+    """copier is invoked with --vcs-ref HEAD, not latest tag."""
+    d = tmp_path / "myproj"
+    d.mkdir()
+    _make_answers(d)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stderr = ""
+
+    with patch("shutil.which", return_value="/usr/bin/copier"):
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+                run_copier_update(projects_dir=tmp_path)
+
+    cmd = mock_run.call_args[0][0]
+    assert "--vcs-ref" in cmd
+    idx = cmd.index("--vcs-ref")
+    assert cmd[idx + 1] == "HEAD"
 
 
 def test_run_copier_update_copier_failure(tmp_path, capsys):

@@ -91,7 +91,10 @@ def run_copier_update(
     for project_dir in projects:
         print(f"  {project_dir.name}... ", end="", flush=True)
         result = subprocess.run(
-            [copier_bin, "update", "--defaults", "--trust"],
+            # --vcs-ref HEAD: use latest commit, not latest tag. Without this,
+            # copier compares _commit in .copier-answers.yml against the latest
+            # git tag and sees nothing to update if template has untagged commits.
+            [copier_bin, "update", "--defaults", "--trust", "--vcs-ref", "HEAD"],
             cwd=project_dir,
             capture_output=True,
             text=True,

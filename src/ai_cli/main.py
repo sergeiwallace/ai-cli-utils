@@ -2449,10 +2449,6 @@ def cli():
         sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] == "copier-update":
-        host = os.environ.get("AI_CLI_HOST", config.get("machine", {}).get("host", ""))
-        if host and host != "mac":
-            print("copier-update: runs on Mac only", file=sys.stderr)
-            sys.exit(1)
         from .copier_update import run_copier_update
 
         dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
