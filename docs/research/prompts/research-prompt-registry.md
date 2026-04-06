@@ -83,6 +83,7 @@ NEVER generate binary images.
 - [Completed](#completed)
   - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672)
   - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
+  - [R-50: Terminal tab/pane title, color, and icon customization for AI fleet management (AI-CLI)](#r-50-terminal-tabpane-title-color-and-icon-customization-for-ai-fleet-management--ai-cli) ✅
 - [Deprecated / Archived](#deprecated--archived)
 
 ## Status Overview
@@ -103,6 +104,7 @@ NEVER generate binary images.
 |---|------|-------|------|-------|-------------|
 | R-1 | opus | Open-source Python CLI package best practices | SW-672 | `opus researcher` | [`open-source-package-best-practices.md`](../open-source-package-best-practices.md) |
 | R-2 | opus | GitHub repo automation & ecosystem tooling | AI-CLI-3 | `opus researcher` | [`github-repo-automation.md`](../github-repo-automation.md) |
+| R-50 | deep-think | Terminal tab/pane title, color, and icon customization for AI fleet management | AI-CLI | `deep-think` | [`iterm2-terminal-customization-research.md`](../iterm2-terminal-customization-research.md) |
 
 ---
 
@@ -134,6 +136,17 @@ CLI projects to emulate (1K-50K stars range).
 ```
 
 </details>
+
+---
+
+### R-50: Terminal Tab/Pane Title, Color, and Icon Customization for AI Fleet Management — AI-CLI
+
+**Status:** ✅ Complete — 2026-04-02
+**Model:** `deep-think` (gemini-2.5-pro with HIGH thinking)
+**Task:** AI-CLI (iTerm2 tab title/color redesign)
+**Results:** [`docs/research/iterm2-terminal-customization-research.md`](../iterm2-terminal-customization-research.md)
+
+Key findings informed the iTerm2 Tab Title and Color System design (now implemented). Research covered OSC sequences for tab title/color control, iTerm2 DCS passthrough for tmux, pre-launch vs in-session layer architecture, mosh/remote session constraints, and profile-based color assignment.
 
 ---
 
