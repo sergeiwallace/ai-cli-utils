@@ -253,6 +253,18 @@ Manages signal-watch processes via Circus process manager (`circusd`). Signal-wa
 
 Circus uses IPC (not TCP) at `~/.local/state/ai-cli/circus.endpoint`. Config written to `~/.local/state/ai-cli/circus.ini`. Launched automatically by the bash session template at session start; stopped at EXIT.
 
+### ai vpn-watch
+
+```
+ai vpn-watch
+```
+
+Internal entry point for the Circus-managed VPN state watcher. **Not intended for direct human invocation** — started and stopped automatically by `ai c -R` sessions.
+
+Polls `_is_vpn_active()` every `remote.vpn_poll_interval` seconds (default: 3). On state change, waits 2 seconds (debounce) and re-checks. If the change is confirmed, publishes `{"vpn": bool, "ts": ...}` to NATS subject `vpn.state.changed`. All active `ai c -R` transport loops subscribe to this subject and switch between mosh and SSH accordingly.
+
+Logs VPN transitions to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL).
+
 ### ai cdp
 
 ```
