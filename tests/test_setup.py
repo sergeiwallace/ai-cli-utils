@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import call, patch
 
-from ai_cli.setup import _is_humanware_platform, _repo_root_from, run_setup
+from ai_cli.setup import _is_managed_platform, _repo_root_from, run_setup
 
 
 # ---------------------------------------------------------------------------
@@ -23,42 +23,42 @@ def _make_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _make_home_with_humanware(tmp_path: Path) -> Path:
-    """Create a home directory that looks like a humanware platform install."""
+def _make_home_with_managed_platform(tmp_path: Path) -> Path:
+    """Create a home directory that looks like a managed platform install."""
     home = tmp_path / "home"
     (home / "projects").mkdir(parents=True)
-    (home / "projects" / "CLAUDE.md").write_text("# global humanware config")
+    (home / "projects" / "CLAUDE.md").write_text("# global managed platform config")
     return home
 
 
-def _make_home_without_humanware(tmp_path: Path) -> Path:
+def _make_home_without_managed_platform(tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir(parents=True)
     return home
 
 
 # ---------------------------------------------------------------------------
-# _is_humanware_platform
+# _is_managed_platform
 # ---------------------------------------------------------------------------
 
 
 class TestIsHumanwarePlatform:
     def test_when_projects_claude_md_exists_then_returns_true(self, tmp_path):
-        home = _make_home_with_humanware(tmp_path)
+        home = _make_home_with_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
-            assert _is_humanware_platform() is True
+            assert _is_managed_platform() is True
 
     def test_when_projects_claude_md_missing_then_returns_false(self, tmp_path):
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
-            assert _is_humanware_platform() is False
+            assert _is_managed_platform() is False
 
     def test_when_projects_dir_missing_entirely_then_returns_false(self, tmp_path):
         # ~/projects/ doesn't exist at all
         home = tmp_path / "home"
         home.mkdir()
         with patch("ai_cli.setup.Path.home", return_value=home):
-            assert _is_humanware_platform() is False
+            assert _is_managed_platform() is False
 
 
 # ---------------------------------------------------------------------------
@@ -89,29 +89,29 @@ class TestRepoRootFrom:
 
 
 # ---------------------------------------------------------------------------
-# run_setup — humanware platform path
+# run_setup — managed platform path
 # ---------------------------------------------------------------------------
 
 
 class TestRunSetupHumanwarePlatform:
     def test_returns_zero(self, tmp_path):
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_with_humanware(tmp_path)
+        home = _make_home_with_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             assert run_setup(cwd=repo) == 0
 
     def test_prints_platform_detected_and_lean_config_confirmation(self, tmp_path, capsys):
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_with_humanware(tmp_path)
+        home = _make_home_with_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             run_setup(cwd=repo)
         out = capsys.readouterr().out
-        assert "humanware platform detected" in out
+        assert "managed platform detected" in out
         assert "lean CLAUDE.md" in out
 
     def test_claude_md_content_is_not_modified(self, tmp_path):
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_with_humanware(tmp_path)
+        home = _make_home_with_managed_platform(tmp_path)
         original = (repo / "CLAUDE.md").read_text()
         with patch("ai_cli.setup.Path.home", return_value=home):
             run_setup(cwd=repo)
@@ -119,16 +119,16 @@ class TestRunSetupHumanwarePlatform:
 
     def test_claude_full_md_is_not_modified(self, tmp_path):
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_with_humanware(tmp_path)
+        home = _make_home_with_managed_platform(tmp_path)
         original_full = (repo / "CLAUDE-full.md").read_text()
         with patch("ai_cli.setup.Path.home", return_value=home):
             run_setup(cwd=repo)
         assert (repo / "CLAUDE-full.md").read_text() == original_full
 
     def test_git_assume_unchanged_is_not_called(self, tmp_path):
-        """On humanware platform, git index must not be touched."""
+        """On managed platform, git index must not be touched."""
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_with_humanware(tmp_path)
+        home = _make_home_with_managed_platform(tmp_path)
         with (
             patch("ai_cli.setup.Path.home", return_value=home),
             patch("ai_cli.setup.subprocess.run", wraps=subprocess.run) as mock_run,
@@ -139,20 +139,20 @@ class TestRunSetupHumanwarePlatform:
 
 
 # ---------------------------------------------------------------------------
-# run_setup — external (no humanware) path
+# run_setup — external (no managed platform) path
 # ---------------------------------------------------------------------------
 
 
 class TestRunSetupExternal:
     def test_returns_zero(self, tmp_path):
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             assert run_setup(cwd=repo) == 0
 
     def test_claude_md_content_replaced_with_full_config(self, tmp_path):
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             run_setup(cwd=repo)
         assert (repo / "CLAUDE.md").read_text() == "# full standalone config"
@@ -160,7 +160,7 @@ class TestRunSetupExternal:
     def test_claude_full_md_is_preserved_after_swap(self, tmp_path):
         """CLAUDE-full.md must still exist and be unmodified after setup."""
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             run_setup(cwd=repo)
         assert (repo / "CLAUDE-full.md").exists()
@@ -168,18 +168,18 @@ class TestRunSetupExternal:
 
     def test_prints_no_platform_detected_and_switched_message(self, tmp_path, capsys):
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             run_setup(cwd=repo)
         out = capsys.readouterr().out
-        assert "No humanware platform detected" in out
+        assert "No managed platform detected" in out
         assert "standalone config" in out
         assert "assume-unchanged" in out
 
     def test_git_assume_unchanged_called_on_claude_md(self, tmp_path):
         """After swap, git must be told to ignore local changes to CLAUDE.md."""
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with (
             patch("ai_cli.setup.Path.home", return_value=home),
             patch("ai_cli.setup.subprocess.run", wraps=subprocess.run) as mock_run,
@@ -200,7 +200,7 @@ class TestRunSetupExternal:
     def test_idempotent_when_run_twice(self, tmp_path):
         """Running setup twice should leave CLAUDE.md with the full config and return 0 both times."""
         repo = _make_repo(tmp_path / "repo")
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             result1 = run_setup(cwd=repo)
             result2 = run_setup(cwd=repo)
@@ -213,7 +213,7 @@ class TestRunSetupExternal:
         repo = _make_repo(tmp_path / "repo")
         subdir = repo / "src" / "deep"
         subdir.mkdir(parents=True)
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             result = run_setup(cwd=subdir)
         assert result == 0
@@ -227,7 +227,7 @@ class TestRunSetupExternal:
 
 class TestRunSetupErrors:
     def test_when_not_in_git_repo_returns_error_and_prints_message(self, tmp_path, capsys):
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             result = run_setup(cwd=tmp_path)
         assert result == 1
@@ -236,7 +236,7 @@ class TestRunSetupErrors:
     def test_when_claude_full_md_missing_returns_error(self, tmp_path, capsys):
         repo = _make_repo(tmp_path / "repo")
         (repo / "CLAUDE-full.md").unlink()
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             result = run_setup(cwd=repo)
         assert result == 1
@@ -248,7 +248,7 @@ class TestRunSetupErrors:
         repo = _make_repo(tmp_path / "repo")
         (repo / "CLAUDE-full.md").unlink()
         original = (repo / "CLAUDE.md").read_text()
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             run_setup(cwd=repo)
         assert (repo / "CLAUDE.md").read_text() == original
@@ -256,7 +256,7 @@ class TestRunSetupErrors:
     def test_when_claude_md_missing_returns_error(self, tmp_path, capsys):
         repo = _make_repo(tmp_path / "repo")
         (repo / "CLAUDE.md").unlink()
-        home = _make_home_without_humanware(tmp_path)
+        home = _make_home_without_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
             result = run_setup(cwd=repo)
         assert result == 1

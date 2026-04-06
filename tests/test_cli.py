@@ -375,12 +375,13 @@ class TestCliDispatch:
         with patch("sys.argv", ["ai", "reconnect"]):
             with patch("ai_cli.main.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe_result):
-                    with patch("ai_cli.main.get_project_aliases", return_value={"sw": "sergei"}):
+                    with patch("ai_cli.main.get_project_aliases", return_value={"mp": "myproject"}):
                         with pytest.raises(SystemExit) as exc:
+                            probe_result.stdout = "c-r-mp-1\n"  # prefix mp matches alias key mp
                             cli()
                         assert exc.value.code == 0
         output = capsys.readouterr().out
-        assert "-p sw" in output
+        assert "-p mp" in output
 
     def test_cli_when_handoff_check_project_then_calls_function(self, capsys):
         with (
@@ -1056,7 +1057,7 @@ class TestCliInternalMissingArgs:
 
 class TestCliRegistryValidation:
     def test_cli_when_registry_incomplete_noninteractive_then_exits(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -1665,7 +1666,7 @@ class TestSignalWatchCliDispatch:
 
 # --- Tunnel tests ---
 
-_TUNNEL_CONFIG = {"remote": {"host": "178.104.70.139", "user": "sergei"}}
+_TUNNEL_CONFIG = {"remote": {"host": "192.0.2.1", "user": "user"}}
 
 
 class TestTunnel:
@@ -1878,7 +1879,7 @@ class TestLocalProjectChdir:
         mock_chdir.assert_not_called()
 
     def test_when_local_project_flag_then_prefix_derived_from_target_project(self, tmp_path):
-        project_dir = tmp_path / "projects" / "humanware-mobile"
+        project_dir = tmp_path / "projects" / "myapp-mobile"
         project_dir.mkdir(parents=True)
         captured = {}
 
@@ -1887,14 +1888,14 @@ class TestLocalProjectChdir:
             return ("c-hm-1", "hm-1")
 
         with (
-            patch("sys.argv", ["ai", "c", "1", "-p", "humanware-mobile"]),
+            patch("sys.argv", ["ai", "c", "1", "-p", "myapp-mobile"]),
             patch("ai_cli.main.load_config", return_value={}),
             patch("ai_cli.main.get_project_aliases", return_value={}),
             patch("ai_cli.main._find_project_dir", return_value=project_dir),
             patch("ai_cli.main._get_project_prefix_by_name", return_value="hm"),
             patch("ai_cli.main.validate_registry_completeness", return_value=True),
             patch("ai_cli.main.cleanup_stale_sessions"),
-            patch("ai_cli.main.get_current_project_name", return_value="sergei"),
+            patch("ai_cli.main.get_current_project_name", return_value="myproject"),
             patch("ai_cli.main.get_project_prefix", return_value="sw"),
             patch("ai_cli.main.build_session_name", side_effect=capture_build),
             patch("ai_cli.main.get_session_map", return_value={}),

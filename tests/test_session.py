@@ -417,13 +417,13 @@ class TestGetLatestGeminiSessionId:
 
 class TestGetLatestGeminiEdgeCases:
     def test_latest_gemini_id_when_main_project_set_then_checks_both_paths(self, tmp_path):
-        main_logs = tmp_path / ".gemini" / "tmp" / "sergei" / "logs.json"
+        main_logs = tmp_path / ".gemini" / "tmp" / "myproject" / "logs.json"
         main_logs.parent.mkdir(parents=True)
         main_logs.write_text('{"sessionId": "main-id-123"}\n')
 
         with patch("pathlib.Path.cwd", return_value=tmp_path / "otherproject"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value="sergei"):
+                with patch("ai_cli.main._get_main_project_name", return_value="myproject"):
                     result = get_latest_gemini_session_id()
         assert result == "main-id-123"
 

@@ -257,7 +257,7 @@ class TestStreamConfig:
             "memory",
             "quota",
             "telemetry",
-            "aido",
+            "handoff-archive",
             "task",
             "health",
             "handoff",

@@ -1,10 +1,10 @@
 """
 ai setup — configure Claude Code session config based on detected environment.
 
-Detects whether the humanware platform (~/projects/CLAUDE.md) is present and
+Detects whether a managed AI platform (~/projects/CLAUDE.md) is present and
 switches CLAUDE.md to the appropriate variant:
-  - humanware platform detected: lean CLAUDE.md is already correct, no action needed
-  - no humanware platform: copy CLAUDE-full.md → CLAUDE.md and mark assume-unchanged in git
+  - managed platform detected: lean CLAUDE.md is already correct, no action needed
+  - no managed platform: copy CLAUDE-full.md → CLAUDE.md and mark assume-unchanged in git
 """
 
 import shutil
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 
-def _is_humanware_platform() -> bool:
+def _is_managed_platform() -> bool:
     return (Path.home() / "projects" / "CLAUDE.md").exists()
 
 
@@ -42,12 +42,12 @@ def run_setup(cwd: Path | None = None) -> int:
     claude_md = repo_root / "CLAUDE.md"
     claude_full_md = repo_root / "CLAUDE-full.md"
 
-    if _is_humanware_platform():
-        print("humanware platform detected (~/projects/CLAUDE.md found)")
+    if _is_managed_platform():
+        print("managed platform detected (~/projects/CLAUDE.md found)")
         print("✓ Using lean CLAUDE.md — ~/projects/CLAUDE.md provides shared AI orchestration rules")
         return 0
 
-    # Not on humanware platform — switch to self-contained config
+    # Not on managed platform — switch to self-contained config
     if not claude_full_md.exists():
         print(f"Error: CLAUDE-full.md not found in {repo_root}", file=sys.stderr)
         print("  Re-clone the repository or restore CLAUDE-full.md from git history", file=sys.stderr)
@@ -66,7 +66,7 @@ def run_setup(cwd: Path | None = None) -> int:
         capture_output=True,
     )
 
-    print("No humanware platform detected (~/projects/CLAUDE.md not found)")
+    print("No managed platform detected (~/projects/CLAUDE.md not found)")
     print("✓ Switched to standalone config: CLAUDE-full.md → CLAUDE.md")
     print("  Git will ignore local changes to CLAUDE.md (assume-unchanged)")
     return 0

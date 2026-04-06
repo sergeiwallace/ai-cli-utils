@@ -448,7 +448,7 @@ def find_recent_session(prefix: str) -> str:
     return sessions[0][0]
 
 
-# Matches ai-cli session names: c-sw-1, c-r-sw-1, g-aido-2, etc.
+# Matches ai-cli session names: c-session-1, c-r-session-1, g-project-2, etc.
 _AI_SESSION_RE = re.compile(r"^[cg](-r)?-[a-zA-Z0-9]+-\d+$")
 
 
@@ -569,9 +569,9 @@ def build_session_name(
     """Build tmux session name and ai_name.
 
     Session name format: {c|g}[-r]-{project}-{index}
-      e.g. c-sw-1, c-r-sw-1, g-aido-2
+      e.g. c-myproject-1, c-r-myproject-1, g-myproject-2
     ai_name (used for --name, worktrees, session map): {project}-{index}
-      e.g. sw-1, aido-2
+      e.g. myproject-1, myproject-2
     """
     engine_short = "c" if engine_type == "c" else "g"
     remote_seg = "-r" if is_remote else ""
@@ -725,8 +725,8 @@ emerald     = "#059669"
 [iterm2.project_colors]
 ## Pin specific projects or session names to a fixed palette color slot.
 ## If the preferred slot is occupied, falls back to lowest free slot.
-# sergei    = "purple"
-# artelier  = "teal"
+# myproject = "purple"
+# myapp     = "teal"
 # ai-cli-1  = "blue"
 
 [iterm2.base_profiles]
@@ -2792,7 +2792,7 @@ def cli():
             return f"{delta // 86400}d"
 
         def _project_from_session(name: str) -> str:
-            """Extract project prefix from session name: c-sw-1 → sw, c-r-sw-1 → sw."""
+            """Extract project prefix from session name: c-myproject-1 → myproject, c-r-myproject-1 → myproject."""
             parts = name.split("-")
             # Format: {c|g}[-r]-{project}-{index}
             if len(parts) >= 3 and parts[0] in ("c", "g"):

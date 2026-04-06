@@ -47,8 +47,8 @@ from ai_cli.sync import (
 )
 
 # Fixed prefix strings for tests — mirror what get_local_prefix() would return on each platform
-_MAC_PREFIX = "-Users-sergeiwallace-projects-"
-_SERVER_PREFIX = "-home-sergei-projects-"
+_MAC_PREFIX = "-Users-user-projects-"
+_SERVER_PREFIX = "-home-user-projects-"
 
 
 # ---------------------------------------------------------------------------
@@ -57,29 +57,29 @@ _SERVER_PREFIX = "-home-sergei-projects-"
 
 
 def test_normalize_project_path_when_mac_prefix_then_returns_bare_name():
-    assert normalize_project_path("-Users-sergeiwallace-projects-sergei", _MAC_PREFIX) == "sergei"
+    assert normalize_project_path("-Users-user-projects-myproject", _MAC_PREFIX) == "myproject"
 
 
 def test_normalize_project_path_when_worktree_suffix_then_preserves_it():
-    result = normalize_project_path("-Users-sergeiwallace-projects-sergei--worktrees-sw-1", _MAC_PREFIX)
-    assert result == "sergei--worktrees-sw-1"
+    result = normalize_project_path("-Users-user-projects-myproject--worktrees-sw-1", _MAC_PREFIX)
+    assert result == "myproject--worktrees-sw-1"
 
 
 def test_normalize_project_path_when_server_prefix_then_returns_bare_name():
-    assert normalize_project_path("-home-sergei-projects-sergei", _SERVER_PREFIX) == "sergei"
+    assert normalize_project_path("-home-user-projects-myproject", _SERVER_PREFIX) == "myproject"
 
 
 def test_normalize_project_path_when_no_match_then_returns_none():
-    assert normalize_project_path("-home-sergei-projects-sergei", _MAC_PREFIX) is None
+    assert normalize_project_path("-home-user-projects-myproject", _MAC_PREFIX) is None
 
 
 def test_normalize_project_path_when_different_project_then_correct():
-    assert normalize_project_path("-Users-sergeiwallace-projects-aurion", _MAC_PREFIX) == "aurion"
+    assert normalize_project_path("-Users-user-projects-aurion", _MAC_PREFIX) == "aurion"
 
 
 def test_normalize_project_path_when_server_worktree_then_preserves_suffix():
-    result = normalize_project_path("-home-sergei-projects-sergei--worktrees-sw-2", _SERVER_PREFIX)
-    assert result == "sergei--worktrees-sw-2"
+    result = normalize_project_path("-home-user-projects-myproject--worktrees-sw-2", _SERVER_PREFIX)
+    assert result == "myproject--worktrees-sw-2"
 
 
 # ---------------------------------------------------------------------------
@@ -88,21 +88,21 @@ def test_normalize_project_path_when_server_worktree_then_preserves_suffix():
 
 
 def test_denormalize_project_name_when_bare_name_then_returns_mac_cc_dir():
-    assert denormalize_project_name("sergei", _MAC_PREFIX) == "-Users-sergeiwallace-projects-sergei"
+    assert denormalize_project_name("myproject", _MAC_PREFIX) == "-Users-user-projects-myproject"
 
 
 def test_denormalize_project_name_when_worktree_suffix_then_preserves_it():
-    result = denormalize_project_name("sergei--worktrees-sw-1", _MAC_PREFIX)
-    assert result == "-Users-sergeiwallace-projects-sergei--worktrees-sw-1"
+    result = denormalize_project_name("myproject--worktrees-sw-1", _MAC_PREFIX)
+    assert result == "-Users-user-projects-myproject--worktrees-sw-1"
 
 
 def test_denormalize_project_name_when_server_prefix_then_correct():
     result = denormalize_project_name("aurion", _SERVER_PREFIX)
-    assert result == "-home-sergei-projects-aurion"
+    assert result == "-home-user-projects-aurion"
 
 
 def test_denormalize_normalize_roundtrip():
-    cc_dir = "-Users-sergeiwallace-projects-sergei--worktrees-sw-3"
+    cc_dir = "-Users-user-projects-myproject--worktrees-sw-3"
     bare = normalize_project_path(cc_dir, _MAC_PREFIX)
     assert denormalize_project_name(bare, _MAC_PREFIX) == cc_dir
 
@@ -141,7 +141,7 @@ def test_is_memory_file_when_file_in_memory_dir_then_true():
 
 
 def test_is_memory_file_when_file_in_memory_dir_nested_then_true():
-    assert is_memory_file(Path("sergei/memory/project_current_work.md")) is True
+    assert is_memory_file(Path("myproject/memory/project_current_work.md")) is True
 
 
 def test_is_memory_file_when_jsonl_then_false():
@@ -230,10 +230,10 @@ def test_translate_history_jsonl_when_foreign_paths_then_replaces(tmp_path, monk
 
     history_path = tmp_path / ".claude" / "history.jsonl"
     history_path.parent.mkdir()
-    mac_home = "/Users/sergeiwallace"
+    mac_home = "/Users/user"
     history_path.write_text(
-        '{"project":"/Users/sergeiwallace/projects/sergei","sessionId":"abc"}\n'
-        '{"project":"/Users/sergeiwallace/projects/aurion","sessionId":"def"}\n'
+        '{"project":"/Users/user/projects/myproject","sessionId":"abc"}\n'
+        '{"project":"/Users/user/projects/aurion","sessionId":"def"}\n'
     )
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -254,7 +254,7 @@ def test_translate_history_jsonl_when_no_foreign_paths_then_noop(tmp_path):
     history_path = tmp_path / ".claude" / "history.jsonl"
     history_path.parent.mkdir()
     local_home = str(tmp_path)
-    history_path.write_text(f'{{"project":"{local_home}/projects/sergei","sessionId":"abc"}}\n')
+    history_path.write_text(f'{{"project":"{local_home}/projects/myproject","sessionId":"abc"}}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
         count = translate_history_jsonl()
@@ -280,13 +280,11 @@ def test_retranslate_project_jsonls_when_foreign_cwd_then_translates(tmp_path):
     from ai_cli.sync import retranslate_project_jsonls
 
     projects_dir = tmp_path / ".claude" / "projects"
-    proj_dir = projects_dir / "-home-sergei-projects-aido"
+    proj_dir = projects_dir / "-home-user-projects-mytools"
     proj_dir.mkdir(parents=True)
-    mac_home = "/Users/sergeiwallace"
+    mac_home = "/Users/user"
     conv = proj_dir / "abc123.jsonl"
-    conv.write_text(
-        '{"type":"summary","cwd":"/Users/sergeiwallace/projects/aido"}\n{"type":"user","content":"hello"}\n'
-    )
+    conv.write_text('{"type":"summary","cwd":"/Users/user/projects/mytools"}\n{"type":"user","content":"hello"}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
         count = retranslate_project_jsonls()
@@ -301,14 +299,12 @@ def test_retranslate_project_jsonls_when_foreign_project_field_then_translates(t
     from ai_cli.sync import retranslate_project_jsonls
 
     projects_dir = tmp_path / ".claude" / "projects"
-    proj_dir = projects_dir / "-home-sergei-projects-sergei"
+    proj_dir = projects_dir / "-home-user-projects-myproject"
     proj_dir.mkdir(parents=True)
-    mac_home = "/Users/sergeiwallace"
+    mac_home = "/Users/user"
     conv = proj_dir / "def456.jsonl"
     # File with no cwd field, only project field
-    conv.write_text(
-        '{"type":"session","project":"/Users/sergeiwallace/projects/sergei"}\n{"type":"user","content":"hi"}\n'
-    )
+    conv.write_text('{"type":"session","project":"/Users/user/projects/myproject"}\n{"type":"user","content":"hi"}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
         count = retranslate_project_jsonls()
@@ -323,11 +319,11 @@ def test_retranslate_project_jsonls_when_already_translated_then_noop(tmp_path):
     from ai_cli.sync import retranslate_project_jsonls
 
     projects_dir = tmp_path / ".claude" / "projects"
-    proj_dir = projects_dir / "-home-sergei-projects-aido"
+    proj_dir = projects_dir / "-home-user-projects-mytools"
     proj_dir.mkdir(parents=True)
     conv = proj_dir / "abc123.jsonl"
     local_home = str(tmp_path)
-    conv.write_text(f'{{"type":"summary","cwd":"{local_home}/projects/aido"}}\n')
+    conv.write_text(f'{{"type":"summary","cwd":"{local_home}/projects/mytools"}}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
         count = retranslate_project_jsonls()
@@ -389,7 +385,7 @@ _FOREIGN_HOME = "/home/foreign-user"  # Fake path — must not match actual home
 
 def test_detect_foreign_home_when_foreign_cwd_then_returns_home_prefix(tmp_path):
     f = tmp_path / "conv.jsonl"
-    f.write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/sergei/.worktrees/sw-1"}}\n')
+    f.write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1"}}\n')
     result = _detect_foreign_home(f)
     assert result == _FOREIGN_HOME
 
@@ -397,7 +393,7 @@ def test_detect_foreign_home_when_foreign_cwd_then_returns_home_prefix(tmp_path)
 def test_detect_foreign_home_when_local_cwd_then_returns_none(tmp_path):
     f = tmp_path / "conv.jsonl"
     local_home = str(Path.home())
-    f.write_text(f'{{"type":"user","cwd":"{local_home}/projects/sergei/.worktrees/sw-1"}}\n')
+    f.write_text(f'{{"type":"user","cwd":"{local_home}/projects/myproject/.worktrees/sw-1"}}\n')
     result = _detect_foreign_home(f)
     assert result is None
 
@@ -410,7 +406,7 @@ def test_detect_foreign_home_when_no_cwd_then_returns_none(tmp_path):
 
 
 def test_translate_cwd_paths_replaces_foreign_home():
-    content = f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/sergei"}}\n'.encode()
+    content = f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject"}}\n'.encode()
     result = translate_cwd_paths(content, _FOREIGN_HOME)
     local_home = str(Path.home()).encode()
     assert _FOREIGN_HOME.encode() not in result
@@ -422,8 +418,10 @@ def test_apply_pull_files_translates_cwd_on_new_file(tmp_path):
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
 
-    (staging_dir / "sergei").mkdir(parents=True)
-    (staging_dir / "sergei" / "abc123.jsonl").write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/sergei"}}\n')
+    (staging_dir / "myproject").mkdir(parents=True)
+    (staging_dir / "myproject" / "abc123.jsonl").write_text(
+        f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject"}}\n'
+    )
 
     with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
         result = apply_pull_files(
@@ -435,7 +433,7 @@ def test_apply_pull_files_translates_cwd_on_new_file(tmp_path):
             dry_run=False,
         )
 
-    dst = cc_projects_dir / "-Users-sergeiwallace-projects-sergei" / "abc123.jsonl"
+    dst = cc_projects_dir / "-Users-user-projects-myproject" / "abc123.jsonl"
     assert dst.exists()
     content = dst.read_text()
     assert _FOREIGN_HOME not in content
@@ -512,10 +510,10 @@ def test_detect_jsonl_divergence_when_both_missing_then_identical(tmp_path):
 
 def test_stage_project_files_when_mac_project_then_stages_to_bare_name(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
-    project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     memory_dir = project_dir / "memory"
     memory_dir.mkdir(parents=True)
-    (memory_dir / "user_profile.md").write_text("# Profile\nSergei Wallace")
+    (memory_dir / "user_profile.md").write_text("# Profile\nExample User")
     (project_dir / "abc123.jsonl").write_text('{"type":"human"}\n')
 
     staging_dir = tmp_path / "staging"
@@ -530,16 +528,16 @@ def test_stage_project_files_when_mac_project_then_stages_to_bare_name(tmp_path)
         dry_run=False,
     )
 
-    assert "sergei" in result["project_names"]
-    assert (staging_dir / "sergei" / "memory" / "user_profile.md").exists()
-    assert (staging_dir / "sergei" / "abc123.jsonl").exists()
+    assert "myproject" in result["project_names"]
+    assert (staging_dir / "myproject" / "memory" / "user_profile.md").exists()
+    assert (staging_dir / "myproject" / "abc123.jsonl").exists()
     assert result["memory_count"] == 1
     assert result["jsonl_count"] == 1
 
 
 def test_stage_project_files_when_memories_only_then_skips_jsonl(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
-    project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     memory_dir = project_dir / "memory"
     memory_dir.mkdir(parents=True)
     (memory_dir / "user_profile.md").write_text("# Profile")
@@ -557,15 +555,15 @@ def test_stage_project_files_when_memories_only_then_skips_jsonl(tmp_path):
         dry_run=False,
     )
 
-    assert (staging_dir / "sergei" / "memory" / "user_profile.md").exists()
-    assert not (staging_dir / "sergei" / "abc123.jsonl").exists()
+    assert (staging_dir / "myproject" / "memory" / "user_profile.md").exists()
+    assert not (staging_dir / "myproject" / "abc123.jsonl").exists()
     assert result["memory_count"] == 1
     assert result["jsonl_count"] == 0
 
 
 def test_stage_project_files_when_tool_results_then_skipped(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
-    project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     tool_results_dir = project_dir / "tool-results" / "uuid123"
     tool_results_dir.mkdir(parents=True)
     (tool_results_dir / "result.json").write_text("{}")
@@ -583,13 +581,13 @@ def test_stage_project_files_when_tool_results_then_skipped(tmp_path):
         dry_run=False,
     )
 
-    assert not (staging_dir / "sergei" / "tool-results").exists()
-    assert (staging_dir / "sergei" / "abc123.jsonl").exists()
+    assert not (staging_dir / "myproject" / "tool-results").exists()
+    assert (staging_dir / "myproject" / "abc123.jsonl").exists()
 
 
 def test_stage_project_files_when_dry_run_then_no_files_written(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
-    project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     memory_dir = project_dir / "memory"
     memory_dir.mkdir(parents=True)
     (memory_dir / "user_profile.md").write_text("# Profile")
@@ -607,13 +605,13 @@ def test_stage_project_files_when_dry_run_then_no_files_written(tmp_path):
     )
 
     assert len(result["staged_files"]) == 1
-    assert not (staging_dir / "sergei").exists()
+    assert not (staging_dir / "myproject").exists()
 
 
 def test_stage_project_files_when_non_matching_prefix_then_skipped(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
     # Server-prefixed dir should be ignored when running with _MAC_PREFIX
-    project_dir = cc_projects_dir / "-home-sergei-projects-sergei"
+    project_dir = cc_projects_dir / "-home-user-projects-myproject"
     project_dir.mkdir(parents=True)
     (project_dir / "abc.jsonl").write_text('{"type":"human"}\n')
 
@@ -635,8 +633,8 @@ def test_stage_project_files_when_non_matching_prefix_then_skipped(tmp_path):
 
 def test_stage_project_files_when_multiple_projects_then_all_staged(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
-    for proj in ["sergei", "aurion", "aido"]:
-        d = cc_projects_dir / f"-Users-sergeiwallace-projects-{proj}" / "memory"
+    for proj in ["myproject", "aurion", "mytools"]:
+        d = cc_projects_dir / f"-Users-user-projects-{proj}" / "memory"
         d.mkdir(parents=True)
         (d / "MEMORY.md").write_text(f"# {proj}")
 
@@ -652,7 +650,7 @@ def test_stage_project_files_when_multiple_projects_then_all_staged(tmp_path):
         dry_run=False,
     )
 
-    assert set(result["project_names"]) == {"sergei", "aurion", "aido"}
+    assert set(result["project_names"]) == {"myproject", "aurion", "mytools"}
 
 
 def test_stage_project_files_when_worktree_cc_dir_then_stages_with_bare_name(tmp_path):
@@ -662,9 +660,9 @@ def test_stage_project_files_when_worktree_cc_dir_then_stages_with_bare_name(tmp
     stays in the bare name so the staging dir has the full worktree identifier.
     """
     cc_projects_dir = tmp_path / "cc_projects"
-    wt_dir = cc_projects_dir / "-home-sergei-projects-ai-cli-utils--worktrees-ai-cli-1"
+    wt_dir = cc_projects_dir / "-home-user-projects-ai-cli-utils--worktrees-ai-cli-1"
     wt_dir.mkdir(parents=True)
-    (wt_dir / "abc123.jsonl").write_text('{"cwd":"/home/sergei/projects/ai-cli-utils/.worktrees/ai-cli-1"}\n')
+    (wt_dir / "abc123.jsonl").write_text('{"cwd":"/home/user/projects/ai-cli-utils/.worktrees/ai-cli-1"}\n')
 
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir()
@@ -687,12 +685,12 @@ def test_stage_project_files_when_worktree_cc_dir_multiple_machines_then_both_st
     """Both main project and worktree CC dirs from the same project get staged."""
     cc_projects_dir = tmp_path / "cc_projects"
     for name in [
-        "-home-sergei-projects-ai-cli-utils",
-        "-home-sergei-projects-ai-cli-utils--worktrees-ai-cli-1",
+        "-home-user-projects-ai-cli-utils",
+        "-home-user-projects-ai-cli-utils--worktrees-ai-cli-1",
     ]:
         d = cc_projects_dir / name
         d.mkdir(parents=True)
-        (d / "conv.jsonl").write_text('{"cwd":"/home/sergei/projects/ai-cli-utils"}\n')
+        (d / "conv.jsonl").write_text('{"cwd":"/home/user/projects/ai-cli-utils"}\n')
 
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir()
@@ -719,13 +717,13 @@ def test_apply_pull_files_when_worktree_staged_then_creates_correct_cc_dir(tmp_p
     """Applying a staged worktree CC dir creates the correct machine-local CC dir name.
 
     When Hetzner pushes 'ai-cli-utils--worktrees-ai-cli-1' and Mac pulls,
-    it should land in '-Users-sergeiwallace-projects-ai-cli-utils--worktrees-ai-cli-1'.
+    it should land in '-Users-user-projects-ai-cli-utils--worktrees-ai-cli-1'.
     """
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
     staged_wt = staging_dir / "ai-cli-utils--worktrees-ai-cli-1"
     staged_wt.mkdir(parents=True)
-    (staged_wt / "abc123.jsonl").write_text('{"cwd":"/home/sergei/projects/ai-cli-utils/.worktrees/ai-cli-1"}\n')
+    (staged_wt / "abc123.jsonl").write_text('{"cwd":"/home/user/projects/ai-cli-utils/.worktrees/ai-cli-1"}\n')
 
     with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
         result = apply_pull_files(
@@ -737,7 +735,7 @@ def test_apply_pull_files_when_worktree_staged_then_creates_correct_cc_dir(tmp_p
             dry_run=False,
         )
 
-    expected_dir = cc_projects_dir / "-Users-sergeiwallace-projects-ai-cli-utils--worktrees-ai-cli-1"
+    expected_dir = cc_projects_dir / "-Users-user-projects-ai-cli-utils--worktrees-ai-cli-1"
     assert expected_dir.is_dir()
     assert result["applied_count"] == 1
 
@@ -764,7 +762,7 @@ def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
             dry_run=False,
         )
 
-    dst = cc_projects_dir / "-Users-sergeiwallace-projects-myproject--worktrees-sw-1" / "conv.jsonl"
+    dst = cc_projects_dir / "-Users-user-projects-myproject--worktrees-sw-1" / "conv.jsonl"
     assert dst.exists()
     content = dst.read_text()
     assert _FOREIGN_HOME not in content
@@ -807,7 +805,7 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
             dry_run=False,
         )
 
-    mac_wt_dir = local_cc / "-Users-sergeiwallace-projects-foo--worktrees-sw-2"
+    mac_wt_dir = local_cc / "-Users-user-projects-foo--worktrees-sw-2"
     assert mac_wt_dir.is_dir()
     applied = (mac_wt_dir / "session.jsonl").read_text()
     assert _FOREIGN_HOME not in applied
@@ -824,8 +822,8 @@ def test_apply_pull_files_when_clean_memory_file_then_applied(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
     cc_projects_dir.mkdir()
 
-    (staging_dir / "sergei" / "memory").mkdir(parents=True)
-    (staging_dir / "sergei" / "memory" / "user_profile.md").write_text("# Profile\nSergei")
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    (staging_dir / "myproject" / "memory" / "user_profile.md").write_text("# Profile\nUser")
 
     result = apply_pull_files(
         staging_dir=staging_dir,
@@ -837,9 +835,9 @@ def test_apply_pull_files_when_clean_memory_file_then_applied(tmp_path):
     )
 
     assert result["conflicts"] == []
-    expected = cc_projects_dir / "-Users-sergeiwallace-projects-sergei" / "memory" / "user_profile.md"
+    expected = cc_projects_dir / "-Users-user-projects-myproject" / "memory" / "user_profile.md"
     assert expected.exists()
-    assert expected.read_text() == "# Profile\nSergei"
+    assert expected.read_text() == "# Profile\nUser"
 
 
 def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_path):
@@ -847,9 +845,9 @@ def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_p
     cc_projects_dir = tmp_path / "cc_projects"
     cc_projects_dir.mkdir()
 
-    (staging_dir / "sergei" / "memory").mkdir(parents=True)
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
     conflict_content = "<<<<<<< HEAD\nlocal content\n=======\nremote content\n>>>>>>> origin/main\n"
-    (staging_dir / "sergei" / "memory" / "project_current_work.md").write_text(conflict_content)
+    (staging_dir / "myproject" / "memory" / "project_current_work.md").write_text(conflict_content)
 
     result = apply_pull_files(
         staging_dir=staging_dir,
@@ -861,7 +859,7 @@ def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_p
     )
 
     assert len(result["conflicts"]) == 1
-    project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     conflict_path = project_dir / "memory" / "project_current_work.md.conflict"
     assert conflict_path.exists()
     # Original file should NOT be written when it has conflict markers
@@ -873,10 +871,10 @@ def test_apply_pull_files_when_jsonl_diverged_then_keep_both(tmp_path):
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
 
-    (staging_dir / "sergei").mkdir(parents=True)
-    (staging_dir / "sergei" / "abc123.jsonl").write_text('{"type":"human","text":"server msg"}\n')
+    (staging_dir / "myproject").mkdir(parents=True)
+    (staging_dir / "myproject" / "abc123.jsonl").write_text('{"type":"human","text":"server msg"}\n')
 
-    local_project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text('{"type":"human","text":"local msg"}\n')
 
@@ -901,10 +899,10 @@ def test_apply_pull_files_when_prefer_remote_and_diverged_then_overwrites(tmp_pa
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
 
-    (staging_dir / "sergei").mkdir(parents=True)
-    (staging_dir / "sergei" / "abc123.jsonl").write_text('{"type":"human","text":"remote msg"}\n')
+    (staging_dir / "myproject").mkdir(parents=True)
+    (staging_dir / "myproject" / "abc123.jsonl").write_text('{"type":"human","text":"remote msg"}\n')
 
-    local_project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text('{"type":"human","text":"local msg"}\n')
 
@@ -934,10 +932,10 @@ def test_apply_pull_files_when_jsonl_fast_forward_remote_then_applied(tmp_path):
     base = '{"type":"human","text":"hello"}\n'
     extended = base + '{"type":"assistant","text":"hi"}\n'
 
-    (staging_dir / "sergei").mkdir(parents=True)
-    (staging_dir / "sergei" / "abc123.jsonl").write_text(extended)
+    (staging_dir / "myproject").mkdir(parents=True)
+    (staging_dir / "myproject" / "abc123.jsonl").write_text(extended)
 
-    local_project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text(base)
 
@@ -961,10 +959,10 @@ def test_apply_pull_files_when_jsonl_fast_forward_local_then_no_change(tmp_path)
     base = '{"type":"human","text":"hello"}\n'
     extended = base + '{"type":"assistant","text":"hi"}\n'
 
-    (staging_dir / "sergei").mkdir(parents=True)
-    (staging_dir / "sergei" / "abc123.jsonl").write_text(base)
+    (staging_dir / "myproject").mkdir(parents=True)
+    (staging_dir / "myproject" / "abc123.jsonl").write_text(base)
 
-    local_project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text(extended)
 
@@ -987,10 +985,10 @@ def test_apply_pull_files_when_jsonl_identical_then_no_action(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
     content = '{"type":"human","text":"hello"}\n'
 
-    (staging_dir / "sergei").mkdir(parents=True)
-    (staging_dir / "sergei" / "abc123.jsonl").write_text(content)
+    (staging_dir / "myproject").mkdir(parents=True)
+    (staging_dir / "myproject" / "abc123.jsonl").write_text(content)
 
-    local_project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text(content)
 
@@ -1013,9 +1011,9 @@ def test_apply_pull_files_when_memories_only_then_skips_jsonl(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
     cc_projects_dir.mkdir()
 
-    (staging_dir / "sergei" / "memory").mkdir(parents=True)
-    (staging_dir / "sergei" / "memory" / "user_profile.md").write_text("# Profile")
-    (staging_dir / "sergei" / "abc123.jsonl").write_text('{"type":"human"}\n')
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    (staging_dir / "myproject" / "memory" / "user_profile.md").write_text("# Profile")
+    (staging_dir / "myproject" / "abc123.jsonl").write_text('{"type":"human"}\n')
 
     apply_pull_files(
         staging_dir=staging_dir,
@@ -1026,7 +1024,7 @@ def test_apply_pull_files_when_memories_only_then_skips_jsonl(tmp_path):
         dry_run=False,
     )
 
-    local_project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     assert (local_project_dir / "memory" / "user_profile.md").exists()
     assert not (local_project_dir / "abc123.jsonl").exists()
 
@@ -1036,8 +1034,8 @@ def test_apply_pull_files_when_dry_run_then_no_files_written(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
     cc_projects_dir.mkdir()
 
-    (staging_dir / "sergei" / "memory").mkdir(parents=True)
-    (staging_dir / "sergei" / "memory" / "user_profile.md").write_text("# Profile")
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    (staging_dir / "myproject" / "memory" / "user_profile.md").write_text("# Profile")
 
     apply_pull_files(
         staging_dir=staging_dir,
@@ -1048,7 +1046,7 @@ def test_apply_pull_files_when_dry_run_then_no_files_written(tmp_path):
         dry_run=True,
     )
 
-    local_project_dir = cc_projects_dir / "-Users-sergeiwallace-projects-sergei"
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     assert not local_project_dir.exists()
 
 
@@ -1102,7 +1100,7 @@ def test_pre_pull_push_memories_when_memory_changed_then_staged(tmp_path):
 
     # Local CC memory file
     cc_projects_dir = tmp_path / "cc_projects"
-    project_dir = cc_projects_dir / "-home-sergei-projects-sergei"
+    project_dir = cc_projects_dir / "-home-user-projects-myproject"
     (project_dir / "memory").mkdir(parents=True)
     (project_dir / "memory" / "project_current_work.md").write_text("---\ntype: project\n---\nserver edits\n")
 
@@ -1119,7 +1117,7 @@ def test_pre_pull_push_memories_when_memory_changed_then_staged(tmp_path):
     _pre_pull_push_memories(cfg, cc_projects_dir, verbose=False)
 
     # The memory file should have been staged into the staging repo (even if push failed)
-    staged = staging_dir / "sergei" / "memory" / "project_current_work.md"
+    staged = staging_dir / "myproject" / "memory" / "project_current_work.md"
     assert staged.exists(), "memory file should be staged before pull"
     assert "server edits" in staged.read_text()
 
@@ -1156,13 +1154,13 @@ def test_git_commit_staged_when_changes_then_creates_commit(tmp_path):
     staging_dir.mkdir()
     _init_git_repo(staging_dir)
 
-    (staging_dir / "sergei" / "memory").mkdir(parents=True)
-    (staging_dir / "sergei" / "memory" / "user_profile.md").write_text("# Profile")
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    (staging_dir / "myproject" / "memory" / "user_profile.md").write_text("# Profile")
 
     committed = git_commit_staged(
         staging_dir=staging_dir,
         source_machine="mac",
-        project_names=["sergei"],
+        project_names=["myproject"],
         memory_count=1,
         jsonl_count=0,
         total_count=1,
@@ -1196,13 +1194,13 @@ def test_git_commit_staged_when_already_committed_then_returns_false(tmp_path):
     staging_dir.mkdir()
     _init_git_repo(staging_dir)
 
-    (staging_dir / "sergei" / "memory").mkdir(parents=True)
-    (staging_dir / "sergei" / "memory" / "user_profile.md").write_text("# Profile")
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    (staging_dir / "myproject" / "memory" / "user_profile.md").write_text("# Profile")
 
     git_commit_staged(
         staging_dir=staging_dir,
         source_machine="mac",
-        project_names=["sergei"],
+        project_names=["myproject"],
         memory_count=1,
         jsonl_count=0,
         total_count=1,
@@ -1212,7 +1210,7 @@ def test_git_commit_staged_when_already_committed_then_returns_false(tmp_path):
     committed = git_commit_staged(
         staging_dir=staging_dir,
         source_machine="mac",
-        project_names=["sergei"],
+        project_names=["myproject"],
         memory_count=1,
         jsonl_count=0,
         total_count=1,
@@ -1226,15 +1224,15 @@ def test_git_commit_staged_commit_message_contains_metadata(tmp_path):
     staging_dir.mkdir()
     _init_git_repo(staging_dir)
 
-    (staging_dir / "sergei" / "memory").mkdir(parents=True)
-    (staging_dir / "sergei" / "memory" / "user_profile.md").write_text("# Profile")
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    (staging_dir / "myproject" / "memory" / "user_profile.md").write_text("# Profile")
     (staging_dir / "aurion" / "memory").mkdir(parents=True)
     (staging_dir / "aurion" / "memory" / "MEMORY.md").write_text("# Aurion")
 
     git_commit_staged(
         staging_dir=staging_dir,
         source_machine="server",
-        project_names=["sergei", "aurion"],
+        project_names=["myproject", "aurion"],
         memory_count=2,
         jsonl_count=0,
         total_count=2,
@@ -1243,7 +1241,7 @@ def test_git_commit_staged_commit_message_contains_metadata(tmp_path):
     res = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=staging_dir, capture_output=True, text=True)
     msg = res.stdout
     assert "sync push from server" in msg
-    assert "sergei" in msg
+    assert "myproject" in msg
     assert "aurion" in msg
     assert "memories: 2" in msg
 
@@ -1285,11 +1283,11 @@ def test_is_cc_active_locally_when_pgrep_returns_1_then_false():
 def test_notify_conflicts_when_called_then_appends_to_log(tmp_path):
     log_path = tmp_path / ".claude-sync-conflicts.log"
     with patch("subprocess.run"), patch("ai_cli.sync.CONFLICT_LOG", log_path):
-        notify_conflicts(["memory sergei/memory/file.md — .conflict file written"])
+        notify_conflicts(["memory myproject/memory/file.md — .conflict file written"])
 
     log_content = log_path.read_text()
     assert "CONFLICT" in log_content
-    assert "sergei/memory/file.md" in log_content
+    assert "myproject/memory/file.md" in log_content
 
 
 def test_notify_conflicts_when_many_conflicts_then_truncates_notification(tmp_path):
@@ -1578,8 +1576,8 @@ def test_get_source_machine_when_mac_then_returns_mac():
 
 
 def test_default_remote_bare_url_when_user_at_host_then_uses_home():
-    result = _default_remote_bare_url("sergei@server.com")
-    assert result == "ssh://sergei@server.com/home/sergei/.claude-sync-staging.git"
+    result = _default_remote_bare_url("user@server.com")
+    assert result == "ssh://user@server.com/home/user/.claude-sync-staging.git"
 
 
 def test_default_remote_bare_url_when_root_at_host_then_uses_root():
@@ -1677,9 +1675,9 @@ def test_load_sync_config_when_mac_then_uses_ssh_url():
 
 
 def test_handoff_queue_dir_when_main_dir_then_returns_path():
-    with patch("ai_cli.main._get_main_project_dir", return_value=Path("/home/u/projects/sergei")):
+    with patch("ai_cli.main._get_main_project_dir", return_value=Path("/home/u/projects/myproject")):
         result = _handoff_queue_dir()
-    assert result == Path("/home/u/projects/sergei/.handoff-queue")
+    assert result == Path("/home/u/projects/myproject/.handoff-queue")
 
 
 # ---------------------------------------------------------------------------
@@ -1794,7 +1792,7 @@ def test_write_jsonl_translated_when_no_foreign_then_copies(tmp_path):
 def test_get_remote_home_when_user_at_host_then_home():
     from ai_cli.sync import _get_remote_home
 
-    assert _get_remote_home("sergei@server") == "/home/sergei"
+    assert _get_remote_home("user@server") == "/home/user"
 
 
 def test_get_remote_home_when_root_at_host_then_root():
@@ -1820,16 +1818,16 @@ def test_translate_settings_paths_to_staging(tmp_path):
     local_home = str(tmp_path)
     content = f'{{"path": "{local_home}/projects/foo"}}'
     with patch("pathlib.Path.home", return_value=tmp_path):
-        result = _translate_settings_paths(content, "to_staging", "sergei@host")
-    assert "/home/sergei/projects/foo" in result
+        result = _translate_settings_paths(content, "to_staging", "user@host")
+    assert "/home/user/projects/foo" in result
 
 
 def test_translate_settings_paths_to_local(tmp_path):
     from ai_cli.sync import _translate_settings_paths
 
-    content = '{"path": "/home/sergei/projects/foo"}'
+    content = '{"path": "/home/user/projects/foo"}'
     with patch("pathlib.Path.home", return_value=tmp_path):
-        result = _translate_settings_paths(content, "to_local", "sergei@host")
+        result = _translate_settings_paths(content, "to_local", "user@host")
     assert str(tmp_path) in result
 
 
@@ -1837,9 +1835,9 @@ def test_translate_settings_paths_when_same_home_then_noop(tmp_path):
     from ai_cli.sync import _translate_settings_paths
 
     # When local and remote are the same, no translation
-    content = '{"path": "/home/sergei/projects/foo"}'
-    with patch("pathlib.Path.home", return_value=Path("/home/sergei")):
-        result = _translate_settings_paths(content, "to_staging", "sergei@host")
+    content = '{"path": "/home/user/projects/foo"}'
+    with patch("pathlib.Path.home", return_value=Path("/home/user")):
+        result = _translate_settings_paths(content, "to_staging", "user@host")
     assert result == content
 
 
@@ -2006,7 +2004,7 @@ def test_sync_push_when_dry_run_then_reports_files(tmp_path, capsys):
     from ai_cli.sync import sync_push
 
     cc_projects_dir = tmp_path / ".claude" / "projects"
-    project_dir = cc_projects_dir / "-home-sergei-projects-myapp"
+    project_dir = cc_projects_dir / "-home-user-projects-myapp"
     memory_dir = project_dir / "memory"
     memory_dir.mkdir(parents=True)
     (memory_dir / "MEMORY.md").write_text("# Memory")
@@ -2077,7 +2075,7 @@ def test_sync_push_when_success_then_pushes(tmp_path):
     from ai_cli.sync import sync_push
 
     cc_projects_dir = tmp_path / ".claude" / "projects"
-    project_dir = cc_projects_dir / "-home-sergei-projects-myapp"
+    project_dir = cc_projects_dir / "-home-user-projects-myapp"
     memory_dir = project_dir / "memory"
     memory_dir.mkdir(parents=True)
     (memory_dir / "MEMORY.md").write_text("# Memory")
@@ -3828,7 +3826,7 @@ def test_replicate_to_worktrees_when_unreadable_jsonl_then_continues(tmp_path):
     cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
     cc_dir.mkdir(parents=True)
     unreadable = cc_dir / "abc123.jsonl"
-    unreadable.write_text('{"cwd":"/home/sergei/projects/myapp"}')
+    unreadable.write_text('{"cwd":"/home/user/projects/myapp"}')
     unreadable.chmod(0o000)
 
     try:

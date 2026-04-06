@@ -64,13 +64,13 @@ def test_find_project_dir_when_not_found_then_returns_lowercase_default():
 
 
 def test_get_current_project_name_when_in_normal_dir_then_returns_dir_name():
-    with patch("pathlib.Path.cwd", return_value=Path("/home/sergei/projects/aurion")):
+    with patch("pathlib.Path.cwd", return_value=Path("/home/user/projects/aurion")):
         assert get_current_project_name() == "aurion"
 
 
 def test_get_current_project_name_when_in_worktree_then_returns_project_name():
-    with patch("pathlib.Path.cwd", return_value=Path("/home/sergei/projects/sergei/.worktrees/sw-2")):
-        assert get_current_project_name() == "sergei"
+    with patch("pathlib.Path.cwd", return_value=Path("/home/user/projects/myproject/.worktrees/sw-2")):
+        assert get_current_project_name() == "myproject"
 
 
 def test_get_current_project_name_when_worktree_nested_then_returns_project_name():
@@ -98,26 +98,27 @@ class TestProjectHelpers:
         assert result is None
 
     def test_get_main_project_dir_when_name_configured_then_returns_path(self):
-        with patch("ai_cli.main._get_main_project_name", return_value="sergei"):
-            with patch("ai_cli.main._find_project_dir", return_value=Path("/home/u/projects/sergei")):
+        with patch("ai_cli.main._get_main_project_name", return_value="myproject"):
+            with patch("ai_cli.main._find_project_dir", return_value=Path("/home/u/projects/myproject")):
                 result = _get_main_project_dir()
-        assert result == Path("/home/u/projects/sergei")
+        assert result == Path("/home/u/projects/myproject")
 
     def test_get_project_registry_path_when_toml_exists_then_returns_it(self, tmp_path):
-        toml_file = tmp_path / "sergei.toml"
+        # Registry file is named {project_name}.toml, not a fixed "registry.toml"
+        toml_file = tmp_path / "myproject.toml"
         toml_file.write_text("[projects]\n")
         with patch("ai_cli.main._get_main_project_dir", return_value=tmp_path):
-            with patch("ai_cli.main._get_main_project_name", return_value="sergei"):
+            with patch("ai_cli.main._get_main_project_name", return_value="myproject"):
                 result = _get_project_registry_path()
         assert result == toml_file
 
     def test_get_handoff_queue_dir_when_main_dir_exists_then_returns_path(self):
-        with patch("ai_cli.main._get_main_project_dir", return_value=Path("/home/u/projects/sergei")):
+        with patch("ai_cli.main._get_main_project_dir", return_value=Path("/home/u/projects/myproject")):
             result = _get_handoff_queue_dir()
-        assert result == Path("/home/u/projects/sergei/.handoff-queue")
+        assert result == Path("/home/u/projects/myproject/.handoff-queue")
 
     def test_get_project_prefix_by_name_when_found_then_returns_prefix(self, tmp_path):
-        toml_file = tmp_path / "sergei.toml"
+        toml_file = tmp_path / "registry.toml"
         toml_content = b'[[projects]]\nname = "myapp"\ntask_prefix = "MA"\n'
         toml_file.write_bytes(toml_content)
         with patch("ai_cli.main._get_project_registry_path", return_value=toml_file):
@@ -130,14 +131,12 @@ class TestProjectHelpers:
         assert result == "myp"
 
     def test_get_project_aliases_when_registry_exists_then_builds_map(self, tmp_path):
-        toml_file = tmp_path / "sergei.toml"
-        toml_content = (
-            b'[[projects]]\nname = "sergei"\ntask_prefix = "SW"\n\n[[projects]]\nname = "ai-dojo"\ntask_prefix = "AD"\n'
-        )
+        toml_file = tmp_path / "registry.toml"
+        toml_content = b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n\n[[projects]]\nname = "ai-dojo"\ntask_prefix = "AD"\n'
         toml_file.write_bytes(toml_content)
         with patch("ai_cli.main._get_project_registry_path", return_value=toml_file):
             result = get_project_aliases()
-        assert result["sw"] == "sergei"
+        assert result["mp"] == "myproject"
         assert result["ad"] == "ai-dojo"
 
     def test_get_project_aliases_when_no_registry_then_empty(self):
@@ -206,7 +205,7 @@ class TestFindAicliProjectPath:
 
 class TestLoadProjectRegistry:
     def test_load_project_registry_when_valid_then_returns_projects(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         with patch("ai_cli.main._get_project_registry_path", return_value=registry):
             result = load_project_registry(_force=True)
@@ -214,7 +213,7 @@ class TestLoadProjectRegistry:
         assert result[0]["name"] == "app"
 
     def test_load_project_registry_when_cached_then_returns_same(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         with patch("ai_cli.main._get_project_registry_path", return_value=registry):
             r1 = load_project_registry(_force=True)
@@ -227,7 +226,7 @@ class TestLoadProjectRegistry:
         assert result == []
 
     def test_load_project_registry_when_missing_name_then_exits(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\ntask_prefix = "APP"\n')
         with patch("ai_cli.main._get_project_registry_path", return_value=registry):
             with pytest.raises(SystemExit) as exc:
@@ -235,7 +234,7 @@ class TestLoadProjectRegistry:
         assert exc.value.code == 1
 
     def test_load_project_registry_when_missing_task_prefix_then_exits(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\n')
         with patch("ai_cli.main._get_project_registry_path", return_value=registry):
             with pytest.raises(SystemExit) as exc:
@@ -243,7 +242,7 @@ class TestLoadProjectRegistry:
         assert exc.value.code == 1
 
     def test_load_project_registry_when_duplicate_name_then_exits(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(
             b'[[projects]]\nname = "app"\ntask_prefix = "A1"\n[[projects]]\nname = "app"\ntask_prefix = "A2"\n'
         )
@@ -253,7 +252,7 @@ class TestLoadProjectRegistry:
         assert exc.value.code == 1
 
     def test_load_project_registry_when_duplicate_prefix_then_exits(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(
             b'[[projects]]\nname = "app1"\ntask_prefix = "AP"\n[[projects]]\nname = "app2"\ntask_prefix = "AP"\n'
         )
@@ -263,7 +262,7 @@ class TestLoadProjectRegistry:
         assert exc.value.code == 1
 
     def test_load_project_registry_when_toml_parse_error_then_returns_empty(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b"not valid toml {{{{")
         with patch("ai_cli.main._get_project_registry_path", return_value=registry):
             result = load_project_registry(_force=True)
@@ -279,7 +278,7 @@ class TestValidateRegistryCompleteness:
             assert validate_registry_completeness(interactive=False) is True
 
     def test_validate_when_all_registered_then_returns_true(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -290,7 +289,7 @@ class TestValidateRegistryCompleteness:
             assert validate_registry_completeness(interactive=False) is True
 
     def test_validate_when_unregistered_noninteractive_then_returns_false(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -302,7 +301,7 @@ class TestValidateRegistryCompleteness:
             assert validate_registry_completeness(interactive=False) is False
 
     def test_validate_when_user_registers_then_returns_true(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -317,7 +316,7 @@ class TestValidateRegistryCompleteness:
         assert "newapp" in content
 
     def test_validate_when_user_declines_then_returns_false(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -330,7 +329,7 @@ class TestValidateRegistryCompleteness:
             assert validate_registry_completeness(interactive=True) is False
 
     def test_validate_when_eof_then_returns_false(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -343,7 +342,7 @@ class TestValidateRegistryCompleteness:
             assert validate_registry_completeness(interactive=True) is False
 
     def test_validate_skips_hidden_dirs(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -355,7 +354,7 @@ class TestValidateRegistryCompleteness:
             assert validate_registry_completeness(interactive=False) is True
 
     def test_validate_when_custom_prefix_then_uses_it(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
         (projects_dir / "app").mkdir(parents=True)
@@ -370,7 +369,7 @@ class TestValidateRegistryCompleteness:
         assert "CUSTOM" in content
 
     def test_validate_when_projects_dir_missing_then_returns_true(self, tmp_path):
-        registry = tmp_path / "sergei.toml"
+        registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         nonexistent = tmp_path / "nonexistent"
         with (
@@ -386,7 +385,7 @@ class TestValidateRegistryCompleteness:
 class TestGetProjectPrefixRegistryMatch:
     def test_get_project_prefix_when_project_matches_registry_then_returns_prefix(self, tmp_path):
         """Covers lines 253-255: project name found in registry, returns task_prefix."""
-        registry_file = tmp_path / "sergei.toml"
+        registry_file = tmp_path / "registry.toml"
         registry_file.write_bytes(b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n')
 
         with patch("ai_cli.main.get_current_project_name", return_value="myproject"):

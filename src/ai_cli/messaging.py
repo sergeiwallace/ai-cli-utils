@@ -15,7 +15,7 @@ STREAM_CONFIG = {
     "memory": ["memory.>"],
     "quota": ["quota.>"],
     "telemetry": ["telemetry.>"],
-    "aido": ["aido.>"],
+    "handoff-archive": ["handoff-archive.>"],
     "task": ["task.>"],
     "health": ["health.>"],
     "handoff": ["handoff.>"],
@@ -47,12 +47,14 @@ class NATSClient:
 
             _cfg = _load_config()
             _remote = _cfg.get("remote", {})
-            _user = _remote.get("user", "sergei")
-            _host = _remote.get("host", "178.104.70.139")
+            _user = _remote.get("user", "")
+            _host = _remote.get("host", "")
             _port = str(_remote.get("port", 22))
             _identity = _remote.get("identity_file", "")
         except Exception:
-            _user, _host, _port, _identity = "sergei", "178.104.70.139", "22", ""
+            _user, _host, _port, _identity = "", "", "22", ""
+        if not _user or not _host:
+            return  # no remote configured — skip tunnel
         ssh_cmd = ["ssh", "-fNL", "4222:localhost:4222"]
         if _identity:
             ssh_cmd += ["-i", _identity]

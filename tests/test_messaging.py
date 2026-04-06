@@ -273,7 +273,7 @@ class TestSshTunnel:
             mock_conn.__exit__ = MagicMock(return_value=False)
             return mock_conn  # tunnel up on retry
 
-        fake_cfg = {"remote": {"host": "178.104.70.139", "user": "sergei", "port": 22}}
+        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
         with patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection):
             with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen:
                 with patch("asyncio.sleep", new=AsyncMock()):
@@ -281,7 +281,7 @@ class TestSshTunnel:
                         asyncio.run(client._open_ssh_tunnel())
 
         mock_popen.assert_called_once_with(
-            ["ssh", "-fNL", "4222:localhost:4222", "-p", "22", "sergei@178.104.70.139"],
+            ["ssh", "-fNL", "4222:localhost:4222", "-p", "22", "user@192.0.2.1"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -331,7 +331,7 @@ class TestOpenSshTunnel:
     def test_uses_configured_host_not_hardcoded_ip(self):
         """Tunnel must use config remote.host (Tailscale IP) not a hardcoded IP."""
         client = NATSClient()
-        config = {"remote": {"host": "100.106.24.69", "user": "sergei", "port": 22}}
+        config = {"remote": {"host": "100.106.24.69", "user": "user", "port": 22}}
         popen_calls = []
 
         def fake_popen(cmd, **kwargs):
@@ -352,10 +352,10 @@ class TestOpenSshTunnel:
         assert len(popen_calls) == 1
         ssh_cmd = popen_calls[0]
         assert "100.106.24.69" in " ".join(ssh_cmd)
-        assert "178.104.70.139" not in " ".join(ssh_cmd)
+        assert "192.0.2.1" not in " ".join(ssh_cmd)
 
-    def test_falls_back_to_default_ip_when_config_missing(self):
-        """If config load fails, falls back to hardcoded default."""
+    def test_skips_tunnel_when_config_missing(self):
+        """If config load fails and no host/user is available, no tunnel is opened."""
         client = NATSClient()
         popen_calls = []
 
@@ -370,8 +370,8 @@ class TestOpenSshTunnel:
                         with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
                             asyncio.run(client._open_ssh_tunnel())
 
-        assert len(popen_calls) == 1
-        assert "178.104.70.139" in " ".join(popen_calls[0])
+        # No tunnel opened — no host/user available when config fails
+        assert len(popen_calls) == 0
 
     def test_includes_identity_file_when_configured(self):
         """identity_file in remote config adds -i flag to SSH command (line 58)."""

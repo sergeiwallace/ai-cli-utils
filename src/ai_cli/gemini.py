@@ -154,8 +154,13 @@ def _load_doppler_secrets() -> None:
         return
 
     try:
+        _doppler_project = os.environ.get("AI_CLI_DOPPLER_PROJECT", "")
+        _doppler_cmd = [doppler_bin, "run"]
+        if _doppler_project:
+            _doppler_cmd += ["--project", _doppler_project]
+        _doppler_cmd += ["--config", "dev", "--", "env"]
         result = subprocess.run(
-            [doppler_bin, "run", "--project", "sergei", "--config", "dev", "--", "env"],
+            _doppler_cmd,
             capture_output=True,
             text=True,
             timeout=10,
