@@ -55,6 +55,21 @@ class ProcessInfo:
     args: str = ""
 
 
+def _clean_stale_transport_files() -> None:
+    """Remove transport-*.json state files whose parent process is no longer alive."""
+    state_dir = _get_state_dir()
+    for f in state_dir.glob("transport-*.json"):
+        try:
+            data = json.loads(f.read_text())
+            parent_pid = data.get("parent_pid")
+            if parent_pid:
+                os.kill(parent_pid, 0)  # 0 = check existence only
+        except (ProcessLookupError, PermissionError):
+            f.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _verdict_for(score: int) -> str:
     if score >= ORPHAN_THRESHOLD:
         return "orphaned"
@@ -744,6 +759,8 @@ def cmd_ps(
         killed = auto_clean_orphans(local, log_path=log_path)
         if killed:
             out(f"[ai ps] Cleaned {len(killed)} orphaned process(es). Run 'ai ps' for details.")
+        # Clean up stale transport state files (parent PID dead)
+        _clean_stale_transport_files()
         # Also refresh remote cache
         if remote_host and remote_user:
             collect_remote_processes(host=remote_host, user=remote_user, force_refresh=True)

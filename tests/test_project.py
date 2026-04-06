@@ -413,16 +413,21 @@ class TestProjectPathSeparatorValidation:
         assert "path separator" in capsys.readouterr().err
 
     def test_when_project_has_no_separator_then_proceeds(self, capsys):
+        async def fake_transport_loop(*args, **kwargs):
+            pass
+
         with patch("sys.argv", ["ai", "c", "1", "-R", "--project", "myproject"]):
             with patch("ai_cli.main.load_config", return_value={"remote": {"host": "h", "user": "u"}}):
                 with patch("ai_cli.main.get_project_aliases", return_value={}):
                     with patch("ai_cli.main.get_current_project_name", return_value=""):
                         with patch("ai_cli.main._get_project_prefix_by_name", return_value="my"):
-                            with patch("subprocess.run", return_value=MagicMock(returncode=0)):
-                                with pytest.raises(SystemExit) as exc:
-                                    from ai_cli.main import cli
+                            with patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop):
+                                with patch("ai_cli.main._ensure_vpn_watcher"):
+                                    with patch("ai_cli.main._maybe_stop_vpn_watcher"):
+                                        with pytest.raises(SystemExit) as exc:
+                                            from ai_cli.main import cli
 
-                                    cli()
+                                            cli()
         assert exc.value.code == 0
 
 

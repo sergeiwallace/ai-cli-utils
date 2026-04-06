@@ -28,7 +28,7 @@ live-infrastructure boundaries (NATS server required) and live-network-state bou
 flags these, the inline comments document the reason. The code path itself is correct and tested
 at the integration level when the full stack is running.
 
-Last verified against: commit `d5746b5` (2026-04-05). Line numbers shift with edits — use the
+Last verified against: 2026-04-06 (after VPN transport switching feature). Line numbers shift with edits — use the
 code snippets below to relocate each site after future changes.
 
 ---
@@ -162,21 +162,97 @@ except Exception as e:
 
 ---
 
-### Group B — `src/ai_cli/main.py`: VPN + mosh reconnect fallback (2 lines)
+### Group B — `src/ai_cli/main.py`: transport loop exception handlers and SSH retry edge cases
 
-**Why uncovered:** Requires SSH to fail *and* VPN to drop simultaneously — a live network state
-transition that cannot be simulated without a real network interface. Mocking both
-`subprocess.run` and `_is_vpn_active` in the correct sequence would be possible in principle,
-but the test would be brittle and the scenario is exercised in production on every VPN roam.
+**Why uncovered:** These paths require specific combinations of live NATS failures, subprocess
+timeout expiry, or VPN state changes occurring mid-retry. All require tightly-timed concurrent
+events that are impractical to simulate reliably in unit tests.
+
+#### `except Exception: pass` in `_ensure_vpn_watcher` status check
 
 ```python
-if _ssh_ret != 0 and not _is_vpn_active():
-    # Not covered: requires SSH failure AND VPN drop simultaneously.
-    print("\nVPN disconnected — reconnecting via mosh...", file=sys.stderr)  # ← not covered
-    subprocess.run(mosh_args)                                                 # ← not covered
+try:
+    result = client.send_message("status")
+    ...
+except Exception:
+    # Not covered: requires CircusClient.send_message to raise mid-call.
+    pass
 ```
 
-Locate: inside `if transport == "mosh":` → `if _is_vpn_active():` branch, after `_ssh_ret` check.
+#### `except Exception: pass` in `_run_transport_loop` NATS subscribe
+
+```python
+try:
+    await nc.nc.subscribe("vpn.state.changed", cb=_on_vpn_change)
+except Exception:
+    # Not covered: requires NATS subscribe to raise after connect succeeds.
+    pass
+```
+
+#### `proc.kill()` after `subprocess.TimeoutExpired`
+
+```python
+try:
+    proc.wait(timeout=2)
+except subprocess.TimeoutExpired:
+    proc.kill()       # ← not covered
+    proc.wait()       # ← not covered
+```
+
+#### SSH retry inner-loop edge cases (VPN changes during retry, SSH succeeds on retry)
+
+```python
+for delay in (1, 2, 4):
+    ...
+    while proc2.poll() is None:
+        if vpn_changed.is_set():
+            proc2.terminate()   # ← not covered (VPN change during retry)
+            proc2.wait()        # ← not covered
+            break               # ← not covered
+        ...
+    if proc2.returncode == 0:
+        return                  # ← not covered (SSH retry succeeds)
+    if vpn_changed.is_set():
+        print(...)              # ← not covered
+        break                   # ← not covered
+if vpn_changed.is_set():
+    continue                    # ← not covered
+```
+
+#### `nc.close()` exception in transport loop finally
+
+```python
+try:
+    await nc.close()
+except Exception:
+    # Not covered: requires NATS close to raise after connect succeeds.
+    pass
+```
+
+---
+
+### Group D — `src/ai_cli/vpn_watch.py`: exception handlers (3 lines)
+
+**Why uncovered:** These are `except`/`pass` guards around infrastructure boundaries.
+
+```python
+try:
+    with open(log_file, "a") as f:
+        f.write(json.dumps(payload) + "\n")
+except OSError:
+    pass  # ← not covered: requires filesystem write failure
+
+if nc.nc:
+    try:
+        await nc.nc.publish(...)
+    except Exception:
+        pass  # ← not covered: requires NATS publish to raise after subscribe
+
+try:
+    await nc.close()
+except Exception:
+    pass  # ← not covered: requires NATS close to raise after connect
+```
 
 ---
 

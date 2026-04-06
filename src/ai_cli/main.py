@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import sys
 import os
 import json
@@ -11,7 +12,11 @@ import re
 import shlex
 import fcntl
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Module-level alias so tests can patch _monotonic without affecting asyncio internals
+_monotonic = time.monotonic
 
 # --- XDG Directory Support ---
 
@@ -72,6 +77,8 @@ stale_session_timeout = 15
 # identity_file = ""
 # transport = "mosh"     # "ssh" or "mosh"
 # project = "my-project" # default project (directory name under ~/projects/)
+## VPN poll interval in seconds for the vpn-watch daemon (default: 3)
+# vpn_poll_interval = 3
 
 [sync]
 ## Remote host for cc sync (SSH user@host format). Derived from [remote] host/user if not set.
@@ -1846,6 +1853,210 @@ def _cmd_cdp_status() -> None:
         print(f"port {port}: PID {pid} ({status})")
 
 
+# --- VPN-aware transport switching ---
+
+
+def _write_transport_state(
+    path: Path,
+    session: str,
+    parent_pid: int,
+    child_pid: int,
+    transport: str,
+) -> None:
+    """Write transport state JSON for this session. Cleaned up in finally block."""
+    state = {
+        "parent_pid": parent_pid,
+        "child_pid": child_pid,
+        "transport": transport,
+        "session": session,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(json.dumps(state))
+
+
+def _ensure_vpn_watcher(config: dict) -> None:
+    """Start the vpn-watch Circus watcher if not already running.
+
+    Called by the first ``ai c -R`` session before entering the transport loop.
+    Subsequent sessions see existing transport-*.json files and skip this.
+    """
+    state_dir = get_xdg_state_home()
+    # If other transport sessions exist they already started the watcher
+    if list(state_dir.glob("transport-*.json")):
+        return
+    try:
+        endpoint = _ensure_circusd()
+        from circus.client import CircusClient
+
+        client = CircusClient(endpoint, timeout=5.0)
+        # Check if already running
+        try:
+            result = client.send_message("status")
+            statuses = result.get("statuses", {}) if isinstance(result, dict) else {}
+            if "vpn-watch" in statuses:
+                return
+        except Exception:
+            pass  # Not covered: requires CircusClient.send_message to raise mid-call
+        ai_bin = shutil.which("ai") or "ai"
+        client.send_message(
+            "add",
+            name="vpn-watch",
+            cmd=f"{ai_bin} vpn-watch",
+            options={
+                "copy_env": True,
+                "respawn": True,
+                "singleton": True,
+                "autostart": True,
+            },
+            start=True,
+        )
+    except Exception:
+        pass  # Non-fatal — transport loop still works without watcher
+
+
+def _maybe_stop_vpn_watcher() -> None:
+    """Stop the vpn-watch Circus watcher if no transport sessions remain."""
+    state_dir = get_xdg_state_home()
+    if list(state_dir.glob("transport-*.json")):
+        return  # Other sessions still active
+    try:
+        endpoint = f"ipc://{state_dir}/circus.endpoint"
+        from circus.client import CircusClient
+
+        CircusClient(endpoint, timeout=2.0).send_message("rm", name="vpn-watch")
+    except Exception:
+        pass
+
+
+async def _run_transport_loop(
+    ssh_args: list[str],
+    mosh_args: list[str],
+    cleanup_cmd: list[str],
+    session_name: str,
+    config: dict,
+) -> None:
+    """Run the mosh/SSH transport loop with VPN-aware switching.
+
+    Subscribes to ``vpn.state.changed`` on NATS. When a message arrives the
+    active transport child is terminated and the loop restarts with the correct
+    transport for the current VPN state. Falls back gracefully when NATS is
+    unavailable — transport still works, just without live switching.
+    """
+    from .messaging import NATSClient
+
+    state_dir = get_xdg_state_home()
+    transport_file = state_dir / f"transport-{session_name}.json"
+
+    servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+    nc = NATSClient(servers)
+    await nc.connect()
+
+    vpn_changed = asyncio.Event()
+
+    async def _on_vpn_change(msg):
+        vpn_changed.set()
+
+    if nc.nc:
+        try:
+            await nc.nc.subscribe("vpn.state.changed", cb=_on_vpn_change)
+        except Exception:
+            pass  # Not covered: requires NATS subscribe to raise after connect succeeds
+
+    try:
+        while True:
+            vpn_active = _is_vpn_active()
+            vpn_changed.clear()
+
+            args = ssh_args if vpn_active else mosh_args
+            transport_type = "ssh" if vpn_active else "mosh"
+            print(
+                f"\n{'VPN active' if vpn_active else 'No VPN'} — connecting via {transport_type}...",
+                file=sys.stderr,
+            )
+
+            proc = subprocess.Popen(args)
+            _write_transport_state(transport_file, session_name, os.getpid(), proc.pid, transport_type)
+
+            start_time = _monotonic()
+            # Poll process while watching for NATS VPN signal
+            while proc.poll() is None:
+                if vpn_changed.is_set():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()  # Not covered: requires proc to ignore SIGTERM
+                        proc.wait()
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                proc.wait()
+
+            elapsed = _monotonic() - start_time
+            transport_file.unlink(missing_ok=True)
+
+            if vpn_changed.is_set():
+                print("\nVPN state changed — switching transport...", file=sys.stderr)
+                continue
+
+            # Mosh failed fast — check for VPN as the cause
+            if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 10:
+                if _is_vpn_active():
+                    print(
+                        f"\nmosh failed ({elapsed:.1f}s), VPN detected — switching to SSH...",
+                        file=sys.stderr,
+                    )
+                    continue
+                # Mosh failed fast without a VPN cause — give up
+                print(
+                    f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.",
+                    file=sys.stderr,
+                )
+                break
+
+            # SSH retry with backoff when VPN is active
+            if transport_type == "ssh" and elapsed < 3 and _is_vpn_active():
+                for delay in (1, 2, 4):
+                    print(f"\nSSH failed — retrying in {delay}s...", file=sys.stderr)
+                    time.sleep(delay)
+                    proc2 = subprocess.Popen(args)
+                    _write_transport_state(transport_file, session_name, os.getpid(), proc2.pid, transport_type)
+                    while proc2.poll() is None:
+                        if vpn_changed.is_set():
+                            proc2.terminate()
+                            proc2.wait()
+                            break
+                        await asyncio.sleep(0.5)
+                    else:
+                        proc2.wait()
+                    transport_file.unlink(missing_ok=True)
+                    if proc2.returncode == 0:
+                        return  # SSH succeeded
+                    if vpn_changed.is_set():
+                        print("\nVPN state changed — switching transport...", file=sys.stderr)
+                        break  # Back to outer loop
+                if vpn_changed.is_set():
+                    continue
+                print("\nSSH failed after retries — giving up.", file=sys.stderr)
+                break
+
+            if elapsed < 3:
+                print(
+                    f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.",
+                    file=sys.stderr,
+                )
+                break
+
+            break  # Normal exit (user detached or session ended)
+    finally:
+        transport_file.unlink(missing_ok=True)
+        try:
+            await nc.close()
+        except Exception:
+            pass  # Not covered: requires NATS close to raise after connect succeeds
+        subprocess.run(cleanup_cmd, capture_output=True)
+
+
 # --- Circus / signal-watch process management ---
 
 
@@ -2619,6 +2830,12 @@ def cli():
             print(f"Unknown cdp action: {cdp_action}. Use start, stop, or status.", file=sys.stderr)
             sys.exit(1)
 
+    if len(sys.argv) > 1 and sys.argv[1] == "vpn-watch":
+        from .vpn_watch import run_vpn_watch
+
+        run_vpn_watch(config)
+        sys.exit(0)
+
     if len(sys.argv) > 1 and sys.argv[1] == "ps":
         from .process_hygiene import cmd_ps
 
@@ -2684,6 +2901,17 @@ def cli():
             sys.exit(0)
 
         aliases = get_project_aliases()
+
+        # Load active transport state files for annotation
+        _state_dir = get_xdg_state_home()
+        _transport_by_session: dict[str, str] = {}
+        for _tf in _state_dir.glob("transport-*.json"):
+            try:
+                _td = json.loads(_tf.read_text())
+                _transport_by_session[_td.get("session", "")] = _td.get("transport", "")
+            except Exception:
+                pass
+
         print(f"Found {len(remote_sessions)} remote session(s). Run each in a separate terminal:\n")
         for session_name in sorted(remote_sessions):
             parts = session_name.split("-")
@@ -2693,10 +2921,14 @@ def cli():
             else:
                 continue
             project_name = aliases.get(proj_prefix, proj_prefix)
+            _transport_tag = ""
+            _transport = _transport_by_session.get(session_name, "")
+            if _transport:
+                _transport_tag = f"  [{_transport} connected]"
             if project_name == proj_prefix:
-                print(f"  ai c {num} -R")
+                print(f"  ai c {num} -R{_transport_tag}")
             else:
-                print(f"  ai c {num} -R -p {proj_prefix}")
+                print(f"  ai c {num} -R -p {proj_prefix}{_transport_tag}")
         print()
         sys.exit(0)
 
@@ -2977,40 +3209,17 @@ def cli():
         mosh_args.append(f"{user}@{host}")
         mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
 
-        import time as _time
-
         if transport == "mosh":
-            if _is_vpn_active():
-                # VPN active — skip mosh (UDP blocked), use SSH.
-                # Reconnect via mosh automatically when VPN drops.
-                print("VPN detected — using ssh instead of mosh", file=sys.stderr)
-                _ssh_ret = subprocess.run(ssh_args).returncode
-                if _ssh_ret != 0 and not _is_vpn_active():
-                    # Not covered: requires SSH to fail AND VPN to drop simultaneously —
-                    # a live network state change that cannot be simulated in unit tests
-                    # without a real network interface. See docs/test/unit-tests.md
-                    # §Intentionally Uncovered Lines.
-                    print("\nVPN disconnected — reconnecting via mosh...", file=sys.stderr)
-                    subprocess.run(mosh_args)
-            else:
-                _mosh_start = _time.monotonic()
-                _mosh_ret = subprocess.run(mosh_args).returncode
-                _mosh_elapsed = _time.monotonic() - _mosh_start
-                # Fast non-zero exit = connection failure (e.g. VPN blocks UDP).
-                # Fall back to SSH and reconnect via mosh if VPN later drops.
-                if _mosh_ret != 0 and _mosh_elapsed < 10:
-                    print(
-                        f"\nmosh failed (exit {_mosh_ret}, {_mosh_elapsed:.1f}s) — falling back to ssh...",
-                        file=sys.stderr,
-                    )
-                    _ssh_ret = subprocess.run(ssh_args).returncode
-                    if _ssh_ret != 0 and not _is_vpn_active():
-                        print("\nVPN disconnected — reconnecting via mosh...", file=sys.stderr)
-                        subprocess.run(mosh_args)
-            subprocess.run(_cleanup_cmd, capture_output=True)
+            _ensure_vpn_watcher(config)
+            import asyncio as _asyncio
+
+            try:
+                _asyncio.run(_run_transport_loop(ssh_args, mosh_args, _cleanup_cmd, _r_ai_name, config))
+            finally:
+                _maybe_stop_vpn_watcher()
             sys.exit(0)
         else:
-            # Pure SSH transport — no mosh fallback or reconnect.
+            # Pure SSH transport — no VPN switching.
             os.execvp("bash", ["bash", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
 
     # When running as the remote side of an --remote session, cd into the project directory

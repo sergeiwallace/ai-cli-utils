@@ -530,7 +530,10 @@ class TestCliSessionSetupBranches:
 
     def test_cli_when_remote_with_project_flag_then_uses_project_prefix(self):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
-        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+
+        async def fake_transport_loop(*args, **kwargs):
+            pass
+
         with (
             patch("sys.argv", ["ai", "c", "-R", "-p", "myproj"]),
             patch("ai_cli.main.load_config", return_value=config),
@@ -539,7 +542,9 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.main._get_project_prefix_by_name", return_value="mp"),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._is_vpn_active", return_value=False),
-            patch("subprocess.run", mock_run),
+            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.main._ensure_vpn_watcher"),
+            patch("ai_cli.main._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
@@ -547,7 +552,11 @@ class TestCliSessionSetupBranches:
 
     def test_cli_when_remote_mosh_non_standard_port_then_adds_ssh_flag(self):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 2222, "transport": "mosh"}}
-        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        captured_mosh_args = []
+
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+            captured_mosh_args.extend(mosh_args)
+
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.main.load_config", return_value=config),
@@ -555,15 +564,14 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.main.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._is_vpn_active", return_value=False),
-            patch("subprocess.run", mock_run),
+            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.main._ensure_vpn_watcher"),
+            patch("ai_cli.main._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
                 cli()
-        mosh_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "mosh"]
-        assert mosh_calls, "mosh was not called"
-        mosh_call_args = mosh_calls[0][0][0]
-        assert "--ssh" in mosh_call_args
+        assert "--ssh" in captured_mosh_args
 
     def test_cli_when_remote_mosh_with_identity_file_only_then_adds_ssh_i(self):
         config = {
@@ -575,7 +583,11 @@ class TestCliSessionSetupBranches:
                 "identity_file": "~/.ssh/id_ed25519",
             }
         }
-        mock_run = MagicMock(return_value=MagicMock(returncode=0))
+        captured_mosh_args = []
+
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+            captured_mosh_args.extend(mosh_args)
+
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.main.load_config", return_value=config),
@@ -583,16 +595,15 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.main.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._is_vpn_active", return_value=False),
-            patch("subprocess.run", mock_run),
+            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.main._ensure_vpn_watcher"),
+            patch("ai_cli.main._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
                 cli()
-        mosh_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "mosh"]
-        assert mosh_calls, "mosh was not called"
-        mosh_call_args = mosh_calls[0][0][0]
-        assert "--ssh" in mosh_call_args
-        assert any("-i" in str(a) for a in mosh_call_args)
+        assert "--ssh" in captured_mosh_args
+        assert any("-i" in str(a) for a in captured_mosh_args)
 
 
 class TestCliGeminiDispatch:

@@ -146,113 +146,6 @@ class TestIsVpnActive:
             assert _is_vpn_active() is False
 
 
-class TestMoshVpnFallback:
-    """VPN detection drives mosh->SSH fallback at launch time."""
-
-    def _run_mosh_remote(self, vpn_active: bool):
-        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
-        mock_run = MagicMock(return_value=MagicMock(returncode=0))
-        mock_exec = MagicMock(side_effect=SystemExit(0))
-        with (
-            patch("sys.argv", ["ai", "c", "-R"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
-            patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._is_vpn_active", return_value=vpn_active),
-            patch("subprocess.run", mock_run),
-            patch("os.execvp", mock_exec),
-            patch("sys.exit", side_effect=SystemExit(0)),
-        ):
-            with pytest.raises(SystemExit):
-                cli()
-        return mock_run, mock_exec
-
-    def test_when_no_vpn_then_mosh_is_used(self):
-        mock_run, mock_exec = self._run_mosh_remote(vpn_active=False)
-        mosh_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "mosh"]
-        assert mosh_calls, "mosh should be called when VPN is inactive"
-        assert not mock_exec.called
-
-    def test_when_vpn_active_then_ssh_is_used_directly(self):
-        mock_run, mock_exec = self._run_mosh_remote(vpn_active=True)
-        mosh_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "mosh"]
-        assert not mosh_calls, "mosh should be skipped when VPN is active"
-        ssh_calls = [c for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "ssh"]
-        assert ssh_calls, "ssh should be called when VPN is active"
-
-
-class TestMoshReconnectAfterVpnDrop:
-    """After SSH exits non-zero (connection dropped), reconnect via mosh if VPN is gone."""
-
-    def _run_with_vpn_sequence(self, vpn_sequence: list[bool]):
-        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
-        vpn_iter = iter(vpn_sequence)
-
-        run_calls = []
-
-        def fake_run(args, **kwargs):
-            run_calls.append(args[0] if args else None)
-            if kwargs.get("capture_output"):
-                return MagicMock(returncode=0)
-            if args and args[0] == "ssh":
-                return MagicMock(returncode=255)
-            return MagicMock(returncode=0)
-
-        with (
-            patch("sys.argv", ["ai", "c", "-R"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
-            patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._is_vpn_active", side_effect=vpn_iter),
-            patch("subprocess.run", side_effect=fake_run),
-            patch("sys.exit", side_effect=SystemExit(0)),
-        ):
-            with pytest.raises(SystemExit):
-                cli()
-        return run_calls
-
-    def test_when_vpn_on_then_drops_then_reconnects_via_mosh(self):
-        run_calls = self._run_with_vpn_sequence([True, False])
-        assert "ssh" in run_calls, "SSH should run while VPN is on"
-        assert "mosh" in run_calls, "mosh should reconnect after VPN drops"
-        assert run_calls.index("ssh") < run_calls.index("mosh")
-
-    def test_when_vpn_on_then_still_on_after_ssh_exits_then_no_mosh_reconnect(self):
-        run_calls = self._run_with_vpn_sequence([True, True])
-        assert "ssh" in run_calls
-        assert "mosh" not in run_calls
-
-    def test_when_no_vpn_and_mosh_fails_fast_then_ssh_runs(self):
-        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
-        run_calls = []
-
-        def fake_run(args, **kwargs):
-            run_calls.append(args[0] if args else None)
-            if kwargs.get("capture_output"):
-                return MagicMock(returncode=0)
-            if args and args[0] == "mosh":
-                return MagicMock(returncode=1)
-            return MagicMock(returncode=0)
-
-        with (
-            patch("sys.argv", ["ai", "c", "-R"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
-            patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._is_vpn_active", return_value=False),
-            patch("subprocess.run", side_effect=fake_run),
-            patch("sys.exit", side_effect=SystemExit(0)),
-        ):
-            with pytest.raises(SystemExit):
-                cli()
-        assert "mosh" in run_calls
-        assert "ssh" in run_calls
-        assert run_calls.index("mosh") < run_calls.index("ssh")
-
-
 class TestRemoteSessionIterm2Emit:
     """Verify iTerm2 profile/color is emitted before mosh/ssh connects for remote sessions."""
 
@@ -261,17 +154,13 @@ class TestRemoteSessionIterm2Emit:
         call_order = []
 
         if transport == "mosh":
-            mock_run = MagicMock(return_value=MagicMock(returncode=0))
             mock_emit = MagicMock()
             mock_slot = MagicMock(return_value="#ff0000")
             mock_emit.side_effect = lambda *a, **kw: call_order.append("emit")
 
-            def run_side_effect(args, **kwargs):
-                if args and args[0] == "mosh":
-                    call_order.append("exec")
-                return MagicMock(returncode=0)
+            async def fake_transport_loop(*args, **kwargs):
+                call_order.append("exec")
 
-            mock_run.side_effect = run_side_effect
             with (
                 patch("sys.argv", argv),
                 patch("ai_cli.main.load_config", return_value=config),
@@ -281,12 +170,14 @@ class TestRemoteSessionIterm2Emit:
                 patch("ai_cli.main._assign_iterm2_color_slot", mock_slot),
                 patch("ai_cli.main._emit_iterm2_profile_setup", mock_emit),
                 patch("ai_cli.main._is_vpn_active", return_value=False),
-                patch("subprocess.run", mock_run),
+                patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
+                patch("ai_cli.main._ensure_vpn_watcher"),
+                patch("ai_cli.main._maybe_stop_vpn_watcher"),
                 patch("sys.exit", side_effect=SystemExit(0)),
             ):
                 with pytest.raises(SystemExit):
                     cli()
-            return mock_slot, mock_emit, mock_run, call_order
+            return mock_slot, mock_emit, None, call_order
         else:
             mock_exec = MagicMock()
             mock_emit = MagicMock()
