@@ -94,10 +94,10 @@ When mosh dies, `subprocess.run()` returns to the Python process. This is the ke
 
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
-| 1 | Where to put the VPN watcher | (a) Circus watcher, (b) Inline in transport loop, (c) Standalone daemon | (b) Inline | Zero new infrastructure, leverages existing subprocess.run return | Pending |
-| 2 | How to kill the active transport | (a) External SIGTERM from watcher, (b) Transport loop self-manages | (a) External SIGTERM + (b) loop handles reconnect | External signal is the only way to interrupt a blocking subprocess.run | Pending |
-| 3 | How to track transport state | (a) PID files in XDG state dir, (b) In-memory only | (a) PID files | External watcher needs to find the right process to signal | Pending |
-| 4 | VPN watcher lifecycle | (a) One global watcher, (b) Per-session watcher | (a) One global watcher | VPN state is machine-wide, not per-session | Pending |
+| 1 | Where to put the VPN watcher | (a) Circus watcher, (b) Inline in transport loop, (c) Standalone daemon | **(a) Circus watcher** | Circus is a core architecture foundation; single watcher serves all sessions; supervised | **Approved** |
+| 2 | How to kill the active transport | (a) SIGTERM to child via NATS signal, (b) Transport loop self-manages | **(a) SIGTERM to child** | Transport loop subscribes to NATS `vpn.state.changed`, self-terminates child | **Approved** |
+| 3 | How to track transport state | (a) PID files in XDG state dir, (b) In-memory only | **(a) State JSON files** | External visibility for `ai ps`, `ai reconnect`, and Circus watcher | **Approved** |
+| 4 | VPN watcher lifecycle | (a) One global Circus watcher, (b) Per-session watcher | **(a) One global watcher** | Lazy start on first remote session; shared by all; torn down when last session exits | **Approved** |
 
 ### Decision Details
 
@@ -145,11 +145,7 @@ A separate long-running process outside Circus.
 
 ##### Recommendation
 
-**Hybrid of (a) and (b):** A single global Circus watcher polls VPN state. When state changes, it signals all active transport processes via SIGTERM. The transport loop in `ai c -R` (option b) catches the signal and reconnects with the appropriate transport. This gives us Circus supervision for the watcher and clean reconnect logic in the transport loop.
-
-However, there is a simpler alternative worth considering: **(b) alone with a background thread**. The Python `ai c -R` process spawns a lightweight daemon thread that polls `_is_vpn_active()` every N seconds. On state change, the thread sends SIGTERM to the child transport process (the mosh-client or ssh PID from `subprocess.Popen`). The main thread's transport loop handles the rest. This avoids Circus entirely for the watcher and keeps everything self-contained.
-
-**Final recommendation: (b) with a background thread** for the initial implementation. The thread is trivial, dies when the process exits, and requires no external state. If multiple remote sessions are common and the overhead of N polling threads (one per session) becomes a concern, upgrade to a single Circus watcher (a) in a later phase.
+**✅ Approved: (a) Circus watcher.** Circus is a core architecture foundation (alongside NATS and ntfy), not an incidental dependency. A single global `vpn-watch` Circus watcher polls `_is_vpn_active()` every 3 seconds and publishes `vpn.state.changed` to NATS on transition. Each transport loop subscribes to that NATS subject and self-terminates its child transport process in response. The watcher is started lazily when the first `ai c -R` session launches and torn down when the last session exits (via reference counting in the state files). Circus supervision ensures the watcher restarts on crash.
 
 ---
 
@@ -255,134 +251,119 @@ Each `ai c -R` process runs its own background thread.
 
 ##### Recommendation
 
-**(b) Per-session watcher thread** for now. The per-thread overhead is negligible for typical session counts (1-5 remote sessions). VPN state polling is cheap (2ms per check, every 3-5 seconds = ~0.1% CPU total across all sessions).
+**✅ Approved: (a) One global Circus watcher.** Started lazily when first `ai c -R` session launches. Each session registers itself in a state file; the watcher reads these to know which sessions are active. When the last session exits it de-registers, and the watcher shuts itself down (or a Circus `stop` call removes it). VPN state is machine-wide — one poll loop is correct and efficient regardless of session count (5-10+ sessions common).
 
 ---
 
-> **Feedback Round 1:** Your approval/feedback on each decision:
-> 1. Decision 1 (background thread vs Circus watcher):
-> 2. Decision 2 (SIGTERM to child):
-> 3. Decision 3 (PID files):
-> 4. Decision 4 (per-session thread):
-> - <enter feedback here>
+> **Feedback Round 1 — 2026-04-06:**
+> D-1: Circus watcher approved. Circus is a core foundation component.
+> D-2: SIGTERM to child via NATS approved.
+> D-3: State JSON files approved.
+> D-4: Single global Circus watcher, lazy start, approved.
 
 ---
 
 ## Switching Mechanism
 
+### Components
+
+**`vpn-watch` Circus watcher** (new file: `src/ai_cli/vpn_watch.py`):
+- Polls `_is_vpn_active()` every 3 seconds
+- On state change: waits 2 seconds (debounce), re-checks, then publishes `vpn.state.changed` to NATS with payload `{"vpn": true/false, "ts": "..."}` if state is confirmed
+- Logs each transition to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL)
+- Started lazily by first `ai c -R` session via `CircusClient.add_watcher()`; stopped when last session de-registers
+
+**Transport loop** (replaces lines 2982-3010 in `main.py`):
+- Subscribes to `vpn.state.changed` on NATS at startup
+- Runs `subprocess.Popen` for the current transport, waits on it
+- NATS message received → call `proc.terminate()` → loop back, pick new transport based on current VPN state
+- Writes/deletes transport state JSON file around each `Popen` lifecycle
+
 ### Transport Loop (Replaces Current Linear Logic)
 
-The current code at lines 2982-3010 is a linear if/else that runs one transport and optionally falls back. The new design replaces this with a **transport loop**:
+The current code at lines 2982-3010 is a linear if/else. The new design replaces this with a **transport loop** driven by NATS:
 
 ```python
-def _run_transport_loop(
+async def _run_transport_loop(
     ssh_args: list[str],
     mosh_args: list[str],
     cleanup_cmd: list[str],
     session_name: str,
+    config: dict,
 ) -> None:
-    """Run the transport loop, switching between mosh and SSH based on VPN state.
-    
-    The loop runs until the user intentionally exits (clean SSH/mosh exit after
-    a non-trivial duration) or an unrecoverable error occurs.
-    """
     state_dir = get_xdg_state_home()
     transport_file = state_dir / f"transport-{session_name}.json"
-    
-    # Shared state between main thread and VPN watcher thread
-    current_proc: subprocess.Popen | None = None
-    proc_lock = threading.Lock()
-    vpn_changed = threading.Event()
-    shutdown = threading.Event()
-    
-    def _vpn_watcher():
-        """Background thread: polls VPN state, signals transport on change."""
-        last_vpn = _is_vpn_active()
-        while not shutdown.is_set():
-            shutdown.wait(3.0)  # Poll every 3 seconds
-            if shutdown.is_set():
-                break
-            now_vpn = _is_vpn_active()
-            if now_vpn != last_vpn:
-                last_vpn = now_vpn
-                vpn_changed.set()
-                with proc_lock:
-                    if current_proc and current_proc.poll() is None:
-                        current_proc.terminate()
-    
-    watcher = threading.Thread(target=_vpn_watcher, daemon=True)
-    watcher.start()
-    
+
+    nc = await nats.connect(config["messaging"]["nats_servers"])
+    vpn_changed = asyncio.Event()
+
+    async def _on_vpn_change(msg):
+        vpn_changed.set()
+
+    await nc.subscribe("vpn.state.changed", cb=_on_vpn_change)
+
     try:
         while True:
             vpn_active = _is_vpn_active()
             vpn_changed.clear()
-            
-            if vpn_active:
-                print("VPN active -- connecting via SSH...", file=sys.stderr)
-                args = ssh_args
-                transport_type = "ssh"
-            else:
-                print("No VPN -- connecting via mosh...", file=sys.stderr)
-                args = mosh_args
-                transport_type = "mosh"
-            
-            with proc_lock:
-                current_proc = subprocess.Popen(args)
-            
-            # Write transport state file
-            _write_transport_state(transport_file, session_name, 
-                                   current_proc.pid, transport_type)
-            
+
+            args = ssh_args if vpn_active else mosh_args
+            transport_type = "ssh" if vpn_active else "mosh"
+            print(f"{'VPN active' if vpn_active else 'No VPN'} -- "
+                  f"connecting via {transport_type}...", file=sys.stderr)
+
+            proc = subprocess.Popen(args)
+            _write_transport_state(transport_file, session_name,
+                                   os.getpid(), proc.pid, transport_type)
+
             start_time = time.monotonic()
-            current_proc.wait()
+            # Wait for process exit OR vpn_changed signal
+            while proc.poll() is None:
+                if vpn_changed.is_set():
+                    proc.terminate()
+                    break
+                await asyncio.sleep(0.5)
+            proc.wait()
             elapsed = time.monotonic() - start_time
-            
-            with proc_lock:
-                current_proc = None
-            
-            # Decide what to do next
+
             if vpn_changed.is_set():
-                # VPN state changed -- loop back to reconnect with correct transport
                 print("\nVPN state changed -- switching transport...", file=sys.stderr)
                 continue
-            
-            if transport_type == "mosh" and elapsed < 10:
-                # Mosh failed fast (possibly VPN activated during connection)
-                if _is_vpn_active():
-                    print(f"\nmosh failed ({elapsed:.1f}s), VPN detected -- "
-                          f"switching to SSH...", file=sys.stderr)
-                    continue
-                # Mosh failed for another reason -- don't retry endlessly
-                print(f"\nmosh failed ({elapsed:.1f}s) -- retrying once...", 
-                      file=sys.stderr)
-                time.sleep(1)
+
+            if transport_type == "mosh" and elapsed < 10 and _is_vpn_active():
+                print(f"\nmosh failed ({elapsed:.1f}s), VPN detected -- "
+                      f"switching to SSH...", file=sys.stderr)
                 continue
-            
+
             if elapsed < 3:
-                # Transport died almost immediately -- unrecoverable
-                print(f"\nTransport died too quickly ({elapsed:.1f}s) -- "
+                print(f"\nTransport exited too quickly ({elapsed:.1f}s) -- "
                       f"giving up.", file=sys.stderr)
                 break
-            
-            # Normal exit (user detached or session ended)
-            break
+
+            break  # Normal exit
     finally:
-        shutdown.set()
         transport_file.unlink(missing_ok=True)
+        await nc.drain()
         subprocess.run(cleanup_cmd, capture_output=True)
 ```
 
-### VPN Watcher Thread Detail
+### Circus Watcher Lifecycle
 
-The watcher thread is intentionally minimal:
+```
+ai c N -R launched
+  → _ensure_vpn_watcher(config)
+      → reads transport state files to count active sessions
+      → if count == 0: CircusClient.add_watcher("vpn-watch", cmd="ai vpn-watch")
+  → registers own transport-{session}.json
+  → runs transport loop (subscribes to vpn.state.changed)
 
-1. Polls `_is_vpn_active()` every 3 seconds (configurable via `[remote] vpn_poll_interval`)
-2. On state change: sets `vpn_changed` event and calls `proc.terminate()` on the child
-3. Thread is `daemon=True` -- dies automatically if the parent exits abnormally
-4. Uses `shutdown.wait(N)` instead of `time.sleep(N)` for clean exit
+ai c N -R exits
+  → transport-{session}.json deleted (finally block)
+  → _maybe_stop_vpn_watcher(config)
+      → if no transport-*.json remain: CircusClient.stop("vpn-watch")
+```
 
-The 3-second interval is a balance: fast enough that the user sees a switch within ~5 seconds of VPN toggling, slow enough that `mullvad status` calls are negligible.
+`ai vpn-watch` is a new subcommand (entry point for the Circus watcher process).
 
 ### State Transitions
 
@@ -542,66 +523,58 @@ If VPN blocks even the initial SSH handshake:
 
 ## Implementation Plan
 
-### Phase 1: Transport Loop Refactor (Core)
+### Phase 1: Circus Watcher + NATS Publisher
 
-**Files:** `src/ai_cli/main.py`
+**New file:** `src/ai_cli/vpn_watch.py`
 
-**Changes:**
+1. `run_vpn_watch(config)` — entry point for `ai vpn-watch` subcommand
+2. Polls `_is_vpn_active()` every `[remote] vpn_poll_interval` seconds (default 3)
+3. On state change: 2s debounce, re-check, publish `vpn.state.changed` to NATS
+4. Logs each confirmed transition to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL: `{"ts": "...", "vpn": true/false}`)
 
-1. **New function `_run_transport_loop()`** (~80 lines): Implements the loop described in [Switching Mechanism](#switching-mechanism). Replaces the current linear transport logic at lines 2982-3010.
+**Changes to `src/ai_cli/main.py`:**
 
-2. **New function `_write_transport_state()`** (~15 lines): Writes the transport state JSON file.
+1. Add `ai vpn-watch` dispatch (~5 lines)
+2. Add `_ensure_vpn_watcher(config)` — starts watcher via `CircusClient.add_watcher()` if no transport state files exist yet
+3. Add `_maybe_stop_vpn_watcher(config)` — stops watcher via `CircusClient.stop()` if no transport state files remain
+4. Add `[remote] vpn_poll_interval = 3` to `DEFAULT_CONFIG`
 
-3. **New function `_vpn_watcher_thread()`** (~20 lines): The background thread target. Extracted as a module-level function for testability (can be tested by mocking `_is_vpn_active` and checking that it calls `proc.terminate()` on state change).
+**Estimated scope:** ~80 lines new, across 2 files.
 
-4. **Refactor lines 2982-3014**: Replace the if/else block with a single call to `_run_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name)`. The `subprocess.run` calls become `subprocess.Popen` + `.wait()` inside the loop.
+### Phase 2: Transport Loop Refactor (Core)
 
-5. **Add `import threading`** to the imports.
+**Changes to `src/ai_cli/main.py`:**
 
-6. **Config key**: `[remote] vpn_poll_interval` (default 3, in seconds). Add to `DEFAULT_CONFIG` with a comment.
+1. **`_run_transport_loop()`** (~90 lines): Replaces lines 2982-3010. Subscribes to `vpn.state.changed` on NATS. Runs `Popen` + poll loop, terminates child on NATS message, reconnects with correct transport.
+2. **`_write_transport_state()`** (~15 lines): Writes `transport-{session}.json`.
+3. **`_emit_iterm2_profile_setup()` call** at top of each loop iteration — ensures tab title/color correct after mosh↔SSH switch.
+4. Call `_ensure_vpn_watcher()` at session start, `_maybe_stop_vpn_watcher()` in `finally`.
 
-**Estimated scope:** ~120 new lines, ~30 lines removed.
+**Estimated scope:** ~120 new lines, ~30 removed.
 
-### Phase 2: State File Integration
+### Phase 3: State File Integration + Observability
 
-**Files:** `src/ai_cli/main.py`
-
-**Changes:**
-
-1. **Transport state files**: Written by `_write_transport_state()`, cleaned up in the `finally` block and by `ai ps cron`.
-
-2. **Enhance `ai ps`** (if it exists as a function, or the process hygiene cron): Add cleanup of stale `transport-*.json` files where `parent_pid` is dead.
-
-3. **Enhance `ai reconnect`**: Read transport state files to annotate output with current transport type for connected sessions.
-
-### Phase 3: Robustness
-
-**Files:** `src/ai_cli/main.py`
-
-**Changes:**
-
-1. **Retry with backoff**: When SSH fails during VPN-active state, retry up to 3 times with 1s/2s/4s delays before giving up.
-
-2. **Debounce (optional)**: If VPN flapping proves annoying, add a 2-second debounce to the watcher thread.
-
-3. **iTerm2 re-emit**: Call `_emit_iterm2_profile_setup()` before each transport launch in the loop (not just at initial launch). This ensures the tab title/color are correct after a mosh->SSH switch and back.
+1. **`ai ps` cleanup**: Add stale `transport-*.json` cleanup (parent PID dead)
+2. **`ai reconnect` annotation**: Show current transport type per session from state files
+3. **SSH retry with backoff**: On SSH failure during VPN-active, retry 3× (1s/2s/4s) before giving up
 
 ### Test Plan
 
-| Test | Type | What it verifies |
+| Test | File | What it verifies |
 |------|------|-----------------|
-| `test_transport_loop_starts_mosh_when_no_vpn` | Unit | Loop uses mosh_args when `_is_vpn_active()` returns False |
-| `test_transport_loop_starts_ssh_when_vpn_active` | Unit | Loop uses ssh_args when `_is_vpn_active()` returns True |
-| `test_transport_loop_switches_on_vpn_change` | Unit | Watcher thread terminates child, loop reconnects with new transport |
-| `test_transport_loop_clean_exit` | Unit | Normal exit (elapsed > 3s) breaks the loop |
-| `test_transport_loop_fast_fail_retry` | Unit | Mosh failing <10s with VPN active triggers SSH |
-| `test_transport_state_file_written` | Unit | State file created on transport start |
-| `test_transport_state_file_cleaned` | Unit | State file deleted on clean exit |
-| `test_vpn_watcher_thread_polls` | Unit | Thread calls `_is_vpn_active()` at the configured interval |
-| `test_vpn_watcher_thread_terminates_proc` | Unit | Thread calls `proc.terminate()` on VPN state change |
-| `test_vpn_flap_uses_latest_state` | Unit | Rapid VPN changes result in correct transport at reconnect |
+| `test_vpn_watch_publishes_on_state_change` | `test_vpn_watch.py` | NATS publish fired when `_is_vpn_active()` changes |
+| `test_vpn_watch_debounce_suppresses_flap` | `test_vpn_watch.py` | No publish if state reverts within 2s |
+| `test_vpn_watch_logs_transition` | `test_vpn_watch.py` | JSONL log entry written on confirmed transition |
+| `test_transport_loop_starts_mosh_when_no_vpn` | `test_transport.py` | Loop uses mosh_args when VPN inactive |
+| `test_transport_loop_starts_ssh_when_vpn_active` | `test_transport.py` | Loop uses ssh_args when VPN active |
+| `test_transport_loop_switches_on_nats_message` | `test_transport.py` | NATS message triggers proc.terminate(), loop reconnects |
+| `test_transport_loop_clean_exit` | `test_transport.py` | Normal exit (elapsed > 3s) breaks the loop |
+| `test_transport_loop_fast_fail_with_vpn` | `test_transport.py` | Mosh <10s + VPN active → SSH |
+| `test_transport_state_file_written_and_cleaned` | `test_transport.py` | State file lifecycle |
+| `test_ensure_vpn_watcher_starts_circus` | `test_transport.py` | CircusClient.add_watcher called on first session |
+| `test_maybe_stop_vpn_watcher_stops_circus` | `test_transport.py` | CircusClient.stop called when last session exits |
 
-All tests mock `_is_vpn_active()`, `subprocess.Popen`, and file I/O. No real network calls.
+All tests mock `_is_vpn_active()`, `subprocess.Popen`, NATS client, and Circus client. No real network calls.
 
 ---
 
@@ -619,24 +592,25 @@ All tests mock `_is_vpn_active()`, `subprocess.Popen`, and file I/O. No real net
 
 ## Open Questions
 
-1. **Should debounce be in v1?** A 2-second debounce in the watcher thread would prevent unnecessary reconnects during VPN flaps. Cost: ~10 lines. Risk of not having it: occasional double-reconnect during flaps.
+1. ~~**Should debounce be in v1?**~~ **✅ Yes — include debounce in v1.** 2-second debounce in the watcher before signaling prevents churn during VPN flaps.
 
-2. **Should the watcher log state transitions?** Writing VPN state changes to `~/.local/state/ai-cli-utils/vpn-transitions.log` would help debug issues. Adds ~5 lines. Could also publish a NATS event for the telemetry system.
+2. ~~**Should the watcher log state transitions?**~~ **✅ Yes — logging and observability are mandatory.** Write VPN state transitions to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL). Publish `vpn.state.changed` to NATS for telemetry. This is a platform-wide design mandate: any sufficiently complex sub-system must include structured logging and telemetry hooks from the start.
 
-3. **`mosh --predict` flag after switch-back?** When switching from SSH back to mosh, should we add `--predict=always` to get faster perceived responsiveness during the initial prediction-training period? Mosh prediction is based on accumulated keystroke timing.
+3. ~~**`mosh --predict` flag after switch-back?**~~ **Skipped.** Difference is imperceptible in practice (a few seconds of reduced prediction). Not worth the complexity.
 
-4. **What about WireGuard/other VPN clients?** The `_is_vpn_active()` fallback (utun/tun interface scan) covers most VPN clients on macOS. Should we test with WireGuard specifically, or is the current detection sufficient?
+4. ~~**WireGuard/other VPN clients?**~~ **Resolved.** Current `_is_vpn_active()` covers Mullvad (CLI check) and Cloudflare WARP + others via `utun`/`tun` interface scan. Sufficient for all currently used VPNs. Client-specific implementations added as needed.
 
-> **Feedback Round 1:** Your thoughts on the open questions:
-> 1. Debounce in v1?
-> 2. Logging state transitions?
-> 3. Mosh predict flag?
-> 4. WireGuard testing?
-> - <enter feedback here>
+> **Feedback Round 1 — 2026-04-06:**
+> OQ-1: Debounce in v1 — approved.
+> OQ-2: Logging/observability — approved. Platform-wide mandate added to projects-wide CLAUDE.md.
+> OQ-3: Skipped — not worth the complexity.
+> OQ-4: Current detection sufficient; handle specifics as needed.
 
 ---
 
 ## Approval Log
 
-| Date | Decision | Notes |
-|------|----------|-------|
+| Date | Round | Decision | Notes |
+|------|-------|----------|-------|
+| 2026-04-06 | 1 | All 4 decisions approved | Circus watcher + NATS pub/sub + state JSON files + single global watcher with lazy start |
+| 2026-04-06 | 1 | Open questions resolved | Debounce in v1; logging/observability mandatory; mosh predict skipped; current VPN detection sufficient |
