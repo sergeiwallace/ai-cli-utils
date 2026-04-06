@@ -20,6 +20,7 @@ jobs:
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
       - run: uv run pyright src/
+      - run: python scripts/lint_doc_alignment.py
 
   test:
     runs-on: ubuntu-latest
