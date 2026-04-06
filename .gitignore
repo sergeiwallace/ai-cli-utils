@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv
+venv/
+*.so
+
+# OS
+.DS_Store
+
+# IDE
+.vs/
+.idea/
+*.suo
+*.user
+*.userprefs
+
+# Obsidian (commit config, ignore workspace cache)
+documentation/.vscode/
+documentation/.obsidian/workspace.json
+documentation/.obsidian/workspace-mobile.json
+documentation/.obsidian/plugins/
+documentation/.obsidian/themes/
+documentation/.obsidian/hotkeys.json
+
+# AI tool config
+.gemini/
+
+# Secrets (envchain loads from macOS Keychain — .env is only for local overrides)
+.env
+
+# direnv
+.direnv/
+
+# SQLite dev database
+dev.db
+
+# Claude Code workflow flags (transient, per-session)
+.claude/no_jira_required
+
+# Test artifacts
+test.db
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+.pytest_cache/
+
+# Exported conversation transcripts (generated output)
+docs/conversations/*
+!docs/conversations/README.md
+
+# Scratch / working notes
+SCRATCH.md
+
+# Claude Code workflow (transient, per-session)
+.claude/signals/
+.claude/handoff-queue/claimed/
+.claude/handoff-queue/completed/
+.worktrees/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Note: uv.lock is tracked for reproducible CI (not ignored)
+
+# Node
+node_modules/
+package-lock.json
+
+# Logo archive (working drafts)
+logos/archive/
+assets/iterm2-key-bindings/

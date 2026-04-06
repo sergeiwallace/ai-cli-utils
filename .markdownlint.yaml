@@ -1,0 +1,26 @@
+# Markdownlint configuration
+# https://github.com/DavidAnson/markdownlint
+
+# Allow duplicate heading names
+MD024: false
+
+# No line length limit (editor word-wrap handles display)
+MD013: false
+
+# Don't require language on fenced code blocks
+MD040: false
+
+# Allow inline HTML
+MD033: false
+
+# Allow emphasis used as heading
+MD036: false
+
+# Don't require blank lines around headings
+MD022: false
+
+# Don't require blank lines around fenced code blocks
+MD031: false
+
+# Don't require blank lines around lists
+MD032: false

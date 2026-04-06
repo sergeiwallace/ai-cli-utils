@@ -1,0 +1,26 @@
+{
+  "[plaintext]": {
+    "editor.wordWrap": "on"
+  },
+  "editor.wordWrap": "on",
+  "terminal.integrated.profiles.osx": {
+    "claude": {
+      "path": "zsh",
+      "icon": "claude",
+      "color": "terminal.ansiMagenta",
+      "overrideName": true
+    },
+    "gemini": {
+      "path": "zsh",
+      "icon": "material-spark",
+      "color": "terminal.ansiBlue",
+      "overrideName": true
+    },
+    "caffeinate": {
+      "path": "zsh",
+      "icon": "coffee",
+      "color": "terminal.ansiYellow",
+      "overrideName": true
+    }
+  }
+}

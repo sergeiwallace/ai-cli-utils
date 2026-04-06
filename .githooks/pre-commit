@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Pre-commit hook: lint staged markdown files
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# ── Markdown linting (markdownlint-cli2) ──────────────────────────────────
+
+STAGED_MD_FILES=$(git diff --cached --name-only --diff-filter=ACMR -- '*.md' || true)
+
+if [ -n "$STAGED_MD_FILES" ]; then
+    MDLINT="$REPO_ROOT/node_modules/.bin/markdownlint-cli2"
+
+    if [ ! -x "$MDLINT" ]; then
+        echo "[pre-commit] WARNING: markdownlint-cli2 not found — run 'npm install'."
+    else
+        echo "[pre-commit] Linting $(echo "$STAGED_MD_FILES" | wc -l | tr -d ' ') markdown file(s)..."
+        if ! echo "$STAGED_MD_FILES" | xargs "$MDLINT" 2>&1; then
+            echo "[pre-commit] ERROR: Markdown lint errors found. Fix them before committing."
+            exit 1
+        fi
+        echo "[pre-commit] Markdown lint passed."
+    fi
+fi

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Pre-push hook: lint changed files and run tests.
+# Environment overrides:
+#   SKIP_TESTS=1  — skip test gate
+#   SKIP_LINT=1   — skip lint checks
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+ERRORS=0
+
+# ── Collect changed files across all refs ─────────────────────────────────
+ALL_MD_FILES=""
+
+while read local_ref local_oid remote_ref remote_oid; do
+    if [ "$local_oid" = "0000000000000000000000000000000000000000" ]; then
+        continue
+    fi
+
+    if [ "$remote_oid" = "0000000000000000000000000000000000000000" ]; then
+        RANGE="${local_oid}~1..$local_oid"
+    else
+        RANGE="$remote_oid..$local_oid"
+    fi
+
+    MD_FILES=$(git diff --name-only --diff-filter=ACMR "$RANGE" -- '*.md' 2>/dev/null || true)
+
+    if [ -n "$MD_FILES" ]; then
+        ALL_MD_FILES="$ALL_MD_FILES $MD_FILES"
+    fi
+done
+
+# ── Markdown lint check ──────────────────────────────────────────────────
+if [ "${SKIP_LINT:-0}" != "1" ] && [ -n "$(echo $ALL_MD_FILES | xargs)" ]; then
+    MDLINT="$REPO_ROOT/node_modules/.bin/markdownlint-cli2"
+    if [ -x "$MDLINT" ]; then
+        MD_COUNT=$(echo "$ALL_MD_FILES" | xargs -n1 | sort -u | wc -l | tr -d ' ')
+        echo "[pre-push] Linting $MD_COUNT markdown file(s)..."
+        if ! echo "$ALL_MD_FILES" | xargs -n1 | sort -u | xargs "$MDLINT" 2>&1; then
+            echo "[pre-push] ERROR: Markdown lint errors found."
+            ERRORS=1
+        else
+            echo "[pre-push] Markdown lint OK."
+        fi
+    else
+        echo "[pre-push] WARNING: markdownlint-cli2 not found — run 'npm install'."
+    fi
+fi
+
+
+# ── Test gate ────────────────────────────────────────────────────────────
+if [ "${SKIP_TESTS:-0}" != "1" ]; then
+
+
+
+    if [ -d "$REPO_ROOT/src" ] || [ -d "$REPO_ROOT/tests" ]; then
+        # Resolve pytest: pyenv .python-version → project venv → system
+        PYTEST=""
+        if [ -f "$REPO_ROOT/.python-version" ]; then
+            PY_VER=$(cat "$REPO_ROOT/.python-version")
+            PYENV_PYTEST="$HOME/.pyenv/versions/$PY_VER/bin/pytest"
+            [ -f "$PYENV_PYTEST" ] && PYTEST="$PYENV_PYTEST"
+        fi
+        [ -z "$PYTEST" ] && [ -f "$REPO_ROOT/.venv/bin/pytest" ] && PYTEST="$REPO_ROOT/.venv/bin/pytest"
+        [ -z "$PYTEST" ] && command -v pytest &>/dev/null && PYTEST="pytest"
+        if [ -n "$PYTEST" ]; then
+            if ! "$PYTEST" "$REPO_ROOT" --tb=short -q 2>&1; then
+                echo "[pre-push] ERROR: Python tests failed."
+                ERRORS=1
+            fi
+        fi
+    fi
+
+
+fi
+
+if [ "$ERRORS" -ne 0 ]; then
+    echo "[pre-push] Push blocked. Fix errors and re-commit."
+    exit 1
+fi
+
+exit 0

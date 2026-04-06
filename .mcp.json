@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+
+    "gemini-cli": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "gemini-mcp-tool"],
+      "env": {}
+    },
+
+
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  }
+}
