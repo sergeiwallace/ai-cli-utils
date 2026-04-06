@@ -8,8 +8,8 @@ Follow this table to ensure the appropriate balance of reasoning depth, context 
 
 | Task Category | Primary Model | Search / Research Type | Rationale |
 | :--- | :--- | :--- | :--- |
-| **Architecture & Design** | `gemini-3.1-pro-preview` | **Strategic Synthesis** | Requires maximum context window and structural reasoning. |
-| **Implementation Plans** | `gemini-3.1-pro-preview` | **Dependency Mapping** | Precision in multi-file dependencies and execution flow. |
+| **Architecture & Design** | `deep-think` (Alias) | **Tradeoff Exploration** | HIGH thinking explores multiple design paths and failure modes before committing. Use `pro` for straightforward architecture tasks without deep tradeoffs. |
+| **Implementation Plans** | `gemini-3.1-pro-preview` | **Dependency Mapping** | Precision in multi-file dependencies and execution flow. For complex cross-service plans (3+ files, new services), consider `deep-think`. |
 | **Complex Research** | `deep-think` (Alias) | **Deep Reasoning** | For topics requiring multi-step logical chains or chain-of-thought. |
 | **Intermediate Research** | `gemini-3.1-pro-preview` | **Technical Synthesis** | Balanced technical review (API docs, library comparisons). |
 | **Rapid Retrieval** | `gemini-3-flash-preview` | **Quick Lookup** | Fast retrieval of simple technical facts or shell commands. |
@@ -26,8 +26,8 @@ If a primary model hits a quota limit (429), repeatedly times out, or returns a 
    - Fallback to: `gemini-3-flash-preview`
    - Tradeoff: Reduced context window and creative nuance. Proceed with caution on large files.
 3. **Tier 3 (3.x series) Failure**: 
-   - Fallback to: `gemini-2.0-flash` (or current 2.x baseline)
-   - Tradeoff: Significant drop in capability. Only for basic file ops or rapid triage.
+   - Fallback to: `gemini-2.5-pro` → `gemini-2.5-flash` → `gemini-2.5-flash-lite` (in sequence)
+   - Tradeoff: Significant capability drop. Exhausting both 3.1-pro AND 3-flash is rare — treat 2.5 as emergency fallback only. No use-case delineation needed at this tier.
 4. **Platform-Wide Outage**: 
    - Transition to **Claude Code** (check quota first) or wait for reset.
 
