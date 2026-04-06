@@ -249,16 +249,33 @@ class TestGetEngineScript:
         script = self._make_script()
         assert 'rm -f "$signal_file" "$config_changed_file"' in script
 
-    def test_signal_file_processing_has_idle_check(self):
-        """The signal_file processing path must guard against mid-typing injection.
-        Without this check, C-u wipes the user's in-progress prompt if they
-        started typing between signal_file creation and the watcher's next cycle."""
+    def test_signal_file_processing_uses_correct_prompt_character(self):
+        """The signal_file idle check must use CC's actual prompt character (❯),
+        not '>'. Using '>' caused injection to fire in all states because the
+        pattern never matched CC's prompt, triggering the rewind menu via Escape."""
         script = self._make_script()
-        # Verify the idle check regex is present in the signal_file block
-        assert "grep -qE" in script
-        # Verify the 'defer' comment is present (distinguishes this guard from the
-        # config-reload idle check)
-        assert "mid-typing" in script
+        # Positive idle check: inject ONLY when at idle empty prompt
+        assert "❯" in script
+        assert "'^[[:space:]]*❯[[:space:]]*$'" in script
+
+    def test_signal_file_injection_does_not_send_escape(self):
+        """The injection sequence must not send Escape before /exit.
+        Escape at an empty CC prompt triggers the conversation rewind menu.
+        C-u alone is sufficient to clear the line."""
+        script = self._make_script()
+        # Find the signal_file block and confirm no Escape is sent before /exit
+        # Strategy: the block ends with '/exit' C-m; Escape should not appear
+        # in the injection sequence (only C-u then /exit).
+        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
+        sig_block_end = script.find("'/exit' C-m", sig_block_start)
+        assert sig_block_start != -1
+        assert sig_block_end != -1
+        injection_sequence = script[sig_block_start:sig_block_end]
+        # C-u must be present (clears any partial input)
+        assert "C-u" in injection_sequence
+        # send-keys Escape must NOT appear in the injection sequence
+        # (Escape at an empty prompt triggers CC's rewind menu)
+        assert 'send-keys -t "$tmux_session" Escape' not in injection_sequence
 
 
 # --- Group 8: _log_handoff_event OSError ---

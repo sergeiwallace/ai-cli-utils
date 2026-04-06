@@ -1100,23 +1100,20 @@ def get_engine_script(
         (( counter++ ))
         
         if [[ -f "$signal_file" ]]; then
-          # Only inject /exit when the user is not mid-typing.
-          # The config-change creation path already has this guard, but the
-          # processing path did not — leaving a window where C-u could wipe
-          # the user's in-progress prompt if they started typing between the
-          # signal_file being written and the watcher's next check.
+          # Only inject /exit when CC is at the idle empty prompt (❯ with nothing
+          # after it). Guards against: user mid-typing, CC actively processing or
+          # responding, CC showing a startup/rewind menu, or CC still launching.
+          #
+          # Previously used '>' which never matched CC's actual prompt character
+          # (❯), so injection fired regardless of state — including during startup
+          # and while CC was busy — causing the rewind menu to appear. Escape
+          # keystrokes were also removed: they triggered the rewind menu when the
+          # prompt was empty, which is exactly when we inject.
           _sig_last=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-          if echo "$_sig_last" | grep -qE '^[[:space:]]*>[[:space:]]+\\S'; then
-            : # user is mid-typing — keep signal_file, retry next cycle
-          else
+          if echo "$_sig_last" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
             rm -f "$signal_file"
-            sleep 1
-            tmux send-keys -t "$tmux_session" Escape
             sleep 0.5
             tmux send-keys -t "$tmux_session" C-u
-            sleep 0.2
-            tmux send-keys -t "$tmux_session" Escape
-            sleep 0.3
             if [[ "$engine" == "g" ]]; then
               tmux send-keys -t "$tmux_session" "/resume save $ai_name" C-m
               sleep 2
@@ -1124,6 +1121,7 @@ def get_engine_script(
             tmux send-keys -t "$tmux_session" '/exit' C-m
             break
           fi
+          # CC not at idle prompt — keep signal_file, retry next cycle
         fi
 
         # Config change detection (CC only, every 10s)
@@ -1140,9 +1138,10 @@ def get_engine_script(
           _changed_at=$(cat "$config_changed_file" 2>/dev/null || echo 0)
           _idle_secs=$(( $(date +%s) - _changed_at ))
           if (( _idle_secs >= _config_reload_idle_secs )); then
-            # Only fire if no text after the CC prompt (user is not mid-typing)
+            # Only fire when CC is at the idle empty prompt (same guard as signal_file
+            # processing path — see comment there for why '>' was wrong).
             _last_line=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-            if ! echo "$_last_line" | grep -qE '^[[:space:]]*>[[:space:]]+\\S'; then
+            if echo "$_last_line" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
               _new_hash=$(cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1)
               echo "$_new_hash" > "$config_hash_file"
               rm -f "$config_changed_file"
