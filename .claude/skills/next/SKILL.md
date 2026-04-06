@@ -1,3 +1,4 @@
+
 ---
 name: next
 description: What's next? Surface current priorities, autonomous batches, and unblocking reviews.
@@ -48,3 +49,4 @@ Always present the information in a structured, high-signal table or list follow
 | Group | Task | Priority | Due / Note |
 | :--- | :--- | :--- | :--- |
 | Group Name | `[ID]` **Title** | `P0` | **Date** / Progress |
+

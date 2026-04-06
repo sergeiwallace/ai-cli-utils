@@ -6,8 +6,6 @@ status: active
 source: project-template
 ---
 
-# Research Prompt Registry
-
 Central registry for all research prompts for this project. Tracks prompt text,
 model, submission status, and links to result docs. Pending/ready prompts listed
 first (highest priority at top), completed below.
@@ -32,6 +30,10 @@ narrative grounded in the research domain.
   moderate complexity
 - `gemini-3-flash-preview` — simple factual lookups, single-source verification only
 - `deep-research` — broad multi-source research requiring web + reasoning
+
+**Prompt patterns:**
+- **Gap-fill / temporal-scoping** — add a hard constraint inside `<grounding_instructions>`: "if [period] is genuinely thin, '[period]: no significant new developments found' is the correct answer. Do not backfill with [earlier period] sources. Backfilling is a failure mode, not a hedge." Generic `[NO SOURCE FOUND]` alone is insufficient — naming the failure prevents it.
+- **Follow-up / sequential runs** — add a `## Background` section at the top of the prompt body (before questions, outside `<grounding_instructions>`) summarizing what prior runs found: "Assume all Background points are established and do not re-derive them." This scopes the model to the delta.
 
 **Research run process:**
 1. Run research — pipe output directly to `docs/research/<topic>.md`

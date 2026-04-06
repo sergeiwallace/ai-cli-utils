@@ -6,8 +6,6 @@ status: active
 source: internal
 ---
 
-# Reasoning Checkpoints
-
 > Design doc: `docs/designs/reasoning-checkpoints.md` | Research: `docs/research/reasoning-enhancement-synthesis.md`
 
 Domain-specific reasoning checkpoints for high-stakes operations in Claude Code and Gemini sessions. Based on the finding that domain-specific guidance amplifies reasoning quality on medium-complexity, multi-step constrained tasks (Tau-bench +54% with optimized prompt; SWE-agent ACI ablation showing structured constraints beat prose).

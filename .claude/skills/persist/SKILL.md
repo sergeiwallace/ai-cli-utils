@@ -27,7 +27,7 @@ Session config = CLAUDE.md + GEMINI.md + MEMORY.md + memory files + procedure do
 3. **Revise existing content if needed:**
    - Persisting is not just appending — you must **intelligently revise, compact, or offload** instructions to keep within the limits.
    - Rewrite sections that have grown verbose or outdated, or merge related entries.
-   - **Hub Limits:** `CLAUDE.md` uses a ~400-line soft heuristic limit. `GEMINI.md` uses a tighter ~150-line heuristic limit. 
+   - **Hub Limits:** projects-wide ~250 lines; project-specific ~100 lines (~350 combined). `GEMINI.md` uses a tighter ~150-line heuristic limit.
    - If adding a rule pushes a file significantly over its limit, you MUST offload detailed content into a new `docs/procedures/` spoke file and leave only a short summary/link in the Hub config.
    - `MEMORY.md` soft limit: ~200 lines (it's an index, keep it concise by nature)
 4. **Write the update:**
@@ -60,7 +60,6 @@ Before writing anything, evaluate which layers this practice needs. Most practic
 ## Relationship to Other Skills
 
 - **`/save-state`** — snapshots session state (memory, docs, git). Different purpose.
-- **`/propagate`** — runs persist + pushes to project-template + all other projects.
 
 ## Auto-Exit / Refresh
 
