@@ -112,6 +112,8 @@ ai gemini "prompt" -m flash -q            # File only, no stdout (-q/--quiet)
 cat prompt.txt | ai gemini -m deep-think  # Pipe from stdin
 ai gemini "prompt" -m flash -F            # Stdout only, no file (-F/--no-file)
 ai gemini "prompt" -m flash -t 120        # 120s timeout (-t/--timeout)
+ai gemini "prompt" -m deep-research       # Gemini Deep Research (Interactions API, polls until done)
+ai gemini "prompt" -m deep-think -s 2     # Skip OAuth, go straight to REST API key
 ```
 
 **Auth fallback chain (automatic on 429/capacity errors):**
@@ -119,7 +121,9 @@ ai gemini "prompt" -m flash -t 120        # 120s timeout (-t/--timeout)
 2. REST API with `GOOGLE_API_KEY_FREE_TIER`
 3. REST API with `GOOGLE_API_KEY_TIER_1`
 
-**Model aliases:** `deep-think`, `pro`, `flash`, `flash-lite`, or any full Gemini model ID.
+Use `-s 2` or `-s 3` to start at a later tier (e.g. when OAuth returns truncated responses without erroring).
+
+**Model aliases:** `deep-think`, `pro`, `flash`, `flash-lite`, `deep-research`, or any full Gemini model ID.
 
 **Logs:** `~/.local/state/ai-cli/gemini-logs/` (JSONL). **Auto output:** `~/.local/state/ai-cli/gemini-output/`.
 

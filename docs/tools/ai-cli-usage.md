@@ -170,8 +170,15 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth -> free API key -> paid API 
 - `quick` (default) -- single-shot call, current behavior
 - `standard` -- Planner-Executor: query generation -> concurrent grounded search -> synthesis (~2x tokens, 2+ model calls)
 
+**Model aliases** (`-m`/`--model`):
+- `deep-think` (default) — Gemini 3.1 Pro with HIGH thinking via 3-tier fallback
+- `pro`, `flash`, `flash-lite` — standard Gemini models via 3-tier fallback
+- `deep-research` — Gemini Deep Research via Interactions API (REST-only, no OAuth; polls until complete, cancels on Ctrl-C). Auth: `GOOGLE_API_KEY_FREE_TIER` → `GOOGLE_API_KEY_TIER_1`.
+- Any full Gemini model ID
+
 **Flags:**
-- `-m`/`--model` -- Model alias: `deep-think`, `pro`, `flash`, `flash-lite`, or full model ID (used for synthesis in standard/deep)
+- `-m`/`--model` -- Model alias or full model ID (see above)
+- `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). Use `-s 2` to skip OAuth when it returns truncated responses.
 - `-d`/`--depth` -- Research depth: `quick` or `standard`
 - `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
 - `--resume RUN_ID` -- Resume a standard run from last completed step

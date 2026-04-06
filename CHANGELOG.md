@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai gemini -m deep-research`: Gemini Deep Research via the Interactions API (`deep-research-pro-preview-12-2025`). Submits a background job, polls every 30s until complete, cancels via DELETE on Ctrl-C. Auth: `GOOGLE_API_KEY_FREE_TIER` → `GOOGLE_API_KEY_TIER_1` (REST-only; no OAuth path). Output follows the same `-o`/auto-file/stdout conventions as other models. (AI-CLI-36)
+- `ai gemini -s`/`--start-tier TIER`: Skip earlier auth tiers explicitly (1=OAuth CLI, 2=free API key, 3=paid API key). Useful when OAuth returns truncated responses without erroring. (AI-CLI-36)
+- `ai gemini -d standard`/`--depth standard`: Planner-Executor research pipeline — query generation → concurrent Gemini-grounded search → synthesis. Per-step JSON checkpointing at `~/.local/state/ai-cli/research-runs/<run-id>/`. Resume with `--resume <run-id>`. (AI-CLI-36)
+
+### Fixed
+
+- `ai gemini -m deep-research`: Interactions API submit response returns `"id"` (flat string), not `"name"` (resource path). Code was using `.get("name", "").split("/")[-1]`, producing an empty string and silently failing before polling started. Fixed to `interaction.get("id") or interaction.get("name", "").split("/")[-1]`. (AI-CLI-36)
+
+### Added
+
 - `ai layout` command: YAML-driven iTerm2 window/tab/pane layout system. Subcommands: `list`, `validate <name>`, `profiles <name>`, `<name>` (apply). Layout files at `~/.config/iterm2/layouts/*.yaml`. Nested pane split model (vertical/horizontal). Dynamic Profile generation + runtime tinted icon per tab. See `docs/designs/iterm2-layout-system.md`.
 - `icon_generator` module: runtime PNG icon generation with Pillow. Auto-contrast tint derived from tab background color via HSL color theory (180° hue rotation + lightness adaptation). Explicit `icon_color` override supported. Source logos at `src/ai_cli/data/icons/`. Falls back to Claude brand orange (`#da7756`) when no tab color is set.
 - Per-session Dynamic Profile generation: each session gets a `ai-cli:{ai_name}` Dynamic Profile JSON (inherits from base profile, sets tab color + icon) written to `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/` at launch and cleaned up on exit.
