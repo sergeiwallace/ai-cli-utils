@@ -172,7 +172,7 @@ All CC sessions MUST be launched via `ai c` (not bare `claude`). `ai c` is the e
 
 **On every `ai c` launch:**
 
-1. **Load registry** — parse `sergei.toml`
+1. **Load registry** — parse `platform.toml`
 2. **Schema validation** — every `[[projects]]` entry must have `name` and `task_prefix`. Both must be unique (case-insensitive). Fail with error if violated.
 3. **Completeness scan** — diff `~/projects/*/` directories against registered `name` fields
 4. **Unregistered directory found** → interactive prompt:
@@ -181,7 +181,7 @@ All CC sessions MUST be launched via `ai c` (not bare `claude`). `ai c` is the e
    Suggested task_prefix: MENOS
    Add to registry? [Y/n, or enter custom prefix]:
    ```
-   - User confirms → append entry to `sergei.toml` with sensible defaults (type, active, etc.)
+   - User confirms → append entry to `platform.toml` with sensible defaults (type, active, etc.)
    - User declines → **exit to shell**. Hard requirement — no session launch with incomplete registry.
 5. **Proceed** — registry is guaranteed complete and valid for this session
 
@@ -248,7 +248,7 @@ After writing the file in `post_handoff()`, publish to subject `"handoff.{projec
 **Batch:** 1
 
 In `NATSClient.connect()`, before attempting connection:
-- If `AI_CLI_HOST == "mac"` and port 4222 is not reachable locally (1s socket timeout): open tunnel via `subprocess.Popen(["ssh", "-fNL", "4222:localhost:4222", "sergei@178.104.70.139"])`
+- If `AI_CLI_HOST == "mac"` and port 4222 is not reachable locally (1s socket timeout): open tunnel via `subprocess.Popen(["ssh", "-fNL", "4222:localhost:4222", "user@192.0.2.1"])`
 - Wait up to 3s for port to become available, then proceed with normal connect
 - Store tunnel PID for cleanup on disconnect
 
@@ -355,7 +355,7 @@ Usage: `ai handoff post --remote <project> "<title>" <priority> "<message>"`
 - `src/ai_cli/main.py`
 
 **Acceptance criteria:**
-- [ ] `--remote` flag SSHes to `sergei@178.104.70.139` and runs `ai handoff post` with same args
+- [ ] `--remote` flag SSHes to `user@192.0.2.1` and runs `ai handoff post` with same args
 - [ ] Without `--remote`, existing behavior unchanged
 - [ ] SSH failure exits with non-zero and prints error
 

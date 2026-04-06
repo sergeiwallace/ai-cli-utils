@@ -5,13 +5,13 @@ tags: [ai-cli, ai-gemini, research-pipeline, depth-tiers, track-a]
 status: approved
 source: session-2026-04-04
 related_docs:
-  - ~/projects/sergei/docs/research/gemini-research-pipeline-synthesis.md
-  - ~/projects/sergei/docs/research/deep-research-pipeline-design.md
+  - docs/research/gemini-research-pipeline-synthesis.md
+  - docs/research/deep-research-pipeline-design.md
 ---
 
 # Implementation Plan — `ai gemini` Research Depth Tiers
 
-**Research basis:** `~/projects/sergei/docs/research/gemini-research-pipeline-synthesis.md` (R-61 + R-62)
+**Research basis:** `docs/research/gemini-research-pipeline-synthesis.md` (R-61 + R-62)
 
 ## Problem
 
@@ -29,7 +29,7 @@ Add a `--depth` flag to `ai gemini` with three tiers, implemented as a pure Pyth
 
 ### Option 1 — Three-tier `--depth` flag (recommended)
 
-Implement `--depth quick|standard|deep` as a configurable orchestration layer in `ai-cli-utils`, modelled on aido's depth config/preset structure for consistency across the platform.
+Implement `--depth quick|standard|deep` as a configurable orchestration layer in `ai-cli-utils`, modelled on a multi-step depth config/preset orchestration pattern.
 
 **`--depth quick` (default — current behavior)**
 - Single model call: `prompt → model → output`
@@ -79,7 +79,7 @@ Best for: broad exploratory surveys, multi-source technical deep dives, strategi
 
 ### Option 3 — LangGraph-based (not recommended)
 
-Heavy dependency for a CLI command; couples `ai-cli` to `aido` graph logic.
+Heavy dependency for a CLI command; couples `ai-cli` to external orchestration graph logic.
 
 ---
 
@@ -91,7 +91,7 @@ Heavy dependency for a CLI command; couples `ai-cli` to `aido` graph logic.
 
 ## Depth Config Structure
 
-Mirror aido's depth config/preset structure (`aido/configs/research_normal.yaml`, `aido/src/aido/research_config.py`). Each preset specifies all configurable parameters explicitly.
+Mirror a named depth config/preset structure. Each preset specifies all configurable parameters explicitly.
 
 Config file location: `~/.config/ai-cli/research.yaml`
 
@@ -156,7 +156,7 @@ To override: `--search-provider tavily|firecrawl|serper` (or set in depth preset
 - Per-step files: `step_01_query_generation.json`, `step_02_search_results.json`, `step_03_synthesis.json`
 - Resume via `ai gemini --resume <run-id>` — picks up from last completed step, no full re-run
 
-**Auto-fallback to REST (B):** Apply `invoke_with_fallback()` pattern (ref: `aido/src/aido/research_config.py:332–559`) to every Gemini call in the orchestration:
+**Auto-fallback to REST (B):** Apply `invoke_with_fallback()` pattern  to every Gemini call in the orchestration:
 1. Try OAuth CLI with timeout
 2. Timeout → retry once with 1.5x backoff
 3. Capacity error → 30s cooldown, skip to REST
@@ -171,11 +171,11 @@ REST budget only charged if OAuth truly fails after retries.
 
 Order by dependency:
 
-1. Review aido's depth config schema — mirror structure for `research.yaml` (ref: `aido/configs/research_normal.yaml`, `aido/src/aido/research_config.py`)
+1. Define depth config schema for `research.yaml`
 2. Add `--depth` flag to `ai gemini` CLI argument parser (`quick` default); add `--resume <run-id>` flag
 3. Define `~/.config/ai-cli/research.yaml` depth preset config with `quick`, `standard`, `deep` presets (including `retries` section)
 4. Implement per-step checkpoint/resume: JSON snapshots at `~/.local/state/ai-cli/research-runs/<run-id>/`
-5. Implement per-step fallback: `invoke_with_fallback()` pattern for each Gemini call (CLI → REST, mirroring aido)
+5. Implement per-step fallback: `invoke_with_fallback()` pattern for each Gemini call (CLI → REST, via invoke_with_fallback())
 6. Implement Gemini native grounding search integration (`tools=[{"googleSearch": {}}]`)
 7. Implement `standard` orchestration: query generation → concurrent search → synthesis
 8. Write tests: query generation output format; synthesis receives search context; mock grounding API; checkpoint written after each step; resume skips completed steps
@@ -240,8 +240,8 @@ Capabilities: multimodal inputs, GCS bucket reads up to 100MB, private web data 
 | Date | Round | Decisions / Approvals |
 |------|-------|----------------------|
 | 2026-04-04 | Round 1 | Plan proposed |
-| 2026-04-04 | Round 2 | OQ-1: Gemini native grounding as default; Tavily/Firecrawl/Serper as optional follow-up tasks (SW-762, SW-763). OQ-2: `quick` stays default. OQ-3: configurable `planning_model` per preset; test `pro`/`flash` vs `deep-think` after `standard` ships; mirror aido depth config structure. New OQ-4 added. |
-| 2026-04-05 | Round 3 | OQ-4 resolved: B + C — per-step JSON checkpointing + per-call OAuth→REST auto-fallback mirroring aido's `invoke_with_fallback()`. `--resume <run-id>` flag added. |
+| 2026-04-04 | Round 2 | OQ-1: Gemini native grounding as default; Tavily/Firecrawl/Serper as optional follow-up tasks (SW-762, SW-763). OQ-2: `quick` stays default. OQ-3: configurable `planning_model` per preset; test `pro`/`flash` vs `deep-think` after `standard` ships; mirror depth config structure. New OQ-4 added. |
+| 2026-04-05 | Round 3 | OQ-4 resolved: B + C — per-step JSON checkpointing + per-call OAuth→REST auto-fallback via `invoke_with_fallback()`. `--resume <run-id>` flag added. |
 | 2026-04-05 | Round 4 | Plan approved. Moved to ai-cli-utils project for implementation. |
 | 2026-04-06 | Round 5 | Phase 2 enhancements added based on R-66 (2026 gap analysis): P2-1 IEW voting for --depth deep, P2-2 hierarchical search provider, P2-3 token-level fault tolerance (confirmed no action — existing checkpointing is correct ceiling). |
 | 2026-04-06 | Round 6 | P2-4 added: --depth exhaustive via Gemini Interactions API (official async Deep Research harness). Pricing/quota research flagged as addition to SW-766 scope. |

@@ -29,7 +29,7 @@ source: session-2026-04-01
 
 ## Background
 
-The user runs `ssh -R 9222:localhost:9222 sergei@178.104.70.139` to forward a local Chrome debug port to the Hetzner server, enabling remote browser automation. This is a recurring need whenever CC sessions on Hetzner need CDP access to a local Chrome instance.
+The user runs `ssh -R 9222:localhost:9222 user@192.0.2.1` to forward a local Chrome debug port to the Hetzner server, enabling remote browser automation. This is a recurring need whenever CC sessions on Hetzner need CDP access to a local Chrome instance.
 
 ## Problem
 
@@ -169,8 +169,8 @@ New `TestTunnel` class in `tests/test_main.py`:
 
 ```toml
 [remote]
-host = "178.104.70.139"
-user = "sergei"
+host = "192.0.2.1"
+user = "user"
 ```
 
 ### 6. Checks

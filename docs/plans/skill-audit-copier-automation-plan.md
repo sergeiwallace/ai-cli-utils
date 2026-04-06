@@ -14,7 +14,7 @@ source: ai-cli-utils
 
 **Related:**
 - `~/projects/project-template/` — template source
-- `~/projects/CLAUDE.md` — projects-wide session config (symlinked from `sergei/docs/projects-dir-session-config/CLAUDE.md`)
+- `~/projects/CLAUDE.md` — projects-wide session config
 - `src/ai_cli/main.py` — ai-cli subcommand implementation
 - `~/.claude/hooks/config-reload-check.sh` — UserPromptSubmit hook (config change detection)
 
@@ -167,9 +167,7 @@ After Phases 1–2 are shipped:
 2. Review any conflict markers reported
 3. Commit and push each project that was modified
 
-**14 projects:** acn-automation, agora, ai-cli-utils, aido, apt-switch, artelier, aurion, hegemony, humanware-mobile, humanware, job-pilot, menos, personal-site, sergei.
-
-Note: `sergei` gets a project-specific `next/SKILL.md` override keeping the cross-project SQLite query — add this after copier runs.
+**Projects:** all active projects in the platform ecosystem. The main platform project may need a project-specific `next/SKILL.md` override — add this after copier runs.
 
 ---
 
@@ -206,5 +204,5 @@ Commit and push `~/projects/CLAUDE.md` directly (it's the projects-wide file, no
 
 | Date | Round | Decisions |
 |------|-------|-----------|
-| 2026-04-04 | Round 1 | propagate=delete; next=local roadmap default (sergei overrides); copier automation=ai copier-update subcommand; auto-restart on idle added as Phase 3; idle threshold=90s configurable; hook block stays as safety net. |
+| 2026-04-04 | Round 1 | propagate=delete; next=local roadmap default; copier automation=ai copier-update subcommand; auto-restart on idle added as Phase 3; idle threshold=90s configurable; hook block stays as safety net. |
 | 2026-04-04 | Complete | All 5 phases shipped. 14/14 projects updated. Template H1/MD025 fixes added. markdownlint-cli2 ignores added to job-pilot/menos/personal-site for procedure/template dirs. |

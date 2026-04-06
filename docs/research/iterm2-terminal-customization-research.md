@@ -71,4 +71,4 @@ prompt: R-50
 **Registry ID:** R-50
 **Model:** deep-think (gemini-2.5-pro with HIGH thinking)
 **Date:** 2026-04-02
-**Prompt:** See `/Users/sergeiwallace/projects/sergei/docs/research/prompts/research-prompt-registry.md` § R-50
+**Prompt:** See project research prompt registry § R-50

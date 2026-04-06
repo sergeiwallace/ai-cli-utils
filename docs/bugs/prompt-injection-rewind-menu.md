@@ -181,7 +181,7 @@ fi
 
 **Trigger:** Called async at session start (`main.py:1254`) with `timeout 20`.
 
-**Code:** Pure Python — reads from humanware DB, writes `session-context.md` to `.claude/signals/`. No tmux interaction whatsoever. Cleared.
+**Code:** Pure Python — reads from platform DB, writes `session-context.md` to `.claude/signals/`. No tmux interaction whatsoever. Cleared.
 
 ---
 

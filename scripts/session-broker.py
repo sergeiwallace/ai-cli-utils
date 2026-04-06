@@ -20,12 +20,14 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
     Returns markdown content for session-context.md.
     """
     try:
-        from humanware.config import load_config
-        from humanware.db import init_db, set_db_path, sync_all_project_roadmaps
-        from humanware.services.curation import get_curated_queue, run_curation
-        from humanware.services.intelligence import get_daily_digest
-        from humanware.services.memory import index_project_memories
-        from humanware.services.tasks import get_cross_project_priorities
+        # Optional platform integration — requires a compatible platform package.
+        # Falls back gracefully if not available.
+        from platform_pkg.config import load_config  # type: ignore[import]
+        from platform_pkg.db import init_db, set_db_path, sync_all_project_roadmaps  # type: ignore[import]
+        from platform_pkg.services.curation import get_curated_queue, run_curation  # type: ignore[import]
+        from platform_pkg.services.intelligence import get_daily_digest  # type: ignore[import]
+        from platform_pkg.services.memory import index_project_memories  # type: ignore[import]
+        from platform_pkg.services.tasks import get_cross_project_priorities  # type: ignore[import]
 
         cfg = load_config(config_path)
         set_db_path(cfg.db_path)
@@ -94,7 +96,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
 
     # Priority Guidance
     try:
-        from humanware.services.guidance import compute_priority_guidance, format_daily_focus
+        from platform_pkg.services.guidance import compute_priority_guidance, format_daily_focus  # type: ignore[import]
 
         guidance = compute_priority_guidance(project=project)
         focus_text = format_daily_focus(guidance)
@@ -111,7 +113,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
 def main():
     parser = argparse.ArgumentParser(description="Generate session context for AI startup")
     parser.add_argument("--project", help="Current project name")
-    parser.add_argument("--config", help="Path to sergei.toml")
+    parser.add_argument("--config", help="Path to platform config file")
     parser.add_argument("--engine", choices=["c", "g"], help="AI engine (c for Claude, g for Gemini)")
     parser.add_argument(
         "--output", help="Output file path (default based on engine)"

@@ -188,7 +188,7 @@ ai reconnect             # Print reconnect commands for remote sessions
 
 This repo ships two Claude Code session config files:
 
-- **`CLAUDE.md`** — lean config for [humanware platform](https://github.com/sergeiwallace/sergei) users, where `~/projects/CLAUDE.md` provides the shared AI orchestration rules.
+- **`CLAUDE.md`** — lean config for users with a shared `~/projects/CLAUDE.md` (managed platform setup), where global AI orchestration rules are inherited from there.
 - **`CLAUDE-full.md`** — standalone config with all rules included, for everyone else.
 
 After installing, run `ai setup` once to automatically detect your environment and configure the right file:
@@ -197,7 +197,7 @@ After installing, run `ai setup` once to automatically detect your environment a
 ai setup
 ```
 
-`ai setup` checks for the humanware platform (`~/projects/CLAUDE.md`). If found, it confirms `CLAUDE.md` is correct and takes no action. If not found, it copies `CLAUDE-full.md` → `CLAUDE.md` and marks the file as `assume-unchanged` in git so it won't show as locally modified.
+`ai setup` checks for a shared `~/projects/CLAUDE.md`. If found, it confirms the lean `CLAUDE.md` is correct and takes no action. If not found, it copies `CLAUDE-full.md` → `CLAUDE.md` and marks the file as `assume-unchanged` in git so it won't show as locally modified.
 
 ### Tool Config
 

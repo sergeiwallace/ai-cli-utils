@@ -47,7 +47,7 @@ The corresponding Dynamic Profile JSON keys are: [VERIFIABLE FACT: [iTerm2 sourc
 ```json
 {
   "Icon": 2,
-  "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/claude-logo.png"
+  "Custom Icon Path": "~/.config/iterm2/icons/claude-logo.png"
 }
 ```
 
@@ -79,7 +79,7 @@ APS rules support these matchers: [VERIFIABLE FACT: [APS docs](https://iterm2.co
 |---|---------|---------|-------|
 | 1 | Username | `root@` | Requires Shell Integration |
 | 2 | Hostname | `*.example.com` | Wildcards supported, requires Shell Integration |
-| 3 | Path | `/home/sergei/projects/*` | Wildcards supported, requires Shell Integration |
+| 3 | Path | `~/projects/*` | Wildcards supported, requires Shell Integration |
 | 4 | Job name | `&python` (prefix with `&`) | Matches foreground process name (v3.6+: matches full command line) |
 
 **Critical limitation: APS does NOT support matching on tmux session name.** The rule system is restricted to user, host, path, and job name. The `tmuxClientName` variable exists in iTerm2's variable system but is only available to the scripting/Python API, not to APS rules. [VERIFIABLE FACT: confirmed by [APS docs](https://iterm2.com/documentation-automatic-profile-switching.html) and [GitLab issue #4543](https://gitlab.com/gnachman/iterm2/-/issues/4543)]
@@ -133,7 +133,7 @@ Dynamic Profiles let you define profiles as JSON files that iTerm2 hot-reloads. 
         "Color Space": "sRGB"
       },
       "Icon": 2,
-      "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/claude-logo.png",
+      "Custom Icon Path": "~/.config/iterm2/icons/claude-logo.png",
       "Tags": ["claude", "ai-agent"]
     },
     {
@@ -149,7 +149,7 @@ Dynamic Profiles let you define profiles as JSON files that iTerm2 hot-reloads. 
         "Color Space": "sRGB"
       },
       "Icon": 2,
-      "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/terminal.png",
+      "Custom Icon Path": "~/.config/iterm2/icons/terminal.png",
       "Tags": ["shell", "utility"]
     }
   ]
@@ -435,7 +435,7 @@ tell application "iTerm2"
     create tab with profile "ClaudeCode"
     tell current session of current tab
       set name to "CC sw-3"
-      write text "ssh sergei@178.104.70.139 -t 'tmux attach -t c-r-sw-3 || tmux new -s c-r-sw-3'"
+      write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-3 || tmux new -s c-r-sw-3'"
     end tell
   end tell
 end tell
@@ -480,7 +480,7 @@ async def launch_cc_session(connection, session_num):
 
     session = tab.current_session
     await session.async_send_text(
-        f"ssh sergei@178.104.70.139 -t "
+        f"ssh user@192.0.2.1 -t "
         f"'tmux attach -t c-r-sw-{session_num} || "
         f"tmux new -s c-r-sw-{session_num}'\n"
     )
@@ -537,14 +537,14 @@ For your workflow, persistence is the **wrong goal** -- your sessions are SSH tu
 
 ### Step 1: Create Dynamic Profiles
 
-Create the file `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-sessions.json`:
+Create the file `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-sessions.json`:
 
 ```json
 {
   "Profiles": [
     {
       "Name": "ClaudeCode",
-      "Guid": "humanware-claude-code-001",
+      "Guid": "ai-cli-claude-code-001",
       "Dynamic Profile Parent Name": "Default",
       "Badge Text": "\\(user.sessionType) sw-\\(user.sessionNum)",
       "Use Tab Color": true,
@@ -555,12 +555,12 @@ Create the file `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-
         "Color Space": "sRGB"
       },
       "Icon": 2,
-      "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/claude-logo.png",
+      "Custom Icon Path": "~/.config/iterm2/icons/claude-logo.png",
       "Tags": ["claude", "ai-agent"]
     },
     {
       "Name": "ShellUtility",
-      "Guid": "humanware-shell-utility-001",
+      "Guid": "ai-cli-shell-utility-001",
       "Dynamic Profile Parent Name": "Default",
       "Badge Text": "\\(user.sessionType)",
       "Use Tab Color": true,
@@ -571,34 +571,34 @@ Create the file `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-
         "Color Space": "sRGB"
       },
       "Icon": 2,
-      "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/terminal.png",
+      "Custom Icon Path": "~/.config/iterm2/icons/terminal.png",
       "Tags": ["shell", "utility"]
     },
     {
       "Name": "Caffeinate",
-      "Guid": "humanware-caffeinate-001",
+      "Guid": "ai-cli-caffeinate-001",
       "Dynamic Profile Parent Name": "ShellUtility",
       "Badge Text": "caffeinate",
       "Icon": 2,
-      "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/coffee.png",
+      "Custom Icon Path": "~/.config/iterm2/icons/coffee.png",
       "Tags": ["utility", "caffeinate"]
     },
     {
       "Name": "PortForward",
-      "Guid": "humanware-port-forward-001",
+      "Guid": "ai-cli-port-forward-001",
       "Dynamic Profile Parent Name": "ShellUtility",
       "Badge Text": "SSH tunnel",
       "Icon": 2,
-      "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/ssh.png",
+      "Custom Icon Path": "~/.config/iterm2/icons/ssh.png",
       "Tags": ["utility", "ssh"]
     },
     {
       "Name": "DebugBrowser",
-      "Guid": "humanware-debug-browser-001",
+      "Guid": "ai-cli-debug-browser-001",
       "Dynamic Profile Parent Name": "ShellUtility",
       "Badge Text": "Chrome debug",
       "Icon": 2,
-      "Custom Icon Path": "/Users/sergei/.config/iterm2/icons/chrome.png",
+      "Custom Icon Path": "~/.config/iterm2/icons/chrome.png",
       "Tags": ["utility", "browser"]
     }
   ]
@@ -660,7 +660,7 @@ For initial session creation from the Mac:
 # ~/bin/iterm2-fleet-launch.sh
 # Creates tabs for all active CC sessions
 
-SERVER="sergei@178.104.70.139"
+SERVER="user@192.0.2.1"
 SESSIONS=(1 2 3 4 5)  # Active session numbers
 
 for num in "${SESSIONS[@]}"; do
@@ -688,12 +688,12 @@ tell application "iTerm2"
   tell current window
     tell current session of current tab
       set name to "Monitor 1"
-      write text "ssh sergei@178.104.70.139 -t 'tmux attach -t c-r-sw-1'"
+      write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-1'"
       -- Split right
       set rightPane to (split vertically with profile "ShellUtility")
       tell rightPane
         set name to "Monitor 2"
-        write text "ssh sergei@178.104.70.139 -t 'tmux attach -t c-r-sw-2'"
+        write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-2'"
       end tell
     end tell
     -- Split current pane down
@@ -701,7 +701,7 @@ tell application "iTerm2"
       set bottomLeft to (split horizontally with profile "ShellUtility")
       tell bottomLeft
         set name to "Monitor 3"
-        write text "ssh sergei@178.104.70.139 -t 'tmux attach -t c-r-sw-3'"
+        write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-3'"
       end tell
     end tell
   end tell

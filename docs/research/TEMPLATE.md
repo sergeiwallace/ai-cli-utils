@@ -65,7 +65,7 @@ source: "[model]-[date]"
 ## Appendix: Research Prompt
 
 **Registry ID:** R-N / DT-N / A-N
-**Model:** `opus researcher` / `gemini-3.1-pro-preview` / `deep-think` / `aido`
+**Model:** `opus researcher` / `gemini-3.1-pro-preview` / `deep-think`
 **Date:** YYYY-MM-DD
 
 ```
@@ -76,11 +76,3 @@ source: "[model]-[date]"
 "This research doc predates the prompt appendix template. The original prompt
 and model information are not available." -->
 
-<!-- NOTE for aido research runs:
-aido's commit_report_node auto-appends a "## Run History" section with
-detailed provenance: aido version, config, mode, query, loop count,
-models used (Claude brief/search/analysis/compile + Gemini model),
-full token usage per backend, estimated API cost, and errors.
-The Appendix: Research Prompt section above still holds the original prompt,
-but aido adds its own runtime metadata automatically — no manual work needed.
-Do NOT duplicate what aido already appends. -->

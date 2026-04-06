@@ -19,7 +19,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ai_cli.gemini import GeminiResult
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +368,7 @@ def synthesize(
     quiet: bool = False,
     verbose: bool = False,
     timeout_s: int = 600,
-) -> "GeminiResult":  # noqa: F821
+) -> "GeminiResult":
     """Call the synthesis model with the original prompt + all search results."""
     from ai_cli.gemini import GeminiResult, run_gemini
 
@@ -418,7 +421,7 @@ def run_standard(
     quiet: bool = False,
     verbose: bool = False,
     timeout_s: int = 600,
-) -> "GeminiResult":  # noqa: F821
+) -> "GeminiResult":
     """Planner-Executor: query generation -> concurrent search -> synthesis.
 
     Args:

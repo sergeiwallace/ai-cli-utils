@@ -3,7 +3,7 @@ title: "Zero-Slop Anchor Text (Deep Think Grounding)"
 category: procedures
 tags: [prompt-engineering, deep-think, research, grounding, anti-hallucination]
 status: active
-source: sergei
+source: internal
 ---
 
 # Zero-Slop Anchor Text (Deep Think Grounding)

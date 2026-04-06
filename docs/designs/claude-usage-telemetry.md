@@ -1,7 +1,7 @@
 ---
 title: Claude Usage Telemetry — Token Tracking and Quota Pacing
 category: design
-tags: [claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23, SW-613]
+tags: [claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23]
 status: approved
 source: R-5 deep-think 2026-04-01, opus synthesis 2026-04-01
 ---
@@ -12,7 +12,7 @@ source: R-5 deep-think 2026-04-01, opus synthesis 2026-04-01
 
 **Created:** 2026-04-01
 
-**Tasks:** AI-CLI-22 (hidden pane scraper), AI-CLI-23 (native API investigation), SW-613 (automated quota tracking + pacing), SW-440 (robust usage tracking), SW-647 (aido Claude token tracking)
+**Tasks:** AI-CLI-22 (hidden pane scraper), AI-CLI-23 (native API investigation)
 **Research:** R-5 (deep-think, 2026-04-01)
 
 <!-- FEEDBACK RULES (for AI agents):
@@ -511,9 +511,9 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - **Slack**: incoming webhook for push alerts
 - **Tailscale**: cross-machine networking (Mac to Hetzner)
 - **tmux**: status bar integration for at-a-glance burn rate
-- **sergei CLI / humanware MCP**: future integration for quota state in priority guidance (so session startup can show "67% of weekly quota used, 3 days remaining")
-- **aido** (`AIDO-1`): aido-spawned CC sessions should be captured by the shared statusLine hook; validate in test harness
-- **hw-scheduling workers** (`SW-746`): workers read `quota.claude.weekly` from NATS KV (written by this telemetry system) before executing AI-tagged jobs. Currently enforced worker-side (Decision 5 in scheduling design doc). **Future consideration:** if quota enforcement logic grows substantially in complexity (multi-model arbitrage, cross-worker priority queuing, cost forecasting), extract a dedicated quota gateway process that sits between JetStream and the workers. At that point, the telemetry system's NATS KV writes become the input to the gateway rather than being read directly by workers. See `docs/designs/scheduling-system.md` D5 for the full analysis of when this extraction is warranted.
+- **Platform MCP**: future integration for quota state in priority guidance (so session startup can show "67% of weekly quota used, 3 days remaining")
+- **Orchestrated sessions**: AI orchestrator-spawned CC sessions should be captured by the shared statusLine hook; validate in test harness
+- **Scheduled workers**: workers read `quota.claude.weekly` from NATS KV (written by this telemetry system) before executing AI-tagged jobs. Currently enforced worker-side. **Future consideration:** if quota enforcement logic grows substantially in complexity (multi-model arbitrage, cross-worker priority queuing, cost forecasting), extract a dedicated quota gateway process that sits between JetStream and the workers.
 
 ## Implementation Phases
 
@@ -575,7 +575,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 
 3. **5-hour rolling limit interaction**: Track both — we'll have the data anyway. The 5-hour sub-limit is less of a concern in practice (never hit), so it's a secondary signal. Pacing focus is the weekly limit; 5-hour is detection-only.
 
-4. **aido token tracking (SW-647)**: Delegate to `c-aido-1` session. Task added to aido roadmap as `AIDO-1`. Likely covered automatically if aido-spawned CC sessions pick up `~/.claude/settings.json` — validate this in the test harness.
+4. **Orchestrator token tracking**: Likely covered automatically if orchestrator-spawned CC sessions pick up `~/.claude/settings.json` — validate this in the test harness.
 
 5. **Accuracy baseline**: The deduced limit may be a moving target, so dynamic calibration from the `/usage` percentage is essential. Anthropic is unlikely to change limits mid-week but shouldn't be ruled out. **The ground truth is the weekly usage quota percentage** — that's what actually matters. The mathematical tracking (token counts, deduced limit) is secondary scaffolding to give context to the percentage.
 
@@ -583,14 +583,14 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 > 1. Tokens are tokens, right? It's a unit of measurement. Opus just uses more tokens than Sonnet. We'll see if the tracking doesn't cohere over time.
 > 2. It's a set week window. Resets next on April 4 1 AM EST. Fixed 7-day window from that point.
 > 3. Track both because we'll have that data anyway, but I've never hit the 5-hour sub-limit so less worried about that.
-> 4. Just incorporate Claude usage token tracking from the system into aido nodes systematically. Let c-aido-1 worry about that when we build this. Check aido roadmap for a task — add one if not there, link it to this.
+> 4. Incorporate Claude usage token tracking into orchestrator nodes systematically.
 > 5. Limit may be a moving target so needs dynamic calibration based on % and token tracking. Unlikely they change it mid-week but shouldn't rule it out. Ground truth is the weekly usage quota % — that's what actually matters. Rest is just mathematical tracking.
 
 > **AI Response Round 1:**
 > - OQ-1: Agreed. No weighting applied. Tracking by model for visibility only. Validated empirically if math drifts from percentage over time.
 > - OQ-2: Fixed 7-day window confirmed. Next reset April 4 1 AM EST recorded as first weekly_state anchor.
 > - OQ-3: Track both, pacing focus on weekly limit, 5-hour is detection-only.
-> - OQ-4: Task AIDO-1 added to aido roadmap (`~/projects/aido/docs/roadmap/master-roadmap.md`). Test harness should validate aido CC sessions are captured by the statusLine hook automatically.
+> - OQ-4: Test harness should validate orchestrator-spawned CC sessions are captured by the statusLine hook automatically.
 > - OQ-5: Agreed — the percentage is the ground truth. Token counting is scaffolding. Dynamic calibration essential since limit may shift week to week.
 
 ---

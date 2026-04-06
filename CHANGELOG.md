@@ -16,9 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `ai gemini -m deep-research`: Interactions API submit response returns `"id"` (flat string), not `"name"` (resource path). Code was using `.get("name", "").split("/")[-1]`, producing an empty string and silently failing before polling started. Fixed to `interaction.get("id") or interaction.get("name", "").split("/")[-1]`. (AI-CLI-36)
-
-### Added
-
+- Prompt injection watcher: hardened against stale `❯` prompt visible during `claude --continue` startup. Added 10-cycle grace period, double `capture-pane` verification, removed `C-u` keystroke, and signal file is now deleted after injection (not before). (AI-CLI-35)
+- Process hygiene (`ai ps`): stale PID file cleanup, orphan detection, and session health checks.
 - `ai layout` command: YAML-driven iTerm2 window/tab/pane layout system. Subcommands: `list`, `validate <name>`, `profiles <name>`, `<name>` (apply). Layout files at `~/.config/iterm2/layouts/*.yaml`. Nested pane split model (vertical/horizontal). Dynamic Profile generation + runtime tinted icon per tab. See `docs/designs/iterm2-layout-system.md`.
 - `icon_generator` module: runtime PNG icon generation with Pillow. Auto-contrast tint derived from tab background color via HSL color theory (180° hue rotation + lightness adaptation). Explicit `icon_color` override supported. Source logos at `src/ai_cli/data/icons/`. Falls back to Claude brand orange (`#da7756`) when no tab color is set.
 - Per-session Dynamic Profile generation: each session gets a `ai-cli:{ai_name}` Dynamic Profile JSON (inherits from base profile, sets tab color + icon) written to `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/` at launch and cleaned up on exit.
@@ -29,8 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ai color <name|#hex>` command: ad hoc tab color reassignment for the current session.
 - `ai internal cleanup-session-files <ai_name>`: remove session icon PNG and Dynamic Profile JSON; called by EXIT trap.
 - OSC 1 title fix: session name now set via `\033]1;` instead of `\033]0;` so mosh on remote sessions does not prepend `[mosh] ` to the tab title.
-- `ai setup` command: detects humanware platform vs standalone environment and configures `CLAUDE.md` accordingly; marks file `assume-unchanged` in git after swap so external users don't see local modifications
-- `CLAUDE-full.md`: standalone self-contained Claude Code session config for users without the humanware platform; `CLAUDE.md` remains the lean variant for humanware users
+- `ai setup` command: detects managed platform vs standalone environment and configures `CLAUDE.md` accordingly; marks file `assume-unchanged` in git after swap so external users don't see local modifications
+- `CLAUDE-full.md`: standalone self-contained Claude Code session config for users without the managed platform; `CLAUDE.md` remains the lean variant for managed platform users
 - pyright basic mode type checking in CI lint job
 
 ### Security

@@ -38,7 +38,7 @@ source: internal
 
 ## Overview
 
-`ai` is the humanware platform CLI. Entry point: `src/ai_cli/main.py:cli()`.
+`ai` is the unified CLI for Claude Code and Gemini CLI sessions. Entry point: `src/ai_cli/main.py:cli()`.
 
 Subcommands are dispatched via `sys.argv` inspection before Click takes over for the default `ai c` session-launch flow.
 
@@ -203,7 +203,7 @@ ai handoff complete <file>
 
 Cross-session handoff queue. `post` writes a handoff item (add `--remote` to post to Hetzner via SSH); `check` prints the highest-priority pending file; `claim` atomically moves a file to `claimed/`; `complete` moves it to `completed/`.
 
-Queue lives at `~/projects/sergei/.handoff-queue/`. Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
+Queue lives at `~/projects/<main-project>/.handoff-queue/` (configured via `main_project` in config.toml). Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
 
 ### ai layout
 
@@ -312,7 +312,7 @@ Requires `autossh` (`brew install autossh` / `apt install autossh`). Reads host/
 ai update [--force]
 ```
 
-Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timestamp}` so uv sees it as a new package, runs `uv tool install --force`, also installs into the aido venv if present, then restores `pyproject.toml`.
+Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timestamp}` so uv sees it as a new package, runs `uv tool install --force`, then restores `pyproject.toml`.
 
 - `--force` — additionally passes `--reinstall` to reinstall all dependencies (not just ai-cli-utils). Use for corrupt-environment recovery.
 - `deploy` is kept as an alias for backward compatibility.
@@ -326,8 +326,8 @@ ai setup
 
 Detects the runtime environment and configures the Claude Code session config (`CLAUDE.md`) accordingly.
 
-- **humanware platform detected** (`~/projects/CLAUDE.md` exists): confirms `CLAUDE.md` (lean version) is correct — the shared AI orchestration rules are inherited from `~/projects/CLAUDE.md`. No file changes made.
-- **no humanware platform**: copies `CLAUDE-full.md` → `CLAUDE.md` (standalone config with all rules), then runs `git update-index --assume-unchanged CLAUDE.md` so the swap doesn't show as a local modification.
+- **Managed platform detected** (`~/projects/CLAUDE.md` exists): confirms `CLAUDE.md` (lean version) is correct — the shared AI orchestration rules are inherited from `~/projects/CLAUDE.md`. No file changes made.
+- **Standalone install**: copies `CLAUDE-full.md` → `CLAUDE.md` (standalone config with all rules), then runs `git update-index --assume-unchanged CLAUDE.md` so the swap doesn't show as a local modification.
 
 Run once after cloning or installing. Safe to re-run at any time.
 

@@ -247,7 +247,7 @@ T-00 must be done first. T-01 through T-07 are independent of each other.
 Autonomous review of the completed work:
 
 1. **Code review:** `grep -rn "sergei\|humanware\|sergeiwallace" src/ai_cli/` — must return 0 results
-2. **Config review:** verify `~/.config/ai-cli/config.toml` on both Mac and server has `main_project = "sergei"` set (since that's what makes the generic code work for our installation)
+2. **Config review:** verify `~/.config/ai-cli/config.toml` on both Mac and server has `main_project = "myproject"` set (since that's what makes the generic code work for our installation)
 3. **Functional test:** verify `ai c 1 -R` still works (project aliases, session naming, auto-resume)
 4. **CI verification:** push a test commit and verify GitHub Actions runs
 5. **Badge verification:** check README renders correctly on GitHub with all badges
@@ -272,11 +272,11 @@ Autonomous review of the completed work:
 
 1. **Repo name mismatch** — GitHub repo is `ai-cli`, PyPI package is `ai-cli-utils`. Rename repo to match, or keep them different?
 
-> **Recommendation: Keep them different.** Many popular projects have repo/PyPI name mismatches (Pillow, beautifulsoup4). Renaming creates churn across the ecosystem (directory paths, sergei.toml, memory files, deploy scripts, editable installs on 3 machines) for minimal user benefit. Only you see the repo name (contributor) and PyPI name (installer). Rename later when going public if alignment matters then.
+> **Recommendation: Keep them different.** Many popular projects have repo/PyPI name mismatches (Pillow, beautifulsoup4). Renaming creates churn across the ecosystem (directory paths, platform.toml, memory files, deploy scripts, editable installs on 3 machines) for minimal user benefit. Only you see the repo name (contributor) and PyPI name (installer). Rename later when going public if alignment matters then.
 >
 > **Risks if we did rename (for reference):**
 > - Local directory `~/projects/ai-cli/` needs renaming on Mac + server
-> - `sergei.toml` path entry needs updating
+> - `platform.toml` path entry needs updating
 > - Memory files and CLAUDE.md deploy commands reference old path
 > - All editable installs (`uv tool install -e ~/projects/ai-cli`) break until path updated
 > - GitHub auto-redirects old URLs (permanent redirect, low risk)

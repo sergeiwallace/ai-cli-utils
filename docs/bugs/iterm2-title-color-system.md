@@ -50,7 +50,7 @@ All bugs were reported 2026-04-02 after testing on freshly opened iTerm2 tabs.
 
 Multiple CC sessions with the same trailing session number but different project names all receive the same tab color. Examples observed:
 
-- `c-ai-cli-2`, `c-art-2`, and `c-aido-2` → all orange with white Claude logo
+- `c-ai-cli-2`, `c-proj-2`, and `c-other-2` → all orange with white Claude logo
 - `c-sw-6` and `c-sw-7` → both blue (correct colors for their slot, but adjacent tabs should contrast)
 
 ### Expected behavior
@@ -100,11 +100,11 @@ Gemini tabs should show: `✦ ▶ {session-name}` (e.g., `✦ ▶ g-art-1`) with
 
 ### Symptom
 
-Running `ai g N -p PROJECT` from a directory that is not the target project root (e.g., running `ai g 1 -p artelier` from `~/projects/sergei/`) when an existing Gemini session conversation exists for that project produces a repeating error loop:
+Running `ai g N -p PROJECT` from a directory that is not the target project root (e.g., running `ai g 1 -p myproject` from a different project directory) when an existing Gemini session conversation exists for that project produces a repeating error loop:
 
 ```
 Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4db0688464".
-  Searched for sessions in /Users/sergeiwallace/.gemini/tmp/sw-1-1/chats.
+  Searched for sessions in ~/.gemini/tmp/sw-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.
 Resuming... (Ctrl-C to exit)
 ```
@@ -175,14 +175,14 @@ the iterm2 session/tab title & auto-rotating color system isn't working correctl
 bugs I've noticed:
 1. the session/tab title system appears to be working for local cc session startup e.g. `ai c {N} -p {PROJECT_NAME}`, `ai c` or `ai c {N}`. it shows the proper logo and the play symbol to the right of the cc tmux session name.
 2. for local cc sessions, the terminal session/tab color appears to rotate colors inconsistently or not at all, it seems. here's what I observed:
-   2a. `c-ai-cli-2`, `c-art-2`, and `c-aido-2` became orange with a white claude logo
+   2a. `c-ai-cli-2`, `c-proj-2`, and `c-other-2` became orange with a white claude logo
    2b. `c-ai-cli-3` became yellow with black claude logo
    2c. `c-sw-5` became turqoise with a black claude logo. this is the only instance where i've seen a non-standard color.
    2d. `c-sw-6` and `c-sw-7` became blue with an orange claude logo
 3. for remote cc sessions, the tab title formatting is wrong. it shows the terminal icon and the text "[mosh] * {PLAY_SYMBOL} {CC_TMUX_SESSION_NAME}". the tab/session color is always grey (the actual color, not no color). it should have the claude logo icon instead of the terminal and no "[mosh]" and no "*" unless it's a tab with split panes. that * is for the pane title, not the tab title. the tab title should already have the claude etc logo icon which should be sufficient. and we don't need to worry about signaling multiple types of terminal sessions with a single title. i asked for the previously but we can scrap that.
 4. for local gemini sessions, there are couple issues:
    4a. if you're in the correct directory and use or don't use the `-p {PROJECT_NAME`, then it's able to start and the tab color appears as a custom color lighter blue with a white gemini logo icon but no tab/session title. it just says "Default". it's able to start a new gemini session conversation or successfully resume an existing one.
-   4b. if you're in a different directory than the project root you want to open gemini session from (e.g. running `ai g 1 -p artelier` from `~/projects/sergei/`) and there's an existing gemini session to resume in the target project's git worktree (e.g. `c-art-1` and `wt-art-1`), then you get this error on repeat and can't resume the existing gemini session if there is one:
+   4b. if you're in a different directory than the project root you want to open gemini session from (e.g. running `ai g 1 -p myproject` from a different project directory) and there's an existing gemini session to resume in the target project's git worktree (e.g. `c-proj-1` and `wt-proj-1`), then you get this error on repeat and can't resume the existing gemini session if there is one:
 ```
 YOLO mode is enabled. All tool calls will be automatically approved.
 Keychain initialization encountered an error: Cannot find module '../build/Release/keytar.node'
@@ -194,10 +194,10 @@ YOLO mode is enabled. All tool calls will be automatically approved.
 Detected terminal background color: #121521
 Detected terminal name: tmux 3.6a
 Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4db0688464".
-  Searched for sessions in /Users/sergeiwallace/.gemini/tmp/sw-1-1/chats.
+  Searched for sessions in ~/.gemini/tmp/sw-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.Resuming... (Ctrl-C to exit)
 ```
-   4c. if you're in a different directory than the target directory you want to launch a gemini session (e.g. `ai g 2 -p artelier` from `~/projects/sergei/`) and there's no existing git worktree or gemini session conversation to resume, then you just get a blank screen that never even gets to the `session context written to .gemini/signals/session-context.md` text. it just stays blank black screen indefinitely until you ctrl + C out of it. if you ctrl + C quickly enough, it's take you back to local machine shell. if you wait a bit, it'll start doing the same failure to resume existing gemini session error above in 4b. also, sometimes the custom light blue tab color and "Default" tab title persist and sometimes it goes back to terminal logo with "Default" title.
+   4c. if you're in a different directory than the target directory you want to launch a gemini session (e.g. `ai g 2 -p myproject` from a different project directory) and there's no existing git worktree or gemini session conversation to resume, then you just get a blank screen that never even gets to the `session context written to .gemini/signals/session-context.md` text. it just stays blank black screen indefinitely until you ctrl + C out of it. if you ctrl + C quickly enough, it's take you back to local machine shell. if you wait a bit, it'll start doing the same failure to resume existing gemini session error above in 4b. also, sometimes the custom light blue tab color and "Default" tab title persist and sometimes it goes back to terminal logo with "Default" title.
 5. for remote gemini sessions that are in different directory than the target direct you want to launch gemini session from, you get same can't resume existing gemini session error from 4b. it exiting me back to a `sw-1` git worktree root on dev server once (the tab title was the usual "[mosh] ..." and other times it kicked me back to local machine shell. not sure what to make of that inconsistency.
 
 review this and create a bug doc (create a `docs/bugs` directory if needed) and in your words write out all the bugs/behaviors I identified and what the fixed behaviors should be (not how to fix, but just what the corrected tab/session titles & color system should be). then also propose how you might go about diagnosing the root causes of the bugs and potential ways to fix them (it's okay if this is a high level outline since you'll need to actually debug etc to identify it). i'll review to make sure you understand each of the bugs/incorrect behaviors and understand what the behaviors should actually be before you start working on diagnosing and fixing the bugs (root cause). we need a more robust and systematic implementation to do this robustly (appropriate tab/session title naming that dynamically changes depending on whether it's a cc / gemini session on either local or remote or a local shell or remote shell etc). right now it's still very buggy and the auto-color rotation to make sure colors between neighboring tabs in a iterm2 window or neighboring split terminal panes within a tab are always different and contrasting colors. also, I want more colors for the claude/gemini logos than orange (claude logo), black, and white. we should have a number of different templates for different colors to have better and more colorful contrast. sometimes black and white with a color background is fine but i want more variety. we should have templates. and ideally we don't have to rely on creating a bunch of different profiles unless that's the only way to have different color logo icons in the tab title.
@@ -220,7 +220,7 @@ The Session Name field should be permanently set to the tmux session name (e.g.,
 
 ### Symptom
 
-Running `ai c 7` and `ai c 8` from the sergei project root results in the new pane getting stuck in tmux copy mode immediately after launch. The session name and tab color apply correctly, but the terminal is unresponsive until the user manually exits copy mode. Not observed with `ai c 6` or `ai c 9 -R`.
+Running `ai c 7` and `ai c 8` from a project root directory results in the new pane getting stuck in tmux copy mode immediately after launch. The session name and tab color apply correctly, but the terminal is unresponsive until the user manually exits copy mode. Not observed with `ai c 6` or `ai c 9 -R`.
 
 ### Expected behavior
 

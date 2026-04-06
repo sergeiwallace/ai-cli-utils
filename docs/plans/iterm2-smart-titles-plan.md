@@ -120,7 +120,7 @@ Shell companion pane uses `ShellUtility` profile. A `>_` style terminal icon PNG
 
 ## Gemini Sessions
 
-Same rules. `g-sw-1`, `g-r-aido-2` — same abbreviation, same status symbols, `◇` symbol, `GeminiCLI` profile icon.
+Same rules. `g-sw-1`, `g-r-proj-2` — same abbreviation, same status symbols, `◇` symbol, `GeminiCLI` profile icon.
 
 ---
 
@@ -133,7 +133,7 @@ Same rules. `g-sw-1`, `g-r-aido-2` — same abbreviation, same status symbols, `
 | `src/ai_cli/main.py` | `_iterm2_status` bash: update status field in names file; re-emit tab title with per-session status |
 | `src/ai_cli/main.py` | EXIT trap: remove own names file entry; re-emit remaining; clean window registry |
 | `~/.config/iterm2/icons/terminal-icon.png` | New: `>_` style terminal icon for ShellUtility profile |
-| `~/Library/.../humanware-profiles.json` | ShellUtility: add `Custom Icon Path` pointing to terminal-icon.png |
+| `~/Library/.../ai-cli-profiles.json` | ShellUtility: add `Custom Icon Path` pointing to terminal-icon.png |
 | `~/.zshrc` | `_ai_iterm2_precmd`: abbreviation logic; shell pane header `$ → {session}`; window title file check |
 
 ---

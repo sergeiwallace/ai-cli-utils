@@ -3,7 +3,7 @@ title: "Reasoning Checkpoints"
 category: procedures
 tags: [reasoning, checkpoints, quality, agents, claude-code]
 status: active
-source: sergei — design doc docs/designs/reasoning-checkpoints.md
+source: internal
 ---
 
 # Reasoning Checkpoints

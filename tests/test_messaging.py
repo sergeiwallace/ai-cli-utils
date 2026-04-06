@@ -291,10 +291,12 @@ class TestSshTunnel:
         monkeypatch.setenv("AI_CLI_HOST", "mac")
         client = NATSClient()
         mock_proc = MagicMock()
+        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
         with patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")):
             with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
                 with patch("asyncio.sleep", new=AsyncMock()):
-                    asyncio.run(client._open_ssh_tunnel())
+                    with patch("ai_cli.main.load_config", return_value=fake_cfg):
+                        asyncio.run(client._open_ssh_tunnel())
         assert client._tunnel_proc is mock_proc  # proc stored even if port never came up
 
 

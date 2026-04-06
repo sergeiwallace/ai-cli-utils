@@ -446,7 +446,7 @@ These projects demonstrate professional open-source practices that a solo mainta
 - Clean docs site (docs.astral.sh/ruff)
 - Part of a cohesive ecosystem (Astral: ruff, uv, ty)
 
-**Emulate:** The ecosystem branding. If `ai-cli-utils` is part of a broader humanware platform, mention that context briefly. And the Ruff badge pattern: providing a badge that other projects can include (e.g., "Managed with ai-cli") is clever organic marketing, though only applicable once there is adoption.
+**Emulate:** The ecosystem branding. If `ai-cli-utils` is part of a broader platform, mention that context briefly. And the Ruff badge pattern: providing a badge that other projects can include (e.g., "Managed with ai-cli") is clever organic marketing, though only applicable once there is adoption.
 
 ---
 

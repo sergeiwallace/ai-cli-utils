@@ -3,7 +3,7 @@ title: "Claude Token Efficiency Guide"
 category: procedures
 tags: [claude, tokens, efficiency, models, quota]
 status: active
-source: sergei
+source: internal
 ---
 
 # Claude Token Efficiency Guide

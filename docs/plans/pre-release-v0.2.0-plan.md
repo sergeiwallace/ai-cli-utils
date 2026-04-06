@@ -297,11 +297,13 @@ ai ps --help
 ai layout --help
 ```
 
-#### Step 7 — TestPyPI Upload (optional)
+#### Step 7 — TestPyPI Upload
 
-- Upload to TestPyPI before touching live package: `uv publish --publish-url https://test.pypi.org/legacy/`
-- Install from TestPyPI in a clean venv and smoke test
-- Skip if confident from Step 6
+- Build: `uv build`
+- Upload to TestPyPI: `uv publish --publish-url https://test.pypi.org/legacy/`
+- Install from TestPyPI in a clean venv: `pip install --index-url https://test.pypi.org/simple/ ai-cli-utils==0.2.0`
+- Smoke test: `ai --version`, `ai --help`
+- Confirm before proceeding to live PyPI publish
 
 #### Step 8 — Present Findings (Claude)
 

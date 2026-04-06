@@ -136,11 +136,11 @@ The in-session bash functions (`_iterm2_fleet_setup`, `_iterm2_status`) will sil
 
 Two issues combine to produce this:
 
-1. The GeminiCLI profile in `humanware-profiles.json` does not inherit from `ClaudeCode` — it inherits from `Default`. The `Default` profile likely has its own title rules. When `SetProfile=GeminiCLI` fires, iTerm2 applies the profile's title configuration, which overwrites any OSC 0 title that was set before the profile switch.
+1. The GeminiCLI profile in `ai-cli-profiles.json` does not inherit from `ClaudeCode` — it inherits from `Default`. The `Default` profile likely has its own title rules. When `SetProfile=GeminiCLI` fires, iTerm2 applies the profile's title configuration, which overwrites any OSC 0 title that was set before the profile switch.
 
 2. The `ClaudeCode` base profile has `"Title Components": 1` in the Dynamic Profile JSON. The iterm2-setup.md doc explicitly warns: "Do NOT add `Title Components` key to Dynamic Profiles — breaks all key mappings in that profile." This key also controls how iTerm2 composes the title. Value `1` likely means "use profile name" or "use job name", which would explain why Gemini shows "Default" (the parent profile's name).
 
-**Fix:** The OSC 0 title emission must happen AFTER the SetProfile sequence, not before. The pre-launch function currently does this correctly (profile first, then title at line 664), but the in-session `_iterm2_fleet_setup` also does this correctly (profile at line 831, title at line 837). The actual problem is that the GeminiCLI profile's `Tab Color` is set statically in the JSON, which makes it work, but the profile likely has title settings inherited from Default that override OSC 0. The fix is to ensure the GeminiCLI profile (and all humanware profiles) do NOT set any title-related keys (`Title Components`, etc.) in the Dynamic Profile JSON, and to remove `"Title Components": 1` from the ClaudeCode base profile.
+**Fix:** The OSC 0 title emission must happen AFTER the SetProfile sequence, not before. The pre-launch function currently does this correctly (profile first, then title at line 664), but the in-session `_iterm2_fleet_setup` also does this correctly (profile at line 831, title at line 837). The actual problem is that the GeminiCLI profile's `Tab Color` is set statically in the JSON, which makes it work, but the profile likely has title settings inherited from Default that override OSC 0. The fix is to ensure the GeminiCLI profile (and all ai-cli profiles) do NOT set any title-related keys (`Title Components`, etc.) in the Dynamic Profile JSON, and to remove `"Title Components": 1` from the ClaudeCode base profile.
 
 Additionally, the Gemini code path in `_emit_iterm2_profile_setup` does not set a rolling tab color — it relies on the static blue in the profile JSON. This should be changed to use the same rolling color system as CC sessions.
 
@@ -180,7 +180,7 @@ Title update behavior is unchanged — `_ai_iterm2_precmd` in `~/.zshrc` handles
 
 ### Problem
 
-The current implementation uses `(num - 1) % 12` where `num` is the trailing digit of the session name (e.g., `sw-2` -> `2`). This means all sessions with the same trailing number across different projects get the same color (Bug 1: `c-ai-cli-2`, `c-art-2`, `c-aido-2` all get orange).
+The current implementation uses `(num - 1) % 12` where `num` is the trailing digit of the session name (e.g., `sw-2` -> `2`). This means all sessions with the same trailing number across different projects get the same color (Bug 1: `c-ai-cli-2`, `c-proj-2`, `c-other-2` all get orange).
 
 ### Design: Local state file with lease-based assignment
 
@@ -191,7 +191,7 @@ The current implementation uses `(num - 1) % 12` where `num` is the trailing dig
 {
   "leases": {
     "c-sw-5": { "slot": 0, "pid": 12345, "ts": "2026-04-02T10:30:00" },
-    "c-art-2": { "slot": 1, "pid": 12346, "ts": "2026-04-02T10:31:00" },
+    "c-proj-2": { "slot": 1, "pid": 12346, "ts": "2026-04-02T10:31:00" },
     "g-art-1": { "slot": 2, "pid": 12347, "ts": "2026-04-02T10:32:00" }
   }
 }
@@ -302,7 +302,7 @@ Every profile type — not just Claude and Gemini — uses the runtime generatio
     "Name": "ai-cli:c-sw-5",
     "Guid": "ai-cli-c-sw-5",
     "Dynamic Profile Parent Name": "ClaudeCode",
-    "Custom Icon Path": "/Users/sergeiwallace/.local/state/ai-cli-utils/iterm2-icons/c-sw-5.png"
+    "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/c-sw-5.png"
   }]
 }
 ```
@@ -400,7 +400,7 @@ OSC 0 (`\033]0;...`) also needs DCS wrapping inside tmux to reliably reach iTerm
 
 ### Problem
 
-Gemini CLI determines its chats storage directory from the working directory at launch time. The path is derived as `~/.gemini/tmp/{sanitized-cwd}/chats/`. When `ai g 1 -p artelier` is run from `~/projects/sergei/`, Gemini looks for sessions in `~/.gemini/tmp/{sergei-path}/chats/` instead of `~/.gemini/tmp/{artelier-worktree-path}/chats/`. This causes Bugs 4, 5, and 6.
+Gemini CLI determines its chats storage directory from the working directory at launch time. The path is derived as `~/.gemini/tmp/{sanitized-cwd}/chats/`. When `ai g 1 -p myproject` is run from a different project directory, Gemini looks for sessions in `~/.gemini/tmp/{wrong-path}/chats/` instead of `~/.gemini/tmp/{correct-worktree-path}/chats/`. This causes Bugs 4, 5, and 6.
 
 Gemini CLI has no `--chats-dir` flag (confirmed by inspecting `gemini --help` output). The working directory at launch is the sole determinant of the chats path.
 
@@ -420,7 +420,7 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 
 **Session UUID tracking:** The `get_session_map` / `update-session-map` system tracks Gemini session UUIDs by `ai_name` (e.g., `art-1`). When resuming, the UUID is passed via `-r {uuid}`. But the UUID is associated with a specific chats directory path inside Gemini's internal state. If the UUID was created from one directory and the resume happens from a different directory, Gemini cannot find the session. The directory must match.
 
-**Clarification on recoverability:** Gemini sessions launched from the wrong directory are NOT permanently broken. Running `ai g 1 -p artelier` from `~/projects/artelier/` (the correct root) will successfully resume the session — Gemini finds the right chats directory because the working directory now matches. The bug is a UX issue: `ai g N -p PROJECT` should work from ANY directory (not just the project root), which is what the `os.chdir()` fix provides. No session-map cleanup is required.
+**Clarification on recoverability:** Gemini sessions launched from the wrong directory are NOT permanently broken. Running `ai g 1 -p myproject` from `~/projects/myproject/` (the correct root) will successfully resume the session — Gemini finds the right chats directory because the working directory now matches. The bug is a UX issue: `ai g N -p PROJECT` should work from ANY directory (not just the project root), which is what the `os.chdir()` fix provides. No session-map cleanup is required.
 
 > **Feedback:**
 

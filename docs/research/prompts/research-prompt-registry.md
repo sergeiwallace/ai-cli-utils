@@ -12,9 +12,9 @@ Central registry for all research prompts for this project. Tracks prompt text,
 model, submission status, and links to result docs. Pending/ready prompts listed
 first (highest priority at top), completed below.
 
-**References (from sergei project):**
-- Zero-slop anchor design: `~/projects/sergei/docs/research/zero-slop-anchor-design.md`
-- Anchor procedure: `~/projects/sergei/docs/procedures/gemini-deep-think-anchor.md`
+**References (project references):**
+- Zero-slop anchor design: `docs/research/zero-slop-anchor-design.md`
+- Anchor procedure: `docs/procedures/gemini-deep-think-anchor.md`
 
 ## Guidelines & The "Zero-Slop" Anchor
 
@@ -31,7 +31,7 @@ narrative grounded in the research domain.
 - `gemini-3.1-pro-preview` — product/tech comparisons, competitive research,
   moderate complexity
 - `gemini-3-flash-preview` — simple factual lookups, single-source verification only
-- `aido -d thorough` — broad multi-source research requiring web + reasoning
+- `deep-research` — broad multi-source research requiring web + reasoning
 
 **Research run process:**
 1. Run research — pipe output directly to `docs/research/<topic>.md`

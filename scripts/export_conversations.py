@@ -214,7 +214,7 @@ def output_path(conv: dict, project: str, base_dir: Path) -> Path:
 
 def main():
     parser = argparse.ArgumentParser(description="Export Claude conversations to markdown")
-    parser.add_argument("--project", help="Filter by project name (e.g. sergei)")
+    parser.add_argument("--project", help="Filter by project name (e.g. myproject)")
     parser.add_argument("--force", action="store_true", help="Re-export all files, ignoring mtime")
     args = parser.parse_args()
 

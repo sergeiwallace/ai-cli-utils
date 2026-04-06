@@ -3,7 +3,7 @@ title: "iTerm2 + ntfy Session Status Integration — Implementation Plan"
 category: plan
 tags: [iterm2, ntfy, notifications, session-status, ai-cli, nats]
 status: active
-source: sergei
+source: internal
 task: SW-732
 ---
 
@@ -111,7 +111,7 @@ Layer 1: ai-cli escape sequences (Hetzner-side, <100ms)
 Layer 2: NATS → ntfy (Hetzner-side, 1-3s)
   ┌──────────────┐    NATS event    ┌─────────────┐    ntfy    ┌──────────┐
   │ ai-cli       │ ───────────────→ │ notification│ ─────────→ │ ntfy.    │
-  │ watcher      │                  │ gateway     │            │ sergei   │
+  │ watcher      │                  │ gateway     │            │ host     │
   └──────────────┘                  └─────────────┘            │ wallace  │
                                                                 │ .com     │
   Already publishes session events via:                        └────┬─────┘
@@ -166,7 +166,7 @@ The ai-cli watcher already publishes NATS events. Verify the notification gatewa
 
 ### Task 4: Dynamic Profiles + icons (Mac)
 
-Create `humanware-profiles.json` with profiles for each session type. Create monochrome white silhouette icons (64x64 PNG). Store at `~/.config/iterm2/icons/`.
+Create `ai-cli-profiles.json` with profiles for each session type. Create monochrome white silhouette icons (64x64 PNG). Store at `~/.config/iterm2/icons/`.
 
 **Files:** Mac-local config
 
@@ -177,11 +177,11 @@ Python script that:
 2. On session event: find matching iTerm2 tab by session name (Python API)
 3. Update badge + tab title on that tab (cross-tab awareness)
 4. Fire macOS notification with "Jump to tab" action
-5. Runs as launchd agent (`~/Library/LaunchAgents/com.humanware.ntfy-iterm2-bridge.plist`)
+5. Runs as launchd agent (`~/Library/LaunchAgents/com.ai-cli.ntfy-iterm2-bridge.plist`)
 
 **Dependencies:** `pip install iterm2` on Mac. iTerm2 → Settings → General → Magic → "Enable Python API" must be checked.
 
-**Files:** New script (location TBD — possibly `~/.config/iterm2/scripts/` or `~/projects/sergei/scripts/`)
+**Files:** New script (location TBD — possibly `~/.config/iterm2/scripts/` or `~/projects/myproject/scripts/`)
 
 ### Task 6: Icon color variant generator (optional, Phase 2)
 
@@ -194,7 +194,7 @@ If monochrome icons don't feel right after testing, create a Python script that 
 After ai-cli code changes:
 - Hetzner: `cd ~/projects/ai-cli-utils && uv tool install -e . --force`
 - Mac: `uv tool install -e ~/projects/ai-cli-utils --force`
-- aido venv: `uv pip install -e ~/projects/ai-cli-utils`
+- optional secondary venv: `uv pip install -e ~/projects/ai-cli-utils`
 
 ## Build Order
 

@@ -36,7 +36,7 @@ related_docs:
 ## Prerequisites
 
 1. Deploy latest ai-cli-utils: `ai deploy` (already done as of 2026-04-02)
-2. Reload iTerm2 Dynamic Profiles: **iTerm2 → Preferences → Profiles** — confirm `ClaudeCode-Coral`, `ClaudeCode-Purple`, `ClaudeCode-Gold`, `ClaudeCode-Cyan`, `ClaudeCode-Teal`, `ClaudeCode-Green`, `GeminiCLI-White`, `GeminiCLI-Navy`, `GeminiCLI-Gold` appear in the list. If not: `touch ~/Library/Application\ Support/iTerm2/DynamicProfiles/humanware-profiles.json`
+2. Reload iTerm2 Dynamic Profiles: **iTerm2 → Preferences → Profiles** — confirm `ClaudeCode-Coral`, `ClaudeCode-Purple`, `ClaudeCode-Gold`, `ClaudeCode-Cyan`, `ClaudeCode-Teal`, `ClaudeCode-Green`, `GeminiCLI-White`, `GeminiCLI-Navy`, `GeminiCLI-Gold` appear in the list. If not: `touch ~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-profiles.json`
 3. On first `ai c` or `ai g` launch, `~/.config/ai-cli-utils/iterm2.toml` is auto-created — verify it exists after TC-2.
 
 ---
@@ -73,8 +73,8 @@ related_docs:
 
 **Steps:**
 1. Open a new tab in the ai-cli-utils project and run `ai c 2`
-2. Open a new tab in the artelier project and run `ai c 2`
-3. Open a new tab in the aido project and run `ai c 2`
+2. Open a new tab in another project and run `ai c 2`
+3. Open a new tab in another project and run `ai c 2`
 4. Observe the three tab background colors
 
 **Expected:** All three tabs have distinct tab background colors (previously all got the same orange because session number "2" always mapped to slot 1)
@@ -105,13 +105,13 @@ related_docs:
 ### TC-4: Bugs 4/5/6 — Gemini Wrong Directory Fix
 
 **Steps:**
-1. From the `sergei` session (or any directory that is NOT the artelier project), run:
+1. From a project directory that is NOT the target project, run:
    ```
-   ai g 1 -p artelier
+   ai g 1 -p myproject
    ```
 2. Observe whether the session opens and whether it can resume
 
-**Expected:** Session opens in the artelier project directory; Gemini finds the correct chats directory; no "Invalid session identifier" error loop
+**Expected:** Session opens in another project directory; Gemini finds the correct chats directory; no "Invalid session identifier" error loop
 
 **Actual:**
 
@@ -122,7 +122,7 @@ related_docs:
 ### TC-5: Bug 7 — Icon Variety
 
 **Steps:**
-1. Open 4+ CC sessions across different projects (e.g. ai-cli-utils `c 1`, artelier `c 1`, aido `c 1`, sergei `c 1`)
+1. Open 4+ CC sessions across different projects (e.g. proj-a `c 1`, proj-b `c 1`, proj-c `c 1`, proj-d `c 1`)
 2. Observe the tab icons
 
 **Expected:** Different Claude logo color variants visible across tabs — at minimum a mix of coral, white, navy, and at least one of purple/gold/cyan/teal/green depending on slot assignment

@@ -3,7 +3,7 @@ title: "iTerm2 Fleet Management Configuration — Implementation Plan"
 category: plan
 tags: [iterm2, terminal, fleet-management, ai-cli, configuration]
 status: active
-source: sergei
+source: internal
 task: SW-730
 ---
 
@@ -51,7 +51,7 @@ Download/create PNG icons (64x64, transparent bg) for each session type:
 
 ### Task 3: Create Dynamic Profiles JSON
 
-Create `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-profiles.json` with profiles:
+Create `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-profiles.json` with profiles:
 
 - **ClaudeCode** — Claude logo icon, Anthropic purple base tab color, badge template `\(user.sessionType) sw-\(user.sessionNum)`, dark color scheme
 - **ShellUtility** — terminal icon, grey tab color, badge with session type
@@ -61,7 +61,7 @@ Create `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-profiles.
 
 Each inherits from Default profile via `"Dynamic Profile Parent Name": "Default"`.
 
-**Files:** Mac `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-profiles.json`
+**Files:** Mac `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-profiles.json`
 
 ### Task 4: Add iTerm2 escape sequence helper to ai-cli
 
@@ -76,7 +76,7 @@ Add `_iterm2_setup()` function to ai-cli that runs after tmux attach:
 Detect iTerm2 via `$TERM_PROGRAM == "iTerm.app"` — skip on other terminals (Ghostty, Windows Terminal).
 
 **Files:** `packages/ai-cli/src/ai_cli/main.py`
-**Risk:** Medium — ai-cli changes require reinstall in 3 places (Mac uv tool, Hetzner uv tool, aido venv)
+**Risk:** Medium — ai-cli changes require reinstall in 3 places (Mac uv tool, Hetzner uv tool, optional secondary venv)
 
 ### Task 5: Create 4-pane fleet monitoring Window Arrangement
 

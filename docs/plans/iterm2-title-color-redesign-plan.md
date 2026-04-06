@@ -48,14 +48,14 @@ Append the user's raw feedback message to `docs/bugs/iterm2-title-color-system.m
 
 ### Step 2 — Write research prompt R-50 and add to registry (Claude Sonnet, now)
 
-Write research prompt R-50 and add it to `/Users/sergeiwallace/projects/sergei/docs/research/prompts/research-prompt-registry.md` following all registry conventions (role identity narrative, zero-slop CoVe anchor, claim classification tags, sources section requirement, appendix format). Commit and push to sergei.
+Write research prompt R-50 and add it to the project research prompt registry following all registry conventions.
 
 **Research scope for R-50:**
 - iTerm2 customization best practices: Dynamic Profiles, escape sequences (OSC, DCS, `\033]1337;`), tab color/title/icon control, tmux passthrough, mosh constraints
 - Programmatic tab/pane title and color customization, icon and symbol usage for session state/status tracking, and auto-rotating color systems when managing parallel AI coding agent sessions — specifically: what each terminal supports (Ghostty, WezTerm, Kitty, Alacritty, etc.) for runtime title/color/icon control via escape sequences or APIs; how they handle remote sessions over SSH/mosh; whether and how they support custom tab/pane icons or symbols to communicate session type and live state (running, waiting, done, error); how others have implemented dynamic color assignment that compares against neighboring tabs/panes and selects visually distinct colors rather than cycling through a fixed palette; and any prior art or open-source implementations from the AI agent or developer productivity community that tackle this class of problem
 - Dynamic icon colorization: whether runtime icon color changes are feasible via OSC sequences, badge overlays, or other mechanisms vs. requiring static profile proliferation
 
-**Deliverable:** R-50 entry in sergei research prompt registry, committed and pushed.
+**Deliverable:** R-50 entry in research prompt registry, committed and pushed.
 
 ---
 
@@ -131,7 +131,7 @@ Do not implement anything. Read-only. Output is one design doc.
 ## Step 1 — Read all of these files in full before writing anything
 
 **Code:**
-- /Users/sergeiwallace/projects/ai-cli-utils/.worktrees/ai-cli-2/src/ai_cli/main.py
+- src/ai_cli/main.py
   Pay particular attention to: _ITERM2_TAB_COLORS, _ITERM2_PROFILE_MAP,
   _emit_iterm2_profile_setup, the bash template in get_engine_script (specifically
   _it2, _iterm2_fleet_setup, _iterm2_status, the _iterm_env_flags propagation block,
@@ -140,32 +140,32 @@ Do not implement anything. Read-only. Output is one design doc.
 - ~/.zshrc — search for and read the _ai_iterm2_precmd function
 
 **Core iTerm2 design docs (ai-cli-utils project):**
-- /Users/sergeiwallace/projects/ai-cli-utils/.worktrees/ai-cli-2/docs/plans/iterm2-smart-titles-plan.md
+- docs/plans/iterm2-smart-titles-plan.md
   Previously approved plan, partially implemented
-- /Users/sergeiwallace/projects/ai-cli-utils/.worktrees/ai-cli-2/docs/bugs/iterm2-title-color-system.md
+- docs/bugs/iterm2-title-color-system.md
   Active bug report with 7 bugs + verbatim user feedback. Primary statement of what
   is broken and what correct behavior looks like.
 
-**Supporting design docs (sergei project):**
-- /Users/sergeiwallace/projects/sergei/docs/plans/iterm2-fleet-config-plan.md
+**Supporting design docs:**
+- docs/plans/iterm2-fleet-config-plan.md
   Foundational plan for Dynamic Profiles + escape sequence architecture
-- /Users/sergeiwallace/projects/sergei/docs/plans/iterm2-ntfy-session-status-plan.md
+- docs/plans/iterm2-ntfy-session-status-plan.md
   Approved design decisions for tab color scheme, status states, session type
   visual identity table
-- /Users/sergeiwallace/projects/sergei/docs/tools/iterm2-setup.md
+- docs/tools/iterm2-setup.md
   Ground truth for what is actually configured in iTerm2 right now: tmux passthrough,
   DCS wrapping, profile inventory, mosh behavior
-- /Users/sergeiwallace/projects/sergei/docs/research/iterm2-fleet-management-config.md
+- docs/research/iterm2-fleet-management-config.md
   Comprehensive research on iTerm2 capabilities: Dynamic Profile JSON format, escape
   sequence mechanics, mosh limitations, icon formats, profile switching. Factual
   foundation for the design.
-- /Users/sergeiwallace/projects/sergei/docs/plans/notification-system-redesign.md
+- docs/plans/notification-system-redesign.md
   Defines channel ownership: iTerm2 tab/badge is the ambient in-terminal status
   channel; ntfy owns push notifications. Read to understand scope boundary — do not
   redesign the notification boundary.
 
 **Research doc (written after the above docs — most current findings):**
-- /Users/sergeiwallace/projects/ai-cli-utils/docs/research/iterm2-terminal-customization-research.md
+- docs/research/iterm2-terminal-customization-research.md
 
 ---
 
@@ -209,14 +209,14 @@ Do not implement anything. Read-only. Output is one design doc.
 
 5. "ai g N -p PROJECT" must work from any directory. Gemini derives its chats
    directory from the working directory at launch time. Running "ai g 1 -p artelier"
-   from ~/projects/sergei/ fails to resume the artelier session because it looks in
+   from  fails to resume the artelier session because it looks in
    the wrong chats dir. The design must address this — likely by ensuring gemini
    always launches from the target project's worktree directory, and by investigating
    whether gemini exposes a --chats_dir flag or equivalent.
 
 6. Color collision must be resolved. The current (num - 1) % 12 scheme assigns the
    same color to all sessions with the same trailing number (e.g. c-ai-cli-2,
-   c-art-2, c-aido-2 all get orange). The design must ensure open tabs in the same
+   c-proj-2, c-other-2 all get orange). The design must ensure open tabs in the same
    iTerm2 window have visually distinct colors. Propose a concrete strategy —
    whether state-file-based, ITERM_SESSION_ID window enumeration, or another approach.
 
@@ -232,7 +232,7 @@ Do not implement anything. Read-only. Output is one design doc.
 ## Step 3 — Output
 
 Write the design doc to:
-/Users/sergeiwallace/projects/ai-cli-utils/.worktrees/ai-cli-2/docs/designs/iterm2-title-color-system.md
+docs/designs/iterm2-title-color-system.md
 
 Use this frontmatter:
 ---

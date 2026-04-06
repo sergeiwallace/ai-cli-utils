@@ -164,7 +164,7 @@ Each layout YAML specifies a `base_profile` (e.g. `"Claude Base"`). The generate
 ```yaml
 # ~/.config/iterm2/layouts/sw-dev.yaml
 name: sw-dev
-description: "Sergei main dev workspace — sergei + sw-5 CC session"
+description: "Main dev workspace — myproject + sw-5 CC session"
 
 tabs:
   - name: "sw-5"
@@ -174,19 +174,19 @@ tabs:
       foreground: "#E8E8F0"
       tab_color: "#3B4BC8"              # color shown in tab bar
     root:                               # root pane — becomes the tab's first session
-      dir: "~/projects/sergei/.worktrees/sw-5"
+      dir: "~/projects/myproject/.worktrees/sw-5"
       command: "ai c 5"
       split:
         direction: vertical             # split this pane vertically
         ratio: 0.65                     # left pane gets 65% width
         right:
-          dir: "~/projects/sergei"
+          dir: "~/projects/myproject"
           command: "git log --oneline -20"
           split:
             direction: horizontal
             ratio: 0.5
             bottom:
-              dir: "~/projects/sergei"
+              dir: "~/projects/myproject"
               command: null             # shell prompt, no startup command
 
   - name: "gemini"
@@ -195,7 +195,7 @@ tabs:
       background: "#0F1A0F"
       tab_color: "#2E7D32"
     root:
-      dir: "~/projects/sergei"
+      dir: "~/projects/myproject"
       command: "ai gemini -m flash"
 
   - name: "monitoring"
@@ -249,7 +249,7 @@ At layout apply time, for each tab that specifies color overrides, the system wr
       "Red Component": 0.231, "Green Component": 0.294,
       "Blue Component": 0.784, "Alpha Component": 1.0
     },
-    "Custom Icon Path": "/Users/sergei/.local/state/ai-cli-utils/iterm2-icons/sw-dev-sw-5.png"
+    "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/sw-dev-sw-5.png"
   }]
 }
 ```

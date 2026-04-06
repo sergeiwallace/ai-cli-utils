@@ -3,7 +3,7 @@ title: "iTerm2 Setup & Shortcuts"
 category: tools
 tags: [iterm2, terminal, shortcuts, configuration, fleet-management]
 status: active
-source: sergei
+source: internal
 ---
 
 # iTerm2 Setup & Shortcuts
@@ -129,7 +129,7 @@ If the preferred slot is already occupied, ai-cli falls back to the lowest free 
 
 ## Dynamic Profiles (Mac-local)
 
-**Base profiles:** `~/Library/Application Support/iTerm2/DynamicProfiles/humanware-profiles.json`
+**Base profiles:** `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-profiles.json`
 
 These are static base profiles. Per-session profiles are generated at runtime by ai-cli and inherit from these.
 
@@ -182,7 +182,7 @@ Window title uses a heuristic derived from the active tmux session names (common
 
 ### Known Constraints
 
-- **Do NOT add `"Title Components"` key to Dynamic Profiles** — breaks all key mappings in that profile. This key conflicts with humanware's dynamic title management. Test confirmed 2026-04-01.
+- **Do NOT add `"Title Components"` key to Dynamic Profiles** — breaks all key mappings in that profile. This key conflicts with ai-cli's dynamic title management. Test confirmed 2026-04-01.
 - **Do NOT add `_ai_zshrc_autoreload` to `precmd_functions`** — causes infinite sourcing loop inside CC sessions (source → mtime changes → source again). Attempted and reverted 2026-04-01.
 - Window title no longer uses `claude -p` subprocess — was spawning a headless CC process from within an active CC session, causing freezes. Fixed in ai-cli-utils commit `add120f` (heuristic only, written directly to file).
 - **Do NOT use badge overlays** — `"Badge Text"` in Dynamic Profiles creates an ugly text overlay. Tab colors + tinted icons + tab title carry all identity information.
@@ -191,7 +191,7 @@ Window title uses a heuristic derived from the active tmux session names (common
 
 **File:** `~/Library/Application Support/iTerm2/Scripts/ntfy-iterm2-bridge.py`
 **Logs:** `~/.config/iterm2/logs/ntfy-bridge.log` / `ntfy-bridge.err`
-**Channel:** `https://ntfy.sergeiwallace.com/humanware-alerts/sse`
+**Channel:** your configured ntfy channel (set `ntfy_url` in config.toml)
 
 Subscribes to the ntfy SSE stream, matches session events to iTerm2 tabs, updates badges/titles, and fires macOS notifications for `done`/`error`/`waiting` states.
 
