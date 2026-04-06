@@ -3,7 +3,7 @@ title: "Zero-Slop Anchor Text (Deep Think Grounding)"
 category: procedures
 tags: [prompt-engineering, deep-think, research, grounding, anti-hallucination]
 status: active
-source: internal
+source: sergei
 ---
 
 # Zero-Slop Anchor Text (Deep Think Grounding)
@@ -52,6 +52,42 @@ When generating your final output, adhere to these epistemic boundaries:
 </operational_reasoning>
 </grounding_instructions>
 ```
+
+## Prompt Patterns
+
+### Gap-Fill / Temporal-Scoping Prompts
+
+When researching what's new in a specific time window (e.g., "what did this field produce in 2026?"), the standard `[NO SOURCE FOUND]` tag is insufficient — the model will backfill with older sources to avoid returning an empty answer. Name the failure mode explicitly.
+
+**Inside `<grounding_instructions>`, add as a hard constraint:**
+
+```
+Hard constraint: if [period] is genuinely thin on a topic, "[period]: no significant new
+developments found" is the correct answer. Do not backfill with [earlier period] sources
+already covered in prior research. Backfilling is a failure mode, not a hedge.
+```
+
+Naming the specific failure ("backfill") is more effective than generic abstention instructions because it gives the model a label to apply during its CoVe hostile cross-examination step.
+
+### Follow-Up / Sequential Research Runs
+
+When a research run follows a prior run on the same topic, add a `## Background` section at the top of the prompt body (before your research questions, outside `<grounding_instructions>`). This prevents the model from re-surveying terrain already covered.
+
+```
+## Background
+
+Prior research ([registry ID], [date]) on [topic] found:
+- [key finding 1]
+- [key finding 2]
+- [key finding 3]
+
+This run should build on — not repeat — those findings. Assume all Background points
+are established and do not re-derive them.
+```
+
+The model uses the Background section during its planning step to scope what's already known, directing its reasoning toward the delta rather than a full re-survey.
+
+---
 
 ## Historical Context
 This anchor is a synthesis of two prior iterations:
