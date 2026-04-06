@@ -12,6 +12,8 @@
   - [Phase 1 — Test Quality and Coverage](#phase-1--test-quality-and-coverage)
   - [Phase 2 — Process Hygiene](#phase-2--process-hygiene)
   - [Phase 3 — Privacy Audit](#phase-3--privacy-audit)
+  - [Phase 3.5 — CLAUDE.md / GEMINI.md Alignment](#phase-35--claudemd--geminimd-alignment)
+  - [Phase 3.6 — iTerm2 Shift+Enter Key Binding Automation](#phase-36--iterm2-shiftenter-key-binding-automation)
   - [Phase 4 — Git History Backup and Squash](#phase-4--git-history-backup-and-squash)
   - [Phase 5 — Version Bump and PyPI Publish](#phase-5--version-bump-and-pypi-publish)
 - [Sequence and Gates](#sequence-and-gates)
@@ -168,6 +170,25 @@ Write a lint script that extracts shared sections from both `CLAUDE.md` and `GEM
 
 ---
 
+### Phase 3.6 — iTerm2 Shift+Enter Key Binding Automation
+
+**Task:** `[AI-CLI-37]`
+**Status:** Not started
+
+Currently the Shift+Enter → newline binding for CC sessions is a manual step: import `assets/iterm2-key-bindings/shift_enter_cc_new_line_iterm2_key_binding.itermkeymap` via iTerm2 Preferences. This is fragile — new users miss it.
+
+**Recommended approach:** Inject `"Key Mappings"` directly into the per-session DynamicProfile JSON in `generate_dynamic_profile()` (`icon_generator.py`). The binding (`0xd-0x20000-0x24` → CSI `[13;2u`) applies automatically when `ai c` starts and is cleaned up on exit. No import step needed.
+
+**Scope:**
+1. Add `"Key Mappings"` to `generate_dynamic_profile()` in `icon_generator.py`
+2. Delete `assets/iterm2-key-bindings/` from git
+3. Update `docs/tools/iterm2-setup.md` — remove manual step, note it's automatic
+4. Update tests for `generate_dynamic_profile()`
+
+**Gate:** `ai c` session launches with Shift+Enter working without any manual iTerm2 configuration.
+
+---
+
 ### Phase 4 — Git History Backup and Squash
 
 **Status:** Not started
@@ -268,6 +289,8 @@ Phase 3 (Privacy Audit)
     ↓ git grep clean + CI green
 Phase 3.5 (CLAUDE/GEMINI Alignment)
     ↓ lint script passing in CI
+Phase 3.6 (iTerm2 key binding automation)
+    ↓ CI green
 Phase 4a (Backup)   ← Claude executes
     ↓ human confirms backup exists on local + private GitHub → explicit approval
 Phase 4b (Squash)   ← Claude executes after explicit human approval
@@ -286,6 +309,7 @@ Done
 | CI green | Phase 2 complete | Automated |
 | `git grep` returns zero hits in src/+tests/ | Phase 3 complete | CI + human verify |
 | Alignment lint script passing in CI | Phase 3.5 complete | Automated |
+| CI green | Phase 3.6 complete | Automated |
 | Backup confirmed before squash | Phase 4a complete | Human — **explicit approval required** |
 | Force-push squash | Phase 4b | Human approval gate |
 | Final review approved | Phase 5 complete | Human |
