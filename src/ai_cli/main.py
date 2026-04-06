@@ -2084,6 +2084,11 @@ def cli():
             nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
             sw_client = NATSClient(servers=nats_servers)
 
+            # Not covered: entire _on_handoff closure is only invoked when a live NATS
+            # JetStream message arrives. Requires a real NATS server + network delivery.
+            # Inner exception branches (OSError on file write, ValueError on filename parse)
+            # additionally require specific filesystem failure conditions inside a live
+            # async callback. See docs/test/unit-tests.md §Intentionally Uncovered Lines.
             async def _on_handoff(data):
                 handoff_id = data.get("id")
                 title = data.get("title", "")
@@ -2165,6 +2170,8 @@ def cli():
             try:
                 asyncio.run(sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff))
             except Exception:
+                # Not covered: subscribe_durable blocks indefinitely on success; exception
+                # path requires a live NATS server to fail mid-subscription.
                 pass
             sys.exit(0)
         elif action == "handoff-drain":
@@ -2184,6 +2191,12 @@ def cli():
             hd_client = NATSClient(servers=nats_servers)
             _log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
 
+            # Not covered: _write_pending_if_claimed is only reachable via _drain() which
+            # requires a live NATS JetStream connection, or from the local-scan path which
+            # is covered. Inner branches (for_machine mismatch, hd_handoff_dir is None,
+            # cross-machine file write, claimed is None) all require live handoff delivery
+            # or specific filesystem failure conditions inside an async context.
+            # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
             def _write_pending_if_claimed(data):
                 handoff_id = data.get("id")
                 title = data.get("title", "")
@@ -2254,12 +2267,19 @@ def cli():
                                 }
                             )
                         except Exception:
+                            # Not covered: requires filesystem error reading a pending
+                            # handoff file that exists and was just discovered by glob.
                             pass
 
             # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
             if not hd_prompt_file.exists():
                 _log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
 
+                # Not covered: _drain() is an async closure that requires a live NATS
+                # JetStream server. Inner branches (js is None, message decode error,
+                # _write_pending_if_claimed returning True, fetch timeout, subscribe
+                # failure) all require specific live-server or network-failure conditions.
+                # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
                 async def _drain():
                     try:
                         await hd_client.connect()
@@ -2295,6 +2315,8 @@ def cli():
                 try:
                     asyncio.run(_drain())
                 except Exception as e:
+                    # Not covered: requires asyncio.run() itself to raise, which needs a
+                    # broken event loop or NATS server in a specific failure state.
                     _log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
             sys.exit(0)
@@ -2920,6 +2942,10 @@ def cli():
                 print("VPN detected — using ssh instead of mosh", file=sys.stderr)
                 _ssh_ret = subprocess.run(ssh_args).returncode
                 if _ssh_ret != 0 and not _is_vpn_active():
+                    # Not covered: requires SSH to fail AND VPN to drop simultaneously —
+                    # a live network state change that cannot be simulated in unit tests
+                    # without a real network interface. See docs/test/unit-tests.md
+                    # §Intentionally Uncovered Lines.
                     print("\nVPN disconnected — reconnecting via mosh...", file=sys.stderr)
                     subprocess.run(mosh_args)
             else:

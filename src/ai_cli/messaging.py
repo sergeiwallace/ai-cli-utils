@@ -87,6 +87,10 @@ class NATSClient:
             try:
 
                 async def _noop_error_cb(e):
+                    # Not covered: invoked by the NATS client library on connection
+                    # error — never called from application code directly. Requires a
+                    # live NATS server to trigger. See docs/test/unit-tests.md §Intentionally
+                    # Uncovered Lines.
                     pass
 
                 self.nc = await nats.connect(

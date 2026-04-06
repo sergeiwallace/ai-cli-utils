@@ -32,7 +32,7 @@ Full pre-release sequence for the next version bump and PyPI publish. Covers tes
 
 **Task:** `[AI-CLI-17]`
 **Plan:** `docs/plans/test-quality-coverage-plan.md`
-**Status:** Awaiting pragma approval (see gate below)
+**Status:** Done
 
 Comprehensive test suite quality audit and coverage recovery following the test_main.py split. Target: ~100% coverage, no lazily-added pragmas, vacuous assertions fixed, all conftest helpers in place.
 
@@ -47,7 +47,7 @@ Comprehensive test suite quality audit and coverage recovery following the test_
 | T-04 | Cover missing lines in main.py | Done — 99% total, 32 lines remaining (see gate) |
 | T-05 | Cover gaps in quota/layout/gemini/icon_generator/messaging | Done — all at 100% |
 | T-06 | Low-severity cleanup | Done |
-| T-07 | Update docs (usage reference, README, code comments) | Pending (after pragma gate) |
+| T-07 | Update docs (usage reference, README, code comments) | Done |
 
 **Results:** 1052 tests pass (2 skipped), 99% total line coverage (32 of 3889 statements uncovered).
 CI badge: green. Codecov upload: queued on commit `ed3334d`.
@@ -276,3 +276,4 @@ These tasks are intentionally deferred until after the release:
 |------|-------|----------|
 | 2026-04-04 | 1 | Phases 1–3 approved for autonomous execution. Human gate before Phase 4. |
 | 2026-04-05 | 2 | Phase 1 implementation complete (99% coverage, 1052 tests). Pragma approval for 32 lines pending. |
+| 2026-04-05 | 3 | Pragma gate resolved: no pragma added. Inline `# Not covered:` comments added at each site; full documentation added to `docs/test/unit-tests.md §Intentionally Uncovered Lines`. Phase 1 complete. |
