@@ -174,20 +174,36 @@ Write a lint script that extracts shared sections from both `CLAUDE.md` and `GEM
 
 The full commit history contains commit messages referencing private platform names and personal identifiers. Squashing to a single clean initial commit eliminates all leakage.
 
-**Steps (in order — human executes Phase 4):**
+Phase 4 is split into two sub-phases: **4a (backup — Claude executes)** and **4b (squash — human gate required before Claude executes)**.
 
-1. **Local bare clone backup:**
+#### Phase 4a — Backup (Claude executes)
+
+1. **Local bare clone backup (Mac):**
    ```bash
    git clone --mirror /Users/sergeiwallace/projects/ai-cli-utils \
      /Users/sergeiwallace/projects/ai-cli-utils-history.git
    ```
 
-2. **Push to private GitHub repo:**
-   - Create private repo `ai-cli-utils-history` on GitHub
-   - `git -C /Users/sergeiwallace/projects/ai-cli-utils-history.git remote set-url origin <private-repo-url>`
-   - `git -C /Users/sergeiwallace/projects/ai-cli-utils-history.git push --mirror`
+2. **Create private GitHub backup repo and push:**
+   ```bash
+   gh repo create ai-cli-utils-history --private \
+     --description "Full git history backup of ai-cli-utils (pre-squash). See README."
+   git -C /Users/sergeiwallace/projects/ai-cli-utils-history.git \
+     remote set-url origin git@github.com:sergeiwallace/ai-cli-utils-history.git
+   git -C /Users/sergeiwallace/projects/ai-cli-utils-history.git push --mirror
+   ```
 
-3. **Squash all history to a single commit:**
+3. **Add README to backup repo** noting its purpose (pre-squash history archive, not the active repo).
+
+**Gate (human):** User confirms both backups exist — local bare clone at
+`~/projects/ai-cli-utils-history.git` and private GitHub repo `sergeiwallace/ai-cli-utils-history`.
+Must give **explicit approval** before Phase 4b proceeds.
+
+#### Phase 4b — Squash (requires explicit human approval from Phase 4a gate)
+
+Once backup is confirmed and approved:
+
+1. **Squash all history to a single commit:**
    ```bash
    cd /Users/sergeiwallace/projects/ai-cli-utils
    git checkout --orphan clean-history
@@ -197,16 +213,33 @@ The full commit history contains commit messages referencing private platform na
    git branch -m main
    ```
 
-4. **Force-push clean history:**
+2. **Force-push clean history:**
    ```bash
    git push origin main --force
    ```
 
-**Gate:** History backup confirmed on both local bare clone and private GitHub repo before squash. Human executes and confirms. No automated execution of this phase.
+**Gate:** Force-push to main. Irreversible without the backup. Do not execute without explicit human approval.
 
 ---
 
-### Phase 5 — Version Bump and PyPI Publish
+### Phase 5 — Final Review
+
+**Status:** Not started
+
+After Phase 4b (squash), do a final review before version bump:
+
+1. Verify `git log` shows single clean initial commit
+2. Confirm CI passes on squashed history
+3. Run `git grep -rn "humanware\|aido\|\bsergei\b\|sergeiwallace\|178\.104" -- src/ tests/` — must return zero hits
+4. Verify `ai --version` returns correct version
+5. Review README, CHANGELOG, pyproject.toml for anything that needs updating
+6. Present findings to user for approval before Phase 6
+
+**Gate:** Human reviews and approves before version bump.
+
+---
+
+### Phase 6 — Version Bump and PyPI Publish
 
 **Status:** Not started
 
@@ -235,9 +268,13 @@ Phase 3 (Privacy Audit)
     ↓ git grep clean + CI green
 Phase 3.5 (CLAUDE/GEMINI Alignment)
     ↓ lint script passing in CI
-Phase 4 (Backup + Squash)   ← human executes
-    ↓ backup confirmed on both local + private GitHub
-Phase 5 (Version Bump + Publish)
+Phase 4a (Backup)   ← Claude executes
+    ↓ human confirms backup exists on local + private GitHub → explicit approval
+Phase 4b (Squash)   ← Claude executes after explicit human approval
+    ↓ CI passes on squashed history
+Phase 5 (Final Review)   ← human approves before bump
+    ↓ human approves
+Phase 6 (Version Bump + Publish)
     ↓ PyPI confirmed
 Done
 ```
@@ -249,8 +286,10 @@ Done
 | CI green | Phase 2 complete | Automated |
 | `git grep` returns zero hits in src/+tests/ | Phase 3 complete | CI + human verify |
 | Alignment lint script passing in CI | Phase 3.5 complete | Automated |
-| Backup confirmed before squash | Phase 4 | Human |
-| PyPI installable | Phase 5 | Human |
+| Backup confirmed before squash | Phase 4a complete | Human — **explicit approval required** |
+| Force-push squash | Phase 4b | Human approval gate |
+| Final review approved | Phase 5 complete | Human |
+| PyPI installable | Phase 6 | Human |
 
 ---
 
