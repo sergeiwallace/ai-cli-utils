@@ -188,6 +188,38 @@ Order by dependency:
 
 ---
 
+## Phase 2 Enhancements (Post-Shipping Phase 1)
+
+Informed by R-66 (2026 gap analysis, 2026-04-06). Not blocking Phase 1 implementation — ship `--depth standard` and `--depth deep` first, then evaluate these enhancements.
+
+### P2-1: IEW Voting for `--depth deep` (arXiv:2601.12707)
+
+When `--depth deep` explores multiple sequential refinement paths (or if a future `--depth exhaustive` tier runs parallel branches), aggregate via **Inverse-Entropy Weighted (IEW) voting** rather than taking the last output or simple majority. IEW assigns higher weight to lower-entropy (higher-confidence) outputs.
+
+*Impact:* Higher accuracy on multi-path deep tier. Low implementation effort once `--depth deep` ships.
+
+### P2-2: Hierarchical Search Provider (arXiv:2602.03442)
+
+Current plan uses a single search modality (Gemini native grounding). A-RAG validated that exposing multiple retrieval modalities improves coverage on complex queries. Future enhancement to `search_provider` config:
+
+```yaml
+search_providers:
+  - type: keyword        # Gemini native grounding or Serper (fast, named entities)
+  - type: semantic       # Future: embedding-based search if provider supports it
+  - type: direct_read    # Firecrawl — for known URLs or specific documents
+```
+
+Allow the planning model to select modality per query via structured JSON output:
+`{"tool": "keyword|semantic|direct_read", "query": "..."}`
+
+*Impact:* Better coverage on research tasks with mixed query types. Depends on SW-762/SW-763 (Tavily/Firecrawl providers) shipping first.
+
+### P2-3: Token-Level Fault Tolerance (Once-More, ICLR 2026)
+
+Once-More (ICLR 2026) shows in-generation perplexity-based correction is effective but requires deep model integration. **Not feasible via standard Gemini API.** Our per-step JSON checkpointing remains the right fault-tolerance ceiling for a CLI wrapper. No action needed — confirming existing approach is correct.
+
+---
+
 ## Approval Log
 
 | Date | Round | Decisions / Approvals |
@@ -196,3 +228,4 @@ Order by dependency:
 | 2026-04-04 | Round 2 | OQ-1: Gemini native grounding as default; Tavily/Firecrawl/Serper as optional follow-up tasks (SW-762, SW-763). OQ-2: `quick` stays default. OQ-3: configurable `planning_model` per preset; test `pro`/`flash` vs `deep-think` after `standard` ships; mirror aido depth config structure. New OQ-4 added. |
 | 2026-04-05 | Round 3 | OQ-4 resolved: B + C — per-step JSON checkpointing + per-call OAuth→REST auto-fallback mirroring aido's `invoke_with_fallback()`. `--resume <run-id>` flag added. |
 | 2026-04-05 | Round 4 | Plan approved. Moved to ai-cli-utils project for implementation. |
+| 2026-04-06 | Round 5 | Phase 2 enhancements added based on R-66 (2026 gap analysis): P2-1 IEW voting for --depth deep, P2-2 hierarchical search provider, P2-3 token-level fault tolerance (confirmed no action — existing checkpointing is correct ceiling). |
