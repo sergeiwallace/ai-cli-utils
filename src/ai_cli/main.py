@@ -1955,6 +1955,12 @@ def _cmd_signal_watch_status() -> None:
 
 
 def cli():
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
+        from importlib.metadata import version as _pkg_version
+
+        print(_pkg_version("ai-cli-utils"))
+        sys.exit(0)
+
     config = load_config()
 
     if len(sys.argv) > 1 and sys.argv[1] == "internal":

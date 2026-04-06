@@ -407,6 +407,15 @@ def run_layout_command(args: list[str]) -> int:
 
     sub = args[0]
 
+    if sub in ("-h", "--help"):
+        print("Usage: ai layout <name|list|validate <name>|profiles <name>>", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("  list              List available layouts", file=sys.stderr)
+        print("  validate <name>   Validate layout YAML schema", file=sys.stderr)
+        print("  profiles <name>   Regenerate Dynamic Profiles without relaunching", file=sys.stderr)
+        print("  <name>            Apply a layout", file=sys.stderr)
+        return 0
+
     if sub == "list":
         return cmd_layout_list()
 

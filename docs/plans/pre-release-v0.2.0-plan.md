@@ -293,8 +293,8 @@ pip install dist/ai_cli_utils-0.2.0-*.whl --force-reinstall
 ai --version         # expect: 0.2.0
 ai --help            # commands render correctly
 ai gemini --help
-ai ps --help
-ai layout --help
+ai layout --help     # shows usage (not treated as layout name)
+ai ps                # shows process health list
 ```
 
 #### Step 7 — TestPyPI Upload

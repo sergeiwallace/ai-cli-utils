@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `ai gemini -m deep-research`: Gemini Deep Research via the Interactions API (`deep-research-pro-preview-12-2025`). Submits a background job, polls every 30s until complete, cancels via DELETE on Ctrl-C. Auth: `GOOGLE_API_KEY_FREE_TIER` → `GOOGLE_API_KEY_TIER_1` (REST-only; no OAuth path). Output follows the same `-o`/auto-file/stdout conventions as other models. (AI-CLI-36)
+- `ai --version` / `ai -V`: print the installed package version and exit.
 - `ai gemini -s`/`--start-tier TIER`: Skip earlier auth tiers explicitly (1=OAuth CLI, 2=free API key, 3=paid API key). Useful when OAuth returns truncated responses without erroring. (AI-CLI-36)
 - `ai gemini -d standard`/`--depth standard`: Planner-Executor research pipeline — query generation → concurrent Gemini-grounded search → synthesis. Per-step JSON checkpointing at `~/.local/state/ai-cli/research-runs/<run-id>/`. Resume with `--resume <run-id>`. (AI-CLI-36)
 

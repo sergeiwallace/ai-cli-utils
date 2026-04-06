@@ -20,6 +20,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | Feature | Description |
 |---------|-------------|
 | **Session management** | `ai c 1`, `ai c 2` — numbered tmux sessions with auto-resume on disconnect |
+| **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
 | **Remote sessions** | `ai c -R` — run sessions on a remote server via mosh or SSH |
@@ -50,6 +51,9 @@ pipx install ai-cli-utils
 ## Quick Start
 
 ```bash
+# Verify install
+ai --version
+
 # Launch Claude Code session 1
 ai c 1
 
@@ -81,7 +85,6 @@ ai c -b/--bare         # Run bare (no tmux wrapper)
 ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
 ai c -s/--sandbox      # Explicitly enable sandboxing
-ai c -S/--no-sandbox   # Explicitly disable sandboxing
 ai c -W/--no-worktree  # Disable git worktree isolation
 ```
 
@@ -126,8 +129,6 @@ Use `-s 2` or `-s 3` to start at a later tier (e.g. when OAuth returns truncated
 **Model aliases:** `deep-think`, `pro`, `flash`, `flash-lite`, `deep-research`, or any full Gemini model ID.
 
 **Logs:** `~/.local/state/ai-cli/gemini-logs/` (JSONL). **Auto output:** `~/.local/state/ai-cli/gemini-output/`.
-
-Install with Gemini REST support: `uv tool install "ai-cli-utils[gemini]"`
 
 ### Session picker
 
@@ -174,6 +175,8 @@ Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define
 ### Other commands
 
 ```bash
+ai ps                    # Show ai-cli processes with health scores; flag suspect/stale ones
+ai ps --kill             # Terminate processes above the suspect threshold
 ai signal-watch status   # List Circus-managed signal-watch processes
 ai memory watch          # Watch for Claude Code memory file changes
 ai quota watch           # Monitor API quota usage

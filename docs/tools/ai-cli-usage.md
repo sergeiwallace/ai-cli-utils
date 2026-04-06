@@ -31,6 +31,7 @@ source: internal
   - [ai tunnel](#ai-tunnel)
   - [ai update](#ai-update)
   - [ai setup](#ai-setup)
+  - [ai ps](#ai-ps)
   - [ai upgrade](#ai-upgrade)
 - [Internal Commands](#internal-commands)
 
@@ -39,6 +40,11 @@ source: internal
 ## Overview
 
 `ai` is the unified CLI for Claude Code and Gemini CLI sessions. Entry point: `src/ai_cli/main.py:cli()`.
+
+```
+ai --version   # print installed version
+ai -V          # same, short form
+```
 
 Subcommands are dispatched via `sys.argv` inspection before Click takes over for the default `ai c` session-launch flow.
 
@@ -330,6 +336,23 @@ Detects the runtime environment and configures the Claude Code session config (`
 - **Standalone install**: copies `CLAUDE-full.md` → `CLAUDE.md` (standalone config with all rules), then runs `git update-index --assume-unchanged CLAUDE.md` so the swap doesn't show as a local modification.
 
 Run once after cloning or installing. Safe to re-run at any time.
+
+### ai ps
+
+```
+ai ps [--kill] [--threshold N] [--json]
+```
+
+Process hygiene inspector. Lists all ai-cli-related processes with health scores and flags stale or suspect ones.
+
+**Scoring:** each process is assigned a score based on tmux session presence, PID file state, and age. Higher score = more suspect.
+
+**Flags:**
+- `--kill` / `-k` — terminate processes at or above the threshold
+- `--threshold N` / `-t N` — kill threshold (default from config, typically 50)
+- `--json` / `-j` — output as JSON (useful for scripting)
+
+Safe to run at any time; without `--kill` it only reads and reports.
 
 ### ai upgrade
 
