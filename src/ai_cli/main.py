@@ -1752,7 +1752,7 @@ def _find_chrome_binary(config: dict) -> str | None:
     return None
 
 
-def _cmd_cdp_start(port: int, incognito: bool, config: dict) -> None:
+def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = False, forward: bool = False) -> None:
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"cdp-{port}.pid"
 
@@ -1807,8 +1807,11 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict) -> None:
     else:
         print(f"CDP started (PID {proc.pid}) — endpoint not yet responding on port {port}")
 
+    if tunnel:
+        _cmd_tunnel_start(port, port, forward=forward, config=config)
 
-def _cmd_cdp_stop(port: int) -> None:
+
+def _cmd_cdp_stop(port: int, tunnel: bool = False) -> None:
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"cdp-{port}.pid"
     if not pid_file.exists():
@@ -1821,6 +1824,8 @@ def _cmd_cdp_stop(port: int) -> None:
         pass
     pid_file.unlink(missing_ok=True)
     print(f"CDP stopped: port {port}")
+    if tunnel:
+        _cmd_tunnel_stop(port)
 
 
 def _cmd_cdp_status() -> None:
@@ -2579,7 +2584,7 @@ def cli():
     if len(sys.argv) > 1 and sys.argv[1] == "cdp":
         if len(sys.argv) < 3:
             print(
-                "Usage: ai cdp [start [--port N] [--no-incognito] | stop [--port N] | status]",
+                "Usage: ai cdp [start [-p N] [-I] [-t] [-L] | stop [-p N] [-t] | status]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2589,14 +2594,23 @@ def cli():
             _cdp_parser = argparse.ArgumentParser(prog="ai cdp start")
             _cdp_parser.add_argument("-p", "--port", type=int, default=_cdp_default_port)
             _cdp_parser.add_argument("-I", "--no-incognito", action="store_true")
+            _cdp_parser.add_argument("-t", "--tunnel", action="store_true", help="start SSH tunnel alongside Chrome")
+            _cdp_parser.add_argument(
+                "-L", "--forward", action="store_true", help="use forward tunnel (default: reverse)"
+            )
             _cdp_args = _cdp_parser.parse_args(sys.argv[3:])
-            _cmd_cdp_start(_cdp_args.port, not _cdp_args.no_incognito, config)
+            _cmd_cdp_start(
+                _cdp_args.port, not _cdp_args.no_incognito, config, tunnel=_cdp_args.tunnel, forward=_cdp_args.forward
+            )
             sys.exit(0)
         elif cdp_action == "stop":
             _cdp_parser = argparse.ArgumentParser(prog="ai cdp stop")
             _cdp_parser.add_argument("-p", "--port", type=int, default=_cdp_default_port)
+            _cdp_parser.add_argument(
+                "-t", "--tunnel", action="store_true", help="also stop the SSH tunnel for this port"
+            )
             _cdp_args = _cdp_parser.parse_args(sys.argv[3:])
-            _cmd_cdp_stop(_cdp_args.port)
+            _cmd_cdp_stop(_cdp_args.port, tunnel=_cdp_args.tunnel)
             sys.exit(0)
         elif cdp_action == "status":
             _cmd_cdp_status()

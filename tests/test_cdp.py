@@ -222,6 +222,48 @@ class TestCmdCdpStart:
 
         assert (tmp_path / "cdp-9333.pid").exists()
 
+    def test_when_tunnel_true_then_calls_tunnel_start_with_reverse(self, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.main._cmd_tunnel_start") as mock_tunnel,
+        ):
+            _cmd_cdp_start(9222, True, {}, tunnel=True, forward=False)
+
+        mock_tunnel.assert_called_once_with(9222, 9222, forward=False, config={})
+
+    def test_when_tunnel_true_and_forward_then_calls_tunnel_start_with_forward(self, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.main._cmd_tunnel_start") as mock_tunnel,
+        ):
+            _cmd_cdp_start(9222, True, {}, tunnel=True, forward=True)
+
+        mock_tunnel.assert_called_once_with(9222, 9222, forward=True, config={})
+
+    def test_when_tunnel_false_then_does_not_call_tunnel_start(self, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.main._cmd_tunnel_start") as mock_tunnel,
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        mock_tunnel.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _cmd_cdp_stop
@@ -273,6 +315,30 @@ class TestCmdCdpStop:
             _cmd_cdp_stop(9333)
 
         mock_kill.assert_called_once_with(77777, 15)
+
+    def test_when_tunnel_true_then_calls_tunnel_stop(self, tmp_path):
+        pid_file = tmp_path / "cdp-9222.pid"
+        pid_file.write_text("12345")
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill"),
+            patch("ai_cli.main._cmd_tunnel_stop") as mock_tunnel_stop,
+        ):
+            _cmd_cdp_stop(9222, tunnel=True)
+
+        mock_tunnel_stop.assert_called_once_with(9222)
+
+    def test_when_tunnel_false_then_does_not_call_tunnel_stop(self, tmp_path):
+        pid_file = tmp_path / "cdp-9222.pid"
+        pid_file.write_text("12345")
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("os.kill"),
+            patch("ai_cli.main._cmd_tunnel_stop") as mock_tunnel_stop,
+        ):
+            _cmd_cdp_stop(9222)
+
+        mock_tunnel_stop.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +406,7 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_start.assert_called_once_with(9222, True, {})
+        mock_start.assert_called_once_with(9222, True, {}, tunnel=False, forward=False)
 
     def test_when_cdp_start_with_port_flag_then_uses_custom_port(self, tmp_path):
         with (
@@ -353,7 +419,7 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_start.assert_called_once_with(9333, True, {})
+        mock_start.assert_called_once_with(9333, True, {}, tunnel=False, forward=False)
 
     def test_when_cdp_start_with_short_port_flag_then_uses_custom_port(self):
         with (
@@ -366,7 +432,7 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_start.assert_called_once_with(8888, True, {})
+        mock_start.assert_called_once_with(8888, True, {}, tunnel=False, forward=False)
 
     def test_when_cdp_start_with_no_incognito_then_passes_false(self):
         with (
@@ -379,7 +445,7 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_start.assert_called_once_with(9222, False, {})
+        mock_start.assert_called_once_with(9222, False, {}, tunnel=False, forward=False)
 
     def test_when_cdp_start_with_short_no_incognito_flag_then_passes_false(self):
         with (
@@ -392,7 +458,7 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_start.assert_called_once_with(9222, False, {})
+        mock_start.assert_called_once_with(9222, False, {}, tunnel=False, forward=False)
 
     def test_when_cdp_start_and_config_has_port_then_uses_config_port(self):
         with (
@@ -405,7 +471,46 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_start.assert_called_once_with(9999, True, {"cdp": {"port": 9999}})
+        mock_start.assert_called_once_with(9999, True, {"cdp": {"port": 9999}}, tunnel=False, forward=False)
+
+    def test_when_cdp_start_with_tunnel_flag_then_passes_tunnel_true(self):
+        with (
+            patch("sys.argv", ["ai", "cdp", "start", "--tunnel"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        mock_start.assert_called_once_with(9222, True, {}, tunnel=True, forward=False)
+
+    def test_when_cdp_start_with_short_t_tunnel_flag_then_passes_tunnel_true(self):
+        with (
+            patch("sys.argv", ["ai", "cdp", "start", "-t"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        mock_start.assert_called_once_with(9222, True, {}, tunnel=True, forward=False)
+
+    def test_when_cdp_start_with_tunnel_and_forward_flags_then_passes_both(self):
+        with (
+            patch("sys.argv", ["ai", "cdp", "start", "-t", "-L"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        mock_start.assert_called_once_with(9222, True, {}, tunnel=True, forward=True)
 
     def test_when_cdp_stop_then_calls_cmd_cdp_stop(self):
         with (
@@ -418,7 +523,7 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_stop.assert_called_once_with(9222)
+        mock_stop.assert_called_once_with(9222, tunnel=False)
 
     def test_when_cdp_stop_with_port_flag_then_uses_custom_port(self):
         with (
@@ -431,7 +536,7 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_stop.assert_called_once_with(9333)
+        mock_stop.assert_called_once_with(9333, tunnel=False)
 
     def test_when_cdp_stop_with_short_port_flag_then_uses_custom_port(self):
         with (
@@ -444,7 +549,33 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 0
-        mock_stop.assert_called_once_with(7777)
+        mock_stop.assert_called_once_with(7777, tunnel=False)
+
+    def test_when_cdp_stop_with_tunnel_flag_then_passes_tunnel_true(self):
+        with (
+            patch("sys.argv", ["ai", "cdp", "stop", "--tunnel"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_cdp_stop") as mock_stop,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        mock_stop.assert_called_once_with(9222, tunnel=True)
+
+    def test_when_cdp_stop_with_short_t_tunnel_flag_then_passes_tunnel_true(self):
+        with (
+            patch("sys.argv", ["ai", "cdp", "stop", "-t"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._cmd_cdp_stop") as mock_stop,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        mock_stop.assert_called_once_with(9222, tunnel=True)
 
     def test_when_cdp_status_then_calls_cmd_cdp_status(self):
         with (

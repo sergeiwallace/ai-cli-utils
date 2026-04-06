@@ -256,8 +256,8 @@ Circus uses IPC (not TCP) at `~/.local/state/ai-cli/circus.endpoint`. Config wri
 ### ai cdp
 
 ```
-ai cdp start [-p|--port N] [-I|--no-incognito]
-ai cdp stop  [-p|--port N]
+ai cdp start [-p|--port N] [-I|--no-incognito] [-t|--tunnel] [-L|--forward]
+ai cdp stop  [-p|--port N] [-t|--tunnel]
 ai cdp status
 ```
 
@@ -271,8 +271,12 @@ any CDP-capable tool to a browser session without managing Chrome flags manually
   `localhost:<port>/json/version` to respond, then prints `CDP ready at localhost:<port>`.
   Idempotent — prints "already running" if a live process is registered on that port.
   Writes PID to `~/.local/state/ai-cli-utils/cdp-<port>.pid`.
+  - `-t`/`--tunnel` — also starts an SSH tunnel for the CDP port after Chrome launches.
+    Defaults to a **reverse tunnel** (`-R`) so remote machines can reach the local Chrome
+    via `localhost:<port>`. Pass `-L`/`--forward` to use a forward tunnel instead.
 - `stop` — sends SIGTERM to the registered process and removes the PID file.
-  Silent if no process is registered on that port.
+  Silent if no process is registered on that port. Pass `-t`/`--tunnel` to also stop
+  the SSH tunnel registered on the same port.
 - `status` — lists all registered CDP processes with port, PID, and alive/dead state.
   Cleans up stale PID files for dead processes.
 
