@@ -129,10 +129,10 @@ Required: `github`, `gemini-cli`.
 
 ## Gemini CLI
 
-**Always pass an explicit `model` argument.** Do not rely on defaults. `gemini-3.0-flash` is the universal safety net.
+**Always pass an explicit `model` argument.** Do not rely on defaults. `gemini-3-flash-preview` is the universal safety net.
 
 ```
-mcp__gemini-cli__ask-gemini(prompt="...", model="gemini-3.0-flash")
+mcp__gemini-cli__ask-gemini(prompt="...", model="gemini-3-flash-preview")
 ```
 
-Models ranked by capability: `gemini-3.1-pro-preview` → `gemini-3.0-pro` → `gemini-3.0-flash` → `gemini-2.5-pro` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`.
+Models ranked by capability: `gemini-3.1-pro-preview` → `gemini-3-flash-preview` → `gemini-2.5-pro` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`.
