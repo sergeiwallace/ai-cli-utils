@@ -109,7 +109,7 @@ refactor but adds scope beyond this release. Option C solves Group A but not B o
 
 **Task:** `[AI-CLI-28]`
 **Plan:** `docs/plans/process-hygiene-plan.md`
-**Status:** Plan approved, not started
+**Status:** Done
 
 Add `ai ps` command showing all ai-cli-managed processes (mosh-server orphans, signal-watch, autossh tunnels) with age and status. Add `ai ps clean` to kill orphaned processes. Scoring system for stale session detection. Termius orphan auto-kill at score threshold.
 
@@ -120,7 +120,7 @@ Add `ai ps` command showing all ai-cli-managed processes (mosh-server orphans, s
 ### Phase 3 — Privacy Audit
 
 **Task:** `[AI-CLI-30]`
-**Status:** Not started
+**Status:** Done
 
 Scrub all proprietary and personal references from code, tests, docs, and comments. Must conform to Public Open-Source Package Standards in `CLAUDE.md`.
 
@@ -160,7 +160,7 @@ Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (whe
 ### Phase 3.5 — CLAUDE.md / GEMINI.md Alignment
 
 **Task:** `[AI-CLI-31]`
-**Status:** Not started
+**Status:** Done
 
 Write a lint script that extracts shared sections from both `CLAUDE.md` and `GEMINI.md` and fails if they differ. Wire to CI. Small lift — shared sections are already defined, GEMINI.md was just synced with CLAUDE.md additions in this release.
 
@@ -316,3 +316,4 @@ These tasks are intentionally deferred until after the release:
 | 2026-04-04 | 1 | Phases 1–3 approved for autonomous execution. Human gate before Phase 4. |
 | 2026-04-05 | 2 | Phase 1 implementation complete (99% coverage, 1052 tests). Pragma approval for 32 lines pending. |
 | 2026-04-05 | 3 | Pragma gate resolved: no pragma added. Inline `# Not covered:` comments added at each site; full documentation added to `docs/test/unit-tests.md §Intentionally Uncovered Lines`. Phase 1 complete. |
+| 2026-04-05 | 4 | Phases 2 (process hygiene), 3 (privacy audit), 3.5 (CLAUDE/GEMINI alignment lint) complete. Proceeding to Phase 4a (backup). |
