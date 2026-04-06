@@ -247,16 +247,69 @@ Once backup is confirmed and approved:
 
 **Status:** Not started
 
-After Phase 4b (squash), do a final review before version bump:
+After Phase 4b (squash), do a full final review before version bump. Split into automated checks (Claude runs) and human review items (needs human eyes).
 
-1. Verify `git log` shows single clean initial commit
-2. Confirm CI passes on squashed history
-3. Run `git grep -rn "humanware\|aido\|\bsergei\b\|sergeiwallace\|178\.104" -- src/ tests/` — must return zero hits
-4. Verify `ai --version` returns correct version
-5. Review README, CHANGELOG, pyproject.toml for anything that needs updating
-6. Present findings to user for approval before Phase 6
+#### Step 1 — Privacy & Public Safety (Claude)
 
-**Gate:** Human reviews and approves before version bump.
+- `git grep -rn "humanware\|aido\|\bsergei\b\|sergeiwallace\|178\.104"` across entire repo (not just src/tests — also docs, configs, comments, scripts)
+- Grep for private email patterns and internal hostnames
+- Verify `git log --oneline` shows single "Initial release" commit — no history leakage
+
+#### Step 2 — CI / Code Quality Gate (Claude)
+
+- Confirm CI is green on squashed history: `gh run list --limit 3`
+- If CI has not re-run since squash, push a no-op commit to trigger it
+- Confirm Codecov still at 99% after re-run
+
+#### Step 3 — Package Metadata Audit (`pyproject.toml`) (Claude)
+
+- `version` — confirm ready to bump `0.1.1` → `0.2.0`
+- `description`, `keywords`, `classifiers` — accurate and complete for PyPI listing
+- `authors` email (`dev@sergeiwallace.com`) — public-facing, confirm intentional
+- `requires-python`, `dependencies` — nothing private, no overly tight pins
+- `[project.scripts]` entry points — correct
+
+#### Step 4 — CHANGELOG (Claude)
+
+- Confirm `[Unreleased]` section is complete — all features since v0.1.1 listed
+- Cross-check against roadmap done items for any missing entries
+- Ready to rename to `[0.2.0] - YYYY-MM-DD` at version bump time
+
+#### Step 5 — README & Docs Audit (human)
+
+- Install instructions — correct for v0.2.0?
+- Feature list — reflects what's actually in v0.2.0?
+- Any screenshots or examples referencing private paths/names?
+- `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE` — nothing outdated
+- `docs/tools/ai-cli-usage.md` — current with all commands (`ai ps`, `ai gemini`, `ai layout`, etc.)?
+- `docs/tools/iterm2-setup.md` — accurate for external users?
+- `setup.sh` — any hardcoded personal paths?
+
+#### Step 6 — Local Install Smoke Test (human)
+
+```bash
+uv build
+pip install dist/ai_cli_utils-0.2.0-*.whl --force-reinstall
+ai --version         # expect: 0.2.0
+ai --help            # commands render correctly
+ai gemini --help
+ai ps --help
+ai layout --help
+```
+
+#### Step 7 — TestPyPI Upload (optional)
+
+- Upload to TestPyPI before touching live package: `uv publish --publish-url https://test.pypi.org/legacy/`
+- Install from TestPyPI in a clean venv and smoke test
+- Skip if confident from Step 6
+
+#### Step 8 — Present Findings (Claude)
+
+- Summarize all findings from Steps 1–4
+- Flag any open questions or decisions
+- Wait for human approval before Phase 6
+
+**Gate:** Human reviews Steps 5–6 and approves before version bump.
 
 ---
 
@@ -341,3 +394,4 @@ These tasks are intentionally deferred until after the release:
 | 2026-04-05 | 2 | Phase 1 implementation complete (99% coverage, 1052 tests). Pragma approval for 32 lines pending. |
 | 2026-04-05 | 3 | Pragma gate resolved: no pragma added. Inline `# Not covered:` comments added at each site; full documentation added to `docs/test/unit-tests.md §Intentionally Uncovered Lines`. Phase 1 complete. |
 | 2026-04-05 | 4 | Phases 2 (process hygiene), 3 (privacy audit), 3.5 (CLAUDE/GEMINI alignment lint) complete. Proceeding to Phase 4a (backup). |
+| 2026-04-06 | 5 | Phase 4a backups confirmed (local bare clone at `~/projects-archive/ai-cli-utils-history.git` + private GitHub `sergeiwallace/ai-cli-utils-history`). Phase 4b squash approved and executed — single commit `6201c1f`. Phase 5 plan expanded and approved. |
