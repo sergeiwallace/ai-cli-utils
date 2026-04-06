@@ -160,12 +160,30 @@ Reads remote host from `[remote] host` in config, overridable via `--remote-host
 ### ai gemini
 
 ```
-ai gemini "prompt" [-m MODEL] [-o OUTPUT_FILE] [--quiet] [--verbose] [--timeout N] [--no-file]
+ai gemini "prompt" [-m MODEL] [-d DEPTH] [-o OUTPUT_FILE] [--quiet] [--verbose]
+             [--timeout N] [--no-file] [--resume RUN_ID] [--planning-model MODEL]
 ```
 
-Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) and auto-retry on 429/capacity errors. See `src/ai_cli/gemini.py`.
+Gemini CLI wrapper with 3-tier auth fallback (OAuth -> free API key -> paid API key) and research depth tiers. See `src/ai_cli/gemini.py` and `src/ai_cli/research.py`.
 
-Model aliases: `deep-think`, `pro`, `flash`, `flash-lite`, or any full model ID.
+**Depth tiers** (`-d`/`--depth`):
+- `quick` (default) -- single-shot call, current behavior
+- `standard` -- Planner-Executor: query generation -> concurrent grounded search -> synthesis (~2x tokens, 2+ model calls)
+
+**Flags:**
+- `-m`/`--model` -- Model alias: `deep-think`, `pro`, `flash`, `flash-lite`, or full model ID (used for synthesis in standard/deep)
+- `-d`/`--depth` -- Research depth: `quick` or `standard`
+- `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
+- `--resume RUN_ID` -- Resume a standard run from last completed step
+- `-o`/`--output` -- Output file path (auto-generated if omitted)
+- `--quiet`/`-q` -- Suppress stderr progress output
+- `--verbose`/`-v` -- Show detailed tier/model info
+- `-t`/`--timeout` -- Timeout in seconds (default: 600)
+- `-F`/`--no-file` -- Stdout only, no file written
+
+**Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
+
+**Checkpoints:** `~/.local/state/ai-cli/research-runs/<run-id>/` -- JSON snapshots after each step. Use `--resume <run-id>` to restart from last completed step.
 
 ### ai handoff
 

@@ -44,6 +44,9 @@ TIER_NAMES = {
 # Default output directory for auto-generated output files
 DEFAULT_OUTPUT_DIR = Path.home() / ".local" / "state" / "ai-cli" / "gemini-output"
 
+# Paths treated as "no output file" -- suppress file write
+_NULL_OUTPUT = {"/dev/null", os.devnull}
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -488,7 +491,7 @@ def run_gemini(
         ts = time.strftime("%Y%m%d-%H%M%S")
         output_path = str(DEFAULT_OUTPUT_DIR / f"{ts}-{model}.md")
 
-    if output_path and final_result.success:
+    if output_path and final_result.success and output_path not in _NULL_OUTPUT:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w") as f:
             f.write(final_result.content)
@@ -535,6 +538,25 @@ def gemini_cli(args: list[str]):
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed tier/model info")
     parser.add_argument("-t", "--timeout", type=int, default=600, help="Timeout in seconds (default: 600)")
     parser.add_argument("-F", "--no-file", action="store_true", help="Don't write output to file, stdout only")
+    parser.add_argument(
+        "-d",
+        "--depth",
+        choices=["quick", "standard"],
+        default="quick",
+        help="Research depth: quick (default, single-shot) or standard (Planner-Executor with grounded search)",
+    )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        metavar="RUN_ID",
+        help="Resume a standard/deep run from last completed step",
+    )
+    parser.add_argument(
+        "--planning-model",
+        default=None,
+        metavar="MODEL",
+        help="Override planning model for standard/deep depth (default: deep-think)",
+    )
 
     parsed = parser.parse_args(args)
 
@@ -553,13 +575,31 @@ def gemini_cli(args: list[str]):
     if parsed.no_file:
         output = "/dev/null"  # effectively discard
 
-    result = run_gemini(
-        prompt,
-        model=parsed.model,
-        output=output,
-        quiet=parsed.quiet,
-        verbose=parsed.verbose,
-        timeout_s=parsed.timeout,
-    )
+    depth = parsed.depth
+    if parsed.resume and depth == "quick":
+        depth = "standard"  # resume always implies standard/deep
+
+    if depth == "quick":
+        result = run_gemini(
+            prompt,
+            model=parsed.model,
+            output=output,
+            quiet=parsed.quiet,
+            verbose=parsed.verbose,
+            timeout_s=parsed.timeout,
+        )
+    else:
+        from .research import load_depth_preset, run_standard
+
+        preset = load_depth_preset(depth, planning_model_override=parsed.planning_model)
+        result = run_standard(
+            prompt,
+            preset,
+            resume=parsed.resume,
+            output=output,
+            quiet=parsed.quiet,
+            verbose=parsed.verbose,
+            timeout_s=parsed.timeout,
+        )
 
     sys.exit(0 if result.success else 1)
