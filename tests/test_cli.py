@@ -1435,9 +1435,7 @@ class TestDeploy:
         src_dir = tmp_path / "src" / "ai_cli"
         src_dir.mkdir(parents=True)
         clean = src_dir / "main.py"
-        clean.write_text(
-            'def check(text):\n    if "<<<<<<< " in text or ">>>>>>> " in text:\n        pass\n'
-        )
+        clean.write_text('def check(text):\n    if "<<<<<<< " in text or ">>>>>>> " in text:\n        pass\n')
         uv_called = []
 
         def fake_run(cmd, **kwargs):
