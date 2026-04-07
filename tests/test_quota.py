@@ -15,6 +15,7 @@ from ai_cli.quota import (
     quota_scrape,
     quota_status,
     quota_history,
+    quota_statusline_part,
 )
 
 
@@ -22,6 +23,26 @@ from ai_cli.quota import (
 
 
 class TestParseUsageOutput:
+    # Actual /usage output format: label on one line, progress bar + % on next line.
+    _REAL_USAGE_OUTPUT = (
+        "  Current session    \n"
+        "  ██                                                 4% used\n\n"
+        "  Current week (all models)\n"
+        "  █████████████                                      26% used\n\n"
+        "  Current week (Sonnet only)\n"
+        "  ████████████                                       24% used\n\n"
+        "  Extra usage\n"
+        "  Extra usage not enabled · /extra-usage to enable\n"
+    )
+
+    def test_when_real_multiline_format_then_all_parsed(self):
+        snap = _parse_usage_output(self._REAL_USAGE_OUTPUT)
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 26.0
+        assert snap.session_pct == 4.0
+        assert snap.weekly_sonnet_pct == 24.0
+        assert snap.extra_pct == 0.0
+
     def test_when_all_fields_present_then_all_parsed(self):
         output = (
             "Current session: 12% used\n"
@@ -78,16 +99,23 @@ class TestScrapeUsageHiddenPane:
             result = _scrape_usage_hidden_pane()
         assert result is None
 
+    def _make_new_window_result(self, index: str = "3") -> MagicMock:
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = f"{index}\n"
+        return r
+
     def test_when_cc_prompt_never_appears_then_returns_none(self):
         """No ❯ in capture output → timeout → returns None."""
         no_prompt = self._make_cap_result("Starting claude...\n")
+        new_win = self._make_new_window_result("3")
         ok = MagicMock()
         ok.returncode = 0
         killed = []
 
         def fake_run(cmd, **kwargs):
             if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return ok
+                return new_win
             if cmd[0] == "tmux" and cmd[1] == "kill-window":
                 killed.append(True)
                 return ok
@@ -100,19 +128,37 @@ class TestScrapeUsageHiddenPane:
         assert result is None
         assert killed, "kill-window must be called on timeout path"
 
+    def test_when_window_index_used_as_capture_target(self):
+        """Index-based target (:N) from new-window is used for capture-pane, not =name."""
+        new_win = self._make_new_window_result("7")
+        ok = MagicMock()
+        ok.returncode = 0
+        targets_seen = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "new-window":
+                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
+                if "-t" in cmd:
+                    targets_seen.append(cmd[cmd.index("-t") + 1])
+                return self._make_cap_result("Starting...\n")  # never shows ❯ → timeout
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            _scrape_usage_hidden_pane()
+
+        assert targets_seen, "capture-pane must be called"
+        assert all(t == ":7" for t in targets_seen), f"expected :7, got {targets_seen}"
+
     def test_when_usage_output_captured_then_returns_snapshot(self):
         """Happy path: prompt appears, /usage output appears, snapshot returned."""
+        new_win = self._make_new_window_result("3")
         ok = MagicMock()
         ok.returncode = 0
 
         prompt_only = self._make_cap_result("❯\n")
-        usage_output = (
-            "❯\n"
-            "Current session: 12% used\n"
-            "Current week (all models): 86% used\n"
-            "Current week (Sonnet only): 49% used\n"
-            "Extra usage not enabled\n"
-        )
+        # Use the real multi-line /usage format to verify regex + scraper work together.
+        usage_output = TestParseUsageOutput._REAL_USAGE_OUTPUT
         cap_with_usage = self._make_cap_result(usage_output)
 
         call_count = 0
@@ -120,7 +166,7 @@ class TestScrapeUsageHiddenPane:
         def fake_run(cmd, **kwargs):
             nonlocal call_count
             if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return ok
+                return new_win
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count <= 1:
@@ -132,9 +178,9 @@ class TestScrapeUsageHiddenPane:
             result = _scrape_usage_hidden_pane()
 
         assert isinstance(result, QuotaSnapshot)
-        assert result.session_pct == 12.0
-        assert result.weekly_all_models_pct == 86.0
-        assert result.weekly_sonnet_pct == 49.0
+        assert result.session_pct == 4.0
+        assert result.weekly_all_models_pct == 26.0
+        assert result.weekly_sonnet_pct == 24.0
         assert result.extra_pct == 0.0
 
     def test_when_exception_raised_then_returns_none_and_kills_window(self):
@@ -581,3 +627,64 @@ class TestQuotaWatch:
 
         assert result == 0
         assert "failed to publish" in capsys.readouterr().err
+
+
+# --- quota_statusline_part ---
+
+
+class TestQuotaStatuslinePart:
+    def test_when_no_snapshot_then_returns_0_and_no_output(self, tmp_path, capsys):
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            result = quota_statusline_part()
+            assert result == 0
+            assert capsys.readouterr().out.strip() == ""
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_under_pace_then_shows_green_icon(self, tmp_path, capsys):
+        """delta < -5 (usage well below expected) → ✅ icon."""
+        import ai_cli.quota_db as qdb
+        from datetime import datetime, timezone, timedelta
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            # Snapshot at 5% but week is ~50% elapsed → delta ≈ -45
+            qdb.record_quota_snapshot(usage_percent=5.0)
+            result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "5%" in out
+            assert "✅" in out
+            assert "↓" in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_over_pace_then_shows_alert_icon(self, tmp_path, capsys):
+        """delta > +5 (usage above expected pace) → 🚨 icon."""
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            # Snapshot at 95% — always over pace unless week is nearly done
+            qdb.record_quota_snapshot(usage_percent=95.0)
+            result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "95%" in out
+            assert "🚨" in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_db_error_then_returns_0_no_crash(self, tmp_path, capsys):
+        """Exception in DB read must not propagate — statusline must never crash CC."""
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "nonexistent" / "quota.db")
+        try:
+            result = quota_statusline_part()
+            assert result == 0
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]

@@ -36,13 +36,19 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
       Current week (Sonnet only): 49% used
       Extra usage not enabled
     """
-    weekly_all_match = re.search(r"Current week \(all models\)[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
+    # re.DOTALL required: /usage output puts the percentage on a separate line from
+    # the label, with a block-character progress bar in between.
+    weekly_all_match = re.search(
+        r"Current week \(all models\).*?(\d+(?:\.\d+)?)\s*%\s*used", output, re.DOTALL | re.IGNORECASE
+    )
     if not weekly_all_match:
         return None
 
-    session_match = re.search(r"Current session[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
-    sonnet_match = re.search(r"Current week \(Sonnet only\)[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
-    extra_match = re.search(r"Extra usage[:\s]+(\d+(?:\.\d+)?)\s*%", output, re.IGNORECASE)
+    session_match = re.search(r"Current session.*?(\d+(?:\.\d+)?)\s*%\s*used", output, re.DOTALL | re.IGNORECASE)
+    sonnet_match = re.search(
+        r"Current week \(Sonnet only\).*?(\d+(?:\.\d+)?)\s*%\s*used", output, re.DOTALL | re.IGNORECASE
+    )
+    extra_match = re.search(r"Extra usage.*?(\d+(?:\.\d+)?)\s*%", output, re.DOTALL | re.IGNORECASE)
     extra_not_enabled = bool(re.search(r"Extra usage not enabled", output, re.IGNORECASE))
 
     return QuotaSnapshot(
@@ -62,18 +68,22 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     """
     window_name = "ai-quota-scrape"
     try:
-        # Create a detached background window
+        # Create a detached background window and capture its index for reliable targeting.
+        # The =window-name syntax works for send-keys but not capture-pane in some tmux
+        # versions; index-based targeting (:N) works universally.
         result = subprocess.run(
-            ["tmux", "new-window", "-d", "-n", window_name],
+            ["tmux", "new-window", "-d", "-n", window_name, "-P", "-F", "#{window_index}"],
             capture_output=True,
+            text=True,
             timeout=3,
         )
         if result.returncode != 0:
             return None
+        target = f":{result.stdout.strip()}"
 
         # Start CC with no-op permissions (read-only scraping, never runs tools)
         subprocess.run(
-            ["tmux", "send-keys", "-t", f"={window_name}", "claude --dangerously-skip-permissions", "Enter"],
+            ["tmux", "send-keys", "-t", target, "claude --dangerously-skip-permissions", "Enter"],
             capture_output=True,
             timeout=2,
         )
@@ -83,7 +93,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         for _ in range(75):  # up to 15s
             time.sleep(0.2)
             cap = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", f"={window_name}", "-J"],
+                ["tmux", "capture-pane", "-p", "-t", target, "-J"],
                 capture_output=True,
                 text=True,
                 timeout=3,
@@ -97,7 +107,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
 
         # Inject /usage
         subprocess.run(
-            ["tmux", "send-keys", "-t", f"={window_name}", "/usage", "Enter"],
+            ["tmux", "send-keys", "-t", target, "/usage", "Enter"],
             capture_output=True,
             timeout=2,
         )
@@ -107,7 +117,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         for _ in range(25):
             time.sleep(0.2)
             cap = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", f"={window_name}", "-J"],
+                ["tmux", "capture-pane", "-p", "-t", target, "-J"],
                 capture_output=True,
                 text=True,
                 timeout=3,
@@ -119,7 +129,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
 
         # Dismiss the dialog
         subprocess.run(
-            ["tmux", "send-keys", "-t", f"={window_name}", "Escape", ""],
+            ["tmux", "send-keys", "-t", target, "Escape", ""],
             capture_output=True,
             timeout=2,
         )
@@ -339,6 +349,76 @@ def quota_scrape() -> int:
         extra_pct=snapshot.extra_pct,
     )
     print("Stored snapshot in local quota DB.")
+    return 0
+
+
+def quota_statusline_part() -> int:
+    """Print a compact quota indicator for use in the statusline.
+
+    Reads the latest snapshot from local SQLite (fast, no scraping).
+    Outputs: {pace_icon} {usage_pct:.0f}% {direction}{delta:.0f}%
+    where delta = usage_pct - week_elapsed_pct.
+    """
+    import sqlite3
+
+    from .quota_db import _get_current_week_start, _get_quota_db_path
+
+    try:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        week_start_str = _get_current_week_start(now)
+
+        db_path = _get_quota_db_path()
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        snap = conn.execute(
+            "SELECT usage_percent FROM quota_snapshots WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 1",
+            (week_start_str,),
+        ).fetchone()
+        conn.close()
+
+        if snap is None:
+            return 0
+
+        usage_pct = snap["usage_percent"]
+
+        ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        elapsed_secs = (now - ws_dt).total_seconds()
+        week_elapsed_pct = min(elapsed_secs / (7 * 24 * 3600) * 100.0, 100.0)
+
+        delta = usage_pct - week_elapsed_pct
+
+        GREEN = "\033[32m"
+        YELLOW = "\033[33m"
+        RED = "\033[31m"
+        RESET = "\033[0m"
+
+        # Quota % color: absolute level
+        if usage_pct < 50:
+            pct_color = GREEN
+        elif usage_pct < 75:
+            pct_color = YELLOW
+        else:
+            pct_color = RED
+
+        # Pace icon + delta color: negative delta = under pace = good
+        if delta < -5:
+            icon = "\u2705"  # ✅
+            delta_color = GREEN
+            arrow = f"\u2193{abs(delta):.0f}%"  # ↓
+        elif delta <= 5:
+            icon = "\u26a0\ufe0f"  # ⚠️
+            delta_color = YELLOW
+            arrow = f"\u2195{abs(delta):.0f}%"  # ↕
+        else:
+            icon = "\U0001f6a8"  # 🚨
+            delta_color = RED
+            arrow = f"\u2191{delta:.0f}%"  # ↑
+
+        print(f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET} {icon} {delta_color}{arrow}{RESET}")  # 📊
+    except Exception:
+        pass
     return 0
 
 
