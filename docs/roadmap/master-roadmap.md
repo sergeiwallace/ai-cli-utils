@@ -2,7 +2,7 @@
 
 ## Open
 
-- [ ] `[P2]` `[AI-CLI-39]` **Refactor: split main.py into cohesive modules** — Extract 8 subsystems (config, session, iterm2, handoff, transport, tunnel, circus, session_script) from main.py into dedicated modules. Eliminates all deferred import workarounds. Reduces main.py from 3385→~1000 lines. Phase 2 (separate task): migrate sys.argv dispatch to Click command groups. Branch: `feature/main-py-refactor`. Plan: `docs/plans/main-py-refactor-plan.md`.
+- [ ] `[P1]` `[AI-CLI-39]` **Refactor: split main.py into cohesive modules** — Extract 8 subsystems (config, session, iterm2, handoff, transport, tunnel, circus, session_script) from main.py into dedicated modules. Eliminates all deferred import workarounds. Reduces main.py from 3385→~1000 lines. Phase 2 (separate task): migrate sys.argv dispatch to Click command groups. Branch: `feature/main-py-refactor`. Plan: `docs/plans/main-py-refactor-plan.md`.
 
 - [ ] `[P2]` `[AI-CLI-38]` **UAT: VPN-aware transport switching** — Live end-to-end test of `ai c N -R` with Mullvad VPN. Verify: (1) mosh connects when VPN off; (2) enabling Mullvad → `vpn-watch` detects state change → transport loop switches to SSH automatically; (3) disabling Mullvad → switches back to mosh; (4) `~/.local/state/ai-cli-utils/vpn-transitions.log` contains correct JSONL entries; (5) transport state file (`transport-{session}.json`) is written and cleaned up. Blocked on: Mullvad re-enabled on Mac. Design: `docs/designs/vpn-transport-switching.md`.
 
