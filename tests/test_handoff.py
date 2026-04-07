@@ -1543,6 +1543,9 @@ class TestSignalWatchCircus:
         return client
 
     def test_ensure_circusd_when_already_running_then_no_popen(self, tmp_path):
+        # Create a live PID file and endpoint socket so the guard passes
+        (tmp_path / "circusd.pid").write_text(str(os.getpid()))
+        (tmp_path / "circus.endpoint").touch()
         client = self._mock_client()
         with (
             patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
@@ -1552,6 +1555,27 @@ class TestSignalWatchCircus:
             endpoint = _ensure_circusd()
         assert endpoint == f"ipc://{tmp_path}/circus.endpoint"
         mock_popen.assert_not_called()
+
+    def test_ensure_circusd_when_stale_pid_then_cleans_up_socket_and_starts_new(self, tmp_path):
+        # Stale PID (999999999 will never be a live process)
+        (tmp_path / "circusd.pid").write_text("999999999")
+        (tmp_path / "circus.endpoint").touch()
+        (tmp_path / "circus.pubsub").touch()
+
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("circus.client.CircusClient", return_value=self._mock_client()),
+            patch("subprocess.Popen") as mock_popen,
+            patch("shutil.which", return_value="/usr/bin/circusd"),
+            patch("time.sleep"),
+        ):
+            _ensure_circusd()
+
+        # Stale socket files removed and a new circusd was launched
+        assert not (tmp_path / "circus.endpoint").exists()
+        assert not (tmp_path / "circus.pubsub").exists()
+        assert not (tmp_path / "circusd.pid").exists()
+        mock_popen.assert_called_once()
 
     def test_ensure_circusd_when_not_running_then_starts_daemon_and_writes_ini(self, tmp_path):
         call_count = 0

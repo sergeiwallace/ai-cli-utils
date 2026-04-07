@@ -2069,14 +2069,28 @@ def _ensure_circusd() -> str:
     state_dir.mkdir(parents=True, exist_ok=True)
     endpoint = f"ipc://{state_dir}/circus.endpoint"
 
-    # Try existing daemon first
-    try:
-        from circus.client import CircusClient
+    # Check PID file first — if the PID is dead, clean up stale socket files so
+    # CircusClient doesn't hang connecting to a dead IPC socket (ZMQ connects to
+    # the file but nobody's listening, and send_message blocks indefinitely).
+    pid_file = state_dir / "circusd.pid"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # raises ProcessLookupError if dead
+        except (ValueError, ProcessLookupError, PermissionError):
+            for _stale in ("circus.endpoint", "circus.pubsub", "circusd.pid"):
+                (state_dir / _stale).unlink(missing_ok=True)
 
-        CircusClient(endpoint, timeout=1.0).send_message("status")
-        return endpoint
-    except Exception:
-        pass
+    # Try existing daemon first
+    endpoint_sock = state_dir / "circus.endpoint"
+    if endpoint_sock.exists():
+        try:
+            from circus.client import CircusClient
+
+            CircusClient(endpoint, timeout=1.0).send_message("status")
+            return endpoint
+        except Exception:
+            pass
 
     # Write circus.ini
     ini_path = state_dir / "circus.ini"
