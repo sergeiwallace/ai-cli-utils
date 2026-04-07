@@ -2406,11 +2406,33 @@ def cli():
                             )
                         )
 
+            # Not covered: _on_quota_snapshot is only invoked on live NATS core delivery.
+            # Requires a real NATS server + published quota.snapshot message.
+            async def _on_quota_snapshot(data: dict) -> None:
+                from .quota_db import record_quota_snapshot
+
+                try:
+                    record_quota_snapshot(
+                        usage_percent=data["usage_percent"],
+                        session_pct=data.get("session_pct"),
+                        weekly_sonnet_pct=data.get("weekly_sonnet_pct"),
+                        extra_pct=data.get("extra_pct"),
+                    )
+                except Exception:
+                    pass
+
             consumer_name = f"{sw_session_id}-signal-watcher"
+
+            async def _run_subscriptions() -> None:
+                await asyncio.gather(
+                    sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff),
+                    sw_client.subscribe("quota.snapshot", _on_quota_snapshot),
+                )
+
             try:
-                asyncio.run(sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff))
+                asyncio.run(_run_subscriptions())
             except Exception:
-                # Not covered: subscribe_durable blocks indefinitely on success; exception
+                # Not covered: _run_subscriptions blocks indefinitely on success; exception
                 # path requires a live NATS server to fail mid-subscription.
                 pass
             sys.exit(0)
@@ -2963,10 +2985,7 @@ def cli():
             for py_file in src_dir.rglob("*.py"):
                 try:
                     text = py_file.read_text(errors="replace")
-                    if any(
-                        ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> ")
-                        for ln in text.splitlines()
-                    ):
+                    if any(ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> ") for ln in text.splitlines()):
                         conflict_files.append(py_file.relative_to(project_path))
                 except OSError:
                     pass

@@ -367,7 +367,50 @@ def quota_scrape() -> int:
         extra_pct=snapshot.extra_pct,
     )
     print("Stored snapshot in local quota DB.")
+    _publish_quota_snapshot(snapshot)
     return 0
+
+
+def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
+    """Publish a quota snapshot to NATS for cross-machine sync.
+
+    Publishes to subject ``quota.snapshot`` so signal-watch daemons on other
+    machines can receive and persist the latest usage data into their local
+    SQLite DB. Fire-and-forget — silently no-ops if NATS is unavailable.
+    """
+    import asyncio
+
+    from .messaging import NATSClient
+
+    try:
+        from .main import load_config
+
+        cfg = load_config()
+        nats_servers = cfg.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+    except Exception:
+        nats_servers = ["nats://localhost:4222"]
+
+    payload: dict = {
+        "usage_percent": snapshot.weekly_all_models_pct,
+        "session_pct": snapshot.session_pct,
+        "weekly_sonnet_pct": snapshot.weekly_sonnet_pct,
+        "extra_pct": snapshot.extra_pct,
+        "ts": time.time(),
+    }
+
+    async def _do_publish() -> None:
+        client = NATSClient(servers=nats_servers)
+        try:
+            await client.connect()
+            if client.nc:
+                await client.publish("quota.snapshot", payload)
+        finally:
+            await client.close()
+
+    try:
+        asyncio.run(_do_publish())
+    except Exception:
+        pass
 
 
 def quota_statusline_part() -> int:

@@ -8,6 +8,7 @@ from ai_cli.quota import (
     QuotaSnapshot,
     _get_claude_usage_snapshot,
     _parse_usage_output,
+    _publish_quota_snapshot,
     _scrape_usage_hidden_pane,
     _send_notification,
     _send_slack_notification,
@@ -373,15 +374,79 @@ class TestQuotaScrape:
                 weekly_sonnet_pct=38.0,
                 extra_pct=0.0,
             )
-            with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap):
+            with (
+                patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap),
+                patch("ai_cli.quota._publish_quota_snapshot") as mock_publish,
+            ):
                 result = quota_scrape()
             assert result == 0
             conn = qdb._get_conn()
             row = conn.execute("SELECT usage_percent FROM quota_snapshots").fetchone()
             conn.close()
             assert row["usage_percent"] == 72.0
+            mock_publish.assert_called_once_with(snap)
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
+
+
+# --- _publish_quota_snapshot ---
+
+
+class TestPublishQuotaSnapshot:
+    def _make_mock_client(self, connected: bool = True):
+        mock_client = MagicMock()
+        mock_client.nc = MagicMock() if connected else None
+
+        async def fake_connect():
+            if connected:
+                mock_client.nc = MagicMock()
+
+        async def fake_publish(subject, payload):
+            pass
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.publish = MagicMock(side_effect=fake_publish)
+        mock_client.close = fake_close
+        return mock_client
+
+    def test_when_nats_available_then_publishes_snapshot(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=55.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
+        mock_client = self._make_mock_client(connected=True)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)
+        mock_client.publish.assert_called_once()
+        subject, payload = mock_client.publish.call_args[0]
+        assert subject == "quota.snapshot"
+        assert payload["usage_percent"] == 55.0
+        assert payload["session_pct"] == 10.0
+        assert payload["weekly_sonnet_pct"] == 30.0
+        assert payload["extra_pct"] == 0.0
+        assert "ts" in payload
+
+    def test_when_nats_unavailable_then_no_exception(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=28.0)
+        mock_client = self._make_mock_client(connected=False)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)  # must not raise
+        mock_client.publish.assert_not_called()
+
+    def test_when_connect_raises_then_no_exception(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=28.0)
+        mock_client = MagicMock()
+
+        async def fake_connect_raises():
+            raise ConnectionRefusedError("no server")
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect_raises
+        mock_client.close = fake_close
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)  # must not raise
 
 
 # --- quota_status ---
@@ -647,7 +712,6 @@ class TestQuotaStatuslinePart:
     def test_when_under_pace_then_shows_green_icon(self, tmp_path, capsys):
         """delta < -5 (usage well below expected) → ✅ icon."""
         import ai_cli.quota_db as qdb
-        from datetime import datetime, timezone, timedelta
 
         qdb.set_db_path(tmp_path / "quota.db")
         try:
