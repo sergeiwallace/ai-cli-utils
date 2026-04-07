@@ -80,6 +80,7 @@ Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR �
 - All dev work branches from `main`: `feature/short-description`
 - Never push feature branches directly to `main` — always PR
 - Atomic commits
+- **Commit at working checkpoints** — commit and push to your feature branch at each working checkpoint (feature functional, doc ready, task added, etc.). Don't leave uncommitted changes at end of session.
 - Non-dev changes (docs, tooling, markdown) commit directly to `main`
 
 ### Implementation Pipeline

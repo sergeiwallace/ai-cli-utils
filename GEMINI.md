@@ -15,6 +15,7 @@ You are invoked as a research and review partner. Your primary tasks are paralle
 - **Scope control:** Implement only what the spec requires
 - **Test naming:** `test_{given}_{when}_{then}` / `it("should {action} when {condition}")`
 - **Commits:** Atomic
+- **Commit at working checkpoints** — commit and push to your feature branch at each working checkpoint (feature functional, doc ready, task added, etc.). Don't leave uncommitted changes at end of session.
 
 - **Dev branch:** `main` — feature branches merged via PR
 
