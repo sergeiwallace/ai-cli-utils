@@ -3262,14 +3262,15 @@ def cli():
         # Build mosh_args unconditionally — needed for both initial connection
         # and for reconnecting after a VPN drop while on SSH.
         # mosh always uses the primary host (Tailscale/LAN) since it only runs without VPN.
+        # ConnectTimeout=10 on the SSH phase ensures mosh fails fast (error + exit) instead
+        # of hanging silently for ~2 minutes when the host is unreachable (e.g. Tailscale down).
         mosh_args = ["mosh"]
+        _mosh_ssh = "ssh -o ConnectTimeout=10"
         if port != "22":
-            mosh_args += [
-                "--ssh",
-                f"ssh -p {port}" + (f" -i {shlex.quote(os.path.expanduser(id_file))}" if id_file else ""),
-            ]
-        elif id_file:
-            mosh_args += ["--ssh", f"ssh -i {shlex.quote(os.path.expanduser(id_file))}"]
+            _mosh_ssh += f" -p {port}"
+        if id_file:
+            _mosh_ssh += f" -i {shlex.quote(os.path.expanduser(id_file))}"
+        mosh_args += ["--ssh", _mosh_ssh]
         mosh_args.append(f"{user}@{host}")
         mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
 

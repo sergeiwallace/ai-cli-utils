@@ -278,7 +278,8 @@ class TestSshTunnel:
             with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen:
                 with patch("asyncio.sleep", new=AsyncMock()):
                     with patch("ai_cli.main.load_config", return_value=fake_cfg):
-                        asyncio.run(client._open_ssh_tunnel())
+                        with patch("ai_cli.main._is_vpn_active", return_value=False):
+                            asyncio.run(client._open_ssh_tunnel())
 
         mock_popen.assert_called_once_with(
             ["ssh", "-fNL", "4222:localhost:4222", "-o", "ConnectTimeout=5", "-p", "22", "user@192.0.2.1"],
@@ -296,7 +297,8 @@ class TestSshTunnel:
             with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
                 with patch("asyncio.sleep", new=AsyncMock()):
                     with patch("ai_cli.main.load_config", return_value=fake_cfg):
-                        asyncio.run(client._open_ssh_tunnel())
+                        with patch("ai_cli.main._is_vpn_active", return_value=False):
+                            asyncio.run(client._open_ssh_tunnel())
         assert client._tunnel_proc is mock_proc  # proc stored even if port never came up
 
 
@@ -331,7 +333,7 @@ class TestOpenSshTunnel:
         mock_popen.assert_not_called()
 
     def test_uses_vpn_host_when_configured(self):
-        """When vpn_host is set, the SSH tunnel uses it instead of host."""
+        """When vpn_host is set and VPN is active, the SSH tunnel uses vpn_host."""
         client = NATSClient()
         config = {"remote": {"host": "100.106.24.69", "vpn_host": "192.0.2.1", "user": "user", "port": 22}}
         popen_calls = []
@@ -345,7 +347,8 @@ class TestOpenSshTunnel:
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock(side_effect=lambda _: None)):
                         with patch("ai_cli.main.load_config", return_value=config):
-                            asyncio.run(client._open_ssh_tunnel())
+                            with patch("ai_cli.main._is_vpn_active", return_value=True):
+                                asyncio.run(client._open_ssh_tunnel())
 
         assert len(popen_calls) == 1
         ssh_cmd = " ".join(popen_calls[0])
@@ -353,7 +356,7 @@ class TestOpenSshTunnel:
         assert "100.106.24.69" not in ssh_cmd  # host not used
 
     def test_uses_configured_host_not_hardcoded_ip(self):
-        """When vpn_host is not set, tunnel falls back to config remote.host."""
+        """When VPN is off, tunnel uses config remote.host (not vpn_host)."""
         client = NATSClient()
         config = {"remote": {"host": "100.106.24.69", "user": "user", "port": 22}}
         popen_calls = []
@@ -369,8 +372,8 @@ class TestOpenSshTunnel:
             with patch("socket.create_connection", side_effect=OSError):
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)):
-                        with patch("ai_cli.messaging.load_config", return_value=config, create=True):
-                            with patch("ai_cli.main.load_config", return_value=config):
+                        with patch("ai_cli.main.load_config", return_value=config):
+                            with patch("ai_cli.main._is_vpn_active", return_value=False):
                                 asyncio.run(client._open_ssh_tunnel())
 
         assert len(popen_calls) == 1
@@ -418,8 +421,8 @@ class TestOpenSshTunnel:
             with patch("socket.create_connection", side_effect=OSError):
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock()):
-                        with patch("ai_cli.messaging.load_config", return_value=config, create=True):
-                            with patch("ai_cli.main.load_config", return_value=config):
+                        with patch("ai_cli.main.load_config", return_value=config):
+                            with patch("ai_cli.main._is_vpn_active", return_value=False):
                                 asyncio.run(client._open_ssh_tunnel())
 
         assert len(popen_calls) == 1
