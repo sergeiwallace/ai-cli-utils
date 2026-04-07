@@ -17,6 +17,7 @@ from ai_cli.quota import (
     quota_status,
     quota_history,
     quota_statusline_part,
+    quota_sync_from_remote,
 )
 
 
@@ -807,3 +808,154 @@ class TestQuotaStatuslinePart:
             assert result == 0
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
+
+
+class TestQuotaSyncFromRemote:
+    """Tests for quota_sync_from_remote — SSH-based pull from remote DB."""
+
+    def _make_config(self, host="remote.example.com", user="testuser", port=22, identity=""):
+        return {
+            "remote": {
+                "host": host,
+                "user": user,
+                "port": port,
+                "identity_file": identity,
+            }
+        }
+
+    def test_when_no_remote_host_then_returns_1(self, capsys):
+        """Missing host/user in config → returns 1 without running SSH."""
+        with (
+            patch("ai_cli.quota.subprocess.run") as mock_run,
+            patch("ai_cli.main.load_config", return_value={"remote": {}}),
+        ):
+            result = quota_sync_from_remote()
+
+        assert result == 1
+        mock_run.assert_not_called()
+
+    def test_when_ssh_fails_then_returns_1(self, capsys):
+        """SSH non-zero exit → returns 1 with error message."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "Connection refused"
+        with (
+            patch("ai_cli.quota.subprocess.run", return_value=mock_result),
+            patch("ai_cli.main.load_config", return_value=self._make_config()),
+        ):
+            result = quota_sync_from_remote()
+
+        assert result == 1
+        out = capsys.readouterr()
+        assert "remote command failed" in out.err
+
+    def test_when_ssh_raises_then_returns_1(self, capsys):
+        """SSH raises (e.g. timeout) → returns 1 with error message."""
+        with (
+            patch("ai_cli.quota.subprocess.run", side_effect=TimeoutError("timed out")),
+            patch("ai_cli.main.load_config", return_value=self._make_config()),
+        ):
+            result = quota_sync_from_remote()
+
+        assert result == 1
+        out = capsys.readouterr()
+        assert "SSH failed" in out.err
+
+    def test_when_remote_output_empty_then_returns_0(self, capsys):
+        """SSH succeeds but remote DB empty → returns 0 with informational message."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        with (
+            patch("ai_cli.quota.subprocess.run", return_value=mock_result),
+            patch("ai_cli.main.load_config", return_value=self._make_config()),
+        ):
+            result = quota_sync_from_remote()
+
+        assert result == 0
+        out = capsys.readouterr()
+        assert "no snapshots" in out.out
+
+    def test_when_new_rows_then_inserts_into_local_db(self, tmp_path, capsys):
+        """Valid remote rows not yet in local DB → inserts and returns 0."""
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = "55.0|10.0|30.0|0.0|2026-04-07T00:00:00Z|2026-04-07T10:00:00Z\n"
+            with (
+                patch("ai_cli.quota.subprocess.run", return_value=mock_result),
+                patch("ai_cli.main.load_config", return_value=self._make_config()),
+            ):
+                result = quota_sync_from_remote()
+
+            assert result == 0
+            out = capsys.readouterr()
+            assert "1 new snapshot" in out.out
+
+            # Verify the row is actually in the DB
+            conn = qdb._get_conn()
+            rows = conn.execute("SELECT usage_percent FROM quota_snapshots").fetchall()
+            conn.close()
+            assert len(rows) == 1
+            assert rows[0][0] == 55.0
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_rows_already_present_then_skips_duplicates(self, tmp_path, capsys):
+        """Rows already in local DB (same snapshotted_at) → skips, returns 0."""
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            # Pre-insert the row
+            conn = qdb._get_conn()
+            conn.execute(
+                "INSERT INTO quota_snapshots (usage_percent, week_start, snapshotted_at)"
+                " VALUES (55.0, '2026-04-07T00:00:00Z', '2026-04-07T10:00:00Z')"
+            )
+            conn.commit()
+            conn.close()
+
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = "55.0|10.0|30.0|0.0|2026-04-07T00:00:00Z|2026-04-07T10:00:00Z\n"
+            with (
+                patch("ai_cli.quota.subprocess.run", return_value=mock_result),
+                patch("ai_cli.main.load_config", return_value=self._make_config()),
+            ):
+                result = quota_sync_from_remote()
+
+            assert result == 0
+            out = capsys.readouterr()
+            assert "already up to date" in out.out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_identity_file_set_then_ssh_cmd_includes_i_flag(self):
+        """identity_file in config → -i flag added to SSH command."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        with (
+            patch("ai_cli.quota.subprocess.run", return_value=mock_result) as mock_run,
+            patch(
+                "ai_cli.main.load_config",
+                return_value=self._make_config(identity="~/.ssh/id_ed25519"),
+            ),
+        ):
+            quota_sync_from_remote()
+
+        call_args = mock_run.call_args[0][0]
+        assert "-i" in call_args
+
+    def test_when_config_load_fails_then_returns_1(self, capsys):
+        """Exception loading config → returns 1."""
+        with patch("ai_cli.main.load_config", side_effect=RuntimeError("no config")):
+            result = quota_sync_from_remote()
+
+        assert result == 1
+        out = capsys.readouterr()
+        assert "could not load config" in out.err

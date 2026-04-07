@@ -2688,7 +2688,7 @@ def cli():
 
     if len(sys.argv) > 1 and sys.argv[1] == "quota":
         if len(sys.argv) < 3:
-            print("Usage: ai quota [watch|status|history|scrape|statusline-part|record]", file=sys.stderr)
+            print("Usage: ai quota [watch|status|history|scrape|statusline-part|record|sync]", file=sys.stderr)
             sys.exit(1)
         subcmd = sys.argv[2]
         if subcmd == "watch":
@@ -2711,6 +2711,10 @@ def cli():
             from .quota import quota_statusline_part
 
             sys.exit(quota_statusline_part())
+        elif subcmd == "sync":
+            from .quota import quota_sync_from_remote
+
+            sys.exit(quota_sync_from_remote())
         elif subcmd == "record":
             if len(sys.argv) < 7:
                 print("Usage: ai quota record SESSION_ID MACHINE_ID MODEL TOTAL_TOKENS [COST_USD]", file=sys.stderr)
@@ -2725,7 +2729,7 @@ def cli():
             sys.exit(quota_record(_session_id, _machine_id, _model, _total_tokens, _cost_usd))
         else:
             print(f"Unknown quota subcommand: {subcmd}", file=sys.stderr)
-            print("Usage: ai quota [watch|status|history|scrape|statusline-part|record]", file=sys.stderr)
+            print("Usage: ai quota [watch|status|history|scrape|statusline-part|record|sync]", file=sys.stderr)
             sys.exit(1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "telemetry":

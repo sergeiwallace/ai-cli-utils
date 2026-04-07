@@ -371,6 +371,115 @@ def quota_scrape() -> int:
     return 0
 
 
+def quota_sync_from_remote() -> int:
+    """Pull quota snapshots from the remote server's SQLite DB into the local DB.
+
+    SSHes to the configured remote host, queries the latest ``quota_snapshots``
+    rows, and upserts any new rows into the local DB.  Rows are deduplicated by
+    ``snapshotted_at`` — existing rows are never overwritten.
+
+    Designed for cron use on Mac: run every 10 minutes so the local DB always
+    reflects the primary server's quota state without needing a scraper or a
+    running CC session.  Silently no-ops if SSH fails (e.g. host unreachable).
+    """
+    from .quota_db import _get_conn
+
+    try:
+        from .main import load_config
+
+        cfg = load_config()
+        remote = cfg.get("remote", {})
+        host = remote.get("host", "")
+        user = remote.get("user", "")
+        port = str(remote.get("port", 22))
+        identity = remote.get("identity_file", "")
+    except Exception as exc:
+        print(f"quota sync: could not load config: {exc}", file=sys.stderr)
+        return 1
+
+    if not host or not user:
+        print("quota sync: no remote host configured in [remote]", file=sys.stderr)
+        return 1
+
+    sql = (
+        "SELECT usage_percent, session_pct, weekly_sonnet_pct, extra_pct,"
+        " week_start, snapshotted_at"
+        " FROM quota_snapshots"
+        " ORDER BY snapshotted_at DESC LIMIT 20;"
+    )
+    ssh_cmd = ["ssh", "-p", port, "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+    if identity:
+        import os
+
+        ssh_cmd += ["-i", os.path.expanduser(identity)]
+    ssh_cmd += [
+        f"{user}@{host}",
+        f'sqlite3 ~/.local/state/ai-cli/quota.db "{sql}"',
+    ]
+
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+    except Exception as exc:
+        print(f"quota sync: SSH failed: {exc}", file=sys.stderr)
+        return 1
+
+    if result.returncode != 0:
+        print(f"quota sync: remote command failed: {result.stderr.strip()}", file=sys.stderr)
+        return 1
+
+    rows = []
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("|")
+        if len(parts) == 6:
+            try:
+                rows.append(
+                    {
+                        "usage_percent": float(parts[0]),
+                        "session_pct": float(parts[1]) if parts[1] else None,
+                        "weekly_sonnet_pct": float(parts[2]) if parts[2] else None,
+                        "extra_pct": float(parts[3]) if parts[3] else None,
+                        "week_start": parts[4],
+                        "snapshotted_at": parts[5],
+                    }
+                )
+            except ValueError:
+                pass
+
+    if not rows:
+        print("quota sync: no snapshots on remote (or remote DB empty).")
+        return 0
+
+    conn = _get_conn()
+    existing = {r[0] for r in conn.execute("SELECT snapshotted_at FROM quota_snapshots").fetchall()}
+    new_rows = [r for r in rows if r["snapshotted_at"] not in existing]
+
+    if new_rows:
+        conn.executemany(
+            "INSERT INTO quota_snapshots"
+            " (usage_percent, session_pct, weekly_sonnet_pct, extra_pct,"
+            "  week_start, snapshotted_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    r["usage_percent"],
+                    r["session_pct"],
+                    r["weekly_sonnet_pct"],
+                    r["extra_pct"],
+                    r["week_start"],
+                    r["snapshotted_at"],
+                )
+                for r in new_rows
+            ],
+        )
+        conn.commit()
+        print(f"quota sync: pulled {len(new_rows)} new snapshot(s) from remote.")
+    else:
+        print("quota sync: already up to date.")
+
+    conn.close()
+    return 0
+
+
 def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
     """Publish a quota snapshot to NATS for cross-machine sync.
 
