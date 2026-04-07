@@ -1399,6 +1399,35 @@ class TestDeploy:
         assert checkout_idx < pull_idx, "checkout must run before pull"
         assert "--autostash" in cmds[pull_idx], "pull must use --autostash"
 
+    def test_deploy_when_conflict_markers_in_source_then_aborts(self, tmp_path, capsys):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        src_dir = tmp_path / "src" / "ai_cli"
+        src_dir.mkdir(parents=True)
+        conflicted = src_dir / "main.py"
+        conflicted.write_text(
+            "def foo():\n    pass\n<<<<<<< Updated upstream\n    x = 1\n=======\n    x = 2\n>>>>>>> Stashed changes\n"
+        )
+        uv_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "uv" in cmd and "tool" in cmd:
+                uv_called.append(cmd)
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+        assert exc.value.code == 1
+        assert not uv_called, "uv install must not run when conflict markers are present"
+        captured = capsys.readouterr()
+        assert "conflict markers" in captured.err
+        assert "src/ai_cli/main.py" in captured.err
+
     def test_deploy_installs_into_extra_venvs_when_configured(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')

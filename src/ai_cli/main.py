@@ -2952,6 +2952,25 @@ def cli():
         subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, check=False)
         print("Pulling latest from origin...")
         subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=project_path, check=False)
+        # Abort if pull left unresolved conflict markers — installing with conflicts produces a broken package
+        src_dir = project_path / "src"
+        conflict_files = []
+        if src_dir.is_dir():
+            for py_file in src_dir.rglob("*.py"):
+                try:
+                    text = py_file.read_text(errors="replace")
+                    if "<<<<<<< " in text or ">>>>>>> " in text:
+                        conflict_files.append(py_file.relative_to(project_path))
+                except OSError:
+                    pass
+        if conflict_files:
+            print(
+                "Error: unresolved git conflict markers found — resolve before installing:",
+                file=sys.stderr,
+            )
+            for f in conflict_files:
+                print(f"  {f}", file=sys.stderr)
+            sys.exit(1)
         # Read version after pull so the bump applies to the current remote state
         original = pyproject.read_text()
         m = re.search(r'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
