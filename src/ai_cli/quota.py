@@ -67,10 +67,12 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     The user never sees it.
     """
     window_name = "ai-quota-scrape"
+    created_session = False
     try:
-        # Create a detached background window and capture its index for reliable targeting.
-        # The =window-name syntax works for send-keys but not capture-pane in some tmux
-        # versions; index-based targeting (:N) works universally.
+        # Prefer new-window (inside tmux) for reliability; fall back to new-session
+        # when running outside tmux (e.g. from cron). Use index-based targeting (:N)
+        # rather than =name syntax — capture-pane requires a pane target, and index
+        # targeting works universally across tmux versions.
         result = subprocess.run(
             ["tmux", "new-window", "-d", "-n", window_name, "-P", "-F", "#{window_index}"],
             capture_output=True,
@@ -78,7 +80,16 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             timeout=3,
         )
         if result.returncode != 0:
-            return None
+            # Outside tmux (e.g. cron) — create a standalone detached session instead
+            result = subprocess.run(
+                ["tmux", "new-session", "-d", "-s", window_name, "-P", "-F", "#{window_index}"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode != 0:
+                return None
+            created_session = True
         target = f":{result.stdout.strip()}"
 
         # Start CC with no-op permissions (read-only scraping, never runs tools)
@@ -138,12 +149,19 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     except Exception:
         return None
     finally:
-        # Always clean up the window
-        subprocess.run(
-            ["tmux", "kill-window", "-t", f"={window_name}"],
-            capture_output=True,
-            timeout=3,
-        )
+        # Always clean up — kill session if we created one, otherwise kill just the window
+        if created_session:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", window_name],
+                capture_output=True,
+                timeout=3,
+            )
+        else:
+            subprocess.run(
+                ["tmux", "kill-window", "-t", f"={window_name}"],
+                capture_output=True,
+                timeout=3,
+            )
 
 
 def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
