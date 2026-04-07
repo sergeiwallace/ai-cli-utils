@@ -12,11 +12,61 @@ from ai_cli.main import (
     _iterm2_state_dir,
     _load_iterm2_config,
     _release_iterm2_color_slot,
+    _resolve_iterm2_config,
     cli,
     get_engine_script,
 )
 
 import pytest
+
+
+class TestResolveIterm2Config:
+    """Tests for _resolve_iterm2_config."""
+
+    def test_when_no_overrides_then_returns_empty(self):
+        cfg = make_iterm2_config()
+        result = _resolve_iterm2_config(cfg, "c-sw-1")
+        assert result == {}
+
+    def test_defaults_returned_when_no_project_or_session(self):
+        cfg = make_iterm2_config(defaults={"tab_color": "blue"})
+        result = _resolve_iterm2_config(cfg, "c-sw-1")
+        assert result["tab_color"] == "blue"
+
+    def test_project_overrides_defaults(self):
+        cfg = make_iterm2_config(
+            defaults={"tab_color": "blue"},
+            projects={"myproject": {"tab_color": "green"}},
+        )
+        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="myproject")
+        assert result["tab_color"] == "green"
+
+    def test_session_overrides_project(self):
+        cfg = make_iterm2_config(
+            projects={"myproject": {"tab_color": "green"}},
+            sessions={"c-sw-1": {"tab_color": "red"}},
+        )
+        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="myproject")
+        assert result["tab_color"] == "red"
+
+    def test_session_icon_color_returned(self):
+        cfg = make_iterm2_config(sessions={"c-sw-1": {"tab_color": "orange", "icon_color": "#4a7535"}})
+        result = _resolve_iterm2_config(cfg, "c-sw-1")
+        assert result["icon_color"] == "#4a7535"
+
+    def test_project_name_empty_skips_project_lookup(self):
+        cfg = make_iterm2_config(projects={"myproject": {"tab_color": "teal"}})
+        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="")
+        assert "tab_color" not in result
+
+    def test_unknown_session_and_project_returns_defaults_only(self):
+        cfg = make_iterm2_config(
+            defaults={"tab_color": "purple"},
+            projects={"other": {"tab_color": "teal"}},
+            sessions={"other-session": {"tab_color": "red"}},
+        )
+        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="myproject")
+        assert result["tab_color"] == "purple"
 
 
 class TestEmitIterm2ProfileSetup:
@@ -224,8 +274,8 @@ class TestAssignIterm2ColorSlot:
         assert slot is not None
         assert slot.lstrip("#") == "1e88e5"
 
-    def test_project_colors_pins_preferred_slot(self, tmp_path):
-        cfg = make_iterm2_config(project_colors={"myproject": "green"})
+    def test_project_tab_color_pins_preferred_slot(self, tmp_path):
+        cfg = make_iterm2_config(projects={"myproject": {"tab_color": "green"}})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
@@ -233,8 +283,8 @@ class TestAssignIterm2ColorSlot:
         assert slot is not None
         assert slot.lstrip("#") == "2ecc71"
 
-    def test_project_colors_falls_back_when_preferred_occupied(self, tmp_path):
-        cfg = make_iterm2_config(project_colors={"myproject": "red"})
+    def test_project_tab_color_falls_back_when_preferred_occupied(self, tmp_path):
+        cfg = make_iterm2_config(projects={"myproject": {"tab_color": "red"}})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
@@ -242,6 +292,36 @@ class TestAssignIterm2ColorSlot:
                     slot = _assign_iterm2_color_slot("sw-1", "c", project_name="myproject")
         assert slot is not None
         assert slot.lstrip("#") != "e74c3c"
+
+    def test_session_tab_color_pins_preferred_slot(self, tmp_path):
+        cfg = make_iterm2_config(sessions={"c-sw-1": {"tab_color": "blue"}})
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+                    slot = _assign_iterm2_color_slot("c-sw-1", "c")
+        assert slot is not None
+        assert slot.lstrip("#") == "1e88e5"
+
+    def test_session_overrides_project_tab_color(self, tmp_path):
+        cfg = make_iterm2_config(
+            projects={"myproject": {"tab_color": "red"}},
+            sessions={"c-sw-1": {"tab_color": "blue"}},
+        )
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+                    slot = _assign_iterm2_color_slot("c-sw-1", "c", project_name="myproject")
+        assert slot is not None
+        assert slot.lstrip("#") == "1e88e5"  # session wins over project
+
+    def test_defaults_tab_color_used_when_no_project_or_session(self, tmp_path):
+        cfg = make_iterm2_config(defaults={"tab_color": "green"})
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+                    slot = _assign_iterm2_color_slot("c-sw-1", "c")
+        assert slot is not None
+        assert slot.lstrip("#") == "2ecc71"
 
 
 class TestReleaseIterm2ColorSlot:

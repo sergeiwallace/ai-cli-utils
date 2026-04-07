@@ -705,7 +705,8 @@ collision_avoidance = true
 ## Named tab background colors available for auto-rotation.
 ## Add your own entries — they are included in the rotation pool.
 ## Icon tint is auto-derived from each tab color via HSL color theory.
-## Override per-entry with: color_name.icon_color = "#hex"
+##
+## Standard colors:
 red         = "#e74c3c"
 orange      = "#e67e22"
 yellow      = "#f0b429"
@@ -716,25 +717,41 @@ blue        = "#1e88e5"
 purple      = "#5e35b1"
 pink        = "#d81b60"
 cyan        = "#00acc1"
+##
+## Extended palette:
 deep_orange = "#ff5722"
 lime        = "#7cb342"
 indigo      = "#3949ab"
 rose        = "#f43f5e"
 amber       = "#ffb300"
 emerald     = "#059669"
+violet      = "#7c3aed"
+slate       = "#475569"
+warm_white  = "#f5f0e8"
+charcoal    = "#2d2d2d"
+##
+## Add custom colors below. Use any name; hex value required.
+## Example: my_color = "#a259ff"
 
-[iterm2.icon_color_overrides]
-## Optional: override the auto-derived icon tint for specific palette entries.
-## If omitted, tint is computed automatically (complementary hue + contrast).
-# red    = "#ffffff"
-# purple = "#ffd700"
+[iterm2.defaults]
+## Settings applied to all sessions unless overridden by a project or session block.
+## tab_color: palette color name (e.g. "blue") or omit for auto-rotation
+## icon_color: hex tint for the Claude/Gemini icon; omit to auto-derive from tab_color
+# tab_color  = "blue"
+# icon_color = "#ffffff"
 
-[iterm2.project_colors]
-## Pin specific projects or session names to a fixed palette color slot.
-## If the preferred slot is occupied, falls back to lowest free slot.
-# myproject = "purple"
-# myapp     = "teal"
-# ai-cli-1  = "blue"
+## Per-project overrides — add one block per project directory name.
+## Falls back to lowest free slot if the preferred color is already occupied.
+##
+## [iterm2.projects.myproject]
+## tab_color  = "teal"
+## icon_color = "#ffd700"   # omit to auto-derive
+
+## Per-session overrides — add one block per tmux session name.
+##
+## [iterm2.sessions."c-myapp-1"]
+## tab_color  = "purple"
+## icon_color = "#ffd700"   # omit to auto-derive
 
 [iterm2.base_profiles]
 ## iTerm2 base profiles for each session type.
@@ -781,6 +798,26 @@ def _iterm2_palette(cfg: dict) -> list[tuple[str, str]]:
     return [(name, val.lstrip("#")) for name, val in raw.items()]
 
 
+def _resolve_iterm2_config(cfg: dict, ai_name: str, project_name: str = "") -> dict:
+    """Resolve per-session iTerm2 config by merging defaults → project → session overrides.
+
+    Returns a dict with the resolved keys (e.g. ``{"tab_color": "blue", "icon_color": "#4a7535"}``).
+    Absent keys are simply missing — callers should use ``.get()``.
+
+    Resolution order (later entries win):
+    - ``[iterm2.defaults]`` — baseline for all sessions
+    - ``[iterm2.projects.<project_name>]`` — project-level override
+    - ``[iterm2.sessions.<ai_name>]`` — session-level override (highest priority)
+    """
+    iterm2 = cfg.get("iterm2", {})
+    resolved: dict = {}
+    resolved.update(iterm2.get("defaults", {}))
+    if project_name:
+        resolved.update(iterm2.get("projects", {}).get(project_name, {}))
+    resolved.update(iterm2.get("sessions", {}).get(ai_name, {}))
+    return resolved
+
+
 def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "") -> str | None:
     """Assign a collision-free tab color for this session.
 
@@ -806,9 +843,8 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
     palette_names = [name for name, _ in palette]
     palette_dict = dict(palette)
 
-    # Check project_colors preference
-    project_colors = cfg.get("iterm2", {}).get("project_colors", {})
-    preferred_color_name = project_colors.get(project_name) or project_colors.get(ai_name)
+    # Resolve preferred tab_color via defaults → project → session
+    preferred_color_name = _resolve_iterm2_config(cfg, ai_name, project_name).get("tab_color")
 
     lease_file = _iterm2_state_dir() / "color-leases.json"
     lock_path = _iterm2_state_dir() / "color-leases.lock"
@@ -936,6 +972,7 @@ def _emit_iterm2_profile_setup(
     engine: str,
     session: str = "",
     slot: str | None = None,
+    project_name: str = "",
 ) -> None:
     """Emit iTerm2 profile/color/title escape sequences directly to stdout.
 
@@ -965,13 +1002,8 @@ def _emit_iterm2_profile_setup(
     try:
         from . import icon_generator as _ig
 
-        icon_color_overrides = cfg.get("iterm2", {}).get("icon_color_overrides", {})
-        # Find which palette slot name this color maps to for override lookup
-        palette_name = next(
-            (n for n, h in _iterm2_palette(cfg) if f"#{h}" == color_hex or h == color_hex.lstrip("#")),
-            None,
-        )
-        icon_color = icon_color_overrides.get(palette_name) if palette_name else None
+        # Resolve icon_color via defaults → project → session
+        icon_color = _resolve_iterm2_config(cfg, ai_name, project_name).get("icon_color")
 
         icon_path = _ig.generate_session_icon(ai_name, color_hex, session_type, icon_color)
         _ig.generate_dynamic_profile(ai_name, color_hex, session_type, icon_path)
@@ -2758,11 +2790,7 @@ def cli():
         try:
             from . import icon_generator as _ig_c
 
-            _icon_color_overrides_c = _iterm2_cfg_c.get("iterm2", {}).get("icon_color_overrides", {})
-            _pname_c = next(
-                (n for n, h in _iterm2_palette(_iterm2_cfg_c) if f"#{h}" == _new_hex or h == _new_hex.lstrip("#")), None
-            )
-            _icon_color_c = _icon_color_overrides_c.get(_pname_c) if _pname_c else None
+            _icon_color_c = _resolve_iterm2_config(_iterm2_cfg_c, _ai_name_env).get("icon_color")
             _ig_c.cleanup_session_files(_ai_name_env)
             _icon_path_c = _ig_c.generate_session_icon(_ai_name_env, _new_hex, _session_type_c, _icon_color_c)
             _ig_c.generate_dynamic_profile(_ai_name_env, _new_hex, _session_type_c, _icon_path_c)
@@ -3407,7 +3435,7 @@ def cli():
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
     # for new tabs, split panes, and re-attaches alike.
-    _emit_iterm2_profile_setup(ai_name, engine, session_id, slot=_iterm2_slot)
+    _emit_iterm2_profile_setup(ai_name, engine, session_id, slot=_iterm2_slot, project_name=current_project_name)
 
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)

@@ -74,10 +74,16 @@ def make_iterm2_config(
     enabled=True,
     color_enabled=True,
     collision_avoidance=True,
-    project_colors=None,
-    icon_color_overrides=None,
+    projects=None,
+    sessions=None,
+    defaults=None,
 ):
-    """Factory for iterm2 config dicts."""
+    """Factory for iterm2 config dicts.
+
+    ``projects``: dict mapping project_name → {tab_color, icon_color, ...}
+    ``sessions``: dict mapping ai_name → {tab_color, icon_color, ...}
+    ``defaults``: dict with default settings applied to all sessions
+    """
     palette = palette or {"red": "#e74c3c", "blue": "#1e88e5", "green": "#2ecc71"}
     cfg = {
         "iterm2": {
@@ -86,10 +92,12 @@ def make_iterm2_config(
             "palette": palette,
         }
     }
-    if project_colors:
-        cfg["iterm2"]["project_colors"] = project_colors
-    if icon_color_overrides:
-        cfg["iterm2"]["icon_color_overrides"] = icon_color_overrides
+    if defaults:
+        cfg["iterm2"]["defaults"] = defaults
+    if projects:
+        cfg["iterm2"]["projects"] = projects
+    if sessions:
+        cfg["iterm2"]["sessions"] = sessions
     return cfg
 
 
