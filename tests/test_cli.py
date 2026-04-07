@@ -605,6 +605,72 @@ class TestCliSessionSetupBranches:
         assert "--ssh" in captured_mosh_args
         assert any("-i" in str(a) for a in captured_mosh_args)
 
+    def test_cli_when_remote_vpn_host_set_then_ssh_uses_vpn_host(self):
+        """When vpn_host is configured, ssh_args must use it instead of host."""
+        config = {
+            "remote": {
+                "host": "100.0.0.1",
+                "vpn_host": "1.2.3.4",
+                "user": "myuser",
+                "port": 22,
+                "transport": "mosh",
+            }
+        }
+        captured_ssh_args = []
+        captured_mosh_args = []
+
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+            captured_ssh_args.extend(ssh_args)
+            captured_mosh_args.extend(mosh_args)
+
+        with (
+            patch("sys.argv", ["ai", "c", "-R"]),
+            patch("ai_cli.main.load_config", return_value=config),
+            patch("ai_cli.main.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._is_vpn_active", return_value=True),
+            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.main._ensure_vpn_watcher"),
+            patch("ai_cli.main._maybe_stop_vpn_watcher"),
+            patch("sys.exit", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        assert any("myuser@1.2.3.4" in str(a) for a in captured_ssh_args), "ssh_args must use vpn_host"
+        assert any("myuser@100.0.0.1" in str(a) for a in captured_mosh_args), "mosh_args must use primary host"
+
+    def test_cli_when_vpn_host_not_set_then_ssh_falls_back_to_host(self):
+        """Without vpn_host, ssh_args should use the primary host."""
+        config = {
+            "remote": {
+                "host": "100.0.0.1",
+                "user": "myuser",
+                "port": 22,
+                "transport": "mosh",
+            }
+        }
+        captured_ssh_args = []
+
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+            captured_ssh_args.extend(ssh_args)
+
+        with (
+            patch("sys.argv", ["ai", "c", "-R"]),
+            patch("ai_cli.main.load_config", return_value=config),
+            patch("ai_cli.main.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._is_vpn_active", return_value=True),
+            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.main._ensure_vpn_watcher"),
+            patch("ai_cli.main._maybe_stop_vpn_watcher"),
+            patch("sys.exit", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        assert any("myuser@100.0.0.1" in str(a) for a in captured_ssh_args), "ssh_args must fall back to host"
+
 
 class TestCliGeminiDispatch:
     def test_cli_when_gemini_returns_normally_then_exits_0(self):

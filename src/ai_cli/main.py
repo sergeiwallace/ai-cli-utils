@@ -3235,14 +3235,19 @@ def cli():
         _emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 
         _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
+        # vpn_host: direct-IP host used for SSH when VPN is active (bypasses Tailscale/WireGuard
+        # which becomes unreachable when a split-tunneling VPN like Mullvad takes over routing).
+        # Falls back to host when not set.
+        vpn_host = remote_cfg.get("vpn_host", "") or host
         ssh_args = ["ssh", "-t", "-p", port]
         if id_file:
             ssh_args += ["-i", os.path.expanduser(id_file)]
-        ssh_args.append(f"{user}@{host}")
+        ssh_args.append(f"{user}@{vpn_host}")
         ssh_args.append(f"bash -l -c {shlex.quote(remote_cmd)}")
 
         # Build mosh_args unconditionally — needed for both initial connection
         # and for reconnecting after a VPN drop while on SSH.
+        # mosh always uses the primary host (Tailscale/LAN) since it only runs without VPN.
         mosh_args = ["mosh"]
         if port != "22":
             mosh_args += [
