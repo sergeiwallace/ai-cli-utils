@@ -1428,6 +1428,33 @@ class TestDeploy:
         assert "conflict markers" in captured.err
         assert "src/ai_cli/main.py" in captured.err
 
+    def test_deploy_when_source_contains_conflict_string_literal_then_proceeds(self, tmp_path):
+        """Guard must not false-positive on string literals containing conflict marker text."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        src_dir = tmp_path / "src" / "ai_cli"
+        src_dir.mkdir(parents=True)
+        clean = src_dir / "main.py"
+        clean.write_text(
+            'def check(text):\n    if "<<<<<<< " in text or ">>>>>>> " in text:\n        pass\n'
+        )
+        uv_called = []
+
+        def fake_run(cmd, **kwargs):
+            if "uv" in cmd and "tool" in cmd:
+                uv_called.append(cmd)
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+        assert exc.value.code == 0
+        assert uv_called, "uv install should run when no actual conflict markers are present"
+
     def test_deploy_installs_into_extra_venvs_when_configured(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')

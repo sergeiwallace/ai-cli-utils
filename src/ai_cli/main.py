@@ -2963,7 +2963,10 @@ def cli():
             for py_file in src_dir.rglob("*.py"):
                 try:
                     text = py_file.read_text(errors="replace")
-                    if "<<<<<<< " in text or ">>>>>>> " in text:
+                    if any(
+                        ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> ")
+                        for ln in text.splitlines()
+                    ):
                         conflict_files.append(py_file.relative_to(project_path))
                 except OSError:
                     pass
