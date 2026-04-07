@@ -55,10 +55,13 @@ class NATSClient:
             _user, _host, _port, _identity = "", "", "22", ""
         if not _user or not _host:
             return  # no remote configured — skip tunnel
-        ssh_cmd = ["ssh", "-fNL", "4222:localhost:4222"]
+        # Prefer vpn_host (direct IP) over host (Tailscale) for the tunnel so
+        # NATS remains reachable when VPN makes Tailscale unreachable.
+        _vpn_host = _remote.get("vpn_host", "") or _host
+        ssh_cmd = ["ssh", "-fNL", "4222:localhost:4222", "-o", "ConnectTimeout=5"]
         if _identity:
             ssh_cmd += ["-i", _identity]
-        ssh_cmd += ["-p", _port, f"{_user}@{_host}"]
+        ssh_cmd += ["-p", _port, f"{_user}@{_vpn_host}"]
         self._tunnel_proc = subprocess.Popen(
             ssh_cmd,
             stdout=subprocess.DEVNULL,

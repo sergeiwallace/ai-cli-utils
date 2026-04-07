@@ -1888,7 +1888,7 @@ def _ensure_vpn_watcher(config: dict) -> None:
         endpoint = _ensure_circusd()
         from circus.client import CircusClient
 
-        client = CircusClient(endpoint, timeout=5.0)
+        client = CircusClient(endpoint=endpoint, timeout=5.0)
         # Check if already running
         try:
             result = client.send_message("status")
@@ -1923,7 +1923,7 @@ def _maybe_stop_vpn_watcher() -> None:
         endpoint = f"ipc://{state_dir}/circus.endpoint"
         from circus.client import CircusClient
 
-        CircusClient(endpoint, timeout=2.0).send_message("rm", name="vpn-watch")
+        CircusClient(endpoint=endpoint, timeout=2.0).send_message("rm", name="vpn-watch")
     except Exception:
         pass
 
@@ -2087,7 +2087,7 @@ def _ensure_circusd() -> str:
         try:
             from circus.client import CircusClient
 
-            CircusClient(endpoint, timeout=1.0).send_message("status")
+            CircusClient(endpoint=endpoint, timeout=1.0).send_message("status")
             return endpoint
         except Exception:
             pass
@@ -2114,7 +2114,7 @@ def _ensure_circusd() -> str:
     for _ in range(10):
         _time.sleep(0.3)
         try:
-            CircusClient(endpoint, timeout=1.0).send_message("status")
+            CircusClient(endpoint=endpoint, timeout=1.0).send_message("status")
             return endpoint
         except Exception:
             pass
@@ -2126,7 +2126,7 @@ def _cmd_signal_watch_start(project: str, session: str) -> None:
     endpoint = _ensure_circusd()
     from circus.client import CircusClient
 
-    client = CircusClient(endpoint, timeout=5.0)
+    client = CircusClient(endpoint=endpoint, timeout=5.0)
     watcher_name = f"sw-{session}"
     ai_bin = shutil.which("ai") or "ai"
     cmd = f"{ai_bin} internal signal-watch {project} {session}"
@@ -2157,7 +2157,7 @@ def _cmd_signal_watch_stop(session: str) -> None:
     try:
         from circus.client import CircusClient
 
-        CircusClient(endpoint, timeout=2.0).send_message("rm", name=f"sw-{session}")
+        CircusClient(endpoint=endpoint, timeout=2.0).send_message("rm", name=f"sw-{session}")
     except Exception:
         pass
 
@@ -2168,7 +2168,7 @@ def _cmd_signal_watch_status() -> None:
     try:
         from circus.client import CircusClient
 
-        result = CircusClient(endpoint, timeout=2.0).send_message("status")
+        result = CircusClient(endpoint=endpoint, timeout=2.0).send_message("status")
         statuses = result.get("statuses", {}) if isinstance(result, dict) else {}
         sw_watchers = {k: v for k, v in statuses.items() if k.startswith("sw-")}
         if not sw_watchers:

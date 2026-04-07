@@ -281,7 +281,7 @@ class TestSshTunnel:
                         asyncio.run(client._open_ssh_tunnel())
 
         mock_popen.assert_called_once_with(
-            ["ssh", "-fNL", "4222:localhost:4222", "-p", "22", "user@192.0.2.1"],
+            ["ssh", "-fNL", "4222:localhost:4222", "-o", "ConnectTimeout=5", "-p", "22", "user@192.0.2.1"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -330,8 +330,30 @@ class TestOpenSshTunnel:
                     asyncio.run(client._open_ssh_tunnel())
         mock_popen.assert_not_called()
 
+    def test_uses_vpn_host_when_configured(self):
+        """When vpn_host is set, the SSH tunnel uses it instead of host."""
+        client = NATSClient()
+        config = {"remote": {"host": "100.106.24.69", "vpn_host": "192.0.2.1", "user": "user", "port": 22}}
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append(cmd)
+            return MagicMock()
+
+        with patch.dict("os.environ", {"AI_CLI_HOST": "mac"}):
+            with patch("socket.create_connection", side_effect=OSError):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch("asyncio.sleep", new=AsyncMock(side_effect=lambda _: None)):
+                        with patch("ai_cli.main.load_config", return_value=config):
+                            asyncio.run(client._open_ssh_tunnel())
+
+        assert len(popen_calls) == 1
+        ssh_cmd = " ".join(popen_calls[0])
+        assert "192.0.2.1" in ssh_cmd  # vpn_host used
+        assert "100.106.24.69" not in ssh_cmd  # host not used
+
     def test_uses_configured_host_not_hardcoded_ip(self):
-        """Tunnel must use config remote.host (Tailscale IP) not a hardcoded IP."""
+        """When vpn_host is not set, tunnel falls back to config remote.host."""
         client = NATSClient()
         config = {"remote": {"host": "100.106.24.69", "user": "user", "port": 22}}
         popen_calls = []
