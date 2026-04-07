@@ -36,6 +36,7 @@ Always present the information in a structured, high-signal table or list follow
 ## Template
 
 ### **Human Review Queue (Unblocking)**
+
 | Item | Type | Project | Status |
 | :--- | :--- | :--- | :--- |
 | `path/to/doc.md` | Design | project | `pending_review` |
@@ -46,7 +47,7 @@ Always present the information in a structured, high-signal table or list follow
 - [ ] `[ID]` **Task Title**
 
 ### **Strategic Roadmap**
+
 | Group | Task | Priority | Due / Note |
 | :--- | :--- | :--- | :--- |
 | Group Name | `[ID]` **Title** | `P0` | **Date** / Progress |
-
