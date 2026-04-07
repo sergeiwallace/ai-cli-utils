@@ -433,16 +433,17 @@ def quota_statusline_part() -> int:
         db_path = _get_quota_db_path()
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
-        snap = conn.execute(
-            "SELECT usage_percent FROM quota_snapshots WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 1",
+        rows = conn.execute(
+            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
+            " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
             (week_start_str,),
-        ).fetchone()
+        ).fetchall()
         conn.close()
 
-        if snap is None:
+        if not rows:
             return 0
 
-        usage_pct = snap["usage_percent"]
+        usage_pct = rows[0]["usage_percent"]
 
         ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         elapsed_secs = (now - ws_dt).total_seconds()
@@ -463,21 +464,36 @@ def quota_statusline_part() -> int:
         else:
             pct_color = RED
 
-        # Pace icon + delta color: negative delta = under pace = good
+        # Pace icon and delta color (match each other)
         if delta < -5:
             icon = "\u2705"  # ✅
             delta_color = GREEN
-            arrow = f"\u2193{abs(delta):.0f}%"  # ↓
         elif delta <= 5:
             icon = "\u26a0\ufe0f"  # ⚠️
             delta_color = YELLOW
-            arrow = f"\u2195{abs(delta):.0f}%"  # ↕
         else:
             icon = "\U0001f6a8"  # 🚨
             delta_color = RED
-            arrow = f"\u2191{delta:.0f}%"  # ↑
 
-        print(f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET} {icon} {delta_color}{arrow}{RESET}")  # 📊
+        # Arrow: acceleration direction (requires ≥3 snapshots)
+        arrow_char = "\u2192"  # → steady (default / insufficient data)
+        if len(rows) >= 3:
+            t0 = datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00")).timestamp()
+            t1 = datetime.fromisoformat(rows[1]["snapshotted_at"].replace("Z", "+00:00")).timestamp()
+            t2 = datetime.fromisoformat(rows[2]["snapshotted_at"].replace("Z", "+00:00")).timestamp()
+            dt01 = (t0 - t1) / 3600
+            dt12 = (t1 - t2) / 3600
+            rate_recent = (rows[0]["usage_percent"] - rows[1]["usage_percent"]) / dt01 if dt01 > 0 else 0.0
+            rate_prev = (rows[1]["usage_percent"] - rows[2]["usage_percent"]) / dt12 if dt12 > 0 else 0.0
+            accel = rate_recent - rate_prev
+            if accel > 1.0:
+                arrow_char = "\u2191"  # ↑ accelerating
+            elif accel < -1.0:
+                arrow_char = "\u2193"  # ↓ decelerating
+
+        print(
+            f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET} {icon} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}"
+        )  # 📊
     except Exception:
         pass
     return 0

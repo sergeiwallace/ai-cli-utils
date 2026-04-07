@@ -709,8 +709,8 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_under_pace_then_shows_green_icon(self, tmp_path, capsys):
-        """delta < -5 (usage well below expected) → ✅ icon."""
+    def test_when_under_pace_then_shows_green_icon_and_steady_arrow(self, tmp_path, capsys):
+        """delta < -5 with single snapshot → ✅ icon, → arrow (insufficient data for acceleration)."""
         import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -722,7 +722,7 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "5%" in out
             assert "✅" in out
-            assert "↓" in out
+            assert "→" in out  # steady: only 1 snapshot, no acceleration data
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -739,6 +739,61 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "95%" in out
             assert "🚨" in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_accelerating_then_shows_up_arrow(self, tmp_path, capsys):
+        """Three snapshots with increasing burn rate → ↑ arrow."""
+        import ai_cli.quota_db as qdb
+        from datetime import datetime, timezone, timedelta
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            conn = qdb._get_conn()
+            now = datetime.now(timezone.utc)
+            week_start = qdb._get_current_week_start(now)
+            # Snapshots spaced 30 min apart: slow burn then fast burn
+            # t2 (oldest): 20% at -60min, t1: 21% at -30min (rate=2%/hr), t0: 23% at now (rate=4%/hr)
+            # accel = 4 - 2 = 2 %/hr > 1.0 → ↑
+            for mins_ago, pct in [(60, 20.0), (30, 21.0), (0, 23.0)]:
+                ts = (now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                conn.execute(
+                    "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
+                    (week_start, pct, ts),
+                )
+            conn.commit()
+            conn.close()
+            result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "↑" in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_decelerating_then_shows_down_arrow(self, tmp_path, capsys):
+        """Three snapshots with decreasing burn rate → ↓ arrow."""
+        import ai_cli.quota_db as qdb
+        from datetime import datetime, timezone, timedelta
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            conn = qdb._get_conn()
+            now = datetime.now(timezone.utc)
+            week_start = qdb._get_current_week_start(now)
+            # t2: 20% at -60min, t1: 23% at -30min (rate=6%/hr), t0: 24% at now (rate=2%/hr)
+            # accel = 2 - 6 = -4 %/hr < -1.0 → ↓
+            for mins_ago, pct in [(60, 20.0), (30, 23.0), (0, 24.0)]:
+                ts = (now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                conn.execute(
+                    "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
+                    (week_start, pct, ts),
+                )
+            conn.commit()
+            conn.close()
+            result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "↓" in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
