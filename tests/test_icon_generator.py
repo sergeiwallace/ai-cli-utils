@@ -154,14 +154,13 @@ class TestGenerateDynamicProfile:
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Use Tab Color"] is True
 
-    def test_no_title_keys_set(self, tmp_path):
+    def test_title_components_set_to_session_name(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         data = json.loads(out.read_text())
         profile = data["Profiles"][0]
-        # Must not set title-related keys — preserves user's Session Title dropdown
-        assert "Title Components" not in profile
-        assert "Title Format" not in profile
+        # Title Components: 1 = session name only ("Name" dropdown option)
+        assert profile["Title Components"] == 1
 
     def test_icon_path_included_when_provided(self, tmp_path):
         icon = tmp_path / "test-session.png"

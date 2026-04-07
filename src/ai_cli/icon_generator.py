@@ -198,8 +198,9 @@ def generate_dynamic_profile(
     The profile GUID is deterministic (ai-cli-{session_name}) so re-running
     is idempotent — iTerm2 updates the existing entry, not accumulates.
 
-    Only tab color and icon are set; title configuration is intentionally
-    omitted so the user's iTerm2 Session Title dropdown setting is preserved.
+    Tab color, icon, and title component are set explicitly. Title Components: 1
+    = session name only, corresponding to the "Name" dropdown in iTerm2's
+    Edit Session > General > Session Title.
     """
     resolved_base = base_profile or _BASE_PROFILES.get(session_type, "Default")
 
@@ -211,6 +212,7 @@ def generate_dynamic_profile(
         "Use Tab Color": True,
         "Use Separate Colors for Light and Dark Mode": True,
         "Icon": 2,  # 2 = custom icon; must be explicit — not reliably inherited
+        "Title Components": 1,  # 1 = session name only ("Name" dropdown option)
     }
     if background_hex:
         profile["Background Color"] = _hex_to_iterm2_color(background_hex)

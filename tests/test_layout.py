@@ -242,7 +242,7 @@ class TestGenerateLayoutProfiles:
         data = json.loads(paths[0].read_text())
         assert "Custom Icon Path" not in data["Profiles"][0]
 
-    def test_no_title_keys_in_profile(self, tmp_path):
+    def test_title_components_set_to_session_name(self, tmp_path):
         layout = Layout(**_MINIMAL_LAYOUT)
         with (
             patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
@@ -250,7 +250,7 @@ class TestGenerateLayoutProfiles:
         ):
             paths = generate_layout_profiles(layout)
         data = json.loads(paths[0].read_text())
-        assert "Title Components" not in data["Profiles"][0]
+        assert data["Profiles"][0]["Title Components"] == 1
 
     def test_multiple_tabs_generate_multiple_profiles(self, tmp_path):
         layout = Layout(

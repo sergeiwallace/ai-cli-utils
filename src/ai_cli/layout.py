@@ -209,6 +209,7 @@ def generate_layout_profiles(layout: Layout) -> list[Path]:
             "Dynamic Profile Parent Name": tab.base_profile,
             "Tab Color": _hex_to_iterm2_color(tab_hex),
             "Use Tab Color": True,
+            "Title Components": 1,  # 1 = session name only ("Name" dropdown option)
         }
         if bg_hex:
             profile["Background Color"] = _hex_to_iterm2_color(bg_hex)
