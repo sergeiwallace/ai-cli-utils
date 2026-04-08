@@ -1,3 +1,6 @@
+import hashlib
+import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -7,6 +10,8 @@ from ai_cli.main import (
     build_session_name,
     cleanup_stale_sessions,
     cleanup_worktree,
+    _checkpoint_to_chat_uuid,
+    _convert_checkpoint_to_chat,
     create_worktree,
     detect_repo_root,
     _find_latest_gemini_uuid,
@@ -370,6 +375,140 @@ class TestFindLatestGeminiUuid:
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _find_latest_gemini_uuid("art-1")
         assert result is None
+
+    def test_when_checkpoint_newer_than_chat_then_converts_and_returns_uuid(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        chats = gemini_tmp / "chats"
+        chats.mkdir(parents=True)
+        # Old chat file
+        old_chat = chats / "session-old.json"
+        old_chat.write_text('{"sessionId": "old-uuid"}')
+        os.utime(old_chat, (1000.0, 1000.0))
+        # Newer checkpoint
+        checkpoint = gemini_tmp / "checkpoint-art-1.json"
+        history = [{"role": "user", "parts": [{"text": "hello"}]}]
+        checkpoint.write_text(json.dumps({"history": history, "authType": "oauth"}))
+        os.utime(checkpoint, (2000.0, 2000.0))
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result is not None
+        assert result != "old-uuid"  # converted checkpoint UUID, not the old chat
+
+    def test_when_chat_newer_than_checkpoint_then_uses_existing_chat(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        chats = gemini_tmp / "chats"
+        chats.mkdir(parents=True)
+        # Newer chat file
+        chat = chats / "session-new.json"
+        chat.write_text('{"sessionId": "new-uuid"}')
+        os.utime(chat, (2000.0, 2000.0))
+        # Older checkpoint
+        checkpoint = gemini_tmp / "checkpoint-art-1.json"
+        checkpoint.write_text(json.dumps({"history": [{"role": "user", "parts": [{"text": "hi"}]}]}))
+        os.utime(checkpoint, (1000.0, 1000.0))
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result == "new-uuid"
+
+    def test_when_no_checkpoint_and_no_chats_then_returns_none(self, tmp_path):
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        assert result is None
+
+
+# --- _convert_checkpoint_to_chat ---
+
+
+class TestConvertCheckpointToChat:
+    def _make_checkpoint(self, gemini_tmp: Path, ai_name: str, history: list, mtime: float = 1000.0) -> Path:
+        gemini_tmp.mkdir(parents=True, exist_ok=True)
+        path = gemini_tmp / f"checkpoint-{ai_name}.json"
+        path.write_text(json.dumps({"history": history, "authType": "oauth"}))
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def test_when_checkpoint_exists_then_creates_chat_file(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        history = [
+            {"role": "user", "parts": [{"text": "hello"}]},
+            {"role": "model", "parts": [{"text": "hi there"}]},
+        ]
+        self._make_checkpoint(gemini_tmp, "art-1", history)
+        result = _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        assert result is not None
+        chats_dir = gemini_tmp / "chats"
+        chat_files = list(chats_dir.glob("session-*.json"))
+        assert len(chat_files) == 1
+
+    def test_when_called_twice_then_idempotent(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        history = [{"role": "user", "parts": [{"text": "hello"}]}]
+        self._make_checkpoint(gemini_tmp, "art-1", history)
+        uuid1 = _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        uuid2 = _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        assert uuid1 == uuid2
+        assert len(list((gemini_tmp / "chats").glob("session-*.json"))) == 1
+
+    def test_maps_model_role_to_gemini_type(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        history = [
+            {"role": "user", "parts": [{"text": "question"}]},
+            {"role": "model", "parts": [{"text": "answer"}]},
+        ]
+        self._make_checkpoint(gemini_tmp, "art-1", history)
+        _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        chat_file = next((gemini_tmp / "chats").glob("session-*.json"))
+        data = json.loads(chat_file.read_text())
+        types = [m["type"] for m in data["messages"]]
+        assert types == ["user", "gemini"]
+
+    def test_project_hash_matches_sha256_of_project_root(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        project_root = "/home/user/projects/myproject/.worktrees/art-1"
+        (gemini_tmp).mkdir(parents=True, exist_ok=True)
+        (gemini_tmp / ".project_root").write_text(project_root)
+        history = [{"role": "user", "parts": [{"text": "hi"}]}]
+        self._make_checkpoint(gemini_tmp, "art-1", history)
+        _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        chat_file = next((gemini_tmp / "chats").glob("session-*.json"))
+        data = json.loads(chat_file.read_text())
+        expected_hash = hashlib.sha256(project_root.encode()).hexdigest()
+        assert data["projectHash"] == expected_hash
+
+    def test_chat_file_mtime_matches_checkpoint_mtime(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        history = [{"role": "user", "parts": [{"text": "hi"}]}]
+        self._make_checkpoint(gemini_tmp, "art-1", history, mtime=1234567890.0)
+        _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        chat_file = next((gemini_tmp / "chats").glob("session-*.json"))
+        assert abs(chat_file.stat().st_mtime - 1234567890.0) < 1.0
+
+    def test_when_no_checkpoint_then_returns_none(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        gemini_tmp.mkdir(parents=True)
+        result = _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        assert result is None
+
+    def test_when_checkpoint_empty_history_then_returns_none(self, tmp_path):
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        gemini_tmp.mkdir(parents=True)
+        (gemini_tmp / "checkpoint-art-1.json").write_text(json.dumps({"history": [], "authType": "oauth"}))
+        result = _convert_checkpoint_to_chat("art-1", gemini_tmp)
+        assert result is None
+
+    def test_uuid_is_stable_across_calls(self, tmp_path):
+        raw = b'{"history": [{"role": "user", "parts": [{"text": "test"}]}]}'
+        uuid1 = _checkpoint_to_chat_uuid(raw)
+        uuid2 = _checkpoint_to_chat_uuid(raw)
+        assert uuid1 == uuid2
+
+    def test_uuid_has_valid_format(self, tmp_path):
+        raw = b'{"history": [{"role": "user", "parts": [{"text": "test"}]}]}'
+        uuid = _checkpoint_to_chat_uuid(raw)
+        parts = uuid.split("-")
+        assert len(parts) == 5
+        assert len(parts[0]) == 8
+        assert parts[2].startswith("4")  # version 4
 
 
 # --- get_latest_gemini_session_id ---

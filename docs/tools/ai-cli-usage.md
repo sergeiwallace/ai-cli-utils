@@ -69,6 +69,18 @@ Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remot
 
 Auto-runs `git pull --rebase --autostash` at session start to keep worktree current.
 
+### ai g
+
+```
+ai g [N] [-p PROJECT] [-R] [--dry-run] [--verbose]
+```
+
+Launch (or resume) a Gemini CLI session in a tmux loop. Same flags as `ai c`.
+
+**Session resume:** on each launch or restart, `ai g` checks `~/.gemini/tmp/{name}/chats/` for the most recent session file. If a `checkpoint-{name}.json` exists and is newer than the latest chat file (or no chat files exist), it is automatically converted to a chat session file and resumed via `gemini -r {uuid}`. No manual `/resume load` required.
+
+**Checkpoint conversion:** the conversion is idempotent — the same checkpoint always produces the same UUID. Once converted, Gemini auto-saves all future messages to the chat file natively. The original checkpoint is never deleted and remains as a fallback.
+
 ### ai ls
 
 ```

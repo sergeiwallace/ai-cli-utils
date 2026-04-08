@@ -11,8 +11,9 @@ import tomllib
 import re
 import shlex
 import fcntl
+import hashlib
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 # Module-level alias so tests can patch _monotonic without affecting asyncio internals
@@ -360,23 +361,135 @@ def get_project_aliases() -> dict:
     return aliases
 
 
+def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
+    """Derive a stable UUID from checkpoint content (SHA-256 of first 64KB).
+
+    Using a content-derived UUID ensures the same checkpoint always produces
+    the same chat file — re-running conversion is idempotent.
+    """
+    h = hashlib.sha256(checkpoint_bytes[:65536]).hexdigest()
+    return f"{h[0:8]}-{h[8:12]}-4{h[13:16]}-{h[16:20]}-{h[20:32]}"
+
+
+def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
+    """Convert a Gemini checkpoint JSON to a chat session file.
+
+    Reads ``checkpoint-{ai_name}.json``, converts from the checkpoint
+    ``history`` format (role/parts) to the chat file format (type/content),
+    and writes a ``chats/session-*.json`` file with a stable content-derived
+    UUID.  Idempotent: if a file with the same UUID already exists and is at
+    least as recent as the checkpoint, it is left unchanged.
+
+    Returns the sessionId UUID on success, or None on any error.
+    """
+    checkpoint_path = gemini_tmp / f"checkpoint-{ai_name}.json"
+    if not checkpoint_path.exists():
+        return None
+
+    try:
+        raw = checkpoint_path.read_bytes()
+        checkpoint = json.loads(raw)
+        history = checkpoint.get("history", [])
+        if not history:
+            return None
+
+        session_uuid = _checkpoint_to_chat_uuid(raw)
+        chats_dir = gemini_tmp / "chats"
+        chats_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build filename from checkpoint mtime so file sorts correctly vs. native sessions
+        chk_mtime = checkpoint_path.stat().st_mtime
+        chk_dt = datetime.fromtimestamp(chk_mtime, tz=timezone.utc)
+        ts_str = chk_dt.strftime("%Y-%m-%dT%H-%M")
+        chat_path = chats_dir / f"session-{ts_str}-{session_uuid[:8]}.json"
+
+        # Skip if already converted and up to date
+        if chat_path.exists() and chat_path.stat().st_mtime >= chk_mtime:
+            return session_uuid
+
+        # Compute projectHash = sha256(projectRoot)
+        project_root_file = gemini_tmp / ".project_root"
+        if project_root_file.exists():
+            project_root = project_root_file.read_text().strip()
+        else:
+            project_root = str(Path.cwd())
+        project_hash = hashlib.sha256(project_root.encode()).hexdigest()
+
+        # Convert history entries to chat messages
+        base_time = chk_dt - timedelta(seconds=len(history))
+        messages = []
+        for i, entry in enumerate(history):
+            role = entry.get("role", "user")
+            parts = entry.get("parts", [])
+            text = next((p.get("text", "") for p in parts if "text" in p), "")
+            msg_time = base_time + timedelta(seconds=i)
+            msg_uuid_raw = hashlib.sha256(f"{session_uuid}:{i}".encode()).hexdigest()
+            msg_uuid = f"{msg_uuid_raw[0:8]}-{msg_uuid_raw[8:12]}-4{msg_uuid_raw[13:16]}-{msg_uuid_raw[16:20]}-{msg_uuid_raw[20:32]}"
+            messages.append(
+                {
+                    "id": msg_uuid,
+                    "timestamp": msg_time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "type": "gemini" if role == "model" else role,
+                    "content": [{"text": text}],
+                }
+            )
+
+        chat_data = {
+            "sessionId": session_uuid,
+            "projectHash": project_hash,
+            "startTime": messages[0]["timestamp"] if messages else chk_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "lastUpdated": messages[-1]["timestamp"] if messages else chk_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "messages": messages,
+            "kind": "main",
+        }
+        chat_path.write_text(json.dumps(chat_data, ensure_ascii=False))
+        # Set mtime to match checkpoint so ordering vs. native chat files is correct
+        os.utime(chat_path, (chk_mtime, chk_mtime))
+        return session_uuid
+
+    except Exception:
+        return None
+
+
 def _find_latest_gemini_uuid(ai_name: str) -> str | None:
     """Return the sessionId from the most recently modified chat file for ai_name.
 
     Gemini stores sessions in ~/.gemini/tmp/{ai_name}/chats/*.json.  Each file
-    contains a top-level "sessionId" field with the full UUID needed for --resume.
+    contains a top-level ``sessionId`` field with the full UUID needed for
+    ``--resume``.
+
+    If a checkpoint exists and is newer than all chat files (or no chat files
+    exist), it is automatically converted to a chat file first so the session
+    can be resumed via ``gemini -r`` without any ``/resume load`` injection.
     """
-    chats_dir = Path.home() / ".gemini" / "tmp" / ai_name / "chats"
-    if not chats_dir.exists():
-        return None
-    json_files = sorted(chats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for f in json_files:
+    gemini_tmp = Path.home() / ".gemini" / "tmp" / ai_name
+    chats_dir = gemini_tmp / "chats"
+    checkpoint_path = gemini_tmp / f"checkpoint-{ai_name}.json"
+
+    # Find newest existing chat file
+    latest_chat: Path | None = None
+    if chats_dir.exists():
+        candidates = sorted(chats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        latest_chat = candidates[0] if candidates else None
+
+    # Convert checkpoint if it exists and is newer than the latest chat file
+    if checkpoint_path.exists():
+        chk_mtime = checkpoint_path.stat().st_mtime
+        chat_mtime = latest_chat.stat().st_mtime if latest_chat else 0.0
+        if chk_mtime > chat_mtime:
+            converted_uuid = _convert_checkpoint_to_chat(ai_name, gemini_tmp)
+            if converted_uuid:
+                return converted_uuid
+
+    # Use latest native chat file
+    if latest_chat:
         try:
-            session_id = json.loads(f.read_text()).get("sessionId")
+            session_id = json.loads(latest_chat.read_text()).get("sessionId")
             if session_id:
                 return session_id
         except Exception:
-            continue
+            pass
+
     return None
 
 
