@@ -1751,6 +1751,10 @@ def _cmd_tunnel_start(
     if not host:
         print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
         sys.exit(1)
+    # Use vpn_host when VPN is active — Tailscale becomes unreachable under VPN.
+    vpn_host = remote_cfg.get("vpn_host", "") or host
+    if vpn_host != host and _is_vpn_active():
+        host = vpn_host
 
     direction = "-L" if forward else "-R"
     cmd = [
