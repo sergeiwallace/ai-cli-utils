@@ -471,6 +471,8 @@ def collect_remote_processes(
             result = subprocess.run(
                 [
                     "ssh",
+                    "-o",
+                    "ConnectTimeout=5",
                     f"{user}@{host}",
                     "ps -ax -o pid=,comm=,etime=,args= 2>/dev/null",
                 ],
@@ -668,6 +670,18 @@ def cmd_ps(
     remote_cfg = config.get("remote", {})
     remote_host = remote_cfg.get("host", "")
     remote_user = remote_cfg.get("user", "")
+    # Use vpn_host (direct IP) when VPN is active so Tailscale-blocked connections
+    # don't hang. Requires mullvad to be on PATH; silently skipped if not installed.
+    vpn_host = remote_cfg.get("vpn_host", "") or remote_host
+    if vpn_host and vpn_host != remote_host and remote_host:
+        try:
+            _vpn_result = subprocess.run(
+                ["mullvad", "status"], capture_output=True, text=True, timeout=2
+            )
+            if "Connected" in _vpn_result.stdout:
+                remote_host = vpn_host
+        except Exception:
+            pass
     hygiene_cfg = config.get("process_hygiene", {})
     cache_ttl = int(hygiene_cfg.get("cache_ttl_minutes", 30)) * 60
     log_path = _get_state_dir() / "process-hygiene.log"
