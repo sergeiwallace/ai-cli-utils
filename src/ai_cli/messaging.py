@@ -34,7 +34,10 @@ class NATSClient:
 
     async def _open_ssh_tunnel(self) -> None:
         """Open SSH tunnel to Hetzner NATS when running on Mac and port 4222 is unreachable."""
-        if os.environ.get("AI_CLI_HOST") != "mac":
+        # Accept either AI_CLI_HOST=mac or HUMANWARE_HOST=mac (HUMANWARE_HOST is set
+        # in ~/.zshenv for zsh sessions; AI_CLI_HOST is the legacy name in ~/.bashrc).
+        _host_id = os.environ.get("AI_CLI_HOST") or os.environ.get("HUMANWARE_HOST", "")
+        if _host_id != "mac":
             return
         try:
             with socket.create_connection(("localhost", 4222), timeout=1):
