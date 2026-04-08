@@ -46,7 +46,7 @@ Claude usage) to `gemini_cost_sync` to eliminate naming ambiguity before adding 
 Claude-specific job.
 
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing?
-> - <enter feedback here>
+> - Scope is right. Proceed.
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
@@ -145,6 +145,7 @@ signal-watch's NATS connectivity is more stable, but not a reliable foundation t
 
 > **Feedback Round 1:** Does Option A feel right? Any concern about SSH per cycle vs
 > the NATS-native Option B/C?
+> - Option A + C. Want real-time (Option C is primary). Option A as fallback/catch-up.
 > - <enter feedback here>
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
@@ -278,7 +279,7 @@ hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
 | 2 | T-05 | Deploy + live verify | Human UAT |
 
 > **Feedback Round 1:** Does the batching make sense? T-01–T-04 can be a single autonomous run.
-> - <enter feedback here>
+> - Batching is fine. Will revisit after open questions are resolved and plan is updated.
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
@@ -328,11 +329,10 @@ hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
    follow-on to Option A rather than waiting for the next poll cycle.
 
 > **Feedback Round 1:** Your thoughts on the open questions:
-> 1. <!-- session % — should it be in the statusline? seen a separate daily sub-limit? -->
-> 2. <!-- statusline secondary metrics — in scope here or separate? -->
-> 3. <!-- NATS KV publication — add to handler or leave for later? -->
-> 4. <!-- 10-minute lag acceptable, or should Option C be included? -->
-> - <enter feedback here>
+> 1. Session % — not in statusline. Include in scraper and DB for potential future use, but don't display.
+> 2. Weekly all-models % only in statusline. No secondary metrics.
+> 3. NATS KV should be updated by Hetzner directly after each scrape — not by Mac after pulling. Having Mac pull then re-publish to Hetzner's KV is a round trip that makes no sense. Hetzner owns the data; Hetzner should write it to KV.
+> 4. Want real-time. Option C is primary path.
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
