@@ -385,7 +385,10 @@ class TestGetLatestGeminiSessionId:
                 result = get_latest_gemini_session_id("art-1")
         assert result == "chats-uuid"
 
-    def test_latest_gemini_id_when_ai_name_provided_but_no_chats_then_falls_back_to_logs(self, tmp_path):
+    def test_latest_gemini_id_when_ai_name_provided_but_no_chats_then_returns_none(self, tmp_path):
+        # Sessions started via /resume load (checkpoint restore) don't write a chat
+        # file, so their UUID in logs.json cannot be used for -r resume.  We must
+        # return None so the caller falls back to /resume load again.
         logs_dir = tmp_path / ".gemini" / "tmp" / "artelier"
         logs_dir.mkdir(parents=True)
         (logs_dir / "logs.json").write_text('{"sessionId": "logs-uuid"}')
@@ -393,7 +396,7 @@ class TestGetLatestGeminiSessionId:
             with patch("pathlib.Path.home", return_value=tmp_path):
                 with patch("ai_cli.main._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id("art-1")
-        assert result == "logs-uuid"
+        assert result is None
 
     def test_latest_gemini_id_when_logs_exist_then_returns_last(self, tmp_path):
         logs_dir = tmp_path / ".gemini" / "tmp" / "testproject"

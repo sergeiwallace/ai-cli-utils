@@ -384,13 +384,15 @@ def get_latest_gemini_session_id(ai_name: str | None = None) -> str | None:
     """Return the most recent Gemini session ID.
 
     If ai_name is provided, scans ~/.gemini/tmp/{ai_name}/chats/ directly —
-    the authoritative source regardless of current working directory.
-    Falls back to scanning logs.json in the project tmp directory.
+    the authoritative source regardless of current working directory.  Only
+    sessions with a chat file on disk can be resumed with ``-r``; sessions
+    started via ``/resume load`` (checkpoint restore) do not write a chat file,
+    so their UUID in logs.json cannot be used for ``-r``.  Returning None in
+    that case causes the caller to fall back to ``/resume load``, which is the
+    correct recovery path.  Never fall back to logs.json when ai_name is known.
     """
     if ai_name:
-        uuid = _find_latest_gemini_uuid(ai_name)
-        if uuid:
-            return uuid
+        return _find_latest_gemini_uuid(ai_name)
 
     cwd = Path.cwd()
     project_name = cwd.name

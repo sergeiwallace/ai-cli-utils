@@ -675,9 +675,7 @@ def cmd_ps(
     vpn_host = remote_cfg.get("vpn_host", "") or remote_host
     if vpn_host and vpn_host != remote_host and remote_host:
         try:
-            _vpn_result = subprocess.run(
-                ["mullvad", "status"], capture_output=True, text=True, timeout=2
-            )
+            _vpn_result = subprocess.run(["mullvad", "status"], capture_output=True, text=True, timeout=2)
             if "Connected" in _vpn_result.stdout:
                 remote_host = vpn_host
         except Exception:
