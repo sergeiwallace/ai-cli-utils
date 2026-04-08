@@ -15,6 +15,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 
 @dataclass
@@ -343,32 +344,77 @@ def quota_history() -> int:
     return 0
 
 
+_SCRAPE_LOCK_PATH = Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape.lock"
+_SCRAPE_TTL_MINUTES = 30
+_SCRAPE_LOCK_STALE_MINUTES = 15
+
+
+def _maybe_trigger_background_scrape(snapshotted_at: str) -> None:
+    """Fire a background `ai quota scrape` if the latest snapshot is stale.
+
+    Skipped when a scrape is already in progress (lock file younger than
+    _SCRAPE_LOCK_STALE_MINUTES).  A lock older than that threshold is treated
+    as stale (crashed scrape) and removed so the next call can proceed.
+
+    Must never raise — the statusline path must be silent on errors.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        snapshot_dt = datetime.fromisoformat(snapshotted_at.replace("Z", "+00:00"))
+        age_minutes = (now - snapshot_dt).total_seconds() / 60
+
+        if age_minutes < _SCRAPE_TTL_MINUTES:
+            return  # snapshot is fresh enough
+
+        if _SCRAPE_LOCK_PATH.exists():
+            lock_age_minutes = (now.timestamp() - _SCRAPE_LOCK_PATH.stat().st_mtime) / 60
+            if lock_age_minutes < _SCRAPE_LOCK_STALE_MINUTES:
+                return  # scrape already running
+            # Stale lock from a crashed scrape — remove and proceed
+            _SCRAPE_LOCK_PATH.unlink(missing_ok=True)
+
+        _SCRAPE_LOCK_PATH.touch()
+        subprocess.Popen(
+            ["ai", "quota", "scrape"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
 def quota_scrape() -> int:
     """Scrape /usage from a hidden CC session and store in local SQLite."""
     from .quota_db import record_quota_snapshot
 
     print("Scraping /usage from Claude Code session (hidden tmux window)...")
-    snapshot = _scrape_usage_hidden_pane()
-    if snapshot is None:
-        print("Could not extract usage percentage.", file=sys.stderr)
-        return 1
+    try:
+        snapshot = _scrape_usage_hidden_pane()
+        if snapshot is None:
+            print("Could not extract usage percentage.", file=sys.stderr)
+            return 1
 
-    print(f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%", end="")
-    if snapshot.weekly_sonnet_pct is not None:
-        print(f", Sonnet {snapshot.weekly_sonnet_pct:.1f}%", end="")
-    if snapshot.session_pct is not None:
-        print(f", session {snapshot.session_pct:.1f}%", end="")
-    print()
+        print(f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%", end="")
+        if snapshot.weekly_sonnet_pct is not None:
+            print(f", Sonnet {snapshot.weekly_sonnet_pct:.1f}%", end="")
+        if snapshot.session_pct is not None:
+            print(f", session {snapshot.session_pct:.1f}%", end="")
+        print()
 
-    record_quota_snapshot(
-        usage_percent=snapshot.weekly_all_models_pct,
-        session_pct=snapshot.session_pct,
-        weekly_sonnet_pct=snapshot.weekly_sonnet_pct,
-        extra_pct=snapshot.extra_pct,
-    )
-    print("Stored snapshot in local quota DB.")
-    _publish_quota_snapshot(snapshot)
-    return 0
+        record_quota_snapshot(
+            usage_percent=snapshot.weekly_all_models_pct,
+            session_pct=snapshot.session_pct,
+            weekly_sonnet_pct=snapshot.weekly_sonnet_pct,
+            extra_pct=snapshot.extra_pct,
+        )
+        print("Stored snapshot in local quota DB.")
+        _publish_quota_snapshot(snapshot)
+        return 0
+    finally:
+        _SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
 
 def quota_sync_from_remote() -> int:
@@ -552,6 +598,7 @@ def quota_statusline_part() -> int:
         if not rows:
             return 0
 
+        _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         usage_pct = rows[0]["usage_percent"]
 
         ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)

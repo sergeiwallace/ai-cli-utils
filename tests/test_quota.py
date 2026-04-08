@@ -1,5 +1,8 @@
 """Tests for quota tracking — hidden pane scraper, notification, quota_watch, quota_record."""
 
+import os
+import time
+from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,7 +10,7 @@ import pytest
 from ai_cli.quota import (
     QuotaSnapshot,
     _get_claude_usage_snapshot,
-    _maybe_trigger_background_scrape,  # noqa: F401 — used in TestMaybeBackgroundScrape (pending)
+    _maybe_trigger_background_scrape,
     _parse_usage_output,
     _publish_quota_snapshot,
     _scrape_usage_hidden_pane,
@@ -387,6 +390,36 @@ class TestQuotaScrape:
             conn.close()
             assert row["usage_percent"] == 72.0
             mock_publish.assert_called_once_with(snap)
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_scrape_fails_then_lock_file_cleaned_up(self, tmp_path):
+        """quota_scrape must always remove the lock file, even on failure."""
+        lock_path = tmp_path / "quota-scrape.lock"
+        lock_path.touch()
+        with (
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None),
+        ):
+            quota_scrape()
+        assert not lock_path.exists()
+
+    def test_when_scrape_succeeds_then_lock_file_cleaned_up(self, tmp_path, capsys):
+        """quota_scrape removes the lock file on success too."""
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        lock_path = tmp_path / "quota-scrape.lock"
+        lock_path.touch()
+        try:
+            snap = QuotaSnapshot(weekly_all_models_pct=50.0)
+            with (
+                patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+                patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap),
+                patch("ai_cli.quota._publish_quota_snapshot"),
+            ):
+                quota_scrape()
+            assert not lock_path.exists()
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -810,6 +843,21 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
+    def test_when_snapshot_exists_then_calls_maybe_trigger_with_snapshotted_at(self, tmp_path, capsys):
+        """quota_statusline_part must call _maybe_trigger_background_scrape with the snapshot timestamp."""
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            qdb.record_quota_snapshot(usage_percent=50.0)
+            with patch("ai_cli.quota._maybe_trigger_background_scrape") as mock_trigger:
+                quota_statusline_part()
+            mock_trigger.assert_called_once()
+            ts_arg = mock_trigger.call_args[0][0]
+            assert isinstance(ts_arg, str) and len(ts_arg) > 0
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
 
 class TestQuotaSyncFromRemote:
     """Tests for quota_sync_from_remote — SSH-based pull from remote DB."""
@@ -960,3 +1008,78 @@ class TestQuotaSyncFromRemote:
         assert result == 1
         out = capsys.readouterr()
         assert "could not load config" in out.err
+
+
+# --- _maybe_trigger_background_scrape ---
+
+
+class TestMaybeBackgroundScrape:
+    def _stale_ts(self, minutes_ago: int = 35) -> str:
+        now = datetime.now(timezone.utc)
+        return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _fresh_ts(self, minutes_ago: int = 5) -> str:
+        now = datetime.now(timezone.utc)
+        return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_when_snapshot_fresh_then_no_scrape_triggered(self, tmp_path):
+        lock_path = tmp_path / "quota-scrape.lock"
+        with (
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            _maybe_trigger_background_scrape(self._fresh_ts())
+        mock_popen.assert_not_called()
+        assert not lock_path.exists()
+
+    def test_when_snapshot_stale_and_no_lock_then_triggers_scrape_and_creates_lock(self, tmp_path):
+        lock_path = tmp_path / "quota-scrape.lock"
+        with (
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            _maybe_trigger_background_scrape(self._stale_ts())
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
+        assert args == ["ai", "quota", "scrape"]
+        assert lock_path.exists()
+
+    def test_when_snapshot_stale_and_fresh_lock_then_no_scrape(self, tmp_path):
+        """Fresh lock = scrape already running — skip."""
+        lock_path = tmp_path / "quota-scrape.lock"
+        lock_path.touch()  # lock written just now
+        with (
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            _maybe_trigger_background_scrape(self._stale_ts())
+        mock_popen.assert_not_called()
+
+    def test_when_snapshot_stale_and_stale_lock_then_removes_lock_and_triggers_scrape(self, tmp_path):
+        """Stale lock (crashed scrape) is removed and a new scrape is launched."""
+        lock_path = tmp_path / "quota-scrape.lock"
+        lock_path.touch()
+        stale_lock_time = time.time() - (16 * 60)  # 16 min old > _SCRAPE_LOCK_STALE_MINUTES
+        os.utime(lock_path, (stale_lock_time, stale_lock_time))
+        with (
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            _maybe_trigger_background_scrape(self._stale_ts())
+        mock_popen.assert_called_once()
+        assert lock_path.exists()  # new lock created after stale one removed
+
+    def test_when_popen_raises_then_no_exception_propagated(self, tmp_path):
+        """Errors must never propagate — statusline path must be silent."""
+        lock_path = tmp_path / "quota-scrape.lock"
+        with (
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("subprocess.Popen", side_effect=OSError("popen failed")),
+        ):
+            _maybe_trigger_background_scrape(self._stale_ts())  # must not raise
+
+    def test_when_invalid_timestamp_then_no_exception_propagated(self, tmp_path):
+        """Malformed snapshotted_at must be handled silently."""
+        lock_path = tmp_path / "quota-scrape.lock"
+        with patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path):
+            _maybe_trigger_background_scrape("not-a-timestamp")  # must not raise
