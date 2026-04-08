@@ -31,7 +31,7 @@ Auto-determined by what files changed. No user input needed.
 
 **When:** Default for all code files
 
-**Fallback chain:** `gemini-3-flash-preview` → `gemini-3.1-pro-preview` → `gemini-2.5-pro`
+**Fallback chain:** `deep-think` → `gemini-3.1-pro-preview` → `gemini-3-flash-preview`
 
 ### Deep Tier (design/security)
 
@@ -40,7 +40,7 @@ Auto-determined by what files changed. No user input needed.
 - Files matching `*auth*`, `*security*`, `*crypto*`, `*trading*`, `*migration*`
 - DB schema changes (`*db*`, `*schema*`, `*migration*`)
 
-**Fallback chain:** `gemini-3.1-pro-preview` → `gemini-3-flash-preview` → `gemini-2.5-pro`
+**Fallback chain:** `deep-think` → `gemini-3.1-pro-preview` → `gemini-3-flash-preview`
 
 ## Fallback Behavior
 
