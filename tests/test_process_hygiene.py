@@ -786,3 +786,52 @@ class TestCmdPs:
         # Both orphaned and suspect should be passed to auto_clean_orphans
         assert any(p.pid == 9998 for p in killed)
         assert any(p.pid == 9999 for p in killed)
+
+    def test_given_vpn_active_when_ps_called_then_uses_vpn_host(self):
+        """When mullvad reports Connected and vpn_host is configured, cmd_ps must SSH to vpn_host."""
+        config = {
+            "remote": {
+                "host": "100.64.0.1",
+                "vpn_host": "192.0.2.1",
+                "user": "user",
+            }
+        }
+        captured_host: list[str] = []
+
+        def fake_collect_remote(host, user, **kwargs):
+            captured_host.append(host)
+            return [], None
+
+        mullvad_result = type("R", (), {"stdout": "Connected\n", "returncode": 0})()
+
+        with (
+            patch("ai_cli.process_hygiene.collect_local_processes", return_value=[]),
+            patch("ai_cli.process_hygiene.collect_remote_processes", side_effect=fake_collect_remote),
+            patch("subprocess.run", return_value=mullvad_result),
+        ):
+            cmd_ps([], config)
+
+        assert captured_host == ["192.0.2.1"]
+
+
+class TestCollectRemoteProcessesConnectTimeout:
+    def test_given_no_ssh_fn_when_called_then_ssh_includes_connect_timeout(self):
+        """collect_remote_processes must pass ConnectTimeout=5 to prevent hangs on unreachable hosts."""
+        ssh_calls: list[list] = []
+
+        def fake_run(cmd, **kwargs):
+            ssh_calls.append(cmd)
+            result = type("R", (), {"stdout": "", "returncode": 0})()
+            return result
+
+        with (
+            patch("ai_cli.process_hygiene._cache_path", return_value=None.__class__.__new__(type(None))),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("ai_cli.process_hygiene._load_cache", return_value=None),
+            patch("ai_cli.process_hygiene._save_cache"),
+        ):
+            collect_remote_processes(host="192.0.2.1", user="user", use_cache=False)
+
+        assert ssh_calls, "subprocess.run was not called"
+        ssh_cmd = ssh_calls[0]
+        assert "ConnectTimeout=5" in " ".join(ssh_cmd)

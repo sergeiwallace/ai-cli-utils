@@ -2227,7 +2227,7 @@ async def _run_transport_loop(
 
             start_time = _monotonic()
             _vpn_poll_ticks = 0
-            _vpn_poll_interval = config.get("vpn_poll_interval", 3)
+            _vpn_poll_interval = config.get("remote", {}).get("vpn_poll_interval", 3)
             _vpn_poll_every = max(1, int(_vpn_poll_interval / 0.5))
             # Poll process while watching for NATS VPN signal.
             # Also poll VPN state directly every vpn_poll_interval seconds as a
