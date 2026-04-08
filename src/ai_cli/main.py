@@ -2083,7 +2083,14 @@ async def _run_transport_loop(
             _write_transport_state(transport_file, session_name, os.getpid(), proc.pid, transport_type)
 
             start_time = _monotonic()
-            # Poll process while watching for NATS VPN signal
+            _vpn_poll_ticks = 0
+            _vpn_poll_interval = config.get("vpn_poll_interval", 3)
+            _vpn_poll_every = max(1, int(_vpn_poll_interval / 0.5))
+            # Poll process while watching for NATS VPN signal.
+            # Also poll VPN state directly every vpn_poll_interval seconds as a
+            # fallback — mosh never exits when UDP is blocked by VPN, so NATS alone
+            # is insufficient; the direct poll catches the case where the NATS
+            # connection drops when VPN changes routing.
             while proc.poll() is None:
                 if vpn_changed.is_set():
                     proc.terminate()
@@ -2093,6 +2100,18 @@ async def _run_transport_loop(
                         proc.kill()  # Not covered: requires proc to ignore SIGTERM
                         proc.wait()
                     break
+                _vpn_poll_ticks += 1
+                if transport_type == "mosh" and _vpn_poll_ticks % _vpn_poll_every == 0:
+                    if _is_vpn_active():
+                        print("\nVPN detected — switching from mosh to SSH...", file=sys.stderr)
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        vpn_changed.set()
+                        break
                 await asyncio.sleep(0.5)
             else:
                 proc.wait()

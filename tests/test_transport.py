@@ -324,6 +324,53 @@ class TestRunTransportLoop:
         asyncio.run(run())
         assert "giving up" in capsys.readouterr().err
 
+    def test_when_mosh_running_and_vpn_detected_by_poll_then_switches_to_ssh(self, tmp_path):
+        """Direct VPN poll fallback: mosh hangs (UDP blocked), NATS unavailable.
+
+        Mosh never exits. The inner loop polls VPN every vpn_poll_interval seconds.
+        On the first poll tick (interval=3s / 0.5s = tick 6) VPN is detected and mosh
+        is terminated, causing the outer loop to restart with SSH.
+        """
+        nc = _mock_nats_client()
+        nc.nc = None  # NATS unavailable — no vpn.state.changed signal
+
+        # mosh: never exits on its own — simulates UDP-blocked mosh
+        proc_mosh = MagicMock()
+        proc_mosh.pid = 1111
+        proc_mosh.returncode = None
+        proc_mosh.terminate = MagicMock()
+        proc_mosh.wait = MagicMock(return_value=0)
+        # 7 None polls before terminate() kicks in, then stops
+        proc_mosh.poll = MagicMock(side_effect=[None] * 7)
+
+        proc_ssh = _make_proc(returncode=0, poll_sequence=[None, 0])
+        procs = iter([proc_mosh, proc_ssh])
+
+        # VPN state: False for initial check (→ mosh), True for every poll tick after
+        vpn_call_count = {"n": 0}
+
+        def vpn_side_effect():
+            vpn_call_count["n"] += 1
+            return vpn_call_count["n"] > 1  # First call False, rest True
+
+        async def run():
+            with (
+                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.main._is_vpn_active", side_effect=vpn_side_effect),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", side_effect=lambda args: next(procs)) as mock_popen,
+                patch("ai_cli.main._monotonic", side_effect=[0.0, 0.0, 0.0, 10.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+            return mock_popen.call_args_list
+
+        call_list = asyncio.run(run())
+        proc_mosh.terminate.assert_called_once()
+        assert call_list[0][0][0] == MOSH_ARGS
+        assert call_list[1][0][0] == SSH_ARGS
+
     def test_when_transport_starts_then_writes_state_file(self, tmp_path):
         proc = _make_proc(returncode=0, poll_sequence=[None, 0])
         nc = _mock_nats_client()
