@@ -1263,7 +1263,7 @@ def get_engine_script(
     # iTerm2 status updates: re-emit pane title with optional status symbol.
     _iterm2_status() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
-      local status="$1" stype="$2" sname="$3"
+      local _st="$1" stype="$2" sname="$3"
       local type_sym="" sym=""
       [[ "$_iterm2_show_type_sym" == "1" ]] && {{
         [[ "$stype" == "cc" ]]     && type_sym="* "
@@ -1271,7 +1271,7 @@ def get_engine_script(
       }}
       if [[ "$_iterm2_show_status_sym" == "1" ]]; then
         sym="▶"
-        case "$status" in
+        case "$_st" in
           done)     sym="✓" ;;
           error)    sym="✗" ;;
           resuming) sym="↻" ;;

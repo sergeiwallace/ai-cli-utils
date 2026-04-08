@@ -418,6 +418,12 @@ class TestGetEngineScriptIterm2Slot:
         assert "_iterm2_claude_profile" not in script
         assert "_iterm2_gemini_profile" not in script
 
+    def test_iterm2_status_function_does_not_use_local_status_variable(self):
+        # zsh treats `status` as a read-only special variable; using `local status=`
+        # causes an immediate error in zsh sessions, breaking `ai g` launch.
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "local status=" not in script
+
     def test_script_calls_fleet_setup_with_session_name(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert '_iterm2_fleet_setup "$tmux_session"' in script
