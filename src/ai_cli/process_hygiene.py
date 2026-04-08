@@ -695,11 +695,9 @@ def cmd_ps(
 
     local = collect_local_processes()
 
-    # Cron mode only cleans local orphans — skip remote collection entirely to
-    # avoid blocking session launch with a potentially slow SSH call.
     remote: list[ProcessInfo] = []
     cache_age: float | None = None
-    if remote_host and remote_user and not cron_mode:
+    if remote_host and remote_user:
         remote, cache_age = collect_remote_processes(
             host=remote_host,
             user=remote_user,
@@ -763,6 +761,9 @@ def cmd_ps(
             out(f"[ai ps] Cleaned {len(killed)} orphaned process(es). Run 'ai ps' for details.")
         # Clean up stale transport state files (parent PID dead)
         _clean_stale_transport_files()
+        # Also refresh remote cache
+        if remote_host and remote_user:
+            collect_remote_processes(host=remote_host, user=remote_user, force_refresh=True)
         return 0
 
     else:
