@@ -15,6 +15,7 @@ from ai_cli.main import (
     create_worktree,
     detect_repo_root,
     _find_latest_gemini_uuid,
+    _get_chat_last_message_timestamp,
     find_next_index,
     find_recent_session,
     get_latest_gemini_session_id,
@@ -380,11 +381,18 @@ class TestFindLatestGeminiUuid:
         gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
         chats = gemini_tmp / "chats"
         chats.mkdir(parents=True)
-        # Old chat file
+        # Chat file with last message at t=1000
         old_chat = chats / "session-old.json"
-        old_chat.write_text('{"sessionId": "old-uuid"}')
+        old_chat.write_text(
+            json.dumps(
+                {
+                    "sessionId": "old-uuid",
+                    "messages": [{"timestamp": "1970-01-01T00:16:40Z", "type": "user", "content": [{"text": "hi"}]}],
+                }
+            )
+        )
         os.utime(old_chat, (1000.0, 1000.0))
-        # Newer checkpoint
+        # Checkpoint saved at t=2000 (newer than last message)
         checkpoint = gemini_tmp / "checkpoint-art-1.json"
         history = [{"role": "user", "parts": [{"text": "hello"}]}]
         checkpoint.write_text(json.dumps({"history": history, "authType": "oauth"}))
@@ -394,15 +402,25 @@ class TestFindLatestGeminiUuid:
         assert result is not None
         assert result != "old-uuid"  # converted checkpoint UUID, not the old chat
 
-    def test_when_chat_newer_than_checkpoint_then_uses_existing_chat(self, tmp_path):
+    def test_when_chat_last_message_newer_than_checkpoint_then_uses_existing_chat(self, tmp_path):
         gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
         chats = gemini_tmp / "chats"
         chats.mkdir(parents=True)
-        # Newer chat file
+        # Chat file with last message at t=2000, but frozen mtime at t=500
+        # (simulates gemini-cli not updating mtime on auto-save writes)
         chat = chats / "session-new.json"
-        chat.write_text('{"sessionId": "new-uuid"}')
-        os.utime(chat, (2000.0, 2000.0))
-        # Older checkpoint
+        chat.write_text(
+            json.dumps(
+                {
+                    "sessionId": "new-uuid",
+                    "messages": [
+                        {"timestamp": "1970-01-01T00:33:20Z", "type": "user", "content": [{"text": "later message"}]}
+                    ],
+                }
+            )
+        )
+        os.utime(chat, (500.0, 500.0))
+        # Checkpoint saved at t=1000 (older than last message in chat)
         checkpoint = gemini_tmp / "checkpoint-art-1.json"
         checkpoint.write_text(json.dumps({"history": [{"role": "user", "parts": [{"text": "hi"}]}]}))
         os.utime(checkpoint, (1000.0, 1000.0))
@@ -410,10 +428,84 @@ class TestFindLatestGeminiUuid:
             result = _find_latest_gemini_uuid("art-1")
         assert result == "new-uuid"
 
+    def test_when_resume_save_mid_session_then_uses_chat_with_later_messages(self, tmp_path):
+        # Regression: /resume save at t=1500 mid-session; auto-save continued to t=2000.
+        # Chat file mtime is frozen at t=500 (gemini-cli does not update mtime on writes).
+        # Must use chat file (last message t=2000), not reconvert checkpoint (t=1500).
+        gemini_tmp = tmp_path / ".gemini" / "tmp" / "art-1"
+        chats = gemini_tmp / "chats"
+        chats.mkdir(parents=True)
+        chat = chats / "session-active.json"
+        chat.write_text(
+            json.dumps(
+                {
+                    "sessionId": "active-uuid",
+                    "messages": [
+                        {"timestamp": "1970-01-01T00:16:40Z", "type": "user", "content": [{"text": "early msg"}]},
+                        {
+                            "timestamp": "1970-01-01T00:33:20Z",
+                            "type": "gemini",
+                            "content": [{"text": "later msg auto-saved after /resume save"}],
+                        },
+                    ],
+                }
+            )
+        )
+        os.utime(chat, (500.0, 500.0))  # mtime frozen — does not reflect actual writes
+        checkpoint = gemini_tmp / "checkpoint-art-1.json"
+        checkpoint.write_text(json.dumps({"history": [{"role": "user", "parts": [{"text": "hi"}]}]}))
+        os.utime(checkpoint, (1500.0, 1500.0))  # /resume save at t=1500
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = _find_latest_gemini_uuid("art-1")
+        # chat last message ts=2000 > checkpoint mtime=1500 → use chat, not checkpoint
+        assert result == "active-uuid"
+
     def test_when_no_checkpoint_and_no_chats_then_returns_none(self, tmp_path):
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _find_latest_gemini_uuid("art-1")
         assert result is None
+
+
+# --- _get_chat_last_message_timestamp ---
+
+
+class TestGetChatLastMessageTimestamp:
+    def test_when_messages_exist_then_returns_last_timestamp(self, tmp_path):
+        chat = tmp_path / "session.json"
+        chat.write_text(
+            json.dumps(
+                {
+                    "messages": [
+                        {"timestamp": "1970-01-01T00:16:40Z", "type": "user", "content": []},
+                        {"timestamp": "1970-01-01T00:33:20Z", "type": "gemini", "content": []},
+                    ]
+                }
+            )
+        )
+        result = _get_chat_last_message_timestamp(chat)
+        assert result == 2000.0
+
+    def test_when_empty_messages_then_returns_zero(self, tmp_path):
+        chat = tmp_path / "session.json"
+        chat.write_text(json.dumps({"messages": []}))
+        result = _get_chat_last_message_timestamp(chat)
+        assert result == 0.0
+
+    def test_when_invalid_json_then_returns_zero(self, tmp_path):
+        chat = tmp_path / "session.json"
+        chat.write_text("not json {{{")
+        result = _get_chat_last_message_timestamp(chat)
+        assert result == 0.0
+
+    def test_when_file_missing_then_returns_zero(self, tmp_path):
+        result = _get_chat_last_message_timestamp(tmp_path / "nonexistent.json")
+        assert result == 0.0
+
+    def test_when_timestamp_missing_from_last_message_then_returns_zero(self, tmp_path):
+        chat = tmp_path / "session.json"
+        chat.write_text(json.dumps({"messages": [{"type": "user", "content": []}]}))
+        result = _get_chat_last_message_timestamp(chat)
+        assert result == 0.0
 
 
 # --- _convert_checkpoint_to_chat ---

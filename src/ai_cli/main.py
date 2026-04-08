@@ -451,6 +451,22 @@ def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
         return None
 
 
+def _get_chat_last_message_timestamp(chat_path: Path) -> float:
+    """Return the timestamp of the last message in a chat file as a Unix timestamp.
+
+    Falls back to 0.0 on any error so callers can compare safely.
+    """
+    try:
+        data = json.loads(chat_path.read_bytes())
+        messages = data.get("messages", [])
+        if not messages:
+            return 0.0
+        last_ts = messages[-1].get("timestamp", "")
+        return datetime.fromisoformat(last_ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
 def _find_latest_gemini_uuid(ai_name: str) -> str | None:
     """Return the sessionId from the most recently modified chat file for ai_name.
 
@@ -458,25 +474,33 @@ def _find_latest_gemini_uuid(ai_name: str) -> str | None:
     contains a top-level ``sessionId`` field with the full UUID needed for
     ``--resume``.
 
-    If a checkpoint exists and is newer than all chat files (or no chat files
-    exist), it is automatically converted to a chat file first so the session
-    can be resumed via ``gemini -r`` without any ``/resume load`` injection.
+    If a checkpoint exists and its mtime is newer than the last message timestamp
+    in the latest chat file (or no chat files exist), the checkpoint is
+    automatically converted to a chat file so the session can be resumed via
+    ``gemini -r`` without any ``/resume load`` injection.
+
+    Comparing checkpoint mtime against the chat file's last message timestamp
+    (rather than the chat file's mtime) correctly handles the case where
+    ``/resume save`` is run mid-session: the chat file may have a stale mtime
+    even though auto-save has written more recent messages to it.
     """
     gemini_tmp = Path.home() / ".gemini" / "tmp" / ai_name
     chats_dir = gemini_tmp / "chats"
     checkpoint_path = gemini_tmp / f"checkpoint-{ai_name}.json"
 
-    # Find newest existing chat file
+    # Find newest existing chat file (by mtime — for initial ordering only)
     latest_chat: Path | None = None
     if chats_dir.exists():
         candidates = sorted(chats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         latest_chat = candidates[0] if candidates else None
 
-    # Convert checkpoint if it exists and is newer than the latest chat file
+    # Convert checkpoint if it exists and its save time is newer than the last
+    # message in the chat file.  This correctly selects the chat file when
+    # auto-save has written messages after a mid-session /resume save.
     if checkpoint_path.exists():
         chk_mtime = checkpoint_path.stat().st_mtime
-        chat_mtime = latest_chat.stat().st_mtime if latest_chat else 0.0
-        if chk_mtime > chat_mtime:
+        chat_last_ts = _get_chat_last_message_timestamp(latest_chat) if latest_chat else 0.0
+        if chk_mtime > chat_last_ts:
             converted_uuid = _convert_checkpoint_to_chat(ai_name, gemini_tmp)
             if converted_uuid:
                 return converted_uuid

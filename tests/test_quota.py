@@ -7,6 +7,7 @@ import pytest
 from ai_cli.quota import (
     QuotaSnapshot,
     _get_claude_usage_snapshot,
+    _maybe_trigger_background_scrape,  # noqa: F401 — used in TestMaybeBackgroundScrape (pending)
     _parse_usage_output,
     _publish_quota_snapshot,
     _scrape_usage_hidden_pane,
