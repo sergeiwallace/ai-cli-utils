@@ -259,7 +259,7 @@ shell      = "ShellUtility"
 
 The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. Each session gets a collision-free slot via lease files. When a tab color is set, the session icon is automatically tinted with a contrasting color (180° HSL hue rotation). When no color is set, the Claude brand orange (`#da7756`) is used as fallback.
 
-Set `AI_CLI_HOST` in your shell profile (`~/.bashrc` or `~/.zshrc`) above the interactive guard to identify the machine. This is used when posting targeted handoffs (`ai handoff post --for-machine mac ...`):
+Set `AI_CLI_HOST` in `~/.zshenv` (sourced by all zsh sessions, including non-interactive ones) to identify the machine. This is used when posting targeted handoffs (`ai handoff post --for-machine mac ...`):
 
 ```bash
 export AI_CLI_HOST=mac    # or "hetzner", "work-laptop", etc.
