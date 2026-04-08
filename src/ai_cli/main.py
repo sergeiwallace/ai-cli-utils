@@ -1493,23 +1493,83 @@ def _find_best_handoff(queue_dir: Path, project_filter: str | None = None) -> "P
     return best_file
 
 
+def _format_handoff_summary(path: Path) -> str:
+    """Render a human-readable summary of a handoff file."""
+    text = path.read_text()
+    meta: dict[str, str] = {}
+    body_lines: list[str] = []
+    in_front = False
+    front_done = False
+    for line in text.splitlines():
+        if line.strip() == "---":
+            if not in_front and not front_done:
+                in_front = True
+                continue
+            if in_front:
+                in_front = False
+                front_done = True
+                continue
+        if in_front:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                meta[k.strip()] = v.strip().strip('"')
+        elif front_done:
+            body_lines.append(line)
+    title = meta.get("title", "(untitled)")
+    priority = meta.get("priority", "?")
+    project = meta.get("project", "?")
+    created_at = meta.get("created_at", "")
+    age = ""
+    if created_at:
+        try:
+            created_ts = time.mktime(time.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ"))
+            secs = max(0, int(time.time() - created_ts))
+            if secs < 60:
+                age = f"{secs}s ago"
+            elif secs < 3600:
+                age = f"{secs // 60}m ago"
+            elif secs < 86400:
+                age = f"{secs // 3600}h ago"
+            else:
+                age = f"{secs // 86400}d ago"
+        except (ValueError, OverflowError):
+            age = created_at
+    body_preview = [ln for ln in body_lines if ln.strip()][:3]
+    lines = [
+        f"{path}",
+        f"  [{priority}] {title}",
+        f"  project: {project}   age: {age}",
+    ]
+    if body_preview:
+        lines.append("  ---")
+        for ln in body_preview:
+            lines.append(f"  {ln}")
+    return "\n".join(lines)
+
+
 def check_handoff():
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
+        print("No pending handoffs (main_project not configured).")
         return
     best_file = _find_best_handoff(handoff_dir / "pending")
     if best_file:
-        print(best_file)
+        print(_format_handoff_summary(best_file))
+    else:
+        print("No pending handoffs.")
 
 
 def check_handoff_project(project_name: str):
     """Like check_handoff but filtered to a specific project directory name."""
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
+        print("No pending handoffs (main_project not configured).")
         return
     best_file = _find_best_handoff(handoff_dir / "pending", project_filter=project_name)
     if best_file:
-        print(best_file)
+        print(_format_handoff_summary(best_file))
+    else:
+        print(f"No pending handoffs for project '{project_name}'.")
 
 
 def claim_handoff(file_path, claimer=None):
@@ -1522,9 +1582,16 @@ def claim_handoff(file_path, claimer=None):
     claimed_dir = handoff_dir / "claimed"
     claimed_dir.mkdir(parents=True, exist_ok=True)
     src, dst = Path(file_path), claimed_dir / Path(file_path).name
+    if not src.exists():
+        print(f"Error: handoff file not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+    if dst.exists():
+        print(f"Error: handoff already claimed: {dst}", file=sys.stderr)
+        sys.exit(1)
     try:
         src.rename(dst)
-    except Exception:
+    except OSError as e:
+        print(f"Error: could not claim handoff: {e}", file=sys.stderr)
         sys.exit(1)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     text = (
@@ -1539,14 +1606,20 @@ def claim_handoff(file_path, claimer=None):
 def complete_handoff(file_path):
     handoff_dir = _get_handoff_queue_dir()
     if handoff_dir is None:
-        return
+        print("Error: [project] main_project not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
+        sys.exit(1)
     completed_dir = handoff_dir / "completed"
     completed_dir.mkdir(parents=True, exist_ok=True)
     src, dst = Path(file_path), completed_dir / Path(file_path).name
+    if not src.exists():
+        print(f"Error: handoff file not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
     try:
         src.rename(dst)
-    except Exception:
-        pass
+    except OSError as e:
+        print(f"Error: could not complete handoff: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(dst)
 
 
 def _claim_handoff_for_signal(handoff_dir: Path, handoff_id: int, claimer: str) -> "Path | None":
@@ -2664,6 +2737,12 @@ def cli():
             if not for_machine:
                 print("Error: --for-machine <machine> is required", file=sys.stderr)
                 sys.exit(1)
+            if len(post_args) < 4:
+                print(
+                    "Usage: ai handoff post --for-machine <machine> <title> <priority> <project> <message>",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
         elif action == "check":
             check_handoff()
@@ -2673,9 +2752,19 @@ def cli():
                 sys.exit(1)
             check_handoff_project(sys.argv[3])
         elif action == "claim":
+            if len(sys.argv) < 4:
+                print("Usage: ai handoff claim <file_path>", file=sys.stderr)
+                sys.exit(1)
             claim_handoff(sys.argv[3])
         elif action == "complete":
+            if len(sys.argv) < 4:
+                print("Usage: ai handoff complete <file_path>", file=sys.stderr)
+                sys.exit(1)
             complete_handoff(sys.argv[3])
+        else:
+            print(f"Error: unknown handoff action '{action}'", file=sys.stderr)
+            print("Usage: ai handoff [post|check|check-project|claim|complete]", file=sys.stderr)
+            sys.exit(1)
         sys.exit(0)
 
     if len(sys.argv) > 1 and sys.argv[1] == "memory":

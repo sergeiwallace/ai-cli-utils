@@ -104,11 +104,11 @@ class TestHandoff:
         output = capsys.readouterr().out
         assert "002-task-b.md" in output
 
-    def test_check_handoff_when_no_pending_then_silent(self, tmp_path, capsys):
+    def test_check_handoff_when_no_pending_then_reports_empty(self, tmp_path, capsys):
         queue_dir = tmp_path / ".handoff-queue"
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
             check_handoff()
-        assert capsys.readouterr().out == ""
+        assert "No pending handoffs" in capsys.readouterr().out
 
     def test_claim_handoff_when_file_exists_then_moves_to_claimed(self, tmp_path):
         queue_dir = tmp_path / ".handoff-queue"
@@ -142,9 +142,11 @@ class TestHandoff:
         completed = list((queue_dir / "completed").glob("*.md"))
         assert len(completed) == 1
 
-    def test_complete_handoff_when_no_main_project_then_noop(self):
+    def test_complete_handoff_when_no_main_project_then_exits(self):
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
-            complete_handoff("/tmp/nonexistent.md")
+            with pytest.raises(SystemExit) as exc:
+                complete_handoff("/tmp/nonexistent.md")
+            assert exc.value.code == 1
 
 
 # --- _claim_handoff_for_signal ---
@@ -923,10 +925,10 @@ class TestPostHandoffExistingFilesMultiDir:
 
 
 class TestCheckHandoffEdgeCases:
-    def test_check_handoff_when_no_handoff_dir_then_returns(self):
-        """Covers line 759: handoff_dir is None."""
+    def test_check_handoff_when_no_handoff_dir_then_reports_empty(self, capsys):
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
             check_handoff()
+        assert "No pending handoffs" in capsys.readouterr().out
 
     def test_check_handoff_when_bad_priority_then_skips(self, tmp_path, capsys):
         """Covers lines 770-771: ValueError parsing priority."""
@@ -964,11 +966,12 @@ class TestClaimHandoffException:
 
 
 class TestCompleteHandoffException:
-    def test_complete_handoff_when_rename_fails_then_silent(self, tmp_path):
-        """Covers lines 814-815: exception during file rename."""
+    def test_complete_handoff_when_source_missing_then_exits(self, tmp_path):
         queue_dir = tmp_path / ".handoff-queue"
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=queue_dir):
-            complete_handoff("/nonexistent/path.md")
+            with pytest.raises(SystemExit) as exc:
+                complete_handoff("/nonexistent/path.md")
+            assert exc.value.code == 1
 
 
 # --- _find_best_handoff ---
@@ -1019,19 +1022,19 @@ class TestCheckHandoffProject:
         out = capsys.readouterr().out.strip()
         assert "001-task.md" in out
 
-    def test_check_handoff_project_when_no_match_then_silent(self, tmp_path, capsys):
+    def test_check_handoff_project_when_no_match_then_reports_empty(self, tmp_path, capsys):
         handoff_dir = tmp_path / ".handoff-queue"
         queue_dir = handoff_dir / "pending"
         queue_dir.mkdir(parents=True)
         (queue_dir / "001-task.md").write_text("---\npriority: P1\nproject: other\n---\n")
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir):
             check_handoff_project("myapp")
-        assert capsys.readouterr().out == ""
+        assert "No pending handoffs" in capsys.readouterr().out
 
-    def test_check_handoff_project_when_no_handoff_dir_then_returns(self, capsys):
+    def test_check_handoff_project_when_no_handoff_dir_then_reports_empty(self, capsys):
         with patch("ai_cli.main._get_handoff_queue_dir", return_value=None):
             check_handoff_project("myapp")
-        assert capsys.readouterr().out == ""
+        assert "No pending handoffs" in capsys.readouterr().out
 
 
 # --- _log_handoff_event ---
