@@ -145,25 +145,42 @@ def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
 def _find_latest_gemini_uuid(ai_name):
     gemini_tmp = ~/.gemini/tmp/{ai_name}
     chats_dir = gemini_tmp / "chats"
-    
-    # Find newest native chat file
+
+    # Find newest native chat file (by mtime — for initial ordering only)
     latest_chat = max(chats_dir.glob("session-*.json"), key=mtime, default=None)
-    
-    # Check if checkpoint exists and is newer than latest chat file
+
+    # Check if checkpoint exists and is newer than the last message in the chat file.
+    # Compare checkpoint mtime vs chat file's last message timestamp — NOT vs chat file
+    # mtime. Gemini-cli does not update the chat file's mtime on auto-save writes, so
+    # mtime vs mtime comparison fails when /resume save is run mid-session:
+    # the checkpoint would appear newer even though auto-save has more recent messages.
     checkpoint = gemini_tmp / f"checkpoint-{ai_name}.json"
     if checkpoint.exists():
-        if latest_chat is None or checkpoint.stat().st_mtime > latest_chat.stat().st_mtime:
+        chk_mtime = checkpoint.stat().st_mtime
+        chat_last_ts = _get_chat_last_message_timestamp(latest_chat) if latest_chat else 0.0
+        if chk_mtime > chat_last_ts:
             # Checkpoint is newer — convert it
             uuid = _convert_checkpoint_to_chat(ai_name, gemini_tmp)
             if uuid:
                 return uuid
-    
+
     # Use latest native chat file
     if latest_chat:
         return _extract_uuid_from_chat_file(latest_chat)
-    
+
     return None  # No checkpoint, no chat files → fresh session
 ```
+
+**Key design note — mtime vs last message timestamp:**
+
+The original design compared `checkpoint.mtime > chat_file.mtime`. This breaks because gemini-cli does not update the chat file's mtime on auto-save writes (observed in production: file content grew from 884KB to 899KB with no mtime change). The fix: compare `checkpoint.mtime` against the `timestamp` field of the last message in the chat file. This correctly handles the `/resume save` mid-session edge case:
+
+| Scenario | checkpoint mtime | chat last msg ts | Result |
+|---|---|---|---|
+| Normal restart, no `/resume save` | 16:03 (old) | 20:02 (auto-saved) | chat wins → use it |
+| `/resume save` then exit immediately | 20:10 | 20:08 (last auto-save) | checkpoint wins → reconvert |
+| `/resume save` then keep talking | 20:10 | 20:15 (auto-saved after) | chat wins → use it |
+| No chat file | any | 0.0 | convert checkpoint |
 
 ### Remove `/resume load` injection
 
@@ -203,8 +220,10 @@ This allows idempotent re-conversion: if checkpoint mtime matches the stored val
 | Scenario | Behavior |
 |---|---|
 | chats/ empty, checkpoint exists | Convert checkpoint → chat file, resume via `-r` |
-| chat file exists, checkpoint newer | Reconvert checkpoint → new/updated chat file, resume via `-r` (checkpoint wins) |
-| chat file exists, checkpoint older | Use existing chat file directly |
+| chat file exists, checkpoint mtime newer than chat last message ts | Reconvert checkpoint → new/updated chat file, resume via `-r` (checkpoint wins) |
+| chat file exists, chat last message ts newer than checkpoint mtime | Use existing chat file directly |
+| `/resume save` mid-session, then more auto-saves | Chat last message ts > checkpoint mtime → chat file wins (no data loss) |
+| `/resume save` then immediate exit | Checkpoint mtime > chat last message ts → reconvert from checkpoint |
 | No checkpoint, no chat files | Fresh session (current behavior) |
 | Checkpoint exists, `.project_root` missing | Fall back to cwd for projectHash computation |
 | Conversion fails (corrupt checkpoint) | Log warning, fall back to `/resume load` injection as before |
@@ -223,9 +242,14 @@ This allows idempotent re-conversion: if checkpoint mtime matches the stored val
 - `test_find_latest_gemini_uuid_when_chat_newer_than_checkpoint_then_uses_chat`
 - `test_find_latest_gemini_uuid_when_no_files_then_returns_none`
 - `test_find_latest_gemini_uuid_when_conversion_fails_then_returns_none`
+- `test_find_latest_gemini_uuid_when_resume_save_mid_session_then_uses_chat_with_later_messages`
+- `test_get_chat_last_message_timestamp_when_messages_exist_then_returns_last_timestamp`
+- `test_get_chat_last_message_timestamp_when_empty_messages_then_returns_zero`
+- `test_get_chat_last_message_timestamp_when_invalid_json_then_returns_zero`
 
 ---
 
 ## Approval Log
 
 - 2026-04-08, Round 1: Plan approved by user. Proceed to implementation.
+- 2026-04-08, Round 2: Design updated — mtime vs mtime comparison replaced with checkpoint mtime vs chat last message timestamp. Handles mid-session `/resume save` edge case where gemini-cli freezes chat file mtime on writes. Added `_get_chat_last_message_timestamp` helper.
