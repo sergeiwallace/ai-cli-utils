@@ -735,7 +735,6 @@ class TestCmdPs:
 
         with (
             patch("ai_cli.process_hygiene.collect_local_processes", return_value=[orphan]),
-            patch("ai_cli.process_hygiene.collect_remote_processes", return_value=([], None)),
             patch("ai_cli.process_hygiene.auto_clean_orphans", return_value=[orphan]),
         ):
             rc = cmd_ps(["cron"], self._make_config(), stdout_fn=output.append)
@@ -749,13 +748,26 @@ class TestCmdPs:
 
         with (
             patch("ai_cli.process_hygiene.collect_local_processes", return_value=[]),
-            patch("ai_cli.process_hygiene.collect_remote_processes", return_value=([], None)),
             patch("ai_cli.process_hygiene.auto_clean_orphans", return_value=[]),
         ):
             rc = cmd_ps(["cron"], self._make_config(), stdout_fn=output.append)
 
         assert rc == 0
         assert output == []
+
+    def test_given_ps_cron_with_remote_config_then_remote_never_fetched(self):
+        """Cron mode must not make SSH calls — it only cleans local orphans."""
+        with (
+            patch("ai_cli.process_hygiene.collect_local_processes", return_value=[]),
+            patch("ai_cli.process_hygiene.collect_remote_processes") as mock_remote,
+            patch("ai_cli.process_hygiene.auto_clean_orphans", return_value=[]),
+        ):
+            cmd_ps(
+                ["cron"],
+                self._make_config(remote={"host": "192.0.2.1", "user": "user"}),
+            )
+
+        mock_remote.assert_not_called()
 
     def test_given_no_remote_config_when_ps_called_then_no_remote_fetch(self):
         with (
