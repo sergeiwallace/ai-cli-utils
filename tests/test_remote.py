@@ -15,7 +15,7 @@ def test_remote_flag_when_host_configured_then_sshs_to_host():
     mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)
     mock_exec.assert_called_once()
     cmd, args = mock_exec.call_args[0]
-    assert cmd == "bash"
+    assert cmd == "zsh"
     bash_cmd = args[2]
     assert "ubuntu@1.2.3.4" in bash_cmd
     assert "-t" in bash_cmd

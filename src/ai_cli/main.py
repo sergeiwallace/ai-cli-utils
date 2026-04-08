@@ -3401,7 +3401,7 @@ def cli():
         if id_file:
             ssh_args += ["-i", os.path.expanduser(id_file)]
         ssh_args.append(f"{user}@{vpn_host}")
-        ssh_args.append(f"bash -l -c {shlex.quote(remote_cmd)}")
+        ssh_args.append(f"zsh -l -c {shlex.quote(remote_cmd)}")
 
         # Build mosh_args unconditionally — needed for both initial connection
         # and for reconnecting after a VPN drop while on SSH.
@@ -3416,7 +3416,7 @@ def cli():
             _mosh_ssh += f" -i {shlex.quote(os.path.expanduser(id_file))}"
         mosh_args += ["--ssh", _mosh_ssh]
         mosh_args.append(f"{user}@{host}")
-        mosh_args += ["--", "bash", "-l", "-c", remote_cmd]
+        mosh_args += ["--", "zsh", "-l", "-c", remote_cmd]
 
         if transport == "mosh":
             _ensure_vpn_watcher(config)
@@ -3429,7 +3429,7 @@ def cli():
             sys.exit(0)
         else:
             # Pure SSH transport — no VPN switching.
-            os.execvp("bash", ["bash", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
+            os.execvp("zsh", ["zsh", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
 
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
@@ -3508,7 +3508,7 @@ def cli():
                 "tmux",
                 ["tmux", "new-session", "-s", session_id]
                 + _iterm_env_flags
-                + ["--", "bash", "-c", f"{cd_pref}claude {perms} --name {ai_name}".strip()],
+                + ["--", "zsh", "-c", f"{cd_pref}claude {perms} --name {ai_name}".strip()],
             )
         else:
             if uuid:
@@ -3516,14 +3516,14 @@ def cli():
                     "tmux",
                     ["tmux", "new-session", "-s", session_id]
                     + _iterm_env_flags
-                    + ["--", "bash", "-c", f"{cd_pref}gemini -y {sandbox_flag} -r {uuid}"],
+                    + ["--", "zsh", "-c", f"{cd_pref}gemini -y {sandbox_flag} -r {uuid}"],
                 )
             else:
                 os.execvp(
                     "tmux",
                     ["tmux", "new-session", "-s", session_id]
                     + _iterm_env_flags
-                    + ["--", "bash", "-c", f"{cd_pref}gemini -y {sandbox_flag} -i '/resume load {ai_name}'"],
+                    + ["--", "zsh", "-c", f"{cd_pref}gemini -y {sandbox_flag} -i '/resume load {ai_name}'"],
                 )
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
@@ -3566,9 +3566,9 @@ def cli():
     elif args.is_remote:
         # Create session attached (not -d) so Claude gets a proper PTY.
         # The script's tmux detach-client at loop end drops us back to the SSH/mosh shell.
-        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "bash", "-c", script])
+        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script])
     else:
-        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "bash", "-c", script])
+        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script])
 
 
 if __name__ == "__main__":  # pragma: no cover

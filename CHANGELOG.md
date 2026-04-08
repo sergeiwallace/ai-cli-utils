@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ai ps cron`: VPN detection in `cmd_ps` — switches to `vpn_host` when Mullvad is active, preventing a 30s hang at session start when the Tailscale IP is unreachable. Added `ConnectTimeout=5` to the remote SSH call. (AI-CLI-37)
+- `ai internal handoff-drain` / NATS tunnel: `NATSClient._open_ssh_tunnel()` now checks only `AI_CLI_HOST` (was silently skipping when the var was absent from non-login shells). Session start no longer hangs on NATS retry loop on Mac when NATS tunnel fails to open. (AI-CLI-37)
+- `ai tunnel start`: `_cmd_tunnel_start` now uses `vpn_host` when VPN is active so autossh reaches the server through the VPN-routed address rather than the Tailscale IP. (AI-CLI-37)
+- Remote sessions / tmux invocations: replaced all `bash -l -c` / `bash -c` with `zsh -l -c` / `zsh -c` so that `~/.zshenv` (the canonical env var file) is sourced on remote connects and all tmux session spawns. (AI-CLI-37)
+
+### Changed
+
+- `AI_CLI_HOST` replaces `HUMANWARE_HOST` as the canonical env var for host machine identification (`mac`, `hetzner`, etc.). `AI_CLI_HOST` is the public/open-source name; `HUMANWARE_HOST` is no longer referenced in the codebase. Set `AI_CLI_HOST` in `~/.zshenv` (sourced by all zsh sessions including non-interactive). (AI-CLI-37)
+
 ## [0.2.0] - 2026-04-06
 
 ### Added
