@@ -1673,3 +1673,93 @@ class TestSignalWatchCircus:
             _cmd_signal_watch_status()
         out = capsys.readouterr().out
         assert "not running" in out
+
+
+# --- ai internal quota-subscriber CLI dispatch ---
+
+
+class TestQuotaSubscriberCli:
+    def test_when_nats_unavailable_then_exits_cleanly(self):
+        from nats.errors import NoServersError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "quota-subscriber"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+    def test_when_message_received_then_records_snapshot_in_db(self, tmp_path):
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="quota")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+            received_callback["subject"] = subject
+            received_callback["durable"] = durable
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = b'{"usage_percent": 55.0, "session_pct": 8.0, "weekly_sonnet_pct": 25.0, "extra_pct": 0.0}'
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        recorded = []
+
+        with (
+            patch("sys.argv", ["ai", "internal", "quota-subscriber"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)),
+            patch("ai_cli.quota_db.record_quota_snapshot", side_effect=lambda **kw: recorded.append(kw)),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert received_callback["subject"] == "quota.snapshot"
+        assert received_callback["durable"] == "quota-subscriber-mac"
+        assert len(recorded) == 1
+        assert recorded[0]["usage_percent"] == 55.0
+        assert recorded[0]["session_pct"] == 8.0
+
+    def test_when_record_raises_then_no_exception_propagated(self, tmp_path):
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="quota")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = b'{"usage_percent": 50.0}'
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "quota-subscriber"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)),
+            patch("ai_cli.quota_db.record_quota_snapshot", side_effect=RuntimeError("db error")),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0  # exception swallowed, daemon exits cleanly

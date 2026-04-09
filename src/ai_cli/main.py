@@ -2687,9 +2687,32 @@ def cli():
                             )
                         )
 
-            # Not covered: _on_quota_snapshot is only invoked on live NATS core delivery.
+            consumer_name = f"{sw_session_id}-signal-watcher"
+
+            async def _run_subscriptions() -> None:
+                await sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff)
+
+            try:
+                asyncio.run(_run_subscriptions())
+            except Exception:
+                # Not covered: _run_subscriptions blocks indefinitely on success; exception
+                # path requires a live NATS server to fail mid-subscription.
+                pass
+            sys.exit(0)
+        elif action == "quota-subscriber":
+            # ai internal quota-subscriber
+            # Persistent daemon: subscribes to quota.snapshot via JetStream durable consumer.
+            # Runs as a Circus-managed process on Mac, independent of CC session lifecycle.
+            # Missed messages during downtime are replayed on reconnect (JetStream durability).
+            import asyncio
+            from .messaging import NATSClient
+
+            qs_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+            qs_client = NATSClient(servers=qs_servers)
+
+            # Not covered: _on_quota_snapshot_msg is only invoked on live JetStream delivery.
             # Requires a real NATS server + published quota.snapshot message.
-            async def _on_quota_snapshot(data: dict) -> None:
+            async def _on_quota_snapshot_msg(data: dict) -> None:
                 from .quota_db import record_quota_snapshot
 
                 try:
@@ -2702,18 +2725,16 @@ def cli():
                 except Exception:
                     pass
 
-            consumer_name = f"{sw_session_id}-signal-watcher"
-
-            async def _run_subscriptions() -> None:
-                await asyncio.gather(
-                    sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff),
-                    sw_client.subscribe("quota.snapshot", _on_quota_snapshot),
-                )
-
             try:
-                asyncio.run(_run_subscriptions())
+                asyncio.run(
+                    qs_client.subscribe_durable(
+                        "quota.snapshot",
+                        "quota-subscriber-mac",
+                        _on_quota_snapshot_msg,
+                    )
+                )
             except Exception:
-                # Not covered: _run_subscriptions blocks indefinitely on success; exception
+                # Not covered: subscribe_durable blocks indefinitely on success; exception
                 # path requires a live NATS server to fail mid-subscription.
                 pass
             sys.exit(0)

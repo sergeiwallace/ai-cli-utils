@@ -559,6 +559,15 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
             await client.connect()
             if client.nc:
                 await client.publish("quota.snapshot", payload)
+                # Write latest snapshot to NATS KV so other services can read current
+                # quota without SSHing to the local DB. Only the publisher (Hetzner)
+                # writes this key — subscribers never re-publish.
+                if client.js:
+                    try:
+                        kv = await client.js.key_value("hw_state")
+                        await kv.put("quota.claude.weekly", json.dumps(payload).encode())
+                    except Exception:
+                        pass
         finally:
             await client.close()
 

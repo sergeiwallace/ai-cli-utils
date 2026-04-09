@@ -431,6 +431,7 @@ class TestPublishQuotaSnapshot:
     def _make_mock_client(self, connected: bool = True):
         mock_client = MagicMock()
         mock_client.nc = MagicMock() if connected else None
+        mock_client.js = None  # No JetStream by default — KV write path skipped
 
         async def fake_connect():
             if connected:
@@ -446,6 +447,24 @@ class TestPublishQuotaSnapshot:
         mock_client.publish = MagicMock(side_effect=fake_publish)
         mock_client.close = fake_close
         return mock_client
+
+    def _make_mock_client_with_js(self, connected: bool = True):
+        """Client with JetStream + KV mock for testing the quota.claude.weekly write."""
+        mock_client = self._make_mock_client(connected=connected)
+        mock_kv = MagicMock()
+        kv_put_calls = []
+
+        async def fake_kv_put(key, value):
+            kv_put_calls.append((key, value))
+
+        async def fake_key_value(bucket):
+            return mock_kv
+
+        mock_kv.put = MagicMock(side_effect=fake_kv_put)
+        mock_kv._put_calls = kv_put_calls
+        mock_client.js = MagicMock()
+        mock_client.js.key_value = MagicMock(side_effect=fake_key_value)
+        return mock_client, mock_kv
 
     def test_when_nats_available_then_publishes_snapshot(self):
         snap = QuotaSnapshot(weekly_all_models_pct=55.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
@@ -482,6 +501,33 @@ class TestPublishQuotaSnapshot:
         mock_client.close = fake_close
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)  # must not raise
+
+    def test_when_js_available_then_writes_snapshot_to_kv(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=42.0, session_pct=5.0, weekly_sonnet_pct=20.0, extra_pct=1.0)
+        mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)
+        mock_kv.put.assert_called_once()
+        key, value = mock_kv.put.call_args[0]
+        assert key == "quota.claude.weekly"
+        import json as _json
+
+        written = _json.loads(value.decode())
+        assert written["usage_percent"] == 42.0
+        assert written["session_pct"] == 5.0
+        assert written["weekly_sonnet_pct"] == 20.0
+
+    def test_when_kv_write_raises_then_publish_still_completes(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=30.0)
+        mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
+
+        async def fake_kv_put_raises(key, value):
+            raise RuntimeError("kv unavailable")
+
+        mock_kv.put = MagicMock(side_effect=fake_kv_put_raises)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)  # must not raise
+        mock_client.publish.assert_called_once()  # publish completed despite KV failure
 
 
 # --- quota_status ---
