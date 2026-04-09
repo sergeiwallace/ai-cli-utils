@@ -30,12 +30,12 @@ _ICON_SIZE = 128
 _DYNAMIC_PROFILE_PREFIX = "ai-cli-session-"
 
 _BASE_PROFILES: dict[str, str] = {
-    "cc": "ClaudeCode",
-    "gemini": "GeminiCLI",
-    "shell": "ShellUtility",
-    "chrome": "ChromeDebug",
-    "caffeinate": "Caffeinate",
-    "ssh": "SSHForward",
+    "cc": "Default",
+    "gemini": "Default",
+    "shell": "Default",
+    "chrome": "Default",
+    "caffeinate": "Default",
+    "ssh": "Default",
 }
 
 # Default icon tint when no tab color is assigned (session has no color set).

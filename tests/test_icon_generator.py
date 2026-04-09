@@ -128,17 +128,17 @@ class TestGenerateDynamicProfile:
         d2 = json.loads(out2.read_text())
         assert d1["Profiles"][0]["Guid"] == d2["Profiles"][0]["Guid"] == "ai-cli-test-session"
 
-    def test_inherits_from_claudecode_for_cc(self, tmp_path):
+    def test_inherits_from_default_for_cc(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         data = json.loads(out.read_text())
-        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "ClaudeCode"
+        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "Default"
 
-    def test_inherits_from_geminicli_for_gemini(self, tmp_path):
+    def test_inherits_from_default_for_gemini(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("gemini-session", "#2ecc71", "gemini")
         data = json.loads(out.read_text())
-        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "GeminiCLI"
+        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "Default"
 
     def test_tab_color_set_in_profile(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):

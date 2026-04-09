@@ -895,12 +895,15 @@ charcoal    = "#2d2d2d"
 [iterm2.base_profiles]
 ## iTerm2 base profiles for each session type.
 ## The generated Dynamic Profile inherits from these.
-cc         = "ClaudeCode"
-gemini     = "GeminiCLI"
-shell      = "ShellUtility"
-chrome     = "ChromeDebug"
-caffeinate = "Caffeinate"
-ssh        = "SSHForward"
+## Override with the exact name of a profile in your iTerm2 profile list.
+## "Default" is guaranteed to exist; custom names (e.g. "ClaudeCode") require
+## you to create a matching profile in iTerm2 → Preferences → Profiles.
+cc         = "Default"
+gemini     = "Default"
+shell      = "Default"
+chrome     = "Default"
+caffeinate = "Default"
+ssh        = "Default"
 """
 
 
