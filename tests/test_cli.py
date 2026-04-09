@@ -11,6 +11,7 @@ from ai_cli.main import (
     _cmd_tunnel_start,
     _cmd_tunnel_stop,
     _cmd_tunnel_status,
+    _configure_tmux_for_iterm2,
     _ensure_nats_tunnel,
     cli,
     get_engine_script,
@@ -495,14 +496,19 @@ class TestCliSessionSetupBranches:
         assert len(killed) == 0
 
     def test_cli_when_iterm2_env_set_then_passes_to_tmux_new_session(self):
-        execvp_calls = []
+        # Env vars are passed to `new-session` (subprocess.run), not `attach-session` (execvp).
+        run_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            return MagicMock(returncode=1, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "g", "1"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.main.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.main._emit_iterm2_profile_setup"):
-                            with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
+                            with patch("subprocess.run", side_effect=fake_run):
                                 with patch.dict(
                                     os.environ,
                                     {
@@ -512,21 +518,16 @@ class TestCliSessionSetupBranches:
                                     },
                                     clear=False,
                                 ):
-                                    with patch(
-                                        "os.execvp",
-                                        side_effect=lambda *a: (
-                                            execvp_calls.append(a) or (_ for _ in ()).throw(SystemExit(0))
-                                        ),
-                                    ):
+                                    with patch("os.execvp", side_effect=SystemExit(0)):
                                         with pytest.raises(SystemExit):
                                             cli()
 
-        assert execvp_calls, "os.execvp was not called"
-        cmd = execvp_calls[-1][1]
-        assert "-e" in cmd
-        assert any("ITERM_SESSION_ID=w0t1p0:abc" in a for a in cmd)
-        assert any("LC_TERMINAL=iTerm2" in a for a in cmd)
-        assert any("TERM_PROGRAM=iTerm.app" in a for a in cmd)
+        new_session_cmd = next((c for c in run_calls if "new-session" in c), None)
+        assert new_session_cmd is not None, "tmux new-session was not called"
+        assert "-e" in new_session_cmd
+        assert any("ITERM_SESSION_ID=w0t1p0:abc" in a for a in new_session_cmd)
+        assert any("LC_TERMINAL=iTerm2" in a for a in new_session_cmd)
+        assert any("TERM_PROGRAM=iTerm.app" in a for a in new_session_cmd)
 
     def test_cli_when_remote_with_project_flag_then_uses_project_prefix(self):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
@@ -786,6 +787,20 @@ class TestCliOncePath:
                                         assert "resume load" in bash_cmd
 
 
+class TestConfigureTmuxForIterm2:
+    def test_sets_allow_passthrough(self):
+        run_calls = []
+        with patch("subprocess.run", side_effect=lambda cmd, **kw: run_calls.append(cmd)):
+            _configure_tmux_for_iterm2("c-sw-1")
+        assert any(cmd == ["tmux", "set-option", "-p", "-t", "c-sw-1", "allow-passthrough", "all"] for cmd in run_calls)
+
+    def test_disables_automatic_rename(self):
+        run_calls = []
+        with patch("subprocess.run", side_effect=lambda cmd, **kw: run_calls.append(cmd)):
+            _configure_tmux_for_iterm2("c-sw-1")
+        assert any(cmd == ["tmux", "set-window-option", "-t", "c-sw-1", "automatic-rename", "off"] for cmd in run_calls)
+
+
 class TestCliSessionExecvp:
     def test_cli_when_existing_session_then_attaches_with_detach(self):
         with patch("sys.argv", ["ai", "c", "1"]):
@@ -806,6 +821,12 @@ class TestCliSessionExecvp:
                                                 assert "-d" in mock_exec.call_args[0][1]
 
     def test_cli_when_no_existing_session_then_creates_new(self):
+        run_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            return MagicMock(returncode=1)
+
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.main.load_config", return_value={}):
                 with patch("ai_cli.main.get_project_prefix", return_value="sw"):
@@ -815,12 +836,13 @@ class TestCliSessionExecvp:
                                 with patch("ai_cli.main.create_worktree", return_value=None):
                                     with patch("ai_cli.main.get_session_map", return_value={}):
                                         with patch("ai_cli.main.get_engine_script", return_value="script"):
-                                            not_existing = MagicMock(returncode=1)
-                                            with patch("subprocess.run", return_value=not_existing):
+                                            with patch("subprocess.run", side_effect=fake_run):
                                                 with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                     with pytest.raises(SystemExit):
                                                         cli()
-                                                assert "new-session" in mock_exec.call_args[0][1]
+                                            # New session: detached new-session via subprocess, then attach via execvp
+                                            assert any("new-session" in c for c in run_calls)
+                                            assert "attach-session" in mock_exec.call_args[0][1]
 
 
 class TestCliIsRemotePath:

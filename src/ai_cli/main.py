@@ -1109,6 +1109,31 @@ def _is_vpn_active() -> bool:
         return False
 
 
+def _configure_tmux_for_iterm2(session_id: str) -> None:
+    """Enable DCS passthrough and disable auto-rename for a tmux session.
+
+    Two options together ensure the bash script's DCS-wrapped SetProfile /
+    OSC-1 sequences reliably reach the outer terminal (iTerm2):
+
+    - ``allow-passthrough all``: let DCS-wrapped escape sequences pass through
+      tmux to the outer terminal.  Required on tmux ≥ 3.3 (default off).
+    - ``automatic-rename off``: stop tmux from emitting its own OSC 0/2 title
+      sequences for the running process name.  Without this, tmux overrides
+      the iTerm2 Session Name with the shell/job name, switching the Session
+      Title dropdown from "Name" to "Shell".
+
+    Both options are silently ignored on tmux versions that don't support them.
+    """
+    subprocess.run(
+        ["tmux", "set-option", "-p", "-t", session_id, "allow-passthrough", "all"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["tmux", "set-window-option", "-t", session_id, "automatic-rename", "off"],
+        capture_output=True,
+    )
+
+
 def _emit_iterm2_profile_setup(
     ai_name: str,
     engine: str,
@@ -3788,14 +3813,19 @@ def cli():
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
     if existing.returncode == 0:
-        # Session exists — attach and detach any stale clients (e.g., closed tabs)
+        # Session exists — configure for iTerm2, then attach (detach stale clients)
+        _configure_tmux_for_iterm2(session_id)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
-    elif args.is_remote:
-        # Create session attached (not -d) so Claude gets a proper PTY.
-        # The script's tmux detach-client at loop end drops us back to the SSH/mosh shell.
-        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script])
     else:
-        os.execvp("tmux", ["tmux", "new-session", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script])
+        # New session: create detached so tmux options can be set before attaching.
+        # tmux always allocates a PTY for the pane regardless of client attachment,
+        # so Claude Code gets a proper PTY once we attach immediately after.
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script],
+            capture_output=True,
+        )
+        _configure_tmux_for_iterm2(session_id)
+        os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
 
 
 if __name__ == "__main__":  # pragma: no cover
