@@ -171,14 +171,15 @@ to KV — Hetzner owns the data and Hetzner writes it.
 > **AI Response Round 1:**
 > - Revised to Option C primary + Option A fallback. Three prerequisites added:
 >   - **T-00a**: Extract `_on_quota_snapshot` (already at `main.py:2692`) into a persistent
->     Circus-managed Mac daemon. This is the Option C subscriber side — largely written already.
+>     Circus-managed Mac daemon. Uses JetStream durable consumer (not NATS core) so missed
+>     messages are buffered and replayed on reconnect — same pattern as handoffs. Largely
+>     pre-written; subscriber logic already exists.
 >   - **T-00b**: Schedule `ai quota scrape` on Hetzner via a new hw-worker-hetzner job
->     (`claude_quota_scrape`). Currently no periodic scrape exists — the scraper only runs
->     when manually invoked or when a CC session loads on Hetzner.
->   - **T-00c**: Extend `_publish_quota_snapshot()` to write `quota.claude.weekly` NATS KV
->     directly on Hetzner after each scrape. Hetzner owns the data; no Mac round-trip.
-> - Option A (T-02/T-03) becomes the fallback: 10-min hw-scheduling pull via SSH catches up
->   any messages missed during Mac tunnel outages.
+>     (`claude_quota_scrape`). Currently no periodic scrape exists on Hetzner.
+>   - **T-00c**: Migrate `_publish_quota_snapshot()` to `js.publish()` (JetStream) AND
+>     write `quota.claude.weekly` KV directly. Hetzner owns the data; no Mac round-trip.
+> - Option A (T-02/T-03) becomes true belt-and-suspenders: JetStream durability in T-00a
+>   eliminates most missed-message scenarios, so SSH pull is a genuine last-resort fallback.
 
 ---
 
@@ -201,25 +202,27 @@ to KV — Hetzner owns the data and Hetzner writes it.
 
 ## Task Breakdown
 
-### T-00a: Persistent Mac quota snapshot subscriber
+### T-00a: Persistent Mac quota snapshot subscriber (JetStream durable)
 
 **Size:** M
 **Batch:** 1
 
 Extract `_on_quota_snapshot` from `signal-watch` (`main.py:2692`) into a standalone
-`ai internal quota-subscriber` daemon. Register as a persistent Circus watcher on Mac
-so it runs continuously regardless of CC session lifecycle. Subscribes to
-`quota.snapshot` NATS core subject; calls `record_quota_snapshot()` on receipt.
+`ai internal quota-subscriber` daemon. Register as a persistent Circus watcher on Mac.
+Uses a **JetStream durable consumer** (not NATS core) so messages published while the
+daemon is down (restart, tunnel blip) are buffered and replayed on reconnect — the same
+pattern as handoffs (`subscribe_durable`). This makes Option C self-healing and reduces
+reliance on Option A as a recovery mechanism.
 
 **Deliverables:**
 - `src/ai_cli/main.py` — `ai internal quota-subscriber` command entry point
 - Mac Circus config — new watcher entry for the subscriber daemon
 
 **Acceptance criteria:**
-- [ ] Daemon subscribes to `quota.snapshot` on startup
-- [ ] Calls `record_quota_snapshot()` on each received message
+- [ ] Daemon subscribes via `NATSClient.subscribe_durable` to `quota.snapshot` stream
+- [ ] Calls `record_quota_snapshot()` on each delivered message
 - [ ] Runs as persistent Circus watcher; survives CC session exits
-- [ ] Reconnects on NATS disconnect (uses existing `NATSClient` retry/reconnect)
+- [ ] Missed messages during downtime are replayed on reconnect (JetStream durability)
 - [ ] `signal-watch` no longer registers the `quota.snapshot` subscription (deduplication)
 
 **Dependencies:** None
@@ -251,23 +254,31 @@ Hetzner — the scraper only runs when manually invoked.
 
 ---
 
-### T-00c: Hetzner writes `quota.claude.weekly` NATS KV after each scrape
+### T-00c: Migrate `quota.snapshot` to JetStream + write `quota.claude.weekly` KV
 
 **Size:** S
 **Batch:** 1
 
-Extend `_publish_quota_snapshot()` in `quota.py` to also write `quota.claude.weekly`
-NATS KV immediately after publishing the NATS core message. Hetzner owns the data and
-writes it directly — Mac does not re-publish.
+Two changes to `_publish_quota_snapshot()` in `quota.py`:
+
+1. **Migrate publish to JetStream** — change `nc.publish("quota.snapshot", ...)` to
+   `js.publish("quota.snapshot", ...)`. This enables T-00a's durable consumer to buffer
+   and replay missed messages. Requires a `quota.snapshot` JetStream stream to exist
+   (created at startup or via provisioning script).
+
+2. **Write `quota.claude.weekly` KV** — after the JetStream publish, write the snapshot
+   to NATS KV key `quota.claude.weekly`. Hetzner owns the data and writes it directly —
+   Mac does not re-publish.
 
 **Deliverables:**
-- `src/ai_cli/quota.py` — KV write added to `_publish_quota_snapshot()`
+- `src/ai_cli/quota.py` — publisher migrated to `js.publish()`; KV write added
 - KV value: JSON with `usage_percent`, `weekly_sonnet_pct`, `session_pct`, `extra_pct`,
   `snapshotted_at`
 
 **Acceptance criteria:**
+- [ ] `quota.snapshot` published via JetStream (not NATS core)
 - [ ] `quota.claude.weekly` KV updated on every successful scrape
-- [ ] KV write happens in the same call as the NATS core publish
+- [ ] Both writes happen in the same call
 - [ ] Mac subscriber does NOT write to this KV key
 
 **Dependencies:** None
