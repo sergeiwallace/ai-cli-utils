@@ -2307,8 +2307,10 @@ async def _run_transport_loop(
                 print("\nVPN state changed — switching transport...", file=sys.stderr)
                 continue
 
-            # Mosh failed fast — check for VPN or unreachable host
-            if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 10:
+            # Mosh failed before establishing a session — check for VPN or unreachable host.
+            # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
+            # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
+            if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
                 if _is_vpn_active():
                     print(
                         f"\nmosh failed ({elapsed:.1f}s), VPN detected — switching to SSH...",
