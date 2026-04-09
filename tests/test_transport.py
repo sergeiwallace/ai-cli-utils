@@ -623,20 +623,22 @@ class TestEnsureTailscaleUp:
         assert asyncio.run(run()) is False
 
     def test_when_host_unreachable_then_opens_tailscale_app_on_darwin(self):
+        # Tailscale not running → open -gj called; host reachable on second poll.
         open_calls = []
-        reachable_results = [False, True]
-        reachable_idx = {"i": 0}
+        # Sequence: _reachable(first), _tailscale_running(False=not running), _reachable(poll→True)
+        bool_results = [False, False, True]
+        bool_idx = {"i": 0}
 
         async def run():
             async def mock_to_thread(fn, *args, **kwargs):
                 import subprocess as _sp
 
                 if fn is _sp.run:
-                    open_calls.append(args)
+                    open_calls.append(args[0] if args else [])
                     return None
-                idx = reachable_idx["i"]
-                reachable_idx["i"] += 1
-                return reachable_results[idx]
+                idx = bool_idx["i"]
+                bool_idx["i"] += 1
+                return bool_results[idx]
 
             with (
                 patch("ai_cli.main.asyncio.to_thread", side_effect=mock_to_thread),
@@ -646,7 +648,36 @@ class TestEnsureTailscaleUp:
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)
 
         assert asyncio.run(run()) is True
-        assert any("Tailscale" in str(c) for c in open_calls)
+        assert any("-gj" in str(c) and "Tailscale" in str(c) for c in open_calls)
+
+    def test_when_tailscale_already_running_then_no_open_call(self):
+        # Tailscale running but host unreachable at first → wait without relaunching.
+        open_calls = []
+        # Sequence: _reachable(False), _tailscale_running(True=running), _reachable(poll→True)
+        bool_results = [False, True, True]
+        bool_idx = {"i": 0}
+
+        async def run():
+            async def mock_to_thread(fn, *args, **kwargs):
+                import subprocess as _sp
+
+                if fn is _sp.run:
+                    open_calls.append(args[0] if args else [])
+                    return None
+                idx = bool_idx["i"]
+                bool_idx["i"] += 1
+                return bool_results[idx]
+
+            with (
+                patch("ai_cli.main.asyncio.to_thread", side_effect=mock_to_thread),
+                patch("ai_cli.main.sys.platform", "darwin"),
+                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+            ):
+                return await _ensure_tailscale_up("100.64.0.1", timeout=5)
+
+        result = asyncio.run(run())
+        assert result is True
+        assert open_calls == [], "open should not be called when Tailscale is already running"
 
     def test_when_tailscale_does_not_come_up_within_timeout_then_returns_false(self):
         async def run():

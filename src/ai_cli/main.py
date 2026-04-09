@@ -2179,9 +2179,12 @@ def _maybe_stop_vpn_watcher() -> None:
 async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
     """Try to start Tailscale and wait for *host* to become TCP-reachable.
 
-    On macOS, opens the Tailscale app if the host is unreachable, then polls
-    until the connection comes up or *timeout* seconds elapse.  Returns True if
-    *host*:22 is reachable before the deadline.
+    On macOS, checks whether Tailscale.app is already running:
+    - If running but host unreachable: waits without relaunching (routes may still be settling).
+    - If not running: starts Tailscale in the background (no GUI window) via ``open -gj``.
+
+    Polls until *host*:22 is reachable or *timeout* seconds elapse.
+    Returns True if *host*:22 becomes reachable before the deadline.
     """
     import socket as _socket
 
@@ -2193,14 +2196,22 @@ async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
         except OSError:
             return False
 
+    def _tailscale_running() -> bool:
+        result = subprocess.run(["pgrep", "-f", "Tailscale.app"], capture_output=True)
+        return result.returncode == 0
+
     if await asyncio.to_thread(_reachable):
         return True
 
     if sys.platform != "darwin":
         return False  # auto-start only implemented for macOS
 
-    print("\nTailscale unreachable — starting Tailscale app...", file=sys.stderr)
-    await asyncio.to_thread(subprocess.run, ["open", "-a", "Tailscale"], capture_output=True)
+    if await asyncio.to_thread(_tailscale_running):
+        print("\nTailscale running but host not yet reachable — waiting...", file=sys.stderr)
+    else:
+        print("\nTailscale not running — starting in background...", file=sys.stderr)
+        # -g: don't bring to foreground; -j: launch hidden (no window)
+        await asyncio.to_thread(subprocess.run, ["open", "-gj", "-a", "Tailscale"], capture_output=True)
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
