@@ -1,6 +1,6 @@
 # Claude Usage Quota Sync — hw-scheduling Integration Plan
 
-**Status:** IN PROGRESS — Batches 1 + 2 shipped; T-05 (deploy + UAT) pending
+**Status:** DEPLOYED — Batches 1–3 shipped; live UAT in progress
 
 **Created:** 2026-04-07
 
@@ -410,7 +410,7 @@ and restart hw-clock and hw-worker-hetzner/mac to pick up new job definitions.
 |-------|-------|-------|------|--------|
 | 1 | T-00a, T-00b, T-00c | Prerequisites: persistent subscriber + Hetzner scrape schedule + KV write | Plan approval | ✅ Shipped 2026-04-08 |
 | 2 | T-01, T-02, T-03, T-04 | Rename gemini handler + fallback SSH-pull job + handler + tests | Batch 1 complete | ✅ Shipped 2026-04-08 |
-| 3 | T-05 | Deploy + live verify | Human UAT | ⏳ Pending |
+| 3 | T-05 | Deploy + live verify | Human UAT | ✅ Deployed 2026-04-08 |
 
 > **Feedback Round 1:** Does the batching make sense? T-01–T-04 can be a single autonomous run.
 > - Batching is fine. Will revisit after open questions are resolved and plan is updated.
@@ -514,4 +514,5 @@ and restart hw-clock and hw-worker-hetzner/mac to pick up new job definitions.
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-08 | Round 1 | Scope approved. Option C primary + Option A fallback (not A-only). Session % in DB, not statusline. Weekly all-models % only. Hetzner writes KV directly (no Mac round-trip). Real-time via persistent subscriber. Three prerequisite tasks added: T-00a (Mac subscriber), T-00b (Hetzner scrape schedule), T-00c (KV write). |
-| 2026-04-08 | Implementation | Batches 1+2 shipped. T-00a/T-00c in ai-cli-utils (6e626b3). T-01/T-00b/T-02/T-03/T-04 in sergei (38effc7). 23 new tests across both repos. T-05 (deploy) pending human gate. |
+| 2026-04-08 | Implementation | Batches 1+2 shipped. T-00a/T-00c in ai-cli-utils (6e626b3). T-01/T-00b/T-02/T-03/T-04 in sergei (38effc7). 23 new tests across both repos. |
+| 2026-04-08 | Deploy (T-05) | All components live. quota-subscriber active under Mac Circus. hw-worker-mac running (launchd, NATS_URL fixed to localhost). hw-clock + hw-worker-hetzner restarted. claude_quota_scrape + claude_quota_sync + gemini_cost_sync all scheduled. Stale hw-worker-hetzner process (PID 2535635) is orphaned — clean up via `ai ps clean`. |
