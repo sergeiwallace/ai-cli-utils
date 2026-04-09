@@ -1,6 +1,6 @@
 # Claude Usage Quota Sync — hw-scheduling Integration Plan
 
-**Status:** DRAFT
+**Status:** APPROVED
 
 **Created:** 2026-04-07
 
