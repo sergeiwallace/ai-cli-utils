@@ -62,7 +62,7 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
 
 - `N` — session number (default: auto-assigned). Creates worktree `.worktrees/sw-N` on branch `wt-sw-N`.
 - `-p PROJECT` — project alias (from `~/.config/ai-cli/config.toml` `[projects]` section)
-- `-R` — remote session: SSH tunnel via mosh + tmux on the configured remote host
+- `-R` — remote session: mosh + tmux on the configured remote host (auto-switches to SSH when VPN is active)
 - `--dry-run` — print what would happen without executing
 
 Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remote).
@@ -274,6 +274,14 @@ ai vpn-watch
 Internal entry point for the Circus-managed VPN state watcher. **Not intended for direct human invocation** — started and stopped automatically by `ai c -R` sessions.
 
 Polls `_is_vpn_active()` every `remote.vpn_poll_interval` seconds (default: 3). On state change, waits 2 seconds (debounce) and re-checks. If the change is confirmed, publishes `{"vpn": bool, "ts": ...}` to NATS subject `vpn.state.changed`. All active `ai c -R` transport loops subscribe to this subject and switch between mosh and SSH accordingly.
+
+**Transport selection logic (mosh-first):**
+1. VPN active → SSH (direct IP via `[remote] vpn_host`)
+2. VPN inactive → mosh (Tailscale/LAN IP via `[remote] host`)
+3. Mosh fails in under 60s with non-zero exit → check if Tailscale is reachable:
+   - **Tailscale unreachable (macOS):** launches `Tailscale.app`, polls for 20s until reachable, then retries mosh
+   - **Tailscale still unreachable or non-macOS:** falls back to SSH
+4. VPN detected after mosh starts (NATS event or direct poll) → terminate mosh, switch to SSH
 
 Logs VPN transitions to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL).
 
