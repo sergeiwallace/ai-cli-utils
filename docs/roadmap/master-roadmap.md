@@ -2,6 +2,8 @@
 
 ## Open
 
+- [ ] `[P2]` `[AI-CLI-41]` **Overhaul Gemini API cost and gemini-cli usage tracking** — The existing `quota_sync` hw-scheduling handler (renamed `gemini_cost_sync` by AI-CLI-25's T-01) reads a manual MEMORY.md ledger — a brittle, human-maintained workaround. Replace with: (1) real Gemini API billing data from the billing API or structured log parsing; (2) per-session gemini-cli usage tracking (token counts, cost per run). Related: SW-73 in sergei (broader spend automation). Blocked on: T-01 rename (AI-CLI-25 plan) landing first.
+
 - [ ] `[P1]` `[AI-CLI-40]` **Geo-aware SSH reverse proxy for `ai gemini`** — Auto-establish SSH reverse SOCKS tunnel through Mac relay when `ai gemini` detects a geo-restricted model (e.g., `deep-research`). Transparent to callers: proxy set up before API call, torn down after. Config: `[gemini.geo_proxy]` in config.toml (relay host, socks port, geo-restricted model list). Prevents repeated manual workarounds for Hetzner geo-blocks. Plan: `docs/plans/geo-aware-proxy-tunnel-plan.md`.
 
 - [ ] `[P1]` `[AI-CLI-39]` **Refactor: split main.py into cohesive modules** — Extract 8 subsystems (config, session, iterm2, handoff, transport, tunnel, circus, session_script) from main.py into dedicated modules. Eliminates all deferred import workarounds. Reduces main.py from 3385→~1000 lines. Phase 2 (separate task): migrate sys.argv dispatch to Click command groups. Branch: `feature/main-py-refactor`. Plan: `docs/plans/main-py-refactor-plan.md`.

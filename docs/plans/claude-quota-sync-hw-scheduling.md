@@ -48,6 +48,23 @@ Claude-specific job.
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing?
 > - Scope is right. Proceed.
 
+> **AI Response Round 1:**
+> - Scope confirmed. Architecture revised to Option A+C: Hetzner scrapes on schedule (T-00b),
+>   publishes `quota.snapshot` NATS core message AND writes `quota.claude.weekly` KV directly
+>   (T-00c). Persistent Mac subscriber receives messages real-time (T-00a). 10-min SSH pull
+>   (T-02/T-03) is fallback/catch-up only. Session % stored in DB but not displayed in
+>   statusline. Weekly all-models % only in statusline. Three new prerequisite tasks added
+>   (T-00a, T-00b, T-00c). Key discovery: `_on_quota_snapshot` already exists in signal-watch
+>   (`main.py:2692`) — T-00a extracts it into a persistent Circus daemon rather than writing
+>   from scratch.
+
+---
+
+> **Feedback Round 2:**
+> - <enter feedback here>
+
+---
+
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
 > **AI Response Round 1:**
@@ -133,20 +150,42 @@ subscribes and upserts the snapshot into local SQLite on receipt.
 
 ### Recommendation
 
-**Option A**, with Option C as a future enhancement layer.
+**Option C primary + Option A fallback.**
 
-Option A is the simplest path: one new job, one new handler, no changes to either the
-Hetzner side or the local DB read paths. It leverages the JetStream WorkQueue pattern
-already used by all other Mac jobs, which provides offline buffering and exactly-once
-delivery. Option B introduces unnecessary complexity by creating a second data path that
-still doesn't eliminate local SQLite. Option C is appealing for real-time responsiveness
-but depends on continuous NATS tunnel availability — acceptable as an enhancement once
-signal-watch's NATS connectivity is more stable, but not a reliable foundation today.
+Option C is the primary path: Hetzner publishes `quota.snapshot` after each scrape;
+a persistent Mac Circus daemon subscribes and upserts into local SQLite in real-time.
+`_on_quota_snapshot` already exists in signal-watch (`main.py:2692`) — it only needs
+to be extracted into a standalone persistent process (T-00a) rather than built from
+scratch. Option A (10-min hw-scheduling SSH pull) runs as a catch-up layer, filling
+gaps during Mac NATS tunnel outages or missed messages. Option B is rejected — NATS KV
+as the read path creates a second data path without eliminating local SQLite.
+
+**Hetzner KV ownership (OQ-3):** `_publish_quota_snapshot()` is extended (T-00c) to
+also write `quota.claude.weekly` KV directly after each scrape. Mac does not re-publish
+to KV — Hetzner owns the data and Hetzner writes it.
 
 > **Feedback Round 1:** Does Option A feel right? Any concern about SSH per cycle vs
 > the NATS-native Option B/C?
 > - Option A + C. Want real-time (Option C is primary). Option A as fallback/catch-up.
+
+> **AI Response Round 1:**
+> - Revised to Option C primary + Option A fallback. Three prerequisites added:
+>   - **T-00a**: Extract `_on_quota_snapshot` (already at `main.py:2692`) into a persistent
+>     Circus-managed Mac daemon. This is the Option C subscriber side — largely written already.
+>   - **T-00b**: Schedule `ai quota scrape` on Hetzner via a new hw-worker-hetzner job
+>     (`claude_quota_scrape`). Currently no periodic scrape exists — the scraper only runs
+>     when manually invoked or when a CC session loads on Hetzner.
+>   - **T-00c**: Extend `_publish_quota_snapshot()` to write `quota.claude.weekly` NATS KV
+>     directly on Hetzner after each scrape. Hetzner owns the data; no Mac round-trip.
+> - Option A (T-02/T-03) becomes the fallback: 10-min hw-scheduling pull via SSH catches up
+>   any messages missed during Mac tunnel outages.
+
+---
+
+> **Feedback Round 2:**
 > - <enter feedback here>
+
+---
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
@@ -161,6 +200,79 @@ signal-watch's NATS connectivity is more stable, but not a reliable foundation t
 -->
 
 ## Task Breakdown
+
+### T-00a: Persistent Mac quota snapshot subscriber
+
+**Size:** M
+**Batch:** 1
+
+Extract `_on_quota_snapshot` from `signal-watch` (`main.py:2692`) into a standalone
+`ai internal quota-subscriber` daemon. Register as a persistent Circus watcher on Mac
+so it runs continuously regardless of CC session lifecycle. Subscribes to
+`quota.snapshot` NATS core subject; calls `record_quota_snapshot()` on receipt.
+
+**Deliverables:**
+- `src/ai_cli/main.py` — `ai internal quota-subscriber` command entry point
+- Mac Circus config — new watcher entry for the subscriber daemon
+
+**Acceptance criteria:**
+- [ ] Daemon subscribes to `quota.snapshot` on startup
+- [ ] Calls `record_quota_snapshot()` on each received message
+- [ ] Runs as persistent Circus watcher; survives CC session exits
+- [ ] Reconnects on NATS disconnect (uses existing `NATSClient` retry/reconnect)
+- [ ] `signal-watch` no longer registers the `quota.snapshot` subscription (deduplication)
+
+**Dependencies:** None
+
+---
+
+### T-00b: Schedule Hetzner quota scrape
+
+**Size:** S
+**Batch:** 1
+
+Add a `claude_quota_scrape` job to hw-scheduling so Hetzner runs `ai quota scrape`
+every 10 minutes via `hw-worker-hetzner`. Currently no periodic scrape exists on
+Hetzner — the scraper only runs when manually invoked.
+
+**Deliverables:**
+- `src/hw_scheduling/jobs.py` — new `claude_quota_scrape` `JobDef`
+  (subject: `hw.jobs.hetzner.claude_quota_scrape`, interval: 10 min)
+- `src/hw_scheduling/handlers/claude_quota_scrape.py` — calls `ai quota scrape` via
+  subprocess; returns `JobResult`
+
+**Acceptance criteria:**
+- [ ] hw-clock emits `hw.jobs.hetzner.claude_quota_scrape` every 10 minutes
+- [ ] Handler calls `ai quota scrape` and returns `JobResult` with stdout/stderr
+- [ ] Non-zero exit → error `JobResult`; does not raise
+- [ ] Scrape triggers `_publish_quota_snapshot()` (already wired in `quota_scrape()`)
+
+**Dependencies:** None
+
+---
+
+### T-00c: Hetzner writes `quota.claude.weekly` NATS KV after each scrape
+
+**Size:** S
+**Batch:** 1
+
+Extend `_publish_quota_snapshot()` in `quota.py` to also write `quota.claude.weekly`
+NATS KV immediately after publishing the NATS core message. Hetzner owns the data and
+writes it directly — Mac does not re-publish.
+
+**Deliverables:**
+- `src/ai_cli/quota.py` — KV write added to `_publish_quota_snapshot()`
+- KV value: JSON with `usage_percent`, `weekly_sonnet_pct`, `session_pct`, `extra_pct`,
+  `snapshotted_at`
+
+**Acceptance criteria:**
+- [ ] `quota.claude.weekly` KV updated on every successful scrape
+- [ ] KV write happens in the same call as the NATS core publish
+- [ ] Mac subscriber does NOT write to this KV key
+
+**Dependencies:** None
+
+---
 
 ### T-01: Rename `quota_sync` → `gemini_cost_sync`
 
@@ -185,12 +297,14 @@ quota sync job. Updates: `jobs.py` (name, subject, registry key), file rename
 
 ---
 
-### T-02: Add `claude_quota_sync` JobDef
+### T-02: Add `claude_quota_sync` JobDef (fallback catch-up)
 
 **Size:** S
-**Batch:** 1
+**Batch:** 2
 
-Add the new job entry to `jobs.py`.
+Add the fallback/catch-up job to `jobs.py`. This job runs on Mac via `hw-worker-mac`
+every 10 minutes and pulls snapshots from Hetzner via SSH — it covers gaps during NATS
+tunnel outages where T-00a's real-time subscriber may have missed messages.
 
 **Deliverables:**
 - `src/hw_scheduling/jobs.py` — new `JobDef` + `HANDLER_REGISTRY` entry
@@ -208,7 +322,7 @@ Add the new job entry to `jobs.py`.
 ### T-03: Implement `ClaudeQuotaSyncHandler`
 
 **Size:** S
-**Batch:** 1
+**Batch:** 2
 
 Create `handlers/claude_quota_sync.py`. Calls `ai quota sync` via subprocess and returns
 a `JobResult`. The handler is intentionally thin — all sync logic lives in ai-cli-utils.
@@ -230,7 +344,7 @@ a `JobResult`. The handler is intentionally thin — all sync logic lives in ai-
 ### T-04: Tests for `ClaudeQuotaSyncHandler`
 
 **Size:** S
-**Batch:** 1
+**Batch:** 2
 
 Unit tests covering success, failure, and binary-not-found paths. Existing
 `QuotaSyncHandler` tests remain valid; only the import path changes (covered by T-01).
@@ -275,11 +389,24 @@ hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
-| 1 | T-01, T-02, T-03, T-04 | Rename + new job + handler + tests | Plan approval (this doc) |
-| 2 | T-05 | Deploy + live verify | Human UAT |
+| 1 | T-00a, T-00b, T-00c | Prerequisites: persistent subscriber + Hetzner scrape schedule + KV write | Plan approval (this doc) |
+| 2 | T-01, T-02, T-03, T-04 | Rename gemini handler + fallback SSH-pull job + handler + tests | Batch 1 complete |
+| 3 | T-05 | Deploy + live verify | Human UAT |
 
 > **Feedback Round 1:** Does the batching make sense? T-01–T-04 can be a single autonomous run.
 > - Batching is fine. Will revisit after open questions are resolved and plan is updated.
+
+> **AI Response Round 1:**
+> - Revised to 3 batches. Batch 1 (T-00a, T-00b, T-00c) covers prerequisites that span
+>   both ai-cli-utils and hw-scheduling. Batch 2 (T-01–T-04) is the original rename +
+>   fallback job work — still a single autonomous run. Batch 3 (T-05) is deploy + UAT.
+
+---
+
+> **Feedback Round 2:**
+> - <enter feedback here>
+
+---
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
@@ -298,7 +425,8 @@ hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
 | Gate | After | Decision needed |
 |------|-------|-----------------|
 | Plan approval | Before Batch 1 | Approve scope, option selection, open questions |
-| UAT | After Batch 2 | Confirm Mac statusline reflects live quota data |
+| Batch 1 complete | After Batch 1 | Confirm persistent subscriber + Hetzner scrape working before adding fallback layer |
+| UAT | After Batch 3 | Confirm Mac statusline reflects live quota data in real-time |
 
 ## Open Questions
 
@@ -334,6 +462,22 @@ hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
 > 3. NATS KV should be updated by Hetzner directly after each scrape — not by Mac after pulling. Having Mac pull then re-publish to Hetzner's KV is a round trip that makes no sense. Hetzner owns the data; Hetzner should write it to KV.
 > 4. Want real-time. Option C is primary path.
 
+> **AI Response Round 1:**
+> 1. Confirmed. `quota_scrape()` continues to capture `session_pct` and store it in
+>    `quota_snapshots.session_pct`. `quota_statusline_part()` is unchanged — weekly % only.
+> 2. Confirmed. No changes to statusline display beyond what's already there.
+> 3. Agreed. T-00c adds a KV write to `_publish_quota_snapshot()` on Hetzner immediately
+>    after the NATS core publish. Mac's subscriber (T-00a) is read-only — it calls
+>    `record_quota_snapshot()` only; no KV writes.
+> 4. Option C is primary (T-00a). Option A is fallback. Architecture revised accordingly.
+
+---
+
+> **Feedback Round 2:**
+> - <enter feedback here>
+
+---
+
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
 > **AI Response Round 1:**
@@ -350,3 +494,4 @@ hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
 
 | Date | Decision | Notes |
 |------|----------|-------|
+| 2026-04-08 | Round 1 | Scope approved. Option C primary + Option A fallback (not A-only). Session % in DB, not statusline. Weekly all-models % only. Hetzner writes KV directly (no Mac round-trip). Real-time via persistent subscriber. Three prerequisite tasks added: T-00a (Mac subscriber), T-00b (Hetzner scrape schedule), T-00c (KV write). |
