@@ -1363,7 +1363,7 @@ def get_engine_script(
     # Auto-clean orphaned processes at session start (score >= 80, local only).
     # Runs in foreground so orphans are gone before CC launches. Suppressed
     # when process_hygiene.auto_clean is false in config.toml.
-    ai ps cron 2>/dev/null || true
+    ai ps cron &>/dev/null || true
 
     # Auto-start sync watch and memory watch (PID files prevent duplicates)
     ai sync watch &>/dev/null &
@@ -2210,13 +2210,15 @@ async def _run_transport_loop(
         except Exception:
             pass  # Not covered: requires NATS subscribe to raise after connect succeeds
 
+    force_ssh = False
     try:
         while True:
             vpn_active = _is_vpn_active()
             vpn_changed.clear()
 
-            args = ssh_args if vpn_active else mosh_args
-            transport_type = "ssh" if vpn_active else "mosh"
+            args = ssh_args if (vpn_active or force_ssh) else mosh_args
+            transport_type = "ssh" if (vpn_active or force_ssh) else "mosh"
+            force_ssh = False
             print(
                 f"\n{'VPN active' if vpn_active else 'No VPN'} — connecting via {transport_type}...",
                 file=sys.stderr,
@@ -2266,7 +2268,7 @@ async def _run_transport_loop(
                 print("\nVPN state changed — switching transport...", file=sys.stderr)
                 continue
 
-            # Mosh failed fast — check for VPN as the cause
+            # Mosh failed fast — check for VPN or unreachable host
             if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 10:
                 if _is_vpn_active():
                     print(
@@ -2274,12 +2276,13 @@ async def _run_transport_loop(
                         file=sys.stderr,
                     )
                     continue
-                # Mosh failed fast without a VPN cause — give up
+                # Mosh failed fast without VPN (e.g. Tailscale down) — fall back to SSH on direct IP
                 print(
-                    f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.",
+                    f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
                     file=sys.stderr,
                 )
-                break
+                force_ssh = True
+                continue
 
             # SSH retry with backoff when VPN is active
             if transport_type == "ssh" and elapsed < 3 and _is_vpn_active():
@@ -3539,7 +3542,10 @@ def cli():
             remote_prefix = _get_project_prefix_by_name(remote_project)
         else:
             remote_prefix = project_prefix
-        remote_cmd = f"ai {engine} --is-remote --project-prefix {remote_prefix} --project {shlex.quote(remote_project)}"
+        # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
+        # when the shell is a non-interactive login shell (zsh -l -c) that does
+        # not source ~/.zshrc where the uv env PATH setup typically lives.
+        remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {remote_prefix} --project {shlex.quote(remote_project)}'
         if args.resume:
             remote_cmd += " --resume"
         if name:

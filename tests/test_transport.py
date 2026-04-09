@@ -305,19 +305,48 @@ class TestRunTransportLoop:
         assert call_list[0][0][0] == MOSH_ARGS
         assert call_list[1][0][0] == SSH_ARGS
 
-    def test_when_transport_exits_too_quickly_without_vpn_then_gives_up(self, tmp_path, capsys):
-        proc = _make_proc(returncode=1, poll_sequence=[None, 1])
+    def test_when_mosh_exits_too_quickly_without_vpn_then_falls_back_to_ssh(
+        self, tmp_path, capsys
+    ):
+        # First proc: mosh fails fast. Second proc: SSH succeeds.
+        mosh_proc = _make_proc(returncode=1, poll_sequence=[None, 1])
+        ssh_proc = _make_proc(returncode=0, poll_sequence=[None, 0])
         nc = _mock_nats_client()
+        popen_calls = iter([mosh_proc, ssh_proc])
 
         async def run():
             with (
                 patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
                 patch("ai_cli.main._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
-                patch("subprocess.Popen", return_value=proc),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0]),
+                patch("subprocess.Popen", side_effect=popen_calls),
+                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "falling back to SSH" in err
+
+    def test_when_mosh_and_ssh_both_fail_without_vpn_then_gives_up(self, tmp_path, capsys):
+        # Mosh fails fast, SSH also fails fast → SSH retry backoff → give up.
+        mosh_proc = _make_proc(returncode=1, poll_sequence=[None, 1])
+        ssh_proc = _make_proc(returncode=1, poll_sequence=[None, 1])
+        nc = _mock_nats_client()
+        popen_calls = iter([mosh_proc, ssh_proc])
+
+        async def run():
+            with (
+                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", side_effect=popen_calls),
+                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 1.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                patch("time.sleep"),
             ):
                 await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
 
