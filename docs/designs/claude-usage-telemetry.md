@@ -507,41 +507,45 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 ## Integration
 
 - **Claude Code**: statusLine hook in `~/.claude/settings.json` on both machines
-- **ai-cli**: `ai quota` subcommands for anchor, status, history
+- **ai-cli**: `ai quota` subcommands for scrape, status, history, sync, statusline-part
 - **Slack**: incoming webhook for push alerts
 - **Tailscale**: cross-machine networking (Mac to Hetzner)
-- **tmux**: status bar integration for at-a-glance burn rate
-- **Platform MCP**: future integration for quota state in priority guidance (so session startup can show "67% of weekly quota used, 3 days remaining")
+- **tmux**: hidden pane scraping (`_scrape_usage_hidden_pane`); status bar integration via `quota_statusline_part`
+- **NATS JetStream**: `quota.snapshot` subject (stream: `quota`) — Hetzner publishes after each scrape; Mac durable consumer `quota-subscriber-mac` replays missed messages on reconnect
+- **NATS KV (`hw_state`)**: `quota.claude.weekly` key — Hetzner writes after each scrape; other services (workers, dashboards) read without SSHing to Mac
+- **hw-scheduling (sergei)**: `claude_quota_scrape` job (Hetzner, 10 min) triggers scrape; `claude_quota_sync` job (Mac, 10 min) SSH-pulls as fallback catch-up; `gemini_cost_sync` job (Hetzner, 4h) tracks Gemini API cost separately
+- **`ai internal quota-subscriber`**: persistent Circus-managed daemon on Mac; JetStream durable consumer for `quota.snapshot`; survives CC session exits
+- **Platform MCP**: future integration for quota state in priority guidance
 - **Orchestrated sessions**: AI orchestrator-spawned CC sessions should be captured by the shared statusLine hook; validate in test harness
-- **Scheduled workers**: workers read `quota.claude.weekly` from NATS KV (written by this telemetry system) before executing AI-tagged jobs. Currently enforced worker-side. **Future consideration:** if quota enforcement logic grows substantially in complexity (multi-model arbitrage, cross-worker priority queuing, cost forecasting), extract a dedicated quota gateway process that sits between JetStream and the workers.
+- **Scheduled workers**: workers read `quota.claude.weekly` from NATS KV before executing AI-tagged jobs. Currently enforced worker-side.
 
 ## Implementation Phases
 
-### Phase 1: tmux Scraping + Capture + Central Store
+### Phase 1: tmux Scraping + Capture + Local Store ✅ (Shipped 2026-04-07)
 
-- Build the tmux scraping pipeline (`quota_scraper.py`) + full test harness asserting end-to-end extraction
-- Build the statusLine hook script (`~/.claude/telemetry.sh`) — fires on every CC status update
-- Build the HTTP receiver + SQLite store on Hetzner (usage_records + quota_snapshots + weekly_state tables)
-- Deploy hook to both machines
-- `ai quota status` CLI command (shows current %, burn rate, time to reset)
+- Hidden pane scraper (`_scrape_usage_hidden_pane`) — injects `/usage` into CC, captures all 4 metrics
+- Local SQLite store on each machine (`~/.local/state/ai-cli/quota.db`) — no central HTTP server needed
+- `ai quota scrape/status/history/record/sync/statusline-part` CLI commands
+- Lazy TTL background scrape in `quota_statusline_part` (30-min TTL, lock file)
 
-### Phase 2: Pacing Engine + Alerting
+### Phase 2: Cross-Machine Sync via NATS ✅ (Shipped 2026-04-08)
 
-- Pacing engine: burn rate vs. expected pace, threshold detection, weekly state management
-- Slack webhook integration for threshold + burn rate alerts
-- `ai quota history` CLI command for weekly trends
+- `_publish_quota_snapshot()` — publishes to `quota.snapshot` JetStream after each scrape; writes `quota.claude.weekly` NATS KV
+- `ai internal quota-subscriber` — persistent Circus daemon on Mac; JetStream durable consumer; replays missed messages
+- hw-scheduling jobs: `claude_quota_scrape` (Hetzner, 10 min), `claude_quota_sync` (Mac fallback, 10 min)
+- Renamed `quota_sync` → `gemini_cost_sync` in hw-scheduling to eliminate naming ambiguity
 
-### Phase 3: tmux Status Bar + Refinement
+### Phase 3: Alerting + Pacing _(pending)_
 
-- tmux status bar widget for at-a-glance visibility at the keyboard
+- Pacing engine: burn rate vs. expected pace, threshold detection
+- Slack webhook integration for threshold alerts (`AI-CLI-25`)
+- `ai quota history` trends and weekly summaries
+
+### Phase 4: tmux Status Bar Refinement _(pending)_
+
 - Model-level usage breakdown in `ai quota status`
 - Refine pacing algorithm from real usage data
-
-### Phase 4: Fallback (Option C) — if Option D fails
-
-- `ai quota anchor <percent>` CLI command
-- anchor_calibrations table + deduced_limit tracking
-- Only needed if the test harness reveals the tmux scraping pipeline is unreliable
+- Investigate native CC usage API (`AI-CLI-23`)
 
 > **Feedback Round 1:** Approved — phasing updated to reflect Option D (tmux scraping) as primary. Option C (anchoring) moved to Phase 4 fallback only. Architecture approved.
 

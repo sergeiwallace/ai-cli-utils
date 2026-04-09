@@ -1,6 +1,6 @@
 # Claude Usage Quota Sync — hw-scheduling Integration Plan
 
-**Status:** APPROVED
+**Status:** IN PROGRESS — Batches 1 + 2 shipped; T-05 (deploy + UAT) pending
 
 **Created:** 2026-04-07
 
@@ -377,32 +377,40 @@ Unit tests covering success, failure, and binary-not-found paths. Existing
 ### T-05: Deploy and live verify
 
 **Size:** S
-**Batch:** 2
+**Batch:** 3
 
-Deploy updated sergei to Hetzner and Mac, restart hw-clock (new job definition) and
-hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
+Deploy updated code to Hetzner and Mac, register the quota-subscriber Circus watcher,
+and restart hw-clock and hw-worker-hetzner/mac to pick up new job definitions.
 
 **Deliverables:**
-- Updated sergei deployed on Hetzner and Mac
-- hw-clock restarted (picks up new `claude_quota_sync` job)
-- hw-worker-mac restarted (registers new handler)
+- `ai update` run on both Hetzner and Mac (deploys T-00a/T-00c to ai-cli)
+- Sergei updated on both machines (deploys T-01/T-00b/T-02/T-03 to hw-scheduling)
+- `quota-subscriber` watcher added to Mac Circus config; circusd restarted
+- hw-clock restarted (picks up `claude_quota_scrape` + `claude_quota_sync`)
+- hw-worker-hetzner restarted (registers `claude_quota_scrape` + `gemini_cost_sync`)
+- hw-worker-mac restarted (registers `claude_quota_sync`)
 
 **Acceptance criteria:**
-- [ ] hw-clock emits `hw.jobs.mac.claude_quota_sync` messages every 10 minutes
-- [ ] hw-worker-mac processes the job without error
-- [ ] `~/.local/state/ai-cli/quota.db` on Mac gains new rows within 10 minutes
+- [ ] `ai internal quota-subscriber` runs persistently on Mac under Circus
+- [ ] hw-clock emits `hw.jobs.hetzner.claude_quota_scrape` every 10 minutes
+- [ ] hw-worker-hetzner runs `ai quota scrape` without error
+- [ ] `quota.snapshot` arrives on Mac subscriber within ~10 minutes of Hetzner scrape
+- [ ] `~/.local/state/ai-cli/quota.db` on Mac gains new rows via subscriber
+- [ ] `quota.claude.weekly` NATS KV updated after each Hetzner scrape
+- [ ] hw-clock emits `hw.jobs.mac.claude_quota_sync` every 10 minutes (fallback)
+- [ ] hw-worker-mac processes `claude_quota_sync` without error
 - [ ] `ai quota status` on Mac shows a snapshot timestamp within the last 10 minutes
 - [ ] CC statusline on Mac shows updated weekly quota %
 
-**Dependencies:** T-01–T-04
+**Dependencies:** T-00a–T-04
 
 ## Batch Plan
 
-| Batch | Tasks | Focus | Gate |
-|-------|-------|-------|------|
-| 1 | T-00a, T-00b, T-00c | Prerequisites: persistent subscriber + Hetzner scrape schedule + KV write | Plan approval (this doc) |
-| 2 | T-01, T-02, T-03, T-04 | Rename gemini handler + fallback SSH-pull job + handler + tests | Batch 1 complete |
-| 3 | T-05 | Deploy + live verify | Human UAT |
+| Batch | Tasks | Focus | Gate | Status |
+|-------|-------|-------|------|--------|
+| 1 | T-00a, T-00b, T-00c | Prerequisites: persistent subscriber + Hetzner scrape schedule + KV write | Plan approval | ✅ Shipped 2026-04-08 |
+| 2 | T-01, T-02, T-03, T-04 | Rename gemini handler + fallback SSH-pull job + handler + tests | Batch 1 complete | ✅ Shipped 2026-04-08 |
+| 3 | T-05 | Deploy + live verify | Human UAT | ⏳ Pending |
 
 > **Feedback Round 1:** Does the batching make sense? T-01–T-04 can be a single autonomous run.
 > - Batching is fine. Will revisit after open questions are resolved and plan is updated.
@@ -506,3 +514,4 @@ hw-worker-mac (new handler). Verify Mac statusline updates within 10 minutes.
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-08 | Round 1 | Scope approved. Option C primary + Option A fallback (not A-only). Session % in DB, not statusline. Weekly all-models % only. Hetzner writes KV directly (no Mac round-trip). Real-time via persistent subscriber. Three prerequisite tasks added: T-00a (Mac subscriber), T-00b (Hetzner scrape schedule), T-00c (KV write). |
+| 2026-04-08 | Implementation | Batches 1+2 shipped. T-00a/T-00c in ai-cli-utils (6e626b3). T-01/T-00b/T-02/T-03/T-04 in sergei (38effc7). 23 new tests across both repos. T-05 (deploy) pending human gate. |
