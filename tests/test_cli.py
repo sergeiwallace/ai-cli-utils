@@ -554,7 +554,7 @@ class TestCliSessionSetupBranches:
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 2222, "transport": "mosh"}}
         captured_mosh_args = []
 
-        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config, **kwargs):
             captured_mosh_args.extend(mosh_args)
 
         with (
@@ -585,7 +585,7 @@ class TestCliSessionSetupBranches:
         }
         captured_mosh_args = []
 
-        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config, **kwargs):
             captured_mosh_args.extend(mosh_args)
 
         with (
@@ -619,7 +619,7 @@ class TestCliSessionSetupBranches:
         captured_ssh_args = []
         captured_mosh_args = []
 
-        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config, **kwargs):
             captured_ssh_args.extend(ssh_args)
             captured_mosh_args.extend(mosh_args)
 
@@ -652,7 +652,7 @@ class TestCliSessionSetupBranches:
         }
         captured_ssh_args = []
 
-        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config):
+        async def fake_transport_loop(ssh_args, mosh_args, cleanup_cmd, session_name, config, **kwargs):
             captured_ssh_args.extend(ssh_args)
 
         with (

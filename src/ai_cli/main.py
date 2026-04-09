@@ -2176,12 +2176,48 @@ def _maybe_stop_vpn_watcher() -> None:
         pass
 
 
+async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
+    """Try to start Tailscale and wait for *host* to become TCP-reachable.
+
+    On macOS, opens the Tailscale app if the host is unreachable, then polls
+    until the connection comes up or *timeout* seconds elapse.  Returns True if
+    *host*:22 is reachable before the deadline.
+    """
+    import socket as _socket
+
+    def _reachable() -> bool:
+        try:
+            s = _socket.create_connection((host, 22), timeout=3.0)
+            s.close()
+            return True
+        except OSError:
+            return False
+
+    if await asyncio.to_thread(_reachable):
+        return True
+
+    if sys.platform != "darwin":
+        return False  # auto-start only implemented for macOS
+
+    print("\nTailscale unreachable — starting Tailscale app...", file=sys.stderr)
+    await asyncio.to_thread(subprocess.run, ["open", "-a", "Tailscale"], capture_output=True)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(1)
+        if await asyncio.to_thread(_reachable):
+            return True
+
+    return False
+
+
 async def _run_transport_loop(
     ssh_args: list[str],
     mosh_args: list[str],
     cleanup_cmd: list[str],
     session_name: str,
     config: dict,
+    tailscale_host: str = "",
 ) -> None:
     """Run the mosh/SSH transport loop with VPN-aware switching.
 
@@ -2189,6 +2225,9 @@ async def _run_transport_loop(
     active transport child is terminated and the loop restarts with the correct
     transport for the current VPN state. Falls back gracefully when NATS is
     unavailable — transport still works, just without live switching.
+
+    *tailscale_host* — when set, the loop will attempt to start Tailscale
+    automatically before falling back to SSH if mosh fails fast without VPN.
     """
     from .messaging import NATSClient
 
@@ -2276,7 +2315,11 @@ async def _run_transport_loop(
                         file=sys.stderr,
                     )
                     continue
-                # Mosh failed fast without VPN (e.g. Tailscale down) — fall back to SSH on direct IP
+                # Mosh failed fast without VPN — try to bring Tailscale up first.
+                # Only fall back to SSH if Tailscale can't be recovered.
+                if tailscale_host and await _ensure_tailscale_up(tailscale_host):
+                    print("\nTailscale up — retrying mosh...", file=sys.stderr)
+                    continue  # retry mosh with Tailscale now reachable
                 print(
                     f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
                     file=sys.stderr,
@@ -3589,7 +3632,9 @@ def cli():
             import asyncio as _asyncio
 
             try:
-                _asyncio.run(_run_transport_loop(ssh_args, mosh_args, _cleanup_cmd, _r_ai_name, config))
+                _asyncio.run(
+                    _run_transport_loop(ssh_args, mosh_args, _cleanup_cmd, _r_ai_name, config, tailscale_host=host)
+                )
             finally:
                 _maybe_stop_vpn_watcher()
             sys.exit(0)

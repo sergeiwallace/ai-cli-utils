@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from ai_cli.main import (
+    _ensure_tailscale_up,
     _ensure_vpn_watcher,
     _maybe_stop_vpn_watcher,
     _run_transport_loop,
@@ -305,9 +306,7 @@ class TestRunTransportLoop:
         assert call_list[0][0][0] == MOSH_ARGS
         assert call_list[1][0][0] == SSH_ARGS
 
-    def test_when_mosh_exits_too_quickly_without_vpn_then_falls_back_to_ssh(
-        self, tmp_path, capsys
-    ):
+    def test_when_mosh_exits_too_quickly_without_vpn_then_falls_back_to_ssh(self, tmp_path, capsys):
         # First proc: mosh fails fast. Second proc: SSH succeeds.
         mosh_proc = _make_proc(returncode=1, poll_sequence=[None, 1])
         ssh_proc = _make_proc(returncode=0, poll_sequence=[None, 0])
@@ -352,6 +351,70 @@ class TestRunTransportLoop:
 
         asyncio.run(run())
         assert "giving up" in capsys.readouterr().err
+
+    def test_when_mosh_fails_and_tailscale_recovers_then_mosh_retried(self, tmp_path, capsys):
+        # Mosh fails fast, Tailscale comes up, mosh retried and succeeds.
+        mosh_fail = _make_proc(returncode=1, poll_sequence=[None, 1])
+        mosh_ok = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+        popen_calls = iter([mosh_fail, mosh_ok])
+
+        async def run():
+            with (
+                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", side_effect=popen_calls),
+                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.main._ensure_tailscale_up", new_callable=AsyncMock, return_value=True),
+            ):
+                await _run_transport_loop(
+                    SSH_ARGS,
+                    MOSH_ARGS,
+                    CLEANUP_CMD,
+                    SESSION,
+                    CONFIG,
+                    tailscale_host="100.64.0.1",
+                )
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "Tailscale up" in err
+        assert "retrying mosh" in err
+        assert "falling back to SSH" not in err
+
+    def test_when_mosh_fails_and_tailscale_cannot_start_then_ssh_fallback(self, tmp_path, capsys):
+        # Mosh fails fast, Tailscale fails to come up → SSH fallback.
+        mosh_proc = _make_proc(returncode=1, poll_sequence=[None, 1])
+        ssh_proc = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+        popen_calls = iter([mosh_proc, ssh_proc])
+
+        async def run():
+            with (
+                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", side_effect=popen_calls),
+                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.main._ensure_tailscale_up", new_callable=AsyncMock, return_value=False),
+            ):
+                await _run_transport_loop(
+                    SSH_ARGS,
+                    MOSH_ARGS,
+                    CLEANUP_CMD,
+                    SESSION,
+                    CONFIG,
+                    tailscale_host="100.64.0.1",
+                )
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "falling back to SSH" in err
 
     def test_when_mosh_running_and_vpn_detected_by_poll_then_switches_to_ssh(self, tmp_path):
         """Direct VPN poll fallback: mosh hangs (UDP blocked), NATS unavailable.
@@ -539,3 +602,60 @@ class TestRunTransportLoop:
 
         asyncio.run(run())
         assert "giving up" in capsys.readouterr().err
+
+
+class TestEnsureTailscaleUp:
+    def test_when_host_already_reachable_then_returns_true(self):
+        async def run():
+            with patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=True):
+                return await _ensure_tailscale_up("100.64.0.1")
+
+        assert asyncio.run(run()) is True
+
+    def test_when_host_unreachable_and_not_darwin_then_returns_false(self):
+        async def run():
+            with (
+                patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
+                patch("ai_cli.main.sys.platform", "linux"),
+            ):
+                return await _ensure_tailscale_up("100.64.0.1", timeout=0)
+
+        assert asyncio.run(run()) is False
+
+    def test_when_host_unreachable_then_opens_tailscale_app_on_darwin(self):
+        open_calls = []
+        reachable_results = [False, True]
+        reachable_idx = {"i": 0}
+
+        async def run():
+            async def mock_to_thread(fn, *args, **kwargs):
+                import subprocess as _sp
+
+                if fn is _sp.run:
+                    open_calls.append(args)
+                    return None
+                idx = reachable_idx["i"]
+                reachable_idx["i"] += 1
+                return reachable_results[idx]
+
+            with (
+                patch("ai_cli.main.asyncio.to_thread", side_effect=mock_to_thread),
+                patch("ai_cli.main.sys.platform", "darwin"),
+                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+            ):
+                return await _ensure_tailscale_up("100.64.0.1", timeout=5)
+
+        assert asyncio.run(run()) is True
+        assert any("Tailscale" in str(c) for c in open_calls)
+
+    def test_when_tailscale_does_not_come_up_within_timeout_then_returns_false(self):
+        async def run():
+            with (
+                patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
+                patch("ai_cli.main.sys.platform", "darwin"),
+                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.main.time.monotonic", side_effect=[0.0, 0.0, 100.0]),
+            ):
+                return await _ensure_tailscale_up("100.64.0.1", timeout=5)
+
+        assert asyncio.run(run()) is False
