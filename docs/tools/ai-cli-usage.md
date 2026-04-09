@@ -69,6 +69,13 @@ Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remot
 
 Auto-runs `git pull --rebase --autostash` at session start to keep worktree current.
 
+**iTerm2 Session Name and Session Title:** when running inside iTerm2, each session automatically configures two tmux options on the new (or resumed) pane:
+
+- `allow-passthrough all` — enables DCS passthrough so iTerm2-specific escape sequences (OSC 1, `SetProfile`, etc.) sent from inside tmux reach the outer terminal. Without this, name-setting sequences are silently dropped.
+- `automatic-rename off` — prevents tmux from sending OSC 0/2 sequences for the running process name (e.g. `zsh`, `claude`), which would override the session name and flip the Session Title dropdown from "Name" to "Shell".
+
+The result: the Session Name field in iTerm2's Edit Session → General tab is always set to the tmux session name (e.g. `c-ai-cli-2`, `c-r-sw-1`), and the Session Title dropdown stays on "Name".
+
 ### ai g
 
 ```
