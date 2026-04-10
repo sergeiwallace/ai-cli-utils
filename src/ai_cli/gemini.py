@@ -34,6 +34,34 @@ MODEL_ALIASES = {
     "flash-lite": "gemini-3.1-flash-lite-preview",
 }
 
+# Model prefixes that have free quota under GOOGLE_API_KEY_FREE_TIER.
+# Pro models and deep-research have no free quota tier — using the free-tier
+# key for them returns a billing error immediately, not a 429.
+_FREE_TIER_MODEL_PREFIXES: frozenset[str] = frozenset(
+    [
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-3-flash",
+        "gemini-3.1-flash",
+        "gemma-4",
+        "text-embedding",
+    ]
+)
+
+
+def _is_free_tier_eligible(model: str) -> bool:
+    """Return True if this model has a free quota tier under GOOGLE_API_KEY_FREE_TIER.
+
+    Flash-family models and Gemma 4 are free-tier eligible.
+    Pro models (deep-think, pro, gemini-3.1-pro-*) are not — the free-tier key
+    returns a billing error for them rather than a 429.
+    """
+    if model == "deep-think":
+        return False
+    resolved = MODEL_ALIASES.get(model, model)
+    return any(resolved.startswith(prefix) for prefix in _FREE_TIER_MODEL_PREFIXES)
+
+
 # Tier names for logging
 TIER_NAMES = {
     1: "gemini-cli (OAuth)",
@@ -415,6 +443,32 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
 
 
 # ---------------------------------------------------------------------------
+# OAuth token helper
+# ---------------------------------------------------------------------------
+
+
+def _get_google_oauth_token() -> str | None:
+    """Try to get a Google OAuth access token via Application Default Credentials.
+
+    Succeeds when the user has authenticated via the gemini CLI (``gemini auth login``)
+    or gcloud ADC (``gcloud auth application-default login``).
+
+    Returns the access token string, or None if credentials are unavailable or
+    google-auth is not installed.
+    """
+    try:
+        import google.auth
+        import google.auth.transport.requests
+
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/generative-language"])
+        request = google.auth.transport.requests.Request()
+        credentials.refresh(request)
+        return credentials.token
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Deep Research — Interactions API (test shim; replace with P2-4 implementation)
 # ---------------------------------------------------------------------------
 
@@ -442,15 +496,27 @@ def _run_deep_research(
 
     _load_doppler_secrets()
 
-    api_key = os.environ.get("GOOGLE_API_KEY_FREE_TIER") or os.environ.get("GOOGLE_API_KEY_TIER_1")
-    if not api_key:
-        return GeminiResult(
-            model="deep-research",
-            success=False,
-            error="GOOGLE_API_KEY_FREE_TIER and GOOGLE_API_KEY_TIER_1 not set",
-        )
-
     _log("[ai gemini] model=deep-research (Interactions API)", quiet=quiet)
+
+    # Auth: try OAuth first (free, ~20/day with Google AI Ultra subscription).
+    # GOOGLE_API_KEY_FREE_TIER has no quota for deep-research — skip it entirely
+    # and fall back to GOOGLE_API_KEY_TIER_1 only when OAuth is unavailable.
+    oauth_token = _get_google_oauth_token()
+    if oauth_token:
+        _log("  → using OAuth (tier 1 — free)", quiet=quiet)
+        _auth_header: dict[str, str] = {"Authorization": f"Bearer {oauth_token}"}
+        _auth_param = ""
+    else:
+        api_key = os.environ.get("GOOGLE_API_KEY_TIER_1") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return GeminiResult(
+                model="deep-research",
+                success=False,
+                error="OAuth unavailable and GOOGLE_API_KEY_TIER_1 not set",
+            )
+        _log("  → OAuth unavailable, using paid API key (tier 3)", quiet=quiet)
+        _auth_header = {}
+        _auth_param = f"?key={api_key}"
 
     # Submit
     payload = json.dumps(
@@ -462,11 +528,11 @@ def _run_deep_research(
         }
     ).encode()
 
-    submit_url = f"{_INTERACTIONS_BASE}?key={api_key}"
+    submit_url = f"{_INTERACTIONS_BASE}{_auth_param}"
     req = urllib.request.Request(
         submit_url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **_auth_header},
         method="POST",
     )
     try:
@@ -492,13 +558,13 @@ def _run_deep_research(
 
     _log(f"  → submitted (id={interaction_id}), polling every {_DEEP_RESEARCH_POLL_INTERVAL}s...", quiet=quiet)
 
-    poll_url = f"{_INTERACTIONS_BASE}/{interaction_id}?key={api_key}"
+    poll_url = f"{_INTERACTIONS_BASE}/{interaction_id}{_auth_param}"
     start = time.time()
     status_data: dict = {}
 
     def _cancel() -> None:
         try:
-            cancel_req = urllib.request.Request(poll_url, method="DELETE")
+            cancel_req = urllib.request.Request(poll_url, method="DELETE", headers=_auth_header)
             urllib.request.urlopen(cancel_req, timeout=10)
         except Exception:
             pass
@@ -519,7 +585,7 @@ def _run_deep_research(
             time.sleep(_DEEP_RESEARCH_POLL_INTERVAL)
 
             try:
-                poll_req = urllib.request.Request(poll_url, method="GET")
+                poll_req = urllib.request.Request(poll_url, method="GET", headers=_auth_header)
                 with urllib.request.urlopen(poll_req, timeout=30) as resp:
                     status_data = json.loads(resp.read())
             except Exception as exc:
@@ -621,6 +687,15 @@ def run_gemini(
         (3, lambda: _try_gemini_api(prompt, model, timeout_s, 3, verbose)),
     ]
     tiers = [(n, fn) for n, fn in tiers if n >= start_tier]
+
+    # Skip tier 2 for models with no free quota — avoids a wasted round-trip that
+    # returns a billing error rather than a 429.
+    if any(n == 2 for n, _ in tiers) and not _is_free_tier_eligible(model):
+        tiers = [(n, fn) for n, fn in tiers if n != 2]
+        _log(
+            f"  → skipping tier 2 (free API key): {model} has no free quota tier, using tier 3 directly",
+            quiet=quiet,
+        )
 
     for tier_num, tier_fn in tiers:
         tier_name = TIER_NAMES[tier_num]

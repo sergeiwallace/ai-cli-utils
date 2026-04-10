@@ -9,6 +9,8 @@ import pytest
 from ai_cli.gemini import (
     AttemptLog,
     GeminiResult,
+    _get_google_oauth_token,
+    _is_free_tier_eligible,
     _log,
     _log_to_file,
     _run_deep_research,
@@ -700,32 +702,37 @@ def _make_urlopen_sequence(responses: list[dict]):
 
 
 class TestRunDeepResearch:
-    def test_when_no_api_key_then_returns_error(self):
+    """deep-research uses OAuth first; falls back to GOOGLE_API_KEY_TIER_1 (not FREE_TIER)."""
+
+    def test_when_no_oauth_and_no_tier3_key_then_returns_error(self):
         with patch.dict("os.environ", {}, clear=True):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                result = _run_deep_research("test prompt", quiet=True)
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    result = _run_deep_research("test prompt", quiet=True)
         assert result.success is False
         assert "not set" in result.error
 
     def test_when_submit_fails_http_error_then_returns_error(self):
         import urllib.error
 
-        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                exc = urllib.error.HTTPError(url=None, code=429, msg="quota", hdrs=None, fp=None)
-                exc.read = lambda: b"quota exceeded"
-                with patch("urllib.request.urlopen", side_effect=exc):
-                    result = _run_deep_research("test prompt", quiet=True)
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    exc = urllib.error.HTTPError(url=None, code=429, msg="quota", hdrs=None, fp=None)
+                    exc.read = lambda: b"quota exceeded"
+                    with patch("urllib.request.urlopen", side_effect=exc):
+                        result = _run_deep_research("test prompt", quiet=True)
         assert result.success is False
         assert "submit failed" in result.error
         assert "429" in result.error
 
     def test_when_submit_returns_no_id_then_returns_error(self):
         urlopen = _make_urlopen_sequence([{"state": "pending"}])  # no "name" field
-        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                with patch("urllib.request.urlopen", urlopen):
-                    result = _run_deep_research("test prompt", quiet=True)
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", urlopen):
+                        result = _run_deep_research("test prompt", quiet=True)
         assert result.success is False
         assert "no interaction ID" in result.error
 
@@ -734,16 +741,17 @@ class TestRunDeepResearch:
         poll_resp = {"name": "interactions/run-abc123", "state": "completed", "outputs": [{"text": "research output"}]}
         urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
 
-        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                with patch("urllib.request.urlopen", urlopen):
-                    with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
-                        with patch("time.sleep"):
-                            result = _run_deep_research(
-                                "test prompt",
-                                output=str(tmp_path / "out.md"),
-                                quiet=True,
-                            )
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                result = _run_deep_research(
+                                    "test prompt",
+                                    output=str(tmp_path / "out.md"),
+                                    quiet=True,
+                                )
         assert result.success is True
         assert result.content == "research output"
         assert (tmp_path / "out.md").read_text() == "research output"
@@ -753,12 +761,13 @@ class TestRunDeepResearch:
         poll_resp = {"name": "interactions/run-xyz", "state": "failed", "outputs": []}
         urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
 
-        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                with patch("urllib.request.urlopen", urlopen):
-                    with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
-                        with patch("time.sleep"):
-                            result = _run_deep_research("test prompt", quiet=True)
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                result = _run_deep_research("test prompt", quiet=True)
         assert result.success is False
         assert "failed" in result.error
 
@@ -767,29 +776,80 @@ class TestRunDeepResearch:
         poll_resp = {"name": "interactions/run-xyz", "state": "completed", "outputs": []}
         urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
 
-        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                with patch("urllib.request.urlopen", urlopen):
-                    with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
-                        with patch("time.sleep"):
-                            result = _run_deep_research("test prompt", quiet=True)
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                result = _run_deep_research("test prompt", quiet=True)
         assert result.success is False
         assert "no output text" in result.error
 
     def test_when_keyboard_interrupt_during_sleep_then_cancels_and_returns_error(self):
-        # Raise KeyboardInterrupt from time.sleep (inside the outer try block) so the
-        # except KeyboardInterrupt handler catches it cleanly without xdist seeing it.
         submit_resp = {"name": "interactions/run-xyz", "state": "running"}
         urlopen = _make_urlopen_sequence([submit_resp])
 
-        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "test-key"}):
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                with patch("urllib.request.urlopen", urlopen):
-                    with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
-                        with patch("time.sleep", side_effect=KeyboardInterrupt):
-                            result = _run_deep_research("test prompt", quiet=True)
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep", side_effect=KeyboardInterrupt):
+                                result = _run_deep_research("test prompt", quiet=True)
         assert result.success is False
         assert "cancelled" in result.error
+
+    def test_when_oauth_available_then_uses_bearer_auth_not_api_key(self):
+        submit_resp = {"name": "interactions/run-oauth1", "state": "running"}
+        poll_resp = {"state": "completed", "outputs": [{"text": "oauth result"}]}
+        urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
+
+        submitted_requests = []
+        orig_urlopen = urlopen
+
+        def capturing_urlopen(req, timeout=None):
+            submitted_requests.append(req)
+            return orig_urlopen(req, timeout=timeout)
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value="my-oauth-token"):
+                    with patch("urllib.request.urlopen", capturing_urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                result = _run_deep_research("test prompt", quiet=True)
+        assert result.success is True
+        assert result.content == "oauth result"
+        # Submit request should use Bearer auth, not ?key= param
+        submit_req = submitted_requests[0]
+        assert submit_req.get_header("Authorization") == "Bearer my-oauth-token"
+        assert "key=" not in submit_req.full_url
+
+    def test_when_oauth_unavailable_then_skips_free_tier_key_uses_tier3(self):
+        submit_resp = {"name": "interactions/run-tier3", "state": "running"}
+        poll_resp = {"state": "completed", "outputs": [{"text": "tier3 result"}]}
+        urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
+
+        submitted_requests = []
+        orig_urlopen = urlopen
+
+        def capturing_urlopen(req, timeout=None):
+            submitted_requests.append(req)
+            return orig_urlopen(req, timeout=timeout)
+
+        # FREE_TIER key present but should NOT be used
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "free-key", "GOOGLE_API_KEY_TIER_1": "paid-key"}):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", capturing_urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                result = _run_deep_research("test prompt", quiet=True)
+        assert result.success is True
+        submit_req = submitted_requests[0]
+        assert "paid-key" in submit_req.full_url
+        assert "free-key" not in submit_req.full_url
 
     def test_run_gemini_when_model_deep_research_then_routes_to_deep_research(self, tmp_path):
         ok = GeminiResult(content="deep result", model="deep-research", success=True)
@@ -798,3 +858,131 @@ class TestRunDeepResearch:
                 r = run_gemini("test", model="deep-research", quiet=True)
         mock_dr.assert_called_once()
         assert r.content == "deep result"
+
+
+# --- _is_free_tier_eligible tests ---
+
+
+class TestIsFreeTierEligible:
+    def test_flash_model_is_eligible(self):
+        assert _is_free_tier_eligible("flash") is True
+
+    def test_flash_full_id_is_eligible(self):
+        assert _is_free_tier_eligible("gemini-3-flash-preview") is True
+
+    def test_flash_25_is_eligible(self):
+        assert _is_free_tier_eligible("gemini-2.5-flash-preview") is True
+
+    def test_flash_lite_alias_is_eligible(self):
+        assert _is_free_tier_eligible("flash-lite") is True
+
+    def test_pro_alias_is_not_eligible(self):
+        assert _is_free_tier_eligible("pro") is False
+
+    def test_pro_full_id_is_not_eligible(self):
+        assert _is_free_tier_eligible("gemini-3.1-pro-preview") is False
+
+    def test_deep_think_is_not_eligible(self):
+        assert _is_free_tier_eligible("deep-think") is False
+
+    def test_unknown_model_is_not_eligible(self):
+        assert _is_free_tier_eligible("some-unknown-model") is False
+
+
+# --- Tier-2 skip tests ---
+
+
+class TestRunGeminiTier2Skip:
+    def test_when_pro_model_then_tier2_skipped(self, tmp_path):
+        tier1_fail = GeminiResult(model="pro", success=False, error="not found")
+        tier3_ok = GeminiResult(content="tier3 ok", model="pro", tier=3, tier_name="API paid tier-1", success=True)
+
+        called_tiers = []
+
+        def mock_api(prompt, model, timeout_s, tier, verbose):
+            called_tiers.append(tier)
+            return tier3_ok if tier == 3 else GeminiResult(model=model, success=False, error="wrong tier")
+
+        with patch("ai_cli.gemini._try_gemini_cli", return_value=tier1_fail):
+            with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
+                with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+                    r = run_gemini("hello", model="pro", quiet=True)
+        assert r.success is True
+        assert 2 not in called_tiers
+        assert called_tiers == [3]
+
+    def test_when_deep_think_model_then_tier2_skipped(self, tmp_path):
+        tier1_fail = GeminiResult(model="deep-think", success=False, error="not found")
+        tier3_ok = GeminiResult(
+            content="deep ok", model="deep-think", tier=3, tier_name="API paid tier-1", success=True
+        )
+
+        called_tiers = []
+
+        def mock_api(prompt, model, timeout_s, tier, verbose):
+            called_tiers.append(tier)
+            return tier3_ok
+
+        with patch("ai_cli.gemini._try_gemini_cli", return_value=tier1_fail):
+            with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
+                with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+                    r = run_gemini("hello", model="deep-think", quiet=True)
+        assert r.success is True
+        assert 2 not in called_tiers
+
+    def test_when_flash_model_then_tier2_not_skipped(self, tmp_path):
+        tier1_fail = GeminiResult(model="flash", success=False, error="not found")
+        tier2_ok = GeminiResult(content="tier2 ok", model="flash", tier=2, tier_name="API free-tier", success=True)
+
+        called_tiers = []
+
+        def mock_api(prompt, model, timeout_s, tier, verbose):
+            called_tiers.append(tier)
+            return tier2_ok
+
+        with patch("ai_cli.gemini._try_gemini_cli", return_value=tier1_fail):
+            with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
+                with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+                    r = run_gemini("hello", model="flash", quiet=True)
+        assert r.success is True
+        assert 2 in called_tiers
+
+    def test_when_start_tier_3_and_pro_model_then_no_skip_log(self, tmp_path, capsys):
+        tier3_ok = GeminiResult(content="ok", model="pro", tier=3, tier_name="API paid tier-1", success=True)
+        with patch("ai_cli.gemini._try_gemini_api", return_value=tier3_ok):
+            with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+                run_gemini("hello", model="pro", quiet=False, start_tier=3)
+        # tier 2 was never in the candidate set (start_tier=3), so skip message should not appear
+        assert "skipping tier 2" not in capsys.readouterr().err
+
+
+# --- _get_google_oauth_token tests ---
+
+
+class TestGetGoogleOauthToken:
+    def test_when_credentials_available_then_returns_token(self):
+        mock_creds = MagicMock()
+        mock_creds.token = "test-access-token"
+
+        with patch("google.auth.default", return_value=(mock_creds, "project")):
+            with patch("google.auth.transport.requests.Request"):
+                token = _get_google_oauth_token()
+
+        assert token == "test-access-token"
+        mock_creds.refresh.assert_called_once()
+
+    def test_when_google_auth_not_installed_then_returns_none(self):
+        import sys
+
+        orig = sys.modules.copy()
+        sys.modules["google.auth"] = None  # type: ignore[assignment]
+        try:
+            token = _get_google_oauth_token()
+        finally:
+            sys.modules.update(orig)
+        assert token is None
+
+    def test_when_credentials_raise_then_returns_none(self):
+        with patch("google.auth.default", side_effect=Exception("no credentials")):
+            token = _get_google_oauth_token()
+        assert token is None
