@@ -885,6 +885,11 @@ class TestIsFreeTierEligible:
     def test_deep_think_is_not_eligible(self):
         assert _is_free_tier_eligible("deep-think") is False
 
+    def test_image_generation_flash_is_not_eligible(self):
+        # gemini-3.1-flash-image-preview is a paid image-generation model;
+        # "gemini-3.1-flash" prefix is excluded to avoid matching it.
+        assert _is_free_tier_eligible("gemini-3.1-flash-image-preview") is False
+
     def test_unknown_model_is_not_eligible(self):
         assert _is_free_tier_eligible("some-unknown-model") is False
 
