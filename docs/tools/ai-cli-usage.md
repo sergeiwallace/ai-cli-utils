@@ -203,7 +203,7 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid AP
 
 **Auth tier notes** (see [pricing](https://ai.google.dev/gemini-api/docs/pricing)):
 - **Tier 1 (OAuth):** free via gemini CLI credentials. Works for all models.
-- **Tier 2 (free API key):** free quota for Flash text/multimodal models (2.0, 2.5, 3.x), Gemma 4, and Gemini Embedding only. Returns a billing error — not a 429 — for Pro models, image-generation variants (`gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`), and deep-research. The fallback chain skips tier 2 automatically for ineligible models.
+- **Tier 2 (free API key):** free quota for Flash text/multimodal models (2.0, 2.5, 3.x — including `gemini-3.1-flash-live-preview`), Gemma 4, and Gemini Embedding only. Returns a billing error — not a 429 — for Pro models, image-generation variants (`gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`), and deep-research. The fallback chain skips tier 2 automatically for ineligible models.
 - **Tier 3 (paid API key):** covers all models. Use `-s 3` when OAuth is unavailable and the model is not free-tier eligible.
 
 **Flags:**

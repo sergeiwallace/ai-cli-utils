@@ -43,14 +43,16 @@ MODEL_ALIASES = {
 # (gemini-3.1-flash-image-preview, gemini-3-pro-image-preview), and all
 # video/image/music generation models (Veo, Imagen, Lyria).
 #
-# "gemini-3.1-flash" is intentionally absent — it would also match
-# gemini-3.1-flash-image-preview, which is a paid model.
+# "gemini-3.1-flash" is intentionally absent — it would match both
+# gemini-3.1-flash-live-preview (free) AND gemini-3.1-flash-image-preview
+# (paid). Use specific prefixes for each free sub-variant instead.
 _FREE_TIER_MODEL_PREFIXES: frozenset[str] = frozenset(
     [
         "gemini-2.0-flash",
         "gemini-2.5-flash",
         "gemini-3-flash",
         "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-live",
         "gemma-4",
         "gemini-embedding",
     ]
@@ -60,10 +62,12 @@ _FREE_TIER_MODEL_PREFIXES: frozenset[str] = frozenset(
 def _is_free_tier_eligible(model: str) -> bool:
     """Return True if this model has a free quota tier under GOOGLE_API_KEY_FREE_TIER.
 
-    Flash text/multimodal models, Gemma 4, and Gemini Embedding are free-tier
-    eligible. Pro models (deep-think, pro, gemini-3.1-pro-*), image-generation
-    Flash variants, and deep-research are not — the free-tier key returns a
-    billing error for them rather than a 429.
+    Flash text/multimodal models (including gemini-3.1-flash-live-preview),
+    Gemma 4, and Gemini Embedding are free-tier eligible. Pro models
+    (deep-think, pro, gemini-3.1-pro-*), image-generation Flash variants
+    (gemini-3.1-flash-image-preview, gemini-3-pro-image-preview), and
+    deep-research are not — the free-tier key returns a billing error for them
+    rather than a 429.
     """
     if model == "deep-think":
         return False
