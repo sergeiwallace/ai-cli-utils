@@ -121,10 +121,10 @@ ai gemini "prompt" -m deep-think -s 2     # Skip OAuth, go straight to REST API 
 
 **Auth fallback chain (automatic on 429/capacity errors):**
 1. Gemini CLI OAuth (free — Google AI subscription)
-2. REST API with `GOOGLE_API_KEY_FREE_TIER`
-3. REST API with `GOOGLE_API_KEY_TIER_1`
+2. REST API with `GOOGLE_API_KEY_FREE_TIER` — **Flash/Gemma models only.** Gemini 3.1 Pro has no free quota tier; tier 2 will fail immediately for Pro/deep-think/deep-research.
+3. REST API with `GOOGLE_API_KEY_TIER_1` — paid, works for all models.
 
-Use `-s 2` or `-s 3` to start at a later tier (e.g. when OAuth returns truncated responses without erroring).
+Use `-s 2` to skip OAuth for Flash calls. For Pro/deep-think/deep-research where OAuth fails, use `-s 3` — the free-tier key cannot serve these models.
 
 **Model aliases:** `deep-think`, `pro`, `flash`, `flash-lite`, `deep-research`, or any full Gemini model ID.
 

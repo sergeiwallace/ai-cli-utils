@@ -189,7 +189,7 @@ ai gemini "prompt" [-m MODEL] [-d DEPTH] [-o OUTPUT_FILE] [--quiet] [--verbose]
              [--timeout N] [--no-file] [--resume RUN_ID] [--planning-model MODEL]
 ```
 
-Gemini CLI wrapper with 3-tier auth fallback (OAuth -> free API key -> paid API key) and research depth tiers. See `src/ai_cli/gemini.py` and `src/ai_cli/research.py`.
+Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) and research depth tiers. See `src/ai_cli/gemini.py` and `src/ai_cli/research.py`.
 
 **Depth tiers** (`-d`/`--depth`):
 - `quick` (default) -- single-shot call, current behavior
@@ -198,12 +198,16 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth -> free API key -> paid API 
 **Model aliases** (`-m`/`--model`):
 - `deep-think` (default) — Gemini 3.1 Pro with HIGH thinking via 3-tier fallback
 - `pro`, `flash`, `flash-lite` — standard Gemini models via 3-tier fallback
-- `deep-research` — Gemini Deep Research via Interactions API (REST-only, no OAuth; polls until complete, cancels on Ctrl-C). Auth: `GOOGLE_API_KEY_FREE_TIER` → `GOOGLE_API_KEY_TIER_1`.
+- `deep-research` — Gemini Deep Research via Interactions API. Async, polls until complete, cancels on Ctrl-C. Auth: OAuth (tier 1) works if the account has a Google AI Ultra subscription (routes through consumer entitlement, ~20 DR/day). If OAuth fails, use `-s 3` — the free-tier API key (tier 2) does not work for Gemini 3.1 Pro (no free quota tier for Pro models).
 - Any full Gemini model ID
+
+**Auth tier notes:**
+- Tier 2 (free API key) only has quota for Flash-family models and Gemma. It will fail immediately for Pro, deep-think, or deep-research.
+- For Pro/deep-think/deep-research calls where OAuth fails, use `-s 3` to skip directly to the paid API key.
 
 **Flags:**
 - `-m`/`--model` -- Model alias or full model ID (see above)
-- `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). Use `-s 2` to skip OAuth when it returns truncated responses.
+- `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). For Flash calls: `-s 2` skips OAuth. For Pro/deep-research calls: `-s 3` (free-tier key has no Pro quota).
 - `-d`/`--depth` -- Research depth: `quick` or `standard`
 - `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
 - `--resume RUN_ID` -- Resume a standard run from last completed step
