@@ -228,9 +228,10 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         # Poll for the CC prompt indicator (❯) — startup takes ~4s.
         # CC may show a "trust this folder" dialog first; dismiss it with Enter,
         # then continue polling for the real interactive prompt.
+        # Total budget: 150 × 0.2s = 30s (trust dialog + post-dismiss startup).
         ready = False
         trust_dismissed = False
-        for _ in range(75):  # up to 15s
+        for _ in range(150):  # up to 30s
             time.sleep(0.2)
             cap = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-t", target, "-J"],
@@ -243,9 +244,13 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             output = cap.stdout
             if "❯" in output:
                 # If the trust dialog is visible, confirm it and keep polling.
-                if not trust_dismissed and ("trust this folder" in output.lower() or "yes, i trust" in output.lower()):
+                if not trust_dismissed and (
+                    "trust this folder" in output.lower()
+                    or "yes, i trust" in output.lower()
+                    or "enter to confirm" in output.lower()
+                ):
                     subprocess.run(
-                        ["tmux", "send-keys", "-t", target, "", "Enter"],
+                        ["tmux", "send-keys", "-t", target, "Enter"],
                         capture_output=True,
                         timeout=2,
                     )
