@@ -10,6 +10,7 @@ from ai_cli.main import (
     _cmd_tunnel_start,
     _cmd_tunnel_stop,
     _cmd_tunnel_status,
+    _cmd_signal_watch_start,
     _cmd_signal_watch_status,
     _find_aicli_project_path,
     _load_iterm2_config,
@@ -436,7 +437,36 @@ class TestCmdTunnelStatus:
         assert not pid_file.exists()
 
 
-# --- Group 14: _cmd_signal_watch_status ---
+# --- Group 14: _cmd_signal_watch_start / _cmd_signal_watch_status ---
+
+
+class TestCmdSignalWatchStart:
+    def test_when_start_called_then_autostart_not_in_options(self, tmp_path):
+        """B-04: autostart is invalid for Circus add — was silently failing watcher registration."""
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = {"status": "ok"}
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("circus.client.CircusClient", return_value=mock_client),
+        ):
+            _cmd_signal_watch_start("myproject", "session-1")
+        call_kwargs = mock_client.send_message.call_args_list[-1][1]
+        options = call_kwargs.get("options", {})
+        assert "autostart" not in options
+        assert call_kwargs.get("start") is True
+
+    def test_when_start_called_then_respawn_false(self, tmp_path):
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = {"status": "ok"}
+        with (
+            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("circus.client.CircusClient", return_value=mock_client),
+        ):
+            _cmd_signal_watch_start("myproject", "session-1")
+        call_kwargs = mock_client.send_message.call_args_list[-1][1]
+        assert call_kwargs["options"]["respawn"] is False
 
 
 class TestCmdSignalWatchStatus:

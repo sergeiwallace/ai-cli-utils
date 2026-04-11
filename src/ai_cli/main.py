@@ -2514,7 +2514,6 @@ def _cmd_signal_watch_start(project: str, session: str) -> None:
             "copy_env": True,
             "respawn": False,
             "singleton": True,
-            "autostart": True,
         },
         start=True,
     )

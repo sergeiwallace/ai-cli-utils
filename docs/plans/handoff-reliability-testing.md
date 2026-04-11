@@ -85,13 +85,12 @@ Each scenario is tested manually, results recorded below.
 
 **Test command template:**
 ```bash
-ai handoff post \
-  --title "Test handoff $(date +%s)" \
-  --priority P1 \
-  --project <project-name> \
-  --for-machine <hetzner|mac> \
+ai handoff post --for-machine <hetzner|mac> \
+  "Test handoff $(date +%s)" P1 <project-name> \
   "Task body: verify pickup works"
 ```
+
+Note: `ai handoff post` takes positional args (`<title> <priority> <project> <message>`), not named flags.
 
 ---
 
@@ -105,7 +104,7 @@ ai handoff post \
 
 | Run | Date | Result | Layer | Notes |
 |:----|:-----|:-------|:------|:------|
-| — | — | — | — | Not tested yet |
+| 1 | 2026-04-11 | ✅ Pass | SW (NATS realtime) | Direct `ai internal signal-watch` confirmed; Circus-managed path was broken (B-04, now fixed) |
 
 ---
 
@@ -119,7 +118,7 @@ ai handoff post \
 
 | Run | Date | Result | Layer | Notes |
 |:----|:-----|:-------|:------|:------|
-| — | — | — | — | Not tested yet |
+| 1 | 2026-04-11 | ✅ Pass | SW (NATS realtime) | Same SW delivery path as Scenario 1; pending file is written immediately, L4 picks up on next exit |
 
 ---
 
@@ -133,7 +132,7 @@ ai handoff post \
 
 | Run | Date | Result | Layer | Notes |
 |:----|:-----|:-------|:------|:------|
-| — | — | — | — | Not tested yet |
+| 1 | 2026-04-11 | ✅ Pass | L5 (startup drain) | Local file scan claimed handoff, wrote `cc-resume-prompt-{session}` correctly; events logged |
 
 ---
 
@@ -147,7 +146,7 @@ ai handoff post \
 
 | Run | Date | Result | Layer | Notes |
 |:----|:-----|:-------|:------|:------|
-| — | — | — | — | Not tested yet |
+| — | — | — | — | Pending live test with Hetzner session running |
 
 ---
 
@@ -161,7 +160,7 @@ ai handoff post \
 
 | Run | Date | Result | Layer | Notes |
 |:----|:-----|:-------|:------|:------|
-| — | — | — | — | Not tested yet |
+| — | — | — | — | Pending live test with cross-machine session running |
 
 ---
 
@@ -172,6 +171,7 @@ ai handoff post \
 | B-01 | All | `subscribe_durable` didn't block — signal-watch exited immediately | Fixed (code review confirmed) |
 | B-02 | All | signal-watch subscribed to wrong NATS subject (task_prefix vs project_name) | Fixed (code review confirmed) |
 | B-03 | 1, 2 | No wakeup mechanism when CC is idle or mid-task — L1/L2/L3 never implemented | Open — design decision needed |
+| B-04 | 1, 2 | `autostart` is not a valid Circus `add` option — silently failed watcher registration via Circus | Fixed 2026-04-11 — removed from options dict |
 
 ---
 
@@ -180,3 +180,4 @@ ai handoff post \
 | Date | Decision | Notes |
 |:-----|:---------|:------|
 | 2026-04-06 | Start scenario-by-scenario testing | Begin with Scenario 3 (most reliable path) |
+| 2026-04-11 | Scenarios 1/2/3 tested (same-machine) | L5 drain + SW NATS delivery both pass; B-04 found and fixed |
