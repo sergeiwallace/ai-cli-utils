@@ -26,6 +26,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 CONFLICT_LOG = Path.home() / ".claude-sync-conflicts.log"
+CONFLICT_DIR = Path.home() / ".claude-sync-conflicts"
 
 _GIT_ENV = {
     **os.environ,
@@ -263,6 +264,11 @@ def should_sync_file(path: Path, memories_only: bool) -> bool:
     # recreates the lock directory on the remote machine, causing CC to treat the
     # session as "active" and hide it from the /resume picker.
     if "subagents" in path.parts:
+        return False
+    # Conflict files go to CONFLICT_DIR, never the CC project dirs or staging repo.
+    if path.name.startswith("conflict-") and path.suffix == ".jsonl":
+        return False
+    if path.suffix == ".conflict":
         return False
     if memories_only:
         return is_memory_file(path)
@@ -785,11 +791,11 @@ def apply_pull_files(
                     else:
                         ts = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
                         conflict_name = f"conflict-{ts}.jsonl"
-                        conflict_path = (dst.parent if dst.parent.exists() else cc_project_dir) / conflict_name
+                        conflict_path = CONFLICT_DIR / bare_name / conflict_name
                         if not dry_run:
                             conflict_path.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(src, conflict_path)
-                        conflict_str = f"jsonl  {bare_name}/{rel.name} — remote saved as {conflict_name}"
+                        conflict_str = f"jsonl  {bare_name}/{rel.name} — remote saved as {conflict_path}"
                         conflicts.append(conflict_str)
                         print(
                             f"JSONL CONFLICT: {bare_name}/{rel.name} — remote version saved as {conflict_name}",
@@ -804,7 +810,7 @@ def apply_pull_files(
                 has_conflict_markers = "<<<<<<<" in content and ">>>>>>>" in content
 
                 if has_conflict_markers:
-                    conflict_path = dst.with_suffix(dst.suffix + ".conflict")
+                    conflict_path = CONFLICT_DIR / bare_name / rel.with_suffix(rel.suffix + ".conflict")
                     if not dry_run:
                         conflict_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, conflict_path)
@@ -1673,15 +1679,24 @@ def sync_pull(flags: list[str]) -> int:
 
 def sync_conflicts(flags: list[str]) -> int:
     """List unresolved .conflict files and recent log entries."""
-    cc_projects_dir = _cc_projects_dir()
-
     conflict_files: list[str] = []
-    if cc_projects_dir.exists():
+    # New location: ~/.claude-sync-conflicts/
+    if CONFLICT_DIR.exists():
         conflict_files = sorted(
+            str(f)
+            for f in CONFLICT_DIR.rglob("*")
+            if f.is_file() and (f.suffix == ".conflict" or (f.name.startswith("conflict-") and f.suffix == ".jsonl"))
+        )
+    # Legacy location: CC project dirs (pre-fix)
+    cc_projects_dir = _cc_projects_dir()
+    if cc_projects_dir.exists():
+        legacy = sorted(
             str(f)
             for f in cc_projects_dir.rglob("*")
             if f.is_file() and (f.suffix == ".conflict" or (f.name.startswith("conflict-") and f.suffix == ".jsonl"))
         )
+        if legacy:
+            conflict_files.extend(legacy)
 
     if conflict_files:
         print("Unresolved conflict files:")

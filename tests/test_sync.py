@@ -852,26 +852,29 @@ def test_apply_pull_files_when_clean_memory_file_then_applied(tmp_path):
 def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_path):
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
     cc_projects_dir.mkdir()
 
     (staging_dir / "myproject" / "memory").mkdir(parents=True)
     conflict_content = "<<<<<<< HEAD\nlocal content\n=======\nremote content\n>>>>>>> origin/main\n"
     (staging_dir / "myproject" / "memory" / "project_current_work.md").write_text(conflict_content)
 
-    result = apply_pull_files(
-        staging_dir=staging_dir,
-        cc_projects_dir=cc_projects_dir,
-        local_prefix=_MAC_PREFIX,
-        memories_only=False,
-        verbose=False,
-        dry_run=False,
-    )
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
 
     assert len(result["conflicts"]) == 1
-    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
-    conflict_path = project_dir / "memory" / "project_current_work.md.conflict"
+    # Conflict file goes to CONFLICT_DIR / bare_name (staging name), not the CC project dir
+    conflict_path = conflict_dir / "myproject" / "memory" / "project_current_work.md.conflict"
     assert conflict_path.exists()
     # Original file should NOT be written when it has conflict markers
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
     original_path = project_dir / "memory" / "project_current_work.md"
     assert not original_path.exists()
 
@@ -879,6 +882,7 @@ def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_p
 def test_apply_pull_files_when_jsonl_diverged_then_keep_both(tmp_path):
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
 
     (staging_dir / "myproject").mkdir(parents=True)
     (staging_dir / "myproject" / "abc123.jsonl").write_text('{"type":"human","text":"server msg"}\n')
@@ -887,21 +891,23 @@ def test_apply_pull_files_when_jsonl_diverged_then_keep_both(tmp_path):
     local_project_dir.mkdir(parents=True)
     (local_project_dir / "abc123.jsonl").write_text('{"type":"human","text":"local msg"}\n')
 
-    result = apply_pull_files(
-        staging_dir=staging_dir,
-        cc_projects_dir=cc_projects_dir,
-        local_prefix=_MAC_PREFIX,
-        memories_only=False,
-        verbose=False,
-        dry_run=False,
-    )
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
 
     assert len(result["conflicts"]) == 1
     # Local file untouched
     assert (local_project_dir / "abc123.jsonl").read_text() == '{"type":"human","text":"local msg"}\n'
-    # Remote written as conflict file
-    conflict_files = list(local_project_dir.glob("conflict-*.jsonl"))
+    # Remote version saved in conflict dir / bare_name (staging name), not the CC project dir
+    conflict_files = list((conflict_dir / "myproject").glob("conflict-*.jsonl"))
     assert len(conflict_files) == 1
+    assert not list(local_project_dir.glob("conflict-*.jsonl"))
 
 
 def test_apply_pull_files_when_prefer_remote_and_diverged_then_overwrites(tmp_path):
@@ -2261,10 +2267,12 @@ def test_sync_conflicts_when_no_conflicts_then_returns_0(tmp_path, capsys):
 
     cc_dir = tmp_path / ".claude" / "projects"
     cc_dir.mkdir(parents=True)
+    conflict_dir = tmp_path / "conflicts"
 
     with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
         with patch("ai_cli.sync.CONFLICT_LOG", tmp_path / "nonexistent.log"):
-            result = sync_conflicts([])
+            with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+                result = sync_conflicts([])
     assert result == 0
     assert "No unresolved" in capsys.readouterr().out
 
