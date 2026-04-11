@@ -810,28 +810,20 @@ def quota_statusline_part() -> int:
                 arrow_char = "\u2193"  # ↓ decelerating
 
         if elapsed_secs < 24 * 3600:
-            # Seedling phase (first 24h): 🌱 always shown; alert only for large positive deltas.
-            # Negative delta (under pace) is never flagged early — it's noise, not signal.
-            if delta < 10:
-                alert = ""
-                delta_color = BLUE
-            elif delta < 20:
-                alert = " \u26a0\ufe0f"  # ⚠️
-                delta_color = YELLOW
-            else:
-                alert = " \U0001f6a8"  # 🚨
-                delta_color = RED
+            # Seedling phase (first 24h): 🌱 always shown; informational only, no alarms.
+            alert = ""
+            delta_color = BLUE
             stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
             print(
                 f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
                 f" \U0001f331{alert} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
-            )  # 📊 N% 🌱 [alert] →X% [⏱]
+            )  # 📊 N% 🌱 →X% [⏱]
         else:
-            # Normal phase: standard ✅/⚠️/🚨 bands
-            if delta < -5:
+            # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
+            if delta <= 10:
                 icon = "\u2705"  # ✅
                 delta_color = GREEN
-            elif delta <= 5:
+            elif delta <= 25:
                 icon = "\u26a0\ufe0f"  # ⚠️
                 delta_color = YELLOW
             else:

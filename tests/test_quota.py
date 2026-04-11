@@ -1016,8 +1016,8 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_seedling_elevated_then_shows_leaf_and_warning(self, tmp_path, capsys):
-        """First 24h, delta 10–19% → 🌱 ⚠️."""
+    def test_when_seedling_elevated_then_shows_leaf_no_alarm(self, tmp_path, capsys):
+        """First 24h: 🌱 always shown regardless of delta — no alarms during seedling phase."""
         import ai_cli.quota_db as qdb
 
         week_start_str = qdb._get_current_week_start()
@@ -1035,13 +1035,13 @@ class TestQuotaStatuslinePart:
             assert result == 0
             out = capsys.readouterr().out
             assert "🌱" in out
-            assert "⚠️" in out
+            assert "⚠️" not in out
             assert "🚨" not in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_seedling_alarming_then_shows_leaf_and_alert(self, tmp_path, capsys):
-        """First 24h, delta ≥ 20% → 🌱 🚨."""
+    def test_when_seedling_high_delta_then_shows_leaf_no_alarm(self, tmp_path, capsys):
+        """First 24h, even high delta → 🌱 with no alarm icon (informational only)."""
         import ai_cli.quota_db as qdb
 
         week_start_str = qdb._get_current_week_start()
@@ -1059,7 +1059,8 @@ class TestQuotaStatuslinePart:
             assert result == 0
             out = capsys.readouterr().out
             assert "🌱" in out
-            assert "🚨" in out
+            assert "⚠️" not in out
+            assert "🚨" not in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
