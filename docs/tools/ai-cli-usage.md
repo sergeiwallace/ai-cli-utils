@@ -219,6 +219,7 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid AP
 **Flags:**
 - `-m`/`--model` -- Model alias or full model ID (see above)
 - `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). For Flash models: `-s 2` skips OAuth. For Pro/deep-research: `-s 3` (free-tier key has no quota for these).
+- `-P`/`--confirm-paid` -- Explicitly confirm paid API usage for `deep-research`. Required at runtime when `paid_fallback_enabled = true` in config. This run may incur charges.
 - `-d`/`--depth` -- Research depth: `quick` or `standard`
 - `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
 - `--resume RUN_ID` -- Resume a standard run from last completed step
@@ -227,6 +228,25 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid AP
 - `--verbose`/`-v` -- Show detailed tier/model info
 - `-t`/`--timeout` -- Timeout in seconds (default: 600)
 - `-F`/`--no-file` -- Stdout only, no file written
+
+**Paid tier safety gates (deep-research):**
+
+Deep Research (`-m deep-research`) draws from the paid AI Studio key (`GOOGLE_API_KEY_TIER_1`) and requires two explicit opt-ins:
+
+1. `paid_fallback_enabled = true` in `~/.config/ai-cli/config.toml` under `[gemini]` (disabled by default).
+2. `-P`/`--confirm-paid` flag at runtime.
+
+If either is absent, the run exits with an actionable error message. After a successful run, the daily paid run count is printed to stderr. A warning is printed when approaching the daily soft limit (`DEEP_RESEARCH_DAILY_WARNING = 18`, hard limit `DEEP_RESEARCH_DAILY_LIMIT = 20`). Daily counts are persisted to `~/.local/state/ai-cli/dr-daily.json` and reset at midnight.
+
+**Auth tier names** (used in JSONL logs):
+
+| Tier | Name | Key |
+|------|------|-----|
+| 1 | `oauth` | gemini CLI credentials |
+| 2 | `ai_studio_free` | `GOOGLE_API_KEY_FREE_TIER` |
+| 3 | `ai_studio_paid` | `GOOGLE_API_KEY_TIER_1` |
+
+Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `null` when usage metadata is absent from the API response (distinguishable from a model that returned zero tokens).
 
 **Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ai gemini -P`/`--confirm-paid`: explicit per-run confirmation flag for Deep Research paid API usage. Required when `paid_fallback_enabled = true` in config; exits with actionable error if absent. (AI-CLI-41 T-02)
+- `ai gemini` — `paid_fallback_enabled` config key under `[gemini]` in `config.toml`: when `false` (default), the `ai_studio_paid` tier is excluded from all fallback chains, preventing accidental paid API spend. Set `true` only after confirming billing credit status. (AI-CLI-41 T-02)
+- `ai gemini` — Deep Research daily run counter persisted to `~/.local/state/ai-cli/dr-daily.json`. Paid run count printed to stderr after each successful run; warning printed when approaching soft daily limit (`DEEP_RESEARCH_DAILY_WARNING = 18` out of `DEEP_RESEARCH_DAILY_LIMIT = 20`). (AI-CLI-41 T-02)
+
+### Changed
+
+- `ai gemini` — auth tier names are now Google-aligned: `oauth` (was `gemini-cli (OAuth)`), `ai_studio_free` (was `API free-tier`), `ai_studio_paid` (was `API paid tier-1`). Used in JSONL logs and fallback-chain messages. (AI-CLI-41 T-01)
+- `ai gemini` — token counts (`input_tokens`, `output_tokens`, `total_tokens`) in JSONL logs are now `null` (not `0`) when usage metadata is absent from the API response. Null is distinguishable from a model that genuinely returned zero tokens. (AI-CLI-41 T-01)
+- `ai gemini` — `GeminiResult` gains `is_deep_research: bool` field (logged to JSONL); token fields changed from `int = 0` to `int | None = None`. (AI-CLI-41 T-01)
+
 ### Fixed
 
 - `ai sync`: removed handoff queue sync and config file sync from push/pull pipeline. Scope is now explicitly CC session data only: `~/.claude/projects/` JSONL and memory files, `~/.claude/history.jsonl`. Git-tracked files (config, hooks, statusline script) are no longer touched by `ai sync`.

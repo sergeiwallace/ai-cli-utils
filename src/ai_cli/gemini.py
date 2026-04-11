@@ -1,15 +1,20 @@
-"""Gemini research wrapper with 3-tier auth fallback.
+"""Gemini research wrapper with auth-tier fallback chain.
 
 Fallback chain:
-  1. gemini CLI (OAuth — free, Google AI subscription)
-  2. Gemini REST API with free-tier key (GOOGLE_API_KEY_FREE_TIER)
-  3. Gemini REST API with paid tier-1 key (GOOGLE_API_KEY_TIER_1)
+  oauth:          gemini CLI (OAuth — free, Google AI subscription)
+  ai_studio_free: Gemini REST API with free-tier key (GOOGLE_API_KEY_FREE_TIER)
+  ai_studio_paid: Gemini REST API with paid key (GOOGLE_API_KEY_TIER_1)
+
+The paid tier is disabled by default (paid_fallback_enabled = false in config).
+Set paid_fallback_enabled = true only after confirming billing credit status (AI-CLI-43).
+Deep Research additionally requires --confirm-paid / -P at runtime when paid is enabled.
 
 Usage:
   ai gemini "prompt" -m deep-think
   ai gemini "prompt" -m gemini-3.1-pro-preview -o output.md
   ai gemini "prompt" -m gemini-3-flash-preview --quiet
   cat prompt.txt | ai gemini -m deep-think -o output.md
+  ai gemini "prompt" -m deep-research -P   # paid deep-research (requires paid_fallback_enabled=true)
 """
 
 import json
@@ -75,12 +80,18 @@ def _is_free_tier_eligible(model: str) -> bool:
     return any(resolved.startswith(prefix) for prefix in _FREE_TIER_MODEL_PREFIXES)
 
 
-# Tier names for logging
+# Tier names for logging — Google-aligned names (T-01)
 TIER_NAMES = {
-    1: "gemini-cli (OAuth)",
-    2: "API free-tier",
-    3: "API paid tier-1",
+    1: "oauth",
+    2: "ai_studio_free",
+    3: "ai_studio_paid",
 }
+
+# Deep Research daily quota tracking
+DEEP_RESEARCH_DAILY_LIMIT: int = 20  # approx. daily cap; update empirically
+DEEP_RESEARCH_DAILY_WARNING: int = 18  # warn when this many OAuth runs used
+
+DR_DAILY_FILE = Path.home() / ".local" / "state" / "ai-cli" / "dr-daily.json"
 
 # Default output directory for auto-generated output files
 DEFAULT_OUTPUT_DIR = Path.home() / ".local" / "state" / "ai-cli" / "gemini-output"
@@ -105,9 +116,10 @@ class GeminiResult:
     success: bool = False
     error: str = ""
     duration_ms: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    is_deep_research: bool = False
     attempts: list = field(default_factory=list)
 
 
@@ -151,6 +163,7 @@ def _log_to_file(result: GeminiResult, prompt: str, output_path: str | None):
         "success": result.success,
         "error": result.error or None,
         "duration_ms": result.duration_ms,
+        "is_deep_research": result.is_deep_research,
         "input_tokens": result.input_tokens,
         "output_tokens": result.output_tokens,
         "total_tokens": result.total_tokens,
@@ -434,13 +447,19 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
     api_response = result_container["response"]
     content = getattr(api_response, "text", None) or ""
 
-    # Extract usage metadata
-    input_tokens = output_tokens = total_tokens = 0
+    # Extract usage metadata — log None (not 0) when unavailable so missing
+    # data is distinguishable from a model that genuinely returned zero tokens.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
     if hasattr(api_response, "usage_metadata") and api_response.usage_metadata:
         um = api_response.usage_metadata
-        input_tokens = getattr(um, "prompt_token_count", 0) or 0
-        output_tokens = getattr(um, "candidates_token_count", 0) or 0
-        total_tokens = getattr(um, "total_token_count", 0) or 0
+        pt = getattr(um, "prompt_token_count", None)
+        ct = getattr(um, "candidates_token_count", None)
+        tt = getattr(um, "total_token_count", None)
+        input_tokens = int(pt) if pt is not None else None
+        output_tokens = int(ct) if ct is not None else None
+        total_tokens = int(tt) if tt is not None else None
 
     return GeminiResult(
         content=content,
@@ -456,12 +475,65 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
 
 
 # ---------------------------------------------------------------------------
-# OAuth token helper
+# Config helpers
 # ---------------------------------------------------------------------------
 
 
+def _load_paid_fallback_config() -> bool:
+    """Return paid_fallback_enabled from config (default: False).
+
+    When False, the ai_studio_paid tier is excluded from the fallback chain
+    for all models, and Deep Research exits with an actionable error.
+    """
+    try:
+        from .main import load_config
+
+        return bool(load_config().get("gemini", {}).get("paid_fallback_enabled", False))
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
-# Deep Research — Interactions API (test shim; replace with P2-4 implementation)
+# Deep Research daily counter
+# ---------------------------------------------------------------------------
+
+
+def _read_dr_daily() -> dict:
+    """Read today's Deep Research run counter from disk.
+
+    Returns a dict with keys: date, oauth_count, paid_count, last_run.
+    Returns a zeroed dict if the file is absent or dated to a different day.
+    """
+    today = time.strftime("%Y-%m-%d")
+    if DR_DAILY_FILE.exists():
+        try:
+            data = json.loads(DR_DAILY_FILE.read_text())
+            if data.get("date") == today:
+                return data
+        except Exception:
+            pass
+    return {"date": today, "oauth_count": 0, "paid_count": 0, "last_run": None}
+
+
+def _increment_dr_counter(tier_name: str) -> dict:
+    """Increment the daily Deep Research run counter and persist it.
+
+    tier_name should be "oauth" or "ai_studio_paid".
+    Returns the updated counter dict.
+    """
+    data = _read_dr_daily()
+    if tier_name == TIER_NAMES[1]:  # "oauth"
+        data["oauth_count"] = data.get("oauth_count", 0) + 1
+    else:
+        data["paid_count"] = data.get("paid_count", 0) + 1
+    data["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    DR_DAILY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DR_DAILY_FILE.write_text(json.dumps(data))
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Deep Research — Interactions API
 # ---------------------------------------------------------------------------
 
 _DEEP_RESEARCH_AGENT = "deep-research-pro-preview-12-2025"
@@ -475,13 +547,14 @@ def _run_deep_research(
     output: str | None = None,
     quiet: bool = False,
     timeout_s: int = 3600,
+    paid_fallback_enabled: bool = False,
+    confirm_paid: bool = False,
 ) -> GeminiResult:
     """Submit a Deep Research job via the Interactions API and poll until complete.
 
-    Auth: GOOGLE_API_KEY_FREE_TIER first, fallback to GOOGLE_API_KEY_TIER_1.
+    Auth: GOOGLE_API_KEY_TIER_1 (ai_studio_paid). Requires paid_fallback_enabled=True
+    in config and confirm_paid=True (--confirm-paid / -P flag) as explicit opt-ins.
     Cancels via DELETE on KeyboardInterrupt.
-
-    NOTE: This is a minimal test shim. Production implementation is P2-4.
     """
     import urllib.error
     import urllib.request
@@ -490,14 +563,46 @@ def _run_deep_research(
 
     _log("[ai gemini] model=deep-research (Interactions API)", quiet=quiet)
 
+    # Gate 1: paid tier must be enabled in config
+    if not paid_fallback_enabled:
+        _log(
+            "[ai gemini] No available auth method succeeded.\n"
+            "  AI Studio paid fallback is disabled (paid_fallback_enabled = false in config).\n"
+            "  To enable: set paid_fallback_enabled = true in ~/.config/ai-cli/config.toml\n"
+            "  (Do this only after confirming billing credit status — see AI-CLI-43)",
+            quiet=quiet,
+        )
+        return GeminiResult(
+            model="deep-research",
+            is_deep_research=True,
+            success=False,
+            error="AI Studio paid fallback is disabled (paid_fallback_enabled = false in config).",
+        )
+
+    # Gate 2: explicit per-run confirmation required for paid deep-research
+    if not confirm_paid:
+        _log(
+            "[deep-research] AI Studio paid key is enabled in config.\n"
+            "  This run may incur charges — billing credit status: unconfirmed (see AI-CLI-43).\n"
+            '  To proceed: ai gemini "..." -m deep-research -P',
+            quiet=quiet,
+        )
+        return GeminiResult(
+            model="deep-research",
+            is_deep_research=True,
+            success=False,
+            error="--confirm-paid (-P) required for deep-research when paid key is enabled.",
+        )
+
     api_key = os.environ.get("GOOGLE_API_KEY_TIER_1") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return GeminiResult(
             model="deep-research",
+            is_deep_research=True,
             success=False,
             error="GOOGLE_API_KEY_TIER_1 not set",
         )
-    _log("  → using paid API key (tier 3)", quiet=quiet)
+    _log("  → using paid API key (ai_studio_paid)", quiet=quiet)
     _auth_header: dict[str, str] = {}
     _auth_param = f"?key={api_key}"
 
@@ -607,8 +712,9 @@ def _run_deep_research(
     result = GeminiResult(
         content=content,
         model="deep-research",
-        tier=2,
-        tier_name="Interactions API",
+        tier=3,
+        tier_name=TIER_NAMES[3],  # "ai_studio_paid"
+        is_deep_research=True,
         success=True,
         duration_ms=elapsed_total * 1000,
     )
@@ -630,6 +736,22 @@ def _run_deep_research(
         print(content)
 
     _log_to_file(result, prompt, output_path)
+
+    # Increment counter after successful completion only
+    counter = _increment_dr_counter(TIER_NAMES[3])
+    if not quiet:
+        paid_today = counter.get("paid_count", 0)
+        print(
+            f"[deep-research] Paid (AI Studio) runs today: {paid_today} — check `ai spend gemini` for charges",
+            file=sys.stderr,
+        )
+        if paid_today >= DEEP_RESEARCH_DAILY_WARNING:
+            print(
+                f"[deep-research] Warning: approaching daily limit"
+                f" ({paid_today}/{DEEP_RESEARCH_DAILY_LIMIT} paid runs used today)",
+                file=sys.stderr,
+            )
+
     return result
 
 
@@ -647,18 +769,32 @@ def run_gemini(
     verbose: bool = False,
     timeout_s: int = 600,
     start_tier: int = 1,
+    paid_fallback_enabled: bool | None = None,
+    confirm_paid: bool = False,
 ) -> GeminiResult:
-    """Run a Gemini prompt with 3-tier auth fallback.
+    """Run a Gemini prompt with auth-tier fallback chain.
 
-    Tries: gemini CLI (OAuth) → free API key → paid API key.
-    On 429/capacity errors, automatically falls through to next tier.
+    Tries: oauth (gemini CLI) → ai_studio_free (free API key) → ai_studio_paid (paid key).
+    The paid tier requires paid_fallback_enabled=True (config) to be included.
+    On 429/capacity errors, automatically falls through to the next available tier.
 
     start_tier skips earlier tiers entirely (e.g. start_tier=2 bypasses OAuth).
+    paid_fallback_enabled: override config value; None means read from config.
 
     Returns GeminiResult with content and metadata.
     """
+    if paid_fallback_enabled is None:
+        paid_fallback_enabled = _load_paid_fallback_config()
+
     if model == "deep-research":
-        return _run_deep_research(prompt, output=output, quiet=quiet, timeout_s=timeout_s)
+        return _run_deep_research(
+            prompt,
+            output=output,
+            quiet=quiet,
+            timeout_s=timeout_s,
+            paid_fallback_enabled=paid_fallback_enabled,
+            confirm_paid=confirm_paid,
+        )
 
     _load_doppler_secrets()
     _log(f"[ai gemini] model={model} prompt={len(prompt)} chars", quiet=quiet)
@@ -671,12 +807,17 @@ def run_gemini(
     ]
     tiers = [(n, fn) for n, fn in tiers if n >= start_tier]
 
+    # Remove paid tier when disabled in config
+    _paid_filtered = not paid_fallback_enabled
+    if _paid_filtered:
+        tiers = [(n, fn) for n, fn in tiers if n != 3]
+
     # Skip tier 2 for models with no free quota — avoids a wasted round-trip that
     # returns a billing error rather than a 429.
     if any(n == 2 for n, _ in tiers) and not _is_free_tier_eligible(model):
         tiers = [(n, fn) for n, fn in tiers if n != 2]
         _log(
-            f"  → skipping tier 2 (free API key): {model} has no free quota tier, using tier 3 directly",
+            f"  → skipping {TIER_NAMES[2]}: {model} has no free quota tier",
             quiet=quiet,
         )
 
@@ -722,6 +863,13 @@ def run_gemini(
     if not final_result.success:
         final_result.error = "all tiers failed"
         _log("  ✗ all tiers exhausted", quiet=quiet)
+        if _paid_filtered:
+            _log(
+                "  AI Studio paid fallback is disabled (paid_fallback_enabled = false in config).\n"
+                "  To enable: set paid_fallback_enabled = true in ~/.config/ai-cli/config.toml\n"
+                "  (Do this only after confirming billing credit status — see AI-CLI-43)",
+                quiet=quiet,
+            )
 
     # Write output
     output_path = output
@@ -809,6 +957,15 @@ def gemini_cli(args: list[str]):
         metavar="TIER",
         help="Start at this auth tier (1=OAuth CLI, 2=free API key, 3=paid API key; default: 1)",
     )
+    parser.add_argument(
+        "-P",
+        "--confirm-paid",
+        action="store_true",
+        help=(
+            "Confirm paid API usage for deep-research. Required when paid_fallback_enabled = true"
+            " in config and OAuth is unavailable. This run may incur charges."
+        ),
+    )
 
     parsed = parser.parse_args(args)
 
@@ -840,6 +997,7 @@ def gemini_cli(args: list[str]):
             verbose=parsed.verbose,
             timeout_s=parsed.timeout,
             start_tier=parsed.start_tier,
+            confirm_paid=parsed.confirm_paid,
         )
     else:
         from .research import load_depth_preset, run_standard
