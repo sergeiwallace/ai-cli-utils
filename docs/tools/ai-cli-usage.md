@@ -263,6 +263,16 @@ client is required.
 429 (quota/billing), `ai gemini -m deep-research` automatically retries with
 `GOOGLE_API_KEY_TIER_1` (the paid API key) and logs the fallback reason.
 
+**AI Studio billing model:** The Interactions API requires an AI Studio project
+with a prepayment balance (mandatory as of March 2026 — all accounts are prepay-only;
+postpay unlocks at $1,000 cumulative spend). However, the prepay balance is a
+"financial handshake" anti-abuse mechanism, not the primary funding source: API
+spend deducts from any GCP credit balance first (e.g. monthly credits from a
+Google AI Ultra subscription), only drawing from the prepay balance once credits
+are exhausted. There is no OAuth path that routes Interactions API requests
+through a consumer Ultra subscription quota directly — Ultra gives GCP credits
+that offset project-level billing, not a separate quota pool.
+
 ### ai handoff
 
 ```
