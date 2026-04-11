@@ -47,7 +47,7 @@ the GCP BigQuery billing export for paid runs and shows OAuth run counts from lo
 
 > **Feedback Round 1:** Is the scope right? Anything to add or cut?
 >
-> - \<enter feedback here>
+> - Scope seems fine. Revise to account for the feedback on open questions below, especially the billing uncertainty — that's the most important thing to get right before we implement.
 
 ## Background and Context
 
@@ -420,7 +420,10 @@ entry.
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 >
-> - \<enter feedback here>
+> 1. Billing project confirmed: `gen-lang-client-0651020461`, billing account `01AC33-5BE8AD-2F4E8A`.
+> 2. SKU mapping: understood, empirical on first query.
+> 3. Token counts: fine, mark null if unavailable.
+> 4. Daily limit: empirically unknown — we haven't been tracking effectively. More importantly: there's a critical open question about whether the AI Studio paid key (`GOOGLE_API_KEY_TIER_1`) has the Google AI Ultra subscription credits ($100/mo) applied. Situation: (a) the Ultra subscription wasn't connected to the billing account previously — that's now fixed. (b) there is mixed information online about whether Ultra credits apply to AI Studio API keys or only Vertex API keys. (c) the Interactions API (used for deep-research) may not work with Vertex API keys at all, so we can't just switch to Vertex. Result: we don't know if `ai_studio_paid` deep-research runs are ~free (subsidized by Ultra credit) or ~$2–5 out of pocket. The tool must NOT silently fall back to `ai_studio_paid` for deep-research. Need hard gates, explicit opt-in, and clear warnings before any paid deep-research run fires. This is the most important safety requirement for this feature.
 
 ## Approval Log
 
