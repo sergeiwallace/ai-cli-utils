@@ -637,11 +637,14 @@ def _run_deep_research(
         with urllib.request.urlopen(req, timeout=30) as resp:
             interaction = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        if exc.code == 403 and oauth_token:
-            # OAuth token has insufficient scope for the Interactions API.
-            # Fall through to paid API key (same as the OAuth-unavailable path).
+        if exc.code in (403, 429) and oauth_token:
+            # 403: OAuth token has insufficient scope.
+            # 429 from OAuth path: AI Studio prepayment credits depleted on this project;
+            #   the paid API key bills to GCP billing (where credits may apply) differently.
+            # In both cases: fall through to paid API key.
+            reason = "insufficient scope" if exc.code == 403 else "quota/billing (429)"
             _log(
-                "  → OAuth returned 403 (insufficient scope) — falling through to paid key",
+                f"  → OAuth returned {exc.code} ({reason}) — falling through to paid key",
                 quiet=quiet,
             )
             api_key = os.environ.get("GOOGLE_API_KEY_TIER_1") or os.environ.get("GEMINI_API_KEY")
@@ -649,7 +652,7 @@ def _run_deep_research(
                 return GeminiResult(
                     model="deep-research",
                     success=False,
-                    error="OAuth 403 (insufficient scope) and GOOGLE_API_KEY_TIER_1 not set",
+                    error=f"OAuth {exc.code} ({reason}) and GOOGLE_API_KEY_TIER_1 not set",
                 )
             _auth_header = {}
             _auth_param = f"?key={api_key}"
@@ -667,11 +670,11 @@ def _run_deep_research(
                 return GeminiResult(
                     model="deep-research",
                     success=False,
-                    error=f"submit failed after OAuth 403 fallback: HTTP {exc2.code}: {exc2.read()[:200].decode(errors='replace')}",
+                    error=f"submit failed after OAuth {exc.code} fallback: HTTP {exc2.code}: {exc2.read()[:200].decode(errors='replace')}",
                 )
             except Exception as exc2:
                 return GeminiResult(
-                    model="deep-research", success=False, error=f"submit failed after OAuth 403 fallback: {exc2}"
+                    model="deep-research", success=False, error=f"submit failed after OAuth {exc.code} fallback: {exc2}"
                 )
         else:
             return GeminiResult(

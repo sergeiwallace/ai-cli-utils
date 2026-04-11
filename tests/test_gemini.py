@@ -852,10 +852,11 @@ class TestRunDeepResearch:
         assert "paid-key" in submit_req.full_url
         assert "free-key" not in submit_req.full_url
 
-    def test_when_oauth_returns_403_then_falls_through_to_paid_key(self, tmp_path):
+    @pytest.mark.parametrize("oauth_error_code", [403, 429])
+    def test_when_oauth_returns_4xx_then_falls_through_to_paid_key(self, tmp_path, oauth_error_code):
         import urllib.error
 
-        # First call (OAuth submit) → 403; second call (paid key submit) → success
+        # First call (OAuth submit) → 4xx; second call (paid key submit) → success
         submit_resp_paid = {"name": "interactions/run-fallback", "state": "running"}
         poll_resp = {"state": "completed", "outputs": [{"text": "fallback result"}]}
         paid_urlopen = _make_urlopen_sequence([submit_resp_paid, poll_resp])
@@ -865,9 +866,8 @@ class TestRunDeepResearch:
         def urlopen_side_effect(req, timeout=None):
             call_count[0] += 1
             if call_count[0] == 1:
-                # OAuth submit → 403
-                exc = urllib.error.HTTPError(url=None, code=403, msg="Forbidden", hdrs=None, fp=None)
-                exc.read = lambda: b"insufficient scope"
+                exc = urllib.error.HTTPError(url=None, code=oauth_error_code, msg="Error", hdrs=None, fp=None)
+                exc.read = lambda: b"oauth error"
                 raise exc
             return paid_urlopen(req, timeout=timeout)
 
@@ -881,18 +881,19 @@ class TestRunDeepResearch:
         assert result.success is True
         assert result.content == "fallback result"
 
-    def test_when_oauth_returns_403_and_no_paid_key_then_error(self):
+    @pytest.mark.parametrize("oauth_error_code", [403, 429])
+    def test_when_oauth_returns_4xx_and_no_paid_key_then_error(self, oauth_error_code):
         import urllib.error
 
         with patch.dict("os.environ", {}, clear=True):
             with patch("ai_cli.gemini._load_doppler_secrets"):
                 with patch("ai_cli.gemini._get_google_oauth_token", return_value="my-oauth-token"):
-                    exc = urllib.error.HTTPError(url=None, code=403, msg="Forbidden", hdrs=None, fp=None)
-                    exc.read = lambda: b"insufficient scope"
+                    exc = urllib.error.HTTPError(url=None, code=oauth_error_code, msg="Error", hdrs=None, fp=None)
+                    exc.read = lambda: b"oauth error"
                     with patch("urllib.request.urlopen", side_effect=exc):
                         result = _run_deep_research("test prompt", quiet=True)
         assert result.success is False
-        assert "403" in result.error or "GOOGLE_API_KEY_TIER_1 not set" in result.error
+        assert str(oauth_error_code) in result.error or "GOOGLE_API_KEY_TIER_1 not set" in result.error
 
     def test_run_gemini_when_model_deep_research_then_routes_to_deep_research(self, tmp_path):
         ok = GeminiResult(content="deep result", model="deep-research", success=True)
