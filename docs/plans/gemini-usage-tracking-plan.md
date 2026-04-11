@@ -59,7 +59,7 @@ billing export for paid runs, with OAuth run counts from local logs.
 ---
 
 > **Feedback Round 2:**
-> - \<enter feedback here>
+> - Do not set up a Tier 1 paid API key / prepaid amount yet. Deep-research should use OAuth only for now; disable the `ai_studio_paid` fallback via a config toggle (`paid_fallback_enabled` or similar). Re-enable only after AI-CLI-43 is resolved and we're confident in the billing credit situation. Add the config toggle to the plan and implement accordingly. "Vertex-only" credit claim confirmed to have no reliable source — can drop that concern from the email.
 
 ## Background and Context
 
@@ -464,7 +464,7 @@ Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` ou
 ---
 
 > **Feedback Round 2:**
-> - \<enter feedback here>
+> - No batching feedback — proceed as designed.
 
 ## Human Gates
 
@@ -516,6 +516,11 @@ Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` ou
 > - Q1, Q2, Q3 resolved as noted above.
 > - Q4 (daily limit): keeping `DEEP_RESEARCH_DAILY_LIMIT = 20` as placeholder; easy to adjust empirically.
 > - Q5 (billing credit uncertainty): this is now the P0 open question. T-02 implements an unconditional paid-run gate with explicit `--confirm-paid` / `-P` flag regardless of credit status — no silent fallback ever. Warning text will be updated once credit status is confirmed. BigQuery billing export (T-03) will provide empirical confirmation after one `--confirm-paid` run is observed in the billing data.
+
+---
+
+> **AI Response Round 2 (open questions):**
+> - Q5: "Vertex-only" credit claim traced to a single unanswered forum post citing Reddit with no official source. Official Developer Program docs explicitly say credits apply to "AI Studio and Vertex AI or any Google Cloud product." Concern dropped from email. However, AI Studio still shows "Action Needed - No Available Credits" and requires Prepay for new projects — suggests a separate issue (credit not yet reflected, or Prepay is a separate requirement that coexists with credits). Email sent to `gdp-premium-support@google.com` 2026-04-11; AI-CLI-43 follow-up task added for 2026-04-12.
 
 ---
 
