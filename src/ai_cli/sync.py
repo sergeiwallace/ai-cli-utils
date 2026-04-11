@@ -221,6 +221,38 @@ def is_jsonl_file(path: Path) -> bool:
     return path.suffix == ".jsonl"
 
 
+def _wt_name_from_bare_name(bare_name: str) -> Optional[str]:
+    """Return the worktree session name from a bare CC dir name, or None if not a worktree dir.
+
+    E.g. "sergei--worktrees-sw-5" → "sw-5", "sergei" → None.
+    """
+    marker = "--worktrees-"
+    idx = bare_name.find(marker)
+    if idx == -1:
+        return None
+    return bare_name[idx + len(marker):]
+
+
+def _jsonl_custom_title(path: Path) -> Optional[str]:
+    """Return the customTitle field from a JSONL file, or None if absent or unreadable."""
+    import json as _json
+
+    try:
+        for raw_line in path.read_bytes()[:8192].split(b"\n"):
+            if not raw_line:
+                continue
+            try:
+                obj = _json.loads(raw_line)
+                title = obj.get("customTitle", "")
+                if title:
+                    return title
+            except (_json.JSONDecodeError, ValueError):
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def should_sync_file(path: Path, memories_only: bool) -> bool:
     """Returns True if the file should be synced given the memories_only flag."""
     if path.name == ".DS_Store":
@@ -423,12 +455,23 @@ def stage_project_files(
         project_names.append(bare_name)
         staging_project_dir = staging_dir / bare_name
 
+        # If this is a worktree CC dir, only stage JSONL files whose customTitle
+        # matches the worktree session name. Staging foreign JSONL files would
+        # replicate session contamination to the other machine via sync.
+        wt_name = _wt_name_from_bare_name(bare_name)
+
         for src in cc_dir.rglob("*"):
             if not src.is_file():
                 continue
             rel = src.relative_to(cc_dir)
             if not should_sync_file(rel, memories_only):
                 continue
+
+            # Worktree-dir JSONL guard: skip files that don't belong here.
+            if wt_name and is_jsonl_file(rel) and len(rel.parts) == 1:
+                title = _jsonl_custom_title(src)
+                if title != wt_name:
+                    continue  # Foreign or untitled session — belongs in main project dir
 
             dst = staging_project_dir / rel
 
@@ -697,12 +740,23 @@ def apply_pull_files(
         cc_dir_name = denormalize_project_name(bare_name, local_prefix)
         cc_project_dir = cc_projects_dir / cc_dir_name
 
+        # If this is a worktree CC dir, only apply JSONL files whose customTitle
+        # matches the worktree session name. This prevents contamination from
+        # spreading via the staging repo if the push side ever stages foreign files.
+        wt_name = _wt_name_from_bare_name(bare_name)
+
         for src in staging_project_dir.rglob("*"):
             if not src.is_file():
                 continue
             rel = src.relative_to(staging_project_dir)
             if not should_sync_file(rel, memories_only):
                 continue
+
+            # Worktree-dir JSONL guard: skip files that don't belong here.
+            if wt_name and is_jsonl_file(src) and len(rel.parts) == 1:
+                title = _jsonl_custom_title(src)
+                if title != wt_name:
+                    continue  # Foreign or untitled session — skip
 
             dst = cc_project_dir / rel
 
@@ -845,42 +899,18 @@ def _replicate_to_worktrees(
             wt_session_name = wt_path.name
 
             # Copy and translate JSONL files — only those belonging to this worktree's session.
-            # Match criteria (any of):
-            #   1. customTitle field equals the worktree session name
-            #   2. cwd field equals the worktree path (conversation created in worktree)
-            # Both criteria use JSON field parsing to avoid false positives from raw-byte
-            # substring matches against message content that happens to mention the path.
-            import json as _json
-
+            # Match criterion: customTitle field must equal the worktree session name.
+            # This is set by `ai c N` via --name flag and is the authoritative identifier.
+            # cwd-based matching is intentionally removed: translated cwd copies could
+            # false-positive match, and titles are a more reliable discriminator.
             for src in cc_dir.glob("*.jsonl"):
                 dst = wt_cc_dir / src.name
                 if dst.exists() and not dst.is_symlink():
                     # Don't overwrite the worktree's own conversations
                     continue
 
-                # Check if this conversation belongs to this worktree
-                try:
-                    with open(src, "rb") as f:
-                        # Read first few KB — title and cwd appear in early lines
-                        head = f.read(4096)
-                    title_match = False
-                    cwd_match = False
-                    for raw_line in head.split(b"\n"):
-                        if not raw_line:
-                            continue
-                        try:
-                            obj = _json.loads(raw_line)
-                        except (_json.JSONDecodeError, ValueError):
-                            continue
-                        if not title_match and obj.get("customTitle") == wt_session_name:
-                            title_match = True
-                        if not cwd_match and obj.get("cwd") == wt_cwd:
-                            cwd_match = True
-                        if title_match or cwd_match:
-                            break
-                    if not title_match and not cwd_match:
-                        continue  # Not this worktree's conversation — skip
-                except Exception:
+                # Only replicate sessions explicitly named for this worktree
+                if _jsonl_custom_title(src) != wt_session_name:
                     continue
 
                 # Read, translate cwd, write
