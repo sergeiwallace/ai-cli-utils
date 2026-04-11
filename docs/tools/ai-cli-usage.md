@@ -23,6 +23,7 @@ source: internal
 - [Sync Commands](#ai-sync)
 - [Utility Commands](#utility-commands)
   - [ai gemini](#ai-gemini)
+  - [ai spend gemini](#ai-spend-gemini)
   - [ai handoff](#ai-handoff)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
@@ -248,6 +249,8 @@ If either is absent, the run exits with an actionable error message. After a suc
 
 Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `null` when usage metadata is absent from the API response (distinguishable from a model that returned zero tokens).
 
+**Logs:** `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — one entry per run. Daily Deep Research counter: `~/.local/state/ai-cli/dr-daily.json`.
+
 **Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
 
 **Checkpoints:** `~/.local/state/ai-cli/research-runs/<run-id>/` -- JSON snapshots after each step. Use `--resume <run-id>` to restart from last completed step.
@@ -261,6 +264,43 @@ subscription), only drawing from the prepay balance once credits are exhausted.
 There is no OAuth path that routes Interactions API requests through a consumer
 Ultra subscription quota — Ultra gives GCP credits that offset project-level
 billing, not a separate quota pool.
+
+### ai spend gemini
+
+```
+ai spend gemini
+```
+
+Print today's and this month's Gemini API usage summary, combining local JSONL logs with GCP BigQuery billing export data.
+
+**Today's section** shows:
+- Deep Research OAuth run count and free quota remaining (daily limit: 20 runs)
+- Deep Research paid run count (if any)
+- Per-model run counts for other models
+
+**This month's section** shows:
+- Monthly Deep Research OAuth and paid run totals
+- Per-model run counts
+- Actual billed amount from GCP billing export (when configured), with Ultra credit status hint
+
+**BigQuery setup** (one-time, required for paid spend data):
+
+1. Enable detailed billing export in Cloud Console → Billing → Billing export → Detailed usage cost
+2. Add to `~/.config/ai-cli/config.toml`:
+
+```toml
+[gemini_billing]
+gcp_project_id = "your-gcp-project"
+billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX"
+```
+
+3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
+
+Data appears in BigQuery within 24–48 hours. When not configured, `ai spend gemini` prints an actionable setup message and continues gracefully.
+
+**State files:**
+- `~/.local/state/ai-cli/dr-daily.json` — daily DR run counter (resets at midnight)
+- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — per-run log
 
 ### ai handoff
 

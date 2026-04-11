@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ai spend gemini`: print Gemini usage summary combining local JSONL logs (OAuth/free-tier run counts, per-model stats) with GCP BigQuery billing export (actual billed amounts for paid runs). Graceful degradation when BigQuery is not configured or `google-cloud-bigquery` not installed. Config under `[gemini_billing]` in `config.toml`. (AI-CLI-41 T-03)
 - `ai gemini -P`/`--confirm-paid`: explicit per-run confirmation flag for Deep Research paid API usage. Required when `paid_fallback_enabled = true` in config; exits with actionable error if absent. (AI-CLI-41 T-02)
 - `ai gemini` — `paid_fallback_enabled` config key under `[gemini]` in `config.toml`: when `false` (default), the `ai_studio_paid` tier is excluded from all fallback chains, preventing accidental paid API spend. Set `true` only after confirming billing credit status. (AI-CLI-41 T-02)
 - `ai gemini` — Deep Research daily run counter persisted to `~/.local/state/ai-cli/dr-daily.json`. Paid run count printed to stderr after each successful run; warning printed when approaching soft daily limit (`DEEP_RESEARCH_DAILY_WARNING = 18` out of `DEEP_RESEARCH_DAILY_LIMIT = 20`). (AI-CLI-41 T-02)

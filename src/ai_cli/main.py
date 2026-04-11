@@ -57,6 +57,9 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Projects that should NOT be sandboxed by default
 ## (Matches the project prefix in your project registry TOML)
 # sandbox_whitelist = ["sw"]
+## Set true only after AI-CLI-43 confirms billing credit status.
+## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
+# paid_fallback_enabled = false
 
 [behavior]
 ## Enable system notifications on task completion
@@ -111,6 +114,14 @@ nats_servers = ["nats://localhost:4222"]
 [cdp]
 ## Chrome/Chromium binary path for CDP debug server (auto-detected if not set)
 # binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+[gemini_billing]
+## GCP project that holds the BigQuery billing export dataset.
+## Required for `ai spend gemini` to show actual billed amounts.
+# gcp_project_id = "my-gcp-project"
+## Fully-qualified BigQuery table ID for the GCP detailed billing export.
+## Enable in Cloud Console → Billing → Billing export → Detailed usage cost.
+# billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
 ## Default port for the Chrome DevTools Protocol endpoint
 # port = 9222
 """
@@ -3149,6 +3160,14 @@ def cli():
 
         gemini_cli(sys.argv[2:])
         sys.exit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "spend":
+        if len(sys.argv) < 3 or sys.argv[2] != "gemini":
+            print("Usage: ai spend gemini", file=sys.stderr)
+            sys.exit(1)
+        from .spend import cmd_spend_gemini
+
+        sys.exit(cmd_spend_gemini(load_config()))
 
     if len(sys.argv) > 1 and sys.argv[1] == "copier-update":
         if os.environ.get("AI_CLI_HOST") != "mac":

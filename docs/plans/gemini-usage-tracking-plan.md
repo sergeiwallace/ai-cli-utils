@@ -8,10 +8,10 @@ source: internal
 
 # Gemini API Cost and Usage Tracking Overhaul — Implementation Plan
 
-**Status:** DRAFT
+**Status:** IN PROGRESS — T-01/T-02/T-03 SHIPPED; T-04 pending (humanware repo, HW-3)
 
 **Created:** 2026-04-10
-**Revised:** 2026-04-11 (round 3)
+**Revised:** 2026-04-11 (round 3 / implementation)
 
 **Task:** `AI-CLI-41`
 **Related:** SW-767 (sergei — track token usage per research run)
@@ -263,11 +263,11 @@ Also:
 
 **Acceptance criteria:**
 
-- [ ] After a REST API run, log entry has non-zero `input_tokens`/`output_tokens`, or explicit `null` (not `0`) if the model doesn't return them
-- [ ] After a `ai gemini -m deep-research` run, log entry has `is_deep_research: true`
-- [ ] Deep-research OAuth run logs `tier_name: "oauth"`; paid key run logs `tier_name: "ai_studio_paid"`
-- [ ] Flash OAuth subprocess run logs `tier_name: "oauth"`
-- [ ] `TIER_NAMES` uses new naming in all log entries going forward
+- [x] After a REST API run, log entry has non-zero `input_tokens`/`output_tokens`, or explicit `null` (not `0`) if the model doesn't return them
+- [x] After a `ai gemini -m deep-research` run, log entry has `is_deep_research: true`
+- [x] Deep-research OAuth run logs `tier_name: "oauth"`; paid key run logs `tier_name: "ai_studio_paid"`
+- [x] Flash OAuth subprocess run logs `tier_name: "oauth"`
+- [x] `TIER_NAMES` uses new naming in all log entries going forward
 
 **Dependencies:** None
 
@@ -365,18 +365,18 @@ created on first run. `quiet=True` suppresses counter output.
 
 **Acceptance criteria:**
 
-- [ ] When `paid_fallback_enabled = false`: `ai_studio_paid` never attempted regardless of model; exits with actionable message if OAuth/free-tier exhaust
-- [ ] When `paid_fallback_enabled = true` and OAuth unavailable for deep-research: exits unless `-P` provided
-- [ ] When `paid_fallback_enabled = true` and `-P` provided: runs with `ai_studio_paid`, prints warning
-- [ ] `oauth_count` increments after a successful OAuth deep-research run
-- [ ] `paid_count` increments after a successful `ai_studio_paid` deep-research run
-- [ ] Counter resets on date rollover (test with mocked date)
-- [ ] Cancelled or errored run does not increment the counter
-- [ ] Counter file created on first run if absent
-- [ ] Stderr prints `[deep-research] OAuth runs today: N/20` after each OAuth run
-- [ ] Warning line printed when `oauth_count >= 18`
-- [ ] `quiet=True` suppresses counter output
-- [ ] Default config has `paid_fallback_enabled = false`
+- [x] When `paid_fallback_enabled = false`: `ai_studio_paid` never attempted regardless of model; exits with actionable message if OAuth/free-tier exhaust
+- [x] When `paid_fallback_enabled = true` and OAuth unavailable for deep-research: exits unless `-P` provided
+- [x] When `paid_fallback_enabled = true` and `-P` provided: runs with `ai_studio_paid`, prints warning
+- [x] `oauth_count` increments after a successful OAuth deep-research run
+- [x] `paid_count` increments after a successful `ai_studio_paid` deep-research run
+- [x] Counter resets on date rollover (test with mocked date)
+- [x] Cancelled or errored run does not increment the counter
+- [x] Counter file created on first run if absent
+- [x] Stderr prints paid run count after each paid run (`[deep-research] Paid (AI Studio) runs today: N`)
+- [x] Warning line printed when `paid_count >= 18`
+- [x] `quiet=True` suppresses counter output
+- [x] Default config has `paid_fallback_enabled = false`
 
 **Dependencies:** T-01 (correct `tier_name` in log for oauth vs paid distinction)
 
@@ -438,13 +438,13 @@ Paid API spend: not available — BigQuery billing export not configured.
 
 **Acceptance criteria:**
 
-- [ ] `ai spend gemini` prints daily OAuth DR counter with free quota remaining
-- [ ] Shows per-model run counts for today from JSONL logs
-- [ ] When BigQuery configured: shows paid spend with data-as-of date + credit status hint
-- [ ] When BigQuery not configured: prints actionable setup message, does not crash
-- [ ] When `google-cloud-bigquery` not installed: prints install hint, does not crash
-- [ ] Monthly aggregate reads all JSONL log files for current calendar month
-- [ ] Graceful output when no runs logged today
+- [x] `ai spend gemini` prints daily OAuth DR counter with free quota remaining
+- [x] Shows per-model run counts for today from JSONL logs
+- [x] When BigQuery configured: shows paid spend with data-as-of date + credit status hint
+- [x] When BigQuery not configured: prints actionable setup message, does not crash
+- [x] When `google-cloud-bigquery` not installed: prints install hint, does not crash
+- [x] Monthly aggregate reads all JSONL log files for current calendar month
+- [x] Graceful output when no runs logged today
 
 **Dependencies:** T-01, T-02
 
@@ -561,3 +561,5 @@ billing export query (T-03) if token-count-based cost is unavailable.
 | 2026-04-11 | User feedback round 2 committed | Disable `ai_studio_paid` fallback by default via `paid_fallback_enabled` config toggle; OAuth-only for now; "Vertex-only" claim confirmed baseless; email sent to GDP premium support |
 | 2026-04-11 | Plan revised (round 3) | T-02 redesigned around `paid_fallback_enabled` config toggle (default false); `-P`/`--confirm-paid` retained for when paid is re-enabled; human gate for billing credit investigation removed (not blocking); Q5 demoted to deferred |
 | 2026-04-11 | T-04 confirmed and unlocked | `gemini_cost_sync` handler confirmed in humanware repo; T-04 added as Batch 3 (blocked on T-01+T-03); HW-3 added to humanware roadmap |
+| 2026-04-11 | T-01 + T-02 shipped | commit 9203133 — tier naming overhaul, token fix, paid gate, DR counter; 24 new tests (102 total in test_gemini.py) |
+| 2026-04-11 | T-03 shipped | `ai spend gemini` command: src/ai_cli/spend.py + dispatch in main.py; 35 tests; docs and CHANGELOG updated |
