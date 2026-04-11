@@ -71,74 +71,95 @@ _MONTH_MAP: dict[str, int] = {
 
 
 def _parse_reset_datetime(text: str) -> str | None:
-    """Extract the quota reset datetime from /usage output and return as UTC ISO string.
+    """Extract the all-models weekly reset datetime from /usage output.
 
-    Handles formats emitted by the /usage dialog, e.g.:
-      "Resets April 18, 2026 at 6:59 AM EST"
-      "Resets Friday, April 18 at 6:59 AM EDT"
-      "Usage resets April 18 at 11:59 PM UTC"
-    Returns None if no reset line is found or the datetime cannot be parsed.
+    Returns a UTC ISO string (e.g. "2026-04-18T11:59:00Z"), or None if not found.
+
+    CC's /usage dialog embeds the reset time in the label line for the weekly
+    all-models quota, using a time-only format without a date:
+
+        Current week (all models) · Resets 6:59am
+        Current week (all models) · Resets 11pm
+
+    The full reset datetime is reconstructed using the system's local timezone:
+    the next future occurrence of that time on a weekly boundary from now.
     """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    # Primary format: "week (all models) ... Resets {time}"
+    # Handles: "6:59am", "6:59 AM", "11pm", "11 PM", "11:00 PM"
     m = re.search(
-        r"[Rr]eset[^\n·]*?"  # line containing "reset"
-        r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*,?\s*)?"  # optional weekday
-        r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?"  # month name (start)
-        r"|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?"
-        r"|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
-        r"\s+(\d{1,2})"  # day
-        r"(?:,?\s*(\d{4}))?"  # optional year
-        r"[^,\n]*?"  # filler (e.g. " at ")
-        r"(\d{1,2}):(\d{2})"  # HH:MM
-        r"(?::(\d{2}))?"  # optional :SS
-        r"\s*([AP]M?)?"  # optional AM/PM
-        r"(?:\s+(EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT))?",  # optional tz
+        r"week\s*\(all\s*models\)[^·\n]*[·\u00b7\u2019·]\s*[Rr]eset[s]?\s+"
+        r"(\d{1,2})(?::(\d{2}))?\s*([AP]M?)\b",
         text,
         re.IGNORECASE,
     )
+
     if not m:
-        return None
+        # Fallback: standalone "Resets {full date+time}" line (e.g. future CC format)
+        full = re.search(
+            r"[Rr]eset[^\n·]*?"
+            r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*,?\s*)?"
+            r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?"
+            r"|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?"
+            r"|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+            r"\s+(\d{1,2})(?:,?\s*(\d{4}))?"
+            r"[^,\n]*?(\d{1,2}):(\d{2})(?::(\d{2}))?"
+            r"\s*([AP]M?)?(?:\s+(EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT))?",
+            text,
+            re.IGNORECASE,
+        )
+        if not full:
+            return None
+        month_str, day_str, year_str, h, mi, sec_s, ampm, tz_s = full.groups()
+        month = _MONTH_MAP.get(month_str.lower())
+        if not month:
+            return None
+        now_utc = _dt.now(_tz.utc)
+        year = int(year_str) if year_str else now_utc.year
+        hour, minute, second = int(h), int(mi), int(sec_s) if sec_s else 0
+        if ampm:
+            ap = ampm.upper().rstrip(".")
+            if ap == "PM" and hour < 12:
+                hour += 12
+            elif ap == "AM" and hour == 12:
+                hour = 0
+        tz_offset_h = _TZ_OFFSETS_H.get(tz_s.upper() if tz_s else "", 0)
+        try:
+            naive = _dt(year, month, day_str and int(day_str) or 1, hour, minute, second)
+            return (naive - _td(hours=tz_offset_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            return None
 
-    month_str, day_str, year_str, hour_str, min_str, sec_str, ampm, tz_str = m.groups()
-
-    month = _MONTH_MAP.get(month_str.lower())
-    if not month:
-        return None
-
-    from datetime import datetime as _datetime, timezone as _tz, timedelta as _td
-
-    now_utc = _datetime.now(_tz.utc)
-    year = int(year_str) if year_str else now_utc.year
-    day = int(day_str)
+    hour_str, min_str, ampm = m.groups()
     hour = int(hour_str)
-    minute = int(min_str)
-    second = int(sec_str) if sec_str else 0
+    minute = int(min_str) if min_str else 0
 
-    if ampm:
-        ampm_upper = ampm.upper().rstrip(".")
-        if ampm_upper == "PM" and hour < 12:
-            hour += 12
-        elif ampm_upper == "AM" and hour == 12:
-            hour = 0
+    ampm_upper = ampm.upper().rstrip(".")
+    if ampm_upper == "PM" and hour < 12:
+        hour += 12
+    elif ampm_upper == "AM" and hour == 12:
+        hour = 0
 
-    tz_offset_h = _TZ_OFFSETS_H.get(tz_str.upper() if tz_str else "", 0)
-
-    try:
-        naive_dt = _datetime(year, month, day, hour, minute, second)
-        utc_dt = naive_dt - _td(hours=tz_offset_h)
-        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    except ValueError:
-        return None
+    # Reconstruct the full UTC datetime using the system's local timezone.
+    # CC shows the next reset time, so we find the next future occurrence of
+    # that time (weekly period).
+    local_now = _dt.now().astimezone()
+    candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= local_now:
+        # Time already passed today — next occurrence is in 7 days
+        candidate += _td(days=7)
+    return candidate.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_usage_output(output: str) -> QuotaSnapshot | None:
     """Parse the text output of /usage into a QuotaSnapshot.
 
     Expected output contains lines like:
-      Current session: 12% used
+      Current week (all models) · Resets 6:59am
       Current week (all models): 86% used
       Current week (Sonnet only): 49% used
       Extra usage not enabled
-      Resets April 18, 2026 at 6:59 AM EST
     """
     # re.DOTALL required: /usage output puts the percentage on a separate line from
     # the label, with a block-character progress bar in between.

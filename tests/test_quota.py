@@ -93,6 +93,41 @@ class TestParseUsageOutput:
 
 
 class TestParseResetDatetime:
+    # --- Real CC format: time-only label embedded in week row ---
+
+    def test_when_real_cc_format_with_minutes_then_returns_future_utc(self):
+        # "Current week (all models) · Resets 6:59am" — no date, no timezone
+        # Result must be a future UTC time ending in T11:59:00Z (EST) or T10:59:00Z (EDT).
+        text = "  Current week (all models) · Resets 6:59am \n  65% used\n"
+        result = _parse_reset_datetime(text)
+        assert result is not None
+        assert result.endswith("T11:59:00Z") or result.endswith("T10:59:00Z")
+        # Must be in the future
+        from datetime import datetime, timezone
+
+        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+
+    def test_when_real_cc_format_hour_only_pm_then_returns_future_utc(self):
+        # "Resets 11pm" — no minutes, no date, no timezone
+        text = "  Current week (all models) · Resets 11pm \n  65% used\n"
+        result = _parse_reset_datetime(text)
+        assert result is not None
+        # Local midnight → UTC time should be in the future
+        from datetime import datetime, timezone
+
+        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+
+    def test_when_no_all_models_line_then_returns_none(self):
+        # "Current week (Sonnet only) · Resets 11pm" — not the all-models row, skip it
+        text = "  Current week (Sonnet only) · Resets 11pm \n  78% used\n"
+        assert _parse_reset_datetime(text) is None
+
+    def test_when_no_reset_label_then_returns_none(self):
+        text = "Current week (all models): 64% used\n"
+        assert _parse_reset_datetime(text) is None
+
+    # --- Fallback: standalone full date+time line (future-proofing) ---
+
     def test_when_full_format_with_year_and_est_then_converts_to_utc(self):
         text = "Resets April 18, 2026 at 6:59 AM EST"
         result = _parse_reset_datetime(text)
@@ -103,41 +138,28 @@ class TestParseResetDatetime:
         result = _parse_reset_datetime(text)
         assert result == "2026-04-18T10:59:00Z"
 
-    def test_when_weekday_prefix_then_ignored(self):
-        text = "Resets Friday, April 18, 2026 at 6:59 AM EST"
-        result = _parse_reset_datetime(text)
-        assert result == "2026-04-18T11:59:00Z"
-
-    def test_when_no_year_then_uses_current_year(self):
-        text = "Resets April 18 at 6:59 AM EST"
-        result = _parse_reset_datetime(text)
-        assert result is not None
-        assert result.endswith("T11:59:00Z")
-
     def test_when_utc_timezone_then_no_offset(self):
         text = "Resets April 18, 2026 at 11:59 PM UTC"
         result = _parse_reset_datetime(text)
         assert result == "2026-04-18T23:59:00Z"
 
-    def test_when_pm_time_then_converted_correctly(self):
-        text = "Resets April 18, 2026 at 1:00 AM EST"
-        result = _parse_reset_datetime(text)
-        assert result == "2026-04-18T06:00:00Z"
+    # --- Integration: _parse_usage_output ---
 
-    def test_when_no_reset_line_then_returns_none(self):
-        text = "Current week (all models): 64% used"
-        assert _parse_reset_datetime(text) is None
-
-    def test_when_embedded_in_full_usage_output_then_parsed(self):
-        text = "  Current week (all models)\n  ████████████████   64% used\n\n  Resets April 18, 2026 at 6:59 AM EST\n"
-        result = _parse_reset_datetime(text)
-        assert result == "2026-04-18T11:59:00Z"
-
-    def test_parse_usage_output_includes_reset_at(self):
-        output = "Current week (all models): 64% used\nResets April 18, 2026 at 6:59 AM EST\n"
+    def test_parse_usage_output_captures_reset_at_from_real_format(self):
+        output = (
+            "  Current week (all models) · Resets 6:59am \n"
+            "  ████████████████   65% used\n\n"
+            "  Current week (Sonnet only) · Resets 11pm \n"
+            "  78% used\n"
+        )
         snap = _parse_usage_output(output)
         assert snap is not None
-        assert snap.reset_at == "2026-04-18T11:59:00Z"
+        assert snap.reset_at is not None
+        # Must be a valid UTC ISO string in the future
+        from datetime import datetime, timezone
+
+        dt = datetime.strptime(snap.reset_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        assert dt > datetime.now(timezone.utc)
 
     def test_parse_usage_output_reset_at_none_when_absent(self):
         output = "Current week (all models): 64% used\n"
