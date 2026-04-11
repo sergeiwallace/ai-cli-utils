@@ -97,11 +97,12 @@ class TestParseResetDatetime:
 
     def test_when_real_cc_format_with_minutes_then_returns_future_utc(self):
         # "Current week (all models) · Resets 6:59am" — no date, no timezone
-        # Result must be a future UTC time ending in T11:59:00Z (EST) or T10:59:00Z (EDT).
+        # The minute component (:59) must be preserved; UTC hour varies by local TZ.
         text = "  Current week (all models) · Resets 6:59am \n  65% used\n"
         result = _parse_reset_datetime(text)
         assert result is not None
-        assert result.endswith("T11:59:00Z") or result.endswith("T10:59:00Z")
+        # Minutes must be preserved regardless of local timezone
+        assert ":59:00Z" in result
         # Must be in the future
         from datetime import datetime, timezone
 
