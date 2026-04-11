@@ -235,20 +235,26 @@ def _wt_name_from_bare_name(bare_name: str) -> Optional[str]:
 
 
 def _jsonl_custom_title(path: Path) -> Optional[str]:
-    """Return the customTitle field from a JSONL file, or None if absent or unreadable."""
+    """Return the customTitle field from a JSONL file, or None if absent or unreadable.
+
+    Reads the full file line-by-line so compacted JSONL files (which start with
+    file-history-snapshot records before any customTitle line) are handled correctly.
+    """
     import json as _json
 
     try:
-        for raw_line in path.read_bytes()[:8192].split(b"\n"):
-            if not raw_line:
-                continue
-            try:
-                obj = _json.loads(raw_line)
-                title = obj.get("customTitle", "")
-                if title:
-                    return title
-            except (_json.JSONDecodeError, ValueError):
-                continue
+        with path.open("rb") as fh:
+            for raw_line in fh:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    obj = _json.loads(raw_line)
+                    title = obj.get("customTitle", "")
+                    if title:
+                        return title
+                except (_json.JSONDecodeError, ValueError):
+                    continue
     except Exception:
         pass
     return None
