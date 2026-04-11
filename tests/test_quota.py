@@ -11,6 +11,7 @@ from ai_cli.quota import (
     QuotaSnapshot,
     _get_claude_usage_snapshot,
     _maybe_trigger_background_scrape,
+    _parse_reset_datetime,
     _parse_usage_output,
     _publish_quota_snapshot,
     _scrape_usage_hidden_pane,
@@ -86,6 +87,120 @@ class TestParseUsageOutput:
         snap = _parse_usage_output(output)
         assert snap is not None
         assert snap.weekly_all_models_pct == 72.5
+
+
+# --- _parse_reset_datetime ---
+
+
+class TestParseResetDatetime:
+    def test_when_full_format_with_year_and_est_then_converts_to_utc(self):
+        text = "Resets April 18, 2026 at 6:59 AM EST"
+        result = _parse_reset_datetime(text)
+        assert result == "2026-04-18T11:59:00Z"
+
+    def test_when_full_format_with_edt_then_converts_to_utc(self):
+        text = "Resets April 18, 2026 at 6:59 AM EDT"
+        result = _parse_reset_datetime(text)
+        assert result == "2026-04-18T10:59:00Z"
+
+    def test_when_weekday_prefix_then_ignored(self):
+        text = "Resets Friday, April 18, 2026 at 6:59 AM EST"
+        result = _parse_reset_datetime(text)
+        assert result == "2026-04-18T11:59:00Z"
+
+    def test_when_no_year_then_uses_current_year(self):
+        text = "Resets April 18 at 6:59 AM EST"
+        result = _parse_reset_datetime(text)
+        assert result is not None
+        assert result.endswith("T11:59:00Z")
+
+    def test_when_utc_timezone_then_no_offset(self):
+        text = "Resets April 18, 2026 at 11:59 PM UTC"
+        result = _parse_reset_datetime(text)
+        assert result == "2026-04-18T23:59:00Z"
+
+    def test_when_pm_time_then_converted_correctly(self):
+        text = "Resets April 18, 2026 at 1:00 AM EST"
+        result = _parse_reset_datetime(text)
+        assert result == "2026-04-18T06:00:00Z"
+
+    def test_when_no_reset_line_then_returns_none(self):
+        text = "Current week (all models): 64% used"
+        assert _parse_reset_datetime(text) is None
+
+    def test_when_embedded_in_full_usage_output_then_parsed(self):
+        text = "  Current week (all models)\n  ████████████████   64% used\n\n  Resets April 18, 2026 at 6:59 AM EST\n"
+        result = _parse_reset_datetime(text)
+        assert result == "2026-04-18T11:59:00Z"
+
+    def test_parse_usage_output_includes_reset_at(self):
+        output = "Current week (all models): 64% used\nResets April 18, 2026 at 6:59 AM EST\n"
+        snap = _parse_usage_output(output)
+        assert snap is not None
+        assert snap.reset_at == "2026-04-18T11:59:00Z"
+
+    def test_parse_usage_output_reset_at_none_when_absent(self):
+        output = "Current week (all models): 64% used\n"
+        snap = _parse_usage_output(output)
+        assert snap is not None
+        assert snap.reset_at is None
+
+
+# --- _parse_reset_datetime anchor persistence ---
+
+
+class TestResetAnchorPersistence:
+    def test_when_record_snapshot_with_reset_at_then_anchor_file_written(self, tmp_path):
+        import ai_cli.quota_db as qdb
+
+        anchor_file = tmp_path / "quota-reset-anchor.txt"
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch.object(qdb, "_get_reset_anchor_path", return_value=anchor_file):
+                qdb.record_quota_snapshot(
+                    usage_percent=64.0,
+                    reset_at="2026-04-18T11:59:00Z",
+                )
+            assert anchor_file.exists()
+            assert anchor_file.read_text().strip() == "2026-04-18T11:59:00Z"
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_anchor_file_exists_then_get_reset_anchor_uses_it(self, tmp_path):
+        import ai_cli.quota_db as qdb
+
+        anchor_file = tmp_path / "quota-reset-anchor.txt"
+        anchor_file.write_text("2026-04-18T11:59:00Z")
+        with patch.object(qdb, "_get_reset_anchor_path", return_value=anchor_file):
+            anchor = qdb._get_reset_anchor_utc()
+        assert anchor.year == 2026
+        assert anchor.month == 4
+        assert anchor.day == 18
+        assert anchor.hour == 11
+        assert anchor.minute == 59
+
+    def test_when_anchor_file_absent_then_falls_back_to_default(self, tmp_path):
+        import ai_cli.quota_db as qdb
+
+        missing = tmp_path / "no-anchor.txt"
+        with patch.object(qdb, "_get_reset_anchor_path", return_value=missing):
+            with patch("ai_cli.quota_db.load_config", side_effect=Exception("no config"), create=True):
+                anchor = qdb._get_reset_anchor_utc()
+        # Should return the default anchor, not raise
+        assert anchor is not None
+
+    def test_when_record_snapshot_without_reset_at_then_anchor_file_unchanged(self, tmp_path):
+        import ai_cli.quota_db as qdb
+
+        anchor_file = tmp_path / "quota-reset-anchor.txt"
+        anchor_file.write_text("2026-04-18T11:59:00Z")
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch.object(qdb, "_get_reset_anchor_path", return_value=anchor_file):
+                qdb.record_quota_snapshot(usage_percent=50.0)  # no reset_at
+            assert anchor_file.read_text().strip() == "2026-04-18T11:59:00Z"  # unchanged
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
 
 
 # --- _scrape_usage_hidden_pane ---

@@ -26,6 +26,108 @@ class QuotaSnapshot:
     session_pct: float | None = None  # "Current session"
     weekly_sonnet_pct: float | None = None  # "Current week (Sonnet only)"
     extra_pct: float | None = None  # "Extra usage: X%" or 0.0 if "not enabled"
+    reset_at: str | None = None  # next reset as UTC ISO string, e.g. "2026-04-18T11:59:00Z"
+
+
+# Timezone abbreviation → UTC offset in hours. Covers US zones; others fall back to UTC.
+_TZ_OFFSETS_H: dict[str, int] = {
+    "EST": -5,
+    "EDT": -4,
+    "CST": -6,
+    "CDT": -5,
+    "MST": -7,
+    "MDT": -6,
+    "PST": -8,
+    "PDT": -7,
+    "UTC": 0,
+    "GMT": 0,
+}
+
+_MONTH_MAP: dict[str, int] = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+
+
+def _parse_reset_datetime(text: str) -> str | None:
+    """Extract the quota reset datetime from /usage output and return as UTC ISO string.
+
+    Handles formats emitted by the /usage dialog, e.g.:
+      "Resets April 18, 2026 at 6:59 AM EST"
+      "Resets Friday, April 18 at 6:59 AM EDT"
+      "Usage resets April 18 at 11:59 PM UTC"
+    Returns None if no reset line is found or the datetime cannot be parsed.
+    """
+    m = re.search(
+        r"[Rr]eset[^\n·]*?"  # line containing "reset"
+        r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*,?\s*)?"  # optional weekday
+        r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?"  # month name (start)
+        r"|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?"
+        r"|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+        r"\s+(\d{1,2})"  # day
+        r"(?:,?\s*(\d{4}))?"  # optional year
+        r"[^,\n]*?"  # filler (e.g. " at ")
+        r"(\d{1,2}):(\d{2})"  # HH:MM
+        r"(?::(\d{2}))?"  # optional :SS
+        r"\s*([AP]M?)?"  # optional AM/PM
+        r"(?:\s+(EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT))?",  # optional tz
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+
+    month_str, day_str, year_str, hour_str, min_str, sec_str, ampm, tz_str = m.groups()
+
+    month = _MONTH_MAP.get(month_str.lower())
+    if not month:
+        return None
+
+    from datetime import datetime as _datetime, timezone as _tz, timedelta as _td
+
+    now_utc = _datetime.now(_tz.utc)
+    year = int(year_str) if year_str else now_utc.year
+    day = int(day_str)
+    hour = int(hour_str)
+    minute = int(min_str)
+    second = int(sec_str) if sec_str else 0
+
+    if ampm:
+        ampm_upper = ampm.upper().rstrip(".")
+        if ampm_upper == "PM" and hour < 12:
+            hour += 12
+        elif ampm_upper == "AM" and hour == 12:
+            hour = 0
+
+    tz_offset_h = _TZ_OFFSETS_H.get(tz_str.upper() if tz_str else "", 0)
+
+    try:
+        naive_dt = _datetime(year, month, day, hour, minute, second)
+        utc_dt = naive_dt - _td(hours=tz_offset_h)
+        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
 
 
 def _parse_usage_output(output: str) -> QuotaSnapshot | None:
@@ -36,6 +138,7 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
       Current week (all models): 86% used
       Current week (Sonnet only): 49% used
       Extra usage not enabled
+      Resets April 18, 2026 at 6:59 AM EST
     """
     # re.DOTALL required: /usage output puts the percentage on a separate line from
     # the label, with a block-character progress bar in between.
@@ -57,6 +160,7 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
         session_pct=float(session_match.group(1)) if session_match else None,
         weekly_sonnet_pct=float(sonnet_match.group(1)) if sonnet_match else None,
         extra_pct=float(extra_match.group(1)) if extra_match else (0.0 if extra_not_enabled else None),
+        reset_at=_parse_reset_datetime(output),
     )
 
 
@@ -409,6 +513,7 @@ def quota_scrape() -> int:
             session_pct=snapshot.session_pct,
             weekly_sonnet_pct=snapshot.weekly_sonnet_pct,
             extra_pct=snapshot.extra_pct,
+            reset_at=snapshot.reset_at,
         )
         print("Stored snapshot in local quota DB.")
         _publish_quota_snapshot(snapshot)

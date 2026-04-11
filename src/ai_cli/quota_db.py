@@ -11,21 +11,55 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Default weekly quota reset anchor.
-# Known anchor: 2026-04-04 06:00:00 UTC (April 4 1AM EST).
-# Override via [quota] reset_anchor_utc in ~/.config/ai-cli-utils/config.toml.
+# Default weekly quota reset anchor (fallback only — overridden by scraped value).
+# Override via [quota] reset_anchor_utc in ~/.config/ai-cli-utils/config.toml,
+# or automatically by record_quota_snapshot() when the /usage dialog includes a
+# reset datetime.
 _DEFAULT_RESET_ANCHOR = "2026-04-04T06:00:00Z"
 _WEEK_SECONDS = 7 * 24 * 3600
 
 
+def _get_reset_anchor_path() -> Path:
+    """Path to the file that caches the reset anchor observed from /usage scrapes."""
+    state_dir = Path.home() / ".local" / "state" / "ai-cli"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / "quota-reset-anchor.txt"
+
+
+def _save_reset_anchor(reset_utc_str: str) -> None:
+    """Persist a reset anchor observed from a /usage scrape."""
+    try:
+        _get_reset_anchor_path().write_text(reset_utc_str.strip())
+    except Exception:
+        pass
+
+
 def _get_reset_anchor_utc() -> datetime:
-    """Return the weekly quota reset anchor from config, or the default."""
+    """Return the weekly quota reset anchor.
+
+    Priority (highest to lowest):
+      1. Anchor file — written by record_quota_snapshot() when /usage includes a reset time.
+      2. Config file — [quota] reset_anchor_utc in config.toml.
+      3. Hardcoded default — last-known fallback.
+    """
+    # 1. Scraped anchor file
+    try:
+        anchor_file = _get_reset_anchor_path()
+        if anchor_file.exists():
+            anchor_str = anchor_file.read_text().strip()
+            if anchor_str:
+                return datetime.strptime(anchor_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+
+    # 2. Config file
     try:
         from .main import load_config
 
         anchor_str = load_config().get("quota", {}).get("reset_anchor_utc", _DEFAULT_RESET_ANCHOR)
     except Exception:
         anchor_str = _DEFAULT_RESET_ANCHOR
+
     return datetime.strptime(anchor_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
@@ -170,13 +204,24 @@ def record_quota_snapshot(
     session_pct: float | None = None,
     weekly_sonnet_pct: float | None = None,
     extra_pct: float | None = None,
+    reset_at: str | None = None,
 ) -> None:
-    """Insert a quota snapshot for the current week and update weekly state."""
+    """Insert a quota snapshot for the current week and update weekly state.
+
+    If ``reset_at`` is provided (scraped from the /usage dialog), it is
+    persisted as the new reset anchor so future week-start calculations are
+    accurate even when the reset time changes.
+    """
+    # Update the anchor before computing week_start so that _get_current_week_start()
+    # immediately uses the freshly scraped reset time for this and all future calls.
+    if reset_at:
+        _save_reset_anchor(reset_at)
+
     conn = _get_conn()
     now = datetime.now(timezone.utc)
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     week_start = _get_current_week_start(now)
-    reset_at = _get_reset_at(now)
+    derived_reset_at = _get_reset_at(now)
 
     conn.execute(
         """INSERT INTO quota_snapshots
@@ -191,7 +236,7 @@ def record_quota_snapshot(
            ON CONFLICT(week_start) DO UPDATE SET
                last_snapshot_at = ?,
                reset_at = ?""",
-        (week_start, now_iso, reset_at, now_iso, reset_at),
+        (week_start, now_iso, derived_reset_at, now_iso, derived_reset_at),
     )
     conn.commit()
     conn.close()
