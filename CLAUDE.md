@@ -14,13 +14,6 @@
 | Core | Python |
 | AI orchestration | Claude Code CLI + Gemini CLI |
 
-## Memory Management
-
-**When saving memories, ALWAYS do both steps — never skip the index update:**
-
-1. Write the memory file to `memory/` with frontmatter (name, description, type)
-2. **Immediately** add a pointer to `MEMORY.md` — if it's not indexed, it's invisible in future sessions
-
 ## Compaction
 
 **PreCompact hook** fires automatically before compaction — run `/save-state` immediately when you see the `SAVE_STATE_REQUIRED` message. This saves session state to memory files and docs before context is lost.
