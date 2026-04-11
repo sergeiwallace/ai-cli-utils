@@ -198,7 +198,7 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid AP
 **Model aliases** (`-m`/`--model`):
 - `deep-think` (default) — Gemini 3.1 Pro with HIGH thinking via 3-tier fallback
 - `pro`, `flash`, `flash-lite` — standard Gemini models via 3-tier fallback
-- `deep-research` — Gemini Deep Research via Interactions API. Async, polls until complete, cancels on Ctrl-C. Tries OAuth (tier 1) first; falls back to paid API key (tier 3). Free-tier key (tier 2) is skipped — deep-research has no free quota.
+- `deep-research` — Gemini Deep Research via Interactions API. Async, polls until complete, cancels on Ctrl-C. Tries OAuth (tier 1) first; falls back to paid API key (tier 3) on HTTP 403 or 429. Free-tier key (tier 2) is skipped — deep-research has no free quota. **OAuth setup required** for tier 1: see [Deep Research OAuth Setup](#deep-research-oauth-setup) below.
 - Any full Gemini model ID
 
 **Auth tier notes** (see [pricing](https://ai.google.dev/gemini-api/docs/pricing)):
@@ -221,6 +221,47 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid AP
 **Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
 
 **Checkpoints:** `~/.local/state/ai-cli/research-runs/<run-id>/` -- JSON snapshots after each step. Use `--resume <run-id>` to restart from last completed step.
+
+#### Deep Research OAuth Setup
+
+`deep-research` uses `google.auth.default()` (Application Default Credentials) for
+tier 1 OAuth. The gemini CLI's built-in OAuth client cannot be reused — it authenticates
+to a different backend (`cloudcode-pa.googleapis.com`). A custom Desktop-app OAuth
+client is required.
+
+**Prerequisites:**
+- A GCP project with the Generative Language API enabled
+- `gcloud` CLI installed locally
+
+**Steps:**
+
+1. **Create a Desktop-app OAuth client in GCP Console:**
+   - Go to `console.cloud.google.com/auth/clients?project=YOUR_PROJECT`
+   - Complete the Google Auth Platform setup if not done (App name, audience External, contact email)
+   - Create client → Application type: **Desktop app**
+   - Download the JSON as `~/.config/gcp/client_secret.json` (set `chmod 600`)
+
+2. **Add yourself as a test user** (if app is in Testing mode):
+   - Go to **Audience** → **Add users** → add your Google account email
+
+3. **Run ADC login:**
+   ```bash
+   gcloud auth application-default login \
+     --client-id-file=~/.config/gcp/client_secret.json \
+     --scopes="https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/generative-language.retriever"
+   ```
+   This saves credentials to `~/.config/gcloud/application_default_credentials.json`.
+
+4. **On a remote server** (e.g., SSH host), copy the ADC file:
+   ```bash
+   scp ~/.config/gcloud/application_default_credentials.json user@host:~/.config/gcloud/
+   ```
+   The ADC file contains a refresh_token that auto-renews access tokens; no further
+   manual refresh is needed.
+
+**Fallback behavior:** If the OAuth submit returns HTTP 403 (insufficient scope) or
+429 (quota/billing), `ai gemini -m deep-research` automatically retries with
+`GOOGLE_API_KEY_TIER_1` (the paid API key) and logs the fallback reason.
 
 ### ai handoff
 

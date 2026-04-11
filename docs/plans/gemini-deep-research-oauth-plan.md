@@ -64,29 +64,28 @@ Source: researcher agent run 2026-04-11, citations from ai.google.dev official d
 
 > **Feedback:**
 
-## Track A — Code Fix: Fall Through on 403 Scope Error
+## Track A — Code Fix: Fall Through on 403/429 Scope Error
 
-**Status:** Not started
+**Status:** Complete (`322ea4d`, `2baa3ff`)
 
 **Problem:** `_run_deep_research()` currently returns an error on 403 PERMISSION_DENIED
 (scope error) rather than falling through to the paid API key. This means if OAuth is
 configured but has wrong scope, the fallback never triggers.
 
-**Fix:** In `_run_deep_research()`, catch 403 from the submit call and fall through to
-paid key (same as the "OAuth unavailable" path). Add a clear log message:
-`→ OAuth returned 403 (insufficient scope) — falling through to paid key`
+**Fix shipped:** `_run_deep_research()` catches 403 and 429 from OAuth submit and falls
+through to paid key. Logs: `→ OAuth returned {code} ({reason}) — falling through to paid key`.
 
 **Files:** `src/ai_cli/gemini.py` — `_run_deep_research()`
 
-**Tests needed:**
-- `test_when_oauth_returns_403_then_falls_through_to_paid_key`
-- `test_when_oauth_returns_403_and_no_paid_key_then_error`
+**Tests:** parametrized over [403, 429]:
+- `test_when_oauth_returns_4xx_then_falls_through_to_paid_key`
+- `test_when_oauth_returns_4xx_and_no_paid_key_then_error`
 
 > **Feedback:**
 
 ## Track B — GCP Custom OAuth Client Setup
 
-**Status:** In progress (blocked on agent-browser)
+**Status:** Complete (2026-04-11)
 
 **Goal:** Set up a custom Desktop-app OAuth client in GCP so `ai gemini -m deep-research`
 can authenticate via OAuth (free, using Developer Program credits) instead of API key.
@@ -102,47 +101,53 @@ can authenticate via OAuth (free, using Developer Program credits) instead of AP
 8. Test: `ai gemini -m deep-research` should use OAuth without 403
 9. No code changes needed — `google.auth.default()` reads ADC automatically
 
-**Blocker:** `agent-browser` CLI not found — see Track C.
+**Completed steps:**
+- `agent-browser` installed: `npm install -g agent-browser --ignore-scripts`
+- GCP Auth Platform configured for `gen-lang-client-0651020461`
+- OAuth 2.0 Desktop app client `ai-cli-gemini-desktop` created
+- `client_secret.json` saved to `~/.config/gcp/` on Mac and Hetzner (mode 600)
+- Test user `sergeipwallace@gmail.com` added to Audience
+- ADC login run on Mac, credentials SCP'd to Hetzner
+- OAuth token confirmed valid with `generative-language.retriever` scope
 
-**Alternative if OAuth setup too complex:** Simplify to just doing Track A (paid key fallthrough)
-and skipping OAuth setup. Deep-research costs ~$0.30-1 per task with credits applied; minimal
-real cost.
+**Outstanding:** HTTP 429 "prepayment credits depleted" on `gen-lang-client-0651020461`.
+Both OAuth and paid key hit this. Root cause: AI Studio project has no prepayment balance.
+Action needed: add AI Studio credits at `aistudio.google.com` or verify GCP billing link.
+The Track A fallthrough means deep-research will still try paid key automatically.
 
 > **Feedback:**
 
 ## Track C — agent-browser Investigation
 
-**Status:** Not started
+**Status:** Complete (2026-04-11)
 
-**Problem:** `agent-browser` command not found in PATH on Mac. CLAUDE.md documents it as
-available but it's not installed anywhere obvious (not in npm global, not in ~/.local/bin,
-not in ~/ACLI/).
+**Root cause:** `agent-browser` is an npm package (`agent-browser@0.25.3`, published by Vercel).
+The symlink `/usr/local/bin/agent-browser` existed but pointed to a non-existent target — a
+previous install attempt failed during the `postinstall` script (ELOOP — symlink loop), leaving
+an orphaned symlink.
 
-**Investigation needed:**
-1. Check if it's a separate CLI package that needs installation
-2. Check npm global packages: `npm list -g | grep browser`
-3. Check pip packages: `pip list | grep agent`
-4. Check ~/ACLI/ directory contents in detail
-5. Check if it's part of the `claude-plugins` or some other CC plugin
-6. Check CC settings.json for any plugin/tool registration
-7. If not installed: find install instructions and install it
+**Fix:**
+```bash
+npm install -g agent-browser --ignore-scripts
+```
+`--ignore-scripts` skips the problematic postinstall. The CLI works normally once installed.
 
-**Alternative for GCP Console work:** `npx playwright` with CDP endpoint for browser automation
+**Version:** 0.25.3. CDP usage: `agent-browser --cdp <port> <command>`.
 
 > **Feedback:**
 
 ## Track D — R-12 Retry (artelier)
 
-**Status:** Blocked on Track A or B
+**Status:** Blocked on AI Studio billing issue (Track B outstanding)
 
 **Current state on Hetzner:**
 - Registry status: "⚠️ Blocked — OAuth scope error; retry from Mac or with paid key"
 - Prompt file: `/tmp/r12_prompt.txt` (still on Hetzner from previous run)
 - tmux session: killed (r12-research)
 
-**Unblock path:**
-- Option 1 (preferred): Complete Track B → retry with OAuth
-- Option 2: Complete Track A → paid key fallback works → retry with paid key (approved if credit confirmed)
+**Unblock path:** Resolve AI Studio 429 billing issue (add prepayment credits or verify GCP
+billing link for `gen-lang-client-0651020461`). Once resolved, `ai gemini -m deep-research`
+will work — OAuth first, paid key fallback if OAuth hits limits.
 
 **Post-run steps (for artelier session c-r-art-1 to handle):**
 - Update R-12 status to ✅ Complete in research registry
@@ -154,14 +159,18 @@ not in ~/ACLI/).
 
 ## Acceptance Criteria
 
-- [ ] `_run_deep_research()` falls through to paid key on HTTP 403 (not just on OAuth None)
-- [ ] `ai gemini -m deep-research` on Hetzner completes successfully (either OAuth or paid key)
+- [x] `_run_deep_research()` falls through to paid key on HTTP 403 or 429 (not just on OAuth None)
+- [ ] `ai gemini -m deep-research` on Hetzner completes successfully (blocked on AI Studio billing)
 - [ ] R-12 research doc landed in artelier at `docs/research/artist-expansion-survey-2026.md`
 - [ ] Handoff sent to c-r-art-1
-- [ ] `agent-browser` either found/fixed or workaround documented
+- [x] `agent-browser` fixed: `npm install -g agent-browser --ignore-scripts`
 
 ## Approval Log
 
 - 2026-04-11 Round 1: Plan drafted mid-session. R-12 run authorized. Paid key use deferred pending
   credit confirmation. GCP OAuth client approach approved in principle. agent-browser investigation
   needed before browser automation can proceed.
+- 2026-04-11 Round 2: Tracks A, B, C completed. agent-browser installed. OAuth client created in GCP.
+  ADC credentials deployed to Hetzner. 403/429 fallthrough shipped (`322ea4d`, `2baa3ff`).
+  Outstanding: AI Studio `gen-lang-client-0651020461` has no prepayment credits; both OAuth and paid
+  key return 429. Client secret exposed in session JSONL — rotation recommended after billing resolved.
