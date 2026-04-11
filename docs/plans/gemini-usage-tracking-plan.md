@@ -11,7 +11,7 @@ source: internal
 **Status:** DRAFT
 
 **Created:** 2026-04-10
-**Revised:** 2026-04-11 (round 2)
+**Revised:** 2026-04-11 (round 3)
 
 **Task:** `AI-CLI-41`
 **Related:** SW-767 (sergei — track token usage per research run)
@@ -40,12 +40,12 @@ source: internal
 ## Overview
 
 Surface Gemini API usage and cost data automatically, with safety-first design around
-paid deep-research spending. Core deliverables: (1) fix token count extraction so per-run
-data is actually logged; (2) a daily Deep Research OAuth run counter with real-time
-stderr feedback; (3) a hard gate before any `ai_studio_paid` deep-research run — the tool
-never silently falls back to the paid key for deep-research, always requiring explicit
-opt-in; (4) an `ai spend gemini` command pulling actual billed amounts from GCP BigQuery
-billing export for paid runs, with OAuth run counts from local logs.
+paid API spending. Core deliverables: (1) fix token count extraction so per-run data is
+actually logged; (2) a `paid_fallback_enabled` config toggle (default: `false`) that
+removes the `ai_studio_paid` tier from the fallback chain entirely until billing credit
+applicability is confirmed (AI-CLI-43); (3) a daily Deep Research OAuth run counter with
+real-time stderr feedback; (4) an `ai spend gemini` command pulling actual billed amounts
+from GCP BigQuery billing export for paid runs, with OAuth run counts from local logs.
 
 ---
 
@@ -169,7 +169,7 @@ Google's own billing terminology. Replacing throughout with Google-aligned names
 |----------|-----------|-----------|
 | `oauth` | "gemini-cli (OAuth)" / tier 1 | Gemini CLI OAuth via Google AI Ultra consumer subscription — free, daily DR cap |
 | `ai_studio_free` | "API free-tier" / tier 2 | Google AI Studio free-tier API key — free for Flash/Gemma only |
-| `ai_studio_paid` | "API paid" / tier 3 | Google AI Studio paid API key linked to billing account — potentially billed (credit applicability TBD) |
+| `ai_studio_paid` | "API paid" / tier 3 | Google AI Studio paid API key — **disabled by default** (`paid_fallback_enabled = false`) until AI-CLI-43 resolves billing credit applicability |
 
 These names are used in:
 - `TIER_NAMES` dict in `gemini.py`
@@ -273,39 +273,46 @@ Also:
 
 ---
 
-### T-02: Deep Research paid-run gate + daily OAuth counter
+### T-02: `paid_fallback_enabled` config toggle + daily OAuth counter
 
 **Size:** S
 **Batch:** 1
 
 Two closely related behaviors, implemented together:
 
-**Part A — Paid-run hard gate (safety-critical):**
+**Part A — `paid_fallback_enabled` config toggle:**
 
-Change the deep-research fallback behavior so that when OAuth is unavailable, the tool
-does NOT auto-fall-back to `ai_studio_paid`. Instead it exits with a warning and
-requires explicit opt-in.
+Add a boolean config key to `config.toml` under `[gemini]`:
 
-New CLI flag: `-P` / `--confirm-paid` (on `ai gemini`, applies only to deep-research).
-
-Behavior when OAuth unavailable and `--confirm-paid` not set:
-```
-[deep-research] OAuth unavailable.
-  AI Studio paid key found, but billing credit status is unconfirmed — this run may
-  cost ~$2–5 out of pocket if the Ultra subscription credit doesn't apply.
-  To proceed: ai gemini "..." -m deep-research --confirm-paid
-  To investigate billing: ai spend gemini
+```toml
+[gemini]
+paid_fallback_enabled = false   # set true only after AI-CLI-43 confirms billing credit status
 ```
 
-Behavior when `--confirm-paid` is set and OAuth unavailable:
+When `false` (default): `ai_studio_paid` is removed from the fallback chain entirely for
+all models. If OAuth and free-tier both fail or are unavailable, the run exits cleanly:
+
 ```
-[deep-research] Warning: running with AI Studio paid key. Billing credit status
-  unconfirmed — check `ai spend gemini` after this run to verify charge.
+[ai gemini] No available auth method succeeded.
+  OAuth: unavailable  |  AI Studio free tier: not eligible for this model
+  AI Studio paid fallback is disabled (paid_fallback_enabled = false in config).
+  To enable: set paid_fallback_enabled = true in ~/.config/ai-cli/config.toml
+  (Do this only after confirming billing credit status — see AI-CLI-43)
 ```
 
-This gate is **unconditional** — it fires regardless of what we later confirm about
-credit applicability. If we later confirm credits do apply, the warning text is updated
-but the explicit opt-in remains (conscious spending is always better than silent spending).
+When `true`: `ai_studio_paid` re-enters the fallback chain. For deep-research
+specifically, the `-P` / `--confirm-paid` flag is still required as an additional
+runtime gate (conscious opt-in, even when paid is enabled in config):
+
+```
+[deep-research] OAuth unavailable. AI Studio paid key is enabled in config.
+  This run may incur charges — billing credit status: unconfirmed (see AI-CLI-43).
+  To proceed: ai gemini "..." -m deep-research -P
+  To check spend: ai spend gemini
+```
+
+The `-P` / `--confirm-paid` flag is implemented now (for when paid is eventually
+re-enabled) but has no effect while `paid_fallback_enabled = false`.
 
 **Part B — Daily OAuth run counter:**
 
@@ -333,15 +340,14 @@ Stderr output after each OAuth deep-research run:
 [deep-research] OAuth runs today: 3/20
 ```
 
-After each paid deep-research run:
+After each paid deep-research run (only reachable when `paid_fallback_enabled = true`):
 ```
 [deep-research] Paid (AI Studio) runs today: 1 — check `ai spend gemini` for charges
 ```
 
 Warning when `oauth_count >= DEEP_RESEARCH_DAILY_WARNING`:
 ```
-[deep-research] Warning: 18/20 OAuth runs used today. Approaching daily limit — next
-  paid fallback will require --confirm-paid.
+[deep-research] Warning: 18/20 OAuth runs used today. Approaching daily limit.
 ```
 
 Counter increments on **completion** only. Cancelled/errored runs not counted. File
@@ -349,14 +355,19 @@ created on first run. `quiet=True` suppresses counter output.
 
 **Deliverables:**
 
-- `src/ai_cli/gemini.py` — paid gate, `-P`/`--confirm-paid` flag, counter logic, constants
+- `src/ai_cli/gemini.py` — `paid_fallback_enabled` config check in fallback chain,
+  `-P`/`--confirm-paid` gate for deep-research when paid is enabled, counter logic,
+  `DEEP_RESEARCH_DAILY_LIMIT` / `DEEP_RESEARCH_DAILY_WARNING` constants
 - `src/ai_cli/main.py` — add `-P`/`--confirm-paid` to `ai gemini` arg parser
+- `src/ai_cli/config.py` (or equivalent) — `paid_fallback_enabled` key, default `false`
 - State file: `~/.local/state/ai-cli/dr-daily.json`
+- `docs/tools/ai-cli-usage.md` — document the config key and what it controls
 
 **Acceptance criteria:**
 
-- [ ] When OAuth unavailable and `--confirm-paid` not set: exits with warning, no API call made, return code 1
-- [ ] When `--confirm-paid` set and OAuth unavailable: runs with `ai_studio_paid`, prints loud warning
+- [ ] When `paid_fallback_enabled = false`: `ai_studio_paid` never attempted regardless of model; exits with actionable message if OAuth/free-tier exhaust
+- [ ] When `paid_fallback_enabled = true` and OAuth unavailable for deep-research: exits unless `-P` provided
+- [ ] When `paid_fallback_enabled = true` and `-P` provided: runs with `ai_studio_paid`, prints warning
 - [ ] `oauth_count` increments after a successful OAuth deep-research run
 - [ ] `paid_count` increments after a successful `ai_studio_paid` deep-research run
 - [ ] Counter resets on date rollover (test with mocked date)
@@ -365,8 +376,7 @@ created on first run. `quiet=True` suppresses counter output.
 - [ ] Stderr prints `[deep-research] OAuth runs today: N/20` after each OAuth run
 - [ ] Warning line printed when `oauth_count >= 18`
 - [ ] `quiet=True` suppresses counter output
-
-**Prerequisites:** Billing credit status investigated (Q5) so warning text is accurate.
+- [ ] Default config has `paid_fallback_enabled = false`
 
 **Dependencies:** T-01 (correct `tier_name` in log for oauth vs paid distinction)
 
@@ -470,11 +480,11 @@ Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` ou
 
 | Gate | After | Decision needed |
 |------|-------|-----------------|
-| Billing credit investigation | Before T-02 implementation | Investigate Q5: does Ultra credit apply to AI Studio paid key? Update warning text accordingly. |
-| Plan approval | Before Batch 1 | Approve scope, approach, tier naming, paid-run gate behavior |
+| Plan approval | Before Batch 1 | Approve scope, approach, tier naming, config toggle behavior |
 | BigQuery setup | Before T-03 | Enable GCP BigQuery billing export in Cloud Console; enable BigQuery API on `gen-lang-client-0651020461` |
 | Output format review | After T-03 draft | Approve `ai spend gemini` display and SKU→model mapping |
-| UAT | After Batch 2 | Confirm counter increments, paid gate fires correctly, BigQuery spend data pulls |
+| UAT | After Batch 2 | Confirm counter increments, paid gate config works, BigQuery spend data pulls |
+| Re-enable paid fallback | After AI-CLI-43 resolved | Set `paid_fallback_enabled = true` in config once billing credit status confirmed |
 
 ## Open Questions
 
@@ -488,20 +498,20 @@ Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` ou
 4. **Partially resolved** — `DEEP_RESEARCH_DAILY_LIMIT = 20`: empirically unknown but
    reasonable starting point. Update the constant when a real limit is encountered.
 
-5. **P0 OPEN — Does the Ultra credit apply to AI Studio paid key?** As of 2026-04-11:
-   - The Ultra subscription credit ($100/month) was recently connected to billing
-     account `01AC33-5BE8AD-2F4E8A`.
-   - Mixed information online about whether AI Studio API keys (`AIzaSy...`) receive
-     this credit, or whether it only applies to Vertex AI keys.
-   - The Interactions API (deep-research) may not work with Vertex AI keys, making a
-     key switch potentially impossible.
-   - **Required before T-02 implementation:** investigate via Google Cloud billing
-     dashboard, Google support, or a controlled test. The paid-run gate in T-02 is
-     implemented unconditionally either way, but the warning text should reflect the
-     actual credit status once known.
-   - **Suggestion:** after BigQuery export is enabled (T-03 human gate), run one
-     `--confirm-paid` deep-research run and check the next day's billing export for
-     a charge. If $0 → credit applies. If charged → it does not.
+5. **DEFERRED (not blocking) — Does the Ultra credit apply to AI Studio paid key?**
+   - "Vertex-only" claim traced to a single unanswered forum post citing Reddit with no
+     official source — not a reliable citation.
+   - Official Developer Program docs say credits apply to "AI Studio and Vertex AI or
+     any Google Cloud product" — suggests AI Studio keys ARE covered.
+   - However, AI Studio still shows "Action Needed - No Available Credits" and requires
+     Prepay for new projects, suggesting the credit may not satisfy the Prepay
+     requirement regardless of whether it appears on the GCP invoice.
+   - **Not blocking:** `paid_fallback_enabled = false` (default) means no paid runs fire
+     until this is resolved. Email sent to `gdp-premium-support@google.com` 2026-04-11.
+     Follow-up via Google Cloud Support chat/phone in progress (AI-CLI-43, due 2026-04-12).
+   - **Resolution path:** once AI-CLI-43 is answered, update warning text in T-02,
+     set `paid_fallback_enabled = true` in config, and optionally run one `--confirm-paid`
+     run + check next-day BigQuery export to confirm empirically.
 
 ---
 
@@ -535,3 +545,5 @@ Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` ou
 | 2026-04-11 | Plan revised (round 1) | Full JSONL schema audit; BigQuery approach adopted; tier naming overhauled; T-01 reframed; T-04 out-of-scope; AI-CLI-25 confirmed not blocking |
 | 2026-04-11 | User feedback round 1 committed | Billing credit uncertainty (Q5) identified as P0 safety concern |
 | 2026-04-11 | Plan revised (round 2) | T-02 redesigned with unconditional paid-run gate (`--confirm-paid` / `-P`); billing uncertainty documented; T-03 updated to show credit status hint from BigQuery data; Q5 added as P0 open question |
+| 2026-04-11 | User feedback round 2 committed | Disable `ai_studio_paid` fallback by default via `paid_fallback_enabled` config toggle; OAuth-only for now; "Vertex-only" claim confirmed baseless; email sent to GDP premium support |
+| 2026-04-11 | Plan revised (round 3) | T-02 redesigned around `paid_fallback_enabled` config toggle (default false); `-P`/`--confirm-paid` retained for when paid is re-enabled; human gate for billing credit investigation removed (not blocking); Q5 demoted to deferred |
