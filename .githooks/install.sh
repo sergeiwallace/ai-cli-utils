@@ -18,7 +18,9 @@ else
 fi
 
 echo "[3/3] Done!"
-echo "  - Pre-commit: lints markdown"
-echo "  - Pre-push: lints markdown, runs tests on changed files"
-echo "  - Override: SKIP_TESTS=1 git push  (skip test gate)"
-echo "  - Override: SKIP_LINT=1 git push   (skip lint checks)"
+echo "  - Pre-commit:  lints markdown"
+echo "  - Commit-msg:  blocks feat: commits missing a CHANGELOG.md [Unreleased] entry"
+echo "  - Pre-push:    lints markdown, runs hook tests, runs Python tests"
+echo "  - Override: SKIP_TESTS=1 git push       (skip test gate)"
+echo "  - Override: SKIP_LINT=1 git push        (skip lint checks)"
+echo "  - Override: SKIP_CHANGELOG=1 git commit (skip CHANGELOG enforcement)"

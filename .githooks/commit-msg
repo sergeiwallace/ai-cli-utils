@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# commit-msg hook: require CHANGELOG.md [Unreleased] entry for feat: commits.
+#
+# Enforces the versioning convention: every user-facing feature commit must
+# include a CHANGELOG.md update in the same staged changeset.
+#
+# Bypass (use sparingly):
+#   SKIP_CHANGELOG=1 git commit -m "feat: ..."
+set -euo pipefail
+
+if [ "${SKIP_CHANGELOG:-0}" = "1" ]; then
+    exit 0
+fi
+
+FIRST_LINE=$(head -1 "$1")
+
+# Match feat: or feat(scope): on the first line only (conventional commit prefix)
+if echo "$FIRST_LINE" | grep -qE "^feat(\([^)]+\))?:"; then
+    if ! git diff --cached --name-only | grep -q "^CHANGELOG.md$"; then
+        echo ""
+        echo "[commit-msg] ERROR: feat: commits require a CHANGELOG.md [Unreleased] entry."
+        echo "[commit-msg] Add the entry, stage CHANGELOG.md, then retry."
+        echo "[commit-msg] To bypass: SKIP_CHANGELOG=1 git commit ..."
+        echo ""
+        exit 1
+    fi
+fi

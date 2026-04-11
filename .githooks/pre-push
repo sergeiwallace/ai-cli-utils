@@ -50,7 +50,14 @@ fi
 # ── Test gate ────────────────────────────────────────────────────────────
 if [ "${SKIP_TESTS:-0}" != "1" ]; then
 
-
+    # Hook tests
+    if [ -f "$REPO_ROOT/tests/hooks/test-commit-msg.sh" ]; then
+        echo "[pre-push] Running commit-msg hook tests..."
+        if ! bash "$REPO_ROOT/tests/hooks/test-commit-msg.sh"; then
+            echo "[pre-push] ERROR: commit-msg hook tests failed."
+            ERRORS=1
+        fi
+    fi
 
     if [ -d "$REPO_ROOT/src" ] || [ -d "$REPO_ROOT/tests" ]; then
         # Resolve pytest: pyenv .python-version → project venv → system
