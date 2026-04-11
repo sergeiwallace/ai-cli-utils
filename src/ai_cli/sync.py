@@ -846,9 +846,12 @@ def _replicate_to_worktrees(
 
             # Copy and translate JSONL files — only those belonging to this worktree's session.
             # Match criteria (any of):
-            #   1. customTitle matches worktree name (e.g. "sw-5" from --name sw-5)
-            #   2. cwd in the JSONL points to this worktree path (conversation created in worktree)
-            wt_path_marker = f".worktrees/{wt_session_name}".encode()
+            #   1. customTitle field equals the worktree session name
+            #   2. cwd field equals the worktree path (conversation created in worktree)
+            # Both criteria use JSON field parsing to avoid false positives from raw-byte
+            # substring matches against message content that happens to mention the path.
+            import json as _json
+
             for src in cc_dir.glob("*.jsonl"):
                 dst = wt_cc_dir / src.name
                 if dst.exists() and not dst.is_symlink():
@@ -858,13 +861,23 @@ def _replicate_to_worktrees(
                 # Check if this conversation belongs to this worktree
                 try:
                     with open(src, "rb") as f:
-                        # Read first few KB — title is line 1, cwd appears early
+                        # Read first few KB — title and cwd appear in early lines
                         head = f.read(4096)
-                    title_match = (
-                        f'"customTitle":"{wt_session_name}"'.encode() in head
-                        or f'"customTitle": "{wt_session_name}"'.encode() in head
-                    )
-                    cwd_match = wt_path_marker in head
+                    title_match = False
+                    cwd_match = False
+                    for raw_line in head.split(b"\n"):
+                        if not raw_line:
+                            continue
+                        try:
+                            obj = _json.loads(raw_line)
+                        except (_json.JSONDecodeError, ValueError):
+                            continue
+                        if not title_match and obj.get("customTitle") == wt_session_name:
+                            title_match = True
+                        if not cwd_match and obj.get("cwd") == wt_cwd:
+                            cwd_match = True
+                        if title_match or cwd_match:
+                            break
                     if not title_match and not cwd_match:
                         continue  # Not this worktree's conversation — skip
                 except Exception:
