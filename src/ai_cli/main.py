@@ -3340,10 +3340,19 @@ def cli():
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         if len(sys.argv) == 2:
             print(
-                "Usage: ai sync [push|pull|conflicts|watch] [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]"
+                "Usage: ai sync [push|pull|conflicts|watch|cleanup|repair-worktree] [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]"
             )
             sys.exit(1)
-        from .sync import sync_push, sync_pull, sync_conflicts, sync_watch
+        from .sync import (
+            sync_push,
+            sync_pull,
+            sync_conflicts,
+            sync_watch,
+            repair_worktree_cc_dir,
+            clean_worktree_cc_dirs,
+            _cc_projects_dir,
+            get_local_prefix,
+        )
 
         action = sys.argv[2]
         flags = sys.argv[3:]
@@ -3355,8 +3364,50 @@ def cli():
             sys.exit(sync_conflicts(flags))
         elif action == "watch":
             sys.exit(sync_watch(flags))
+        elif action == "repair-worktree":
+            # Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]
+            positional = [a for a in flags if not a.startswith("-")]
+            if len(positional) < 2:
+                print(
+                    "Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]\n"
+                    "Example: ai sync repair-worktree job-pilot job-1\n"
+                    "Copies all conversations from the main project CC dir into the worktree CC dir\n"
+                    "so they are accessible from the worktree session.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            project_name = positional[0]
+            wt_name = positional[1]
+            dry_run = "-n" in flags or "--dry-run" in flags
+            verbose = "-v" in flags or "--verbose" in flags
+            copied = repair_worktree_cc_dir(
+                project_name=project_name,
+                wt_name=wt_name,
+                cc_projects_dir=_cc_projects_dir(),
+                local_prefix=get_local_prefix(),
+                dry_run=dry_run,
+                verbose=verbose,
+            )
+            sys.exit(0 if copied >= 0 else 1)
+        elif action == "cleanup":
+            # Usage: ai sync cleanup [-n|--dry-run] [-v|--verbose]
+            # Removes stale duplicate JSONL copies and orphan lock dirs from worktree CC dirs.
+            dry_run = "-n" in flags or "--dry-run" in flags
+            verbose = "-v" in flags or "--verbose" in flags
+            removed_jsonl, removed_lock = clean_worktree_cc_dirs(
+                _cc_projects_dir(),
+                get_local_prefix(),
+                dry_run=dry_run,
+                verbose=verbose,
+            )
+            verb = "Would remove" if dry_run else "Removed"
+            print(f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
+            sys.exit(0)
         else:
-            print(f"Unknown sync action: {action}. Use push, pull, conflicts, or watch.", file=sys.stderr)
+            print(
+                f"Unknown sync action: {action}. Use push, pull, conflicts, watch, cleanup, or repair-worktree.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "reconnect":

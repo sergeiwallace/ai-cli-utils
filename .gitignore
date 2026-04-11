@@ -74,4 +74,5 @@ package-lock.json
 
 # Logo archive (working drafts)
 logos/archive/
+.direnv
 assets/iterm2-key-bindings/

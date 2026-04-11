@@ -878,6 +878,10 @@ def apply_pull_files(
     if not memories_only and not dry_run:
         wt_count = _replicate_to_worktrees(cc_projects_dir, local_prefix, verbose)
         applied_count += wt_count
+        # Note: clean_worktree_cc_dirs is not called here automatically.
+        # It is a one-time cleanup tool exposed as `ai sync cleanup`.
+        # Running it on every pull would remove files placed by repair_worktree_cc_dir
+        # before the user has had a chance to extend them by resuming the conversation.
 
     return {"conflicts": conflicts, "applied_count": applied_count}
 
@@ -992,6 +996,182 @@ def _replicate_to_worktrees(
                             print(f"  replicate dir: {bare_name}/{d.name} → {wt_path.name}")
 
     return count
+
+
+def clean_worktree_cc_dirs(
+    cc_projects_dir: Path,
+    local_prefix: str,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> tuple[int, int]:
+    """Remove stale JSONL copies and orphan lock dirs from worktree CC directories.
+
+    Two categories of stale files are removed:
+
+    1. JSONL duplicates — a JSONL file in a worktree CC dir whose UUID also exists
+       in the corresponding main project CC dir AND whose customTitle does not match
+       the worktree session name.  These are leftover copies created by old versions
+       of ``_replicate_to_worktrees`` before the customTitle filter was introduced.
+       Removing them is safe: the originals remain in the main project CC dir.
+
+    2. Orphan lock directories — UUID-named directories in a worktree CC dir with no
+       corresponding ``{uuid}.jsonl`` file in the same dir.  CC treats these as
+       active sessions and hides the conversation from the /resume picker.
+
+    Returns (removed_jsonl_count, removed_lock_count).
+    """
+    removed_jsonl = 0
+    removed_lock = 0
+
+    if not cc_projects_dir.exists():
+        return 0, 0
+
+    for cc_dir in sorted(cc_projects_dir.iterdir()):
+        if not cc_dir.is_dir():
+            continue
+        bare_name = normalize_project_path(cc_dir.name, local_prefix)
+        if bare_name is None:
+            continue
+        wt_name = _wt_name_from_bare_name(bare_name)
+        if not wt_name:
+            continue  # Not a worktree CC dir
+
+        # Locate the corresponding main project CC dir
+        main_bare = bare_name.split("--worktrees-")[0]
+        main_cc_dir = cc_projects_dir / (local_prefix + main_bare)
+        main_uuids = {f.stem for f in main_cc_dir.glob("*.jsonl")} if main_cc_dir.is_dir() else set()
+
+        # Track which UUIDs have a valid .jsonl in the worktree CC dir (after cleanup)
+        valid_uuids: set[str] = set()
+
+        for jsonl_path in sorted(cc_dir.glob("*.jsonl")):
+            title = _jsonl_custom_title(jsonl_path)
+            if title == wt_name:
+                valid_uuids.add(jsonl_path.stem)
+                continue  # Correct session — keep
+
+            # Foreign or untitled: remove only if the UUID also exists in the main CC dir
+            # (i.e. it is a copy, not a standalone worktree-native conversation) AND
+            # the worktree file is not larger than the main copy (which would mean the
+            # conversation was resumed and extended in the worktree — keep those).
+            if jsonl_path.stem in main_uuids:
+                main_copy = (main_cc_dir / jsonl_path.name) if main_cc_dir.is_dir() else None
+                wt_size = jsonl_path.stat().st_size
+                main_size = main_copy.stat().st_size if (main_copy and main_copy.exists()) else 0
+                if wt_size > main_size:
+                    # Worktree copy is larger — conversation was continued here, keep it
+                    valid_uuids.add(jsonl_path.stem)
+                else:
+                    if not dry_run:
+                        jsonl_path.unlink()
+                    removed_jsonl += 1
+                    if verbose:
+                        print(f"  rm stale copy: {bare_name}/{jsonl_path.name} (title={title!r}, exists in main)")
+            else:
+                # Unique to this worktree — keep it
+                valid_uuids.add(jsonl_path.stem)
+
+        # Remove orphan lock directories (UUID dirs with no matching .jsonl)
+        for item in sorted(cc_dir.iterdir()):
+            if not item.is_dir() or item.name == "memory":
+                continue
+            # Only consider UUID-looking names (32+ hex chars with dashes)
+            if item.name in valid_uuids:
+                continue  # Has a matching .jsonl — keep
+            if not dry_run:
+                shutil.rmtree(item)
+            removed_lock += 1
+            if verbose:
+                print(f"  rm orphan lock: {bare_name}/{item.name}/")
+
+    return removed_jsonl, removed_lock
+
+
+def repair_worktree_cc_dir(
+    project_name: str,
+    wt_name: str,
+    cc_projects_dir: Path,
+    local_prefix: str,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
+    """Copy all JSONL conversations from a main project CC dir to a worktree CC dir.
+
+    Used when conversations created in the main project context (e.g. on another
+    machine without a worktree) need to be accessible from a worktree CC session.
+
+    Translates the ``cwd`` field from the main project path to the worktree path.
+    Skips files that already exist in the worktree CC dir (non-destructive).
+    Removes orphan lock directories before copying.
+
+    Returns the number of files copied.
+    """
+    from .main import _get_projects_dir
+
+    projects_base = _get_projects_dir()
+    project_path = projects_base / project_name
+    if not project_path.is_dir():
+        print(f"Error: project '{project_name}' not found at {project_path}", file=sys.stderr)
+        return 0
+
+    wt_path = project_path / ".worktrees" / wt_name
+    if not wt_path.is_dir():
+        print(f"Error: worktree '{wt_name}' not found at {wt_path}", file=sys.stderr)
+        return 0
+
+    main_cc_name = local_prefix + project_name
+    main_cc_dir = cc_projects_dir / main_cc_name
+    if not main_cc_dir.is_dir():
+        print(f"Error: no CC dir for '{project_name}' at {main_cc_dir}", file=sys.stderr)
+        return 0
+
+    wt_cc_name = local_prefix + project_name + "--worktrees-" + wt_name
+    wt_cc_dir = cc_projects_dir / wt_cc_name
+    if not dry_run:
+        wt_cc_dir.mkdir(parents=True, exist_ok=True)
+
+    main_cwd = str(project_path)
+    wt_cwd = str(wt_path)
+
+    # Remove orphan lock dirs first so they don't block resumed conversations
+    existing_jsonl = {f.stem for f in wt_cc_dir.glob("*.jsonl")} if wt_cc_dir.is_dir() else set()
+    for item in sorted(wt_cc_dir.iterdir()) if wt_cc_dir.is_dir() else []:
+        if not item.is_dir() or item.name == "memory":
+            continue
+        if item.name not in existing_jsonl:
+            if not dry_run:
+                shutil.rmtree(item)
+            if verbose:
+                print(f"  rm orphan lock: {wt_cc_name}/{item.name}/")
+
+    copied = 0
+    for src in sorted(main_cc_dir.glob("*.jsonl")):
+        dst = wt_cc_dir / src.name
+        if dst.exists() and not dst.is_symlink():
+            if verbose:
+                print(f"  skip (exists): {src.name}")
+            continue
+
+        content = src.read_bytes()
+        translated = content.replace(
+            f'"cwd":"{main_cwd}"'.encode(),
+            f'"cwd":"{wt_cwd}"'.encode(),
+        )
+        translated = translated.replace(
+            f'"cwd": "{main_cwd}"'.encode(),
+            f'"cwd": "{wt_cwd}"'.encode(),
+        )
+        if not dry_run:
+            dst.write_bytes(translated)
+        copied += 1
+        if verbose:
+            print(f"  copy: {src.name} → {wt_cc_name}/")
+
+    if not dry_run:
+        print(f"repair-worktree: {copied} conversations copied to {wt_cc_name}")
+    else:
+        print(f"repair-worktree (dry-run): would copy {copied} conversations to {wt_cc_name}")
+    return copied
 
 
 # ---------------------------------------------------------------------------

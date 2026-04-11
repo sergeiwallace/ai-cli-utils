@@ -33,6 +33,8 @@ from ai_cli.sync import (
     replicate_history_to_worktrees,
     purge_phantom_history_entries,
     retranslate_project_jsonls,
+    clean_worktree_cc_dirs,
+    repair_worktree_cc_dir,
     sync_watch,
     sync_push,
     sync_pull,
@@ -3969,3 +3971,325 @@ def test_wait_for_dream_completion_when_asyncio_run_raises_then_nonfatal():
         with patch("pathlib.Path.exists", return_value=True):
             with patch("asyncio.run", side_effect=RuntimeError("event loop broken")):
                 _wait_for_dream_completion(verbose=False)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# clean_worktree_cc_dirs
+# ---------------------------------------------------------------------------
+
+
+def test_clean_worktree_cc_dirs_when_no_cc_dir_then_returns_zeros(tmp_path):
+    cc_projects = tmp_path / "cc"
+    result = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    assert result == (0, 0)
+
+
+def test_clean_worktree_cc_dirs_when_duplicate_untitled_then_removes(tmp_path):
+    """Removes a JSONL copy whose UUID exists in the main CC dir, has no matching title,
+    and is not larger than the main copy (i.e. not extended by a resumed conversation)."""
+    cc_projects = tmp_path / "cc"
+    main_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    main_dir.mkdir(parents=True)
+    wt_dir.mkdir(parents=True)
+
+    # File exists in BOTH dirs with identical content — unmodified stale copy
+    content = '{"cwd": "/projects/myapp", "msg": "hello"}\n'
+    (main_dir / "abc123.jsonl").write_text(content)
+    wt_copy = wt_dir / "abc123.jsonl"
+    wt_copy.write_text(content)
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    assert removed_jsonl == 1
+    assert removed_lock == 0
+    assert not wt_copy.exists()
+    # Original in main dir untouched
+    assert (main_dir / "abc123.jsonl").exists()
+
+
+def test_clean_worktree_cc_dirs_when_worktree_copy_extended_then_keeps(tmp_path):
+    """Keeps a JSONL copy in the worktree if it is larger than the main copy
+    (conversation was resumed and extended in the worktree — in-progress work)."""
+    cc_projects = tmp_path / "cc"
+    main_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    main_dir.mkdir(parents=True)
+    wt_dir.mkdir(parents=True)
+
+    # Main copy is shorter; worktree copy has more messages appended
+    (main_dir / "abc123.jsonl").write_text('{"cwd": "/projects/myapp"}\n')
+    wt_copy = wt_dir / "abc123.jsonl"
+    wt_copy.write_text('{"cwd": "/projects/myapp"}\n{"role":"user","content":"hello"}\n')
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    assert removed_jsonl == 0
+    assert wt_copy.exists()
+
+
+def test_clean_worktree_cc_dirs_when_correct_title_then_keeps(tmp_path):
+    """Keeps a JSONL file with the correct customTitle for this worktree."""
+    cc_projects = tmp_path / "cc"
+    main_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    main_dir.mkdir(parents=True)
+    wt_dir.mkdir(parents=True)
+
+    (main_dir / "abc123.jsonl").write_text('{"customTitle": "myapp-1", "cwd": "/projects/myapp"}\n')
+    wt_file = wt_dir / "abc123.jsonl"
+    wt_file.write_text('{"customTitle": "myapp-1", "cwd": "/projects/myapp/.worktrees/myapp-1"}\n')
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    assert removed_jsonl == 0
+    assert wt_file.exists()
+
+
+def test_clean_worktree_cc_dirs_when_unique_to_worktree_then_keeps(tmp_path):
+    """Keeps a JSONL file that only exists in the worktree (not a copy of main)."""
+    cc_projects = tmp_path / "cc"
+    main_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    main_dir.mkdir(parents=True)
+    wt_dir.mkdir(parents=True)
+
+    # Only in worktree, not in main — not a duplicate, keep it
+    wt_file = wt_dir / "unique99.jsonl"
+    wt_file.write_text('{"cwd": "/projects/myapp/.worktrees/myapp-1"}\n')
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    assert removed_jsonl == 0
+    assert wt_file.exists()
+
+
+def test_clean_worktree_cc_dirs_when_orphan_lock_dir_then_removes(tmp_path):
+    """Removes a UUID lock directory that has no corresponding .jsonl file."""
+    cc_projects = tmp_path / "cc"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    wt_dir.mkdir(parents=True)
+
+    # Orphan lock dir — no matching .jsonl
+    lock = wt_dir / "deadbeef-0000"
+    lock.mkdir()
+    (lock / "lock").write_text("lock data")
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    assert removed_lock == 1
+    assert not lock.exists()
+
+
+def test_clean_worktree_cc_dirs_when_lock_has_jsonl_then_keeps_lock(tmp_path):
+    """Keeps a lock dir when a matching .jsonl exists in the same CC dir."""
+    cc_projects = tmp_path / "cc"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    wt_dir.mkdir(parents=True)
+
+    jsonl = wt_dir / "abc123.jsonl"
+    jsonl.write_text('{"customTitle": "myapp-1"}\n')
+    lock = wt_dir / "abc123"
+    lock.mkdir()
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    assert removed_lock == 0
+    assert lock.exists()
+
+
+def test_clean_worktree_cc_dirs_when_dry_run_then_no_deletions(tmp_path):
+    """dry_run=True counts removals but does not delete files."""
+    cc_projects = tmp_path / "cc"
+    main_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    main_dir.mkdir(parents=True)
+    wt_dir.mkdir(parents=True)
+
+    # Identical content — stale unmodified copy
+    content = '{"cwd": "/projects/myapp", "x": 1}\n'
+    (main_dir / "abc123.jsonl").write_text(content)
+    wt_copy = wt_dir / "abc123.jsonl"
+    wt_copy.write_text(content)
+    orphan = wt_dir / "deadbeef"
+    orphan.mkdir()
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX, dry_run=True)
+    assert removed_jsonl == 1
+    assert removed_lock == 1
+    # Files still exist — dry run did not delete
+    assert wt_copy.exists()
+    assert orphan.exists()
+
+
+def test_clean_worktree_cc_dirs_when_verbose_then_prints(tmp_path, capsys):
+    cc_projects = tmp_path / "cc"
+    main_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    main_dir.mkdir(parents=True)
+    wt_dir.mkdir(parents=True)
+
+    # Identical content — stale unmodified copy
+    content = '{"cwd": "/projects/myapp", "x": 1}\n'
+    (main_dir / "abc123.jsonl").write_text(content)
+    (wt_dir / "abc123.jsonl").write_text(content)
+    orphan = wt_dir / "deadbeef"
+    orphan.mkdir()
+
+    clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX, verbose=True)
+    out = capsys.readouterr().out
+    assert "stale copy" in out
+    assert "orphan lock" in out
+
+
+def test_clean_worktree_cc_dirs_when_main_dir_missing_then_no_error(tmp_path):
+    """Worktree CC dir exists but there is no main project CC dir — skip gracefully."""
+    cc_projects = tmp_path / "cc"
+    wt_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    wt_dir.mkdir(parents=True)
+
+    # File that looks like a duplicate but main dir doesn't exist
+    wt_file = wt_dir / "abc123.jsonl"
+    wt_file.write_text('{"cwd": "/projects/myapp/.worktrees/myapp-1"}\n')
+
+    removed_jsonl, removed_lock = clean_worktree_cc_dirs(cc_projects, _SERVER_PREFIX)
+    # No main dir → UUID not in main_uuids → file is unique to worktree → keep
+    assert removed_jsonl == 0
+    assert wt_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# repair_worktree_cc_dir
+# ---------------------------------------------------------------------------
+
+
+def test_repair_worktree_cc_dir_when_project_missing_then_returns_zero(tmp_path, capsys):
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir(parents=True)
+    projects_base = tmp_path / "projects"
+    projects_base.mkdir()
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = repair_worktree_cc_dir("missing-project", "session-1", cc_projects, _SERVER_PREFIX)
+    assert result == 0
+    assert "not found" in capsys.readouterr().err
+
+
+def test_repair_worktree_cc_dir_when_worktree_missing_then_returns_zero(tmp_path, capsys):
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir(parents=True)
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    myapp.mkdir(parents=True)
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = repair_worktree_cc_dir("myapp", "no-such-wt", cc_projects, _SERVER_PREFIX)
+    assert result == 0
+    assert "not found" in capsys.readouterr().err
+
+
+def test_repair_worktree_cc_dir_when_no_main_cc_dir_then_returns_zero(tmp_path, capsys):
+    cc_projects = tmp_path / "cc"
+    cc_projects.mkdir(parents=True)
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    wt_dir = myapp / ".worktrees" / "myapp-1"
+    wt_dir.mkdir(parents=True)
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX)
+    assert result == 0
+    assert "no CC dir" in capsys.readouterr().err
+
+
+def test_repair_worktree_cc_dir_when_conversations_exist_then_copies(tmp_path, capsys):
+    """Copies all main project JSONL files to the worktree CC dir with cwd translation."""
+    cc_projects = tmp_path / "cc"
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    wt_path = myapp / ".worktrees" / "myapp-1"
+    wt_path.mkdir(parents=True)
+
+    main_cc = cc_projects / f"{_SERVER_PREFIX}myapp"
+    main_cc.mkdir(parents=True)
+
+    main_cwd = str(myapp)
+    wt_cwd = str(wt_path)
+    conv = main_cc / "abc123.jsonl"
+    conv.write_text(f'{{"cwd":"{main_cwd}", "msg":"hello"}}\n')
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX, verbose=True)
+
+    assert result == 1
+    wt_cc = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    dst = wt_cc / "abc123.jsonl"
+    assert dst.exists()
+    content = dst.read_text()
+    # cwd should be translated to worktree path; original standalone cwd value replaced
+    assert f'"cwd":"{wt_cwd}"' in content
+    assert f'"cwd":"{main_cwd}"' not in content
+    out = capsys.readouterr().out
+    assert "copy" in out
+
+
+def test_repair_worktree_cc_dir_when_file_already_exists_then_skips(tmp_path):
+    """Does not overwrite a file that already exists in the worktree CC dir."""
+    cc_projects = tmp_path / "cc"
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    wt_path = myapp / ".worktrees" / "myapp-1"
+    wt_path.mkdir(parents=True)
+
+    main_cc = cc_projects / f"{_SERVER_PREFIX}myapp"
+    main_cc.mkdir(parents=True)
+    wt_cc = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    wt_cc.mkdir(parents=True)
+
+    (main_cc / "abc123.jsonl").write_text('{"cwd": "/projects/myapp"}\n')
+    existing = wt_cc / "abc123.jsonl"
+    existing.write_text("already here\n")
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX)
+
+    assert result == 0
+    assert existing.read_text() == "already here\n"
+
+
+def test_repair_worktree_cc_dir_when_orphan_lock_exists_then_removes(tmp_path):
+    """Removes orphan lock dirs before copying conversations."""
+    cc_projects = tmp_path / "cc"
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    wt_path = myapp / ".worktrees" / "myapp-1"
+    wt_path.mkdir(parents=True)
+
+    main_cc = cc_projects / f"{_SERVER_PREFIX}myapp"
+    main_cc.mkdir(parents=True)
+    wt_cc = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    wt_cc.mkdir(parents=True)
+
+    (main_cc / "abc123.jsonl").write_text('{"cwd": "/projects/myapp"}\n')
+    # Orphan lock dir — no matching .jsonl in worktree
+    orphan = wt_cc / "deadbeef-0000"
+    orphan.mkdir()
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX)
+
+    assert not orphan.exists()
+
+
+def test_repair_worktree_cc_dir_when_dry_run_then_no_writes(tmp_path, capsys):
+    cc_projects = tmp_path / "cc"
+    projects_base = tmp_path / "projects"
+    myapp = projects_base / "myapp"
+    wt_path = myapp / ".worktrees" / "myapp-1"
+    wt_path.mkdir(parents=True)
+
+    main_cc = cc_projects / f"{_SERVER_PREFIX}myapp"
+    main_cc.mkdir(parents=True)
+    (main_cc / "abc123.jsonl").write_text('{"cwd": "/projects/myapp"}\n')
+
+    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX, dry_run=True)
+
+    assert result == 1
+    wt_cc = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
+    assert not wt_cc.exists()
+    assert "dry-run" in capsys.readouterr().out
