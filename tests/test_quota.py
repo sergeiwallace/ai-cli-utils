@@ -917,16 +917,28 @@ class TestQuotaWatch:
 
 
 class TestQuotaStatuslinePart:
-    def test_when_no_snapshot_then_returns_0_and_no_output(self, tmp_path, capsys):
+    def test_when_no_snapshot_then_shows_placeholder_and_triggers_scrape(self, tmp_path, capsys):
+        """No data for current week → shows '📊 -' placeholder and launches a background scrape."""
         import ai_cli.quota_db as qdb
+        import ai_cli.quota as q
 
         qdb.set_db_path(tmp_path / "quota.db")
+        # Initialize the DB schema without inserting any snapshots
+        qdb._get_conn().close()
+        q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
         try:
-            result = quota_statusline_part()
+            with patch("subprocess.Popen") as mock_popen:
+                result = quota_statusline_part()
             assert result == 0
-            assert capsys.readouterr().out.strip() == ""
+            out = capsys.readouterr().out
+            assert "📊" in out
+            assert "-" in out
+            # Background scrape should have been launched
+            mock_popen.assert_called_once()
+            assert "scrape" in mock_popen.call_args[0][0]
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
+            q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
     def test_when_under_pace_then_shows_green_icon_and_steady_arrow(self, tmp_path, capsys):
         """delta < -5 with single snapshot → ✅ icon, → arrow (insufficient data for acceleration)."""
@@ -955,16 +967,14 @@ class TestQuotaStatuslinePart:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
     def test_when_over_pace_then_shows_alert_icon(self, tmp_path, capsys):
-        """delta > +5 (usage above expected pace) → 🚨 icon."""
+        """delta > +5 in normal phase (≥24h elapsed) → 🚨 icon."""
         import ai_cli.quota_db as qdb
 
-        # Pin `now` to 1 hour into the current billing week so that
-        # week_elapsed_pct ≈ 0.6% and delta = 95 - 0.6 ≈ 94 >> 5 regardless
-        # of when the test actually runs.  Without pinning, the test fails
-        # late in the billing week when week_elapsed_pct > 90%.
+        # Pin `now` to 25h into the week (post-seedling) so normal-phase bands apply.
+        # week_elapsed_pct ≈ 14.9%, delta = 95 - 14.9 ≈ 80 >> 5 → 🚨
         week_start_str = qdb._get_current_week_start()
         week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        fixed_now = week_start_dt + timedelta(hours=1)
+        fixed_now = week_start_dt + timedelta(hours=25)
 
         qdb.set_db_path(tmp_path / "quota.db")
         try:
@@ -977,6 +987,78 @@ class TestQuotaStatuslinePart:
             assert result == 0
             out = capsys.readouterr().out
             assert "95%" in out
+            assert "🚨" in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_seedling_calm_then_shows_leaf_and_blue_delta(self, tmp_path, capsys):
+        """First 24h, delta < 10% → 🌱 icon, no alert, delta shown (blue = no ANSI color assertion needed)."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=6)  # 6h in — seedling, delta = 5-3.6 = 1.4%
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=5.0)
+                result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "🌱" in out
+            assert "✅" not in out
+            assert "🚨" not in out
+
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_seedling_elevated_then_shows_leaf_and_warning(self, tmp_path, capsys):
+        """First 24h, delta 10–19% → 🌱 ⚠️."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=6)  # elapsed ~3.6%, usage 18% → delta ≈ 14%
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=18.0)
+                result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "🌱" in out
+            assert "⚠️" in out
+            assert "🚨" not in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_seedling_alarming_then_shows_leaf_and_alert(self, tmp_path, capsys):
+        """First 24h, delta ≥ 20% → 🌱 🚨."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=6)  # elapsed ~3.6%, usage 30% → delta ≈ 26%
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=30.0)
+                result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "🌱" in out
             assert "🚨" in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
@@ -1044,6 +1126,65 @@ class TestQuotaStatuslinePart:
         try:
             result = quota_statusline_part()
             assert result == 0
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_snapshot_stale_then_shows_clock_indicator(self, tmp_path, capsys):
+        """Snapshot >2h old → ⏱ stale indicator appended to output."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=30)  # post-seedling
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            # Insert a snapshot timestamped 3h before fixed_now
+            conn = qdb._get_conn()
+            stale_ts = (fixed_now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
+                (week_start_str, 40.0, stale_ts),
+            )
+            conn.commit()
+            conn.close()
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "⏱" in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_snapshot_fresh_then_no_clock_indicator(self, tmp_path, capsys):
+        """Snapshot <2h old → no ⏱ indicator."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=30)
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            conn = qdb._get_conn()
+            fresh_ts = (fixed_now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
+                (week_start_str, 40.0, fresh_ts),
+            )
+            conn.commit()
+            conn.close()
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "⏱" not in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 

@@ -489,12 +489,33 @@ _SCRAPE_TTL_MINUTES = 30
 _SCRAPE_LOCK_STALE_MINUTES = 15
 
 
+def _launch_background_scrape() -> None:
+    """Launch `ai quota scrape` in the background if no scrape is already running.
+
+    Must never raise — the statusline path must be silent on errors.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        if _SCRAPE_LOCK_PATH.exists():
+            lock_age_minutes = (datetime.now(timezone.utc).timestamp() - _SCRAPE_LOCK_PATH.stat().st_mtime) / 60
+            if lock_age_minutes < _SCRAPE_LOCK_STALE_MINUTES:
+                return  # scrape already running
+            _SCRAPE_LOCK_PATH.unlink(missing_ok=True)
+
+        _SCRAPE_LOCK_PATH.touch()
+        subprocess.Popen(
+            ["ai", "quota", "scrape"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
 def _maybe_trigger_background_scrape(snapshotted_at: str) -> None:
     """Fire a background `ai quota scrape` if the latest snapshot is stale.
-
-    Skipped when a scrape is already in progress (lock file younger than
-    _SCRAPE_LOCK_STALE_MINUTES).  A lock older than that threshold is treated
-    as stale (crashed scrape) and removed so the next call can proceed.
 
     Must never raise — the statusline path must be silent on errors.
     """
@@ -508,20 +529,7 @@ def _maybe_trigger_background_scrape(snapshotted_at: str) -> None:
         if age_minutes < _SCRAPE_TTL_MINUTES:
             return  # snapshot is fresh enough
 
-        if _SCRAPE_LOCK_PATH.exists():
-            lock_age_minutes = (now.timestamp() - _SCRAPE_LOCK_PATH.stat().st_mtime) / 60
-            if lock_age_minutes < _SCRAPE_LOCK_STALE_MINUTES:
-                return  # scrape already running
-            # Stale lock from a crashed scrape — remove and proceed
-            _SCRAPE_LOCK_PATH.unlink(missing_ok=True)
-
-        _SCRAPE_LOCK_PATH.touch()
-        subprocess.Popen(
-            ["ai", "quota", "scrape"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        _launch_background_scrape()
     except Exception:
         pass
 
@@ -746,10 +754,19 @@ def quota_statusline_part() -> int:
         conn.close()
 
         if not rows:
+            # No data for current week — show placeholder and kick off a scrape
+            _launch_background_scrape()
+            DIM = "\033[2m"
+            RESET = "\033[0m"
+            print(f"\U0001f4ca {DIM}-{RESET}")  # 📊 -
             return 0
 
         _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         usage_pct = rows[0]["usage_percent"]
+        snapshot_age_hours = (
+            now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
+        ).total_seconds() / 3600
+        stale = snapshot_age_hours > 2.0  # scrape has been failing for >2h
 
         ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         elapsed_secs = (now - ws_dt).total_seconds()
@@ -760,6 +777,7 @@ def quota_statusline_part() -> int:
         GREEN = "\033[32m"
         YELLOW = "\033[33m"
         RED = "\033[31m"
+        BLUE = "\033[34m"
         RESET = "\033[0m"
 
         # Quota % color: absolute level
@@ -769,17 +787,6 @@ def quota_statusline_part() -> int:
             pct_color = YELLOW
         else:
             pct_color = RED
-
-        # Pace icon and delta color (match each other)
-        if delta < -5:
-            icon = "\u2705"  # ✅
-            delta_color = GREEN
-        elif delta <= 5:
-            icon = "\u26a0\ufe0f"  # ⚠️
-            delta_color = YELLOW
-        else:
-            icon = "\U0001f6a8"  # 🚨
-            delta_color = RED
 
         # Arrow: acceleration direction (requires ≥3 snapshots)
         arrow_char = "\u2192"  # → steady (default / insufficient data)
@@ -797,9 +804,38 @@ def quota_statusline_part() -> int:
             elif accel < -1.0:
                 arrow_char = "\u2193"  # ↓ decelerating
 
-        print(
-            f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET} {icon} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}"
-        )  # 📊
+        if elapsed_secs < 24 * 3600:
+            # Seedling phase (first 24h): 🌱 always shown; alert only for large positive deltas.
+            # Negative delta (under pace) is never flagged early — it's noise, not signal.
+            if delta < 10:
+                alert = ""
+                delta_color = BLUE
+            elif delta < 20:
+                alert = " \u26a0\ufe0f"  # ⚠️
+                delta_color = YELLOW
+            else:
+                alert = " \U0001f6a8"  # 🚨
+                delta_color = RED
+            stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
+            print(
+                f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
+                f" \U0001f331{alert} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
+            )  # 📊 N% 🌱 [alert] →X% [⏱]
+        else:
+            # Normal phase: standard ✅/⚠️/🚨 bands
+            if delta < -5:
+                icon = "\u2705"  # ✅
+                delta_color = GREEN
+            elif delta <= 5:
+                icon = "\u26a0\ufe0f"  # ⚠️
+                delta_color = YELLOW
+            else:
+                icon = "\U0001f6a8"  # 🚨
+                delta_color = RED
+            stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
+            print(
+                f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET} {icon} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
+            )  # 📊 N% ✅/⚠️/🚨 →X% [⏱]
     except Exception:
         pass
     return 0
