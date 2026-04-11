@@ -794,11 +794,20 @@ class TestQuotaStatuslinePart:
         """delta < -5 with single snapshot → ✅ icon, → arrow (insufficient data for acceleration)."""
         import ai_cli.quota_db as qdb
 
+        # Pin `now` to 50% through the billing week so week_elapsed_pct ≈ 50%
+        # and delta = 5 - 50 = -45 << -5 regardless of when the test actually runs.
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(days=3, hours=12)  # 50% of 7 days
+
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            # Snapshot at 5% but week is ~50% elapsed → delta ≈ -45
-            qdb.record_quota_snapshot(usage_percent=5.0)
-            result = quota_statusline_part()
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=5.0)
+                result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
             assert "5%" in out

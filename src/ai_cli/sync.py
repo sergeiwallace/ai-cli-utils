@@ -230,7 +230,7 @@ def _wt_name_from_bare_name(bare_name: str) -> Optional[str]:
     idx = bare_name.find(marker)
     if idx == -1:
         return None
-    return bare_name[idx + len(marker):]
+    return bare_name[idx + len(marker) :]
 
 
 def _jsonl_custom_title(path: Path) -> Optional[str]:

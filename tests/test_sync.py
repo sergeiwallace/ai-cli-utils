@@ -663,7 +663,9 @@ def test_stage_project_files_when_worktree_cc_dir_then_stages_with_bare_name(tmp
     cc_projects_dir = tmp_path / "cc_projects"
     wt_dir = cc_projects_dir / "-home-user-projects-ai-cli-utils--worktrees-ai-cli-1"
     wt_dir.mkdir(parents=True)
-    (wt_dir / "abc123.jsonl").write_text('{"cwd":"/home/user/projects/ai-cli-utils/.worktrees/ai-cli-1","customTitle":"ai-cli-1"}\n')
+    (wt_dir / "abc123.jsonl").write_text(
+        '{"cwd":"/home/user/projects/ai-cli-utils/.worktrees/ai-cli-1","customTitle":"ai-cli-1"}\n'
+    )
 
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir()
@@ -724,7 +726,9 @@ def test_apply_pull_files_when_worktree_staged_then_creates_correct_cc_dir(tmp_p
     cc_projects_dir = tmp_path / "cc_projects"
     staged_wt = staging_dir / "ai-cli-utils--worktrees-ai-cli-1"
     staged_wt.mkdir(parents=True)
-    (staged_wt / "abc123.jsonl").write_text('{"cwd":"/home/user/projects/ai-cli-utils/.worktrees/ai-cli-1","customTitle":"ai-cli-1"}\n')
+    (staged_wt / "abc123.jsonl").write_text(
+        '{"cwd":"/home/user/projects/ai-cli-utils/.worktrees/ai-cli-1","customTitle":"ai-cli-1"}\n'
+    )
 
     with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
         result = apply_pull_files(
@@ -751,7 +755,9 @@ def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
     cc_projects_dir = tmp_path / "cc_projects"
     staged_wt = staging_dir / "myproject--worktrees-sw-1"
     staged_wt.mkdir(parents=True)
-    (staged_wt / "conv.jsonl").write_text(f'{{"cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1","customTitle":"sw-1"}}\n')
+    (staged_wt / "conv.jsonl").write_text(
+        f'{{"cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1","customTitle":"sw-1"}}\n'
+    )
 
     with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
         apply_pull_files(
@@ -778,7 +784,9 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
     remote_cc = tmp_path / "remote_cc"
     wt_cc = remote_cc / f"{_foreign_prefix}foo--worktrees-sw-2"
     wt_cc.mkdir(parents=True)
-    (wt_cc / "session.jsonl").write_text(f'{{"cwd":"{_FOREIGN_HOME}/projects/foo/.worktrees/sw-2","customTitle":"sw-2","type":"user"}}\n')
+    (wt_cc / "session.jsonl").write_text(
+        f'{{"cwd":"{_FOREIGN_HOME}/projects/foo/.worktrees/sw-2","customTitle":"sw-2","type":"user"}}\n'
+    )
 
     # Remote stages
     staging_dir = tmp_path / "staging"
