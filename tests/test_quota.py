@@ -811,11 +811,22 @@ class TestQuotaStatuslinePart:
         """delta > +5 (usage above expected pace) → 🚨 icon."""
         import ai_cli.quota_db as qdb
 
+        # Pin `now` to 1 hour into the current billing week so that
+        # week_elapsed_pct ≈ 0.6% and delta = 95 - 0.6 ≈ 94 >> 5 regardless
+        # of when the test actually runs.  Without pinning, the test fails
+        # late in the billing week when week_elapsed_pct > 90%.
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=1)
+
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            # Snapshot at 95% — always over pace unless week is nearly done
-            qdb.record_quota_snapshot(usage_percent=95.0)
-            result = quota_statusline_part()
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=95.0)
+                result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
             assert "95%" in out
