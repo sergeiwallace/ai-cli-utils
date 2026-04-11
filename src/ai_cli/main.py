@@ -54,9 +54,24 @@ def get_xdg_cache_home():
 DEFAULT_CONFIG = """## ai-cli-utils configuration
 
 [gemini]
+## Enable the paid AI Studio API key (GOOGLE_API_KEY_TIER_1) as a fallback tier.
+## Default: false — keeps paid key out of the fallback chain until billing credit
+## status is confirmed. Set to true only after running `ai spend gemini` to
+## verify charges (or confirming credits apply).
+paid_fallback_enabled = false
+
 ## Projects that should NOT be sandboxed by default
 ## (Matches the project prefix in your project registry TOML)
 # sandbox_whitelist = ["sw"]
+
+[gemini_billing]
+## GCP project linked to your AI Studio paid API key (GOOGLE_API_KEY_TIER_1).
+## Used by `ai spend gemini` to query BigQuery billing export for actual spend.
+## Leave billing_export_table empty until you enable BigQuery billing export
+## (Cloud Console → Billing → Billing export → Detailed usage cost).
+# gcp_project_id = "gen-lang-client-xxxxxxxxxx"
+# billing_account_id = "XXXXXX-XXXXXX-XXXXXX"
+# billing_export_table = ""  # e.g. "project.dataset.gcp_billing_export_v1_XXXXXX"
 
 [behavior]
 ## Enable system notifications on task completion
@@ -3104,6 +3119,18 @@ def cli():
 
         gemini_cli(sys.argv[2:])
         sys.exit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "spend":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "gemini":
+            from .spend import spend_gemini
+
+            spend_gemini(load_config())
+            sys.exit(0)
+        else:
+            print(f"Unknown spend subcommand: {subcmd!r}", file=sys.stderr)
+            print("Usage: ai spend gemini", file=sys.stderr)
+            sys.exit(1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "copier-update":
         if os.environ.get("AI_CLI_HOST") != "mac":

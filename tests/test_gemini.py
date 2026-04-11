@@ -8,11 +8,16 @@ import pytest
 
 from ai_cli.gemini import (
     AttemptLog,
+    DEEP_RESEARCH_DAILY_LIMIT,
+    DEEP_RESEARCH_DAILY_WARNING,
+    TIER_NAMES,
     GeminiResult,
     _get_google_oauth_token,
+    _increment_dr_counter,
     _is_free_tier_eligible,
     _log,
     _log_to_file,
+    _read_dr_counter,
     _run_deep_research,
     _try_gemini_api,
     _try_gemini_cli,
@@ -31,12 +36,27 @@ class TestDataclasses:
         assert r.content == ""
         assert r.attempts == []
 
+    def test_gemini_result_when_default_then_tokens_are_none(self):
+        r = GeminiResult()
+        assert r.input_tokens is None
+        assert r.output_tokens is None
+        assert r.total_tokens is None
+
+    def test_gemini_result_when_default_then_not_deep_research(self):
+        r = GeminiResult()
+        assert r.is_deep_research is False
+
     def test_attempt_log_when_created_then_stores_fields(self):
-        a = AttemptLog(tier=1, tier_name="gemini-cli (OAuth)", model="flash", success=True)
+        a = AttemptLog(tier=1, tier_name=TIER_NAMES[1], model="flash", success=True)
         assert a.tier == 1
         assert a.model == "flash"
         assert a.success is True
         assert a.error == ""
+
+    def test_tier_names_use_google_aligned_labels(self):
+        assert TIER_NAMES[1] == "oauth"
+        assert TIER_NAMES[2] == "ai_studio_free"
+        assert TIER_NAMES[3] == "ai_studio_paid"
 
 
 # --- _log tests ---
@@ -70,7 +90,7 @@ class TestLogToFile:
                 content="response text",
                 model="flash",
                 tier=1,
-                tier_name="gemini-cli (OAuth)",
+                tier_name=TIER_NAMES[1],
                 success=True,
                 duration_ms=500,
             )
@@ -84,6 +104,38 @@ class TestLogToFile:
         assert entry["prompt_chars"] == len("test prompt")
         assert entry["response_chars"] == len("response text")
         assert entry["output_path"] == "/tmp/output.md"
+
+    def test_log_to_file_when_normal_run_then_is_deep_research_false(self, tmp_path):
+        with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+            result = GeminiResult(model="flash", success=True, is_deep_research=False)
+            _log_to_file(result, "p", None)
+        entry = json.loads(list(tmp_path.glob("*.jsonl"))[0].read_text().strip())
+        assert entry["is_deep_research"] is False
+
+    def test_log_to_file_when_deep_research_run_then_is_deep_research_true(self, tmp_path):
+        with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+            result = GeminiResult(model="deep-research", success=True, is_deep_research=True)
+            _log_to_file(result, "p", None)
+        entry = json.loads(list(tmp_path.glob("*.jsonl"))[0].read_text().strip())
+        assert entry["is_deep_research"] is True
+
+    def test_log_to_file_when_tokens_unavailable_then_logs_null(self, tmp_path):
+        with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+            result = GeminiResult(model="flash", success=True)  # tokens default None
+            _log_to_file(result, "p", None)
+        entry = json.loads(list(tmp_path.glob("*.jsonl"))[0].read_text().strip())
+        assert entry["input_tokens"] is None
+        assert entry["output_tokens"] is None
+        assert entry["total_tokens"] is None
+
+    def test_log_to_file_when_tokens_present_then_logs_values(self, tmp_path):
+        with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+            result = GeminiResult(model="flash", success=True, input_tokens=10, output_tokens=20, total_tokens=30)
+            _log_to_file(result, "p", None)
+        entry = json.loads(list(tmp_path.glob("*.jsonl"))[0].read_text().strip())
+        assert entry["input_tokens"] == 10
+        assert entry["output_tokens"] == 20
+        assert entry["total_tokens"] == 30
 
     def test_log_to_file_when_has_attempts_then_includes_them(self, tmp_path):
         with patch("ai_cli.gemini.LOG_DIR", tmp_path):
@@ -361,10 +413,23 @@ class TestRunGemini:
         with patch("ai_cli.gemini._try_gemini_cli", return_value=fail):
             with patch("ai_cli.gemini._try_gemini_api", return_value=fail):
                 with patch("ai_cli.gemini.LOG_DIR", tmp_path):
-                    r = run_gemini("hello", model="flash", quiet=True)
+                    # paid_fallback_enabled=True so all 3 tiers are in the chain
+                    r = run_gemini("hello", model="flash", quiet=True, paid_fallback_enabled=True)
         assert r.success is False
         assert r.error == "all tiers failed"
         assert len(r.attempts) == 3
+
+    def test_run_gemini_when_paid_disabled_and_all_free_tiers_fail_then_only_2_attempts(self, tmp_path):
+        fail = GeminiResult(model="flash", success=False, error="not configured", tier=1, tier_name="x")
+
+        with patch("ai_cli.gemini._try_gemini_cli", return_value=fail):
+            with patch("ai_cli.gemini._try_gemini_api", return_value=fail):
+                with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+                    r = run_gemini("hello", model="flash", quiet=True, paid_fallback_enabled=False)
+        assert r.success is False
+        assert r.error == "all tiers failed"
+        # Tier 3 was stripped — only tiers 1 and 2 attempted
+        assert len(r.attempts) == 2
 
     def test_run_gemini_when_capacity_error_then_falls_through(self, tmp_path):
         capacity_fail = GeminiResult(
@@ -407,7 +472,7 @@ class TestRunGemini:
 
     def test_run_gemini_when_start_tier_3_then_only_paid_tier(self, tmp_path):
         tier3_ok = GeminiResult(
-            content="paid ok", model="flash", tier=3, tier_name="API paid tier-1", success=True, duration_ms=80
+            content="paid ok", model="flash", tier=3, tier_name=TIER_NAMES[3], success=True, duration_ms=80
         )
 
         call_tiers = []
@@ -421,7 +486,8 @@ class TestRunGemini:
         with patch("ai_cli.gemini._try_gemini_cli"):
             with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
                 with patch("ai_cli.gemini.LOG_DIR", tmp_path):
-                    r = run_gemini("hello", model="flash", quiet=True, start_tier=3)
+                    # paid_fallback_enabled=True needed to allow tier 3
+                    r = run_gemini("hello", model="flash", quiet=True, start_tier=3, paid_fallback_enabled=True)
         assert r.success is True
         assert call_tiers == [3]  # only tier 3 was tried
 
@@ -702,13 +768,34 @@ def _make_urlopen_sequence(responses: list[dict]):
 
 
 class TestRunDeepResearch:
-    """deep-research uses OAuth first; falls back to GOOGLE_API_KEY_TIER_1 (not FREE_TIER)."""
+    """deep-research uses OAuth first; falls back to GOOGLE_API_KEY_TIER_1 only when
+    paid_fallback_enabled=True and confirm_paid=True."""
+
+    def test_when_no_oauth_and_paid_disabled_then_returns_error(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=False)
+        assert result.success is False
+        assert "paid_fallback_enabled" in result.error
+
+    def test_when_no_oauth_and_paid_enabled_but_not_confirmed_then_returns_error(self):
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    result = _run_deep_research(
+                        "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=False
+                    )
+        assert result.success is False
+        assert "--confirm-paid" in result.error or "confirm_paid" in result.error.lower() or "-P" in result.error
 
     def test_when_no_oauth_and_no_tier3_key_then_returns_error(self):
         with patch.dict("os.environ", {}, clear=True):
             with patch("ai_cli.gemini._load_doppler_secrets"):
                 with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
-                    result = _run_deep_research("test prompt", quiet=True)
+                    result = _run_deep_research(
+                        "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                    )
         assert result.success is False
         assert "not set" in result.error
 
@@ -721,7 +808,9 @@ class TestRunDeepResearch:
                     exc = urllib.error.HTTPError(url=None, code=429, msg="quota", hdrs=None, fp=None)
                     exc.read = lambda: b"quota exceeded"
                     with patch("urllib.request.urlopen", side_effect=exc):
-                        result = _run_deep_research("test prompt", quiet=True)
+                        result = _run_deep_research(
+                            "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                        )
         assert result.success is False
         assert "submit failed" in result.error
         assert "429" in result.error
@@ -732,7 +821,9 @@ class TestRunDeepResearch:
             with patch("ai_cli.gemini._load_doppler_secrets"):
                 with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
                     with patch("urllib.request.urlopen", urlopen):
-                        result = _run_deep_research("test prompt", quiet=True)
+                        result = _run_deep_research(
+                            "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                        )
         assert result.success is False
         assert "no interaction ID" in result.error
 
@@ -747,14 +838,37 @@ class TestRunDeepResearch:
                     with patch("urllib.request.urlopen", urlopen):
                         with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                             with patch("time.sleep"):
-                                result = _run_deep_research(
-                                    "test prompt",
-                                    output=str(tmp_path / "out.md"),
-                                    quiet=True,
-                                )
+                                with patch("ai_cli.gemini._increment_dr_counter"):
+                                    result = _run_deep_research(
+                                        "test prompt",
+                                        output=str(tmp_path / "out.md"),
+                                        quiet=True,
+                                        paid_fallback_enabled=True,
+                                        confirm_paid=True,
+                                    )
         assert result.success is True
         assert result.content == "research output"
         assert (tmp_path / "out.md").read_text() == "research output"
+
+    def test_when_completed_then_result_has_is_deep_research_true(self, tmp_path):
+        submit_resp = {"name": "interactions/run-abc", "state": "running"}
+        poll_resp = {"state": "completed", "outputs": [{"text": "output"}]}
+        urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
+
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                with patch("ai_cli.gemini._increment_dr_counter"):
+                                    result = _run_deep_research(
+                                        "p",
+                                        quiet=True,
+                                        paid_fallback_enabled=True,
+                                        confirm_paid=True,
+                                    )
+        assert result.is_deep_research is True
 
     def test_when_poll_returns_failed_state_then_returns_error(self):
         submit_resp = {"name": "interactions/run-xyz", "state": "running"}
@@ -767,7 +881,12 @@ class TestRunDeepResearch:
                     with patch("urllib.request.urlopen", urlopen):
                         with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                             with patch("time.sleep"):
-                                result = _run_deep_research("test prompt", quiet=True)
+                                result = _run_deep_research(
+                                    "test prompt",
+                                    quiet=True,
+                                    paid_fallback_enabled=True,
+                                    confirm_paid=True,
+                                )
         assert result.success is False
         assert "failed" in result.error
 
@@ -782,7 +901,12 @@ class TestRunDeepResearch:
                     with patch("urllib.request.urlopen", urlopen):
                         with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                             with patch("time.sleep"):
-                                result = _run_deep_research("test prompt", quiet=True)
+                                result = _run_deep_research(
+                                    "test prompt",
+                                    quiet=True,
+                                    paid_fallback_enabled=True,
+                                    confirm_paid=True,
+                                )
         assert result.success is False
         assert "no output text" in result.error
 
@@ -796,7 +920,12 @@ class TestRunDeepResearch:
                     with patch("urllib.request.urlopen", urlopen):
                         with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                             with patch("time.sleep", side_effect=KeyboardInterrupt):
-                                result = _run_deep_research("test prompt", quiet=True)
+                                result = _run_deep_research(
+                                    "test prompt",
+                                    quiet=True,
+                                    paid_fallback_enabled=True,
+                                    confirm_paid=True,
+                                )
         assert result.success is False
         assert "cancelled" in result.error
 
@@ -818,13 +947,51 @@ class TestRunDeepResearch:
                     with patch("urllib.request.urlopen", capturing_urlopen):
                         with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                             with patch("time.sleep"):
-                                result = _run_deep_research("test prompt", quiet=True)
+                                with patch("ai_cli.gemini._increment_dr_counter"):
+                                    result = _run_deep_research("test prompt", quiet=True)
         assert result.success is True
         assert result.content == "oauth result"
         # Submit request should use Bearer auth, not ?key= param
         submit_req = submitted_requests[0]
         assert submit_req.get_header("Authorization") == "Bearer my-oauth-token"
         assert "key=" not in submit_req.full_url
+
+    def test_when_oauth_available_then_result_has_oauth_tier_name(self):
+        submit_resp = {"name": "interactions/run-oauth2", "state": "running"}
+        poll_resp = {"state": "completed", "outputs": [{"text": "oauth result"}]}
+        urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value="oauth-token"):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                with patch("ai_cli.gemini._increment_dr_counter"):
+                                    result = _run_deep_research("test prompt", quiet=True)
+        assert result.tier_name == "oauth"
+        assert result.tier == 1
+
+    def test_when_oauth_unavailable_and_paid_confirmed_then_result_has_paid_tier_name(self, tmp_path):
+        submit_resp = {"name": "interactions/run-paid", "state": "running"}
+        poll_resp = {"state": "completed", "outputs": [{"text": "paid result"}]}
+        urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
+
+        with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "paid-key"}):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                with patch("ai_cli.gemini._increment_dr_counter"):
+                                    result = _run_deep_research(
+                                        "test prompt",
+                                        quiet=True,
+                                        paid_fallback_enabled=True,
+                                        confirm_paid=True,
+                                    )
+        assert result.tier_name == "ai_studio_paid"
+        assert result.tier == 3
 
     def test_when_oauth_unavailable_then_skips_free_tier_key_uses_tier3(self):
         submit_resp = {"name": "interactions/run-tier3", "state": "running"}
@@ -838,18 +1005,65 @@ class TestRunDeepResearch:
             submitted_requests.append(req)
             return orig_urlopen(req, timeout=timeout)
 
-        # FREE_TIER key present but should NOT be used
+        # FREE_TIER key present but should NOT be used for deep-research
         with patch.dict("os.environ", {"GOOGLE_API_KEY_FREE_TIER": "free-key", "GOOGLE_API_KEY_TIER_1": "paid-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
                 with patch("ai_cli.gemini._get_google_oauth_token", return_value=None):
                     with patch("urllib.request.urlopen", capturing_urlopen):
                         with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                             with patch("time.sleep"):
-                                result = _run_deep_research("test prompt", quiet=True)
+                                with patch("ai_cli.gemini._increment_dr_counter"):
+                                    result = _run_deep_research(
+                                        "test prompt",
+                                        quiet=True,
+                                        paid_fallback_enabled=True,
+                                        confirm_paid=True,
+                                    )
         assert result.success is True
         submit_req = submitted_requests[0]
         assert "paid-key" in submit_req.full_url
         assert "free-key" not in submit_req.full_url
+
+    def test_when_successful_oauth_run_then_counter_incremented(self):
+        submit_resp = {"name": "interactions/run-count", "state": "running"}
+        poll_resp = {"state": "completed", "outputs": [{"text": "result"}]}
+        urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
+
+        counter_calls = []
+
+        def mock_increment(tier_name, *, quiet=False):
+            counter_calls.append(tier_name)
+            return {}
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value="oauth-token"):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                with patch("ai_cli.gemini._increment_dr_counter", side_effect=mock_increment):
+                                    _run_deep_research("test prompt", quiet=True)
+        assert counter_calls == ["oauth"]
+
+    def test_when_failed_run_then_counter_not_incremented(self):
+        submit_resp = {"name": "interactions/run-fail", "state": "running"}
+        poll_resp = {"state": "failed", "outputs": []}
+        urlopen = _make_urlopen_sequence([submit_resp, poll_resp])
+
+        counter_calls = []
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("ai_cli.gemini._load_doppler_secrets"):
+                with patch("ai_cli.gemini._get_google_oauth_token", return_value="oauth-token"):
+                    with patch("urllib.request.urlopen", urlopen):
+                        with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
+                            with patch("time.sleep"):
+                                with patch(
+                                    "ai_cli.gemini._increment_dr_counter",
+                                    side_effect=lambda *a, **k: counter_calls.append(a),
+                                ):
+                                    _run_deep_research("test prompt", quiet=True)
+        assert counter_calls == []  # no increment on failure
 
     def test_run_gemini_when_model_deep_research_then_routes_to_deep_research(self, tmp_path):
         ok = GeminiResult(content="deep result", model="deep-research", success=True)
@@ -906,7 +1120,7 @@ class TestIsFreeTierEligible:
 class TestRunGeminiTier2Skip:
     def test_when_pro_model_then_tier2_skipped(self, tmp_path):
         tier1_fail = GeminiResult(model="pro", success=False, error="not found")
-        tier3_ok = GeminiResult(content="tier3 ok", model="pro", tier=3, tier_name="API paid tier-1", success=True)
+        tier3_ok = GeminiResult(content="tier3 ok", model="pro", tier=3, tier_name=TIER_NAMES[3], success=True)
 
         called_tiers = []
 
@@ -917,16 +1131,14 @@ class TestRunGeminiTier2Skip:
         with patch("ai_cli.gemini._try_gemini_cli", return_value=tier1_fail):
             with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
                 with patch("ai_cli.gemini.LOG_DIR", tmp_path):
-                    r = run_gemini("hello", model="pro", quiet=True)
+                    r = run_gemini("hello", model="pro", quiet=True, paid_fallback_enabled=True)
         assert r.success is True
         assert 2 not in called_tiers
         assert called_tiers == [3]
 
     def test_when_deep_think_model_then_tier2_skipped(self, tmp_path):
         tier1_fail = GeminiResult(model="deep-think", success=False, error="not found")
-        tier3_ok = GeminiResult(
-            content="deep ok", model="deep-think", tier=3, tier_name="API paid tier-1", success=True
-        )
+        tier3_ok = GeminiResult(content="deep ok", model="deep-think", tier=3, tier_name=TIER_NAMES[3], success=True)
 
         called_tiers = []
 
@@ -937,13 +1149,13 @@ class TestRunGeminiTier2Skip:
         with patch("ai_cli.gemini._try_gemini_cli", return_value=tier1_fail):
             with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
                 with patch("ai_cli.gemini.LOG_DIR", tmp_path):
-                    r = run_gemini("hello", model="deep-think", quiet=True)
+                    r = run_gemini("hello", model="deep-think", quiet=True, paid_fallback_enabled=True)
         assert r.success is True
         assert 2 not in called_tiers
 
     def test_when_flash_model_then_tier2_not_skipped(self, tmp_path):
         tier1_fail = GeminiResult(model="flash", success=False, error="not found")
-        tier2_ok = GeminiResult(content="tier2 ok", model="flash", tier=2, tier_name="API free-tier", success=True)
+        tier2_ok = GeminiResult(content="tier2 ok", model="flash", tier=2, tier_name=TIER_NAMES[2], success=True)
 
         called_tiers = []
 
@@ -954,17 +1166,43 @@ class TestRunGeminiTier2Skip:
         with patch("ai_cli.gemini._try_gemini_cli", return_value=tier1_fail):
             with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
                 with patch("ai_cli.gemini.LOG_DIR", tmp_path):
-                    r = run_gemini("hello", model="flash", quiet=True)
+                    r = run_gemini("hello", model="flash", quiet=True, paid_fallback_enabled=False)
         assert r.success is True
         assert 2 in called_tiers
 
-    def test_when_start_tier_3_and_pro_model_then_no_skip_log(self, tmp_path, capsys):
-        tier3_ok = GeminiResult(content="ok", model="pro", tier=3, tier_name="API paid tier-1", success=True)
+    def test_when_paid_disabled_and_pro_model_then_tier3_not_attempted(self, tmp_path, capsys):
+        tier1_fail = GeminiResult(model="pro", success=False, error="not found")
+
+        called_tiers: list[int] = []
+
+        def mock_api(prompt, model, timeout_s, tier, verbose):
+            called_tiers.append(tier)
+            return GeminiResult(model=model, success=False, error="should not reach tier 3")
+
+        with patch("ai_cli.gemini._try_gemini_cli", return_value=tier1_fail):
+            with patch("ai_cli.gemini._try_gemini_api", side_effect=mock_api):
+                with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+                    r = run_gemini("hello", model="pro", quiet=True, paid_fallback_enabled=False)
+        # tier 2 is skipped (Pro has no free quota), tier 3 is stripped (paid disabled)
+        assert r.success is False
+        assert 3 not in called_tiers
+
+    def test_when_paid_disabled_then_actionable_message_printed(self, tmp_path, capsys):
+        fail = GeminiResult(model="flash", success=False, error="not configured")
+        with patch("ai_cli.gemini._try_gemini_cli", return_value=fail):
+            with patch("ai_cli.gemini._try_gemini_api", return_value=fail):
+                with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+                    run_gemini("hello", model="flash", quiet=False, paid_fallback_enabled=False)
+        err = capsys.readouterr().err
+        assert "paid_fallback_enabled" in err
+
+    def test_when_start_tier_3_and_pro_model_then_no_free_tier_skip_log(self, tmp_path, capsys):
+        tier3_ok = GeminiResult(content="ok", model="pro", tier=3, tier_name=TIER_NAMES[3], success=True)
         with patch("ai_cli.gemini._try_gemini_api", return_value=tier3_ok):
             with patch("ai_cli.gemini.LOG_DIR", tmp_path):
-                run_gemini("hello", model="pro", quiet=False, start_tier=3)
-        # tier 2 was never in the candidate set (start_tier=3), so skip message should not appear
-        assert "skipping tier 2" not in capsys.readouterr().err
+                run_gemini("hello", model="pro", quiet=False, start_tier=3, paid_fallback_enabled=True)
+        # ai_studio_free was never in the candidate set (start_tier=3), so free-skip message should not appear
+        assert "ai_studio_free" not in capsys.readouterr().err
 
 
 # --- _get_google_oauth_token tests ---
@@ -997,3 +1235,135 @@ class TestGetGoogleOauthToken:
         with patch("google.auth.default", side_effect=Exception("no credentials")):
             token = _get_google_oauth_token()
         assert token is None
+
+
+# --- DR daily counter tests ---
+
+
+class TestDrCounter:
+    def test_read_dr_counter_when_no_file_then_returns_zeroed_today(self, tmp_path):
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", tmp_path / "dr-daily.json"):
+            counter = _read_dr_counter()
+        import time as _time
+
+        assert counter["date"] == _time.strftime("%Y-%m-%d")
+        assert counter["oauth_count"] == 0
+        assert counter["paid_count"] == 0
+
+    def test_read_dr_counter_when_file_has_today_then_returns_it(self, tmp_path):
+        import time as _time
+
+        today = _time.strftime("%Y-%m-%d")
+        state_file = tmp_path / "dr-daily.json"
+        state_file.write_text(json.dumps({"date": today, "oauth_count": 3, "paid_count": 1, "last_run": None}))
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            counter = _read_dr_counter()
+        assert counter["oauth_count"] == 3
+        assert counter["paid_count"] == 1
+
+    def test_read_dr_counter_when_file_has_old_date_then_returns_zeroed(self, tmp_path):
+        state_file = tmp_path / "dr-daily.json"
+        state_file.write_text(json.dumps({"date": "2020-01-01", "oauth_count": 99, "paid_count": 5}))
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            counter = _read_dr_counter()
+        assert counter["oauth_count"] == 0
+        assert counter["paid_count"] == 0
+
+    def test_increment_dr_counter_oauth_increments_oauth_count(self, tmp_path):
+        state_file = tmp_path / "dr-daily.json"
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            counter = _increment_dr_counter("oauth", quiet=True)
+        assert counter["oauth_count"] == 1
+        assert counter["paid_count"] == 0
+        assert json.loads(state_file.read_text())["oauth_count"] == 1
+
+    def test_increment_dr_counter_paid_increments_paid_count(self, tmp_path):
+        state_file = tmp_path / "dr-daily.json"
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            counter = _increment_dr_counter("ai_studio_paid", quiet=True)
+        assert counter["paid_count"] == 1
+        assert counter["oauth_count"] == 0
+
+    def test_increment_dr_counter_prints_count_to_stderr(self, tmp_path, capsys):
+        state_file = tmp_path / "dr-daily.json"
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            _increment_dr_counter("oauth", quiet=False)
+        err = capsys.readouterr().err
+        assert f"1/{DEEP_RESEARCH_DAILY_LIMIT}" in err
+
+    def test_increment_dr_counter_quiet_suppresses_output(self, tmp_path, capsys):
+        state_file = tmp_path / "dr-daily.json"
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            _increment_dr_counter("oauth", quiet=True)
+        assert capsys.readouterr().err == ""
+
+    def test_increment_dr_counter_warning_when_near_limit(self, tmp_path, capsys):
+        import time as _time
+
+        today = _time.strftime("%Y-%m-%d")
+        state_file = tmp_path / "dr-daily.json"
+        # Start at warning threshold - 1
+        state_file.write_text(
+            json.dumps({"date": today, "oauth_count": DEEP_RESEARCH_DAILY_WARNING - 1, "paid_count": 0})
+        )
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            _increment_dr_counter("oauth", quiet=False)
+        err = capsys.readouterr().err
+        assert "Warning" in err
+        assert "Approaching daily limit" in err
+
+    def test_increment_dr_counter_no_warning_below_threshold(self, tmp_path, capsys):
+        state_file = tmp_path / "dr-daily.json"
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            _increment_dr_counter("oauth", quiet=False)
+        err = capsys.readouterr().err
+        assert "Warning" not in err
+
+    def test_increment_dr_counter_paid_prints_charge_reminder(self, tmp_path, capsys):
+        state_file = tmp_path / "dr-daily.json"
+        with patch("ai_cli.gemini.DR_DAILY_STATE_FILE", state_file):
+            _increment_dr_counter("ai_studio_paid", quiet=False)
+        err = capsys.readouterr().err
+        assert "ai spend gemini" in err
+
+    def test_dr_counter_constants_have_expected_values(self):
+        assert DEEP_RESEARCH_DAILY_LIMIT == 20
+        assert DEEP_RESEARCH_DAILY_WARNING == 18
+        assert DEEP_RESEARCH_DAILY_WARNING < DEEP_RESEARCH_DAILY_LIMIT
+
+
+# --- gemini_cli confirm_paid flag ---
+
+
+class TestGeminiCliConfirmPaid:
+    def test_when_confirm_paid_flag_then_passes_to_run_gemini(self):
+        ok = GeminiResult(content="ok", model="deep-think", success=True)
+        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+            with patch("ai_cli.gemini._read_gemini_config", return_value={}):
+                with pytest.raises(SystemExit):
+                    gemini_cli(["prompt", "-P"])
+        assert mock_run.call_args[1]["confirm_paid"] is True
+
+    def test_when_confirm_paid_long_flag_then_passes_to_run_gemini(self):
+        ok = GeminiResult(content="ok", model="deep-think", success=True)
+        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+            with patch("ai_cli.gemini._read_gemini_config", return_value={}):
+                with pytest.raises(SystemExit):
+                    gemini_cli(["prompt", "--confirm-paid"])
+        assert mock_run.call_args[1]["confirm_paid"] is True
+
+    def test_when_paid_fallback_in_config_then_passes_to_run_gemini(self):
+        ok = GeminiResult(content="ok", model="flash", success=True)
+        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+            with patch("ai_cli.gemini._read_gemini_config", return_value={"paid_fallback_enabled": True}):
+                with pytest.raises(SystemExit):
+                    gemini_cli(["prompt", "-m", "flash"])
+        assert mock_run.call_args[1]["paid_fallback_enabled"] is True
+
+    def test_when_no_config_then_paid_fallback_defaults_to_false(self):
+        ok = GeminiResult(content="ok", model="flash", success=True)
+        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+            with patch("ai_cli.gemini._read_gemini_config", return_value={}):
+                with pytest.raises(SystemExit):
+                    gemini_cli(["prompt", "-m", "flash"])
+        assert mock_run.call_args[1]["paid_fallback_enabled"] is False

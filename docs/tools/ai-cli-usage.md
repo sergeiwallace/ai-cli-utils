@@ -187,40 +187,80 @@ Reads remote host from `[remote] host` in config, overridable via `--remote-host
 ```
 ai gemini "prompt" [-m MODEL] [-d DEPTH] [-o OUTPUT_FILE] [--quiet] [--verbose]
              [--timeout N] [--no-file] [--resume RUN_ID] [--planning-model MODEL]
+             [-P] [-s TIER]
 ```
 
-Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) and research depth tiers. See `src/ai_cli/gemini.py` and `src/ai_cli/research.py`.
+Gemini CLI wrapper with auth fallback (oauth → ai_studio_free → ai_studio_paid) and research depth tiers. See `src/ai_cli/gemini.py` and `src/ai_cli/research.py`.
 
 **Depth tiers** (`-d`/`--depth`):
-- `quick` (default) -- single-shot call, current behavior
-- `standard` -- Planner-Executor: query generation -> concurrent grounded search -> synthesis (~2x tokens, 2+ model calls)
+- `quick` (default) -- single-shot call
+- `standard` -- Planner-Executor: query generation → concurrent grounded search → synthesis (~2x tokens, 2+ model calls)
 
 **Model aliases** (`-m`/`--model`):
-- `deep-think` (default) — Gemini 3.1 Pro with HIGH thinking via 3-tier fallback
-- `pro`, `flash`, `flash-lite` — standard Gemini models via 3-tier fallback
-- `deep-research` — Gemini Deep Research via Interactions API. Async, polls until complete, cancels on Ctrl-C. Tries OAuth (tier 1) first; falls back to paid API key (tier 3). Free-tier key (tier 2) is skipped — deep-research has no free quota.
+- `deep-think` (default) — Gemini 3.1 Pro with HIGH thinking
+- `pro`, `flash`, `flash-lite` — standard Gemini models
+- `deep-research` — Gemini Deep Research via Interactions API. Async, polls until complete, cancels on Ctrl-C. Uses OAuth only by default; `ai_studio_paid` fallback requires `paid_fallback_enabled = true` in config + `-P` flag.
 - Any full Gemini model ID
 
-**Auth tier notes** (see [pricing](https://ai.google.dev/gemini-api/docs/pricing)):
-- **Tier 1 (OAuth):** free via gemini CLI credentials. Works for all models.
-- **Tier 2 (free API key):** free quota for Flash text/multimodal models (2.0, 2.5, 3.x — including `gemini-3.1-flash-live-preview`), Gemma 4, and Gemini Embedding only. Returns a billing error — not a 429 — for Pro models, image-generation variants (`gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`), and deep-research. The fallback chain skips tier 2 automatically for ineligible models.
-- **Tier 3 (paid API key):** covers all models. Use `-s 3` when OAuth is unavailable and the model is not free-tier eligible.
+**Auth tiers** (see [pricing](https://ai.google.dev/gemini-api/docs/pricing)):
+- **oauth:** free via gemini CLI credentials (Google AI Ultra subscription). Works for all models. ~20 Deep Research runs/day.
+- **ai_studio_free:** `GOOGLE_API_KEY_FREE_TIER` env var. Free quota for Flash text/multimodal (2.0, 2.5, 3.x — including `gemini-3.1-flash-live-preview`), Gemma 4, Gemini Embedding only. Billing error (not 429) for Pro models and deep-research — fallback chain skips this tier automatically for ineligible models.
+- **ai_studio_paid:** `GOOGLE_API_KEY_TIER_1` env var. Covers all models. **Disabled by default** (`paid_fallback_enabled = false` in config.toml). Enable only after confirming billing credit status.
+
+**`paid_fallback_enabled` config key** (`~/.config/ai-cli/config.toml`, under `[gemini]`):
+```toml
+[gemini]
+paid_fallback_enabled = false   # default; set true only after billing credit is confirmed
+```
+When `false`: `ai_studio_paid` is never tried. When `true`: paid key enters the fallback chain; deep-research still requires `-P` as a conscious runtime gate.
 
 **Flags:**
 - `-m`/`--model` -- Model alias or full model ID (see above)
-- `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). For Flash models: `-s 2` skips OAuth. For Pro/deep-research: `-s 3` (free-tier key has no quota for these).
+- `-s`/`--start-tier` -- Start at auth tier 1 (oauth, default), 2 (ai_studio_free), or 3 (ai_studio_paid). For Flash: `-s 2` skips OAuth. For Pro/deep-research: `-s 3` skips both free tiers.
+- `-P`/`--confirm-paid` -- Explicitly confirm use of `ai_studio_paid` (required for deep-research when paid is enabled and OAuth unavailable)
 - `-d`/`--depth` -- Research depth: `quick` or `standard`
 - `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
 - `--resume RUN_ID` -- Resume a standard run from last completed step
 - `-o`/`--output` -- Output file path (auto-generated if omitted)
-- `--quiet`/`-q` -- Suppress stderr progress output
+- `--quiet`/`-q` -- Suppress stderr progress output (also suppresses daily run counter)
 - `--verbose`/`-v` -- Show detailed tier/model info
 - `-t`/`--timeout` -- Timeout in seconds (default: 600)
 - `-F`/`--no-file` -- Stdout only, no file written
 
-**Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
+**Daily Deep Research counter:** after each successful deep-research run, `~/.local/state/ai-cli/dr-daily.json` is updated and a one-line counter is printed to stderr: `[deep-research] OAuth runs today: N/20`. A warning prints when ≥18 runs are used. Resets at midnight.
+
+**Logs:** `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — one JSONL entry per run. Fields include `tier_name` (`oauth`, `ai_studio_free`, `ai_studio_paid`), `is_deep_research`, and token counts (when returned by the API).
+
+**Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML to override preset defaults.
 
 **Checkpoints:** `~/.local/state/ai-cli/research-runs/<run-id>/` -- JSON snapshots after each step. Use `--resume <run-id>` to restart from last completed step.
+
+### ai spend
+
+```
+ai spend gemini
+```
+
+Print a Gemini usage summary combining local JSONL logs and (optionally) GCP BigQuery billing export.
+
+**Output:**
+- Today's Deep Research OAuth/paid run counts with free quota remaining
+- Per-model run counts for today's non-DR calls
+- This month's DR totals from JSONL logs
+- Actual paid API spend from GCP billing export (when configured)
+
+**BigQuery setup** (one-time human action, ~5 min):
+1. Cloud Console → Billing → Billing export → Detailed usage cost → Enable
+2. Add to `~/.config/ai-cli/config.toml`:
+```toml
+[gemini_billing]
+gcp_project_id = "your-gcp-project-id"
+billing_account_id = "XXXXXX-XXXXXX-XXXXXX"
+billing_export_table = "project.dataset.gcp_billing_export_v1_XXXXXX"
+```
+3. Data appears within 24-48h. First query prints raw SKU strings to help confirm model→SKU mapping.
+
+When BigQuery is not configured or `google-cloud-bigquery` is not installed, the command still shows run counts and prints an actionable setup message.
 
 ### ai handoff
 
