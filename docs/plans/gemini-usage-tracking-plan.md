@@ -11,7 +11,7 @@ source: internal
 **Status:** DRAFT
 
 **Created:** 2026-04-10
-**Revised:** 2026-04-11
+**Revised:** 2026-04-11 (round 2)
 
 **Task:** `AI-CLI-41`
 **Related:** SW-767 (sergei — track token usage per research run)
@@ -39,15 +39,27 @@ source: internal
 
 ## Overview
 
-Surface Gemini API usage and cost data automatically, replacing the brittle manual
-MEMORY.md ledger. Key deliverables: (1) fix token count extraction so per-run data is
-actually logged; (2) a daily Deep Research OAuth run counter with real-time stderr
-feedback per run; (3) an `ai spend gemini` command that pulls actual billed amounts from
-the GCP BigQuery billing export for paid runs and shows OAuth run counts from local logs.
+Surface Gemini API usage and cost data automatically, with safety-first design around
+paid deep-research spending. Core deliverables: (1) fix token count extraction so per-run
+data is actually logged; (2) a daily Deep Research OAuth run counter with real-time
+stderr feedback; (3) a hard gate before any `ai_studio_paid` deep-research run — the tool
+never silently falls back to the paid key for deep-research, always requiring explicit
+opt-in; (4) an `ai spend gemini` command pulling actual billed amounts from GCP BigQuery
+billing export for paid runs, with OAuth run counts from local logs.
+
+---
 
 > **Feedback Round 1:** Is the scope right? Anything to add or cut?
 >
 > - Scope seems fine. Revise to account for the feedback on open questions below, especially the billing uncertainty — that's the most important thing to get right before we implement.
+
+> **AI Response Round 1:**
+> - Scope confirmed. Revised to make the `ai_studio_paid` gate the primary safety mechanism — it's now the first thing implemented in T-02, not an afterthought. Billing uncertainty documented as a P0 open question with a prerequisite investigation step before T-02 implementation.
+
+---
+
+> **Feedback Round 2:**
+> - \<enter feedback here>
 
 ## Background and Context
 
@@ -86,59 +98,84 @@ SDK version returns it under a different attribute. T-01 investigates and fixes 
 free API key) and doesn't reflect whether OAuth or paid key was used. T-01 fixes this
 alongside the tier naming overhaul.
 
+### Billing Credit Uncertainty — P0 Prerequisite
+
+**This is the most important open question in this plan.** The situation:
+
+- The Google AI Ultra subscription ($100/month credit) was previously not connected to
+  the billing account used for the `ai_studio_paid` API key. That's now fixed.
+- **Open question:** Does the Ultra subscription credit apply to Google AI Studio API
+  keys (`AIzaSy...`, billing account `01AC33-5BE8AD-2F4E8A`)? Or only to Vertex AI keys?
+  Mixed information online — no authoritative answer found yet.
+- The Interactions API (used for `ai gemini -m deep-research`) likely doesn't work with
+  Vertex API keys at all, which would make a key switch impossible even if Vertex is
+  the right answer.
+- **If the Ultra credit does NOT apply to `ai_studio_paid`:** every paid deep-research
+  run costs ~$2–5 out of pocket, unsubsidized. The current code silently falls back to
+  this path when OAuth is unavailable — that's unacceptable.
+
+**Consequence for implementation:** T-02 must gate `ai_studio_paid` deep-research behind
+an explicit user opt-in (`--confirm-paid` / `-P` flag), regardless of what we later learn
+about credit applicability. The tool should never silently spend money on deep-research.
+
+Resolving the credit question (see Open Questions Q5) will inform whether the warning
+message says "billing may or may not be subsidized" vs. a definitive statement, but the
+gate itself is implemented unconditionally.
+
 ### Why the Deep Research Counter Matters
 
-OAuth deep-research runs are free under the Google AI Ultra consumer subscription
-(~20 runs/day). Paid runs (`ai_studio_paid`) cost ~$2–5 each from the billing account.
-Without a counter, a session config session has no visibility into how many free runs
-remain before the daily limit is hit and billing kicks in.
+OAuth deep-research runs are free under the Google AI Ultra consumer subscription. The
+daily limit (~20 runs, empirically unverified) is more than enough for typical usage, but
+without a counter a session has no visibility into how many free runs remain. The counter
+makes the free quota visible so the paid fallback is a conscious, last-resort choice —
+not an accidental one.
 
 ### Auth Infrastructure (as of 2026-04-11)
 
-`_get_google_oauth_token()` was added in the previous session — OAuth is now tried first
-for deep-research and falls back to the paid API key if unavailable. The 3-tier REST API
-fallback chain is already implemented and working.
+`_get_google_oauth_token()` was added in a previous session — OAuth is now tried first
+for deep-research and falls back to the paid API key if unavailable. T-02 changes this:
+when OAuth is unavailable, the tool no longer auto-falls-back. Instead it exits with an
+actionable error unless `--confirm-paid` / `-P` is explicitly provided.
 
-### GCP Billing Export Research (2026-04-11)
+### GCP Billing Configuration (confirmed 2026-04-11)
 
-Key finding: **GCP has no direct billing query API.** The Cloud Billing API manages
-account links; it does not return cost data. The only path to actual billed amounts is
-BigQuery billing export, queried via `google-cloud-bigquery`.
+- Billing account: `01AC33-5BE8AD-2F4E8A` (Sergei Wallace)
+- GCP project for paid AI Studio key: `gen-lang-client-0651020461` (Tier 1)
+- BigQuery billing export: **not yet configured** — one-time human setup required
+- Service name in billing export: `"Gemini API"` (`generativelanguage.googleapis.com`)
+- OAuth runs are not billed and will not appear in the export
 
-- Gemini API usage (AI Studio key) appears under service `generativelanguage.googleapis.com`,
-  displayed as `"Gemini API"` in billing.
-- Granularity: daily per-model SKU (not per-request). Data is delayed 24–48h.
-- BigQuery billing export is **not currently configured** on the user's GCP projects.
-  One-time setup required (~5 min in Cloud Console) before T-03 paid spend queries work.
-- Google AI Studio has no public spend API — web UI only.
-- OAuth runs (free via consumer subscription) will **not appear** in the billing export
-  at all (they are not billed). These are tracked via local JSONL logs only.
+### GCP Billing API Research (2026-04-11)
+
+GCP has no direct billing query API. The Cloud Billing API manages account links; it
+does not return cost data. The only path to actual billed amounts is BigQuery billing
+export queried via `google-cloud-bigquery`. Granularity: daily per-model SKU (not
+per-request). Data is delayed 24–48h. Exact `sku.description` strings per model are
+confirmed empirically on first query.
 
 ### AI-CLI-25 Status
 
 The ai-cli-utils code changes from AI-CLI-25 are complete: `quota_sync_from_remote()`
-exists, Slack webhook sending is implemented. The remaining items are human actions
-(creating the Slack webhook URL, storing in Doppler) and humanware-project work — they
-do not block AI-CLI-41.
+and Slack webhook sending are implemented. Remaining items are human actions (webhook URL
+creation, Doppler config) and a separate humanware-project task — they do not block
+AI-CLI-41.
 
 ## Auth Tier Naming
 
 The old `tier 1/2/3` numbering conflates an internal fallback-chain concept with
-Google's own billing terminology and is not useful for communicating with humans or
-in log output. Replacing throughout with Google-aligned names:
+Google's own billing terminology. Replacing throughout with Google-aligned names:
 
 | New name | Old label | What it is |
 |----------|-----------|-----------|
-| `oauth` | "gemini-cli (OAuth)" / tier 1 | Gemini CLI OAuth via Google AI Ultra consumer subscription — free, ~20 DR runs/day |
+| `oauth` | "gemini-cli (OAuth)" / tier 1 | Gemini CLI OAuth via Google AI Ultra consumer subscription — free, daily DR cap |
 | `ai_studio_free` | "API free-tier" / tier 2 | Google AI Studio free-tier API key — free for Flash/Gemma only |
-| `ai_studio_paid` | "API paid" / tier 3 | Google AI Studio paid API key linked to billing account — billed |
+| `ai_studio_paid` | "API paid" / tier 3 | Google AI Studio paid API key linked to billing account — potentially billed (credit applicability TBD) |
 
 These names are used in:
 - `TIER_NAMES` dict in `gemini.py`
 - `tier_name` field in JSONL log entries
-- Stderr output (`[deep-research] OAuth runs today: N/20`)
-- `ai spend gemini` display
-- Session config and doc references (replace all "tier 3" references with "AI Studio paid")
+- Stderr output and `ai spend gemini` display
+- Session config and doc references
 
 **In-code tier integers (1/2/3) are kept** for fallback-chain ordering logic only and
 are not user-facing.
@@ -155,50 +192,51 @@ hardcoded into the tool. No external dependencies beyond existing ones.
 - Real-time (not delayed like BigQuery)
 
 **Cons:**
-- We're back to calculating spend ourselves, not reading actual billed amounts
+- We're calculating spend ourselves — not reading what Google actually charged
 - Published rates and billing reality diverge (credits, discounts, rounding)
 - Per-token prices change; the tool falls out of sync
-- OAuth runs have no token data from the subprocess path
+- OAuth runs have no token data (subprocess path)
+- Doesn't resolve the Ultra credit question — just estimates
 
 ### Option B: BigQuery billing export for paid spend
 
 Enable GCP BigQuery billing export (one-time human setup, ~5 min). Python tool queries
-`google-cloud-bigquery` to get actual billed amounts for `ai_studio_paid` runs. OAuth and
-`ai_studio_free` runs tracked via JSONL logs only (they are not billed).
+`google-cloud-bigquery` to get actual billed amounts for `ai_studio_paid` runs.
 
 **Pros:**
-- Actual billed amounts — what Google charged, not what we calculated
+- Actual billed amounts — what Google charged, including any credits applied
 - Per-model SKU breakdown available
-- `google-cloud-bigquery` is the standard, well-supported client; ADC auth works
+- `google-cloud-bigquery` + ADC auth is the standard path
 
 **Cons:**
 - One-time human setup required before paid-spend data is available
 - Data is delayed 24–48h — "today's spend" shows yesterday's data
-- Per-request granularity is not available (hourly SKU aggregates only)
-- Exact `sku.description` strings per model need to be mapped empirically (first run)
+- Per-request granularity not available (hourly SKU aggregates only)
+- Exact SKU strings need empirical mapping on first query
 
-### Option C: Hybrid — BigQuery for paid, JSONL for OAuth
+### Option C: Hybrid — BigQuery for paid, JSONL for OAuth (recommended)
 
 Use BigQuery for `ai_studio_paid` actual billed amounts; use JSONL logs for OAuth and
-free-tier run counts. `ai spend gemini` combines both sources. Graceful degradation
-when BigQuery is not set up (shows "not configured" with setup instructions instead of
-crashing).
+free-tier run counts. `ai spend gemini` combines both sources. Graceful degradation when
+BigQuery is not set up.
 
 **Pros:**
-- Best of both: actual billing data + free-run tracking
-- No paid-run cost calculation needed — ground truth from Google
+- Ground truth for paid spend — resolves the credit uncertainty empirically (if $0 shows
+  in billing after a paid run, the credit is being applied)
+- No paid-run cost calculation needed
+- OAuth and free-tier runs fully tracked via JSONL
 
 **Cons:**
 - Two data sources to integrate in T-03
-- Requires BigQuery setup gate (human action)
+- BigQuery setup is a required human gate before paid-spend data appears
 
 ### Recommendation
 
-**Option C (hybrid).** The only honest way to know what Google actually charged is to
-read what they actually charged. Option A (calculate ourselves) defeats the purpose of
-this feature. Option C adds one human gate (BigQuery setup) but delivers accurate paid
-spend alongside the free OAuth run counter. T-03 detects missing BigQuery config and
-guides the user through setup rather than failing silently.
+**Option C (hybrid).** Most importantly: the BigQuery billing export will reveal exactly
+what Google charged after a paid run, which is the only reliable way to determine whether
+the Ultra credit is being applied to AI Studio API key usage. This makes Option C
+doubly valuable — it's both the usage-display feature and the empirical answer to the
+billing uncertainty.
 
 ## Task Breakdown
 
@@ -209,42 +247,70 @@ guides the user through setup rather than failing silently.
 
 Debug why `input_tokens`, `output_tokens`, `total_tokens` are always `0` in JSONL logs
 even though `_call_rest_api()` reads `response.usage_metadata`. Likely culprits: the
-`gemini-3-flash-preview` model doesn't populate `usage_metadata`, the SDK attribute name
-differs from `prompt_token_count`/`candidates_token_count`, or `usage_metadata` is `None`
-for some responses. Fix extraction and add a fallback log if the field is absent.
+model doesn't populate `usage_metadata`, the SDK attribute name differs from expected
+(`prompt_token_count`/`candidates_token_count`), or `usage_metadata` is `None`. Fix
+extraction; log `null` (not `0`) when unavailable so the two cases are distinguishable.
 
-Also as part of this task:
-- Add `is_deep_research: bool` to each log entry (True when `model == "deep-research"`
-  or the Interactions API path was used)
-- Update `TIER_NAMES` dict to new naming system: `{1: "oauth", 2: "ai_studio_free", 3: "ai_studio_paid"}`
-- Fix `_run_deep_research()` to log the correct tier name (`"oauth"` if OAuth token was
-  obtained, `"ai_studio_paid"` if paid key was used) instead of `"Interactions API"`
+Also:
+- Add `is_deep_research: bool` to each log entry
+- Update `TIER_NAMES` dict: `{1: "oauth", 2: "ai_studio_free", 3: "ai_studio_paid"}`
+- Fix `_run_deep_research()` to log the actual auth used (`"oauth"` or `"ai_studio_paid"`)
+  instead of the generic `"Interactions API"`
 
 **Deliverables:**
 
-- `src/ai_cli/gemini.py` — fix token extraction, add `is_deep_research`, update `TIER_NAMES`, fix deep-research log tier
+- `src/ai_cli/gemini.py`
 
 **Acceptance criteria:**
 
-- [ ] After a `ai gemini -m flash` REST API run, log entry has non-zero `input_tokens` and `output_tokens` (or `null` with a warning if the model doesn't return them)
+- [ ] After a REST API run, log entry has non-zero `input_tokens`/`output_tokens`, or explicit `null` (not `0`) if the model doesn't return them
 - [ ] After a `ai gemini -m deep-research` run, log entry has `is_deep_research: true`
 - [ ] Deep-research OAuth run logs `tier_name: "oauth"`; paid key run logs `tier_name: "ai_studio_paid"`
-- [ ] Flash OAuth run (tier 1, subprocess) logs `tier_name: "oauth"`
-- [ ] `TIER_NAMES` dict uses new naming system in all log entries going forward
+- [ ] Flash OAuth subprocess run logs `tier_name: "oauth"`
+- [ ] `TIER_NAMES` uses new naming in all log entries going forward
 
 **Dependencies:** None
 
 ---
 
-### T-02: Deep Research daily OAuth run counter
+### T-02: Deep Research paid-run gate + daily OAuth counter
 
 **Size:** S
 **Batch:** 1
 
-Write/increment `~/.local/state/ai-cli/dr-daily.json` on each successful deep-research
-run completion. Reset on date rollover. Print per-run status to stderr after each run.
+Two closely related behaviors, implemented together:
 
-**Schema:**
+**Part A — Paid-run hard gate (safety-critical):**
+
+Change the deep-research fallback behavior so that when OAuth is unavailable, the tool
+does NOT auto-fall-back to `ai_studio_paid`. Instead it exits with a warning and
+requires explicit opt-in.
+
+New CLI flag: `-P` / `--confirm-paid` (on `ai gemini`, applies only to deep-research).
+
+Behavior when OAuth unavailable and `--confirm-paid` not set:
+```
+[deep-research] OAuth unavailable.
+  AI Studio paid key found, but billing credit status is unconfirmed — this run may
+  cost ~$2–5 out of pocket if the Ultra subscription credit doesn't apply.
+  To proceed: ai gemini "..." -m deep-research --confirm-paid
+  To investigate billing: ai spend gemini
+```
+
+Behavior when `--confirm-paid` is set and OAuth unavailable:
+```
+[deep-research] Warning: running with AI Studio paid key. Billing credit status
+  unconfirmed — check `ai spend gemini` after this run to verify charge.
+```
+
+This gate is **unconditional** — it fires regardless of what we later confirm about
+credit applicability. If we later confirm credits do apply, the warning text is updated
+but the explicit opt-in remains (conscious spending is always better than silent spending).
+
+**Part B — Daily OAuth run counter:**
+
+Write/increment `~/.local/state/ai-cli/dr-daily.json` on each successful deep-research
+completion. Schema:
 
 ```json
 {
@@ -255,50 +321,54 @@ run completion. Reset on date rollover. Print per-run status to stderr after eac
 }
 ```
 
-**Constants (in `gemini.py`):**
+Constants in `gemini.py`:
 
 ```python
-DEEP_RESEARCH_DAILY_LIMIT: int = 20       # approx. Ultra subscription daily cap
-DEEP_RESEARCH_DAILY_WARNING: int = 18     # warn when this many runs used
+DEEP_RESEARCH_DAILY_LIMIT: int = 20       # approx. daily cap; unverified — update empirically
+DEEP_RESEARCH_DAILY_WARNING: int = 18     # warn when this many OAuth runs used
 ```
 
-**Stderr output format (printed after each deep-research run):**
-
-For OAuth run:
+Stderr output after each OAuth deep-research run:
 ```
 [deep-research] OAuth runs today: 3/20
 ```
 
-For paid run:
+After each paid deep-research run:
 ```
-[deep-research] Paid (AI Studio) runs today: 1
-```
-
-Warning (when `oauth_count >= DEEP_RESEARCH_DAILY_WARNING` after an OAuth run):
-```
-[deep-research] Warning: 18/20 OAuth runs used today. Next 2 are free; after that AI Studio paid billing applies.
+[deep-research] Paid (AI Studio) runs today: 1 — check `ai spend gemini` for charges
 ```
 
-The counter is incremented on **completion**, not start — a cancelled or errored run does
-not count. On first run, the file is created if absent.
+Warning when `oauth_count >= DEEP_RESEARCH_DAILY_WARNING`:
+```
+[deep-research] Warning: 18/20 OAuth runs used today. Approaching daily limit — next
+  paid fallback will require --confirm-paid.
+```
+
+Counter increments on **completion** only. Cancelled/errored runs not counted. File
+created on first run. `quiet=True` suppresses counter output.
 
 **Deliverables:**
 
-- `src/ai_cli/gemini.py` — counter read/write on deep-research completion; `DEEP_RESEARCH_DAILY_LIMIT` and `DEEP_RESEARCH_DAILY_WARNING` constants
+- `src/ai_cli/gemini.py` — paid gate, `-P`/`--confirm-paid` flag, counter logic, constants
+- `src/ai_cli/main.py` — add `-P`/`--confirm-paid` to `ai gemini` arg parser
 - State file: `~/.local/state/ai-cli/dr-daily.json`
 
 **Acceptance criteria:**
 
+- [ ] When OAuth unavailable and `--confirm-paid` not set: exits with warning, no API call made, return code 1
+- [ ] When `--confirm-paid` set and OAuth unavailable: runs with `ai_studio_paid`, prints loud warning
 - [ ] `oauth_count` increments after a successful OAuth deep-research run
 - [ ] `paid_count` increments after a successful `ai_studio_paid` deep-research run
 - [ ] Counter resets on date rollover (test with mocked date)
 - [ ] Cancelled or errored run does not increment the counter
-- [ ] Counter file is created on first run if absent
+- [ ] Counter file created on first run if absent
 - [ ] Stderr prints `[deep-research] OAuth runs today: N/20` after each OAuth run
-- [ ] Stderr prints warning line when `oauth_count >= 18` after an OAuth run
-- [ ] `quiet=True` suppresses counter output (consistent with other stderr output)
+- [ ] Warning line printed when `oauth_count >= 18`
+- [ ] `quiet=True` suppresses counter output
 
-**Dependencies:** T-01 (need correct `tier_name` in log to distinguish oauth vs paid)
+**Prerequisites:** Billing credit status investigated (Q5) so warning text is accurate.
+
+**Dependencies:** T-01 (correct `tier_name` in log for oauth vs paid distinction)
 
 ---
 
@@ -307,116 +377,133 @@ not count. On first run, the file is created if absent.
 **Size:** M
 **Batch:** 2
 
-New subcommand combining two data sources: BigQuery billing export for `ai_studio_paid`
-actual billed amounts; local JSONL logs + `dr-daily.json` for OAuth and free-tier run
-counts.
+New subcommand combining BigQuery billing export for `ai_studio_paid` actual billed
+amounts and local JSONL logs + `dr-daily.json` for OAuth and free-tier run counts.
+
+**Config keys** (`config.toml` under `[gemini_billing]`):
+```toml
+[gemini_billing]
+gcp_project_id = "gen-lang-client-0651020461"
+billing_account_id = "01AC33-5BE8AD-2F4E8A"
+billing_export_table = ""   # filled after BigQuery export is enabled
+```
+
+**BigQuery query:** filter `service.description = 'Gemini API'`, group by
+`DATE(usage_start_time)` and `sku.description`. On first successful query, print
+raw SKU strings so model→SKU mapping can be confirmed.
 
 **Example output:**
 
 ```
 Gemini usage — today (2026-04-11)
-  Deep Research:  3 OAuth runs (17 remaining free)  |  1 paid run
+  Deep Research:  3 OAuth runs (17 remaining free)  |  0 paid runs
   Other models:   flash ×12  •  deep-think ×2
 
 This month (Apr 2026)
-  Deep Research:  18 OAuth  •  4 paid
-  Paid API spend: $14.80  (source: GCP billing export, as of 2026-04-10)
-  Est. monthly credit remaining: $85.20  (vs $100/mo — offset by Ultra subscription)
+  Deep Research:  18 OAuth  •  1 paid run
+  Paid API spend: $0.00  (source: GCP billing export, as of 2026-04-10)
+    → Ultra credit appears to be applied ✓
 ```
 
-When BigQuery export is not configured:
+Or, if billing shows a charge:
+
+```
+  Paid API spend: $3.20  (source: GCP billing export, as of 2026-04-10)
+    → Charges are being applied — Ultra credit may not cover AI Studio API keys
+```
+
+When BigQuery not configured:
 ```
 Paid API spend: not available — BigQuery billing export not configured.
-  To enable: https://console.cloud.google.com/billing/export
+  To enable: Cloud Console → Billing → Billing export → Detailed usage cost
   One-time setup (~5 min); data appears within 24-48h.
+  GCP project: gen-lang-client-0651020461
 ```
-
-**BigQuery integration:**
-- Optional dependency: `google-cloud-bigquery` (skip spend query gracefully if not installed)
-- Auth: ADC (`gcloud auth application-default login`)
-- Config keys added to `config.toml` under `[gemini_billing]`:
-  - `gcp_project_id` — GCP project to run BQ jobs from (auto-detectable via `gcloud config get-value project`)
-  - `billing_export_table` — full table path `PROJECT.DATASET.TABLE` of the billing export
-- Query: filter `service.description = 'Gemini API'`, group by `DATE(usage_start_time)` and `sku.description`
-- On first successful query, log the SKU descriptions found so the model→SKU mapping can be confirmed
 
 **Deliverables:**
 
 - `src/ai_cli/main.py` — `ai spend gemini` subcommand dispatch
 - `src/ai_cli/spend.py` (new) — log parsing and BigQuery query logic
-- `docs/tools/ai-cli-usage.md` — document the command and BigQuery setup steps
+- `docs/tools/ai-cli-usage.md` — document command + BigQuery setup steps
 
 **Acceptance criteria:**
 
 - [ ] `ai spend gemini` prints daily OAuth DR counter with free quota remaining
 - [ ] Shows per-model run counts for today from JSONL logs
-- [ ] When BigQuery is configured: shows paid spend with data-as-of date
-- [ ] When BigQuery is not configured: prints actionable setup message, does not crash
-- [ ] When `google-cloud-bigquery` is not installed: prints install hint, does not crash
+- [ ] When BigQuery configured: shows paid spend with data-as-of date + credit status hint
+- [ ] When BigQuery not configured: prints actionable setup message, does not crash
+- [ ] When `google-cloud-bigquery` not installed: prints install hint, does not crash
 - [ ] Monthly aggregate reads all JSONL log files for current calendar month
-- [ ] Graceful output when no runs logged today ("No Gemini runs today")
+- [ ] Graceful output when no runs logged today
 
-**Dependencies:** T-01 (correct tier names in logs), T-02 (DR counter file)
+**Dependencies:** T-01, T-02
 
 ---
 
 ### T-04: Replace MEMORY.md ledger in `gemini_cost_sync` handler
 
-**Size:** S
-**Batch:** deferred
-
-**Status: OUT OF SCOPE for ai-cli-utils / DEFERRED**
-
-The `gemini_cost_sync` hw-scheduling handler lives in the humanware/sergei project
-(linked to SW-767), not in this repo. The ai-cli-utils side of this integration
-(log schema + `ai spend gemini`) is delivered by T-01–T-03. Once those land, the
-humanware side can be updated separately to read from the JSONL logs or the `ai spend`
-command output instead of the MEMORY.md ledger.
-
-No action needed in this task — remove the T-04 blocker from the AI-CLI-41 roadmap
-entry.
+**Status: OUT OF SCOPE / DEFERRED** — lives in humanware/sergei project (SW-767).
+Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` output.
 
 ## Batch Plan
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
-| 1 | T-01, T-02 | Foundation — fix token extraction, tier naming, DR counter | Plan approval |
+| 1 | T-01, T-02 | Foundation — token extraction fix, tier naming, DR counter + paid gate | Plan approval + billing Q5 investigated |
 | 2 | T-03 | Surface — `ai spend gemini` command | Human review of BigQuery setup + output format |
+
+---
 
 > **Feedback Round 1:** Does the batching make sense? Should any tasks be reordered, split, or merged?
 >
+> - \<enter feedback here>
+
+> **AI Response Round 1:**
+> - No feedback received on batching — proceeding with two-batch plan as designed.
+
+---
+
+> **Feedback Round 2:**
 > - \<enter feedback here>
 
 ## Human Gates
 
 | Gate | After | Decision needed |
 |------|-------|-----------------|
-| Plan approval | Before Batch 1 | Approve scope, approach, tier naming system |
-| BigQuery setup | Before T-03 | Enable GCP BigQuery billing export (one-time, ~5 min in Cloud Console); enable BigQuery API on the billing project |
-| Output format review | After T-03 draft | Approve `ai spend gemini` display and SKU→model mapping before finalizing |
-| UAT | After Batch 2 | Confirm counter increments correctly, paid spend pulls correctly |
+| Billing credit investigation | Before T-02 implementation | Investigate Q5: does Ultra credit apply to AI Studio paid key? Update warning text accordingly. |
+| Plan approval | Before Batch 1 | Approve scope, approach, tier naming, paid-run gate behavior |
+| BigQuery setup | Before T-03 | Enable GCP BigQuery billing export in Cloud Console; enable BigQuery API on `gen-lang-client-0651020461` |
+| Output format review | After T-03 draft | Approve `ai spend gemini` display and SKU→model mapping |
+| UAT | After Batch 2 | Confirm counter increments, paid gate fires correctly, BigQuery spend data pulls |
 
 ## Open Questions
 
-1. **BigQuery export project:** Which GCP project should the billing export write to?
-   `gen-lang-client-0651020461` (Tier 1) is linked to the paid billing account
-   (`01AC33-5BE8AD-2F4E8A`). Should the export write to that project, or to
-   `humanware-492904`? (This determines the `billing_export_table` config key.)
+1. **Resolved** — BigQuery project: `gen-lang-client-0651020461`, billing account
+   `01AC33-5BE8AD-2F4E8A`.
 
-2. **Exact `sku.description` strings:** The BigQuery export uses opaque SKU strings
-   (e.g. `"Gemini 3.1 Pro Preview Input Tokens"`). These need to be mapped to
-   model aliases used by `ai gemini`. The first live query will reveal actual SKU strings —
-   this mapping is confirmed empirically, not upfront.
+2. **Resolved** — SKU strings: confirmed empirically on first query.
 
-3. **`ai_studio_free` token counts:** The free-tier API key path uses the same REST API
-   as the paid key and should also populate `usage_metadata`. If token extraction is
-   fixed in T-01 and free-tier runs still show zeros, it may be a model-specific gap
-   (some Gemma/Flash variants don't return token counts). Mark as `null` with a comment
-   in the log if so.
+3. **Resolved** — Token counts: if unavailable after T-01 fix, log `null` (not `0`).
 
-4. **`DEEP_RESEARCH_DAILY_LIMIT = 20`:** This is an approximate limit from research
-   (R-4, 2026-04-10); Google has not published an exact number. The constant is easy to
-   adjust. If you've hit a limit in practice, update this value and note it here.
+4. **Partially resolved** — `DEEP_RESEARCH_DAILY_LIMIT = 20`: empirically unknown but
+   reasonable starting point. Update the constant when a real limit is encountered.
+
+5. **P0 OPEN — Does the Ultra credit apply to AI Studio paid key?** As of 2026-04-11:
+   - The Ultra subscription credit ($100/month) was recently connected to billing
+     account `01AC33-5BE8AD-2F4E8A`.
+   - Mixed information online about whether AI Studio API keys (`AIzaSy...`) receive
+     this credit, or whether it only applies to Vertex AI keys.
+   - The Interactions API (deep-research) may not work with Vertex AI keys, making a
+     key switch potentially impossible.
+   - **Required before T-02 implementation:** investigate via Google Cloud billing
+     dashboard, Google support, or a controlled test. The paid-run gate in T-02 is
+     implemented unconditionally either way, but the warning text should reflect the
+     actual credit status once known.
+   - **Suggestion:** after BigQuery export is enabled (T-03 human gate), run one
+     `--confirm-paid` deep-research run and check the next day's billing export for
+     a charge. If $0 → credit applies. If charged → it does not.
+
+---
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 >
@@ -425,9 +512,21 @@ entry.
 > 3. Token counts: fine, mark null if unavailable.
 > 4. Daily limit: empirically unknown — we haven't been tracking effectively. More importantly: there's a critical open question about whether the AI Studio paid key (`GOOGLE_API_KEY_TIER_1`) has the Google AI Ultra subscription credits ($100/mo) applied. Situation: (a) the Ultra subscription wasn't connected to the billing account previously — that's now fixed. (b) there is mixed information online about whether Ultra credits apply to AI Studio API keys or only Vertex API keys. (c) the Interactions API (used for deep-research) may not work with Vertex API keys at all, so we can't just switch to Vertex. Result: we don't know if `ai_studio_paid` deep-research runs are ~free (subsidized by Ultra credit) or ~$2–5 out of pocket. The tool must NOT silently fall back to `ai_studio_paid` for deep-research. Need hard gates, explicit opt-in, and clear warnings before any paid deep-research run fires. This is the most important safety requirement for this feature.
 
+> **AI Response Round 1:**
+> - Q1, Q2, Q3 resolved as noted above.
+> - Q4 (daily limit): keeping `DEEP_RESEARCH_DAILY_LIMIT = 20` as placeholder; easy to adjust empirically.
+> - Q5 (billing credit uncertainty): this is now the P0 open question. T-02 implements an unconditional paid-run gate with explicit `--confirm-paid` / `-P` flag regardless of credit status — no silent fallback ever. Warning text will be updated once credit status is confirmed. BigQuery billing export (T-03) will provide empirical confirmation after one `--confirm-paid` run is observed in the billing data.
+
+---
+
+> **Feedback Round 2:**
+> - \<enter feedback here>
+
 ## Approval Log
 
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-10 | Plan drafted | Initial sketch based on AI-CLI-41 task + R-4 billing research |
-| 2026-04-11 | Plan revised | Full audit of JSONL schema (token counts = 0, schema already rich); BigQuery approach adopted for paid spend; tier naming system overhauled; T-01 reframed as token extraction debug; T-04 marked out-of-scope; AI-CLI-25 confirmed not blocking |
+| 2026-04-11 | Plan revised (round 1) | Full JSONL schema audit; BigQuery approach adopted; tier naming overhauled; T-01 reframed; T-04 out-of-scope; AI-CLI-25 confirmed not blocking |
+| 2026-04-11 | User feedback round 1 committed | Billing credit uncertainty (Q5) identified as P0 safety concern |
+| 2026-04-11 | Plan revised (round 2) | T-02 redesigned with unconditional paid-run gate (`--confirm-paid` / `-P`); billing uncertainty documented; T-03 updated to show credit status hint from BigQuery data; Q5 added as P0 open question |
