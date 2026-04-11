@@ -23,7 +23,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
-| **Remote sessions** | `ai c -R` — run sessions on a remote server via mosh or SSH |
+| **Remote sessions** | `ai c -R` — run sessions on a remote server via mosh or SSH; Tailscale auto-started if mosh fails (macOS) |
 | **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory and conversations between machines |
 | **Handoff queue** | `ai handoff post/check/claim/complete` — delegate tasks between sessions |
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
@@ -33,6 +33,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Signal-watch** | Handoff delivery via Circus-managed background process — isolated from CC session lifecycle |
 | **Notifications** | Desktop and push notifications on task completion |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
+| **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
 | **Runtime tinted icons** | Pillow-based PNG icon generation at session launch; auto-contrast tint derived from tab color via HSL color theory |
 | **Collision-free tab colors** | Lease-file-based color slot assignment; each session gets a unique color from a configurable palette |
 
@@ -98,7 +99,7 @@ ai c -R -p/--project myproject <name>  # Specify remote project directory
 ### Cross-machine sync
 
 ```bash
-ai sync push [-m] [-n] [-v] [-f]   # Push Claude Code state to remote
+ai sync push [-m] [-n] [-v] [-f]   # Push state to remote; aborts if remote has newer files (use -f to force)
 ai sync pull [-m] [-n] [-v] [-f]   # Pull remote state to local
 ai sync conflicts                   # Show unresolved sync conflicts
 ai sync watch [-v]                  # Watch for sync events via NATS
@@ -121,10 +122,10 @@ ai gemini "prompt" -m deep-think -s 2     # Skip OAuth, go straight to REST API 
 
 **Auth fallback chain (automatic on 429/capacity errors):**
 1. Gemini CLI OAuth (free — Google AI subscription)
-2. REST API with `GOOGLE_API_KEY_FREE_TIER` — **Flash/Gemma models only.** Gemini 3.1 Pro has no free quota tier; tier 2 will fail immediately for Pro/deep-think/deep-research.
+2. REST API with `GOOGLE_API_KEY_FREE_TIER` — **Flash/Gemma models only.** Pro, image-generation variants, and deep-research have no free quota; tier 2 is skipped automatically for ineligible models.
 3. REST API with `GOOGLE_API_KEY_TIER_1` — paid, works for all models.
 
-Use `-s 2` to skip OAuth for Flash calls. For Pro/deep-think/deep-research where OAuth fails, use `-s 3` — the free-tier key cannot serve these models.
+`deep-research` uses OAuth first and falls back directly to tier 3 — tier 2 is always skipped for it. Use `-s 2` to skip OAuth for Flash calls. For Pro/deep-think where OAuth fails, use `-s 3`.
 
 **Model aliases:** `deep-think`, `pro`, `flash`, `flash-lite`, `deep-research`, or any full Gemini model ID.
 
