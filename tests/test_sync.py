@@ -36,6 +36,7 @@ from ai_cli.sync import (
     _find_project_worktrees,
     _replicate_to_worktrees,
     replicate_history_to_worktrees,
+    purge_phantom_history_entries,
     retranslate_project_jsonls,
     sync_watch,
     sync_push,
@@ -2186,7 +2187,7 @@ def test_sync_pull_when_full_run_then_applies_and_translates(tmp_path):
                             with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
                                 with patch("ai_cli.sync.translate_history_jsonl", return_value=0):
                                     with patch("ai_cli.sync.retranslate_project_jsonls", return_value=0):
-                                        with patch("ai_cli.sync.replicate_history_to_worktrees", return_value=0):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries", return_value=0):
                                             result = sync_pull(["--force"])
 
     assert result == 0
@@ -3771,7 +3772,7 @@ def test_sync_pull_when_cc_active_locally_then_prints_warning(tmp_path, capsys):
                                     with patch("ai_cli.sync.apply_config_files", return_value=0):
                                         with patch("ai_cli.sync.translate_history_jsonl"):
                                             with patch("ai_cli.sync.retranslate_project_jsonls"):
-                                                with patch("ai_cli.sync.replicate_history_to_worktrees"):
+                                                with patch("ai_cli.sync.purge_phantom_history_entries"):
                                                     with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
                                                         result = sync_pull([])
     assert result == 0
@@ -3848,7 +3849,7 @@ def test_sync_pull_when_verbose_then_prints_applied_count(tmp_path, capsys):
                                     with patch("ai_cli.sync.apply_config_files", return_value=1):
                                         with patch("ai_cli.sync.translate_history_jsonl"):
                                             with patch("ai_cli.sync.retranslate_project_jsonls"):
-                                                with patch("ai_cli.sync.replicate_history_to_worktrees"):
+                                                with patch("ai_cli.sync.purge_phantom_history_entries"):
                                                     with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
                                                         result = sync_pull(["--verbose"])
     assert result == 0
@@ -3890,7 +3891,7 @@ def test_sync_pull_when_conflicts_then_notifies_and_returns_2(tmp_path):
                                     with patch("ai_cli.sync.apply_config_files", return_value=0):
                                         with patch("ai_cli.sync.translate_history_jsonl"):
                                             with patch("ai_cli.sync.retranslate_project_jsonls"):
-                                                with patch("ai_cli.sync.replicate_history_to_worktrees"):
+                                                with patch("ai_cli.sync.purge_phantom_history_entries"):
                                                     with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
                                                         with patch("ai_cli.sync.notify_conflicts") as mock_notify:
                                                             result = sync_pull([])
@@ -4013,6 +4014,95 @@ def test_replicate_history_to_worktrees_when_blank_lines_then_skips(tmp_path):
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = replicate_history_to_worktrees()
     assert result == 0  # no worktrees → nothing replicated, but blank line branch was exercised
+
+
+def test_purge_phantom_history_entries_when_no_history_then_returns_zero():
+    """Early exit when history.jsonl doesn't exist."""
+    with patch("pathlib.Path.home", return_value=Path("/tmp/nonexistent_purge_test")):
+        result = purge_phantom_history_entries()
+    assert result == 0
+
+
+def test_purge_phantom_history_entries_when_no_phantoms_then_returns_zero(tmp_path):
+    """Genuine worktree entries (UUID only in worktree) are kept."""
+    import json as _json
+
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    # A genuine worktree conversation — UUID not in any main-project entry
+    wt_cwd = str(tmp_path / "projects" / "myapp" / ".worktrees" / "wt-1")
+    history.write_text(_json.dumps({"project": wt_cwd, "sessionId": "genuine-uuid"}) + "\n")
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = purge_phantom_history_entries()
+
+    assert result == 0
+    assert "genuine-uuid" in history.read_text()
+
+
+def test_purge_phantom_history_entries_when_phantoms_exist_then_removes_them(tmp_path):
+    """Phantom entries (worktree path, UUID also in main-project) are removed."""
+    import json as _json
+
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+
+    main_cwd = str(tmp_path / "projects" / "myapp")
+    wt_cwd = str(tmp_path / "projects" / "myapp" / ".worktrees" / "wt-1")
+
+    main_entry = _json.dumps({"project": main_cwd, "sessionId": "shared-uuid"})
+    phantom_entry = _json.dumps({"project": wt_cwd, "sessionId": "shared-uuid"})
+    genuine_wt_entry = _json.dumps({"project": wt_cwd, "sessionId": "wt-only-uuid"})
+    history.write_text("\n".join([main_entry, phantom_entry, genuine_wt_entry]) + "\n")
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = purge_phantom_history_entries()
+
+    assert result == 1
+    remaining = history.read_text()
+    assert "shared-uuid" in remaining  # main-project entry kept
+    assert main_cwd in remaining
+    assert "wt-only-uuid" in remaining  # genuine worktree entry kept
+    # Phantom (worktree path + shared UUID) is gone
+    lines = [_json.loads(l) for l in remaining.strip().split("\n") if l]
+    wt_shared = [l for l in lines if l["project"] == wt_cwd and l["sessionId"] == "shared-uuid"]
+    assert wt_shared == []
+
+
+def test_purge_phantom_history_entries_when_verbose_then_prints(tmp_path, capsys):
+    """Verbose mode prints removal count."""
+    import json as _json
+
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+
+    main_cwd = str(tmp_path / "projects" / "myapp")
+    wt_cwd = str(tmp_path / "projects" / "myapp" / ".worktrees" / "wt-1")
+    history.write_text(
+        _json.dumps({"project": main_cwd, "sessionId": "s1"})
+        + "\n"
+        + _json.dumps({"project": wt_cwd, "sessionId": "s1"})
+        + "\n"
+    )
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = purge_phantom_history_entries(verbose=True)
+
+    assert result == 1
+    assert "purge phantom history" in capsys.readouterr().out
+
+
+def test_purge_phantom_history_entries_when_malformed_json_then_keeps_line(tmp_path):
+    """Malformed JSON lines are kept (exception path)."""
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text('{"project": "ok", "sessionId": "s1"}\nnot-json\n')
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = purge_phantom_history_entries()
+
+    assert result == 0
+    assert "not-json" in history.read_text()
 
 
 def test_retranslate_project_jsonls_when_jsonl_is_dir_then_skips(tmp_path):

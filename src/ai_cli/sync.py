@@ -694,6 +694,71 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
     return len(new_entries)
 
 
+def purge_phantom_history_entries(verbose: bool = False) -> int:
+    """Remove phantom worktree entries from history.jsonl.
+
+    ``replicate_history_to_worktrees`` (now removed from the sync pipeline)
+    used to copy every main-project history entry into worktree-path variants
+    on each pull.  These phantom entries cause the conversation picker to show
+    main-project conversations inside worktree sessions, then fail to load them
+    because the JSONL files live in the main CC directory, not the worktree CC
+    directory.
+
+    A phantom entry is a history.jsonl line whose ``project`` field is a
+    worktree path AND whose ``sessionId`` also appears under a main-project
+    path.  Genuine worktree-initiated conversations (created by CC with the
+    worktree CWD) are not phantoms — their UUIDs only exist under the worktree
+    path.
+
+    Returns the number of entries removed.
+    """
+    import json as _json
+
+    history_path = Path.home() / ".claude" / "history.jsonl"
+    if not history_path.exists():
+        return 0
+
+    lines = history_path.read_text().strip().split("\n")
+
+    # Collect UUIDs that appear in *main-project* entries (not worktrees).
+    main_project_uuids: set[str] = set()
+    for line in lines:
+        if not line:
+            continue
+        try:
+            d = _json.loads(line)
+            proj = d.get("project", "")
+            if proj and ".worktrees/" not in proj and "--worktrees-" not in proj:
+                session_id = d.get("sessionId", "")
+                if session_id:
+                    main_project_uuids.add(session_id)
+        except Exception:
+            pass
+
+    kept: list[str] = []
+    removed = 0
+    for line in lines:
+        if not line:
+            continue
+        try:
+            d = _json.loads(line)
+            proj = d.get("project", "")
+            session_id = d.get("sessionId", "")
+            if (".worktrees/" in proj or "--worktrees-" in proj) and session_id in main_project_uuids:
+                removed += 1
+                continue
+        except Exception:
+            pass
+        kept.append(line)
+
+    if removed:
+        history_path.write_text("\n".join(kept) + "\n" if kept else "")
+        if verbose:
+            print(f"  purge phantom history: {removed} phantom worktree entries removed")
+
+    return removed
+
+
 def retranslate_project_jsonls(verbose: bool = False) -> int:
     """Translate foreign home paths in-place in all conversation JSONL files.
 
@@ -1673,7 +1738,7 @@ def sync_pull(flags: list[str]) -> int:
     if not dry_run and not memories_only:
         translate_history_jsonl(verbose=verbose)
         retranslate_project_jsonls(verbose=verbose)
-        replicate_history_to_worktrees(verbose=verbose)
+        purge_phantom_history_entries(verbose=verbose)
 
     if result["conflicts"]:
         if not dry_run:
