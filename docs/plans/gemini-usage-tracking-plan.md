@@ -2,13 +2,13 @@
 title: "Gemini API Cost and Usage Tracking Overhaul"
 category: plans
 tags: [ai-gemini, usage-tracking, billing, deep-research, quota, ai-cli-41]
-status: DRAFT
+status: COMPLETE
 source: internal
 ---
 
 # Gemini API Cost and Usage Tracking Overhaul — Implementation Plan
 
-**Status:** DRAFT
+**Status:** COMPLETE (T-01, T-02, T-03 shipped 2026-04-11; T-04/HW-3 tracked in humanware)
 
 **Created:** 2026-04-10
 **Revised:** 2026-04-11 (round 3)
@@ -561,3 +561,4 @@ billing export query (T-03) if token-count-based cost is unavailable.
 | 2026-04-11 | User feedback round 2 committed | Disable `ai_studio_paid` fallback by default via `paid_fallback_enabled` config toggle; OAuth-only for now; "Vertex-only" claim confirmed baseless; email sent to GDP premium support |
 | 2026-04-11 | Plan revised (round 3) | T-02 redesigned around `paid_fallback_enabled` config toggle (default false); `-P`/`--confirm-paid` retained for when paid is re-enabled; human gate for billing credit investigation removed (not blocking); Q5 demoted to deferred |
 | 2026-04-11 | T-04 confirmed and unlocked | `gemini_cost_sync` handler confirmed in humanware repo; T-04 added as Batch 3 (blocked on T-01+T-03); HW-3 added to humanware roadmap |
+| 2026-04-11 | T-01, T-02, T-03 implemented | Full autonomous implementation. 1426 tests passing. Shipped to feature branch `feature/ai-cli-41-gemini-usage-tracking`. |
