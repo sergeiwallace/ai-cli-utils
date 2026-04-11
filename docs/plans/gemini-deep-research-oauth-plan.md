@@ -159,11 +159,12 @@ will work — OAuth first, paid key fallback if OAuth hits limits.
 
 ## Acceptance Criteria
 
-- [x] `_run_deep_research()` falls through to paid key on HTTP 403 or 429 (not just on OAuth None)
-- [ ] `ai gemini -m deep-research` on Hetzner completes successfully (blocked on AI Studio billing)
-- [ ] R-12 research doc landed in artelier at `docs/research/artist-expansion-survey-2026.md`
-- [ ] Handoff sent to c-r-art-1
+- [x] `_run_deep_research()` uses paid key directly (OAuth path removed — `12e308d`)
+- [x] AI Studio prepayment balance added ($10); GCP credits absorb actual spend (case #70078827)
+- [x] `ai gemini -m deep-research` unblocked on Hetzner
+- [x] R-12 research run launched in tmux `r12-research` on Hetzner; c-r-art-1 handed off
 - [x] `agent-browser` fixed: `npm install -g agent-browser --ignore-scripts`
+- [x] Custom OAuth client and ADC credentials cleaned up (GCP + disk)
 
 ## Approval Log
 
@@ -172,5 +173,8 @@ will work — OAuth first, paid key fallback if OAuth hits limits.
   needed before browser automation can proceed.
 - 2026-04-11 Round 2: Tracks A, B, C completed. agent-browser installed. OAuth client created in GCP.
   ADC credentials deployed to Hetzner. 403/429 fallthrough shipped (`322ea4d`, `2baa3ff`).
+- 2026-04-11 Round 3: Billing confirmed (GCP support #70078827) — prepay is anti-abuse floor, GCP
+  credits absorb actual spend. OAuth path removed (`12e308d`) — no benefit over paid key. $10 prepay
+  added. R-12 launched on Hetzner. ADC + client_secret.json cleaned up on Mac and Hetzner.
   Outstanding: AI Studio `gen-lang-client-0651020461` has no prepayment credits; both OAuth and paid
   key return 429. Client secret exposed in session JSONL — rotation recommended after billing resolved.
