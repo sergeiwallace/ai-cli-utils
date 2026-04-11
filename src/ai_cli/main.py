@@ -709,6 +709,21 @@ def resolve_session(prefix: str, name: str) -> str:
     return find_recent_session(f"{prefix}{name}-")
 
 
+def _resolve_is_remote(is_remote_flag: bool) -> bool:
+    """Return True when --is-remote was passed OR the process is running on a non-Mac host.
+
+    The --is-remote flag is injected by the local machine when SSHing to a remote
+    host to launch a session.  When ``ai c`` / ``ai g`` is run *directly* on a
+    remote host (e.g. AI_CLI_HOST=hetzner), the flag is absent but the session
+    should still receive the ``c-r-`` / ``g-r-`` prefix so quota pane discovery
+    and other host-aware logic work correctly.
+    """
+    if is_remote_flag:
+        return True
+    host = os.environ.get("AI_CLI_HOST", "")
+    return bool(host) and host not in ("mac",)
+
+
 def build_session_name(
     engine_type: str, project_prefix: str, name: str, config: dict | None = None, is_remote: bool = False
 ) -> tuple[str, str]:
@@ -3581,6 +3596,9 @@ def cli():
     parser.add_argument("--project-prefix", default="", help=argparse.SUPPRESS)  # override auto-detected project prefix
 
     args, unknown = parser.parse_known_args()
+    # Auto-promote to remote mode when running directly on a non-Mac host so
+    # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
+    args.is_remote = _resolve_is_remote(args.is_remote)
     engine = args.engine
     if args.project_prefix:
         project_prefix = args.project_prefix

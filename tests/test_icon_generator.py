@@ -202,6 +202,15 @@ class TestGenerateDynamicProfile:
         # Icon: 2 must be explicit — iTerm2 does not reliably inherit it from parent profiles
         assert data["Profiles"][0]["Icon"] == 2
 
+    def test_shift_enter_key_mapping_injected(self, tmp_path):
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        data = json.loads(out.read_text())
+        key_maps = data["Profiles"][0]["Key Mappings"]
+        binding = key_maps["0xd-0x20000-0x24"]
+        assert binding["Action"] == 10
+        assert binding["Text"] == "[13;2u"
+
     def test_rerun_is_idempotent(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out1 = generate_dynamic_profile("test-session", "#5e35b1", "cc")

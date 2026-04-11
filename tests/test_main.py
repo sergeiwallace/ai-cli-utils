@@ -16,6 +16,7 @@ from ai_cli.main import (
     _log_handoff_event,
     _migrate_xdg_dir,
     _release_iterm2_color_slot,
+    _resolve_is_remote,
     _sweep_stale_iterm2_profiles,
     cli,
     get_engine_script,
@@ -687,6 +688,33 @@ class TestCliDispatchExtended:
             with pytest.raises(SystemExit) as exc:
                 cli()
             assert exc.value.code == 1  # exits because -R requires remote host
+
+
+class TestResolveIsRemote:
+    def test_when_flag_true_then_returns_true_regardless_of_host(self):
+        with patch.dict(os.environ, {"AI_CLI_HOST": "mac"}):
+            assert _resolve_is_remote(True) is True
+
+    def test_when_flag_false_and_mac_host_then_returns_false(self):
+        with patch.dict(os.environ, {"AI_CLI_HOST": "mac"}):
+            assert _resolve_is_remote(False) is False
+
+    def test_when_flag_false_and_hetzner_host_then_returns_true(self):
+        with patch.dict(os.environ, {"AI_CLI_HOST": "hetzner"}):
+            assert _resolve_is_remote(False) is True
+
+    def test_when_flag_false_and_arbitrary_remote_host_then_returns_true(self):
+        with patch.dict(os.environ, {"AI_CLI_HOST": "devserver"}):
+            assert _resolve_is_remote(False) is True
+
+    def test_when_flag_false_and_no_host_env_then_returns_false(self):
+        env = {k: v for k, v in os.environ.items() if k != "AI_CLI_HOST"}
+        with patch.dict(os.environ, env, clear=True):
+            assert _resolve_is_remote(False) is False
+
+    def test_when_flag_false_and_empty_host_then_returns_false(self):
+        with patch.dict(os.environ, {"AI_CLI_HOST": ""}):
+            assert _resolve_is_remote(False) is False
 
 
 class TestEnsureNatsTunnel:

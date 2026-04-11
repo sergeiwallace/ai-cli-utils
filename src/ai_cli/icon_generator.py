@@ -214,6 +214,17 @@ def generate_dynamic_profile(
         "Icon": 2,  # 2 = custom icon; must be explicit — not reliably inherited
         "Title Components": 1,  # 1 = session name only ("Name" dropdown option)
     }
+    # Inject Shift+Enter → CSI u escape sequence automatically so CC sessions
+    # handle newline-without-submit without any manual iTerm2 configuration.
+    profile["Key Mappings"] = {
+        "0xd-0x20000-0x24": {
+            "Version": 2,
+            "Apply Mode": 0,
+            "Action": 10,
+            "Text": "[13;2u",
+            "Escaping": 2,
+        }
+    }
     if background_hex:
         profile["Background Color"] = _hex_to_iterm2_color(background_hex)
     if icon_path and icon_path.exists():
