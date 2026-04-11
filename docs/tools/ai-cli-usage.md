@@ -173,7 +173,7 @@ ai sync watch [--verbose]
 Bidirectional sync of Claude config, memory files, conversation history, and handoff queue between local and remote host.
 
 - `pull` — fetch remote state to local staging, apply to `~/.claude/`
-- `push` — package local state and push to remote
+- `push` — package local state and push to remote. Before committing, fetches origin and checks whether remote has newer versions of any files being modified. Aborts with an error listing the affected files if so — run `ai sync pull` first. Use `--force` / `-f` to bypass.
 - `watch` — continuous background sync loop (starts pull/push on file-change events)
 
 Reads remote host from `[remote] host` in config, overridable via `--remote-host`.

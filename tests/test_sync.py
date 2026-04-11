@@ -41,6 +41,7 @@ from ai_cli.sync import (
     sync_push,
     sync_pull,
     _push_to_remote,
+    _remote_newer_files,
     _release_pid_file,
     _wait_for_dream_completion,
     _pre_pull_push_memories,
@@ -2208,7 +2209,8 @@ def test_sync_push_when_nothing_to_commit_then_returns_0(tmp_path):
                             with patch("ai_cli.sync.git_commit_staged", return_value=False):
                                 with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
                                     with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                        result = sync_push([])
+                                        with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                            result = sync_push([])
     assert result == 0
 
 
@@ -2236,7 +2238,8 @@ def test_sync_push_when_push_fails_then_returns_1(tmp_path):
                                 with patch("ai_cli.sync._push_to_remote", return_value=False):
                                     with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
                                         with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            result = sync_push([])
+                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                                result = sync_push([])
     assert result == 1
 
 
@@ -3263,8 +3266,9 @@ def test_sync_push_when_init_server_raises_oserror_then_continues(tmp_path, caps
                                 ):
                                     with patch("ai_cli.sync.stage_handoff_files", return_value=0):
                                         with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                result = sync_push([])
+                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                    result = sync_push([])
     assert result == 0
 
 
@@ -3342,8 +3346,9 @@ def test_sync_push_when_cc_check_times_out_then_proceeds(tmp_path, capsys):
                                 ):
                                     with patch("ai_cli.sync.stage_handoff_files", return_value=0):
                                         with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                result = sync_push([])
+                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                    result = sync_push([])
     assert result == 0
     assert "WARNING" in capsys.readouterr().err
 
@@ -3381,8 +3386,9 @@ def test_sync_push_when_cc_check_exception_then_proceeds_silently(tmp_path):
                                 ):
                                     with patch("ai_cli.sync.stage_handoff_files", return_value=0):
                                         with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                result = sync_push([])
+                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                    result = sync_push([])
     assert result == 0
 
 
@@ -3455,8 +3461,9 @@ def test_sync_push_when_not_committed_verbose_then_prints(tmp_path, capsys):
                                 ):
                                     with patch("ai_cli.sync.stage_handoff_files", return_value=0):
                                         with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                result = sync_push(["--verbose"])
+                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                    result = sync_push(["--verbose"])
     assert result == 0
     assert "Nothing to commit" in capsys.readouterr().out
 
@@ -3497,13 +3504,222 @@ def test_sync_push_when_push_succeeds_and_nats_notified_then_returns_0(tmp_path,
                                 ):
                                     with patch("ai_cli.sync.stage_handoff_files", return_value=0):
                                         with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync.git_commit_staged", return_value=True):
-                                                with patch("ai_cli.sync._push_to_remote", return_value=True):
-                                                    with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
-                                                        result = sync_push(["--verbose"])
+                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                                with patch("ai_cli.sync.git_commit_staged", return_value=True):
+                                                    with patch("ai_cli.sync._push_to_remote", return_value=True):
+                                                        with patch(
+                                                            "ai_cli.messaging.NATSClient", return_value=mock_client
+                                                        ):
+                                                            result = sync_push(["--verbose"])
     assert result == 0
     output = capsys.readouterr().out
     assert "Pushed" in output
+
+
+# ---------------------------------------------------------------------------
+# _remote_newer_files — remote-is-newer guard
+# ---------------------------------------------------------------------------
+
+
+def _make_git_result(stdout: str = "", returncode: int = 0) -> MagicMock:
+    result = MagicMock()
+    result.returncode = returncode
+    result.stdout = stdout.encode()
+    return result
+
+
+def test_remote_newer_files_when_fetch_fails_then_returns_empty(tmp_path):
+    """Non-fatal: if git fetch fails (offline), guard returns empty list."""
+    with patch("ai_cli.sync._git") as mock_git:
+        mock_git.return_value = _make_git_result(returncode=1)
+        result = _remote_newer_files(tmp_path)
+    assert result == []
+
+
+def test_remote_newer_files_when_no_modified_files_then_returns_empty(tmp_path):
+    """If nothing was modified in the staging dir, no conflict is possible."""
+
+    def _git_side_effect(args, *a, **kw):
+        if args[0] == "fetch":
+            return _make_git_result()
+        if args[0] == "status":
+            return _make_git_result("")  # empty — nothing staged
+        return _make_git_result()
+
+    with patch("ai_cli.sync._git", side_effect=_git_side_effect):
+        result = _remote_newer_files(tmp_path)
+    assert result == []
+
+
+def test_remote_newer_files_when_remote_is_newer_then_returns_file_path(tmp_path):
+    """Modified file with remote ts > local ts is returned in the list."""
+    status_output = " M some/project/session.jsonl\n"
+    remote_ts = "1700000100"  # newer
+    local_ts = "1700000000"  # older
+
+    call_count = [0]
+
+    def _git_side_effect(args, *a, **kw):
+        if args[0] == "fetch":
+            return _make_git_result()
+        if args[0] == "status":
+            return _make_git_result(status_output)
+        if args[0] == "log":
+            # First log call = origin/main (remote), second = HEAD (local)
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return _make_git_result(remote_ts)
+            return _make_git_result(local_ts)
+        return _make_git_result()
+
+    with patch("ai_cli.sync._git", side_effect=_git_side_effect):
+        result = _remote_newer_files(tmp_path)
+    assert result == ["some/project/session.jsonl"]
+
+
+def test_remote_newer_files_when_local_is_newer_then_returns_empty(tmp_path):
+    """Local file is newer than remote — no conflict, push is safe."""
+    status_output = " M some/project/session.jsonl\n"
+    remote_ts = "1700000000"
+    local_ts = "1700000100"  # local is newer
+
+    call_count = [0]
+
+    def _git_side_effect(args, *a, **kw):
+        if args[0] == "fetch":
+            return _make_git_result()
+        if args[0] == "status":
+            return _make_git_result(status_output)
+        if args[0] == "log":
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return _make_git_result(remote_ts)
+            return _make_git_result(local_ts)
+        return _make_git_result()
+
+    with patch("ai_cli.sync._git", side_effect=_git_side_effect):
+        result = _remote_newer_files(tmp_path)
+    assert result == []
+
+
+def test_remote_newer_files_when_file_not_on_remote_then_skips(tmp_path):
+    """New file (not yet on remote) — remote log returns empty, no conflict."""
+    status_output = " M brand-new-project/session.jsonl\n"
+
+    def _git_side_effect(args, *a, **kw):
+        if args[0] == "fetch":
+            return _make_git_result()
+        if args[0] == "status":
+            return _make_git_result(status_output)
+        if args[0] == "log":
+            return _make_git_result("")  # empty = not on remote
+        return _make_git_result()
+
+    with patch("ai_cli.sync._git", side_effect=_git_side_effect):
+        result = _remote_newer_files(tmp_path)
+    assert result == []
+
+
+def test_remote_newer_files_when_new_untracked_file_then_skips(tmp_path):
+    """?? prefix = untracked new file — skipped entirely, no remote comparison."""
+    status_output = "?? brand-new/session.jsonl\n"
+
+    def _git_side_effect(args, *a, **kw):
+        if args[0] == "fetch":
+            return _make_git_result()
+        if args[0] == "status":
+            return _make_git_result(status_output)
+        return _make_git_result()
+
+    with patch("ai_cli.sync._git", side_effect=_git_side_effect) as mock_git:
+        result = _remote_newer_files(tmp_path)
+    assert result == []
+    # log should never have been called for untracked files
+    log_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "log"]
+    assert log_calls == []
+
+
+def test_sync_push_when_remote_is_newer_then_returns_1_with_error(tmp_path, capsys):
+    """Guard fires when remote has newer content — returns 1, prints error."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="mac",
+        local_prefix=_MAC_PREFIX,
+    )
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync.init_server_bare_repo"):
+                with patch("ai_cli.sync.init_staging_repo"):
+                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                        with patch("ai_cli.sync._wait_for_dream_completion"):
+                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                                with patch(
+                                    "ai_cli.sync.stage_project_files",
+                                    return_value={
+                                        "staged_files": [],
+                                        "project_names": [],
+                                        "memory_count": 0,
+                                        "jsonl_count": 0,
+                                    },
+                                ):
+                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch(
+                                                "ai_cli.sync._remote_newer_files",
+                                                return_value=["proj/session.jsonl"],
+                                            ):
+                                                result = sync_push([])
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "remote has newer content" in err
+    assert "proj/session.jsonl" in err
+    assert "ai sync pull" in err
+
+
+def test_sync_push_when_remote_is_newer_and_force_then_proceeds(tmp_path):
+    """--force bypasses the remote-is-newer guard."""
+    from ai_cli.sync import SyncConfig
+
+    cfg = SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="mac",
+        local_prefix=_MAC_PREFIX,
+    )
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
+            with patch("ai_cli.sync.init_server_bare_repo"):
+                with patch("ai_cli.sync.init_staging_repo"):
+                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                        with patch("ai_cli.sync._wait_for_dream_completion"):
+                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                                with patch(
+                                    "ai_cli.sync.stage_project_files",
+                                    return_value={
+                                        "staged_files": [],
+                                        "project_names": [],
+                                        "memory_count": 0,
+                                        "jsonl_count": 0,
+                                    },
+                                ):
+                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
+                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
+                                            with patch("ai_cli.sync._remote_newer_files") as mock_guard:
+                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                                    result = sync_push(["--force"])
+    assert result == 0
+    mock_guard.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

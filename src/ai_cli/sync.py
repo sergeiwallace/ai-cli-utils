@@ -1208,6 +1208,75 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
     return False
 
 
+def _remote_newer_files(staging_dir: Path) -> list[str]:
+    """Return relative paths of tracked files where remote has a newer commit than local HEAD.
+
+    Fetches origin first. Files that are new (untracked) are skipped — they have
+    no remote version to conflict with. Returns an empty list if remote cannot
+    be reached (guard is non-fatal on network error).
+    """
+    fetch = _git(["fetch", "origin"], staging_dir, check=False)
+    if fetch.returncode != 0:
+        return []  # Can't reach remote — skip guard
+
+    # Get files that are modified relative to HEAD (M = modified tracked file)
+    status = _git(["status", "--porcelain"], staging_dir, check=False)
+    if status.returncode != 0:
+        return []
+
+    modified: list[str] = []
+    for line in status.stdout.decode().splitlines():
+        if len(line) < 4:
+            continue
+        xy = line[:2]
+        # Working-tree modified (unstaged) — "staged" shows in index col, but
+        # stage_project_files uses shutil.copy2 without git-add, so changes
+        # appear as unstaged modifications or new untracked files.
+        # ' M' = modified in working tree; 'MM' = modified in both.
+        # 'AM' / ' M' etc. — skip '??' (untracked/new).
+        if xy == "??":
+            continue  # New file — no remote version to conflict with
+        path = line[3:].strip()
+        if path:
+            modified.append(path)
+
+    if not modified:
+        return []
+
+    newer: list[str] = []
+    for rel in modified:
+        remote_ts_raw = (
+            _git(
+                ["log", "-1", "--format=%ct", "origin/main", "--", rel],
+                staging_dir,
+                check=False,
+            )
+            .stdout.decode()
+            .strip()
+        )
+
+        if not remote_ts_raw:
+            continue  # File not on remote yet — no conflict
+
+        local_ts_raw = (
+            _git(
+                ["log", "-1", "--format=%ct", "HEAD", "--", rel],
+                staging_dir,
+                check=False,
+            )
+            .stdout.decode()
+            .strip()
+        )
+
+        remote_ts = int(remote_ts_raw)
+        local_ts = int(local_ts_raw) if local_ts_raw else 0
+
+        if remote_ts > local_ts:
+            newer.append(rel)
+
+    return newer
+
+
 # ---------------------------------------------------------------------------
 # Pre-pull memory push
 # ---------------------------------------------------------------------------
@@ -1413,6 +1482,18 @@ def sync_push(flags: list[str]) -> int:
         if config_count:
             print(f"Would sync {config_count} config file(s)")
         return 0
+
+    if not force:
+        newer = _remote_newer_files(cfg.staging_dir)
+        if newer:
+            files_list = "\n".join(f"  {f}" for f in newer)
+            print(
+                f"Error: remote has newer content for {len(newer)} file(s):\n"
+                f"{files_list}\n"
+                "Run 'ai sync pull' first, or use --force / -f to overwrite.",
+                file=sys.stderr,
+            )
+            return 1
 
     committed = git_commit_staged(
         staging_dir=cfg.staging_dir,
