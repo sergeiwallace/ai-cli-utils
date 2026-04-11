@@ -1862,6 +1862,37 @@ def _find_aicli_project_path(config: dict) -> "Path | None":
     return None
 
 
+def _deploy_cc_config_files(project_path: Path) -> None:
+    """Copy bundled CC config files from the package data dir to ~/.claude/.
+
+    Writes plain files, replacing any pre-existing symlinks. These files are
+    owned by ai-cli-utils and must not be managed by ai sync or tracked in any
+    project git repo.
+    """
+    data_dir = project_path / "src" / "ai_cli" / "data"
+    cc_dir = Path.home() / ".claude"
+
+    # Files to deploy: (source relative to data_dir, dest relative to ~/.claude/)
+    deployable = [
+        ("statusline-command.sh", "statusline-command.sh"),
+    ]
+
+    for src_name, dst_rel in deployable:
+        src = data_dir / src_name
+        if not src.exists():
+            continue
+        dst = cc_dir / dst_rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # Unlink first so we replace any symlink with a plain file
+        if dst.is_symlink() or dst.exists():
+            dst.unlink()
+        import shutil as _shutil
+
+        _shutil.copy2(src, dst)
+        if src.suffix == ".sh":
+            dst.chmod(dst.stat().st_mode | 0o755)
+
+
 def _auto_update_if_stale(config: dict) -> None:
     """Run `ai update --force` if the project has new commits since the last update."""
     project_path = _find_aicli_project_path(config)
@@ -3460,6 +3491,10 @@ def cli():
                 stamp_file = get_xdg_state_home() / "last_update_commit.txt"
                 stamp_file.parent.mkdir(parents=True, exist_ok=True)
                 stamp_file.write_text(head.stdout.strip())
+            # Deploy bundled CC config files to ~/.claude/ — write as plain files so any
+            # pre-existing symlinks are replaced. These files are owned by ai-cli-utils and
+            # should not be managed by ai sync or tracked in any project git repo.
+            _deploy_cc_config_files(project_path)
         sys.exit(exit_code)
 
     if len(sys.argv) > 1 and sys.argv[1] == "attach":

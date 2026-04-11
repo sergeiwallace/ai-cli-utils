@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai sync`: removed handoff queue sync and config file sync from push/pull pipeline. Scope is now explicitly CC session data only: `~/.claude/projects/` JSONL and memory files, `~/.claude/history.jsonl`. Git-tracked files (config, hooks, statusline script) are no longer touched by `ai sync`.
+- `ai update`: now deploys `src/ai_cli/data/statusline-command.sh` to `~/.claude/statusline-command.sh` as a plain file, replacing any existing symlink. The statusline script is now owned by this package, not by any other project repo.
 - `ai signal-watch start`: removed invalid `autostart` key from Circus `add` options — was silently failing watcher registration so signal-watch was never actually started via Circus when `ai c` launched. `start=True` top-level parameter already handles immediate start. (AI-CLI-16)
 - `ai sync pull`: removed `replicate_history_to_worktrees` from pull pipeline — it was injecting phantom `history.jsonl` entries (worktree-path copies of main-project entries) on every pull. These phantoms caused the conversation picker to show the wrong project's sessions inside worktree sessions, and made `--continue` fail to find the correct conversation. Added `purge_phantom_history_entries()` which runs on each pull to clean up any previously created phantoms. Existing phantom entries are purged on the next `ai sync pull`.
 - `ai ps cron`: VPN detection in `cmd_ps` — switches to `vpn_host` when Mullvad is active, preventing a 30s hang at session start when the Tailscale IP is unreachable. Added `ConnectTimeout=5` to the remote SSH call. (AI-CLI-37)

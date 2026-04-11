@@ -170,7 +170,17 @@ ai sync conflicts
 ai sync watch [--verbose]
 ```
 
-Bidirectional sync of Claude config, memory files, conversation history, and handoff queue between local and remote host.
+Bidirectional sync of Claude Code session data between local and remote host.
+
+**Scope — what `ai sync` handles:**
+- `~/.claude/projects/` — per-project JSONL conversation files and memory files
+- `~/.claude/history.jsonl` — prompt history (translated for cross-machine path differences)
+
+**Out of scope — what `ai sync` does NOT handle:**
+- Git-tracked files (config, hooks, scripts) — use `git pull/push` in the relevant repo
+- The handoff queue — `ai handoff post --remote` delivers directly; the queue lives in a git repo
+
+This boundary exists because `ai sync` is for CC session migration (conversations, memories, history) — not for config management. Files tracked in git are authoritative in git; syncing them outside git creates conflicts and dirty working trees.
 
 - `pull` — fetch remote state to local staging, apply to `~/.claude/`
 - `push` — package local state and push to remote. Before committing, fetches origin and checks whether remote has newer versions of any files being modified. Aborts with an error listing the affected files if so — run `ai sync pull` first. Use `--force` / `-f` to bypass.

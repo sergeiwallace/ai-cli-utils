@@ -56,6 +56,16 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 - **Commit messages are public** — same rules apply to git commit messages
 - If you catch an existing violation while working, flag it immediately rather than letting it accumulate
 
+## ai sync Scope Boundary
+
+`ai sync` handles **only CC session data** — files that are NOT tracked in git:
+- `~/.claude/projects/` JSONL conversation files and memory files
+- `~/.claude/history.jsonl` (prompt history, path-translated for cross-machine differences)
+
+**Never add config files, scripts, hooks, or handoff queue files to sync.** Those are git-tracked — use `git pull/push` in the owning repo. Syncing git-tracked files via `ai sync` creates dirty working trees and conflicts.
+
+**Statusline script (`~/.claude/statusline-command.sh`)** — lives in `src/ai_cli/data/statusline-command.sh`, deployed by `ai update` as a plain file (any existing symlink is replaced). Do not manage it via `ai sync` and do not keep it in any other project repo.
+
 ## Documentation Maintenance
 
 - **Update docs when shipping features** — after any feature lands, update `docs/tools/ai-cli-usage.md` (usage reference), inline code comments in `main.py` for changed commands, and `README.md` if the CLI interface changed. Doc staleness is a bug.

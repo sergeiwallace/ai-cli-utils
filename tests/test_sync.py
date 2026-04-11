@@ -10,7 +10,6 @@ from ai_cli.sync import (
     get_source_machine,
     _default_remote_bare_url,
     _parse_flags,
-    _handoff_queue_dir,
     load_sync_config,
     detect_jsonl_divergence,
     should_sync_file,
@@ -19,8 +18,6 @@ from ai_cli.sync import (
     file_hash,
     stage_project_files,
     apply_pull_files,
-    stage_handoff_files,
-    apply_handoff_files,
     git_commit_staged,
     is_cc_active_on_server,
     is_cc_active_locally,
@@ -31,8 +28,6 @@ from ai_cli.sync import (
     _detect_foreign_home_in_history,
     _write_jsonl_translated,
     SyncConfig,
-    stage_config_files,
-    apply_config_files,
     _find_project_worktrees,
     _replicate_to_worktrees,
     replicate_history_to_worktrees,
@@ -1348,117 +1343,11 @@ def test_notify_conflicts_when_appends_multiple_entries_then_all_logged(tmp_path
 
 
 # ---------------------------------------------------------------------------
-# stage_handoff_files
 # ---------------------------------------------------------------------------
 
 
-def test_stage_handoff_files_when_pending_exists_then_stages_files(tmp_path):
-    queue_dir = tmp_path / "queue"
-    (queue_dir / "pending").mkdir(parents=True)
-    (queue_dir / "pending" / "001-do-something.md").write_text("handoff content")
-    staging_dir = tmp_path / "staging"
-    staging_dir.mkdir()
-
-    count = stage_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=False)
-
-    assert count == 1
-    staged = staging_dir / "--handoff-queue" / "pending" / "001-do-something.md"
-    assert staged.exists()
-    assert staged.read_text() == "handoff content"
-
-
-def test_stage_handoff_files_when_no_pending_dir_then_returns_zero(tmp_path):
-    queue_dir = tmp_path / "queue"
-    staging_dir = tmp_path / "staging"
-    staging_dir.mkdir()
-
-    count = stage_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=False)
-
-    assert count == 0
-
-
-def test_stage_handoff_files_when_dry_run_then_no_files_written(tmp_path):
-    queue_dir = tmp_path / "queue"
-    (queue_dir / "pending").mkdir(parents=True)
-    (queue_dir / "pending" / "001-task.md").write_text("content")
-    staging_dir = tmp_path / "staging"
-    staging_dir.mkdir()
-
-    count = stage_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=True)
-
-    assert count == 1
-    assert not (staging_dir / "--handoff-queue" / "pending" / "001-task.md").exists()
-
-
 # ---------------------------------------------------------------------------
-# apply_handoff_files
 # ---------------------------------------------------------------------------
-
-
-def test_apply_handoff_files_when_new_pending_then_applies(tmp_path):
-    staging_dir = tmp_path / "staging"
-    staging_pending = staging_dir / "--handoff-queue" / "pending"
-    staging_pending.mkdir(parents=True)
-    (staging_pending / "001-task.md").write_text("handoff from remote")
-    queue_dir = tmp_path / "queue"
-
-    count = apply_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=False)
-
-    assert count == 1
-    assert (queue_dir / "pending" / "001-task.md").read_text() == "handoff from remote"
-
-
-def test_apply_handoff_files_when_already_pending_then_skips(tmp_path):
-    staging_dir = tmp_path / "staging"
-    staging_pending = staging_dir / "--handoff-queue" / "pending"
-    staging_pending.mkdir(parents=True)
-    (staging_pending / "001-task.md").write_text("remote content")
-    queue_dir = tmp_path / "queue"
-    (queue_dir / "pending").mkdir(parents=True)
-    (queue_dir / "pending" / "001-task.md").write_text("local content")
-
-    count = apply_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=False)
-
-    assert count == 0
-    assert (queue_dir / "pending" / "001-task.md").read_text() == "local content"
-
-
-def test_apply_handoff_files_when_already_claimed_then_skips(tmp_path):
-    staging_dir = tmp_path / "staging"
-    staging_pending = staging_dir / "--handoff-queue" / "pending"
-    staging_pending.mkdir(parents=True)
-    (staging_pending / "001-task.md").write_text("remote content")
-    queue_dir = tmp_path / "queue"
-    (queue_dir / "claimed").mkdir(parents=True)
-    (queue_dir / "claimed" / "001-task.md").write_text("claimed content")
-
-    count = apply_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=False)
-
-    assert count == 0
-    assert not (queue_dir / "pending" / "001-task.md").exists()
-
-
-def test_apply_handoff_files_when_dry_run_then_no_files_written(tmp_path):
-    staging_dir = tmp_path / "staging"
-    staging_pending = staging_dir / "--handoff-queue" / "pending"
-    staging_pending.mkdir(parents=True)
-    (staging_pending / "001-task.md").write_text("content")
-    queue_dir = tmp_path / "queue"
-
-    count = apply_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=True)
-
-    assert count == 1
-    assert not (queue_dir / "pending" / "001-task.md").exists()
-
-
-def test_apply_handoff_files_when_no_staging_namespace_then_returns_zero(tmp_path):
-    staging_dir = tmp_path / "staging"
-    staging_dir.mkdir()
-    queue_dir = tmp_path / "queue"
-
-    count = apply_handoff_files(staging_dir, queue_dir, verbose=False, dry_run=False)
-
-    assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1686,17 +1575,6 @@ def test_load_sync_config_when_mac_then_uses_ssh_url():
 
 
 # ---------------------------------------------------------------------------
-# _handoff_queue_dir
-# ---------------------------------------------------------------------------
-
-
-def test_handoff_queue_dir_when_main_dir_then_returns_path():
-    with patch("ai_cli.main._get_main_project_dir", return_value=Path("/home/u/projects/myproject")):
-        result = _handoff_queue_dir()
-    assert result == Path("/home/u/projects/myproject/.handoff-queue")
-
-
-# ---------------------------------------------------------------------------
 # init_staging_repo
 # ---------------------------------------------------------------------------
 
@@ -1801,132 +1679,19 @@ def test_write_jsonl_translated_when_no_foreign_then_copies(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _get_remote_home
 # ---------------------------------------------------------------------------
 
 
-def test_get_remote_home_when_user_at_host_then_home():
-    from ai_cli.sync import _get_remote_home
-
-    assert _get_remote_home("user@server") == "/home/user"
-
-
-def test_get_remote_home_when_root_at_host_then_root():
-    from ai_cli.sync import _get_remote_home
-
-    assert _get_remote_home("root@server") == "/root"
-
-
-def test_get_remote_home_when_no_at_then_root():
-    from ai_cli.sync import _get_remote_home
-
-    assert _get_remote_home("server") == "/root"
-
-
 # ---------------------------------------------------------------------------
-# _translate_settings_paths
 # ---------------------------------------------------------------------------
 
 
-def test_translate_settings_paths_to_staging(tmp_path):
-    from ai_cli.sync import _translate_settings_paths
-
-    local_home = str(tmp_path)
-    content = f'{{"path": "{local_home}/projects/foo"}}'
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        result = _translate_settings_paths(content, "to_staging", "user@host")
-    assert "/home/user/projects/foo" in result
-
-
-def test_translate_settings_paths_to_local(tmp_path):
-    from ai_cli.sync import _translate_settings_paths
-
-    content = '{"path": "/home/user/projects/foo"}'
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        result = _translate_settings_paths(content, "to_local", "user@host")
-    assert str(tmp_path) in result
-
-
-def test_translate_settings_paths_when_same_home_then_noop(tmp_path):
-    from ai_cli.sync import _translate_settings_paths
-
-    # When local and remote are the same, no translation
-    content = '{"path": "/home/user/projects/foo"}'
-    with patch("pathlib.Path.home", return_value=Path("/home/user")):
-        result = _translate_settings_paths(content, "to_staging", "user@host")
-    assert result == content
-
-
 # ---------------------------------------------------------------------------
-# stage_config_files
 # ---------------------------------------------------------------------------
 
 
-def test_stage_config_files_when_files_exist_then_stages(tmp_path):
-    from ai_cli.sync import stage_config_files
-
-    cc_dir = tmp_path / ".claude"
-    cc_dir.mkdir()
-    (cc_dir / "statusline-command.sh").write_text("#!/bin/bash\n")
-    (cc_dir / "settings.json").write_text('{"key": "value"}')
-
-    staging_dir = tmp_path / "staging"
-    staging_dir.mkdir()
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        count = stage_config_files(staging_dir, verbose=False, dry_run=False, remote_host="user@host")
-    assert count >= 1
-
-
-def test_stage_config_files_when_dry_run_then_no_files(tmp_path):
-    from ai_cli.sync import stage_config_files
-
-    cc_dir = tmp_path / ".claude"
-    cc_dir.mkdir()
-    (cc_dir / "statusline-command.sh").write_text("#!/bin/bash\n")
-
-    staging_dir = tmp_path / "staging"
-    staging_dir.mkdir()
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        count = stage_config_files(staging_dir, verbose=False, dry_run=True)
-    assert count >= 1
-    # No files should be written in dry_run
-    assert not (staging_dir / "--config").exists()
-
-
 # ---------------------------------------------------------------------------
-# apply_config_files
 # ---------------------------------------------------------------------------
-
-
-def test_apply_config_files_when_staging_has_files_then_applies(tmp_path):
-    from ai_cli.sync import apply_config_files
-
-    staging_dir = tmp_path / "staging"
-    config_dir = staging_dir / "--config"
-    config_dir.mkdir(parents=True)
-    (config_dir / "statusline-command.sh").write_text("#!/bin/bash\necho status")
-    (config_dir / "settings.json").write_text('{"key": "value"}')
-
-    cc_dir = tmp_path / ".claude"
-    cc_dir.mkdir()
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        count = apply_config_files(staging_dir, verbose=False, dry_run=False, remote_host="user@host")
-    assert count >= 1
-    assert (cc_dir / "statusline-command.sh").exists()
-
-
-def test_apply_config_files_when_no_staging_then_returns_zero(tmp_path):
-    from ai_cli.sync import apply_config_files
-
-    staging_dir = tmp_path / "staging"
-    staging_dir.mkdir()
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        count = apply_config_files(staging_dir, verbose=False, dry_run=False)
-    assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2036,8 +1801,7 @@ def test_sync_push_when_dry_run_then_reports_files(tmp_path, capsys):
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
         with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
-            with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-                result = sync_push(["--dry-run"])
+            result = sync_push(["--dry-run"])
 
     assert result == 0
     output = capsys.readouterr().out
@@ -2115,10 +1879,8 @@ def test_sync_push_when_success_then_pushes(tmp_path):
                         with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
                             with patch("ai_cli.sync.git_commit_staged", return_value=True):
                                 with patch("ai_cli.sync._push_to_remote", return_value=True):
-                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.messaging.NATSClient", side_effect=Exception("no nats")):
-                                                result = sync_push([])
+                                    with patch("ai_cli.messaging.NATSClient", side_effect=Exception("no nats")):
+                                        result = sync_push([])
     assert result == 0
 
 
@@ -2147,8 +1909,7 @@ def test_sync_pull_when_dry_run_then_succeeds(tmp_path):
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
         with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
             with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
-                with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
-                    result = sync_pull(["--dry-run"])
+                result = sync_pull(["--dry-run"])
 
     assert result == 0
 
@@ -2184,11 +1945,10 @@ def test_sync_pull_when_full_run_then_applies_and_translates(tmp_path):
                 with patch("ai_cli.sync._pre_pull_push_memories"):
                     with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                         with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
-                            with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
-                                with patch("ai_cli.sync.translate_history_jsonl", return_value=0):
-                                    with patch("ai_cli.sync.retranslate_project_jsonls", return_value=0):
-                                        with patch("ai_cli.sync.purge_phantom_history_entries", return_value=0):
-                                            result = sync_pull(["--force"])
+                            with patch("ai_cli.sync.translate_history_jsonl", return_value=0):
+                                with patch("ai_cli.sync.retranslate_project_jsonls", return_value=0):
+                                    with patch("ai_cli.sync.purge_phantom_history_entries", return_value=0):
+                                        result = sync_pull(["--force"])
 
     assert result == 0
 
@@ -2222,10 +1982,8 @@ def test_sync_push_when_nothing_to_commit_then_returns_0(tmp_path):
                     with patch("ai_cli.sync._wait_for_dream_completion"):
                         with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
                             with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
-                                    with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                        with patch("ai_cli.sync._remote_newer_files", return_value=[]):
-                                            result = sync_push([])
+                                with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                    result = sync_push([])
     assert result == 0
 
 
@@ -2251,10 +2009,8 @@ def test_sync_push_when_push_fails_then_returns_1(tmp_path):
                         with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
                             with patch("ai_cli.sync.git_commit_staged", return_value=True):
                                 with patch("ai_cli.sync._push_to_remote", return_value=False):
-                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / "hq"):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
-                                                result = sync_push([])
+                                    with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                        result = sync_push([])
     assert result == 1
 
 
@@ -2587,86 +2343,6 @@ def test_apply_pull_files_when_verbose_ff_local_then_prints(tmp_path, capsys):
             )
     output = capsys.readouterr().out
     assert "skip (local ahead)" in output
-
-
-def test_stage_handoff_files_when_verbose_then_prints(tmp_path, capsys):
-    """Covers line 976: verbose handoff staging."""
-    handoff_dir = tmp_path / "handoff"
-    pending = handoff_dir / "pending"
-    pending.mkdir(parents=True)
-    (pending / "001-task.md").write_text("task")
-
-    staging = tmp_path / "staging"
-
-    from ai_cli.sync import stage_handoff_files
-
-    count = stage_handoff_files(
-        staging_dir=staging,
-        handoff_queue_dir=handoff_dir,
-        verbose=True,
-        dry_run=False,
-    )
-    assert count == 1
-    output = capsys.readouterr().out
-    assert "stage handoff:" in output
-
-
-def test_apply_handoff_files_when_verbose_and_known_then_prints_skip(tmp_path, capsys):
-    """Covers line 1007: verbose skip for known handoffs."""
-    from ai_cli.sync import _HANDOFF_STAGING_NAMESPACE
-
-    staging = tmp_path / "staging" / _HANDOFF_STAGING_NAMESPACE / "pending"
-    staging.mkdir(parents=True)
-    (staging / "001-task.md").write_text("task")
-
-    handoff_dir = tmp_path / "handoff"
-    local_pending = handoff_dir / "pending"
-    local_pending.mkdir(parents=True)
-    (local_pending / "001-task.md").write_text("already here")
-
-    count = apply_handoff_files(
-        staging_dir=tmp_path / "staging",
-        handoff_queue_dir=handoff_dir,
-        verbose=True,
-        dry_run=False,
-    )
-    assert count == 0
-    output = capsys.readouterr().out
-    assert "skip handoff" in output
-
-
-def test_translate_settings_paths_when_unknown_direction_then_returns_unchanged():
-    """Covers line 1050: unknown direction returns content unchanged."""
-    from ai_cli.sync import _translate_settings_paths
-
-    content = "/home/test/something"
-    result = _translate_settings_paths(content, "invalid_direction", "host")
-    assert result == content
-
-
-def test_apply_config_files_when_settings_unchanged_then_skips(tmp_path):
-    """Covers lines 1134-1136: settings.json identical after translation."""
-    from ai_cli.sync import apply_config_files
-
-    staging = tmp_path / "staging" / "_config"
-    staging.mkdir(parents=True)
-    settings_src = staging / "settings.json"
-    settings_src.write_text('{"key": "value"}')
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        # Create the local settings with same content
-        local_claude = tmp_path / ".claude"
-        local_claude.mkdir(parents=True)
-        (local_claude / "settings.json").write_text('{"key": "value"}')
-
-        with patch("ai_cli.sync._translate_settings_paths", return_value='{"key": "value"}'):
-            count = apply_config_files(
-                staging_dir=tmp_path / "staging",
-                verbose=False,
-                dry_run=False,
-                remote_host="",
-            )
-    assert count == 0  # Nothing applied since identical
 
 
 # ---------------------------------------------------------------------------
@@ -3079,130 +2755,11 @@ def test_replicate_to_worktrees_when_matching_conv_then_replicates(tmp_path, cap
 
 
 # ---------------------------------------------------------------------------
-# stage_config_files — verbose branches
 # ---------------------------------------------------------------------------
 
 
-def test_stage_config_files_when_portable_file_exists_verbose_then_prints(tmp_path, capsys):
-    """Covers line 1075: verbose output for portable config file staged."""
-    from ai_cli.sync import _CONFIG_SYNC_FILES
-
-    cc_dir = tmp_path / ".claude"
-    cc_dir.mkdir()
-    # Create the first portable config file
-    first_file = _CONFIG_SYNC_FILES[0]
-    src = cc_dir / first_file
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text("content")
-
-    staging = tmp_path / "staging"
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        count = stage_config_files(staging_dir=staging, verbose=True, dry_run=False, remote_host="")
-
-    assert count >= 1
-    assert first_file in capsys.readouterr().out
-
-
-def test_stage_config_files_when_settings_exists_verbose_then_prints(tmp_path, capsys):
-    """Covers line 1088: verbose output for settings.json staged with path translation."""
-    cc_dir = tmp_path / ".claude"
-    cc_dir.mkdir()
-    (cc_dir / "settings.json").write_text('{"key": "value"}')
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.sync._translate_settings_paths", return_value='{"key": "value"}'):
-            count = stage_config_files(
-                staging_dir=tmp_path / "staging",
-                verbose=True,
-                dry_run=False,
-                remote_host="host",
-            )
-
-    assert count >= 1
-    assert "settings.json" in capsys.readouterr().out
-
-
 # ---------------------------------------------------------------------------
-# apply_config_files — verbose and skip branches
 # ---------------------------------------------------------------------------
-
-
-def test_apply_config_files_when_portable_file_identical_then_skips(tmp_path):
-    """Covers line 1114: portable config file with same hash → skip."""
-    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE, _CONFIG_SYNC_FILES
-
-    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
-    staging_config.mkdir(parents=True)
-    first_file = _CONFIG_SYNC_FILES[0]
-    src = staging_config / first_file
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text("same content")
-
-    cc_dir = tmp_path / ".claude"
-    dst = cc_dir / first_file
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text("same content")
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        count = apply_config_files(
-            staging_dir=tmp_path / "staging",
-            verbose=False,
-            dry_run=False,
-            remote_host="",
-        )
-    assert count == 0
-
-
-def test_apply_config_files_when_portable_file_changed_verbose_then_prints(tmp_path, capsys):
-    """Covers line 1123: verbose output for portable config file applied."""
-    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE, _CONFIG_SYNC_FILES
-
-    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
-    staging_config.mkdir(parents=True)
-    first_file = _CONFIG_SYNC_FILES[0]
-    src = staging_config / first_file
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text("new content")
-
-    cc_dir = tmp_path / ".claude"
-    cc_dir.mkdir(parents=True)
-    # dst does not exist → different hash → apply
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        count = apply_config_files(
-            staging_dir=tmp_path / "staging",
-            verbose=True,
-            dry_run=False,
-            remote_host="",
-        )
-    assert count >= 1
-    assert "apply config" in capsys.readouterr().out
-
-
-def test_apply_config_files_when_settings_changed_verbose_then_prints(tmp_path, capsys):
-    """Covers line 1143: verbose print for settings.json applied with path translation."""
-    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE
-
-    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
-    staging_config.mkdir(parents=True)
-    (staging_config / "settings.json").write_text('{"key": "new"}')
-
-    cc_dir = tmp_path / ".claude"
-    cc_dir.mkdir(parents=True)
-    # No existing settings.json → will be applied
-
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.sync._translate_settings_paths", return_value='{"key": "new"}'):
-            count = apply_config_files(
-                staging_dir=tmp_path / "staging",
-                verbose=True,
-                dry_run=False,
-                remote_host="",
-            )
-    assert count >= 1
-    output = capsys.readouterr().out
-    assert "settings.json" in output
 
 
 # ---------------------------------------------------------------------------
@@ -3266,26 +2823,23 @@ def test_sync_push_when_init_server_raises_oserror_then_continues(tmp_path, caps
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync.init_server_bare_repo", side_effect=OSError("no route")):
-                with patch("ai_cli.sync.init_staging_repo"):
-                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                        with patch("ai_cli.sync._wait_for_dream_completion"):
-                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                                with patch(
-                                    "ai_cli.sync.stage_project_files",
-                                    return_value={
-                                        "staged_files": [],
-                                        "project_names": [],
-                                        "memory_count": 0,
-                                        "jsonl_count": 0,
-                                    },
-                                ):
-                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
-                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                    result = sync_push([])
+        with patch("ai_cli.sync.init_server_bare_repo", side_effect=OSError("no route")):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                    with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                        result = sync_push([])
     assert result == 0
 
 
@@ -3346,26 +2900,23 @@ def test_sync_push_when_cc_check_times_out_then_proceeds(tmp_path, capsys):
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync.init_server_bare_repo"):
-                with patch("ai_cli.sync.init_staging_repo"):
-                    with patch("ai_cli.sync.is_cc_active_on_server", side_effect=subprocess.TimeoutExpired("ssh", 5)):
-                        with patch("ai_cli.sync._wait_for_dream_completion"):
-                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                                with patch(
-                                    "ai_cli.sync.stage_project_files",
-                                    return_value={
-                                        "staged_files": [],
-                                        "project_names": [],
-                                        "memory_count": 0,
-                                        "jsonl_count": 0,
-                                    },
-                                ):
-                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
-                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                    result = sync_push([])
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", side_effect=subprocess.TimeoutExpired("ssh", 5)):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                    with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                        result = sync_push([])
     assert result == 0
     assert "WARNING" in capsys.readouterr().err
 
@@ -3386,31 +2937,28 @@ def test_sync_push_when_cc_check_exception_then_proceeds_silently(tmp_path):
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync.init_server_bare_repo"):
-                with patch("ai_cli.sync.init_staging_repo"):
-                    with patch("ai_cli.sync.is_cc_active_on_server", side_effect=OSError("network gone")):
-                        with patch("ai_cli.sync._wait_for_dream_completion"):
-                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                                with patch(
-                                    "ai_cli.sync.stage_project_files",
-                                    return_value={
-                                        "staged_files": [],
-                                        "project_names": [],
-                                        "memory_count": 0,
-                                        "jsonl_count": 0,
-                                    },
-                                ):
-                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
-                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                    result = sync_push([])
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", side_effect=OSError("network gone")):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                    with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                        result = sync_push([])
     assert result == 0
 
 
-def test_sync_push_when_dry_run_with_handoffs_then_prints_count(tmp_path, capsys):
-    """Covers line 1410: dry_run shows handoff count when > 0."""
+def test_sync_push_when_dry_run_then_prints_would_sync(tmp_path, capsys):
+    """Covers line 1357: dry_run prints 'Would sync' summary."""
     from ai_cli.sync import SyncConfig
 
     cfg = SyncConfig(
@@ -3425,24 +2973,21 @@ def test_sync_push_when_dry_run_with_handoffs_then_prints_count(tmp_path, capsys
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync._wait_for_dream_completion"):
-                with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                    with patch(
-                        "ai_cli.sync.stage_project_files",
-                        return_value={
-                            "staged_files": [("a", "b")],
-                            "project_names": ["proj"],
-                            "memory_count": 0,
-                            "jsonl_count": 0,
-                        },
-                    ):
-                        with patch("ai_cli.sync.stage_handoff_files", return_value=2):
-                            with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                result = sync_push(["--dry-run"])
+        with patch("ai_cli.sync._wait_for_dream_completion"):
+            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                with patch(
+                    "ai_cli.sync.stage_project_files",
+                    return_value={
+                        "staged_files": [("a", "b")],
+                        "project_names": ["proj"],
+                        "memory_count": 0,
+                        "jsonl_count": 0,
+                    },
+                ):
+                    result = sync_push(["--dry-run"])
     assert result == 0
     output = capsys.readouterr().out
-    assert "handoff" in output
+    assert "Would sync" in output
 
 
 def test_sync_push_when_not_committed_verbose_then_prints(tmp_path, capsys):
@@ -3461,26 +3006,23 @@ def test_sync_push_when_not_committed_verbose_then_prints(tmp_path, capsys):
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync.init_server_bare_repo"):
-                with patch("ai_cli.sync.init_staging_repo"):
-                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                        with patch("ai_cli.sync._wait_for_dream_completion"):
-                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                                with patch(
-                                    "ai_cli.sync.stage_project_files",
-                                    return_value={
-                                        "staged_files": [],
-                                        "project_names": [],
-                                        "memory_count": 0,
-                                        "jsonl_count": 0,
-                                    },
-                                ):
-                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
-                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                    result = sync_push(["--verbose"])
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                    with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                        result = sync_push(["--verbose"])
     assert result == 0
     assert "Nothing to commit" in capsys.readouterr().out
 
@@ -3504,30 +3046,25 @@ def test_sync_push_when_push_succeeds_and_nats_notified_then_returns_0(tmp_path,
     mock_client.publish = AsyncMock(return_value=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync.init_server_bare_repo"):
-                with patch("ai_cli.sync.init_staging_repo"):
-                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                        with patch("ai_cli.sync._wait_for_dream_completion"):
-                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                                with patch(
-                                    "ai_cli.sync.stage_project_files",
-                                    return_value={
-                                        "staged_files": [("a", "b")],
-                                        "project_names": ["proj"],
-                                        "memory_count": 1,
-                                        "jsonl_count": 0,
-                                    },
-                                ):
-                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync._remote_newer_files", return_value=[]):
-                                                with patch("ai_cli.sync.git_commit_staged", return_value=True):
-                                                    with patch("ai_cli.sync._push_to_remote", return_value=True):
-                                                        with patch(
-                                                            "ai_cli.messaging.NATSClient", return_value=mock_client
-                                                        ):
-                                                            result = sync_push(["--verbose"])
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [("a", "b")],
+                                    "project_names": ["proj"],
+                                    "memory_count": 1,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync._remote_newer_files", return_value=[]):
+                                    with patch("ai_cli.sync.git_commit_staged", return_value=True):
+                                        with patch("ai_cli.sync._push_to_remote", return_value=True):
+                                            with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+                                                result = sync_push(["--verbose"])
     assert result == 0
     output = capsys.readouterr().out
     assert "Pushed" in output
@@ -3671,28 +3208,25 @@ def test_sync_push_when_remote_is_newer_then_returns_1_with_error(tmp_path, caps
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync.init_server_bare_repo"):
-                with patch("ai_cli.sync.init_staging_repo"):
-                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                        with patch("ai_cli.sync._wait_for_dream_completion"):
-                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
                                 with patch(
-                                    "ai_cli.sync.stage_project_files",
-                                    return_value={
-                                        "staged_files": [],
-                                        "project_names": [],
-                                        "memory_count": 0,
-                                        "jsonl_count": 0,
-                                    },
+                                    "ai_cli.sync._remote_newer_files",
+                                    return_value=["proj/session.jsonl"],
                                 ):
-                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch(
-                                                "ai_cli.sync._remote_newer_files",
-                                                return_value=["proj/session.jsonl"],
-                                            ):
-                                                result = sync_push([])
+                                    result = sync_push([])
     assert result == 1
     err = capsys.readouterr().err
     assert "remote has newer content" in err
@@ -3715,26 +3249,23 @@ def test_sync_push_when_remote_is_newer_and_force_then_proceeds(tmp_path):
     cc_dir.mkdir(parents=True)
 
     with patch("ai_cli.sync.load_sync_config", return_value=cfg):
-        with patch("ai_cli.sync._handoff_queue_dir", return_value=tmp_path / ".handoff-queue"):
-            with patch("ai_cli.sync.init_server_bare_repo"):
-                with patch("ai_cli.sync.init_staging_repo"):
-                    with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
-                        with patch("ai_cli.sync._wait_for_dream_completion"):
-                            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
-                                with patch(
-                                    "ai_cli.sync.stage_project_files",
-                                    return_value={
-                                        "staged_files": [],
-                                        "project_names": [],
-                                        "memory_count": 0,
-                                        "jsonl_count": 0,
-                                    },
-                                ):
-                                    with patch("ai_cli.sync.stage_handoff_files", return_value=0):
-                                        with patch("ai_cli.sync.stage_config_files", return_value=0):
-                                            with patch("ai_cli.sync._remote_newer_files") as mock_guard:
-                                                with patch("ai_cli.sync.git_commit_staged", return_value=False):
-                                                    result = sync_push(["--force"])
+        with patch("ai_cli.sync.init_server_bare_repo"):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync.is_cc_active_on_server", return_value=False):
+                    with patch("ai_cli.sync._wait_for_dream_completion"):
+                        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                            with patch(
+                                "ai_cli.sync.stage_project_files",
+                                return_value={
+                                    "staged_files": [],
+                                    "project_names": [],
+                                    "memory_count": 0,
+                                    "jsonl_count": 0,
+                                },
+                            ):
+                                with patch("ai_cli.sync._remote_newer_files") as mock_guard:
+                                    with patch("ai_cli.sync.git_commit_staged", return_value=False):
+                                        result = sync_push(["--force"])
     assert result == 0
     mock_guard.assert_not_called()
 
@@ -3768,13 +3299,10 @@ def test_sync_pull_when_cc_active_locally_then_prints_warning(tmp_path, capsys):
                             with patch(
                                 "ai_cli.sync.apply_pull_files", return_value={"conflicts": [], "applied_count": 0}
                             ):
-                                with patch("ai_cli.sync.apply_handoff_files", return_value=0):
-                                    with patch("ai_cli.sync.apply_config_files", return_value=0):
-                                        with patch("ai_cli.sync.translate_history_jsonl"):
-                                            with patch("ai_cli.sync.retranslate_project_jsonls"):
-                                                with patch("ai_cli.sync.purge_phantom_history_entries"):
-                                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
-                                                        result = sync_pull([])
+                                with patch("ai_cli.sync.translate_history_jsonl"):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries"):
+                                            result = sync_pull([])
     assert result == 0
     assert "WARNING" in capsys.readouterr().err
 
@@ -3845,18 +3373,13 @@ def test_sync_pull_when_verbose_then_prints_applied_count(tmp_path, capsys):
                             with patch(
                                 "ai_cli.sync.apply_pull_files", return_value={"conflicts": [], "applied_count": 3}
                             ):
-                                with patch("ai_cli.sync.apply_handoff_files", return_value=2):
-                                    with patch("ai_cli.sync.apply_config_files", return_value=1):
-                                        with patch("ai_cli.sync.translate_history_jsonl"):
-                                            with patch("ai_cli.sync.retranslate_project_jsonls"):
-                                                with patch("ai_cli.sync.purge_phantom_history_entries"):
-                                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
-                                                        result = sync_pull(["--verbose"])
+                                with patch("ai_cli.sync.translate_history_jsonl"):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries"):
+                                            result = sync_pull(["--verbose"])
     assert result == 0
     output = capsys.readouterr().out
     assert "Applied" in output
-    assert "handoff" in output
-    assert "config" in output
 
 
 def test_sync_pull_when_conflicts_then_notifies_and_returns_2(tmp_path):
@@ -3887,14 +3410,11 @@ def test_sync_pull_when_conflicts_then_notifies_and_returns_2(tmp_path):
                                     "applied_count": 0,
                                 },
                             ):
-                                with patch("ai_cli.sync.apply_handoff_files", return_value=0):
-                                    with patch("ai_cli.sync.apply_config_files", return_value=0):
-                                        with patch("ai_cli.sync.translate_history_jsonl"):
-                                            with patch("ai_cli.sync.retranslate_project_jsonls"):
-                                                with patch("ai_cli.sync.purge_phantom_history_entries"):
-                                                    with patch("ai_cli.sync._handoff_queue_dir", return_value=None):
-                                                        with patch("ai_cli.sync.notify_conflicts") as mock_notify:
-                                                            result = sync_pull([])
+                                with patch("ai_cli.sync.translate_history_jsonl"):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries"):
+                                            with patch("ai_cli.sync.notify_conflicts") as mock_notify:
+                                                result = sync_pull([])
     assert result == 2
     mock_notify.assert_called_once()
 
@@ -4185,57 +3705,6 @@ def test_replicate_to_worktrees_when_lock_dir_not_in_replicated_then_skips(tmp_p
     # Lock dir was skipped (UUID not in replicated set)
     wt_cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
     assert not (wt_cc_dir / "abc123").exists()
-
-
-def test_apply_handoff_files_when_verbose_and_new_handoff_then_prints(tmp_path, capsys):
-    """Covers line 1014: verbose print for applied handoff."""
-    from ai_cli.sync import _HANDOFF_STAGING_NAMESPACE
-
-    staging_pending = tmp_path / "staging" / _HANDOFF_STAGING_NAMESPACE / "pending"
-    staging_pending.mkdir(parents=True)
-    handoff_file = staging_pending / "001-test.md"
-    handoff_file.write_text("handoff content")
-
-    handoff_queue_dir = tmp_path / "queue"
-
-    result = apply_handoff_files(
-        staging_dir=tmp_path / "staging",
-        handoff_queue_dir=handoff_queue_dir,
-        verbose=True,
-        dry_run=False,
-    )
-
-    assert result == 1
-    assert "apply handoff" in capsys.readouterr().out
-
-
-def test_apply_config_files_when_settings_identical_to_dst_then_skips_write(tmp_path):
-    """Covers lines 1134-1136: settings dst exists with same content → return early."""
-    from ai_cli.sync import _CONFIG_STAGING_NAMESPACE
-
-    staging_config = tmp_path / "staging" / _CONFIG_STAGING_NAMESPACE
-    staging_config.mkdir(parents=True)
-
-    # apply_config_files writes to Path.home() / ".claude"
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    cc_dir = fake_home / ".claude"
-    cc_dir.mkdir()
-
-    settings_content = '{"mcpServers": {}}'
-    (staging_config / "settings.json").write_text(settings_content)
-    # Write identical content to destination
-    (cc_dir / "settings.json").write_text(settings_content)
-
-    with patch("pathlib.Path.home", return_value=fake_home):
-        with patch("ai_cli.sync._translate_settings_paths", return_value=settings_content):
-            result = apply_config_files(
-                staging_dir=tmp_path / "staging",
-                verbose=False,
-                dry_run=False,
-                remote_host="user@host",
-            )
-    assert result == 0  # returned early — content unchanged
 
 
 def test_pre_pull_push_memories_when_committed_and_verbose_then_prints(tmp_path, capsys):

@@ -1,12 +1,21 @@
 """
-ai sync push/pull — bidirectional CC memory and history sync via git staging repo.
+ai sync push/pull — bidirectional CC session data sync via git staging repo.
+
+Scope: CC session data only — conversation JSONL files, memory files
+(MEMORY.md + memory/*.md), and history.jsonl. All files live in
+~/.claude/projects/ which is not a git repo. Sync is the only mechanism
+that moves this data between machines.
+
+What sync does NOT touch:
+  - Git-tracked files (config, hooks, statusline, handoff queue) — use git.
+  - ~/.claude/settings.json or other machine-specific CC config.
 
 Architecture:
   Mac: ~/.claude-sync-staging/  (working git repo, remote = ssh://{user}@{host}/{home}/.claude-sync-staging.git)
   Server: ~/.claude-sync-staging.git  (bare repo, receives pushes from both machines)
   Server: ~/.claude-sync-staging/     (working checkout, remote = file://{home}/.claude-sync-staging.git)
 
-Push flow: stage local files → git commit → git push to bare repo
+Push flow: stage local ~/.claude/projects/ files → git commit → git push to bare repo
 Pull flow: git fetch + merge from bare repo → apply merged files to ~/.claude/projects/
 """
 
@@ -132,42 +141,6 @@ def load_sync_config() -> SyncConfig:
 
 def _cc_projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
-
-
-def _handoff_queue_dir() -> Path:
-    from .main import _get_main_project_dir
-
-    main_dir = _get_main_project_dir()
-    assert main_dir is not None, "Main project directory not configured"
-    return main_dir / ".handoff-queue"
-
-
-# Namespace in the staging repo for handoff queue files.
-# Double-dash prefix ensures it never collides with project names.
-_HANDOFF_STAGING_NAMESPACE = "--handoff-queue"
-
-# Namespace for user-level CC config files (hooks, statusline, keybindings).
-# settings.json requires path translation between Mac and server.
-_CONFIG_STAGING_NAMESPACE = "--config"
-
-# Files to sync from ~/.claude/ (relative to ~/.claude/)
-# Excludes: settings.json (needs path translation, handled separately),
-#           settings.local.json (machine-specific by design),
-#           security_warnings_state_*.json (session-specific),
-#           stats-cache.json (local metrics),
-#           ai-cli-update.json (local update state),
-#           projects/ (handled by project sync),
-#           plugins/ (managed by CC plugin system)
-_CONFIG_SYNC_FILES = [
-    "statusline-command.sh",
-    "keybindings.json",
-    "hooks/config-reload-check.sh",
-    "hooks/config-reload-reset.sh",
-    "hooks/notify.sh",
-]
-
-# settings.json is synced separately with path translation
-_SETTINGS_FILE = "settings.json"
 
 
 def _parse_flags(flags: list[str]) -> tuple[bool, bool, bool, bool, bool]:
@@ -1071,203 +1044,6 @@ def notify_conflicts(conflicts: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Handoff queue sync
-# ---------------------------------------------------------------------------
-
-
-def stage_handoff_files(
-    staging_dir: Path,
-    handoff_queue_dir: Path,
-    verbose: bool,
-    dry_run: bool,
-) -> int:
-    """Stage pending handoff files into the staging repo. Returns count of files staged."""
-    pending_dir = handoff_queue_dir / "pending"
-    if not pending_dir.exists():
-        return 0
-
-    count = 0
-    staging_pending = staging_dir / _HANDOFF_STAGING_NAMESPACE / "pending"
-    for src in sorted(pending_dir.glob("*.md")):
-        dst = staging_pending / src.name
-        if not dry_run:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        count += 1
-        if verbose:
-            print(f"  stage handoff: {src.name}")
-    return count
-
-
-def apply_handoff_files(
-    staging_dir: Path,
-    handoff_queue_dir: Path,
-    verbose: bool,
-    dry_run: bool,
-) -> int:
-    """Apply pending handoff files from staging repo to local queue. Returns count applied.
-
-    Skips files already present in any state (pending / claimed / completed) to avoid
-    re-adding handoffs that were already picked up locally.
-    """
-    staging_pending = staging_dir / _HANDOFF_STAGING_NAMESPACE / "pending"
-    if not staging_pending.exists():
-        return 0
-
-    # Build a set of filenames already known in any state
-    known: set[str] = set()
-    for state in ("pending", "claimed", "completed"):
-        state_dir = handoff_queue_dir / state
-        if state_dir.exists():
-            known.update(f.name for f in state_dir.glob("*.md"))
-
-    count = 0
-    local_pending = handoff_queue_dir / "pending"
-    for src in sorted(staging_pending.glob("*.md")):
-        if src.name in known:
-            if verbose:
-                print(f"  skip handoff (already known): {src.name}")
-            continue
-        if not dry_run:
-            local_pending.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, local_pending / src.name)
-        count += 1
-        if verbose:
-            print(f"  apply handoff: {src.name}")
-    return count
-
-
-# ---------------------------------------------------------------------------
-# Config sync (hooks, statusline, settings.json with path translation)
-# ---------------------------------------------------------------------------
-
-
-def _get_remote_home(remote_host: str) -> str:
-    """Derive the remote home directory from a user@host string.
-
-    E.g. 'user@host' -> '/home/user', 'root@host' -> '/root'
-    """
-    if "@" in remote_host:
-        user = remote_host.split("@")[0]
-        return "/root" if user == "root" else f"/home/{user}"
-    return "/root"
-
-
-def _translate_settings_paths(content: str, direction: str, remote_host: str = "") -> str:
-    """Translate absolute paths in settings.json between local and remote machines.
-
-    direction: "to_local" -- replace remote paths with local
-               "to_staging" -- normalize to remote (canonical) form in staging
-    """
-    local_home = str(Path.home())
-    remote_home = _get_remote_home(remote_host) if remote_host else ""
-
-    if not remote_home or local_home == remote_home:
-        return content
-
-    if direction == "to_staging":
-        return content.replace(local_home, remote_home)
-    elif direction == "to_local":
-        return content.replace(remote_home, local_home)
-    return content
-
-
-def stage_config_files(
-    staging_dir: Path,
-    verbose: bool,
-    dry_run: bool,
-    remote_host: str = "",
-) -> int:
-    """Stage user-level CC config files into the staging repo. Returns count staged."""
-    cc_dir = Path.home() / ".claude"
-    staging_config = staging_dir / _CONFIG_STAGING_NAMESPACE
-    count = 0
-
-    # Portable files (no path translation needed)
-    for rel_path in _CONFIG_SYNC_FILES:
-        src = cc_dir / rel_path
-        if not src.exists():
-            continue
-        dst = staging_config / rel_path
-        if not dry_run:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        count += 1
-        if verbose:
-            print(f"  stage config: {rel_path}")
-
-    # settings.json — translate paths to canonical (server) form
-    settings_src = cc_dir / _SETTINGS_FILE
-    if settings_src.exists():
-        settings_dst = staging_config / _SETTINGS_FILE
-        if not dry_run:
-            settings_dst.parent.mkdir(parents=True, exist_ok=True)
-            content = settings_src.read_text()
-            translated = _translate_settings_paths(content, "to_staging", remote_host)
-            settings_dst.write_text(translated)
-        count += 1
-        if verbose:
-            print(f"  stage config: {_SETTINGS_FILE} (path-translated)")
-
-    return count
-
-
-def apply_config_files(
-    staging_dir: Path,
-    verbose: bool,
-    dry_run: bool,
-    remote_host: str = "",
-) -> int:
-    """Apply config files from staging repo to local ~/.claude/. Returns count applied."""
-    cc_dir = Path.home() / ".claude"
-    staging_config = staging_dir / _CONFIG_STAGING_NAMESPACE
-    if not staging_config.exists():
-        return 0
-
-    count = 0
-
-    # Portable files — copy if changed
-    for rel_path in _CONFIG_SYNC_FILES:
-        src = staging_config / rel_path
-        if not src.exists():
-            continue
-        dst = cc_dir / rel_path
-        if dst.exists() and file_hash(src) == file_hash(dst):
-            continue
-        if not dry_run:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            # Preserve executable permission for shell scripts
-            if src.suffix == ".sh":
-                dst.chmod(dst.stat().st_mode | 0o111)
-        count += 1
-        if verbose:
-            print(f"  apply config: {rel_path}")
-
-    # settings.json — translate paths from canonical to local
-    settings_src = staging_config / _SETTINGS_FILE
-    if settings_src.exists():
-        settings_dst = cc_dir / _SETTINGS_FILE
-        staged_content = settings_src.read_text()
-        translated = _translate_settings_paths(staged_content, "to_local", remote_host)
-
-        # Only write if content actually changed
-        if settings_dst.exists():
-            current = settings_dst.read_text()
-            if current == translated:
-                return count
-
-        if not dry_run:
-            settings_dst.parent.mkdir(parents=True, exist_ok=True)
-            settings_dst.write_text(translated)
-        count += 1
-        if verbose:
-            print(f"  apply config: {_SETTINGS_FILE} (path-translated)")
-
-    return count
-
-
-# ---------------------------------------------------------------------------
 # git push helpers
 # ---------------------------------------------------------------------------
 
@@ -1575,32 +1351,12 @@ def sync_push(flags: list[str]) -> int:
         dry_run=dry_run,
     )
 
-    handoff_count = 0
-    config_count = 0
-    if not memories_only:
-        handoff_count = stage_handoff_files(
-            staging_dir=cfg.staging_dir,
-            handoff_queue_dir=_handoff_queue_dir(),
-            verbose=verbose,
-            dry_run=dry_run,
-        )
-        config_count = stage_config_files(
-            staging_dir=cfg.staging_dir,
-            verbose=verbose,
-            dry_run=dry_run,
-            remote_host=cfg.remote_host,
-        )
-
     if dry_run:
         staged = result["staged_files"]
         project_names = result["project_names"]
         print(f"Would sync {len(staged)} files across {len(project_names)} projects:")
         for src, dst in staged:
             print(f"  {src}")
-        if handoff_count:
-            print(f"Would sync {handoff_count} handoff file(s)")
-        if config_count:
-            print(f"Would sync {config_count} config file(s)")
         return 0
 
     if not force:
@@ -1621,7 +1377,7 @@ def sync_push(flags: list[str]) -> int:
         project_names=result["project_names"],
         memory_count=result["memory_count"],
         jsonl_count=result["jsonl_count"],
-        total_count=len(result["staged_files"]) + handoff_count + config_count,
+        total_count=len(result["staged_files"]),
     )
 
     if not committed:
@@ -1715,25 +1471,6 @@ def sync_pull(flags: list[str]) -> int:
 
     if verbose and not dry_run:
         print(f"Applied {result['applied_count']} files to {cc_projects_dir}")
-
-    if not memories_only:
-        handoff_applied = apply_handoff_files(
-            staging_dir=cfg.staging_dir,
-            handoff_queue_dir=_handoff_queue_dir(),
-            verbose=verbose,
-            dry_run=dry_run,
-        )
-        if verbose and handoff_applied:
-            print(f"Applied {handoff_applied} handoff file(s) to queue")
-
-        config_applied = apply_config_files(
-            staging_dir=cfg.staging_dir,
-            verbose=verbose,
-            dry_run=dry_run,
-            remote_host=cfg.remote_host,
-        )
-        if verbose and config_applied:
-            print(f"Applied {config_applied} config file(s) to ~/.claude/")
 
     if not dry_run and not memories_only:
         translate_history_jsonl(verbose=verbose)
