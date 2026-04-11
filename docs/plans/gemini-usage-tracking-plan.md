@@ -452,15 +452,28 @@ Paid API spend: not available — BigQuery billing export not configured.
 
 ### T-04: Replace MEMORY.md ledger in `gemini_cost_sync` handler
 
-**Status: OUT OF SCOPE / DEFERRED** — lives in humanware/sergei project (SW-767).
-Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` output.
+**Size:** S
+**Batch:** 3 (after T-01–T-03 are done)
+**Repo:** humanware — `src/humanware/scheduling/handlers/gemini_cost_sync.py`
+**Tracking:** `HW-3` in humanware roadmap
+
+Confirmed: the handler exists in humanware. It reads a MEMORY.md cost ledger
+(`project_claude_quota.md`) via regex and writes `quota.gemini.monthly` to NATS KV.
+
+Replace the regex ledger read with JSONL log parsing from
+`~/.local/state/ai-cli/gemini-logs/`. Sum `estimated_cost_usd` across today's and
+yesterday's log entries (once T-01 populates that field). Fall back to BigQuery
+billing export query (T-03) if token-count-based cost is unavailable.
+
+**Blocked on:** T-01 (log enrichment), T-03 (`ai spend gemini` / BigQuery integration).
 
 ## Batch Plan
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
-| 1 | T-01, T-02 | Foundation — token extraction fix, tier naming, DR counter + paid gate | Plan approval + billing Q5 investigated |
+| 1 | T-01, T-02 | Foundation — token extraction fix, tier naming, DR counter + paid gate | Plan approval |
 | 2 | T-03 | Surface — `ai spend gemini` command | Human review of BigQuery setup + output format |
+| 3 | T-04 | Humanware — replace MEMORY.md ledger in `gemini_cost_sync` | T-01 + T-03 done; work in humanware repo (HW-3) |
 
 ---
 
@@ -547,3 +560,4 @@ Once T-01–T-03 land, the humanware side reads from JSONL logs or `ai spend` ou
 | 2026-04-11 | Plan revised (round 2) | T-02 redesigned with unconditional paid-run gate (`--confirm-paid` / `-P`); billing uncertainty documented; T-03 updated to show credit status hint from BigQuery data; Q5 added as P0 open question |
 | 2026-04-11 | User feedback round 2 committed | Disable `ai_studio_paid` fallback by default via `paid_fallback_enabled` config toggle; OAuth-only for now; "Vertex-only" claim confirmed baseless; email sent to GDP premium support |
 | 2026-04-11 | Plan revised (round 3) | T-02 redesigned around `paid_fallback_enabled` config toggle (default false); `-P`/`--confirm-paid` retained for when paid is re-enabled; human gate for billing credit investigation removed (not blocking); Q5 demoted to deferred |
+| 2026-04-11 | T-04 confirmed and unlocked | `gemini_cost_sync` handler confirmed in humanware repo; T-04 added as Batch 3 (blocked on T-01+T-03); HW-3 added to humanware roadmap |
