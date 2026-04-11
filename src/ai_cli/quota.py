@@ -225,8 +225,11 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             timeout=2,
         )
 
-        # Poll for the CC prompt indicator (❯) — startup takes ~4s
+        # Poll for the CC prompt indicator (❯) — startup takes ~4s.
+        # CC may show a "trust this folder" dialog first; dismiss it with Enter,
+        # then continue polling for the real interactive prompt.
         ready = False
+        trust_dismissed = False
         for _ in range(75):  # up to 15s
             time.sleep(0.2)
             cap = subprocess.run(
@@ -235,7 +238,19 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                 text=True,
                 timeout=3,
             )
-            if cap.returncode == 0 and "❯" in cap.stdout:
+            if cap.returncode != 0:
+                continue
+            output = cap.stdout
+            if "❯" in output:
+                # If the trust dialog is visible, confirm it and keep polling.
+                if not trust_dismissed and ("trust this folder" in output.lower() or "yes, i trust" in output.lower()):
+                    subprocess.run(
+                        ["tmux", "send-keys", "-t", target, "", "Enter"],
+                        capture_output=True,
+                        timeout=2,
+                    )
+                    trust_dismissed = True
+                    continue
                 ready = True
                 break
 
