@@ -9,6 +9,7 @@ import pytest
 from ai_cli.gemini import (
     AttemptLog,
     GeminiResult,
+    _get_gemini_cli_oauth_token,
     _get_google_oauth_token,
     _is_free_tier_eligible,
     _log,
@@ -988,12 +989,157 @@ class TestGetGoogleOauthToken:
         orig = sys.modules.copy()
         sys.modules["google.auth"] = None  # type: ignore[assignment]
         try:
-            token = _get_google_oauth_token()
+            with patch("ai_cli.gemini._get_gemini_cli_oauth_token", return_value=None):
+                token = _get_google_oauth_token()
         finally:
             sys.modules.update(orig)
         assert token is None
 
     def test_when_credentials_raise_then_returns_none(self):
         with patch("google.auth.default", side_effect=Exception("no credentials")):
-            token = _get_google_oauth_token()
+            with patch("ai_cli.gemini._get_gemini_cli_oauth_token", return_value=None):
+                token = _get_google_oauth_token()
+        assert token is None
+
+    def test_when_adc_fails_then_falls_back_to_gemini_cli_creds(self):
+        with patch("google.auth.default", side_effect=Exception("no ADC")):
+            with patch("ai_cli.gemini._get_gemini_cli_oauth_token", return_value="cli-token"):
+                token = _get_google_oauth_token()
+        assert token == "cli-token"
+
+    def test_when_adc_returns_falsy_token_then_falls_back_to_gemini_cli_creds(self):
+        mock_creds = MagicMock()
+        mock_creds.token = None
+        with patch("google.auth.default", return_value=(mock_creds, "project")):
+            with patch("google.auth.transport.requests.Request"):
+                with patch("ai_cli.gemini._get_gemini_cli_oauth_token", return_value="cli-token"):
+                    token = _get_google_oauth_token()
+        assert token == "cli-token"
+
+
+# --- _get_gemini_cli_oauth_token tests ---
+
+
+class TestGetGeminiCliOauthToken:
+    def test_when_no_creds_file_then_returns_none(self, tmp_path):
+        with patch("ai_cli.gemini.Path.home", return_value=tmp_path):
+            token = _get_gemini_cli_oauth_token()
+        assert token is None
+
+    def test_when_creds_file_has_no_refresh_token_then_returns_none(self, tmp_path):
+        creds_dir = tmp_path / ".gemini"
+        creds_dir.mkdir()
+        (creds_dir / "oauth_creds.json").write_text(json.dumps({"access_token": "tok", "expiry_date": 9999999999000}))
+        with patch("ai_cli.gemini.Path.home", return_value=tmp_path):
+            token = _get_gemini_cli_oauth_token()
+        assert token is None
+
+    def test_when_access_token_still_valid_then_returns_without_refresh(self, tmp_path):
+        import time
+
+        creds_dir = tmp_path / ".gemini"
+        creds_dir.mkdir()
+        future_ms = int(time.time() * 1000) + 3_600_000  # 1 hour from now
+        (creds_dir / "oauth_creds.json").write_text(
+            json.dumps(
+                {
+                    "access_token": "valid-token",
+                    "refresh_token": "refresh-tok",
+                    "expiry_date": future_ms,
+                    "client_id": "cid",
+                    "client_secret": "csec",
+                }
+            )
+        )
+        with patch("ai_cli.gemini.Path.home", return_value=tmp_path):
+            token = _get_gemini_cli_oauth_token()
+        assert token == "valid-token"
+
+    def test_when_access_token_expired_then_refreshes(self, tmp_path):
+        import time
+
+        creds_dir = tmp_path / ".gemini"
+        creds_dir.mkdir()
+        past_ms = int(time.time() * 1000) - 3_600_000  # expired 1 hour ago
+        creds_file = creds_dir / "oauth_creds.json"
+        creds_file.write_text(
+            json.dumps(
+                {
+                    "access_token": "expired-token",
+                    "refresh_token": "my-refresh-token",
+                    "expiry_date": past_ms,
+                    "client_id": "cid",
+                    "client_secret": "csec",
+                }
+            )
+        )
+        refresh_response = json.dumps({"access_token": "new-token", "expires_in": 3600}).encode()
+
+        class FakeResp:
+            def read(self):
+                return refresh_response
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        with patch("ai_cli.gemini.Path.home", return_value=tmp_path):
+            with patch("urllib.request.urlopen", return_value=FakeResp()):
+                token = _get_gemini_cli_oauth_token()
+
+        assert token == "new-token"
+        # Creds file should be updated with the new token
+        updated = json.loads(creds_file.read_text())
+        assert updated["access_token"] == "new-token"
+
+    def test_when_refresh_fails_then_returns_none(self, tmp_path):
+        import time
+
+        creds_dir = tmp_path / ".gemini"
+        creds_dir.mkdir()
+        past_ms = int(time.time() * 1000) - 3_600_000
+        (creds_dir / "oauth_creds.json").write_text(
+            json.dumps(
+                {
+                    "access_token": "expired",
+                    "refresh_token": "my-refresh-token",
+                    "expiry_date": past_ms,
+                    "client_id": "cid",
+                    "client_secret": "csec",
+                }
+            )
+        )
+        with patch("ai_cli.gemini.Path.home", return_value=tmp_path):
+            with patch("urllib.request.urlopen", side_effect=Exception("network error")):
+                token = _get_gemini_cli_oauth_token()
+        assert token is None
+
+    def test_when_no_client_id_then_returns_none(self, tmp_path):
+        import time
+
+        creds_dir = tmp_path / ".gemini"
+        creds_dir.mkdir()
+        past_ms = int(time.time() * 1000) - 3_600_000
+        (creds_dir / "oauth_creds.json").write_text(
+            json.dumps(
+                {
+                    "access_token": "expired",
+                    "refresh_token": "my-refresh-token",
+                    "expiry_date": past_ms,
+                    # no client_id / client_secret
+                }
+            )
+        )
+        with patch("ai_cli.gemini.Path.home", return_value=tmp_path):
+            token = _get_gemini_cli_oauth_token()
+        assert token is None
+
+    def test_when_creds_file_malformed_then_returns_none(self, tmp_path):
+        creds_dir = tmp_path / ".gemini"
+        creds_dir.mkdir()
+        (creds_dir / "oauth_creds.json").write_text("not valid json{{")
+        with patch("ai_cli.gemini.Path.home", return_value=tmp_path):
+            token = _get_gemini_cli_oauth_token()
         assert token is None

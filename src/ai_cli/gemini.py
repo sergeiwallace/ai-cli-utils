@@ -460,15 +460,96 @@ def _try_gemini_api(prompt: str, model: str, timeout_s: int, tier: int, verbose:
 # ---------------------------------------------------------------------------
 
 
-def _get_google_oauth_token() -> str | None:
-    """Try to get a Google OAuth access token via Application Default Credentials.
+def _get_gemini_cli_oauth_token() -> str | None:
+    """Read and refresh a token from ~/.gemini/oauth_creds.json.
 
-    Succeeds when the user has authenticated via the gemini CLI (``gemini auth login``)
-    or gcloud ADC (``gcloud auth application-default login``).
+    The gemini CLI stores OAuth credentials in its own JSON format at this path.
+    When the access token is expired but a refresh token is present, this
+    refreshes it via the Google token endpoint using only stdlib (no extra deps).
 
-    Returns the access token string, or None if credentials are unavailable or
-    google-auth is not installed.
+    Returns the access token string, or None on any failure (file missing,
+    no refresh token, network error, etc.).
     """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    creds_path = Path.home() / ".gemini" / "oauth_creds.json"
+    if not creds_path.exists():
+        return None
+
+    try:
+        creds = json.loads(creds_path.read_text())
+    except Exception:
+        return None
+
+    refresh_token = creds.get("refresh_token")
+    if not refresh_token:
+        return None
+
+    # Check if the current access token is still valid.
+    # expiry_date in the gemini CLI format is epoch milliseconds.
+    access_token = creds.get("access_token")
+    expiry_ms = creds.get("expiry_date", 0)
+    now_ms = int(time.time() * 1000)
+    if access_token and expiry_ms and expiry_ms > now_ms + 60_000:
+        return access_token
+
+    # Token is expired (or absent) — refresh it via the token endpoint.
+    client_id = creds.get("client_id", "")
+    client_secret = creds.get("client_secret", "")
+    if not client_id or not client_secret:
+        return None
+
+    try:
+        body = urllib.parse.urlencode(
+            {
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            token_data = json.loads(resp.read())
+    except Exception:
+        return None
+
+    new_token = token_data.get("access_token")
+    if not new_token:
+        return None
+
+    # Write the refreshed token back so subsequent calls skip the round-trip.
+    try:
+        expires_in = token_data.get("expires_in", 3600)
+        creds["access_token"] = new_token
+        creds["expiry_date"] = int(time.time() * 1000) + expires_in * 1000
+        creds_path.write_text(json.dumps(creds, indent=2))
+    except Exception:
+        pass  # non-fatal — we still have a valid token
+
+    return new_token
+
+
+def _get_google_oauth_token() -> str | None:
+    """Try to get a Google OAuth access token.
+
+    Tries two paths in order:
+
+    1. ``google.auth.default()`` — Application Default Credentials (gcloud ADC).
+    2. ``~/.gemini/oauth_creds.json`` — gemini CLI OAuth creds. Handles the
+       common case where the access token is expired but a refresh token is
+       present: refreshes transparently via the Google token endpoint.
+
+    Returns the access token string, or None if no valid credentials are found.
+    """
+    # Path 1: Application Default Credentials
     try:
         import google.auth
         import google.auth.transport.requests
@@ -476,9 +557,13 @@ def _get_google_oauth_token() -> str | None:
         credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/generative-language"])
         request = google.auth.transport.requests.Request()
         credentials.refresh(request)
-        return credentials.token
+        if credentials.token:
+            return credentials.token
     except Exception:
-        return None
+        pass
+
+    # Path 2: gemini CLI creds (handles expired access tokens with valid refresh tokens)
+    return _get_gemini_cli_oauth_token()
 
 
 # ---------------------------------------------------------------------------
