@@ -87,9 +87,11 @@ TIER_NAMES = {
     3: "ai_studio_paid",
 }
 
-# Deep Research daily quota tracking
-DEEP_RESEARCH_DAILY_LIMIT: int = 20  # approx. daily cap; update empirically
-DEEP_RESEARCH_DAILY_WARNING: int = 18  # warn when this many OAuth runs used
+# Deep Research daily run tracking — budget alert thresholds only.
+# There is no Google-imposed hard daily limit on paid Interactions API runs.
+# These constants are soft budget alerts to flag unexpectedly high paid usage.
+DEEP_RESEARCH_DAILY_LIMIT: int = 20  # alert threshold: warn above this many paid runs/day
+DEEP_RESEARCH_DAILY_WARNING: int = 18  # warn when paid count reaches this
 
 DR_DAILY_FILE = Path.home() / ".local" / "state" / "ai-cli" / "dr-daily.json"
 
@@ -747,8 +749,8 @@ def _run_deep_research(
         )
         if paid_today >= DEEP_RESEARCH_DAILY_WARNING:
             print(
-                f"[deep-research] Warning: approaching daily limit"
-                f" ({paid_today}/{DEEP_RESEARCH_DAILY_LIMIT} paid runs used today)",
+                f"[deep-research] Warning: budget alert — {paid_today} paid runs today"
+                f" (threshold: {DEEP_RESEARCH_DAILY_LIMIT}). Check `ai spend gemini`.",
                 file=sys.stderr,
             )
 

@@ -369,14 +369,13 @@ class TestCmdSpendGemini:
         out = capsys.readouterr().out
         assert "No runs logged today" in out
 
-    def test_when_daily_oauth_dr_runs_then_shows_count(self, tmp_path, capsys):
+    def test_when_no_paid_dr_runs_today_then_shows_zero(self, tmp_path, capsys):
         today = time.strftime("%Y-%m-%d")
         dr_file = tmp_path / "dr-daily.json"
-        dr_file.write_text(json.dumps({"date": today, "oauth_count": 3, "paid_count": 0, "last_run": None}))
+        dr_file.write_text(json.dumps({"date": today, "oauth_count": 0, "paid_count": 0, "last_run": None}))
         cmd_spend_gemini({}, log_dir=tmp_path, dr_file=dr_file)
         out = capsys.readouterr().out
-        assert "3 OAuth runs" in out
-        assert "17 remaining free" in out
+        assert "0 paid runs today" in out
 
     def test_when_paid_dr_runs_today_then_shown(self, tmp_path, capsys):
         today = time.strftime("%Y-%m-%d")
@@ -499,10 +498,10 @@ class TestCmdSpendGemini:
         out = capsys.readouterr().out
         assert "my-gcp-project" in out
 
-    def test_when_daily_limit_custom_then_free_remaining_correct(self, tmp_path, capsys):
+    def test_when_paid_dr_runs_plural_then_pluralized(self, tmp_path, capsys):
         today = time.strftime("%Y-%m-%d")
         dr_file = tmp_path / "dr-daily.json"
-        dr_file.write_text(json.dumps({"date": today, "oauth_count": 8, "paid_count": 0, "last_run": None}))
-        cmd_spend_gemini({}, log_dir=tmp_path, dr_file=dr_file, dr_daily_limit=10)
+        dr_file.write_text(json.dumps({"date": today, "oauth_count": 0, "paid_count": 3, "last_run": None}))
+        cmd_spend_gemini({}, log_dir=tmp_path, dr_file=dr_file)
         out = capsys.readouterr().out
-        assert "2 remaining free" in out
+        assert "3 paid runs" in out

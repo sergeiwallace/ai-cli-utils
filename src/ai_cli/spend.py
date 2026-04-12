@@ -26,9 +26,6 @@ from typing import Optional
 LOG_DIR = Path.home() / ".local" / "state" / "ai-cli" / "gemini-logs"
 DR_DAILY_FILE = Path.home() / ".local" / "state" / "ai-cli" / "dr-daily.json"
 
-# Deep Research daily quota constants — kept in sync with gemini.py
-_DR_DAILY_LIMIT: int = 20
-
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -244,7 +241,6 @@ def cmd_spend_gemini(
     *,
     log_dir: Optional[Path] = None,
     dr_file: Optional[Path] = None,
-    dr_daily_limit: int = _DR_DAILY_LIMIT,
 ) -> int:
     """Print Gemini usage and cost summary.
 
@@ -252,7 +248,6 @@ def cmd_spend_gemini(
         config: Loaded config dict (from load_config()).
         log_dir: Override for LOG_DIR (used in tests).
         dr_file: Override for DR_DAILY_FILE (used in tests).
-        dr_daily_limit: Override for the daily DR limit constant (used in tests).
 
     Returns 0 on success.
     """
@@ -266,14 +261,14 @@ def cmd_spend_gemini(
     # --- Today ---
     print(f"Gemini usage — today ({today})")
 
-    oauth_dr = dr_today.get("oauth_count", 0)
     paid_dr = dr_today.get("paid_count", 0)
-    free_remaining = max(0, dr_daily_limit - oauth_dr)
 
-    dr_parts = [f"{oauth_dr} OAuth runs ({free_remaining} remaining free)"]
     if paid_dr:
-        dr_parts.append(f"{paid_dr} paid")
-    print(f"  Deep Research:  {' | '.join(dr_parts)}")
+        print(
+            f"  Deep Research:  {paid_dr} paid run{'s' if paid_dr != 1 else ''} (check `ai spend gemini` for charges)"
+        )
+    else:
+        print("  Deep Research:  0 paid runs today")
 
     _sep = " \u00b7 "  # middle dot separator
     _times = "\u00d7"  # multiplication sign
@@ -281,7 +276,7 @@ def cmd_spend_gemini(
     if other_models:
         model_parts = [f"{m} {_times}{c}" for m, c in sorted(other_models.items(), key=lambda x: -x[1])]
         print(f"  Other models:   {_sep.join(model_parts)}")
-    elif not oauth_dr and not paid_dr and not daily.successful_runs:
+    elif not paid_dr and not daily.successful_runs:
         print("  No runs logged today.")
 
     print()

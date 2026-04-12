@@ -21,7 +21,7 @@ Follow this table to ensure the appropriate balance of reasoning depth, context 
 
 | Tier | Auth Method | Models Available | Notes |
 |------|-------------|-----------------|-------|
-| 1 | OAuth (Gemini CLI) | All models | Free via Google AI consumer subscription. Deep Research: ~20/day via consumer entitlement. |
+| 1 | OAuth (Gemini CLI) | All models except Deep Research | Free via Google AI consumer subscription. **Deep Research is not available via OAuth** — the CLI OAuth token is scoped to the Code Assist backend and cannot reach the Interactions API. Use tier 3 for Deep Research. |
 | 2 | `GOOGLE_API_KEY_FREE_TIER` | Flash family only (Gemini 3 Flash, 3.1 Flash-Lite, 2.5 Flash, 2.0 Flash, Gemma 4) | **Gemini 3.1 Pro has no free quota tier.** Using tier 2 for Pro/deep-think/deep-research will fail immediately with a billing error, not a 429. |
 | 3 | `GOOGLE_API_KEY_TIER_1` | All models | Paid, billed per token. Deep Research ~$2–5/task. |
 

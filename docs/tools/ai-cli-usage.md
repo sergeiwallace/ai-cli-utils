@@ -237,7 +237,7 @@ Deep Research (`-m deep-research`) draws from the paid AI Studio key (`GOOGLE_AP
 1. `paid_fallback_enabled = true` in `~/.config/ai-cli/config.toml` under `[gemini]` (disabled by default).
 2. `-P`/`--confirm-paid` flag at runtime.
 
-If either is absent, the run exits with an actionable error message. After a successful run, the daily paid run count is printed to stderr. A warning is printed when approaching the daily soft limit (`DEEP_RESEARCH_DAILY_WARNING = 18`, hard limit `DEEP_RESEARCH_DAILY_LIMIT = 20`). Daily counts are persisted to `~/.local/state/ai-cli/dr-daily.json` and reset at midnight.
+If either is absent, the run exits with an actionable error message. After a successful run, the daily paid run count is printed to stderr. A warning is printed when paid run count reaches the configurable budget alert threshold (`DEEP_RESEARCH_DAILY_WARNING = 18`, alert at `DEEP_RESEARCH_DAILY_LIMIT = 20`). There is no Google-imposed hard daily limit — these are local budget-awareness constants only. Daily counts are persisted to `~/.local/state/ai-cli/dr-daily.json` and reset at midnight.
 
 **Auth tier names** (used in JSONL logs):
 
@@ -274,8 +274,7 @@ ai spend gemini
 Print today's and this month's Gemini API usage summary, combining local JSONL logs with GCP BigQuery billing export data.
 
 **Today's section** shows:
-- Deep Research OAuth run count and free quota remaining (daily limit: 20 runs)
-- Deep Research paid run count (if any)
+- Deep Research paid run count for today
 - Per-model run counts for other models
 
 **This month's section** shows:
