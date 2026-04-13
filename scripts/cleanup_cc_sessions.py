@@ -2,7 +2,7 @@
 """Clean up contaminated CC (Claude Code) session files.
 
 Handles two types of contamination:
-1. Stub files (<10KB JSONL) from old sync bugs
+1. Stub files: <10KB OR <30 lines (catches large-record stubs that slip past the size gate)
 2. Cross-project sessions (e.g., aido-N sessions in sergei/ dirs)
 
 Files are archived to ~/.claude-session-archive/YYYY-MM-DD/, never deleted.
@@ -19,7 +19,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
-STUB_THRESHOLD = 10 * 1024  # 10KB
+STUB_SIZE_THRESHOLD = 10 * 1024  # 10KB
+STUB_LINE_THRESHOLD = 30  # files with fewer lines than this are stubs
 
 # Maps customTitle prefix patterns to expected staging subdir names.
 # Order matters: more specific patterns first (sw-N-suffix before sw-N).
@@ -54,25 +55,26 @@ def get_expected_staging_dir(custom_title: str) -> str | None:
     return None
 
 
-def get_custom_title(jsonl_path: Path, max_lines: int = 500) -> str | None:
-    """Read customTitle from a JSONL file, scanning up to max_lines."""
+def get_custom_title_and_linecount(jsonl_path: Path) -> tuple[str | None, int]:
+    """Read customTitle and total line count from a JSONL file."""
+    title = None
+    line_count = 0
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
-            for i, line in enumerate(f):
-                if i >= max_lines:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(record, dict) and "customTitle" in record:
-                    return record["customTitle"]
+            for line in f:
+                line_count += 1
+                if title is None:
+                    stripped = line.strip()
+                    if stripped:
+                        try:
+                            record = json.loads(stripped)
+                            if isinstance(record, dict) and "customTitle" in record:
+                                title = record["customTitle"]
+                        except (json.JSONDecodeError, ValueError):
+                            pass
     except OSError:
-        return None
-    return None
+        pass
+    return title, line_count
 
 
 def extract_project_subdir(dir_name: str, is_staging: bool) -> str:
@@ -126,18 +128,19 @@ def scan_dir(
 
         for jsonl_path in sorted(jsonl_files):
             file_size = jsonl_path.stat().st_size
-            custom_title = get_custom_title(jsonl_path)
+            custom_title, line_count = get_custom_title_and_linecount(jsonl_path)
             uuid_stem = jsonl_path.stem
             uuid_dir = jsonl_path.parent / uuid_stem
 
-            # Check stub threshold
-            if file_size < STUB_THRESHOLD:
-                reason = "stub"
+            # Check stub: small file OR very few lines (large-record stubs evade size gate)
+            is_stub = file_size < STUB_SIZE_THRESHOLD or line_count < STUB_LINE_THRESHOLD
+            if is_stub:
+                reason = f"stub({file_size // 1024}KB,{line_count}lines)"
                 title_info = f", customTitle={custom_title}" if custom_title else ""
                 archive_dest = archive_base / dir_name / jsonl_path.name
                 print(
-                    f"  ARCHIVE({reason}): {jsonl_path} "
-                    f"({file_size} bytes{title_info}) -> {archive_dest}"
+                    f"  ARCHIVE({reason}): {jsonl_path}"
+                    f"{title_info} -> {archive_dest}"
                 )
                 if execute:
                     _archive_file(jsonl_path, archive_dest)
@@ -223,7 +226,7 @@ def main() -> None:
 
     print("=" * 60)
     print(f"Summary:")
-    print(f"  Stubs archived (<{STUB_THRESHOLD // 1024}KB):  {total['stubs']}")
+    print(f"  Stubs archived (<{STUB_SIZE_THRESHOLD // 1024}KB or <{STUB_LINE_THRESHOLD}lines):  {total['stubs']}")
     print(f"  Cross-project archived:       {total['cross_project']}")
     print(f"  UUID dirs archived:           {total['uuid_dirs']}")
     print(f"  Left in place:                {total['left']}")
