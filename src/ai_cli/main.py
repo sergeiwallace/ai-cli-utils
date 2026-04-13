@@ -1520,10 +1520,27 @@ def get_engine_script(
         fi
       else
         if [[ "$engine" == "c" ]]; then
-          # Check if any conversation exists in this worktree directory.
-          # --continue resumes the most recent; if none exists, start fresh.
+          # Find conversation matching $ai_name by customTitle, then resume it by UUID.
+          # --continue picks by mtime (wrong); --resume UUID targets the named session exactly.
           cc_project_dir="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[/.]|-|g')"
-          if [[ -d "$cc_project_dir" ]] && ls "$cc_project_dir"/*.jsonl &>/dev/null; then
+          matched_uuid=$(python3 -c "
+import json,os,sys
+d,t=sys.argv[1],sys.argv[2]
+if not os.path.isdir(d): sys.exit(0)
+files=sorted([x for x in os.listdir(d) if x.endswith('.jsonl')],key=lambda x:os.path.getmtime(os.path.join(d,x)),reverse=True)
+for fname in files:
+    try:
+        with open(os.path.join(d,fname)) as fh:
+            for line in fh:
+                r=json.loads(line);ct=r.get('customTitle','')
+                if ct:
+                    if ct==t: sys.stdout.write(fname[:-6])
+                    break
+    except: pass
+" "$cc_project_dir" "$ai_name" 2>/dev/null)
+          if [[ -n "$matched_uuid" ]]; then
+            claude $claude_perms_flag --resume "$matched_uuid" --name "$ai_name"
+          elif [[ -d "$cc_project_dir" ]] && ls "$cc_project_dir"/*.jsonl &>/dev/null; then
             claude $claude_perms_flag --continue --name "$ai_name"
           else
             claude $claude_perms_flag --name "$ai_name"
