@@ -282,6 +282,54 @@ class TestSignalWatchCli:
         assert "fix login" in content
         assert not (pending / "003-fix-login.md").exists()
 
+    def test_signal_watch_when_claim_succeeds_then_touches_signal_file(self, tmp_path):
+        """After claiming a handoff, signal-watch must touch cc-exit-{session} to wake the watcher."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "003-wake-test.md").write_text(
+            '---\nid: "3"\ntitle: "wake test"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+        received_callback = {}
+
+        async def fake_js_subscribe(subject, durable, cb):
+            received_callback["cb"] = cb
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            if "cb" in received_callback:
+                msg = MagicMock()
+                msg.data = (
+                    b'{"id": 3, "title": "wake test", "priority": "P1", "message": "body", "for_machine": "hetzner"}'
+                )
+                msg.ack = AsyncMock()
+                await received_callback["cb"](msg)
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-1"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        # Watcher signal_file must be touched so the watcher injects /exit
+        assert (state_dir / "cc-exit-c-sw-1").exists()
+
     def test_signal_watch_when_claim_lost_to_other_session_then_no_pending_file(self, tmp_path):
         handoff_dir = tmp_path / ".handoff-queue"
         (handoff_dir / "pending").mkdir(parents=True)
@@ -530,6 +578,45 @@ class TestSignalWatchCli:
         assert pending_file.exists()
         assert not (pending / "004-pre-existing-task.md").exists()
         assert (handoff_dir / "claimed" / "004-pre-existing-task.md").exists()
+
+    def test_signal_watch_startup_scan_when_claim_succeeds_then_touches_signal_file(self, tmp_path):
+        """Startup scan must also touch cc-exit-{session} to wake a running session."""
+        handoff_dir = tmp_path / ".handoff-queue"
+        pending = handoff_dir / "pending"
+        pending.mkdir(parents=True)
+        (pending / "004-startup-wake.md").write_text(
+            '---\nid: "4"\ntitle: "startup wake"\nfor_machine: hetzner\nclaimed_by: null\nclaimed_at: null\n---\n\nDo this.\n'
+        )
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        mock_nc = MagicMock()
+        mock_js = MagicMock()
+        mock_js.find_stream_name_by_subject = AsyncMock(return_value="handoff")
+        mock_nc.jetstream.return_value = mock_js
+
+        async def fake_js_subscribe(subject, durable, cb):
+            pass
+
+        mock_js.subscribe = fake_js_subscribe
+
+        async def fake_sleep(_):
+            raise asyncio.CancelledError
+
+        with (
+            patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-4"]),
+            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("subprocess.run"),
+            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        assert (state_dir / "cc-exit-c-sw-4").exists()
 
     def test_signal_watch_startup_scan_does_not_send_keys(self, tmp_path):
         """Startup scan must never send-keys."""

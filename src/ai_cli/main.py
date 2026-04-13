@@ -2792,10 +2792,15 @@ def cli():
                 resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
                 sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
                 sw_pending_file.write_text(resume_msg)
-                # Pending file is the pickup mechanism — while loop reads it on CC exit.
-                # pane_current_command is always bash on Linux (CC is a child of bash,
-                # not the foreground process), so command-based nudging is unreliable
-                # and could inject text while CC is actively running.
+                # Touch signal_file to wake the watcher. The watcher's idle guard
+                # (counter >= 10 + double ❯ check) ensures /exit is only injected
+                # when CC is at the empty prompt — safe to touch unconditionally here.
+                # Without this, the pending file sits unread until CC exits naturally.
+                sw_signal_file = get_xdg_state_home() / f"cc-exit-{sw_session_id}"
+                try:
+                    sw_signal_file.touch()
+                except OSError:
+                    pass
 
             # Startup scan: pick up any unclaimed files already in the pending queue
             if sw_handoff_dir is not None:
