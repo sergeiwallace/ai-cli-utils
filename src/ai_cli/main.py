@@ -1520,10 +1520,11 @@ def get_engine_script(
         fi
       else
         if [[ "$engine" == "c" ]]; then
-          # Find conversation matching $ai_name by customTitle, then resume it by UUID.
-          # --continue picks by mtime (wrong); --resume UUID targets the named session exactly.
+          # Find the most recent conversation matching $ai_name by customTitle.
+          # Touch it so --continue (which picks by mtime) resumes the right one.
+          # --resume UUID opens a search picker instead of resuming directly, so avoid it.
           cc_project_dir="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[/.]|-|g')"
-          matched_uuid=$(python3 -c "
+          matched_file=$(python3 -c "
 import json,os,sys
 d,t=sys.argv[1],sys.argv[2]
 if not os.path.isdir(d): sys.exit(0)
@@ -1534,12 +1535,13 @@ for fname in files:
             for line in fh:
                 r=json.loads(line);ct=r.get('customTitle','')
                 if ct:
-                    if ct==t: sys.stdout.write(fname[:-6])
+                    if ct==t: sys.stdout.write(os.path.join(d,fname)); sys.exit(0)
                     break
     except: pass
 " "$cc_project_dir" "$ai_name" 2>/dev/null)
-          if [[ -n "$matched_uuid" ]]; then
-            claude $claude_perms_flag --resume "$matched_uuid" --name "$ai_name"
+          if [[ -n "$matched_file" ]]; then
+            touch "$matched_file"
+            claude $claude_perms_flag --continue --name "$ai_name"
           elif [[ -d "$cc_project_dir" ]] && ls "$cc_project_dir"/*.jsonl &>/dev/null; then
             claude $claude_perms_flag --continue --name "$ai_name"
           else
