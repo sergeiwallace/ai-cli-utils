@@ -109,10 +109,17 @@ try:
     week_secs = 604800
     # Use dynamic anchor file when available (written by 'ai quota scrape').
     # The file stores the *next* reset timestamp; subtract one week to get current week start.
+    # When the anchor is stale (reset already passed), advance forward by full weeks instead.
     anchor_file = os.path.expanduser('~/.local/state/ai-cli/quota-reset-anchor.txt')
     if os.path.exists(anchor_file):
         next_reset = datetime.fromisoformat(open(anchor_file).read().strip().replace('Z', '+00:00'))
-        week_start_ts = next_reset.timestamp() - week_secs
+        now_ts = now.timestamp()
+        nr_ts = next_reset.timestamp()
+        if nr_ts > now_ts:
+            week_start_ts = nr_ts - week_secs
+        else:
+            full_weeks = int((now_ts - nr_ts) / week_secs)
+            week_start_ts = nr_ts + full_weeks * week_secs
         week_elapsed_pct = min((now.timestamp() - week_start_ts) / week_secs * 100, 100)
     else:
         anchor_ts = 1775282400  # 2026-04-04T06:00:00Z fallback

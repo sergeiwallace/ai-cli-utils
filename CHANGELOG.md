@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `ai statusline` quota indicator — disappeared on remote sessions when the weekly quota reset occurred and the anchor file was not yet refreshed by a scrape. The inline week-start computation now advances forward from a stale anchor (matching `quota_db._get_current_week_start()`) instead of always subtracting one week, which queried the wrong week and returned no rows. (bug)
+
 ## [0.3.0] - 2026-04-11
 
 ### Added

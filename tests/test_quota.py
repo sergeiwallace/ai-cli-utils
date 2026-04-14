@@ -212,6 +212,27 @@ class TestResetAnchorPersistence:
         # Should return the default anchor, not raise
         assert anchor is not None
 
+    def test_when_anchor_is_stale_then_week_start_advances_from_anchor(self, tmp_path):
+        """Stale anchor (reset already passed) must not push week_start back a full week.
+
+        This is the root cause of the remote statusline disappearing: statusline-command.sh
+        inline Python computed week_start = anchor - 7 days even when anchor was in the past,
+        producing a week_start one week before the stored snapshots.
+        """
+        import ai_cli.quota_db as qdb
+        from datetime import datetime, timezone
+
+        # Anchor is April 11 10:59 UTC — the reset that ALREADY OCCURRED
+        stale_anchor = "2026-04-11T10:59:00Z"
+        anchor_file = tmp_path / "quota-reset-anchor.txt"
+        anchor_file.write_text(stale_anchor)
+        # Simulate "now" = April 13 02:00 UTC — two days after the reset
+        now = datetime(2026, 4, 13, 2, 0, 0, tzinfo=timezone.utc)
+        with patch.object(qdb, "_get_reset_anchor_path", return_value=anchor_file):
+            week_start = qdb._get_current_week_start(now)
+        # Week started AT the reset anchor, not one week before it
+        assert week_start == "2026-04-11T10:59:00Z"
+
     def test_when_record_snapshot_without_reset_at_then_anchor_file_unchanged(self, tmp_path):
         import ai_cli.quota_db as qdb
 
