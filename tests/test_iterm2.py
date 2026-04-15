@@ -432,6 +432,15 @@ class TestGetEngineScriptIterm2Slot:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert 'ai internal release-color-slot "$ai_name"' in script
 
+    def test_gemini_engine_when_default_cmd_then_uses_gemini(self):
+        script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj")
+        assert "gemini -y" in script
+
+    def test_gemini_engine_when_custom_cmd_then_uses_custom_cmd(self):
+        script = get_engine_script("g", "g-proj-1", "g-proj-1", "g-proj-", "proj", gemini_cmd="npx @google/gemini-cli")
+        assert "npx @google/gemini-cli -y" in script
+        assert "gemini -y" not in script
+
     def test_script_cleanup_session_files_in_exit_trap(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert 'ai internal cleanup-session-files "$ai_name"' in script

@@ -60,6 +60,9 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## Set true only after AI-CLI-43 confirms billing credit status.
 ## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
 # paid_fallback_enabled = false
+## Command used to launch gemini-cli. Override if the binary is not on PATH
+## (e.g. "npx @google/gemini-cli" for npx-only installs).
+# command = "gemini"
 
 [behavior]
 ## Enable system notifications on task completion
@@ -1238,6 +1241,7 @@ def get_engine_script(
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
     config_reload_idle_secs: int = 90,
+    gemini_cmd: str = "gemini",
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
@@ -1514,8 +1518,8 @@ def get_engine_script(
           claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"
         else
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if [[ -n "$uuid" ]]; then gemini -y {sandbox_flag} -r "$uuid"
-          else gemini -y {sandbox_flag} -i "/resume load $ai_name"
+          if [[ -n "$uuid" ]]; then {gemini_cmd} -y {sandbox_flag} -r "$uuid"
+          else {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         fi
       else
@@ -1548,8 +1552,8 @@ for fname in files:
             claude $claude_perms_flag --name "$ai_name"
           fi
         else
-          if [[ -n "$uuid" ]]; then gemini -y {sandbox_flag} -r "$uuid"
-          else gemini -y {sandbox_flag} -i "/resume load $ai_name"
+          if [[ -n "$uuid" ]]; then {gemini_cmd} -y {sandbox_flag} -r "$uuid"
+          else {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         fi
       fi
@@ -3746,6 +3750,7 @@ def cli():
     use_sandbox = args.sandbox
 
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
+    gemini_cmd = config.get("gemini", {}).get("command", "gemini")
 
     name = args.name
     if not name and unknown:
@@ -3854,8 +3859,8 @@ def cli():
             perms = [] if os.getuid() == 0 else ["--dangerously-skip-permissions"]
             os.execvp("claude", ["claude"] + perms + unknown)
         else:
-            gemini_args = ["gemini", "-y", "-s" if use_sandbox else "--no-sandbox"]
-            os.execvp("gemini", gemini_args + unknown)
+            _gcmd = shlex.split(gemini_cmd)
+            os.execvp(_gcmd[0], _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + unknown)
 
     if args.resume:
         session = resolve_session(prefix, name)
@@ -3914,14 +3919,14 @@ def cli():
                     "tmux",
                     ["tmux", "new-session", "-s", session_id]
                     + _iterm_env_flags
-                    + ["--", "zsh", "-c", f"{cd_pref}gemini -y {sandbox_flag} -r {uuid}"],
+                    + ["--", "zsh", "-c", f"{cd_pref}{gemini_cmd} -y {sandbox_flag} -r {uuid}"],
                 )
             else:
                 os.execvp(
                     "tmux",
                     ["tmux", "new-session", "-s", session_id]
                     + _iterm_env_flags
-                    + ["--", "zsh", "-c", f"{cd_pref}gemini -y {sandbox_flag} -i '/resume load {ai_name}'"],
+                    + ["--", "zsh", "-c", f"{cd_pref}{gemini_cmd} -y {sandbox_flag} -i '/resume load {ai_name}'"],
                 )
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
@@ -3945,6 +3950,7 @@ def cli():
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
         config_reload_idle_secs=_config_reload_idle_secs,
+        gemini_cmd=gemini_cmd,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
