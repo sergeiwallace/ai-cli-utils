@@ -772,11 +772,22 @@ class TestResolveSessionFallback:
 
 class TestDetectRepoRoot:
     def test_detect_repo_root_when_in_repo_then_returns_path(self):
+        # --git-common-dir returns the .git directory; parent is the repo root.
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "/home/user/projects/myapp\n"
+        mock_result.stdout = "/home/user/projects/myapp/.git\n"
         with patch("subprocess.run", return_value=mock_result):
             result = detect_repo_root()
+        assert result == Path("/home/user/projects/myapp")
+
+    def test_detect_repo_root_when_in_worktree_then_returns_main_root(self):
+        # --git-common-dir from a worktree may return a relative path; resolve it.
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "../../.git\n"
+        with patch("subprocess.run", return_value=mock_result):
+            with patch("ai_cli.main.Path.cwd", return_value=Path("/home/user/projects/myapp/.worktrees/sw-1")):
+                result = detect_repo_root()
         assert result == Path("/home/user/projects/myapp")
 
     def test_detect_repo_root_when_not_in_repo_then_returns_none(self):

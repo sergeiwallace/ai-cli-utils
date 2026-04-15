@@ -786,8 +786,16 @@ def build_session_name(
 
 
 def detect_repo_root():
-    res = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    return Path(res.stdout.strip()) if res.returncode == 0 else None
+    # Use --git-common-dir so we get the main repo root even when called from
+    # inside a git worktree (--show-toplevel would return the worktree path instead,
+    # causing create_worktree to nest worktrees and create circular .direnv symlinks).
+    res = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True)
+    if res.returncode != 0:
+        return None
+    git_common = Path(res.stdout.strip())
+    if not git_common.is_absolute():
+        git_common = Path(os.path.normpath(Path.cwd() / git_common))
+    return git_common.parent
 
 
 def create_worktree(ai_name: str) -> Path | None:
