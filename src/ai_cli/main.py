@@ -1541,15 +1541,18 @@ import json,os,sys
 d,t=sys.argv[1],sys.argv[2]
 if not os.path.isdir(d): sys.exit(0)
 files=sorted([x for x in os.listdir(d) if x.endswith('.jsonl')],key=lambda x:os.path.getmtime(os.path.join(d,x)),reverse=True)
+found=None
 for fname in files:
     try:
         with open(os.path.join(d,fname)) as fh:
             for line in fh:
                 r=json.loads(line);ct=r.get('customTitle','')
                 if ct:
-                    if ct==t: sys.stdout.write(os.path.join(d,fname)); sys.exit(0)
+                    if ct==t: found=os.path.join(d,fname)
                     break
     except Exception: pass
+    if found: break
+if found: sys.stdout.write(found)
 " "$cc_project_dir" "$ai_name" 2>/dev/null)
           if [[ -n "$matched_file" ]]; then
             touch "$matched_file" 2>/dev/null
