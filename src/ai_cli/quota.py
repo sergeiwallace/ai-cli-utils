@@ -228,6 +228,15 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             created_session = True
         target = f":{result.stdout.strip()}"
 
+        # Resize to a generous size so the full /usage dialog fits without scrolling.
+        # The dialog spans ~25 lines; a small default pane causes the label lines to
+        # scroll off before capture-pane can read them.
+        subprocess.run(
+            ["tmux", "resize-window", "-t", target, "-x", "220", "-y", "60"],
+            capture_output=True,
+            timeout=2,
+        )
+
         # Start CC with no-op permissions (read-only scraping, never runs tools)
         subprocess.run(
             ["tmux", "send-keys", "-t", target, "claude --dangerously-skip-permissions", "Enter"],
@@ -279,9 +288,13 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             timeout=2,
         )
 
-        # Poll for the usage output (max 5s)
+        # Poll for the usage output (max 40s).
+        # On some machines the Anthropic API takes 25-35s to respond; until then
+        # /usage shows a local-session-only estimate.  _parse_usage_output rejects
+        # that estimate and returns None, so we keep polling until the real data
+        # arrives or the budget expires.
         snapshot = None
-        for _ in range(25):
+        for _ in range(200):
             time.sleep(0.2)
             cap = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-t", target, "-J"],

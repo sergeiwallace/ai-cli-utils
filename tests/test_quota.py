@@ -373,6 +373,47 @@ class TestScrapeUsageHiddenPane:
         assert result.weekly_sonnet_pct == 24.0
         assert result.extra_pct == 0.0
 
+    def test_when_real_data_arrives_late_then_returns_it_after_initial_local_estimate(self):
+        """Scraper keeps polling when local-sessions-only output appears first.
+
+        Real Anthropic API data can take 25-35s to load on remote machines.  Until
+        then /usage shows a local-sessions-only estimate labelled "does not include
+        other devices".  The scraper must continue polling (not give up on the first
+        hit) and return the real snapshot when it arrives.
+        """
+        new_win = self._make_new_window_result("5")
+        ok = MagicMock()
+        ok.returncode = 0
+
+        prompt_output = self._make_cap_result("❯\n")
+        # Simulate the local-sessions-only fallback shown before the API responds.
+        local_only_output = self._make_cap_result(
+            "Usage (this machine only — does not include other devices)\nCurrent week (all models): 1% used\n"
+        )
+        # Real data arrives after several polls.
+        real_output = self._make_cap_result(TestParseUsageOutput._REAL_USAGE_OUTPUT)
+
+        call_count = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal call_count
+            if cmd[0] == "tmux" and cmd[1] == "new-window":
+                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
+                call_count += 1
+                if call_count == 1:
+                    return prompt_output  # startup poll
+                if call_count <= 5:
+                    return local_only_output  # early polls: local-sessions estimate
+                return real_output  # later poll: real API data
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            result = _scrape_usage_hidden_pane()
+
+        assert isinstance(result, QuotaSnapshot), "should return real snapshot, not None"
+        assert result.weekly_all_models_pct == 26.0, "should use real data, not local 1%"
+
     def test_when_exception_raised_then_returns_none_and_kills_window(self):
         """Exception mid-scrape must not propagate; kill-window must still fire."""
         killed = []
