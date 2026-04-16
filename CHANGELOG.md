@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Session resume (bash template): bare `except: pass` in the Python one-liner that finds the most recent CC session file was catching `SystemExit`, causing `sys.exit(0)` to be swallowed after the first match. All subsequent files sharing the same `customTitle` (e.g. sync-generated `conflict-*.jsonl` copies) also had their paths written to stdout, producing a concatenated multi-path blob in `$matched_file`. `touch` then failed with "File name too long" before CC could launch. Fixed by using `except Exception: pass` so `SystemExit` propagates correctly.
+- Session resume (bash template): `ls "$cc_project_dir"/*.jsonl &>/dev/null` used a shell glob that zsh NOMATCH fires on before the command runs, bypassing `&>/dev/null` and printing an error to the terminal. Replaced with a `find`-based check that avoids shell glob expansion entirely.
 - `ai statusline` quota indicator — disappeared on remote sessions when the weekly quota reset occurred and the anchor file was not yet refreshed by a scrape. The inline week-start computation now advances forward from a stale anchor (matching `quota_db._get_current_week_start()`) instead of always subtracting one week, which queried the wrong week and returned no rows. (bug)
 
 ## [0.3.0] - 2026-04-11
