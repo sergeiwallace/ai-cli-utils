@@ -39,7 +39,7 @@ TITLE_PATTERNS: list[tuple[re.Pattern, callable]] = [
     (re.compile(r"^site-(\d+)", re.IGNORECASE), lambda m: f"personal-site--worktrees-site-{m.group(1)}"),
     (re.compile(r"^job-(\d+)", re.IGNORECASE), lambda m: f"job-pilot--worktrees-job-{m.group(1)}"),
     (re.compile(r"^apt-(\d+)", re.IGNORECASE), lambda m: f"apt-switch--worktrees-apt-{m.group(1)}"),
-    (re.compile(r"^trip-(\d+)", re.IGNORECASE), lambda m: f"trip-cd-sw-26--worktrees-trip-{m.group(1)}"),
+    (re.compile(r"^trip-(\d+)", re.IGNORECASE), lambda m: f"trip-planner--worktrees-trip-{m.group(1)}"),
     (re.compile(r"^fin-(\d+)", re.IGNORECASE), lambda m: f"aurion--worktrees-fin-{m.group(1)}"),
     (re.compile(r"^acn-(\d+)", re.IGNORECASE), lambda m: f"acn-automation--worktrees-acn-{m.group(1)}"),
     (re.compile(r"^agora-(\d+)", re.IGNORECASE), lambda m: f"agora--worktrees-agora-{m.group(1)}"),
