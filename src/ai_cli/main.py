@@ -1554,7 +1554,7 @@ for fname in files:
           if [[ -n "$matched_file" ]]; then
             touch "$matched_file"
             claude $claude_perms_flag --continue --name "$ai_name"
-          elif [[ -d "$cc_project_dir" ]] && ls "$cc_project_dir"/*.jsonl &>/dev/null; then
+          elif [[ -d "$cc_project_dir" ]] && [[ -n "$(find "$cc_project_dir" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null)" ]]; then
             claude $claude_perms_flag --continue --name "$ai_name"
           else
             claude $claude_perms_flag --name "$ai_name"
