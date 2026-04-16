@@ -88,6 +88,31 @@ class TestParseUsageOutput:
         assert snap is not None
         assert snap.weekly_all_models_pct == 72.5
 
+    def test_when_local_sessions_only_disclaimer_then_returns_none(self):
+        """Local-session-only output must be rejected.
+
+        When CC cannot reach the Anthropic quota API (e.g. geo-blocked server)
+        it falls back to estimating usage from local session files.  The output
+        includes "does not include other devices" to signal this.  Storing this
+        estimate would overwrite the real account-wide quota with a per-machine
+        value that is typically 0-3% (far below the true figure).
+        """
+        output = (
+            "  Current week (all models)\n"
+            "  █                                                  1% used\n\n"
+            "  Approximate, based on local sessions on this \n"
+            "  machine — does not include other devices or \n"
+            "  API usage\n"
+        )
+        assert _parse_usage_output(output) is None
+
+    def test_when_real_account_data_without_disclaimer_then_parsed(self):
+        """Ensure the local-sessions guard does not affect real API data."""
+        output = "  Current week (all models)\n  ████████████████   42% used\n\n"
+        snap = _parse_usage_output(output)
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 42.0
+
 
 # --- _parse_reset_datetime ---
 
@@ -638,6 +663,29 @@ class TestPublishQuotaSnapshot:
         assert payload["weekly_sonnet_pct"] == 30.0
         assert payload["extra_pct"] == 0.0
         assert "ts" in payload
+
+    def test_when_snapshot_has_reset_at_then_included_in_payload(self):
+        """reset_at must be included so receiving machines can update their
+        week-start anchor — without it, the receiving machine's week_start
+        diverges and Mac quota snapshots end up in a different DB bucket."""
+        snap = QuotaSnapshot(
+            weekly_all_models_pct=22.0,
+            reset_at="2026-04-18T09:59:00Z",
+        )
+        mock_client = self._make_mock_client(connected=True)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)
+        _, payload = mock_client.publish.call_args[0]
+        assert payload["reset_at"] == "2026-04-18T09:59:00Z"
+
+    def test_when_snapshot_has_no_reset_at_then_payload_has_none(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=10.0, reset_at=None)
+        mock_client = self._make_mock_client(connected=True)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)
+        _, payload = mock_client.publish.call_args[0]
+        assert "reset_at" in payload
+        assert payload["reset_at"] is None
 
     def test_when_nats_unavailable_then_no_exception(self):
         snap = QuotaSnapshot(weekly_all_models_pct=28.0)

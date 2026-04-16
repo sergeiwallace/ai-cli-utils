@@ -2903,6 +2903,7 @@ def cli():
                         session_pct=data.get("session_pct"),
                         weekly_sonnet_pct=data.get("weekly_sonnet_pct"),
                         extra_pct=data.get("extra_pct"),
+                        reset_at=data.get("reset_at"),
                     )
                 except Exception:
                     pass

@@ -160,7 +160,17 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
       Current week (all models): 86% used
       Current week (Sonnet only): 49% used
       Extra usage not enabled
+
+    Returns None if the output is a local-session-only estimate (shown when CC
+    cannot reach the Anthropic API).  Local estimates are labelled with
+    "does not include other devices" and reflect only the current machine's
+    sessions — they are not a reliable proxy for the account-wide quota.
     """
+    # Reject local-session-only estimates — unreliable on machines where the
+    # Anthropic quota API is unreachable (e.g. geo-blocked servers).
+    if re.search(r"does not include other devices", output, re.IGNORECASE):
+        return None
+
     # re.DOTALL required: /usage output puts the percentage on a separate line from
     # the label, with a block-character progress bar in between.
     weekly_all_match = re.search(
@@ -704,6 +714,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
         "session_pct": snapshot.session_pct,
         "weekly_sonnet_pct": snapshot.weekly_sonnet_pct,
         "extra_pct": snapshot.extra_pct,
+        "reset_at": snapshot.reset_at,
         "ts": time.time(),
     }
 
