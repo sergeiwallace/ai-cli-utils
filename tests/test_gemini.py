@@ -712,7 +712,7 @@ class TestRunDeepResearch:
     def test_when_no_tier3_key_then_returns_error(self):
         with patch.dict("os.environ", {}, clear=True):
             with patch("ai_cli.gemini._load_doppler_secrets"):
-                result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True)
+                result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True)
         assert result.success is False
         assert "not set" in result.error
 
@@ -725,7 +725,7 @@ class TestRunDeepResearch:
                 exc.read = lambda: b"quota exceeded"
                 with patch("urllib.request.urlopen", side_effect=exc):
                     result = _run_deep_research(
-                        "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                        "test prompt", quiet=True, paid_fallback_enabled=True
                     )
         assert result.success is False
         assert "submit failed" in result.error
@@ -737,7 +737,7 @@ class TestRunDeepResearch:
             with patch("ai_cli.gemini._load_doppler_secrets"):
                 with patch("urllib.request.urlopen", urlopen):
                     result = _run_deep_research(
-                        "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                        "test prompt", quiet=True, paid_fallback_enabled=True
                     )
         assert result.success is False
         assert "no interaction ID" in result.error
@@ -759,7 +759,6 @@ class TestRunDeepResearch:
                                     output=str(tmp_path / "out.md"),
                                     quiet=True,
                                     paid_fallback_enabled=True,
-                                    confirm_paid=True,
                                 )
         assert result.success is True
         assert result.content == "research output"
@@ -776,7 +775,7 @@ class TestRunDeepResearch:
                     with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                         with patch("time.sleep"):
                             result = _run_deep_research(
-                                "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                                "test prompt", quiet=True, paid_fallback_enabled=True
                             )
         assert result.success is False
         assert "failed" in result.error
@@ -792,7 +791,7 @@ class TestRunDeepResearch:
                     with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                         with patch("time.sleep"):
                             result = _run_deep_research(
-                                "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                                "test prompt", quiet=True, paid_fallback_enabled=True
                             )
         assert result.success is False
         assert "no output text" in result.error
@@ -807,7 +806,7 @@ class TestRunDeepResearch:
                     with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                         with patch("time.sleep", side_effect=KeyboardInterrupt):
                             result = _run_deep_research(
-                                "test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=True
+                                "test prompt", quiet=True, paid_fallback_enabled=True
                             )
         assert result.success is False
         assert "cancelled" in result.error
@@ -835,7 +834,6 @@ class TestRunDeepResearch:
                                     "test prompt",
                                     quiet=True,
                                     paid_fallback_enabled=True,
-                                    confirm_paid=True,
                                 )
         assert result.success is True
         submit_req = submitted_requests[0]
@@ -1154,11 +1152,6 @@ class TestPaidFallbackGate:
         assert result.success is False
         assert "paid_fallback_enabled" in result.error
 
-    def test_run_deep_research_when_paid_enabled_but_no_confirm_then_gate2_returns_error(self):
-        result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True, confirm_paid=False)
-        assert result.success is False
-        assert "-P" in result.error or "confirm-paid" in result.error or "confirm_paid" in result.error
-
     def test_run_deep_research_when_quiet_then_suppresses_counter_output(self, tmp_path, capsys):
         submit_resp = {"name": "interactions/run-abc", "state": "running"}
         poll_resp = {"state": "completed", "outputs": [{"text": "result"}]}
@@ -1174,7 +1167,6 @@ class TestPaidFallbackGate:
                                     "test prompt",
                                     quiet=True,
                                     paid_fallback_enabled=True,
-                                    confirm_paid=True,
                                 )
         out = capsys.readouterr()
         assert "runs today" not in out.err
@@ -1195,7 +1187,6 @@ class TestPaidFallbackGate:
                                     "test prompt",
                                     quiet=False,
                                     paid_fallback_enabled=True,
-                                    confirm_paid=True,
                                 )
         err = capsys.readouterr().err
         assert "runs today" in err
@@ -1221,15 +1212,8 @@ class TestPaidFallbackGate:
                                     "test prompt",
                                     quiet=False,
                                     paid_fallback_enabled=True,
-                                    confirm_paid=True,
                                 )
         err = capsys.readouterr().err
         assert "Warning" in err
         assert str(DEEP_RESEARCH_DAILY_WARNING) in err
 
-    def test_gemini_cli_when_confirm_paid_flag_then_passed_to_run_gemini(self):
-        ok = GeminiResult(content="ok", model="deep-research", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
-            with pytest.raises(SystemExit):
-                gemini_cli(["test prompt", "-m", "deep-research", "-P"])
-        assert mock_run.call_args[1]["confirm_paid"] is True

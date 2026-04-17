@@ -220,7 +220,6 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid AP
 **Flags:**
 - `-m`/`--model` -- Model alias or full model ID (see above)
 - `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). For Flash models: `-s 2` skips OAuth. For Pro/deep-research: `-s 3` (free-tier key has no quota for these).
-- `-P`/`--confirm-paid` -- Explicitly confirm paid API usage for `deep-research`. Required at runtime when `paid_fallback_enabled = true` in config. This run may incur charges.
 - `-d`/`--depth` -- Research depth: `quick` or `standard`
 - `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
 - `--resume RUN_ID` -- Resume a standard run from last completed step
@@ -230,14 +229,13 @@ Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid AP
 - `-t`/`--timeout` -- Timeout in seconds (default: 600)
 - `-F`/`--no-file` -- Stdout only, no file written
 
-**Paid tier safety gates (deep-research):**
+**Paid tier for deep-research:**
 
-Deep Research (`-m deep-research`) draws from the paid AI Studio key (`GOOGLE_API_KEY_TIER_1`) and requires two explicit opt-ins:
+Deep Research (`-m deep-research`) draws from the paid AI Studio key (`GOOGLE_API_KEY_TIER_1`) and requires one opt-in:
 
-1. `paid_fallback_enabled = true` in `~/.config/ai-cli/config.toml` under `[gemini]` (disabled by default).
-2. `-P`/`--confirm-paid` flag at runtime.
+`paid_fallback_enabled = true` in `~/.config/ai-cli/config.toml` under `[gemini]` (disabled by default).
 
-If either is absent, the run exits with an actionable error message. After a successful run, the daily paid run count is printed to stderr. A warning is printed when paid run count reaches the configurable budget alert threshold (`DEEP_RESEARCH_DAILY_WARNING = 18`, alert at `DEEP_RESEARCH_DAILY_LIMIT = 20`). There is no Google-imposed hard daily limit — these are local budget-awareness constants only. Daily counts are persisted to `~/.local/state/ai-cli/dr-daily.json` and reset at midnight.
+If absent, the run exits with an actionable error message. After a successful run, the daily paid run count is printed to stderr. A warning is printed when paid run count reaches the configurable budget alert threshold (`DEEP_RESEARCH_DAILY_WARNING = 18`, alert at `DEEP_RESEARCH_DAILY_LIMIT = 20`). There is no Google-imposed hard daily limit — these are local budget-awareness constants only. Daily counts are persisted to `~/.local/state/ai-cli/dr-daily.json` and reset at midnight.
 
 **Auth tier names** (used in JSONL logs):
 

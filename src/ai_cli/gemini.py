@@ -6,15 +6,14 @@ Fallback chain:
   ai_studio_paid: Gemini REST API with paid key (GOOGLE_API_KEY_TIER_1)
 
 The paid tier is disabled by default (paid_fallback_enabled = false in config).
-Set paid_fallback_enabled = true only after confirming billing credit status (AI-CLI-43).
-Deep Research additionally requires --confirm-paid / -P at runtime when paid is enabled.
+Set paid_fallback_enabled = true to enable deep-research (AI Studio Interactions API).
 
 Usage:
   ai gemini "prompt" -m deep-think
   ai gemini "prompt" -m gemini-3.1-pro-preview -o output.md
   ai gemini "prompt" -m gemini-3-flash-preview --quiet
   cat prompt.txt | ai gemini -m deep-think -o output.md
-  ai gemini "prompt" -m deep-research -P   # paid deep-research (requires paid_fallback_enabled=true)
+  ai gemini "prompt" -m deep-research   # requires paid_fallback_enabled=true in config
 """
 
 import json
@@ -550,13 +549,11 @@ def _run_deep_research(
     quiet: bool = False,
     timeout_s: int = 3600,
     paid_fallback_enabled: bool = False,
-    confirm_paid: bool = False,
 ) -> GeminiResult:
     """Submit a Deep Research job via the Interactions API and poll until complete.
 
     Auth: GOOGLE_API_KEY_TIER_1 (ai_studio_paid). Requires paid_fallback_enabled=True
-    in config and confirm_paid=True (--confirm-paid / -P flag) as explicit opt-ins.
-    Cancels via DELETE on KeyboardInterrupt.
+    in config. Cancels via DELETE on KeyboardInterrupt.
     """
     import urllib.error
     import urllib.request
@@ -565,13 +562,12 @@ def _run_deep_research(
 
     _log("[ai gemini] model=deep-research (Interactions API)", quiet=quiet)
 
-    # Gate 1: paid tier must be enabled in config
+    # Gate: paid tier must be enabled in config
     if not paid_fallback_enabled:
         _log(
             "[ai gemini] No available auth method succeeded.\n"
             "  AI Studio paid fallback is disabled (paid_fallback_enabled = false in config).\n"
-            "  To enable: set paid_fallback_enabled = true in ~/.config/ai-cli/config.toml\n"
-            "  (Do this only after confirming billing credit status — see AI-CLI-43)",
+            "  To enable: set paid_fallback_enabled = true in ~/.config/ai-cli/config.toml",
             quiet=quiet,
         )
         return GeminiResult(
@@ -579,21 +575,6 @@ def _run_deep_research(
             is_deep_research=True,
             success=False,
             error="AI Studio paid fallback is disabled (paid_fallback_enabled = false in config).",
-        )
-
-    # Gate 2: explicit per-run confirmation required for paid deep-research
-    if not confirm_paid:
-        _log(
-            "[deep-research] AI Studio paid key is enabled in config.\n"
-            "  This run may incur charges — billing credit status: unconfirmed (see AI-CLI-43).\n"
-            '  To proceed: ai gemini "..." -m deep-research -P',
-            quiet=quiet,
-        )
-        return GeminiResult(
-            model="deep-research",
-            is_deep_research=True,
-            success=False,
-            error="--confirm-paid (-P) required for deep-research when paid key is enabled.",
         )
 
     api_key = os.environ.get("GOOGLE_API_KEY_TIER_1") or os.environ.get("GEMINI_API_KEY")
@@ -772,7 +753,6 @@ def run_gemini(
     timeout_s: int = 600,
     start_tier: int = 1,
     paid_fallback_enabled: bool | None = None,
-    confirm_paid: bool = False,
 ) -> GeminiResult:
     """Run a Gemini prompt with auth-tier fallback chain.
 
@@ -795,7 +775,6 @@ def run_gemini(
             quiet=quiet,
             timeout_s=timeout_s,
             paid_fallback_enabled=paid_fallback_enabled,
-            confirm_paid=confirm_paid,
         )
 
     _load_doppler_secrets()
@@ -959,16 +938,6 @@ def gemini_cli(args: list[str]):
         metavar="TIER",
         help="Start at this auth tier (1=OAuth CLI, 2=free API key, 3=paid API key; default: 1)",
     )
-    parser.add_argument(
-        "-P",
-        "--confirm-paid",
-        action="store_true",
-        help=(
-            "Confirm paid API usage for deep-research. Required when paid_fallback_enabled = true"
-            " in config and OAuth is unavailable. This run may incur charges."
-        ),
-    )
-
     parsed = parser.parse_args(args)
 
     # Get prompt from arg or stdin
@@ -999,7 +968,6 @@ def gemini_cli(args: list[str]):
             verbose=parsed.verbose,
             timeout_s=parsed.timeout,
             start_tier=parsed.start_tier,
-            confirm_paid=parsed.confirm_paid,
         )
     else:
         from .research import load_depth_preset, run_standard
