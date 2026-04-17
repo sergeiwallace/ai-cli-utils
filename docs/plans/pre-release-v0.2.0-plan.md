@@ -140,7 +140,7 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 | `tests/test_cli.py:378` | `{"sw": "sergei"}` alias | Generic: `{"mp": "myproject"}` |
 | `tests/test_cli.py:1059` | `sergei.toml` registry path | `registry.toml` |
 | `tests/test_cli.py:1608` | `"178.104.70.139"`, `"sergei"` in tunnel config | `"192.0.2.1"`, `"user"` |
-| `tests/test_cli.py:1821,1830,1837` | `humanware-mobile`, `"sergei"` project names | Generic names |
+| `tests/test_cli.py:1821,1830,1837` | `ai-ide-mobile`, `"sergei"` project names | Generic names |
 | `tests/test_messaging.py:276,284,334,355,374` | `"178.104.70.139"`, `"sergei"` | `"192.0.2.1"`, `"user"` |
 | `tests/test_messaging_jetstream.py:260` | `"aido"` NATS topic in test | Generic |
 | `tests/test_session.py:419,425` | `"sergei"` in `.gemini/tmp/` path | `"user"` |
