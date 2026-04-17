@@ -215,9 +215,14 @@ def _parse_usage_output(output: str, *, strict: bool = True) -> QuotaSnapshot | 
     real API data never loads in the scraper (e.g. the hidden pane session does
     not authenticate against the quota API).
     """
-    # Always reject while the local-session scan is still running — data is
-    # incomplete and will change within the next few seconds.
-    if re.search(r"Scanning local sessions", output, re.IGNORECASE):
+    # In non-strict mode, reject while the local-session scan is still running —
+    # data is incomplete and will change within seconds.  In strict mode the
+    # "does not include other devices" check below is sufficient: during active
+    # scanning that disclaimer is always present in CC v2.1.112+.  On some
+    # hosts the pane retains "Scanning local sessions" in scrollback alongside
+    # already-rendered API data; rejecting on "Scanning" alone in strict mode
+    # would block the valid real-data capture.
+    if not strict and re.search(r"Scanning local sessions", output, re.IGNORECASE):
         return None
 
     # In strict mode, reject local-session-only estimates.

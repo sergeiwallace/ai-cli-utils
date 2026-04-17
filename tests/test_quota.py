@@ -91,16 +91,37 @@ class TestParseUsageOutput:
     def test_when_scanning_in_progress_then_returns_none(self):
         """Reject output while the local-session scan is still running.
 
-        "Scanning local sessions…" means the data is incomplete and will change
-        within the next few seconds — rejecting prevents storing a mid-scan
-        partial value.
+        In CC v2.1.112+, "Scanning local sessions…" is accompanied by the
+        "does not include other devices" disclaimer.  strict=True rejects via
+        the disclaimer; strict=False rejects via the Scanning guard.
         """
         output = (
             "  Current week (all models)\n"
             "  █                                                  1% used\n\n"
+            "  Approximate, based on local sessions on this \n"
+            "  machine — does not include other devices or \n"
+            "  API usage\n"
             "  Scanning local sessions…\n"
         )
-        assert _parse_usage_output(output) is None
+        assert _parse_usage_output(output) is None  # strict=True rejects via disclaimer
+        assert _parse_usage_output(output, strict=False) is None  # non-strict rejects via Scanning
+
+    def test_when_strict_and_scanning_without_disclaimer_then_parsed(self):
+        """strict=True parses valid data even when 'Scanning' is in scrollback.
+
+        On some hosts the pane retains the 'Scanning local sessions' message in
+        scrollback alongside already-rendered API data.  strict=True should not
+        reject this case — only the 'does not include other devices' disclaimer
+        signals a local-session estimate in strict mode.
+        """
+        output = (
+            "  Current week (all models)\n"
+            "  ████████████████   4% used\n\n"
+            "  Scanning local sessions…\n"  # residual scrollback — real data already above
+        )
+        snap = _parse_usage_output(output)  # strict=True
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 4.0
 
     def test_when_strict_and_disclaimer_present_then_returns_none(self):
         """In strict mode, local-session estimates (with disclaimer) are rejected.
