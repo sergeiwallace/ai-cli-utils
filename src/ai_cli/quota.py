@@ -18,6 +18,9 @@ from datetime import date
 from pathlib import Path
 
 
+__all__ = ["QuotaSnapshot", "read_latest_snapshot"]
+
+
 @dataclass
 class QuotaSnapshot:
     """All metrics from a single /usage scrape."""
@@ -408,6 +411,24 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
 def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
     """Return a QuotaSnapshot from a hidden tmux window, or None if unavailable."""
     return _scrape_usage_hidden_pane()
+
+
+def read_latest_snapshot() -> QuotaSnapshot | None:
+    """Return the most recent stored quota snapshot from local SQLite.
+
+    Reads from the local DB without scraping — fast and safe to call from
+    library code. Returns None if no snapshots have been recorded yet.
+    """
+    from .quota_db import get_current_status
+
+    status = get_current_status()
+    snap = status.get("latest_snapshot")
+    if snap is None:
+        return None
+    return QuotaSnapshot(
+        weekly_all_models_pct=float(snap["usage_percent"]),
+        reset_at=status.get("reset_at"),
+    )
 
 
 def quota_watch(poll_interval: int = 300) -> int:

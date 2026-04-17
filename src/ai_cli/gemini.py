@@ -63,6 +63,9 @@ _FREE_TIER_MODEL_PREFIXES: frozenset[str] = frozenset(
 )
 
 
+__all__ = ["GeminiResult", "AttemptLog", "run_gemini"]
+
+
 def _is_free_tier_eligible(model: str) -> bool:
     """Return True if this model has a free quota tier under GOOGLE_API_KEY_FREE_TIER.
 
