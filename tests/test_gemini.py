@@ -724,9 +724,7 @@ class TestRunDeepResearch:
                 exc = urllib.error.HTTPError(url=None, code=429, msg="quota", hdrs=None, fp=None)
                 exc.read = lambda: b"quota exceeded"
                 with patch("urllib.request.urlopen", side_effect=exc):
-                    result = _run_deep_research(
-                        "test prompt", quiet=True, paid_fallback_enabled=True
-                    )
+                    result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True)
         assert result.success is False
         assert "submit failed" in result.error
         assert "429" in result.error
@@ -736,9 +734,7 @@ class TestRunDeepResearch:
         with patch.dict("os.environ", {"GOOGLE_API_KEY_TIER_1": "test-key"}):
             with patch("ai_cli.gemini._load_doppler_secrets"):
                 with patch("urllib.request.urlopen", urlopen):
-                    result = _run_deep_research(
-                        "test prompt", quiet=True, paid_fallback_enabled=True
-                    )
+                    result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True)
         assert result.success is False
         assert "no interaction ID" in result.error
 
@@ -774,9 +770,7 @@ class TestRunDeepResearch:
                 with patch("urllib.request.urlopen", urlopen):
                     with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                         with patch("time.sleep"):
-                            result = _run_deep_research(
-                                "test prompt", quiet=True, paid_fallback_enabled=True
-                            )
+                            result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True)
         assert result.success is False
         assert "failed" in result.error
 
@@ -790,9 +784,7 @@ class TestRunDeepResearch:
                 with patch("urllib.request.urlopen", urlopen):
                     with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                         with patch("time.sleep"):
-                            result = _run_deep_research(
-                                "test prompt", quiet=True, paid_fallback_enabled=True
-                            )
+                            result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True)
         assert result.success is False
         assert "no output text" in result.error
 
@@ -805,9 +797,7 @@ class TestRunDeepResearch:
                 with patch("urllib.request.urlopen", urlopen):
                     with patch("ai_cli.gemini._DEEP_RESEARCH_POLL_INTERVAL", 0):
                         with patch("time.sleep", side_effect=KeyboardInterrupt):
-                            result = _run_deep_research(
-                                "test prompt", quiet=True, paid_fallback_enabled=True
-                            )
+                            result = _run_deep_research("test prompt", quiet=True, paid_fallback_enabled=True)
         assert result.success is False
         assert "cancelled" in result.error
 
@@ -1216,4 +1206,3 @@ class TestPaidFallbackGate:
         err = capsys.readouterr().err
         assert "Warning" in err
         assert str(DEEP_RESEARCH_DAILY_WARNING) in err
-
