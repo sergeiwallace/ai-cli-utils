@@ -96,6 +96,47 @@ def _parse_reset_datetime(text: str) -> str | None:
     )
 
     if not m:
+        # CC v2.1.112 format: "Resets Apr 23 at 3pm (America/New_York)"
+        # Month + day + hour-only time (no colon) + IANA timezone in parens.
+        iana_fmt = re.search(
+            r"[Rr]eset[s]?\s+"
+            r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?"
+            r"|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?"
+            r"|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+            r"\s+(\d{1,2})"
+            r"[^(]*?"
+            r"(\d{1,2})(?::(\d{2}))?\s*([AP]M?)"
+            r"[^(]*\(([A-Za-z/_]+)\)",
+            text,
+            re.IGNORECASE,
+        )
+        if iana_fmt:
+            from zoneinfo import ZoneInfo
+
+            month_str, day_str, h, mi, ampm, iana_name = iana_fmt.groups()
+            month = _MONTH_MAP.get(month_str.lower())
+            if not month:
+                return None
+            now_utc = _dt.now(_tz.utc)
+            day = int(day_str)
+            hour = int(h)
+            minute = int(mi) if mi else 0
+            ap = ampm.upper().rstrip(".")
+            if ap == "PM" and hour < 12:
+                hour += 12
+            elif ap == "AM" and hour == 12:
+                hour = 0
+            try:
+                tz_info = ZoneInfo(iana_name)
+                # Use current or next year so the date is always in the future.
+                for year in (now_utc.year, now_utc.year + 1):
+                    candidate = _dt(year, month, day, hour, minute, 0, tzinfo=tz_info)
+                    if candidate.astimezone(_tz.utc) > now_utc:
+                        return candidate.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:
+                pass
+            return None
+
         # Fallback: standalone "Resets {full date+time}" line (e.g. future CC format)
         full = re.search(
             r"[Rr]eset[^\n·]*?"
@@ -152,23 +193,35 @@ def _parse_reset_datetime(text: str) -> str | None:
     return candidate.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_usage_output(output: str) -> QuotaSnapshot | None:
+def _parse_usage_output(output: str, *, strict: bool = True) -> QuotaSnapshot | None:
     """Parse the text output of /usage into a QuotaSnapshot.
 
-    Expected output contains lines like:
-      Current week (all models) · Resets 6:59am
-      Current week (all models): 86% used
-      Current week (Sonnet only): 49% used
-      Extra usage not enabled
+    CC v2.1.112 format (one label per line, progress bar below, then "N% used"):
 
-    Returns None if the output is a local-session-only estimate (shown when CC
-    cannot reach the Anthropic API).  Local estimates are labelled with
-    "does not include other devices" and reflect only the current machine's
-    sessions — they are not a reliable proxy for the account-wide quota.
+        Current week (all models)
+        Resets Apr 23 at 3pm (America/New_York)      3% used
+
+    Older format (inline):
+
+        Current week (all models) · Resets 6:59am
+        Current week (all models): 86% used
+
+    ``strict=True`` (default): returns None when the output is labelled "does not
+    include other devices" — meaning the Anthropic quota API was unreachable and
+    CC fell back to a local-session count.  This count reflects only the current
+    machine, so it is not a reliable proxy for the account-wide quota.
+
+    ``strict=False``: accepts local-session estimates as a fallback — useful when
+    real API data never loads in the scraper (e.g. the hidden pane session does
+    not authenticate against the quota API).
     """
-    # Reject local-session-only estimates — unreliable on machines where the
-    # Anthropic quota API is unreachable (e.g. geo-blocked servers).
-    if re.search(r"does not include other devices", output, re.IGNORECASE):
+    # Always reject while the local-session scan is still running — data is
+    # incomplete and will change within the next few seconds.
+    if re.search(r"Scanning local sessions", output, re.IGNORECASE):
+        return None
+
+    # In strict mode, reject local-session-only estimates.
+    if strict and re.search(r"does not include other devices", output, re.IGNORECASE):
         return None
 
     # re.DOTALL required: /usage output puts the percentage on a separate line from
@@ -288,12 +341,19 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             timeout=2,
         )
 
-        # Poll for the usage output (max 40s).
-        # On some machines the Anthropic API takes 25-35s to respond; until then
-        # /usage shows a local-session-only estimate.  _parse_usage_output rejects
-        # that estimate and returns None, so we keep polling until the real data
-        # arrives or the budget expires.
+        # Poll for the usage output — two-phase, max 40s total.
+        #
+        # Phase 1: wait for real API data (no "does not include other devices"
+        # disclaimer).  On geo-restricted hosts the API can take 25-35s to
+        # respond; on those hosts the dialog shows a local-session estimate in
+        # the meantime which we skip in strict mode.
+        #
+        # Phase 2: if the 40s budget expires without real API data, fall back
+        # to the best local-session estimate seen so far.  This handles hosts
+        # where the quota API never responds in a hidden pane session but a
+        # local-session count is still a useful proxy for the current week.
         snapshot = None
+        local_fallback: QuotaSnapshot | None = None
         for _ in range(200):
             time.sleep(0.2)
             cap = subprocess.run(
@@ -303,9 +363,16 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                 timeout=3,
             )
             if cap.returncode == 0 and "% used" in cap.stdout:
+                # strict=True: accept only real API data (phase 1)
                 snapshot = _parse_usage_output(cap.stdout)
                 if snapshot:
                     break
+                # strict=False: save local estimate as phase-2 fallback
+                if local_fallback is None:
+                    local_fallback = _parse_usage_output(cap.stdout, strict=False)
+
+        if snapshot is None:
+            snapshot = local_fallback
 
         # Dismiss the dialog
         subprocess.run(

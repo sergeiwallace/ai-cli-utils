@@ -88,14 +88,26 @@ class TestParseUsageOutput:
         assert snap is not None
         assert snap.weekly_all_models_pct == 72.5
 
-    def test_when_local_sessions_only_disclaimer_then_returns_none(self):
-        """Local-session-only output must be rejected.
+    def test_when_scanning_in_progress_then_returns_none(self):
+        """Reject output while the local-session scan is still running.
 
-        When CC cannot reach the Anthropic quota API (e.g. geo-blocked server)
-        it falls back to estimating usage from local session files.  The output
-        includes "does not include other devices" to signal this.  Storing this
-        estimate would overwrite the real account-wide quota with a per-machine
-        value that is typically 0-3% (far below the true figure).
+        "Scanning local sessions…" means the data is incomplete and will change
+        within the next few seconds — rejecting prevents storing a mid-scan
+        partial value.
+        """
+        output = (
+            "  Current week (all models)\n"
+            "  █                                                  1% used\n\n"
+            "  Scanning local sessions…\n"
+        )
+        assert _parse_usage_output(output) is None
+
+    def test_when_strict_and_disclaimer_present_then_returns_none(self):
+        """In strict mode, local-session estimates (with disclaimer) are rejected.
+
+        The "does not include other devices" disclaimer signals that the Anthropic
+        quota API was unreachable and CC fell back to a local-session count.  In
+        strict mode this is rejected so only real account-wide data is stored.
         """
         output = (
             "  Current week (all models)\n"
@@ -104,10 +116,33 @@ class TestParseUsageOutput:
             "  machine — does not include other devices or \n"
             "  API usage\n"
         )
-        assert _parse_usage_output(output) is None
+        assert _parse_usage_output(output) is None  # strict=True by default
+        assert _parse_usage_output(output, strict=True) is None
+
+    def test_when_non_strict_and_disclaimer_present_then_parsed(self):
+        """strict=False accepts local-session estimates as a fallback."""
+        output = (
+            "  Current week (all models)\n"
+            "  █                                                  3% used\n\n"
+            "  Approximate, based on local sessions on this \n"
+            "  machine — does not include other devices or claude.ai\n"
+        )
+        snap = _parse_usage_output(output, strict=False)
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 3.0
+
+    def test_when_non_strict_and_scanning_then_still_returns_none(self):
+        """strict=False still rejects output while scanning is in progress."""
+        output = (
+            "  Current week (all models)\n"
+            "  █                                                  1% used\n\n"
+            "  Scanning local sessions…\n"
+            "  does not include other devices\n"
+        )
+        assert _parse_usage_output(output, strict=False) is None
 
     def test_when_real_account_data_without_disclaimer_then_parsed(self):
-        """Ensure the local-sessions guard does not affect real API data."""
+        """Real API data (no disclaimer) is always accepted."""
         output = "  Current week (all models)\n  ████████████████   42% used\n\n"
         snap = _parse_usage_output(output)
         assert snap is not None
@@ -169,6 +204,29 @@ class TestParseResetDatetime:
         result = _parse_reset_datetime(text)
         assert result == "2026-04-18T23:59:00Z"
 
+    # --- CC v2.1.112 IANA timezone format ---
+
+    def test_when_iana_format_with_hour_only_then_converts_to_utc(self):
+        # "Resets Apr 23 at 3pm (America/New_York)" — CC v2.1.112 format
+        # Apr 23 is in EDT (UTC-4), so 3pm EDT = 19:00 UTC.
+        text = "Resets Apr 23 at 3pm (America/New_York)            3% used"
+        result = _parse_reset_datetime(text)
+        assert result is not None
+        assert result == "2026-04-23T19:00:00Z"
+
+    def test_when_iana_format_with_minutes_then_converts_to_utc(self):
+        # "Resets Apr 23 at 3:30pm (America/New_York)"
+        text = "Resets Apr 23 at 3:30pm (America/New_York)"
+        result = _parse_reset_datetime(text)
+        assert result is not None
+        assert result == "2026-04-23T19:30:00Z"
+
+    def test_when_iana_format_utc_then_no_offset(self):
+        text = "Resets Apr 23 at 7pm (UTC)"
+        result = _parse_reset_datetime(text)
+        assert result is not None
+        assert result == "2026-04-23T19:00:00Z"
+
     # --- Integration: _parse_usage_output ---
 
     def test_parse_usage_output_captures_reset_at_from_real_format(self):
@@ -192,6 +250,19 @@ class TestParseResetDatetime:
         snap = _parse_usage_output(output)
         assert snap is not None
         assert snap.reset_at is None
+
+    def test_parse_usage_output_captures_reset_at_from_v2112_format(self):
+        """CC v2.1.112 format: IANA timezone in parens, reset date on separate line."""
+        output = (
+            "  Current week (all models)\n"
+            "  Resets Apr 23 at 3pm (America/New_York)            3% used\n"
+            "  Current week (Sonnet only)\n"
+            "  Resets Apr 23 at 3pm (America/New_York)            5% used\n"
+        )
+        snap = _parse_usage_output(output, strict=False)
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 3.0
+        assert snap.reset_at == "2026-04-23T19:00:00Z"
 
 
 # --- _parse_reset_datetime anchor persistence ---
@@ -373,24 +444,24 @@ class TestScrapeUsageHiddenPane:
         assert result.weekly_sonnet_pct == 24.0
         assert result.extra_pct == 0.0
 
-    def test_when_real_data_arrives_late_then_returns_it_after_initial_local_estimate(self):
-        """Scraper keeps polling when local-sessions-only output appears first.
+    def test_when_real_data_arrives_late_then_preferred_over_local_estimate(self):
+        """Scraper prefers real API data over local-session estimate.
 
-        Real Anthropic API data can take 25-35s to load on remote machines.  Until
-        then /usage shows a local-sessions-only estimate labelled "does not include
-        other devices".  The scraper must continue polling (not give up on the first
-        hit) and return the real snapshot when it arrives.
+        On geo-restricted hosts, real Anthropic API data takes 25-35s to load.
+        Until then /usage shows a local-sessions-only estimate (with disclaimer).
+        The scraper saves the local estimate as a fallback but keeps polling and
+        uses the real data when it arrives.
         """
         new_win = self._make_new_window_result("5")
         ok = MagicMock()
         ok.returncode = 0
 
         prompt_output = self._make_cap_result("❯\n")
-        # Simulate the local-sessions-only fallback shown before the API responds.
+        # Local-sessions estimate (disclaimer present, no "Scanning").
         local_only_output = self._make_cap_result(
-            "Usage (this machine only — does not include other devices)\nCurrent week (all models): 1% used\n"
+            "Current week (all models): 1% used\ndoes not include other devices\n"
         )
-        # Real data arrives after several polls.
+        # Real API data arrives later (no disclaimer).
         real_output = self._make_cap_result(TestParseUsageOutput._REAL_USAGE_OUTPUT)
 
         call_count = 0
@@ -405,14 +476,52 @@ class TestScrapeUsageHiddenPane:
                     return prompt_output  # startup poll
                 if call_count <= 5:
                     return local_only_output  # early polls: local-sessions estimate
-                return real_output  # later poll: real API data
+                return real_output  # later poll: real API data (no disclaimer)
             return ok
 
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             result = _scrape_usage_hidden_pane()
 
-        assert isinstance(result, QuotaSnapshot), "should return real snapshot, not None"
-        assert result.weekly_all_models_pct == 26.0, "should use real data, not local 1%"
+        assert isinstance(result, QuotaSnapshot), "should return a snapshot"
+        assert result.weekly_all_models_pct == 26.0, "should use real API data, not local 1%"
+
+    def test_when_only_local_estimate_available_then_falls_back_to_it(self):
+        """Scraper falls back to local-session estimate when API data never loads.
+
+        On machines where the quota API never responds in a hidden pane session
+        (e.g. Mac hidden pane sessions), the scraper exhausts its poll budget and
+        returns the best local-session estimate seen instead of None.
+        """
+        new_win = self._make_new_window_result("6")
+        ok = MagicMock()
+        ok.returncode = 0
+
+        prompt_output = self._make_cap_result("❯\n")
+        # Local-sessions estimate that never transitions to real API data.
+        local_only_output = self._make_cap_result(
+            "Current week (all models)\n"
+            "Resets Apr 23 at 3pm (America/New_York)   3% used\n"
+            "does not include other devices or claude.ai\n"
+        )
+
+        call_count = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal call_count
+            if cmd[0] == "tmux" and cmd[1] == "new-window":
+                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
+                call_count += 1
+                if call_count == 1:
+                    return prompt_output  # startup poll
+                return local_only_output  # all subsequent polls: local only
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            result = _scrape_usage_hidden_pane()
+
+        assert isinstance(result, QuotaSnapshot), "should fall back to local estimate, not None"
+        assert result.weekly_all_models_pct == 3.0, "should return the local session value"
 
     def test_when_exception_raised_then_returns_none_and_kills_window(self):
         """Exception mid-scrape must not propagate; kill-window must still fire."""
