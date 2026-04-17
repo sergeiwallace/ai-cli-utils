@@ -4,7 +4,7 @@ Reads all CC session JSONL files, extracts per-call token data from assistant
 messages, and POSTs new entries to the humanware REST API. Cursor-tracked so
 only entries since the last push are sent.
 
-Cursor file: ~/.local/state/ai-cli/cc-usage-cursor.json
+Cursor file: ~/.local/state/ai-cli-utils/cc-usage-cursor.json
   Format: {"session-uuid": "2026-04-17T10:00:00+00:00", ...}
 
 Config (config.toml [humanware] section):
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
-_STATE_DIR = Path.home() / ".local" / "state" / "ai-cli"
+_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "ai-cli-utils"
 _CURSOR_FILE = _STATE_DIR / "cc-usage-cursor.json"
 
 
@@ -136,7 +136,6 @@ def _decode_project_path(encoded_dir_name: str) -> str:
     CC encodes paths by replacing '/' with '-' and leading '~' with
     '-Users-<name>'. We return a best-effort human-readable string.
     """
-    # Strip leading '-' and replace remaining '-' with '/'
     if encoded_dir_name.startswith("-"):
         return "/" + encoded_dir_name[1:].replace("-", "/")
     return encoded_dir_name
@@ -313,14 +312,12 @@ def scan_and_push(
     cursor = _load_cursor()
     events, new_cursor = scan_new_events(claude_dir=claude_dir, machine=machine, cursor=cursor)
 
-    # Count unique sessions scanned
-    result.scanned_sessions = len({e.session_id for e in events}) + len(cursor)
+    result.scanned_sessions = len({e.session_id for e in events} | set(cursor.keys()))
     result.new_events = len(events)
 
     if not events or dry_run:
         return result
 
-    # Push in batches
     try:
         for i in range(0, len(events), _BATCH_SIZE):
             batch = events[i : i + _BATCH_SIZE]
@@ -340,8 +337,7 @@ def get_cursor_summary() -> dict:
     cursor = _load_cursor()
     if not cursor:
         return {"sessions_tracked": 0, "last_push": None}
-    last_push = max(cursor.values()) if cursor else None
     return {
         "sessions_tracked": len(cursor),
-        "last_push": last_push,
+        "last_push": max(cursor.values()),
     }
