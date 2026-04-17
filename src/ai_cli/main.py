@@ -127,6 +127,12 @@ nats_servers = ["nats://localhost:4222"]
 # billing_export_table = "my-project.billing_export.gcp_billing_export_v1_XXXXXX"
 ## Default port for the Chrome DevTools Protocol endpoint
 # port = 9222
+
+[humanware]
+## REST API base URL and key for pushing CC usage events.
+## Obtain from your humanware backend instance.
+# api_url = "https://your-humanware-host"
+# api_key = "hw-api-..."
 """
 
 
@@ -3208,6 +3214,33 @@ def cli():
         from .spend import cmd_spend_gemini
 
         sys.exit(cmd_spend_gemini(load_config()))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "cc-usage":
+        from .cc_usage import scan_and_push, get_cursor_summary
+
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else None
+        if subcmd == "push":
+            dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
+            result = scan_and_push(config=config, dry_run=dry_run)
+            if result.error:
+                print(f"Error: {result.error}", file=sys.stderr)
+                sys.exit(1)
+            if dry_run:
+                print(f"Dry run: {result.new_events} new events across {result.scanned_sessions} sessions (not pushed)")
+            else:
+                print(
+                    f"Pushed {result.inserted} new events, {result.skipped} skipped "
+                    f"({result.scanned_sessions} sessions scanned)"
+                )
+            sys.exit(0)
+        elif subcmd == "status":
+            summary = get_cursor_summary()
+            print(f"Sessions tracked: {summary['sessions_tracked']}")
+            print(f"Last push:        {summary['last_push'] or 'never'}")
+            sys.exit(0)
+        else:
+            print("Usage: ai cc-usage <push [-d/--dry-run] | status>", file=sys.stderr)
+            sys.exit(1)
 
     if len(sys.argv) > 1 and sys.argv[1] == "copier-update":
         if os.environ.get("AI_CLI_HOST") != "mac":
