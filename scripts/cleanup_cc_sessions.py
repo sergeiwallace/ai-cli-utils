@@ -33,7 +33,7 @@ TITLE_PATTERNS: list[tuple[re.Pattern, callable]] = [
     (re.compile(r"^ai-cli-(\d+)", re.IGNORECASE), lambda m: f"ai-cli-utils--worktrees-ai-cli-{m.group(1)}"),
     (re.compile(r"^aq-(\d+)", re.IGNORECASE), lambda m: f"ai-cli-quickstart--worktrees-aq-{m.group(1)}"),
     (re.compile(r"^mobile-(\d+)", re.IGNORECASE), lambda m: f"ai-ide-mobile--worktrees-mobile-{m.group(1)}"),
-    (re.compile(r"^hwosx-(\d+)", re.IGNORECASE), lambda m: f"humanware-macos--worktrees-hwosx-{m.group(1)}"),
+    (re.compile(r"^hwosx-(\d+)", re.IGNORECASE), lambda m: f"ai-ide-macos--worktrees-hwosx-{m.group(1)}"),
     (re.compile(r"^dojo-(\d+)", re.IGNORECASE), lambda m: f"ai-dojo--worktrees-dojo-{m.group(1)}"),
     (re.compile(r"^ps-(\d+)", re.IGNORECASE), lambda m: f"personal-site--worktrees-ps-{m.group(1)}"),
     (re.compile(r"^site-(\d+)", re.IGNORECASE), lambda m: f"personal-site--worktrees-site-{m.group(1)}"),
