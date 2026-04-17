@@ -24,6 +24,7 @@ source: internal
 - [Utility Commands](#utility-commands)
   - [ai gemini](#ai-gemini)
   - [ai spend gemini](#ai-spend-gemini)
+  - [ai cc-usage](#ai-cc-usage)
   - [ai handoff](#ai-handoff)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
@@ -298,6 +299,33 @@ Data appears in BigQuery within 24–48 hours. When not configured, `ai spend ge
 **State files:**
 - `~/.local/state/ai-cli/dr-daily.json` — daily DR run counter (resets at midnight)
 - `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — per-run log
+
+### ai cc-usage
+
+```
+ai cc-usage push [-d/--dry-run]
+ai cc-usage status
+```
+
+Scan Claude Code session JSONL files and push per-call token usage events to a configured REST API backend.
+
+**`push`** scans `~/.claude/projects/` for assistant message entries not yet pushed (tracked by a cursor file), and POSTs them in batches of 500 to `/api/v1/usage/cc/ingest`. On success, the cursor is advanced so subsequent runs only send new events. `--dry-run` / `-d` scans and counts without pushing or advancing the cursor.
+
+**`status`** prints the number of sessions tracked by the cursor and the timestamp of the last successful push.
+
+**Config** (`~/.config/ai-cli-utils/config.toml`):
+
+```toml
+[humanware]
+api_url = "https://your-backend-host"
+api_key  = "hw-api-..."
+```
+
+Both `api_url` and `api_key` must be set for `push` to run.
+
+**State file:** `~/.local/state/ai-cli-utils/cc-usage-cursor.json` — maps session UUID → last pushed `occurred_at` ISO timestamp.
+
+---
 
 ### ai handoff
 
