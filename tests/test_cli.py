@@ -1211,28 +1211,31 @@ class TestCliDaemonDispatch:
 class TestVersionFlag:
     def test_given_version_flag_when_called_then_prints_version_and_exits_0(self, capsys):
         with patch("sys.argv", ["ai", "--version"]):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
+            with patch("importlib.metadata.version", return_value="1.2.3"):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 0
         out = capsys.readouterr().out.strip()
         assert out
-        assert "." in out  # version string contains a dot
+        assert "." in out
 
     def test_given_short_version_flag_when_called_then_prints_version_and_exits_0(self, capsys):
         with patch("sys.argv", ["ai", "-V"]):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
+            with patch("importlib.metadata.version", return_value="1.2.3"):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+                assert exc.value.code == 0
         out = capsys.readouterr().out.strip()
         assert out
         assert "." in out
 
     def test_given_version_flag_when_called_then_does_not_load_config(self):
         with patch("sys.argv", ["ai", "--version"]):
-            with patch("ai_cli.main.load_config") as mock_cfg:
-                with pytest.raises(SystemExit):
-                    cli()
-                mock_cfg.assert_not_called()
+            with patch("importlib.metadata.version", return_value="1.2.3"):
+                with patch("ai_cli.main.load_config") as mock_cfg:
+                    with pytest.raises(SystemExit):
+                        cli()
+                    mock_cfg.assert_not_called()
 
 
 class TestGetVersion:
@@ -1240,6 +1243,7 @@ class TestGetVersion:
         with (
             patch("sys.argv", ["ai", "internal", "get-version"]),
             patch("ai_cli.main.load_config", return_value={}),
+            patch("importlib.metadata.version", return_value="1.2.3"),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
