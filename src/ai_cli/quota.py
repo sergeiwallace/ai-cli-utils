@@ -292,8 +292,15 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         # Resize to a generous size so the full /usage dialog fits without scrolling.
         # The dialog spans ~25 lines; a small default pane causes the label lines to
         # scroll off before capture-pane can read them.
+        # NOTE: resize-window sets window-size=manual on the session as a side effect.
+        # Restore window-size=latest immediately so iTerm2 pane resize keeps working.
         subprocess.run(
             ["tmux", "resize-window", "-t", target, "-x", "220", "-y", "60"],
+            capture_output=True,
+            timeout=2,
+        )
+        subprocess.run(
+            ["tmux", "set-option", "window-size", "latest"],
             capture_output=True,
             timeout=2,
         )

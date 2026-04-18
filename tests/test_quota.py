@@ -562,6 +562,44 @@ class TestScrapeUsageHiddenPane:
         assert result is None
         assert killed, "kill-window must be called even on exception"
 
+    def test_window_size_latest_restored_after_resize(self):
+        """resize-window sets window-size=manual as a tmux side effect.
+
+        The scraper must call `set-option window-size latest` immediately after
+        resize-window so that iTerm2 pane resize keeps working in the host session.
+        """
+        new_win = self._make_new_window_result("3")
+        ok = MagicMock()
+        ok.returncode = 0
+        cmds_seen = []
+
+        def fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[0] == "tmux":
+                cmds_seen.append(cmd[1:])
+            if cmd[0] == "tmux" and cmd[1] == "new-window":
+                return new_win
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            _scrape_usage_hidden_pane()
+
+        resize_idx = next(
+            (i for i, c in enumerate(cmds_seen) if c[0] == "resize-window"), None
+        )
+        restore_idx = next(
+            (
+                i
+                for i, c in enumerate(cmds_seen)
+                if c[:3] == ["set-option", "window-size", "latest"]
+            ),
+            None,
+        )
+        assert resize_idx is not None, "resize-window must be called"
+        assert restore_idx is not None, "set-option window-size latest must be called"
+        assert restore_idx == resize_idx + 1, (
+            "set-option window-size latest must follow resize-window immediately"
+        )
+
 
 # --- _get_claude_usage_snapshot ---
 
