@@ -8,7 +8,7 @@ source: internal
 
 # Gemini API Cost and Usage Tracking Overhaul — Implementation Plan
 
-**Status:** IN PROGRESS — T-01/T-02/T-03 SHIPPED; T-04 pending (humanware repo, HW-3)
+**Status:** COMPLETE — T-01/T-02/T-03 SHIPPED; T-04 OBSOLETE (MEMORY.md ledger approach dropped; replaced by NATS → Postgres pipeline in HW-4)
 
 **Created:** 2026-04-10
 **Revised:** 2026-04-11 (round 3 / implementation)

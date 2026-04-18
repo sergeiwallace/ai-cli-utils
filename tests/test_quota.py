@@ -17,6 +17,7 @@ from ai_cli.quota import (
     _scrape_usage_hidden_pane,
     _send_notification,
     _send_slack_notification,
+    _try_read_kv_snapshot,
     quota_record,
     quota_scrape,
     quota_status,
@@ -1515,6 +1516,66 @@ class TestQuotaStatuslinePart:
             mock_trigger.assert_called_once()
             ts_arg = mock_trigger.call_args[0][0]
             assert isinstance(ts_arg, str) and len(ts_arg) > 0
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+
+class TestTryReadKvSnapshot:
+    def test_returns_none_when_nats_servers_not_configured(self):
+        """_try_read_kv_snapshot returns None when config has no nats_servers."""
+        with patch("ai_cli.main.load_config", return_value={}):
+            result = _try_read_kv_snapshot()
+        assert result is None
+
+    def test_returns_none_on_load_config_failure(self):
+        """_try_read_kv_snapshot returns None when load_config raises."""
+        with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
+            result = _try_read_kv_snapshot()
+        assert result is None
+
+
+class TestQuotaStatuslinePartKvSync:
+    def test_stale_local_data_uses_fresher_kv_value(self, tmp_path, capsys):
+        """When local SQLite is stale and NATS KV has a fresher value, the KV value is used."""
+        import time
+        import ai_cli.quota_db as qdb
+        import ai_cli.quota as q
+        from datetime import datetime, timezone, timedelta
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            # Insert a stale local snapshot (older than TTL)
+            stale_time = (datetime.now(timezone.utc) - timedelta(minutes=q._SCRAPE_TTL_MINUTES + 10))
+            stale_ts = stale_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            import sqlite3
+            conn = sqlite3.connect(str(tmp_path / "quota.db"))
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS quota_snapshots "
+                "(id INTEGER PRIMARY KEY, usage_percent REAL, snapshotted_at TEXT, week_start TEXT)"
+            )
+            week_start = qdb._get_current_week_start()
+            conn.execute(
+                "INSERT INTO quota_snapshots (usage_percent, snapshotted_at, week_start) VALUES (?, ?, ?)",
+                (10.0, stale_ts, week_start),
+            )
+            conn.commit()
+            conn.close()
+
+            # KV has a fresher value (higher usage_percent and more recent ts)
+            kv_payload = {
+                "usage_percent": 42.0,
+                "ts": time.time(),
+                "session_pct": None,
+                "weekly_sonnet_pct": None,
+                "extra_pct": None,
+                "reset_at": None,
+            }
+            with patch("ai_cli.quota._try_read_kv_snapshot", return_value=kv_payload), \
+                 patch("ai_cli.quota._maybe_trigger_background_scrape"):
+                result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "42%" in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 

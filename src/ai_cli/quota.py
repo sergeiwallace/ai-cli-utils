@@ -869,16 +869,67 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
         pass
 
 
+def _try_read_kv_snapshot() -> dict | None:
+    """Read the latest quota snapshot from NATS KV (shared across machines).
+
+    Returns the raw payload dict or None if NATS is unreachable or the key
+    doesn't exist. Capped at 300ms total via a daemon thread join — never
+    blocks the statusline for longer than that.
+    """
+    import threading
+
+    result: list[dict | None] = [None]
+
+    def _read() -> None:
+        try:
+            from .main import load_config as _load_config
+            cfg = _load_config()
+            nats_servers = cfg.get("messaging", {}).get("nats_servers")
+        except Exception:
+            return
+        if not nats_servers:
+            return
+
+        from .messaging import NATSClient
+
+        async def _do() -> None:
+            client = NATSClient(servers=nats_servers)
+            try:
+                await asyncio.wait_for(client.connect(), timeout=0.25)
+                if client.js:
+                    kv = await asyncio.wait_for(client.js.key_value("hw_state"), timeout=0.1)
+                    entry = await asyncio.wait_for(kv.get("quota.claude.current"), timeout=0.1)
+                    result[0] = json.loads(entry.value)
+            except Exception:
+                pass
+            finally:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+
+        try:
+            asyncio.run(_do())
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_read, daemon=True)
+    t.start()
+    t.join(timeout=0.3)
+    return result[0]
+
+
 def quota_statusline_part() -> int:
     """Print a compact quota indicator for use in the statusline.
 
-    Reads the latest snapshot from local SQLite (fast, no scraping).
+    Primary source: NATS KV (shared across machines) when local data is stale.
+    Fast path: local SQLite when data is fresh (no network call).
     Outputs: {pace_icon} {usage_pct:.0f}% {direction}{delta:.0f}%
     where delta = usage_pct - week_elapsed_pct.
     """
     import sqlite3
 
-    from .quota_db import _get_current_week_start, _get_quota_db_path
+    from .quota_db import _get_current_week_start, _get_quota_db_path, record_quota_snapshot
 
     try:
         from datetime import datetime, timezone
@@ -896,8 +947,45 @@ def quota_statusline_part() -> int:
         ).fetchall()
         conn.close()
 
+        # If local data is stale (>TTL) or absent, try NATS KV for the shared value.
+        # This keeps Mac and Hetzner statuslines aligned without requiring a local scrape.
+        local_stale = (
+            not rows
+            or (
+                now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
+            ).total_seconds() / 60 >= _SCRAPE_TTL_MINUTES
+        )
+        if local_stale:
+            kv = _try_read_kv_snapshot()
+            if kv is not None:
+                kv_ts = kv.get("ts", 0.0)
+                local_ts = (
+                    datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00")).timestamp()
+                    if rows else 0.0
+                )
+                if kv_ts > local_ts:
+                    # KV has fresher data — persist it locally and use it
+                    try:
+                        record_quota_snapshot(
+                            usage_percent=kv["usage_percent"],
+                            session_pct=kv.get("session_pct"),
+                            weekly_sonnet_pct=kv.get("weekly_sonnet_pct"),
+                            extra_pct=kv.get("extra_pct"),
+                            reset_at=kv.get("reset_at"),
+                        )
+                        conn2 = sqlite3.connect(str(db_path))
+                        conn2.row_factory = sqlite3.Row
+                        rows = conn2.execute(
+                            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
+                            " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
+                            (week_start_str,),
+                        ).fetchall()
+                        conn2.close()
+                    except Exception:
+                        pass
+
         if not rows:
-            # No data for current week — show placeholder and kick off a scrape
+            # No data anywhere — show placeholder and kick off a scrape
             _launch_background_scrape()
             DIM = "\033[2m"
             RESET = "\033[0m"

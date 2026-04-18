@@ -8,7 +8,7 @@ source: R-5 deep-think 2026-04-01, opus synthesis 2026-04-01
 
 # Claude Usage Telemetry — Token Tracking and Quota Pacing
 
-**Status:** APPROVED
+**Status:** APPROVED — *Note: System Architecture and Data Model sections below reflect the original design (standalone SQLite + HTTP receiver). The actual implementation uses NATS JetStream → Postgres via humanware. See `humanware/docs/designs/ai-usage-tracking.md` for the authoritative architecture.*
 
 **Created:** 2026-04-01
 
