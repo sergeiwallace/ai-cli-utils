@@ -89,86 +89,55 @@ class TestParseUsageOutput:
         assert snap is not None
         assert snap.weekly_all_models_pct == 72.5
 
-    def test_when_scanning_in_progress_then_returns_none(self):
-        """Reject output while the local-session scan is still running.
-
-        In CC v2.1.112+, "Scanning local sessions…" is accompanied by the
-        "does not include other devices" disclaimer.  strict=True rejects via
-        the disclaimer; strict=False rejects via the Scanning guard.
-        """
+    def test_when_cc_2114_format_with_scanning_and_disclaimer_then_parsed(self):
+        """CC v2.1.114+ always shows 'does not include other devices' and
+        'Scanning local sessions' in the contributing-factors section, even when
+        the main weekly figure is valid API data.  Both must be ignored."""
         output = (
             "  Current week (all models)\n"
-            "  █                                                  1% used\n\n"
+            "  █████████████                                      26% used\n"
+            "  Resets Apr 23 at 3pm (America/New_York)\n\n"
+            "  What's contributing to your limits usage?\n"
             "  Approximate, based on local sessions on this \n"
-            "  machine — does not include other devices or \n"
-            "  API usage\n"
+            "  machine — does not include other devices or claude.ai\n"
             "  Scanning local sessions…\n"
         )
-        assert _parse_usage_output(output) is None  # strict=True rejects via disclaimer
-        assert _parse_usage_output(output, strict=False) is None  # non-strict rejects via Scanning
-
-    def test_when_strict_and_scanning_without_disclaimer_then_parsed(self):
-        """strict=True parses valid data even when 'Scanning' is in scrollback.
-
-        On some hosts the pane retains the 'Scanning local sessions' message in
-        scrollback alongside already-rendered API data.  strict=True should not
-        reject this case — only the 'does not include other devices' disclaimer
-        signals a local-session estimate in strict mode.
-        """
-        output = (
-            "  Current week (all models)\n"
-            "  ████████████████   4% used\n\n"
-            "  Scanning local sessions…\n"  # residual scrollback — real data already above
-        )
-        snap = _parse_usage_output(output)  # strict=True
+        snap = _parse_usage_output(output)
         assert snap is not None
-        assert snap.weekly_all_models_pct == 4.0
+        assert snap.weekly_all_models_pct == 26.0
 
-    def test_when_strict_and_disclaimer_present_then_returns_none(self):
-        """In strict mode, local-session estimates (with disclaimer) are rejected.
-
-        The "does not include other devices" disclaimer signals that the Anthropic
-        quota API was unreachable and CC fell back to a local-session count.  In
-        strict mode this is rejected so only real account-wide data is stored.
-        """
-        output = (
-            "  Current week (all models)\n"
-            "  █                                                  1% used\n\n"
-            "  Approximate, based on local sessions on this \n"
-            "  machine — does not include other devices or \n"
-            "  API usage\n"
-        )
-        assert _parse_usage_output(output) is None  # strict=True by default
-        assert _parse_usage_output(output, strict=True) is None
-
-    def test_when_non_strict_and_disclaimer_present_then_parsed(self):
-        """strict=False accepts local-session estimates as a fallback."""
+    def test_when_disclaimer_only_no_scanning_then_parsed(self):
+        """'does not include other devices' in the detail section must not block
+        parsing of the headline weekly figure."""
         output = (
             "  Current week (all models)\n"
             "  █                                                  3% used\n\n"
             "  Approximate, based on local sessions on this \n"
             "  machine — does not include other devices or claude.ai\n"
         )
-        snap = _parse_usage_output(output, strict=False)
+        snap = _parse_usage_output(output)
         assert snap is not None
         assert snap.weekly_all_models_pct == 3.0
 
-    def test_when_non_strict_and_scanning_then_still_returns_none(self):
-        """strict=False still rejects output while scanning is in progress."""
-        output = (
-            "  Current week (all models)\n"
-            "  █                                                  1% used\n\n"
-            "  Scanning local sessions…\n"
-            "  does not include other devices\n"
-        )
-        assert _parse_usage_output(output, strict=False) is None
+    def test_when_scanning_without_weekly_section_then_returns_none(self):
+        """Return None when 'Current week (all models)' line has not rendered yet."""
+        output = "  Loading usage data…\n  Scanning local sessions…\n"
+        assert _parse_usage_output(output) is None
 
     def test_when_real_account_data_without_disclaimer_then_parsed(self):
-        """Real API data (no disclaimer) is always accepted."""
+        """Clean API data (no disclaimers) is always accepted."""
         output = "  Current week (all models)\n  ████████████████   42% used\n\n"
         snap = _parse_usage_output(output)
         assert snap is not None
         assert snap.weekly_all_models_pct == 42.0
+
+    def test_when_scanning_with_weekly_section_then_parsed(self):
+        """'Scanning local sessions' in the detail section must not block parsing
+        when the weekly headline is already present."""
+        output = "  Current week (all models)\n  ████████████████   4% used\n\n  Scanning local sessions…\n"
+        snap = _parse_usage_output(output)
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 4.0
 
 
 # --- _parse_reset_datetime ---
@@ -281,7 +250,7 @@ class TestParseResetDatetime:
             "  Current week (Sonnet only)\n"
             "  Resets Apr 23 at 3pm (America/New_York)            5% used\n"
         )
-        snap = _parse_usage_output(output, strict=False)
+        snap = _parse_usage_output(output)
         assert snap is not None
         assert snap.weekly_all_models_pct == 3.0
         assert snap.reset_at == "2026-04-23T19:00:00Z"
@@ -466,25 +435,20 @@ class TestScrapeUsageHiddenPane:
         assert result.weekly_sonnet_pct == 24.0
         assert result.extra_pct == 0.0
 
-    def test_when_real_data_arrives_late_then_preferred_over_local_estimate(self):
-        """Scraper prefers real API data over local-session estimate.
+    def test_when_data_arrives_returns_first_parseable_result(self):
+        """Scraper returns the first parseable result.
 
-        On geo-restricted hosts, real Anthropic API data takes 25-35s to load.
-        Until then /usage shows a local-sessions-only estimate (with disclaimer).
-        The scraper saves the local estimate as a fallback but keeps polling and
-        uses the real data when it arrives.
+        In CC v2.1.114+, the 'does not include other devices' disclaimer is always
+        present in the contributing-factors section and is no longer a signal that
+        the headline figure is a local-only estimate.  The scraper accepts the first
+        output that contains 'Current week (all models)' and '% used'.
         """
         new_win = self._make_new_window_result("5")
         ok = MagicMock()
         ok.returncode = 0
 
         prompt_output = self._make_cap_result("❯\n")
-        # Local-sessions estimate (disclaimer present, no "Scanning").
-        local_only_output = self._make_cap_result(
-            "Current week (all models): 1% used\ndoes not include other devices\n"
-        )
-        # Real API data arrives later (no disclaimer).
-        real_output = self._make_cap_result(TestParseUsageOutput._REAL_USAGE_OUTPUT)
+        first_output = self._make_cap_result("Current week (all models): 1% used\ndoes not include other devices\n")
 
         call_count = 0
 
@@ -495,17 +459,15 @@ class TestScrapeUsageHiddenPane:
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count == 1:
-                    return prompt_output  # startup poll
-                if call_count <= 5:
-                    return local_only_output  # early polls: local-sessions estimate
-                return real_output  # later poll: real API data (no disclaimer)
+                    return prompt_output
+                return first_output
             return ok
 
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             result = _scrape_usage_hidden_pane()
 
         assert isinstance(result, QuotaSnapshot), "should return a snapshot"
-        assert result.weekly_all_models_pct == 26.0, "should use real API data, not local 1%"
+        assert result.weekly_all_models_pct == 1.0, "should return first parseable result"
 
     def test_when_only_local_estimate_available_then_falls_back_to_it(self):
         """Scraper falls back to local-session estimate when API data never loads.
@@ -1544,22 +1506,19 @@ class TestQuotaStatuslinePartKvSync:
 
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            # Insert a stale local snapshot (older than TTL)
-            stale_time = (datetime.now(timezone.utc) - timedelta(minutes=q._SCRAPE_TTL_MINUTES + 10))
+            # Insert a stale local snapshot (older than TTL) using the real schema
+            stale_time = datetime.now(timezone.utc) - timedelta(minutes=q._SCRAPE_TTL_MINUTES + 10)
             stale_ts = stale_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            import sqlite3
-            conn = sqlite3.connect(str(tmp_path / "quota.db"))
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS quota_snapshots "
-                "(id INTEGER PRIMARY KEY, usage_percent REAL, snapshotted_at TEXT, week_start TEXT)"
-            )
             week_start = qdb._get_current_week_start()
+            # Use _get_conn() to initialise the full schema, then insert with all columns
+            conn = qdb._get_conn()
             conn.execute(
-                "INSERT INTO quota_snapshots (usage_percent, snapshotted_at, week_start) VALUES (?, ?, ?)",
-                (10.0, stale_ts, week_start),
+                "INSERT INTO quota_snapshots "
+                "(usage_percent, session_pct, weekly_sonnet_pct, extra_pct, week_start, snapshotted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (10.0, None, None, None, week_start, stale_ts),
             )
             conn.commit()
-            conn.close()
 
             # KV has a fresher value (higher usage_percent and more recent ts)
             kv_payload = {
@@ -1570,8 +1529,10 @@ class TestQuotaStatuslinePartKvSync:
                 "extra_pct": None,
                 "reset_at": None,
             }
-            with patch("ai_cli.quota._try_read_kv_snapshot", return_value=kv_payload), \
-                 patch("ai_cli.quota._maybe_trigger_background_scrape"):
+            with (
+                patch("ai_cli.quota._try_read_kv_snapshot", return_value=kv_payload),
+                patch("ai_cli.quota._maybe_trigger_background_scrape"),
+            ):
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out

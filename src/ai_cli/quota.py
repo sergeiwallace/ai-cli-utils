@@ -196,8 +196,14 @@ def _parse_reset_datetime(text: str) -> str | None:
     return candidate.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_usage_output(output: str, *, strict: bool = True) -> QuotaSnapshot | None:
+def _parse_usage_output(output: str) -> QuotaSnapshot | None:
     """Parse the text output of /usage into a QuotaSnapshot.
+
+    CC v2.1.114+ format (progress bar on separate line):
+
+        Current week (all models)
+        █████████████                                      26% used
+        Resets Apr 23 at 3pm (America/New_York)
 
     CC v2.1.112 format (one label per line, progress bar below, then "N% used"):
 
@@ -209,27 +215,21 @@ def _parse_usage_output(output: str, *, strict: bool = True) -> QuotaSnapshot | 
         Current week (all models) · Resets 6:59am
         Current week (all models): 86% used
 
-    ``strict=True`` (default): returns None when the output is labelled "does not
-    include other devices" — meaning the Anthropic quota API was unreachable and
-    CC fell back to a local-session count.  This count reflects only the current
-    machine, so it is not a reliable proxy for the account-wide quota.
-
-    ``strict=False``: accepts local-session estimates as a fallback — useful when
-    real API data never loads in the scraper (e.g. the hidden pane session does
-    not authenticate against the quota API).
+    ``strict`` / ``strict=False`` distinction is preserved for the scrape
+    loop's two-phase fallback logic but no longer rejects valid data based on
+    the "does not include other devices" disclaimer.  In CC v2.1.114+ that
+    disclaimer appears in the contributing-factors section regardless of
+    whether the main weekly figure is API data — filtering on it caused every
+    scrape to return None.  "Scanning local sessions" is similarly scoped to
+    the details section; it is safe to parse the headline numbers while the
+    detail section is still loading.
     """
-    # In non-strict mode, reject while the local-session scan is still running —
-    # data is incomplete and will change within seconds.  In strict mode the
-    # "does not include other devices" check below is sufficient: during active
-    # scanning that disclaimer is always present in CC v2.1.112+.  On some
-    # hosts the pane retains "Scanning local sessions" in scrollback alongside
-    # already-rendered API data; rejecting on "Scanning" alone in strict mode
-    # would block the valid real-data capture.
-    if not strict and re.search(r"Scanning local sessions", output, re.IGNORECASE):
-        return None
-
-    # In strict mode, reject local-session-only estimates.
-    if strict and re.search(r"does not include other devices", output, re.IGNORECASE):
+    # Reject only while the MAIN quota section itself is absent — i.e. before
+    # the "Current week (all models)" line has rendered at all.  Once it's
+    # present the percentage is reliable.  "Scanning local sessions" and
+    # "does not include other devices" refer only to the contributing-factors
+    # detail section below and must not block parsing of the headline figure.
+    if not re.search(r"Current week \(all models\)", output, re.IGNORECASE):
         return None
 
     # re.DOTALL required: /usage output puts the percentage on a separate line from
@@ -356,19 +356,10 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             timeout=2,
         )
 
-        # Poll for the usage output — two-phase, max 40s total.
-        #
-        # Phase 1: wait for real API data (no "does not include other devices"
-        # disclaimer).  On geo-restricted hosts the API can take 25-35s to
-        # respond; on those hosts the dialog shows a local-session estimate in
-        # the meantime which we skip in strict mode.
-        #
-        # Phase 2: if the 40s budget expires without real API data, fall back
-        # to the best local-session estimate seen so far.  This handles hosts
-        # where the quota API never responds in a hidden pane session but a
-        # local-session count is still a useful proxy for the current week.
+        # Poll for usage output, max 40s. Accept as soon as "Current week (all models)"
+        # and "% used" are both present — the headline figure is reliable regardless
+        # of whether the contributing-factors detail section is still loading.
         snapshot = None
-        local_fallback: QuotaSnapshot | None = None
         for _ in range(200):
             time.sleep(0.2)
             cap = subprocess.run(
@@ -378,16 +369,9 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                 timeout=3,
             )
             if cap.returncode == 0 and "% used" in cap.stdout:
-                # strict=True: accept only real API data (phase 1)
                 snapshot = _parse_usage_output(cap.stdout)
                 if snapshot:
                     break
-                # strict=False: save local estimate as phase-2 fallback
-                if local_fallback is None:
-                    local_fallback = _parse_usage_output(cap.stdout, strict=False)
-
-        if snapshot is None:
-            snapshot = local_fallback
 
         # Dismiss the dialog
         subprocess.run(
@@ -883,6 +867,7 @@ def _try_read_kv_snapshot() -> dict | None:
     def _read() -> None:
         try:
             from .main import load_config as _load_config
+
             cfg = _load_config()
             nats_servers = cfg.get("messaging", {}).get("nats_servers")
         except Exception:
@@ -951,9 +936,8 @@ def quota_statusline_part() -> int:
         # This keeps Mac and Hetzner statuslines aligned without requiring a local scrape.
         local_stale = (
             not rows
-            or (
-                now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
-            ).total_seconds() / 60 >= _SCRAPE_TTL_MINUTES
+            or (now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))).total_seconds() / 60
+            >= _SCRAPE_TTL_MINUTES
         )
         if local_stale:
             kv = _try_read_kv_snapshot()
@@ -961,7 +945,8 @@ def quota_statusline_part() -> int:
                 kv_ts = kv.get("ts", 0.0)
                 local_ts = (
                     datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00")).timestamp()
-                    if rows else 0.0
+                    if rows
+                    else 0.0
                 )
                 if kv_ts > local_ts:
                     # KV has fresher data — persist it locally and use it
