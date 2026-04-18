@@ -2,14 +2,14 @@
 title: main.py Refactor — Module Extraction + CLI Dispatch Redesign
 category: plans
 tags: [refactor, architecture, cli, modules]
-status: draft
+status: approved
 source: internal
 task: AI-CLI-39
 ---
 
 # main.py Refactor — Module Extraction + CLI Dispatch Redesign
 
-**Status:** DRAFT
+**Status:** APPROVED
 **Created:** 2026-04-07
 **Task:** `[AI-CLI-39]`
 
@@ -197,7 +197,7 @@ main.py (cli dispatch)
   │     └── messaging.py
   ├── tunnel.py (tunnel + CDP)
   │     └── config.py
-  ├── circus.py (signal-watch management)
+  ├── process_manager.py (signal-watch management)
   │     └── config.py
   └── config.py (XDG, load_config, session map, project registry)
         └── (stdlib + external only)
@@ -217,7 +217,7 @@ After Phase 1, existing modules that currently do `from .main import load_config
 | `handoff.py` | `_log_handoff_event`, `post_handoff`, `_find_best_handoff`, `check_handoff`, `check_handoff_project`, `claim_handoff`, `complete_handoff`, `_claim_handoff_for_signal` | ~200 |
 | `transport.py` | `_is_vpn_active`, `_write_transport_state`, `_ensure_vpn_watcher`, `_maybe_stop_vpn_watcher`, `_run_transport_loop` | ~200 |
 | `tunnel.py` | `_cmd_tunnel_start`, `_ensure_nats_tunnel`, `_cmd_tunnel_stop`, `_cmd_tunnel_status`, `_find_chrome_binary`, `_cmd_cdp_start`, `_cmd_cdp_stop`, `_cmd_cdp_status` | ~200 |
-| `circus.py` | `_ensure_circusd`, `_cmd_signal_watch_start`, `_cmd_signal_watch_stop`, `_cmd_signal_watch_status` | ~150 |
+| `process_manager.py` | `_ensure_circusd`, `_cmd_signal_watch_start`, `_cmd_signal_watch_stop`, `_cmd_signal_watch_status` | ~150 |
 | `session_script.py` | `get_engine_script` | ~365 |
 
 **`main.py` after extraction:** ~1000 lines (`cli()` dispatch + remote session launch + update/deploy logic + `_find_aicli_project_path` + `_auto_update_if_stale`).
@@ -358,7 +358,7 @@ Move tunnel and CDP command implementations. These are self-contained except for
 
 ---
 
-#### T-07: Extract `circus.py`
+#### T-07: Extract `process_manager.py`
 
 **Size:** S  
 **Batch:** 3
@@ -366,11 +366,11 @@ Move tunnel and CDP command implementations. These are self-contained except for
 Move Circus process management (signal-watch start/stop/status + `_ensure_circusd`).
 
 **Deliverables:**
-- `src/ai_cli/circus.py` (new)
+- `src/ai_cli/process_manager.py` (new)
 - `src/ai_cli/main.py` (functions removed)
 
 **Acceptance criteria:**
-- [ ] `_ensure_circusd` and `_cmd_signal_watch_*` in `circus.py`
+- [ ] `_ensure_circusd` and `_cmd_signal_watch_*` in `process_manager.py`
 - [ ] `pytest` passes
 
 **Dependencies:** T-01
@@ -519,21 +519,15 @@ All batches on `feature/main-py-refactor` branch. Each batch is a separate commi
 |------|-------|-----------------|
 | Plan approval | Before coding | Approve scope, module names, import DAG |
 | UAT | After Batch 3 | Verify `ai c`, `ai c -R`, `ai tunnel`, `ai handoff` work end-to-end |
-| Phase 2 gate | Separate session | Approve Click migration scope and design |
+| Phase 2 gate | After Batch 3 UAT | Click migration scope pre-approved; UAT after Phase 2 completes |
 
 ---
 
 ## Open Questions
 
-1. **`circus.py` naming** — `circus.py` could conflict with the `circus` package name in some import scenarios. Alternative: `signal_watch.py` or `process_manager.py`.
-2. **`iterm2.py` + `icon_generator.py` merge** — merging reduces module count but the merged file will be ~500 lines. Alternative: keep `icon_generator.py`, just fix its deferred imports.
-3. **Phase 2 timing** — is there a trigger (e.g., a new command being added) that would make Click migration urgent, or is Phase 1 sufficient for the foreseeable future?
-
-> **Feedback Round 1:** Your thoughts on the open questions:
-> 1. <!-- naming preference -->
-> 2. <!-- merge preference -->
-> 3. <!-- Phase 2 urgency -->
-> - <enter feedback here>
+1. **`process_manager.py` naming** — ✅ Decided: `process_manager.py` (avoids `circus` package name conflict).
+2. **`iterm2.py` + `icon_generator.py` merge** — ✅ Decided: keep separate. `icon_generator.py` is significant enough to stand alone; deferred import fixed as side effect of T-01 (`config.py` extraction).
+3. **Phase 2 timing** — ✅ Decided: implement Phase 2 (Click) in this task. Firm foundation preferred over deferral.
 
 ---
 
@@ -541,3 +535,4 @@ All batches on `feature/main-py-refactor` branch. Each batch is a separate commi
 
 | Date | Decision | Notes |
 |------|----------|-------|
+| 2026-04-18 | Plan approved | process_manager.py naming; icon_generator.py stays separate; Phase 2 (Click) included in scope |
