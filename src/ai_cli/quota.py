@@ -257,50 +257,44 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
 
 
 def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
-    """Scrape /usage from a hidden tmux window running a bare CC session.
+    """Scrape /usage from a hidden tmux session running a bare CC session.
 
-    Spins up a detached tmux window, starts claude --dangerously-skip-permissions,
-    waits for the prompt, injects /usage, captures the output, and kills the window.
-    The user never sees it.
+    Always creates a fully isolated detached tmux session (never new-window in the
+    user's session). Uses the session name as the target throughout — unambiguous,
+    never accidentally targets the user's active session.
     """
     window_name = "ai-quota-scrape"
-    created_session = False
     try:
-        # Prefer new-window (inside tmux) for reliability; fall back to new-session
-        # when running outside tmux (e.g. from cron). Use index-based targeting (:N)
-        # rather than =name syntax — capture-pane requires a pane target, and index
-        # targeting works universally across tmux versions.
-        result = subprocess.run(
-            ["tmux", "new-window", "-d", "-n", window_name, "-P", "-F", "#{window_index}"],
+        # Kill any stale scrape session left by a previous failed run
+        subprocess.run(
+            ["tmux", "kill-session", "-t", window_name],
             capture_output=True,
-            text=True,
             timeout=3,
         )
+        # Always use a standalone detached session — never new-window inside the user's
+        # session, which would cause `:N` targeting to hit the wrong session.
+        result = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", window_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
         if result.returncode != 0:
-            # Outside tmux (e.g. cron) — create a standalone detached session instead
-            result = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", window_name, "-P", "-F", "#{window_index}"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-            )
-            if result.returncode != 0:
-                return None
-            created_session = True
-        target = f":{result.stdout.strip()}"
+            return None
+        target = window_name  # session-name target — unambiguous across all tmux contexts
 
         # Resize to a generous size so the full /usage dialog fits without scrolling.
         # The dialog spans ~25 lines; a small default pane causes the label lines to
         # scroll off before capture-pane can read them.
-        # NOTE: resize-window sets window-size=manual on the session as a side effect.
-        # Restore window-size=latest immediately so iTerm2 pane resize keeps working.
+        # NOTE: resize-window sets window-size=manual on the session as a side effect;
+        # scoped to the isolated scrape session, so it never affects the user's session.
         subprocess.run(
             ["tmux", "resize-window", "-t", target, "-x", "220", "-y", "60"],
             capture_output=True,
             timeout=2,
         )
         subprocess.run(
-            ["tmux", "set-option", "window-size", "latest"],
+            ["tmux", "set-option", "-t", target, "window-size", "latest"],
             capture_output=True,
             timeout=2,
         )
@@ -384,19 +378,11 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     except Exception:
         return None
     finally:
-        # Always clean up — kill session if we created one, otherwise kill just the window
-        if created_session:
-            subprocess.run(
-                ["tmux", "kill-session", "-t", window_name],
-                capture_output=True,
-                timeout=3,
-            )
-        else:
-            subprocess.run(
-                ["tmux", "kill-window", "-t", f"={window_name}"],
-                capture_output=True,
-                timeout=3,
-            )
+        subprocess.run(
+            ["tmux", "kill-session", "-t", window_name],
+            capture_output=True,
+            timeout=3,
+        )
 
 
 def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
