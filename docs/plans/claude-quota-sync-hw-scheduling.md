@@ -7,6 +7,14 @@
 **Design:** `docs/designs/claude-usage-telemetry.md`
 **Related:** `src/ai_cli/quota.py` — `quota_sync_from_remote()` (shipped 2026-04-07)
 
+> **Post-deployment note (2026-04-18):** The KV key was renamed from
+> `quota.claude.weekly` to `quota.claude.current` so consumers read the latest
+> snapshot from a single canonical key. `_publish_quota_snapshot()` also now
+> publishes to the `hw.events.usage.claude.snapshot` NATS core subject
+> alongside the existing `quota.snapshot` JetStream subject, feeding the
+> humanware `UsageConsumer` for cross-provider usage ingest.
+> References below to `quota.claude.weekly` are historical.
+
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
   2. When the user writes feedback: commit the doc immediately BEFORE responding or revising.

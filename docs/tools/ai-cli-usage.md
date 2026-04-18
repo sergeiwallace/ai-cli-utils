@@ -250,6 +250,10 @@ Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `nu
 
 **Logs:** `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — one entry per run. Daily Deep Research counter: `~/.local/state/ai-cli/dr-daily.json`.
 
+**JSONL fields:** in addition to tier/model/token fields, every log entry includes `id` (UUID), `occurred_at` (UTC ISO8601 with trailing `Z`), `machine` (value of `AI_CLI_HOST`), `provider` (`gemini`), and `source_quality` (`ok` when the prompt is 20+ characters, `suspected_test` otherwise).
+
+**NATS usage events:** when `[messaging] nats_servers` is configured, each call fires a fire-and-forget publish on the subject `hw.events.usage.gemini.event` with the same payload as the JSONL entry. Publishing runs in a daemon thread and never blocks the caller — if NATS is unavailable or not configured the publish silently no-ops. Downstream consumers (the humanware `UsageConsumer`) ingest these events into Postgres for cross-provider usage reporting.
+
 **Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
 
 **Checkpoints:** `~/.local/state/ai-cli/research-runs/<run-id>/` -- JSON snapshots after each step. Use `--resume <run-id>` to restart from last completed step.
