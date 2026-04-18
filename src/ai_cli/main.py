@@ -3602,10 +3602,11 @@ def cli():
         base = re.sub(r"\.post\d+$", "", m.group(2))
         new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
         print(f"Updating {m.group(2)} → {new_version}")
+        uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
         exit_code = 0
         try:
             pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
-            uv_cmd = ["uv", "tool", "install", str(project_path), "--force"]
+            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
             if force_reinstall:
                 uv_cmd.append("--reinstall")
             result = subprocess.run(uv_cmd, cwd=project_path)
@@ -3618,7 +3619,7 @@ def cli():
             for venv_path_str in extra_venvs:
                 venv_path = Path(venv_path_str).expanduser()
                 if venv_path.exists():
-                    pip_cmd = ["uv", "pip", "install", str(project_path)]
+                    pip_cmd = [uv_bin, "pip", "install", str(project_path)]
                     if force_reinstall:
                         pip_cmd.append("--force-reinstall")
                     subprocess.run(
