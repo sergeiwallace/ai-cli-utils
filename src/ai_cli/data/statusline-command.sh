@@ -97,64 +97,8 @@ clock=$(date +%H:%M)
 _telem_tokens=$(( total_in + total_out ))
 ai quota record "${_telem_session}" "$(hostname)" "${model_id}" "${_telem_tokens}" >/dev/null 2>&1 &
 
-# --- Quota indicator (direct SQLite read — fast, no subprocess startup overhead) ---
-quota_part=$(python3 -c "
-import sqlite3, sys, os
-from datetime import datetime, timezone
-db = os.path.expanduser('~/.local/state/ai-cli/quota.db')
-if not os.path.exists(db): sys.exit(0)
-try:
-    con = sqlite3.connect(db)
-    now = datetime.now(timezone.utc)
-    week_secs = 604800
-    # Use dynamic anchor file when available (written by 'ai quota scrape').
-    # The file stores the *next* reset timestamp; subtract one week to get current week start.
-    # When the anchor is stale (reset already passed), advance forward by full weeks instead.
-    anchor_file = os.path.expanduser('~/.local/state/ai-cli/quota-reset-anchor.txt')
-    if os.path.exists(anchor_file):
-        next_reset = datetime.fromisoformat(open(anchor_file).read().strip().replace('Z', '+00:00'))
-        now_ts = now.timestamp()
-        nr_ts = next_reset.timestamp()
-        if nr_ts > now_ts:
-            week_start_ts = nr_ts - week_secs
-        else:
-            full_weeks = int((now_ts - nr_ts) / week_secs)
-            week_start_ts = nr_ts + full_weeks * week_secs
-        week_elapsed_pct = min((now.timestamp() - week_start_ts) / week_secs * 100, 100)
-    else:
-        anchor_ts = 1775282400  # 2026-04-04T06:00:00Z fallback
-        elapsed = now.timestamp() - anchor_ts
-        week_start_ts = anchor_ts + int(elapsed / week_secs) * week_secs
-        week_elapsed_pct = min((elapsed % week_secs) / week_secs * 100, 100)
-    week_start = datetime.fromtimestamp(week_start_ts, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-    rows = con.execute('SELECT usage_percent, snapshotted_at FROM quota_snapshots WHERE week_start=? ORDER BY snapshotted_at DESC LIMIT 3', (week_start,)).fetchall()
-    con.close()
-    if not rows: sys.exit(0)
-    pct = rows[0][0]
-    delta = pct - week_elapsed_pct
-    G,Y,R,C,E = '\033[32m','\033[33m','\033[31m','\033[36m','\033[0m'
-    pc = G if pct < 50 else Y if pct < 75 else R
-    # Seedling phase: first 24 h of each billing week — informational only, no alarms.
-    # Wider bands outside seedling: ≤10% over = on track, 10-25% = running hot, >25% = over.
-    if week_elapsed_pct < 14.3:
-        ic,dc = '\U0001f331',C       # 🌱 cyan — first day, no alarm
-    elif delta <= 10: ic,dc = '\u2705',G       # ✅ on track
-    elif delta <= 25: ic,dc = '\u26a0\ufe0f',Y # ⚠️ running hot
-    else:             ic,dc = '\U0001f6a8',R   # 🚨 significantly over
-    ar_char = '\u2192'  # → steady (default)
-    if len(rows) >= 3:
-        from datetime import datetime, timezone as tz
-        t0 = datetime.fromisoformat(rows[0][1].replace('Z','+00:00')).timestamp()
-        t1 = datetime.fromisoformat(rows[1][1].replace('Z','+00:00')).timestamp()
-        t2 = datetime.fromisoformat(rows[2][1].replace('Z','+00:00')).timestamp()
-        dt01 = (t0-t1)/3600; dt12 = (t1-t2)/3600
-        r1 = (rows[0][0]-rows[1][0])/dt01 if dt01>0 else 0
-        r2 = (rows[1][0]-rows[2][0])/dt12 if dt12>0 else 0
-        if r1-r2 > 1.0:    ar_char = '\u2191'  # ↑ accelerating
-        elif r1-r2 < -1.0: ar_char = '\u2193'  # ↓ decelerating
-    print(f'\U0001f4ca {pc}{pct:.0f}%{E} {ic} {dc}{ar_char}{abs(delta):.0f}%{E}')
-except Exception: pass
-" 2>/dev/null)
+# --- Quota indicator (via ai quota statusline-part — reads NATS KV when local SQLite is stale) ---
+quota_part=$(ai quota statusline-part 2>/dev/null)
 
 # --- Assemble ---
 sep="\033[2m│\033[0m"
