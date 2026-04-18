@@ -583,22 +583,14 @@ class TestScrapeUsageHiddenPane:
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             _scrape_usage_hidden_pane()
 
-        resize_idx = next(
-            (i for i, c in enumerate(cmds_seen) if c[0] == "resize-window"), None
-        )
+        resize_idx = next((i for i, c in enumerate(cmds_seen) if c[0] == "resize-window"), None)
         restore_idx = next(
-            (
-                i
-                for i, c in enumerate(cmds_seen)
-                if c[:3] == ["set-option", "window-size", "latest"]
-            ),
+            (i for i, c in enumerate(cmds_seen) if c[:3] == ["set-option", "window-size", "latest"]),
             None,
         )
         assert resize_idx is not None, "resize-window must be called"
         assert restore_idx is not None, "set-option window-size latest must be called"
-        assert restore_idx == resize_idx + 1, (
-            "set-option window-size latest must follow resize-window immediately"
-        )
+        assert restore_idx == resize_idx + 1, "set-option window-size latest must follow resize-window immediately"
 
 
 # --- _get_claude_usage_snapshot ---
@@ -842,7 +834,7 @@ class TestPublishQuotaSnapshot:
         return mock_client
 
     def _make_mock_client_with_js(self, connected: bool = True):
-        """Client with JetStream + KV mock for testing the quota.claude.weekly write."""
+        """Client with JetStream + KV mock for testing the quota.claude.current write."""
         mock_client = self._make_mock_client(connected=connected)
         mock_kv = MagicMock()
         kv_put_calls = []
@@ -864,8 +856,7 @@ class TestPublishQuotaSnapshot:
         mock_client = self._make_mock_client(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)
-        mock_client.publish.assert_called_once()
-        subject, payload = mock_client.publish.call_args[0]
+        subject, payload = mock_client.publish.call_args_list[0][0]
         assert subject == "quota.snapshot"
         assert payload["usage_percent"] == 55.0
         assert payload["session_pct"] == 10.0
@@ -884,7 +875,7 @@ class TestPublishQuotaSnapshot:
         mock_client = self._make_mock_client(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)
-        _, payload = mock_client.publish.call_args[0]
+        _, payload = mock_client.publish.call_args_list[0][0]
         assert payload["reset_at"] == "2026-04-18T09:59:00Z"
 
     def test_when_snapshot_has_no_reset_at_then_payload_has_none(self):
@@ -892,7 +883,7 @@ class TestPublishQuotaSnapshot:
         mock_client = self._make_mock_client(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)
-        _, payload = mock_client.publish.call_args[0]
+        _, payload = mock_client.publish.call_args_list[0][0]
         assert "reset_at" in payload
         assert payload["reset_at"] is None
 
@@ -925,7 +916,7 @@ class TestPublishQuotaSnapshot:
             _publish_quota_snapshot(snap)
         mock_kv.put.assert_called_once()
         key, value = mock_kv.put.call_args[0]
-        assert key == "quota.claude.weekly"
+        assert key == "quota.claude.current"
         import json as _json
 
         written = _json.loads(value.decode())
@@ -943,7 +934,52 @@ class TestPublishQuotaSnapshot:
         mock_kv.put = MagicMock(side_effect=fake_kv_put_raises)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)  # must not raise
-        mock_client.publish.assert_called_once()  # publish completed despite KV failure
+        # Both publishes (quota.snapshot + hw.events.usage.claude.snapshot) completed
+        # despite KV failure.
+        assert mock_client.publish.call_count == 2
+
+    def test_when_js_available_then_kv_key_is_quota_claude_current(self):
+        """KV key must be quota.claude.current (renamed from the older
+        quota.claude.weekly) so consumers read the latest snapshot from a
+        single canonical key."""
+        snap = QuotaSnapshot(weekly_all_models_pct=33.0)
+        mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)
+        key, _ = mock_kv.put.call_args[0]
+        assert key == "quota.claude.current"
+        # Regression guard: the old key name must not be written.
+        written_keys = [call.args[0] for call in mock_kv.put.call_args_list]
+        assert "quota.claude.weekly" not in written_keys
+
+    def test_when_publish_then_also_publishes_to_humanware_subject(self, monkeypatch):
+        """The second publish call targets hw.events.usage.claude.snapshot with a
+        UsageConsumer-compatible payload shape (id, machine, used_pct, raw, ...)."""
+        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+        snap = QuotaSnapshot(weekly_all_models_pct=77.5, reset_at="2026-04-18T09:59:00Z")
+        mock_client = self._make_mock_client(connected=True)
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(snap)
+
+        subjects = [call.args[0] for call in mock_client.publish.call_args_list]
+        assert "hw.events.usage.claude.snapshot" in subjects
+
+        hw_call = next(
+            call for call in mock_client.publish.call_args_list if call.args[0] == "hw.events.usage.claude.snapshot"
+        )
+        hw_payload = hw_call.args[1]
+        assert hw_payload["machine"] == "hetzner"
+        assert hw_payload["used_pct"] == 77.5
+        assert hw_payload["tokens_used"] is None
+        assert hw_payload["tokens_limit"] is None
+        assert hw_payload["reset_at"] == "2026-04-18T09:59:00Z"
+        assert hw_payload["scraped_at"].endswith("Z")
+        assert isinstance(hw_payload["id"], str) and len(hw_payload["id"]) > 0
+        assert isinstance(hw_payload["raw"], str)  # JSON-serialized original payload
+        import json as _json
+
+        raw_parsed = _json.loads(hw_payload["raw"])
+        assert raw_parsed["usage_percent"] == 77.5
 
 
 # --- quota_status ---

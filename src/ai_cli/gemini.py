@@ -125,6 +125,8 @@ class GeminiResult:
     total_tokens: int | None = None
     is_deep_research: bool = False
     attempts: list = field(default_factory=list)
+    event_id: str = ""
+    machine: str = ""
 
 
 @dataclass
@@ -154,13 +156,65 @@ def _log(msg: str, *, quiet: bool = False, verbose: bool = False, is_verbose: bo
         print(msg, file=sys.stderr)
 
 
-def _log_to_file(result: GeminiResult, prompt: str, output_path: str | None):
+def _publish_gemini_event_nats(entry: dict) -> None:
+    """Fire-and-forget NATS publish of a Gemini usage event.
+
+    Published to hw.events.usage.gemini.event so the humanware UsageConsumer
+    can ingest it into Postgres. Runs in a daemon thread — never blocks callers.
+    Silently no-ops if NATS is unavailable or not configured.
+    """
+    import asyncio
+    import threading as _threading
+
+    from .messaging import NATSClient
+
+    try:
+        from .main import load_config as _load_config
+
+        cfg = _load_config()
+        nats_servers = cfg.get("messaging", {}).get("nats_servers")
+    except Exception:
+        nats_servers = None
+
+    if not nats_servers:
+        return
+
+    async def _do() -> None:
+        client = NATSClient(servers=nats_servers)
+        try:
+            await client.connect()
+            if client.nc:
+                await client.publish("hw.events.usage.gemini.event", entry)
+        finally:
+            await client.close()
+
+    def _run() -> None:
+        try:
+            asyncio.run(_do())
+        except Exception:
+            pass
+
+    _threading.Thread(target=_run, daemon=True).start()
+
+
+def _log_to_file(result: GeminiResult, prompt: str, output_path: str | None) -> None:
     """Append a structured log entry to the log file."""
+    import uuid as _uuid
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / f"{time.strftime('%Y-%m-%d')}.jsonl"
 
+    event_id = str(_uuid.uuid4())
+    machine = os.environ.get("AI_CLI_HOST", "")
+    occurred_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    source_quality = "suspected_test" if len(prompt) < 20 else "ok"
+
     entry = {
+        "id": event_id,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "occurred_at": occurred_at,
+        "machine": machine,
+        "provider": "gemini",
         "model": result.model,
         "tier": result.tier,
         "tier_name": result.tier_name,
@@ -174,6 +228,7 @@ def _log_to_file(result: GeminiResult, prompt: str, output_path: str | None):
         "prompt_chars": len(prompt),
         "response_chars": len(result.content),
         "output_path": output_path,
+        "source_quality": source_quality,
         "attempts": [
             {
                 "tier": a.tier,
@@ -189,6 +244,8 @@ def _log_to_file(result: GeminiResult, prompt: str, output_path: str | None):
 
     with open(log_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+    _publish_gemini_event_nats(entry)
 
 
 # ---------------------------------------------------------------------------

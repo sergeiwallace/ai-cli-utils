@@ -101,6 +101,77 @@ class TestLogToFile:
         assert len(entry["attempts"]) == 1
         assert entry["attempts"][0]["error"] == "timeout"
 
+    def test_log_to_file_when_called_then_includes_humanware_fields(self, tmp_path, monkeypatch):
+        """Entry must include id, machine, provider, occurred_at, source_quality."""
+        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+        with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+            with patch("ai_cli.gemini._publish_gemini_event_nats"):
+                result = GeminiResult(
+                    content="response text",
+                    model="flash",
+                    tier=1,
+                    tier_name="oauth",
+                    success=True,
+                )
+                _log_to_file(result, "a long enough prompt for normal quality", "/tmp/out.md")
+
+        entry = json.loads(list(tmp_path.glob("*.jsonl"))[0].read_text().strip())
+        assert "id" in entry and len(entry["id"]) > 0
+        assert entry["machine"] == "hetzner"
+        assert entry["provider"] == "gemini"
+        assert "occurred_at" in entry and entry["occurred_at"].endswith("Z")
+        assert entry["source_quality"] == "ok"
+
+    def test_log_to_file_when_prompt_long_then_source_quality_ok(self, tmp_path):
+        """Prompts of 20 or more chars mark source_quality=ok."""
+        with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+            with patch("ai_cli.gemini._publish_gemini_event_nats"):
+                result = GeminiResult(model="flash", success=True)
+                _log_to_file(result, "x" * 20, None)  # boundary: len == 20
+        entry = json.loads(list(tmp_path.glob("*.jsonl"))[0].read_text().strip())
+        assert entry["source_quality"] == "ok"
+
+    def test_log_to_file_when_prompt_short_then_source_quality_suspected_test(self, tmp_path):
+        """Prompts shorter than 20 chars mark source_quality=suspected_test."""
+        with patch("ai_cli.gemini.LOG_DIR", tmp_path):
+            with patch("ai_cli.gemini._publish_gemini_event_nats"):
+                result = GeminiResult(model="flash", success=True)
+                _log_to_file(result, "short", None)
+        entry = json.loads(list(tmp_path.glob("*.jsonl"))[0].read_text().strip())
+        assert entry["source_quality"] == "suspected_test"
+
+
+# --- _publish_gemini_event_nats tests ---
+
+
+class TestPublishGeminiEventNats:
+    def test_publish_when_no_nats_servers_configured_then_returns_silently(self):
+        """No nats_servers in config → returns without spawning a thread or raising."""
+        from ai_cli.gemini import _publish_gemini_event_nats
+
+        with patch("ai_cli.main.load_config", return_value={"messaging": {}}):
+            with patch("threading.Thread") as mock_thread:
+                _publish_gemini_event_nats({"id": "x", "provider": "gemini"})
+        mock_thread.assert_not_called()
+
+    def test_publish_when_nats_servers_empty_list_then_returns_silently(self):
+        """Empty nats_servers list is treated as no-config."""
+        from ai_cli.gemini import _publish_gemini_event_nats
+
+        with patch("ai_cli.main.load_config", return_value={"messaging": {"nats_servers": []}}):
+            with patch("threading.Thread") as mock_thread:
+                _publish_gemini_event_nats({"id": "x", "provider": "gemini"})
+        mock_thread.assert_not_called()
+
+    def test_publish_when_load_config_raises_then_returns_silently(self):
+        """A config-load failure must not propagate; publish becomes a no-op."""
+        from ai_cli.gemini import _publish_gemini_event_nats
+
+        with patch("ai_cli.main.load_config", side_effect=RuntimeError("boom")):
+            with patch("threading.Thread") as mock_thread:
+                _publish_gemini_event_nats({"id": "x", "provider": "gemini"})
+        mock_thread.assert_not_called()
+
 
 # --- _try_gemini_cli tests ---
 

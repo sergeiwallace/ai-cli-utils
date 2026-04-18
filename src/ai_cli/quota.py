@@ -811,6 +811,8 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
     SQLite DB. Fire-and-forget — silently no-ops if NATS is unavailable.
     """
     import asyncio
+    import os
+    import uuid as _uuid
 
     from .messaging import NATSClient
 
@@ -837,13 +839,25 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
             await client.connect()
             if client.nc:
                 await client.publish("quota.snapshot", payload)
+                # Publish to humanware subject for UsageConsumer ingest
+                hw_payload = {
+                    "id": str(_uuid.uuid4()),
+                    "machine": os.environ.get("AI_CLI_HOST", ""),
+                    "used_pct": snapshot.weekly_all_models_pct,
+                    "tokens_used": None,
+                    "tokens_limit": None,
+                    "reset_at": snapshot.reset_at,
+                    "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "raw": json.dumps(payload),
+                }
+                await client.publish("hw.events.usage.claude.snapshot", hw_payload)
                 # Write latest snapshot to NATS KV so other services can read current
                 # quota without SSHing to the local DB. Only the publisher (Hetzner)
                 # writes this key — subscribers never re-publish.
                 if client.js:
                     try:
                         kv = await client.js.key_value("hw_state")
-                        await kv.put("quota.claude.weekly", json.dumps(payload).encode())
+                        await kv.put("quota.claude.current", json.dumps(payload).encode())
                     except Exception:
                         pass
         finally:
