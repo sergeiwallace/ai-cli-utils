@@ -607,7 +607,7 @@ class TestRunTransportLoop:
 class TestEnsureTailscaleUp:
     def test_when_host_already_reachable_then_returns_true(self):
         async def run():
-            with patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=True):
+            with patch("ai_cli.transport.asyncio.to_thread", new_callable=AsyncMock, return_value=True):
                 return await _ensure_tailscale_up("100.64.0.1")
 
         assert asyncio.run(run()) is True
@@ -615,7 +615,7 @@ class TestEnsureTailscaleUp:
     def test_when_host_unreachable_and_not_darwin_then_returns_false(self):
         async def run():
             with (
-                patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
+                patch("ai_cli.transport.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
                 patch("ai_cli.main.sys.platform", "linux"),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=0)
@@ -641,9 +641,9 @@ class TestEnsureTailscaleUp:
                 return bool_results[idx]
 
             with (
-                patch("ai_cli.main.asyncio.to_thread", side_effect=mock_to_thread),
+                patch("ai_cli.transport.asyncio.to_thread", side_effect=mock_to_thread),
                 patch("ai_cli.main.sys.platform", "darwin"),
-                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport.asyncio.sleep", new_callable=AsyncMock),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)
 
@@ -669,9 +669,9 @@ class TestEnsureTailscaleUp:
                 return bool_results[idx]
 
             with (
-                patch("ai_cli.main.asyncio.to_thread", side_effect=mock_to_thread),
+                patch("ai_cli.transport.asyncio.to_thread", side_effect=mock_to_thread),
                 patch("ai_cli.main.sys.platform", "darwin"),
-                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport.asyncio.sleep", new_callable=AsyncMock),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)
 
@@ -682,9 +682,9 @@ class TestEnsureTailscaleUp:
     def test_when_tailscale_does_not_come_up_within_timeout_then_returns_false(self):
         async def run():
             with (
-                patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
+                patch("ai_cli.transport.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
                 patch("ai_cli.main.sys.platform", "darwin"),
-                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport.asyncio.sleep", new_callable=AsyncMock),
                 patch("ai_cli.main.time.monotonic", side_effect=[0.0, 0.0, 100.0]),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)

@@ -1858,7 +1858,7 @@ class TestTunnel:
         mock_proc = MagicMock()
         mock_proc.pid = 12345
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
         ):
@@ -1873,7 +1873,7 @@ class TestTunnel:
         mock_proc = MagicMock()
         mock_proc.pid = 99
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
         ):
@@ -1885,7 +1885,7 @@ class TestTunnel:
     def test_cmd_tunnel_start_when_already_running_then_skips(self, tmp_path):
         (tmp_path / "tunnel-9222.pid").write_text("5555")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
             patch("subprocess.Popen") as mock_popen,
         ):
@@ -1897,7 +1897,7 @@ class TestTunnel:
         mock_proc = MagicMock()
         mock_proc.pid = 7777
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill", side_effect=ProcessLookupError),
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
@@ -1910,7 +1910,7 @@ class TestTunnel:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
         ):
@@ -1923,7 +1923,7 @@ class TestTunnel:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
         ):
@@ -1933,7 +1933,7 @@ class TestTunnel:
 
     def test_cmd_tunnel_start_when_autossh_missing_then_exits_1(self, tmp_path):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value=None),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1943,7 +1943,7 @@ class TestTunnel:
     def test_cmd_tunnel_stop_when_pid_file_exists_then_kills_and_removes(self, tmp_path):
         (tmp_path / "tunnel-9222.pid").write_text("5678")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill") as mock_kill,
         ):
             _cmd_tunnel_stop(9222)
@@ -1951,13 +1951,13 @@ class TestTunnel:
         assert not (tmp_path / "tunnel-9222.pid").exists()
 
     def test_cmd_tunnel_stop_when_no_pid_file_then_silent(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
             _cmd_tunnel_stop(9222)
 
     def test_cmd_tunnel_status_lists_active_tunnels(self, tmp_path, capsys):
         (tmp_path / "tunnel-9222.pid").write_text("4242")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
         ):
             _cmd_tunnel_status()
@@ -1980,7 +1980,7 @@ class TestTunnel:
     def test_ensure_nats_tunnel_when_tunnel_port_configured_then_starts_tunnel(self, tmp_path):
         cfg = {**_TUNNEL_CONFIG, "messaging": {"tunnel_port": 4222}}
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=MagicMock(pid=999)) as mock_popen,
         ):
@@ -1996,7 +1996,7 @@ class TestTunnel:
         (tmp_path / "tunnel-4222.pid").write_text("9999")
         cfg = {**_TUNNEL_CONFIG, "messaging": {"tunnel_port": 4222}}
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
             patch("subprocess.Popen") as mock_popen,
         ):

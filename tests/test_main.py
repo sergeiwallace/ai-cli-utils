@@ -435,7 +435,7 @@ class TestAutoUpdateIfStaleFailure:
 class TestCmdTunnelStartNoHost:
     def test_when_remote_host_not_set_then_exits_1(self, tmp_path, capsys):
         with (
-            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/autossh"),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -451,7 +451,7 @@ class TestCmdTunnelStopProcessDead:
     def test_when_process_already_dead_then_cleans_up_pid_file(self, tmp_path, capsys):
         pid_file = tmp_path / "tunnel-9222.pid"
         pid_file.write_text("99999")
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
             with patch("os.kill", side_effect=ProcessLookupError):
                 _cmd_tunnel_stop(9222)
         assert not pid_file.exists()
@@ -463,7 +463,7 @@ class TestCmdTunnelStopProcessDead:
 
 class TestCmdTunnelStatus:
     def test_when_no_tunnel_pid_files_then_prints_no_tunnels(self, tmp_path, capsys):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
             _cmd_tunnel_status()
         assert "No tunnels registered" in capsys.readouterr().out
 
@@ -471,7 +471,7 @@ class TestCmdTunnelStatus:
         pid_file = tmp_path / "tunnel-4222.pid"
         pid_file.write_text("99999")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill", side_effect=ProcessLookupError),
         ):
             _cmd_tunnel_status()
@@ -488,8 +488,8 @@ class TestCmdSignalWatchStart:
         mock_client = MagicMock()
         mock_client.send_message.return_value = {"status": "ok"}
         with (
-            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _cmd_signal_watch_start("myproject", "session-1")
@@ -502,8 +502,8 @@ class TestCmdSignalWatchStart:
         mock_client = MagicMock()
         mock_client.send_message.return_value = {"status": "ok"}
         with (
-            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _cmd_signal_watch_start("myproject", "session-1")
@@ -516,7 +516,7 @@ class TestCmdSignalWatchStatus:
         mock_client = MagicMock()
         mock_client.send_message.return_value = {"statuses": {"other-watcher": "active"}}
         with (
-            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _cmd_signal_watch_status()

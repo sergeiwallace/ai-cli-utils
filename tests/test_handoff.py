@@ -1688,7 +1688,7 @@ class TestSignalWatchCircus:
         (tmp_path / "circus.endpoint").touch()
         client = self._mock_client()
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", return_value=client),
             patch("subprocess.Popen") as mock_popen,
         ):
@@ -1703,7 +1703,7 @@ class TestSignalWatchCircus:
         (tmp_path / "circus.pubsub").touch()
 
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", return_value=self._mock_client()),
             patch("subprocess.Popen") as mock_popen,
             patch("shutil.which", return_value="/usr/bin/circusd"),
@@ -1728,7 +1728,7 @@ class TestSignalWatchCircus:
             return self._mock_client()
 
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", side_effect=client_factory),
             patch("subprocess.Popen") as mock_popen,
             patch("shutil.which", return_value="/usr/bin/circusd"),
@@ -1763,7 +1763,7 @@ class TestSignalWatchCircus:
         client = self._mock_client()
         client.send_message.side_effect = [Exception("not found"), None]
         with (
-            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=client),
             patch("shutil.which", return_value="/usr/bin/ai"),
         ):
@@ -1775,7 +1775,7 @@ class TestSignalWatchCircus:
     def test_cmd_signal_watch_stop_when_circusd_running(self, tmp_path):
         client = self._mock_client()
         with (
-            patch("ai_cli.handoff.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", return_value=client),
         ):
             _cmd_signal_watch_stop("c-sw-1")
@@ -1783,7 +1783,7 @@ class TestSignalWatchCircus:
 
     def test_cmd_signal_watch_stop_when_circusd_not_running_then_silent(self, tmp_path):
         with (
-            patch("ai_cli.handoff.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", side_effect=Exception("zmq error")),
         ):
             _cmd_signal_watch_stop("c-sw-1")

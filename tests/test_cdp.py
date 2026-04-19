@@ -84,8 +84,8 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 12345
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
         ):
@@ -99,8 +99,8 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 12345
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
         ):
@@ -112,8 +112,8 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 99
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen", side_effect=OSError("refused")),
             patch("ai_cli.main.time.monotonic", side_effect=[0.0, 10.0]),
@@ -129,8 +129,8 @@ class TestCmdCdpStart:
         mock_proc.pid = 99
         # urlopen raises once, then succeeds; monotonic never exceeds deadline
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen", side_effect=[OSError("refused"), None]),
             patch("ai_cli.main.time.monotonic", side_effect=[0.0, 0.1, 0.2]),
@@ -145,7 +145,7 @@ class TestCmdCdpStart:
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("55555")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
             patch("subprocess.Popen") as mock_popen,
         ):
@@ -160,9 +160,9 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 66666
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill", side_effect=ProcessLookupError),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
         ):
@@ -172,8 +172,8 @@ class TestCmdCdpStart:
 
     def test_when_no_chrome_found_then_exits_1(self, tmp_path, capsys):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value=None),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value=None),
         ):
             with pytest.raises(SystemExit) as exc:
                 _cmd_cdp_start(9222, True, {})
@@ -185,8 +185,8 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch("urllib.request.urlopen"),
         ):
@@ -199,8 +199,8 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch("urllib.request.urlopen"),
         ):
@@ -213,8 +213,8 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
         ):
@@ -226,11 +226,11 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
-            patch("ai_cli.main._cmd_tunnel_start") as mock_tunnel,
+            patch("ai_cli.tunnel._cmd_tunnel_start") as mock_tunnel,
         ):
             _cmd_cdp_start(9222, True, {}, tunnel=True, forward=False)
 
@@ -240,11 +240,11 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
-            patch("ai_cli.main._cmd_tunnel_start") as mock_tunnel,
+            patch("ai_cli.tunnel._cmd_tunnel_start") as mock_tunnel,
         ):
             _cmd_cdp_start(9222, True, {}, tunnel=True, forward=True)
 
@@ -254,11 +254,11 @@ class TestCmdCdpStart:
         mock_proc = MagicMock()
         mock_proc.pid = 1
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
-            patch("ai_cli.main._cmd_tunnel_start") as mock_tunnel,
+            patch("ai_cli.tunnel._cmd_tunnel_start") as mock_tunnel,
         ):
             _cmd_cdp_start(9222, True, {})
 
@@ -275,7 +275,7 @@ class TestCmdCdpStop:
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill") as mock_kill,
         ):
             _cmd_cdp_stop(9222)
@@ -286,7 +286,7 @@ class TestCmdCdpStop:
 
     def test_when_no_pid_file_then_prints_message_and_returns(self, tmp_path, capsys):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill") as mock_kill,
         ):
             _cmd_cdp_stop(9222)
@@ -298,7 +298,7 @@ class TestCmdCdpStop:
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill", side_effect=ProcessLookupError),
         ):
             _cmd_cdp_stop(9222)
@@ -309,7 +309,7 @@ class TestCmdCdpStop:
         pid_file = tmp_path / "cdp-9333.pid"
         pid_file.write_text("77777")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill") as mock_kill,
         ):
             _cmd_cdp_stop(9333)
@@ -320,9 +320,9 @@ class TestCmdCdpStop:
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
-            patch("ai_cli.main._cmd_tunnel_stop") as mock_tunnel_stop,
+            patch("ai_cli.tunnel._cmd_tunnel_stop") as mock_tunnel_stop,
         ):
             _cmd_cdp_stop(9222, tunnel=True)
 
@@ -332,9 +332,9 @@ class TestCmdCdpStop:
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
-            patch("ai_cli.main._cmd_tunnel_stop") as mock_tunnel_stop,
+            patch("ai_cli.tunnel._cmd_tunnel_stop") as mock_tunnel_stop,
         ):
             _cmd_cdp_stop(9222)
 
@@ -348,7 +348,7 @@ class TestCmdCdpStop:
 
 class TestCmdCdpStatus:
     def test_when_no_pid_files_then_prints_none_registered(self, tmp_path, capsys):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
             _cmd_cdp_status()
 
         assert "No CDP processes registered" in capsys.readouterr().out
@@ -356,7 +356,7 @@ class TestCmdCdpStatus:
     def test_when_alive_process_then_reports_alive(self, tmp_path, capsys):
         (tmp_path / "cdp-9222.pid").write_text("12345")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
         ):
             _cmd_cdp_status()
@@ -367,7 +367,7 @@ class TestCmdCdpStatus:
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill", side_effect=ProcessLookupError),
         ):
             _cmd_cdp_status()
@@ -379,7 +379,7 @@ class TestCmdCdpStatus:
         (tmp_path / "cdp-9222.pid").write_text("111")
         (tmp_path / "cdp-9333.pid").write_text("222")
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("os.kill"),
         ):
             _cmd_cdp_status()
