@@ -169,7 +169,7 @@ class TestRemoteSessionIterm2Emit:
                 patch("ai_cli.main.trigger_background_update"),
                 patch("ai_cli.main._assign_iterm2_color_slot", mock_slot),
                 patch("ai_cli.main._emit_iterm2_profile_setup", mock_emit),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
                 patch("ai_cli.main._ensure_vpn_watcher"),
                 patch("ai_cli.main._maybe_stop_vpn_watcher"),

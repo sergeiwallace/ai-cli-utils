@@ -388,7 +388,7 @@ class TestGetProjectPrefixRegistryMatch:
         registry_file = tmp_path / "registry.toml"
         registry_file.write_bytes(b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n')
 
-        with patch("ai_cli.main.get_current_project_name", return_value="myproject"):
+        with patch("ai_cli.session.get_current_project_name", return_value="myproject"):
             with patch("ai_cli.config._get_project_registry_path", return_value=registry_file):
                 from ai_cli.config import load_project_registry
 
@@ -459,7 +459,7 @@ class TestProjectRegistryExceptionBranches:
         registry = tmp_path / "broken.toml"
         registry.write_text("not valid toml {{{")
         with patch("ai_cli.config._get_project_registry_path", return_value=registry):
-            with patch("ai_cli.main.get_current_project_name", return_value="myproject"):
+            with patch("ai_cli.session.get_current_project_name", return_value="myproject"):
                 from ai_cli.config import load_project_registry
 
                 load_project_registry(_force=True)

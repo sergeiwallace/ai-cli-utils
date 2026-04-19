@@ -141,9 +141,9 @@ class TestLoadIterm2Config:
 class TestAssignIterm2ColorSlot:
     def test_when_iterm2_disabled_via_config_then_returns_none(self):
         with (
-            patch("ai_cli.main._is_iterm2", return_value=True),
+            patch("ai_cli.iterm2._is_iterm2", return_value=True),
             patch(
-                "ai_cli.main._load_iterm2_config",
+                "ai_cli.iterm2._load_iterm2_config",
                 return_value={"iterm2": {"enabled": False}},
             ),
         ):
@@ -152,9 +152,9 @@ class TestAssignIterm2ColorSlot:
 
     def test_when_color_disabled_via_config_then_returns_none(self):
         with (
-            patch("ai_cli.main._is_iterm2", return_value=True),
+            patch("ai_cli.iterm2._is_iterm2", return_value=True),
             patch(
-                "ai_cli.main._load_iterm2_config",
+                "ai_cli.iterm2._load_iterm2_config",
                 return_value={"iterm2": {"enabled": True, "color": {"enabled": False}}},
             ),
         ):
@@ -163,9 +163,9 @@ class TestAssignIterm2ColorSlot:
 
     def test_when_palette_empty_then_returns_none(self):
         with (
-            patch("ai_cli.main._is_iterm2", return_value=True),
+            patch("ai_cli.iterm2._is_iterm2", return_value=True),
             patch(
-                "ai_cli.main._load_iterm2_config",
+                "ai_cli.iterm2._load_iterm2_config",
                 return_value={
                     "iterm2": {
                         "enabled": True,
@@ -185,9 +185,9 @@ class TestAssignIterm2ColorSlot:
         (state_dir / "color-leases.json").write_text("CORRUPT")
         cfg = make_iterm2_config(palette={"red": "#e74c3c", "blue": "#1e88e5"})
         with (
-            patch("ai_cli.main._is_iterm2", return_value=True),
-            patch("ai_cli.main._iterm2_state_dir", return_value=state_dir),
-            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch("ai_cli.iterm2._is_iterm2", return_value=True),
+            patch("ai_cli.iterm2._iterm2_state_dir", return_value=state_dir),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg),
         ):
             result = _assign_iterm2_color_slot("session-1", "c", "myproject")
         assert result is not None
@@ -203,7 +203,7 @@ class TestReleaseIterm2ColorSlot:
         state_dir.mkdir(parents=True)
         (state_dir / "color-leases.json").write_text("CORRUPT")
         (state_dir / "color-leases.lock").touch()
-        with patch("ai_cli.main._iterm2_state_dir", return_value=state_dir):
+        with patch("ai_cli.iterm2._iterm2_state_dir", return_value=state_dir):
             _release_iterm2_color_slot("session-1")
         # Should have written a valid JSON file after handling corrupt input
         data = json.loads((state_dir / "color-leases.json").read_text())
@@ -605,7 +605,7 @@ class TestCliDispatchExtended:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
-            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg),
             patch.dict("sys.modules", {"ai_cli.icon_generator": mock_ig}),
             patch("sys.stdout"),
         ):
@@ -699,7 +699,7 @@ class TestCliDispatchExtended:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
-            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg),
             patch.dict("sys.modules", {"ai_cli.icon_generator": mock_ig}),
             patch("sys.stdout"),
         ):
@@ -715,7 +715,7 @@ class TestCliDispatchExtended:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
-            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -729,7 +729,7 @@ class TestCliDispatchExtended:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
-            patch("ai_cli.main._load_iterm2_config", return_value=cfg),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg),
             patch("ai_cli.icon_generator.cleanup_session_files", side_effect=RuntimeError("icon err")),
             patch("sys.stdout"),
         ):
