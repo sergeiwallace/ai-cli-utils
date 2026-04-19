@@ -398,9 +398,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_then_calls_cmd_cdp_start(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "cdp", "start"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -411,9 +411,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_with_port_flag_then_uses_custom_port(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "cdp", "start", "--port", "9333"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -424,9 +424,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_with_short_port_flag_then_uses_custom_port(self):
         with (
             patch("sys.argv", ["ai", "cdp", "start", "-p", "8888"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -437,9 +437,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_with_no_incognito_then_passes_false(self):
         with (
             patch("sys.argv", ["ai", "cdp", "start", "--no-incognito"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -450,9 +450,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_with_short_no_incognito_flag_then_passes_false(self):
         with (
             patch("sys.argv", ["ai", "cdp", "start", "-I"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -463,9 +463,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_and_config_has_port_then_uses_config_port(self):
         with (
             patch("sys.argv", ["ai", "cdp", "start"]),
-            patch("ai_cli.main.load_config", return_value={"cdp": {"port": 9999}}),
+            patch("ai_cli.config.load_config", return_value={"cdp": {"port": 9999}}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -476,9 +476,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_with_tunnel_flag_then_passes_tunnel_true(self):
         with (
             patch("sys.argv", ["ai", "cdp", "start", "--tunnel"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -489,9 +489,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_with_short_t_tunnel_flag_then_passes_tunnel_true(self):
         with (
             patch("sys.argv", ["ai", "cdp", "start", "-t"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -502,9 +502,9 @@ class TestCdpDispatch:
     def test_when_cdp_start_with_tunnel_and_forward_flags_then_passes_both(self):
         with (
             patch("sys.argv", ["ai", "cdp", "start", "-t", "-L"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_start") as mock_start,
+            patch("ai_cli.tunnel._cmd_cdp_start") as mock_start,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -515,9 +515,9 @@ class TestCdpDispatch:
     def test_when_cdp_stop_then_calls_cmd_cdp_stop(self):
         with (
             patch("sys.argv", ["ai", "cdp", "stop"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_stop") as mock_stop,
+            patch("ai_cli.tunnel._cmd_cdp_stop") as mock_stop,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -528,9 +528,9 @@ class TestCdpDispatch:
     def test_when_cdp_stop_with_port_flag_then_uses_custom_port(self):
         with (
             patch("sys.argv", ["ai", "cdp", "stop", "--port", "9333"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_stop") as mock_stop,
+            patch("ai_cli.tunnel._cmd_cdp_stop") as mock_stop,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -541,9 +541,9 @@ class TestCdpDispatch:
     def test_when_cdp_stop_with_short_port_flag_then_uses_custom_port(self):
         with (
             patch("sys.argv", ["ai", "cdp", "stop", "-p", "7777"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_stop") as mock_stop,
+            patch("ai_cli.tunnel._cmd_cdp_stop") as mock_stop,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -554,9 +554,9 @@ class TestCdpDispatch:
     def test_when_cdp_stop_with_tunnel_flag_then_passes_tunnel_true(self):
         with (
             patch("sys.argv", ["ai", "cdp", "stop", "--tunnel"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_stop") as mock_stop,
+            patch("ai_cli.tunnel._cmd_cdp_stop") as mock_stop,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -567,9 +567,9 @@ class TestCdpDispatch:
     def test_when_cdp_stop_with_short_t_tunnel_flag_then_passes_tunnel_true(self):
         with (
             patch("sys.argv", ["ai", "cdp", "stop", "-t"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_stop") as mock_stop,
+            patch("ai_cli.tunnel._cmd_cdp_stop") as mock_stop,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -580,9 +580,9 @@ class TestCdpDispatch:
     def test_when_cdp_status_then_calls_cmd_cdp_status(self):
         with (
             patch("sys.argv", ["ai", "cdp", "status"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_cdp_status") as mock_status,
+            patch("ai_cli.tunnel._cmd_cdp_status") as mock_status,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -593,7 +593,7 @@ class TestCdpDispatch:
     def test_when_cdp_unknown_action_then_exits_1(self, capsys):
         with (
             patch("sys.argv", ["ai", "cdp", "restart"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -606,7 +606,7 @@ class TestCdpDispatch:
     def test_when_cdp_no_action_then_exits_1(self, capsys):
         with (
             patch("sys.argv", ["ai", "cdp"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
         ):
             with pytest.raises(SystemExit) as exc:

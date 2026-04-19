@@ -424,9 +424,9 @@ class TestProjectPathSeparatorValidation:
                 with patch("ai_cli.config.get_project_aliases", return_value={}):
                     with patch("ai_cli.config.get_current_project_name", return_value=""):
                         with patch("ai_cli.config._get_project_prefix_by_name", return_value="my"):
-                            with patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop):
-                                with patch("ai_cli.main._ensure_vpn_watcher"):
-                                    with patch("ai_cli.main._maybe_stop_vpn_watcher"):
+                            with patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop):
+                                with patch("ai_cli.transport._ensure_vpn_watcher"):
+                                    with patch("ai_cli.transport._maybe_stop_vpn_watcher"):
                                         with pytest.raises(SystemExit) as exc:
                                             from ai_cli.main import cli
 

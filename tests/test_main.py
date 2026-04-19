@@ -622,7 +622,7 @@ class TestCliDispatchExtended:
             patch("sys.argv", ["ai", "tunnel", "stop", "9222"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_tunnel_stop") as mock_stop,
+            patch("ai_cli.tunnel._cmd_tunnel_stop") as mock_stop,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -638,7 +638,7 @@ class TestCliDispatchExtended:
             patch("sys.argv", ["ai", "tunnel", "status"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_tunnel_status") as mock_status,
+            patch("ai_cli.tunnel._cmd_tunnel_status") as mock_status,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -662,7 +662,7 @@ class TestCliDispatchExtended:
             patch("sys.argv", ["ai", "signal-watch", "status"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._cmd_signal_watch_status") as mock_status,
+            patch("ai_cli.process_manager._cmd_signal_watch_status") as mock_status,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -742,7 +742,7 @@ class TestCliDispatchExtended:
         """line 2665: --project-prefix arg is used directly as project_prefix."""
         with (
             patch("sys.argv", ["ai", "c", "--project-prefix", "myprefix", "-R"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -754,7 +754,7 @@ class TestCliDispatchExtended:
         # args.name is empty (no positional); --unrecognized-flag lands in unknown
         with (
             patch("sys.argv", ["ai", "c", "--project-prefix", "myprefix", "-R", "--unrecognized"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -799,7 +799,7 @@ class TestEnsureNatsTunnel:
         config = {"messaging": {"tunnel_port": 4222}}
         with (
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._cmd_tunnel_start", side_effect=SystemExit(1)),
+            patch("ai_cli.tunnel._cmd_tunnel_start", side_effect=SystemExit(1)),
         ):
             _ensure_nats_tunnel(config)  # must not raise or propagate SystemExit
 

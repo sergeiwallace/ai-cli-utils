@@ -24,7 +24,7 @@ def _run_cli_with_args(argv, config_override=None):
     config = config_override or {}
     with (
         patch("sys.argv", argv),
-        patch("ai_cli.main.load_config", return_value=config),
+        patch("ai_cli.config.load_config", return_value=config),
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main.trigger_background_update"),
     ):
@@ -45,7 +45,7 @@ def run_cli(argv, config=None, env=None):
     _env = env or {}
     with (
         patch("sys.argv", argv),
-        patch("ai_cli.main.load_config", return_value=_config),
+        patch("ai_cli.config.load_config", return_value=_config),
         patch("ai_cli.main.trigger_background_update"),
         patch.dict(os.environ, _env),
     ):

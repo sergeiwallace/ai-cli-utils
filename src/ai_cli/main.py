@@ -10,7 +10,23 @@ from pathlib import Path
 
 import click
 
-from .config import (  # noqa: F401 — re-exported for backwards compatibility with tests
+# Module aliases used by the call sites throughout this file. Tests can
+# patch on the source module (``patch("ai_cli.config.load_config")``) and
+# the dynamic attribute lookup here picks up the mock. The underscore
+# prefix avoids clashing with the ``config: dict`` parameter name used by
+# several helpers in this file.
+from . import config as _config
+from . import handoff as _handoff
+from . import iterm2 as _iterm2
+from . import process_manager as _process_manager
+from . import session as _session
+from . import session_script as _session_script
+from . import transport as _transport
+from . import tunnel as _tunnel
+
+# Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
+# call sites in the test suite keep working.
+from .config import (  # noqa: E402,F401
     DEFAULT_CONFIG,
     WORKTREE_DIR,
     _find_project_dir,
@@ -33,7 +49,7 @@ from .config import (  # noqa: F401 — re-exported for backwards compatibility 
     save_session_map,
     validate_registry_completeness,
 )
-from .iterm2 import (  # noqa: F401 — re-exported for backwards compatibility with tests
+from .iterm2 import (  # noqa: E402,F401
     _DEFAULT_ITERM2_CONFIG,
     _assign_iterm2_color_slot,
     _configure_tmux_for_iterm2,
@@ -46,7 +62,7 @@ from .iterm2 import (  # noqa: F401 — re-exported for backwards compatibility 
     _release_iterm2_color_slot,
     _resolve_iterm2_config,
 )
-from .handoff import (  # noqa: F401 — re-exported for backwards compatibility with tests
+from .handoff import (  # noqa: E402,F401
     _claim_handoff_for_signal,
     _find_best_handoff,
     _format_handoff_summary,
@@ -57,7 +73,7 @@ from .handoff import (  # noqa: F401 — re-exported for backwards compatibility
     complete_handoff,
     post_handoff,
 )
-from .session import (  # noqa: F401 — re-exported for backwards compatibility with tests
+from .session import (  # noqa: E402,F401
     _AI_SESSION_RE,
     _checkpoint_to_chat_uuid,
     _convert_checkpoint_to_chat,
@@ -76,7 +92,7 @@ from .session import (  # noqa: F401 — re-exported for backwards compatibility
     get_project_prefix,
     resolve_session,
 )
-from .transport import (  # noqa: F401 — re-exported for backwards compatibility with tests
+from .transport import (  # noqa: E402,F401
     _ensure_tailscale_up,
     _ensure_vpn_watcher,
     _is_vpn_active,
@@ -85,14 +101,14 @@ from .transport import (  # noqa: F401 — re-exported for backwards compatibili
     _run_transport_loop,
     _write_transport_state,
 )
-from .process_manager import (  # noqa: F401 — re-exported for backwards compatibility with tests
+from .process_manager import (  # noqa: E402,F401
     _cmd_signal_watch_start,
     _cmd_signal_watch_status,
     _cmd_signal_watch_stop,
     _ensure_circusd,
 )
 from .session_script import get_engine_script  # noqa: F401
-from .tunnel import (  # noqa: F401 — re-exported for backwards compatibility with tests
+from .tunnel import (  # noqa: E402,F401
     _cmd_cdp_start,
     _cmd_cdp_status,
     _cmd_cdp_stop,
@@ -187,7 +203,7 @@ def _auto_update_if_stale(config: dict) -> None:
     if head.returncode != 0:
         return
     current_hash = head.stdout.strip()
-    stamp_file = get_xdg_state_home() / "last_update_commit.txt"
+    stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
     if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
         return
     print("ai-cli-utils has new commits — running ai update --force...")
@@ -198,7 +214,7 @@ def _auto_update_if_stale(config: dict) -> None:
 
 
 def trigger_background_update():
-    state_file = get_xdg_state_home() / "update_check.json"
+    state_file = _config.get_xdg_state_home() / "update_check.json"
     now = time.time()
     if state_file.exists():
         try:
@@ -239,11 +255,11 @@ def _handle_internal(argv: list[str]) -> None:
         print("Usage: ai internal <action> [args...]", file=sys.stderr)
         sys.exit(1)
     action = argv[0]
-    config = load_config()
+    config = _config.load_config()
 
     if action == "get-latest-gemini-id":
         _ai_name_arg = argv[1] if len(argv) > 1 else None
-        res = get_latest_gemini_session_id(_ai_name_arg)
+        res = _session.get_latest_gemini_session_id(_ai_name_arg)
         if res:
             print(res)
         sys.exit(0)
@@ -252,21 +268,21 @@ def _handle_internal(argv: list[str]) -> None:
             print("Usage: ai internal update-session-map <engine> <ai_name> <uuid>", file=sys.stderr)
             sys.exit(1)
         engine, ai_name, uuid = argv[1], argv[2], argv[3]
-        d = get_session_map(engine)
+        d = _config.get_session_map(engine)
         d[ai_name] = uuid
-        save_session_map(d, engine)
+        _config.save_session_map(d, engine)
         sys.exit(0)
     elif action == "cleanup-worktree":
         if len(argv) < 2:
             print("Usage: ai internal cleanup-worktree <ai_name>", file=sys.stderr)
             sys.exit(1)
-        cleanup_worktree(argv[1])
+        _session.cleanup_worktree(argv[1])
         sys.exit(0)
     elif action == "release-color-slot":
         if len(argv) < 2:
             print("Usage: ai internal release-color-slot <ai_name>", file=sys.stderr)
             sys.exit(1)
-        _release_iterm2_color_slot(argv[1])
+        _iterm2._release_iterm2_color_slot(argv[1])
         sys.exit(0)
     elif action == "cleanup-session-files":
         if len(argv) < 2:
@@ -379,8 +395,8 @@ def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) ->
     import asyncio
     from .messaging import NATSClient
 
-    sw_handoff_dir = _get_handoff_queue_dir()
-    sw_pending_file = get_xdg_state_home() / f"handoff-pending-{sw_session_id}"
+    sw_handoff_dir = _config._get_handoff_queue_dir()
+    sw_pending_file = _config.get_xdg_state_home() / f"handoff-pending-{sw_session_id}"
     nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
     sw_client = NATSClient(servers=nats_servers)
 
@@ -416,10 +432,10 @@ def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) ->
                     local_file.write_text(content)
                 except OSError:
                     pass
-        claimed = _claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
+        claimed = _handoff._claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
         if claimed is None:
             return  # another session claimed it first
-        _log_handoff_event(
+        _handoff._log_handoff_event(
             "handoff.claimed",
             handoff_id=handoff_id,
             session=sw_session_id,
@@ -432,7 +448,7 @@ def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) ->
         # (counter >= 10 + double ❯ check) ensures /exit is only injected
         # when CC is at the empty prompt — safe to touch unconditionally here.
         # Without this, the pending file sits unread until CC exits naturally.
-        sw_signal_file = get_xdg_state_home() / f"cc-exit-{sw_session_id}"
+        sw_signal_file = _config.get_xdg_state_home() / f"cc-exit-{sw_session_id}"
         try:
             sw_signal_file.touch()
         except OSError:
@@ -530,11 +546,11 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
     import asyncio
     from .messaging import NATSClient
 
-    hd_handoff_dir = _get_handoff_queue_dir()
-    hd_prompt_file = get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
+    hd_handoff_dir = _config._get_handoff_queue_dir()
+    hd_prompt_file = _config.get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
     nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
     hd_client = NATSClient(servers=nats_servers)
-    _log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
+    _handoff._log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
 
     # Not covered: _write_pending_if_claimed is only reachable via _drain() which
     # requires a live NATS JetStream connection, or from the local-scan path which
@@ -568,10 +584,10 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
                     local_file.write_text(content)
                 except OSError:
                     return False
-        claimed = _claim_handoff_for_signal(hd_handoff_dir, int(handoff_id), hd_session)
+        claimed = _handoff._claim_handoff_for_signal(hd_handoff_dir, int(handoff_id), hd_session)
         if claimed is None:
             return False
-        _log_handoff_event(
+        _handoff._log_handoff_event(
             "handoff.claimed",
             handoff_id=handoff_id,
             session=hd_session,
@@ -586,7 +602,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
     if hd_handoff_dir is not None:
         pending_dir = hd_handoff_dir / "pending"
         if pending_dir.exists():
-            best = _find_best_handoff(pending_dir, project_filter=hd_project)
+            best = _handoff._find_best_handoff(pending_dir, project_filter=hd_project)
             if best is not None:
                 try:
                     fid = int(best.name.split("-")[0])
@@ -596,7 +612,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
                     fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
                     body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
                     local_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
-                    _log_handoff_event(
+                    _handoff._log_handoff_event(
                         "handoff.drain.local_found",
                         session=hd_session,
                         handoff_id=fid,
@@ -618,7 +634,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
 
     # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
     if not hd_prompt_file.exists():
-        _log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
+        _handoff._log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
 
         # Not covered: _drain() is an async closure that requires a live NATS
         # JetStream server. Inner branches (js is None, message decode error,
@@ -629,10 +645,10 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
             try:
                 await hd_client.connect()
             except Exception as e:
-                _log_handoff_event("handoff.drain.nats_connect_failed", session=hd_session, error=str(e))
+                _handoff._log_handoff_event("handoff.drain.nats_connect_failed", session=hd_session, error=str(e))
                 return
             if not hd_client.js:
-                _log_handoff_event("handoff.drain.nats_no_js", session=hd_session)
+                _handoff._log_handoff_event("handoff.drain.nats_no_js", session=hd_session)
                 return
             consumer_name = f"{hd_session}-pre-launch"
             subject = f"handoff.{hd_project}"
@@ -653,7 +669,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
                     except Exception:
                         break
             except Exception as e:
-                _log_handoff_event("handoff.drain.nats_subscribe_failed", session=hd_session, error=str(e))
+                _handoff._log_handoff_event("handoff.drain.nats_subscribe_failed", session=hd_session, error=str(e))
             finally:
                 await hd_client.close()
 
@@ -662,7 +678,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
         except Exception as e:
             # Not covered: requires asyncio.run() itself to raise, which needs a
             # broken event loop or NATS server in a specific failure state.
-            _log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
+            _handoff._log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
 
 # --- Command implementations (invoked by Click handlers below) ---
@@ -748,7 +764,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
         # Record HEAD hash so session start can detect staleness
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
         if head.returncode == 0:
-            stamp_file = get_xdg_state_home() / "last_update_commit.txt"
+            stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
             stamp_file.parent.mkdir(parents=True, exist_ok=True)
             stamp_file.write_text(head.stdout.strip())
         # Deploy bundled CC config files to ~/.claude/ — write as plain files so any
@@ -788,10 +804,10 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         print(f"No matching remote sessions for: {requested}")
         sys.exit(0)
 
-    aliases = get_project_aliases()
+    aliases = _config.get_project_aliases()
 
     # Load active transport state files for annotation
-    _state_dir = get_xdg_state_home()
+    _state_dir = _config.get_xdg_state_home()
     _transport_by_session: dict[str, str] = {}
     for _tf in _state_dir.glob("transport-*.json"):
         try:
@@ -927,8 +943,8 @@ def _do_color(color_arg: str) -> None:
         print("ai color: not inside an ai session (AI_TMUX_SESSION not set)", file=sys.stderr)
         sys.exit(1)
     # Resolve color arg: named palette entry or raw hex
-    _iterm2_cfg_c = _load_iterm2_config()
-    _palette_c = dict(_iterm2_palette(_iterm2_cfg_c))
+    _iterm2_cfg_c = _iterm2._load_iterm2_config()
+    _palette_c = dict(_iterm2._iterm2_palette(_iterm2_cfg_c))
     if color_arg.startswith("#"):
         _new_hex = color_arg
     elif color_arg in _palette_c:
@@ -938,11 +954,11 @@ def _do_color(color_arg: str) -> None:
         sys.exit(1)
     # Determine engine from session name convention
     _engine_c = "g" if _ai_name_env.startswith("g-") else "c"
-    _session_type_c = _iterm2_session_type(_engine_c)
+    _session_type_c = _iterm2._iterm2_session_type(_engine_c)
     try:
         from . import icon_generator as _ig_c
 
-        _icon_color_c = _resolve_iterm2_config(_iterm2_cfg_c, _ai_name_env).get("icon_color")
+        _icon_color_c = _iterm2._resolve_iterm2_config(_iterm2_cfg_c, _ai_name_env).get("icon_color")
         _ig_c.cleanup_session_files(_ai_name_env)
         _icon_path_c = _ig_c.generate_session_icon(_ai_name_env, _new_hex, _session_type_c, _icon_color_c)
         _ig_c.generate_dynamic_profile(_ai_name_env, _new_hex, _session_type_c, _icon_path_c)
@@ -959,7 +975,7 @@ def _do_color(color_arg: str) -> None:
 
 def _do_handoff_post(remote: bool, for_machine: str, post_args: "list[str]") -> None:
     if remote:
-        remote_cfg = load_config().get("remote", {})
+        remote_cfg = _config.load_config().get("remote", {})
         remote_host = remote_cfg.get("host", "")
         remote_user = remote_cfg.get("user", "ubuntu")
         if not remote_host:
@@ -979,7 +995,7 @@ def _do_handoff_post(remote: bool, for_machine: str, post_args: "list[str]") -> 
             file=sys.stderr,
         )
         sys.exit(1)
-    post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
+    _handoff.post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
     sys.exit(0)
 
 
@@ -1004,16 +1020,16 @@ def _do_session_launch(
 ) -> None:
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
-    is_remote = _resolve_is_remote(is_remote)
+    is_remote = _session._resolve_is_remote(is_remote)
     if project_prefix_override:
         project_prefix = project_prefix_override
     elif project and not remote:
         # Local -p flag: derive prefix from the target project, not cwd
-        _lp_aliases = get_project_aliases()
+        _lp_aliases = _config.get_project_aliases()
         _lp_name = _lp_aliases.get(project, project)
-        project_prefix = _get_project_prefix_by_name(_lp_name)
+        project_prefix = _config._get_project_prefix_by_name(_lp_name)
     else:
-        project_prefix = get_project_prefix()
+        project_prefix = _session.get_project_prefix()
     engine_short = "c" if engine == "c" else "g"
     remote_seg = "-r" if is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
@@ -1036,15 +1052,15 @@ def _do_session_launch(
         port = str(remote_cfg.get("port", 22))
         id_file = remote_cfg.get("identity_file", "")
         transport = remote_cfg.get("transport", "mosh")
-        aliases = get_project_aliases()
-        raw_project = project or get_current_project_name()
+        aliases = _config.get_project_aliases()
+        raw_project = project or _config.get_current_project_name()
         if project and ("/" in project or "\\" in project):
             print("Error: --project name must not contain path separators", file=sys.stderr)
             sys.exit(1)
         remote_project = aliases.get(raw_project, raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
         if project:
-            remote_prefix = _get_project_prefix_by_name(remote_project)
+            remote_prefix = _config._get_project_prefix_by_name(remote_project)
         else:
             remote_prefix = project_prefix
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
@@ -1060,8 +1076,8 @@ def _do_session_launch(
         # is the only opportunity to set the profile and tab color.
         _r_engine_short = "c" if engine == "c" else "g"
         _r_ai_name = f"{_r_engine_short}-r-{remote_prefix}-{name or '1'}"
-        _iterm2_remote_slot = _assign_iterm2_color_slot(_r_ai_name, engine)
-        _emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
+        _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
+        _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 
         _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
         # vpn_host: direct-IP host used for SSH when VPN is active (bypasses Tailscale/WireGuard
@@ -1090,15 +1106,17 @@ def _do_session_launch(
         mosh_args += ["--", "zsh", "-l", "-c", remote_cmd]
 
         if transport == "mosh":
-            _ensure_vpn_watcher(config)
+            _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
             try:
                 _asyncio.run(
-                    _run_transport_loop(ssh_args, mosh_args, _cleanup_cmd, _r_ai_name, config, tailscale_host=host)
+                    _transport._run_transport_loop(
+                        ssh_args, mosh_args, _cleanup_cmd, _r_ai_name, config, tailscale_host=host
+                    )
                 )
             finally:
-                _maybe_stop_vpn_watcher()
+                _transport._maybe_stop_vpn_watcher()
             sys.exit(0)
         else:
             # Pure SSH transport — no VPN switching.
@@ -1107,20 +1125,20 @@ def _do_session_launch(
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
     if is_remote:
-        aliases = get_project_aliases()
-        raw_project = project or config.get("remote", {}).get("project") or _get_main_project_name()
+        aliases = _config.get_project_aliases()
+        raw_project = project or config.get("remote", {}).get("project") or _config._get_main_project_name()
         if raw_project:
             project_name = aliases.get(raw_project, raw_project)
-            project_dir = _find_project_dir(project_name)
+            project_dir = _config._find_project_dir(project_name)
             if project_dir.exists():
                 os.chdir(project_dir)
     elif project:
         # Local session with explicit -p PROJECT: cd to the project directory so that
         # git worktrees and Gemini chats directories resolve relative to the correct root.
         # Mirrors the is_remote path above.
-        aliases = get_project_aliases()
+        aliases = _config.get_project_aliases()
         _local_project = aliases.get(project, project)
-        _local_project_dir = _find_project_dir(_local_project)
+        _local_project_dir = _config._find_project_dir(_local_project)
         if _local_project_dir.exists():
             os.chdir(_local_project_dir)
 
@@ -1133,38 +1151,38 @@ def _do_session_launch(
             os.execvp(_gcmd[0], _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + extra_args)
 
     if resume:
-        session = resolve_session(prefix, name)
+        session = _session.resolve_session(prefix, name)
         if not session:
             print(f"No matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
     # Registry validation: ensure all projects are registered before launching session
-    if not validate_registry_completeness(interactive=sys.stdin.isatty()):
+    if not _config.validate_registry_completeness(interactive=sys.stdin.isatty()):
         sys.exit(1)
 
-    cleanup_stale_sessions(config)
-    current_project_name = get_current_project_name()
-    session_id, ai_name = build_session_name(engine, project_prefix, name, config, is_remote=is_remote)
+    _session.cleanup_stale_sessions(config)
+    current_project_name = _config.get_current_project_name()
+    session_id, ai_name = _session.build_session_name(engine, project_prefix, name, config, is_remote=is_remote)
 
     # Worktree setup
     worktree_path = None
     if config.get("worktree", {}).get("enabled", True) and not no_worktree:
-        worktree_path = create_worktree(ai_name)
+        worktree_path = _session.create_worktree(ai_name)
         if worktree_path:
             # Sync worktree with any changes that landed on main from other sessions
             subprocess.run(["git", "pull", "--rebase", "--autostash"], capture_output=True, cwd=worktree_path)
 
-    d = get_session_map(engine)
+    d = _config.get_session_map(engine)
     uuid = d.get(ai_name)
     # For Gemini, always check the chats directory for the latest session — the
     # session map may be stale if the user exited and restarted directly via gemini CLI.
     if engine == "g":
-        latest = _find_latest_gemini_uuid(ai_name)
+        latest = _session._find_latest_gemini_uuid(ai_name)
         if latest and latest != uuid:
             uuid = latest
             d[ai_name] = uuid
-            save_session_map(d, engine)
+            _config.save_session_map(d, engine)
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
     # so _iterm2_fleet_setup inside the bash script would silently no-op without them.
@@ -1201,11 +1219,11 @@ def _do_session_launch(
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
-    _iterm2_cfg = _load_iterm2_config()
-    _iterm2_slot = _assign_iterm2_color_slot(ai_name, engine, project_name=current_project_name)
+    _iterm2_cfg = _iterm2._load_iterm2_config()
+    _iterm2_slot = _iterm2._assign_iterm2_color_slot(ai_name, engine, project_name=current_project_name)
 
     _config_reload_idle_secs = int(config.get("session", {}).get("config_reload_idle_secs", 90))
-    script = get_engine_script(
+    script = _session_script.get_engine_script(
         engine,
         ai_name,
         session_id,
@@ -1225,7 +1243,9 @@ def _do_session_launch(
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
     # for new tabs, split panes, and re-attaches alike.
-    _emit_iterm2_profile_setup(ai_name, engine, session_id, slot=_iterm2_slot, project_name=current_project_name)
+    _iterm2._emit_iterm2_profile_setup(
+        ai_name, engine, session_id, slot=_iterm2_slot, project_name=current_project_name
+    )
 
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
@@ -1235,7 +1255,7 @@ def _do_session_launch(
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
     if existing.returncode == 0:
         # Session exists — configure for iTerm2, then attach (detach stale clients)
-        _configure_tmux_for_iterm2(session_id)
+        _iterm2._configure_tmux_for_iterm2(session_id)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
@@ -1245,7 +1265,7 @@ def _do_session_launch(
             ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script],
             capture_output=True,
         )
-        _configure_tmux_for_iterm2(session_id)
+        _iterm2._configure_tmux_for_iterm2(session_id)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
 
 
@@ -1277,10 +1297,10 @@ def _session_command(engine: str):
         project_prefix,
     ):
         # Startup hooks happen only when launching a new session.
-        config = load_config()
+        config = _config.load_config()
         trigger_background_update()
         _auto_update_if_stale(config)
-        _ensure_nats_tunnel(config)
+        _tunnel._ensure_nats_tunnel(config)
         _do_session_launch(
             engine=engine,
             name=name,
@@ -1394,28 +1414,28 @@ def cmd_handoff_post(for_machine, remote, args):
 
 @cmd_handoff_group.command("check", help="Check for handoffs targeted at this machine")
 def cmd_handoff_check():
-    check_handoff()
+    _handoff.check_handoff()
     sys.exit(0)
 
 
 @cmd_handoff_group.command("check-project", help="Check pending handoffs for a specific project")
 @click.argument("project_name")
 def cmd_handoff_check_project(project_name):
-    check_handoff_project(project_name)
+    _handoff.check_handoff_project(project_name)
     sys.exit(0)
 
 
 @cmd_handoff_group.command("claim", help="Mark a handoff as claimed")
 @click.argument("file_path")
 def cmd_handoff_claim(file_path):
-    claim_handoff(file_path)
+    _handoff.claim_handoff(file_path)
     sys.exit(0)
 
 
 @cmd_handoff_group.command("complete", help="Mark a handoff as complete")
 @click.argument("file_path")
 def cmd_handoff_complete(file_path):
-    complete_handoff(file_path)
+    _handoff.complete_handoff(file_path)
     sys.exit(0)
 
 
@@ -1536,7 +1556,7 @@ def cmd_spend_group():
 def cmd_spend_gemini_cli():
     from .spend import cmd_spend_gemini
 
-    sys.exit(cmd_spend_gemini(load_config()))
+    sys.exit(cmd_spend_gemini(_config.load_config()))
 
 
 @_cli_group.group("cc-usage", help="Claude Code CLI per-call token usage")
@@ -1549,7 +1569,7 @@ def cmd_cc_usage_group():
 def cmd_cc_usage_push(dry_run):
     from .cc_usage import scan_and_push
 
-    config = load_config()
+    config = _config.load_config()
     result = scan_and_push(config=config, dry_run=dry_run)
     if result.error:
         print(f"Error: {result.error}", file=sys.stderr)
@@ -1617,23 +1637,23 @@ def cmd_tunnel_group():
 @click.argument("remote_port", type=int, required=False, default=None)
 @click.option("-L", "--forward", is_flag=True, help="Create a forward tunnel (default: reverse)")
 def cmd_tunnel_start(local_port, remote_port, forward):
-    config = load_config()
+    config = _config.load_config()
     if remote_port is None:
         remote_port = local_port
-    _cmd_tunnel_start(local_port, remote_port, forward=forward, config=config)
+    _tunnel._cmd_tunnel_start(local_port, remote_port, forward=forward, config=config)
     sys.exit(0)
 
 
 @cmd_tunnel_group.command("stop", help="Stop an SSH tunnel")
 @click.argument("port", type=int)
 def cmd_tunnel_stop(port):
-    _cmd_tunnel_stop(port)
+    _tunnel._cmd_tunnel_stop(port)
     sys.exit(0)
 
 
 @cmd_tunnel_group.command("status", help="Show running SSH tunnels")
 def cmd_tunnel_status():
-    _cmd_tunnel_status()
+    _tunnel._cmd_tunnel_status()
     sys.exit(0)
 
 
@@ -1649,20 +1669,20 @@ def cmd_signal_watch_group():
 @click.argument("project")
 @click.argument("session")
 def cmd_signal_watch_start(project, session):
-    _cmd_signal_watch_start(project, session)
+    _process_manager._cmd_signal_watch_start(project, session)
     sys.exit(0)
 
 
 @cmd_signal_watch_group.command("stop", help="Stop signal-watch for a session")
 @click.argument("session")
 def cmd_signal_watch_stop(session):
-    _cmd_signal_watch_stop(session)
+    _process_manager._cmd_signal_watch_stop(session)
     sys.exit(0)
 
 
 @cmd_signal_watch_group.command("status", help="Show signal-watch status")
 def cmd_signal_watch_status():
-    _cmd_signal_watch_status()
+    _process_manager._cmd_signal_watch_status()
     sys.exit(0)
 
 
@@ -1680,11 +1700,11 @@ def cmd_cdp_group():
 @click.option("-t", "--tunnel", is_flag=True, help="Start an SSH tunnel alongside Chrome")
 @click.option("-L", "--forward", is_flag=True, help="Use forward tunnel (default: reverse)")
 def cmd_cdp_start(port, no_incognito, tunnel, forward):
-    config = load_config()
+    config = _config.load_config()
     _default_port = config.get("cdp", {}).get("port", 9222)
     if port is None:
         port = _default_port
-    _cmd_cdp_start(port, not no_incognito, config, tunnel=tunnel, forward=forward)
+    _tunnel._cmd_cdp_start(port, not no_incognito, config, tunnel=tunnel, forward=forward)
     sys.exit(0)
 
 
@@ -1692,17 +1712,17 @@ def cmd_cdp_start(port, no_incognito, tunnel, forward):
 @click.option("-p", "--port", type=int, default=None, help="CDP port")
 @click.option("-t", "--tunnel", is_flag=True, help="Also stop the SSH tunnel for this port")
 def cmd_cdp_stop(port, tunnel):
-    config = load_config()
+    config = _config.load_config()
     _default_port = config.get("cdp", {}).get("port", 9222)
     if port is None:
         port = _default_port
-    _cmd_cdp_stop(port, tunnel=tunnel)
+    _tunnel._cmd_cdp_stop(port, tunnel=tunnel)
     sys.exit(0)
 
 
 @cmd_cdp_group.command("status", help="Show CDP Chrome status")
 def cmd_cdp_status():
-    _cmd_cdp_status()
+    _tunnel._cmd_cdp_status()
     sys.exit(0)
 
 
@@ -1713,7 +1733,7 @@ def cmd_cdp_status():
 def cmd_vpn_watch():
     from .vpn_watch import run_vpn_watch
 
-    run_vpn_watch(load_config())
+    run_vpn_watch(_config.load_config())
     sys.exit(0)
 
 
@@ -1726,7 +1746,7 @@ def cmd_vpn_watch():
 def cmd_ps(args):
     from .process_hygiene import cmd_ps as _cmd_ps
 
-    sys.exit(_cmd_ps(list(args), load_config()))
+    sys.exit(_cmd_ps(list(args), _config.load_config()))
 
 
 @_cli_group.command(
@@ -1810,7 +1830,7 @@ def cmd_sync(action, args):
 @_cli_group.command("reconnect", help="Print reconnect commands for remote tmux sessions")
 @click.argument("sessions", nargs=-1)
 def cmd_reconnect(sessions):
-    config = load_config()
+    config = _config.load_config()
     requested = [int(x) for x in sessions if x.isdigit()] if sessions else None
     _do_reconnect(requested, config)
 
@@ -1818,14 +1838,14 @@ def cmd_reconnect(sessions):
 @_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")
 @click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install")
 def cmd_update(force):
-    config = load_config()
+    config = _config.load_config()
     _do_update_or_deploy(force_reinstall=force, config=config)
 
 
 @_cli_group.command("deploy", help="Alias for update (historical)")
 @click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install")
 def cmd_deploy(force):
-    config = load_config()
+    config = _config.load_config()
     _do_update_or_deploy(force_reinstall=force, config=config)
 
 

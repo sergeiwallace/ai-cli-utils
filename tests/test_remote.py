@@ -37,8 +37,8 @@ def test_remote_flag_when_called_then_passes_project_prefix_to_server():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
     with (
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
-        patch("ai_cli.main.load_config", return_value=config),
-        patch("ai_cli.main.get_project_prefix", return_value="sw"),
+        patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.session.get_project_prefix", return_value="sw"),
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main.trigger_background_update"),
     ):
@@ -86,7 +86,7 @@ def test_remote_flag_when_host_not_configured_then_exits_with_error():
     config = {"remote": {"host": "", "user": "ubuntu", "port": 22, "identity_file": ""}}
     with (
         patch("sys.argv", ["ai", "c", "--remote"]),
-        patch("ai_cli.main.load_config", return_value=config),
+        patch("ai_cli.config.load_config", return_value=config),
         patch("ai_cli.main.trigger_background_update"),
         patch("sys.stderr"),
     ):
@@ -163,16 +163,16 @@ class TestRemoteSessionIterm2Emit:
 
             with (
                 patch("sys.argv", argv),
-                patch("ai_cli.main.load_config", return_value=config),
-                patch("ai_cli.main.get_project_prefix", return_value="sw"),
-                patch("ai_cli.main.get_project_aliases", return_value={}),
+                patch("ai_cli.config.load_config", return_value=config),
+                patch("ai_cli.session.get_project_prefix", return_value="sw"),
+                patch("ai_cli.config.get_project_aliases", return_value={}),
                 patch("ai_cli.main.trigger_background_update"),
-                patch("ai_cli.main._assign_iterm2_color_slot", mock_slot),
-                patch("ai_cli.main._emit_iterm2_profile_setup", mock_emit),
+                patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
+                patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
                 patch("ai_cli.transport._is_vpn_active", return_value=False),
-                patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
-                patch("ai_cli.main._ensure_vpn_watcher"),
-                patch("ai_cli.main._maybe_stop_vpn_watcher"),
+                patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+                patch("ai_cli.transport._ensure_vpn_watcher"),
+                patch("ai_cli.transport._maybe_stop_vpn_watcher"),
                 patch("sys.exit", side_effect=SystemExit(0)),
             ):
                 with pytest.raises(SystemExit):
@@ -188,12 +188,12 @@ class TestRemoteSessionIterm2Emit:
             ]
             with (
                 patch("sys.argv", argv),
-                patch("ai_cli.main.load_config", return_value=config),
-                patch("ai_cli.main.get_project_prefix", return_value="sw"),
-                patch("ai_cli.main.get_project_aliases", return_value={}),
+                patch("ai_cli.config.load_config", return_value=config),
+                patch("ai_cli.session.get_project_prefix", return_value="sw"),
+                patch("ai_cli.config.get_project_aliases", return_value={}),
                 patch("ai_cli.main.trigger_background_update"),
-                patch("ai_cli.main._assign_iterm2_color_slot", mock_slot),
-                patch("ai_cli.main._emit_iterm2_profile_setup", mock_emit),
+                patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
+                patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
                 patch("os.execvp", mock_exec),
             ):
                 with pytest.raises(SystemExit):

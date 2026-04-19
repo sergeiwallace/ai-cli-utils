@@ -25,8 +25,8 @@ from ai_cli.main import (
 class TestCliDispatch:
     def test_cli_when_internal_get_latest_gemini_id_then_calls_function(self):
         with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id"]):
-            with patch("ai_cli.main.get_latest_gemini_session_id", return_value="abc123") as mock_fn:
-                with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.session.get_latest_gemini_session_id", return_value="abc123") as mock_fn:
+                with patch("ai_cli.config.load_config", return_value={}):
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
@@ -34,8 +34,8 @@ class TestCliDispatch:
 
     def test_cli_when_internal_get_latest_gemini_id_with_ai_name_then_passes_it(self):
         with patch("sys.argv", ["ai", "internal", "get-latest-gemini-id", "art-1"]):
-            with patch("ai_cli.main.get_latest_gemini_session_id", return_value="uuid") as mock_fn:
-                with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.session.get_latest_gemini_session_id", return_value="uuid") as mock_fn:
+                with patch("ai_cli.config.load_config", return_value={}):
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
@@ -43,9 +43,9 @@ class TestCliDispatch:
 
     def test_cli_when_internal_update_session_map_then_updates(self, tmp_path):
         with patch("sys.argv", ["ai", "internal", "update-session-map", "g", "sw-1", "uuid123"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_session_map", return_value={}):
-                    with patch("ai_cli.main.save_session_map") as mock_save:
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.config.get_session_map", return_value={}):
+                    with patch("ai_cli.config.save_session_map") as mock_save:
                         with pytest.raises(SystemExit) as exc:
                             cli()
                         assert exc.value.code == 0
@@ -53,8 +53,8 @@ class TestCliDispatch:
 
     def test_cli_when_internal_cleanup_worktree_then_calls_function(self):
         with patch("sys.argv", ["ai", "internal", "cleanup-worktree", "sw-1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.cleanup_worktree") as mock_cleanup:
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.cleanup_worktree") as mock_cleanup:
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
@@ -62,7 +62,7 @@ class TestCliDispatch:
 
     def test_cli_when_internal_notify_then_calls_notification_manager(self):
         with patch("sys.argv", ["ai", "internal", "notify", "session1", "hello"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 mock_mgr = MagicMock()
                 with patch("ai_cli.notifications.NotificationManager", return_value=mock_mgr):
                     with pytest.raises(SystemExit) as exc:
@@ -71,8 +71,8 @@ class TestCliDispatch:
 
     def test_cli_when_handoff_check_then_calls_check_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "check"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.check_handoff") as mock_check:
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.handoff.check_handoff") as mock_check:
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
@@ -80,21 +80,21 @@ class TestCliDispatch:
 
     def test_cli_when_memory_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "memory"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_quota_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "quota"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_gemini_then_calls_gemini_cli(self):
         with patch("sys.argv", ["ai", "gemini", "hello", "-m", "flash"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.gemini.gemini_cli", side_effect=SystemExit(0)) as mock_gemini:
                     with pytest.raises(SystemExit):
                         cli()
@@ -102,7 +102,7 @@ class TestCliDispatch:
 
     def test_cli_when_sync_push_then_calls_sync_push(self):
         with patch("sys.argv", ["ai", "sync", "push"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.sync.sync_push", return_value=0) as mock_push:
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -111,14 +111,14 @@ class TestCliDispatch:
 
     def test_cli_when_sync_no_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "sync"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_upgrade_then_calls_execvp(self):
         with patch("sys.argv", ["ai", "upgrade"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                     with pytest.raises(SystemExit):
                         cli()
@@ -126,42 +126,42 @@ class TestCliDispatch:
 
     def test_cli_when_internal_no_action_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_telemetry_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "telemetry"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_update_session_map_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "update-session-map"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_cleanup_worktree_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "cleanup-worktree"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_notify_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "notify"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_publish_event_then_publishes_event(self):
         with patch("sys.argv", ["ai", "internal", "publish-event", "sess1", "START"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
                     mock_client = MagicMock()
                     mock_nats.return_value = mock_client
@@ -176,7 +176,7 @@ class TestCliDispatch:
 
     def test_cli_when_internal_publish_heartbeat_then_publishes_heartbeat(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", '{"cpu": 50}']):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
                     mock_client = MagicMock()
                     mock_nats.return_value = mock_client
@@ -191,14 +191,14 @@ class TestCliDispatch:
 
     def test_cli_when_internal_publish_heartbeat_bad_json_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", "not-json"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_publish_session_event_then_publishes_with_subject(self):
         with patch("sys.argv", ["ai", "internal", "publish-session-event", "sess1", "started"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
                     mock_client = MagicMock()
                     mock_nats.return_value = mock_client
@@ -214,7 +214,7 @@ class TestCliDispatch:
 
     def test_cli_when_internal_publish_then_publishes_to_given_subject(self):
         with patch("sys.argv", ["ai", "internal", "publish", "test.topic", '{"key": "val"}']):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
                     mock_client = MagicMock()
                     mock_nats.return_value = mock_client
@@ -229,8 +229,8 @@ class TestCliDispatch:
 
     def test_cli_when_handoff_post_then_calls_post_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "post", "--for-machine", "hetzner", "title", "P1", "proj", "msg"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.post_handoff") as mock_post:
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.handoff.post_handoff") as mock_post:
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
@@ -238,15 +238,15 @@ class TestCliDispatch:
 
     def test_cli_when_handoff_post_without_for_machine_then_exits_1(self):
         with patch("sys.argv", ["ai", "handoff", "post", "title", "P1", "proj", "msg"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_handoff_claim_then_calls_claim_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "claim", "/tmp/file.md"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.claim_handoff") as mock_claim:
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.handoff.claim_handoff") as mock_claim:
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
@@ -254,8 +254,8 @@ class TestCliDispatch:
 
     def test_cli_when_handoff_complete_then_calls_complete_handoff(self):
         with patch("sys.argv", ["ai", "handoff", "complete", "/tmp/file.md"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.complete_handoff") as mock_complete:
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.handoff.complete_handoff") as mock_complete:
                     with pytest.raises(SystemExit) as exc:
                         cli()
                     assert exc.value.code == 0
@@ -263,14 +263,14 @@ class TestCliDispatch:
 
     def test_cli_when_handoff_no_subcommand_then_exits_1(self):
         with patch("sys.argv", ["ai", "handoff"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_sync_pull_then_calls_sync_pull(self):
         with patch("sys.argv", ["ai", "sync", "pull"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.sync.sync_pull", return_value=0) as mock_pull:
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -279,7 +279,7 @@ class TestCliDispatch:
 
     def test_cli_when_sync_conflicts_then_calls_sync_conflicts(self):
         with patch("sys.argv", ["ai", "sync", "conflicts"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.sync.sync_conflicts", return_value=0) as mock_conflicts:
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -288,7 +288,7 @@ class TestCliDispatch:
 
     def test_cli_when_sync_watch_then_calls_sync_watch(self):
         with patch("sys.argv", ["ai", "sync", "watch"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.sync.sync_watch", return_value=0) as mock_watch:
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -297,7 +297,7 @@ class TestCliDispatch:
 
     def test_cli_when_sync_unknown_action_then_exits_1(self):
         with patch("sys.argv", ["ai", "sync", "badaction"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
@@ -309,9 +309,9 @@ class TestCliDispatch:
         probe_result.stdout = "c-r-sw-1\nc-r-sw-2\nother-session\n"
 
         with patch("sys.argv", ["ai", "reconnect"]):
-            with patch("ai_cli.main.load_config", return_value=config):
+            with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe_result):
-                    with patch("ai_cli.main.get_project_aliases", return_value={}):
+                    with patch("ai_cli.config.get_project_aliases", return_value={}):
                         with pytest.raises(SystemExit) as exc:
                             cli()
                         assert exc.value.code == 0
@@ -322,7 +322,7 @@ class TestCliDispatch:
     def test_cli_when_reconnect_no_host_then_exits_1(self):
         config = {"remote": {"host": ""}}
         with patch("sys.argv", ["ai", "reconnect"]):
-            with patch("ai_cli.main.load_config", return_value=config):
+            with patch("ai_cli.config.load_config", return_value=config):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
@@ -334,7 +334,7 @@ class TestCliDispatch:
         probe_result.stdout = "other-session\n"
 
         with patch("sys.argv", ["ai", "reconnect"]):
-            with patch("ai_cli.main.load_config", return_value=config):
+            with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe_result):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -347,7 +347,7 @@ class TestCliDispatch:
         probe_result.returncode = 1
 
         with patch("sys.argv", ["ai", "reconnect"]):
-            with patch("ai_cli.main.load_config", return_value=config):
+            with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe_result):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -360,7 +360,7 @@ class TestCliDispatch:
         probe_result.stdout = "c-r-sw-1\n"
 
         with patch("sys.argv", ["ai", "reconnect", "99"]):
-            with patch("ai_cli.main.load_config", return_value=config):
+            with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe_result):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -374,9 +374,9 @@ class TestCliDispatch:
         probe_result.stdout = "c-r-sw-1\n"
 
         with patch("sys.argv", ["ai", "reconnect"]):
-            with patch("ai_cli.main.load_config", return_value=config):
+            with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe_result):
-                    with patch("ai_cli.main.get_project_aliases", return_value={"mp": "myproject"}):
+                    with patch("ai_cli.config.get_project_aliases", return_value={"mp": "myproject"}):
                         with pytest.raises(SystemExit) as exc:
                             probe_result.stdout = "c-r-mp-1\n"  # prefix mp matches alias key mp
                             cli()
@@ -387,7 +387,7 @@ class TestCliDispatch:
     def test_cli_when_handoff_check_project_then_calls_function(self, capsys):
         with (
             patch("sys.argv", ["ai", "handoff", "check-project", "myapp"]),
-            patch("ai_cli.main.check_handoff_project") as mock_check,
+            patch("ai_cli.handoff.check_handoff_project") as mock_check,
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -404,28 +404,28 @@ class TestCliDispatch:
 class TestCliDispatchBranches:
     def test_cli_when_memory_no_watch_then_exits_1(self):
         with patch("sys.argv", ["ai", "memory", "bad"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_quota_no_watch_then_exits_1(self):
         with patch("sys.argv", ["ai", "quota", "bad"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_telemetry_no_writer_then_exits_1(self):
         with patch("sys.argv", ["ai", "telemetry", "bad"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_gemini_no_args_then_calls_gemini_cli(self):
         with patch("sys.argv", ["ai", "gemini"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.gemini.gemini_cli", side_effect=SystemExit(0)):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -435,8 +435,8 @@ class TestCliDispatchBranches:
 class TestCliSessionSetupBranches:
     def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self):
         with patch("sys.argv", ["ai", "c", "--bare"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("os.execvp", side_effect=SystemExit(0)):
                             with pytest.raises(SystemExit):
@@ -444,8 +444,8 @@ class TestCliSessionSetupBranches:
 
     def test_cli_when_sandbox_flag_then_sandbox_true(self):
         with patch("sys.argv", ["ai", "g", "--sandbox", "--bare"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("os.execvp", side_effect=SystemExit(0)):
                             with pytest.raises(SystemExit):
@@ -463,10 +463,10 @@ class TestCliSessionSetupBranches:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "g", "1", "--sandbox"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main._emit_iterm2_profile_setup"):
+                        with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
                             with patch("subprocess.run", side_effect=_run):
                                 with patch("os.execvp", side_effect=SystemExit(0)):
                                     with pytest.raises(SystemExit):
@@ -485,10 +485,10 @@ class TestCliSessionSetupBranches:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "g", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main._emit_iterm2_profile_setup"):
+                        with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
                             with patch("subprocess.run", side_effect=_run):
                                 with patch("os.execvp", side_effect=SystemExit(0)):
                                     with pytest.raises(SystemExit):
@@ -504,10 +504,10 @@ class TestCliSessionSetupBranches:
             return MagicMock(returncode=1, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "g", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main._emit_iterm2_profile_setup"):
+                        with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
                             with patch("subprocess.run", side_effect=fake_run):
                                 with patch.dict(
                                     os.environ,
@@ -537,15 +537,15 @@ class TestCliSessionSetupBranches:
 
         with (
             patch("sys.argv", ["ai", "c", "-R", "-p", "myproj"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
-            patch("ai_cli.main._get_project_prefix_by_name", return_value="mp"),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.config._get_project_prefix_by_name", return_value="mp"),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
-            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
-            patch("ai_cli.main._ensure_vpn_watcher"),
-            patch("ai_cli.main._maybe_stop_vpn_watcher"),
+            patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.transport._ensure_vpn_watcher"),
+            patch("ai_cli.transport._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
@@ -560,14 +560,14 @@ class TestCliSessionSetupBranches:
 
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
-            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
-            patch("ai_cli.main._ensure_vpn_watcher"),
-            patch("ai_cli.main._maybe_stop_vpn_watcher"),
+            patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.transport._ensure_vpn_watcher"),
+            patch("ai_cli.transport._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
@@ -591,14 +591,14 @@ class TestCliSessionSetupBranches:
 
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
-            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
-            patch("ai_cli.main._ensure_vpn_watcher"),
-            patch("ai_cli.main._maybe_stop_vpn_watcher"),
+            patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.transport._ensure_vpn_watcher"),
+            patch("ai_cli.transport._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
@@ -626,14 +626,14 @@ class TestCliSessionSetupBranches:
 
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.transport._is_vpn_active", return_value=True),
-            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
-            patch("ai_cli.main._ensure_vpn_watcher"),
-            patch("ai_cli.main._maybe_stop_vpn_watcher"),
+            patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.transport._ensure_vpn_watcher"),
+            patch("ai_cli.transport._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
@@ -658,14 +658,14 @@ class TestCliSessionSetupBranches:
 
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
-            patch("ai_cli.main.load_config", return_value=config),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.transport._is_vpn_active", return_value=True),
-            patch("ai_cli.main._run_transport_loop", side_effect=fake_transport_loop),
-            patch("ai_cli.main._ensure_vpn_watcher"),
-            patch("ai_cli.main._maybe_stop_vpn_watcher"),
+            patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.transport._ensure_vpn_watcher"),
+            patch("ai_cli.transport._maybe_stop_vpn_watcher"),
             patch("sys.exit", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit):
@@ -676,7 +676,7 @@ class TestCliSessionSetupBranches:
 class TestCliGeminiDispatch:
     def test_cli_when_gemini_returns_normally_then_exits_0(self):
         with patch("sys.argv", ["ai", "gemini", "hello"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.gemini.gemini_cli", return_value=None):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -688,9 +688,9 @@ class TestCliReconnectContinueBranch:
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
         probe = MagicMock(returncode=0, stdout="c-r-x\nc-r-sw-1\n")
         with patch("sys.argv", ["ai", "reconnect"]):
-            with patch("ai_cli.main.load_config", return_value=config):
+            with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe):
-                    with patch("ai_cli.main.get_project_aliases", return_value={}):
+                    with patch("ai_cli.config.get_project_aliases", return_value={}):
                         with pytest.raises(SystemExit) as exc:
                             cli()
                         assert exc.value.code == 0
@@ -701,10 +701,10 @@ class TestCliReconnectContinueBranch:
 class TestCliResumePath:
     def test_cli_when_resume_and_session_found_then_attaches(self):
         with patch("sys.argv", ["ai", "c", "-r", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.resolve_session", return_value="c-sw-1"):
+                        with patch("ai_cli.session.resolve_session", return_value="c-sw-1"):
                             with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                 with pytest.raises(SystemExit):
                                     cli()
@@ -713,10 +713,10 @@ class TestCliResumePath:
 
     def test_cli_when_resume_and_no_session_then_exits_1(self, capsys):
         with patch("sys.argv", ["ai", "c", "-r", "nonexistent"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.resolve_session", return_value=None):
+                        with patch("ai_cli.session.resolve_session", return_value=None):
                             with pytest.raises(SystemExit) as exc:
                                 cli()
                             assert exc.value.code == 1
@@ -725,13 +725,13 @@ class TestCliResumePath:
 class TestCliOncePath:
     def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.cleanup_stale_sessions"):
-                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.main.create_worktree", return_value=None):
-                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("os.getuid", return_value=1000):
                                             with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                 with pytest.raises(SystemExit):
@@ -742,13 +742,13 @@ class TestCliOncePath:
 
     def test_cli_when_once_and_claude_root_then_execvp_without_perms(self):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.cleanup_stale_sessions"):
-                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.main.create_worktree", return_value=None):
-                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("os.getuid", return_value=0):
                                             with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                 with pytest.raises(SystemExit):
@@ -758,13 +758,17 @@ class TestCliOncePath:
 
     def test_cli_when_once_and_gemini_with_uuid_then_resumes(self):
         with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.cleanup_stale_sessions"):
-                            with patch("ai_cli.main.build_session_name", return_value=("g-sw-research", "sw-research")):
-                                with patch("ai_cli.main.create_worktree", return_value=None):
-                                    with patch("ai_cli.main.get_session_map", return_value={"sw-research": "uuid123"}):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch(
+                                "ai_cli.session.build_session_name", return_value=("g-sw-research", "sw-research")
+                            ):
+                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                    with patch(
+                                        "ai_cli.config.get_session_map", return_value={"sw-research": "uuid123"}
+                                    ):
                                         with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                             with pytest.raises(SystemExit):
                                                 cli()
@@ -773,13 +777,15 @@ class TestCliOncePath:
 
     def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self):
         with patch("sys.argv", ["ai", "g", "-o", "research"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.cleanup_stale_sessions"):
-                            with patch("ai_cli.main.build_session_name", return_value=("g-sw-research", "sw-research")):
-                                with patch("ai_cli.main.create_worktree", return_value=None):
-                                    with patch("ai_cli.main.get_session_map", return_value={}):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch(
+                                "ai_cli.session.build_session_name", return_value=("g-sw-research", "sw-research")
+                            ):
+                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                             with pytest.raises(SystemExit):
                                                 cli()
@@ -804,14 +810,14 @@ class TestConfigureTmuxForIterm2:
 class TestCliSessionExecvp:
     def test_cli_when_existing_session_then_attaches_with_detach(self):
         with patch("sys.argv", ["ai", "c", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.cleanup_stale_sessions"):
-                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.main.create_worktree", return_value=None):
-                                    with patch("ai_cli.main.get_session_map", return_value={}):
-                                        with patch("ai_cli.main.get_engine_script", return_value="script"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
                                             existing = MagicMock(returncode=0)
                                             with patch("subprocess.run", return_value=existing):
                                                 with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
@@ -828,14 +834,14 @@ class TestCliSessionExecvp:
             return MagicMock(returncode=1)
 
         with patch("sys.argv", ["ai", "c", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.cleanup_stale_sessions"):
-                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.main.create_worktree", return_value=None):
-                                    with patch("ai_cli.main.get_session_map", return_value={}):
-                                        with patch("ai_cli.main.get_engine_script", return_value="script"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
                                             with patch("subprocess.run", side_effect=fake_run):
                                                 with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                     with pytest.raises(SystemExit):
@@ -851,16 +857,18 @@ class TestCliIsRemotePath:
         project_dir.mkdir(parents=True)
 
         with patch("sys.argv", ["ai", "c", "--is-remote", "--project", "myproj"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.get_project_aliases", return_value={}):
-                            with patch("ai_cli.main._find_project_dir", return_value=project_dir):
-                                with patch("ai_cli.main.cleanup_stale_sessions"):
-                                    with patch("ai_cli.main.build_session_name", return_value=("cr-sw-1", "sw-1")):
-                                        with patch("ai_cli.main.create_worktree", return_value=None):
-                                            with patch("ai_cli.main.get_session_map", return_value={}):
-                                                with patch("ai_cli.main.get_engine_script", return_value="script"):
+                        with patch("ai_cli.config.get_project_aliases", return_value={}):
+                            with patch("ai_cli.config._find_project_dir", return_value=project_dir):
+                                with patch("ai_cli.session.cleanup_stale_sessions"):
+                                    with patch("ai_cli.session.build_session_name", return_value=("cr-sw-1", "sw-1")):
+                                        with patch("ai_cli.session.create_worktree", return_value=None):
+                                            with patch("ai_cli.config.get_session_map", return_value={}):
+                                                with patch(
+                                                    "ai_cli.session_script.get_engine_script", return_value="script"
+                                                ):
                                                     not_existing = MagicMock(returncode=1)
                                                     with patch("subprocess.run", return_value=not_existing):
                                                         with patch("os.chdir") as mock_chdir:
@@ -883,14 +891,14 @@ class TestCliWorktreeGitPull:
             return MagicMock(returncode=1)
 
         with patch("sys.argv", ["ai", "c", "1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
-                with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.main.cleanup_stale_sessions"):
-                            with patch("ai_cli.main.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.main.create_worktree", return_value=worktree_path):
-                                    with patch("ai_cli.main.get_session_map", return_value={}):
-                                        with patch("ai_cli.main.get_engine_script", return_value="script"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.session.create_worktree", return_value=worktree_path):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
                                             with patch("subprocess.run", side_effect=fake_subprocess_run):
                                                 with patch("os.execvp", side_effect=SystemExit(0)):
                                                     with pytest.raises(SystemExit):
@@ -904,7 +912,7 @@ class TestCliAttachDispatch:
 
     def test_when_no_session_name_then_exits_1_with_usage(self, capsys):
         with patch("sys.argv", ["ai", "attach"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
         assert exc.value.code == 1
@@ -912,7 +920,7 @@ class TestCliAttachDispatch:
 
     def test_when_session_does_not_exist_then_exits_1_with_message(self, capsys):
         with patch("sys.argv", ["ai", "attach", "c-sw-99"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=MagicMock(returncode=1)):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -921,7 +929,7 @@ class TestCliAttachDispatch:
 
     def test_when_session_exists_then_execs_tmux_attach(self):
         with patch("sys.argv", ["ai", "attach", "c-sw-1"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                     with patch("os.execvp") as mock_exec:
                         mock_exec.side_effect = SystemExit(0)
@@ -939,7 +947,7 @@ class TestCliLsDispatch:
 
     def test_when_tmux_not_running_then_exits_0_with_stderr(self, capsys):
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -948,7 +956,7 @@ class TestCliLsDispatch:
 
     def test_when_no_ai_sessions_then_exits_0_with_hint(self, capsys):
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=self._fake_tmux_sessions([("random-session", 1000)])):
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit) as exc:
@@ -959,7 +967,7 @@ class TestCliLsDispatch:
 
     def test_when_no_sessions_with_all_flag_then_exits_0_with_no_sessions_message(self, capsys):
         with patch("sys.argv", ["ai", "ls", "--all"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -970,7 +978,7 @@ class TestCliLsDispatch:
         now = int(time.time())
         sessions = [("c-sw-1", now - 120), ("c-sw-2", now - 3600)]
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=self._fake_tmux_sessions(sessions)):
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit) as exc:
@@ -992,7 +1000,7 @@ class TestCliLsDispatch:
             return fzf_result
 
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("shutil.which", return_value="/usr/bin/fzf"):
                         with patch("os.execvp") as mock_exec:
@@ -1012,7 +1020,7 @@ class TestCliLsDispatch:
             return fzf_cancelled
 
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("shutil.which", return_value="/usr/bin/fzf"):
                         with patch("os.execvp") as mock_exec:
@@ -1025,7 +1033,7 @@ class TestCliLsDispatch:
         now = int(time.time())
         sessions = [("c-sw-1", now - 60), ("random-session", now - 120)]
         with patch("sys.argv", ["ai", "ls", "--all"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=self._fake_tmux_sessions(sessions)):
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit) as exc:
@@ -1039,7 +1047,7 @@ class TestCliLsDispatch:
         raw_output = f"c-sw-1 {now - 300}\n\nc-sw-2 {now - 600}\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=tmux_result):
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit):
@@ -1052,7 +1060,7 @@ class TestCliLsDispatch:
         raw_output = "c-sw-1 not-a-number\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=tmux_result):
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit):
@@ -1064,7 +1072,7 @@ class TestCliLsDispatch:
         raw_output = f"c-sw-1 {now - 10}\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=tmux_result):
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit):
@@ -1076,7 +1084,7 @@ class TestCliLsDispatch:
         raw_output = f"c-sw-1 {now - 90000}\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=tmux_result):
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit):
@@ -1104,7 +1112,7 @@ class TestCliLsDispatch:
             return MagicMock(returncode=1)
 
         with patch("sys.argv", ["ai", "ls"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("shutil.which", side_effect=fake_which):
                         with pytest.raises(SystemExit) as exc:
@@ -1117,35 +1125,35 @@ class TestCliLsDispatch:
 class TestCliInternalMissingArgs:
     def test_cli_when_internal_publish_event_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-event"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_publish_heartbeat_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_publish_session_event_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-session-event"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_publish_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()
                 assert exc.value.code == 1
 
     def test_cli_when_internal_publish_bad_json_payload_then_uses_empty(self):
         with patch("sys.argv", ["ai", "internal", "publish", "topic", "not-json"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient") as mock_nats:
                     mock_instance = MagicMock()
                     mock_nats.return_value = mock_instance
@@ -1164,8 +1172,8 @@ class TestCliRegistryValidation:
 
         with (
             patch("sys.argv", ["ai", "c", "1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main.get_project_prefix", return_value="app"),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="app"),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
@@ -1179,7 +1187,7 @@ class TestCliRegistryValidation:
 class TestCliDaemonDispatch:
     def test_cli_when_memory_watch_then_calls_memory_watch(self):
         with patch("sys.argv", ["ai", "memory", "watch"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.memory.memory_watch", return_value=0) as mock_watch:
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -1188,7 +1196,7 @@ class TestCliDaemonDispatch:
 
     def test_cli_when_quota_watch_then_calls_quota_watch(self):
         with patch("sys.argv", ["ai", "quota", "watch"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.quota.quota_watch", return_value=0) as mock_watch:
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -1197,7 +1205,7 @@ class TestCliDaemonDispatch:
 
     def test_cli_when_telemetry_writer_then_calls_telemetry_writer(self):
         with patch("sys.argv", ["ai", "telemetry", "writer"]):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.telemetry.telemetry_writer", return_value=0) as mock_writer:
                     with pytest.raises(SystemExit) as exc:
                         cli()
@@ -1232,7 +1240,7 @@ class TestVersionFlag:
     def test_given_version_flag_when_called_then_does_not_load_config(self):
         with patch("sys.argv", ["ai", "--version"]):
             with patch("importlib.metadata.version", return_value="1.2.3"):
-                with patch("ai_cli.main.load_config") as mock_cfg:
+                with patch("ai_cli.config.load_config") as mock_cfg:
                     with pytest.raises(SystemExit):
                         cli()
                     mock_cfg.assert_not_called()
@@ -1242,7 +1250,7 @@ class TestGetVersion:
     def test_get_version_when_package_installed_then_prints_version(self, capsys):
         with (
             patch("sys.argv", ["ai", "internal", "get-version"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("importlib.metadata.version", return_value="1.2.3"),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1257,7 +1265,7 @@ class TestGetVersion:
 
         with (
             patch("sys.argv", ["ai", "internal", "get-version"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("importlib.metadata.version", side_effect=PackageNotFoundError("ai-cli-utils")),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1377,7 +1385,7 @@ class TestDeploy:
 
         with (
             patch("sys.argv", ["ai", "deploy"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")) as mock_run,
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1398,7 +1406,7 @@ class TestDeploy:
 
         with (
             patch("sys.argv", ["ai", "deploy"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
             patch("builtins.print") as mock_print,
         ):
@@ -1411,7 +1419,7 @@ class TestDeploy:
     def test_deploy_when_no_pyproject_then_exits_with_error(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "deploy"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1423,7 +1431,7 @@ class TestDeploy:
 
         with (
             patch("sys.argv", ["ai", "deploy"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
         ):
@@ -1434,7 +1442,7 @@ class TestDeploy:
     def test_deploy_exits_when_source_not_found(self, tmp_path, capsys):
         with (
             patch("sys.argv", ["ai", "deploy"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main._find_aicli_project_path", return_value=None),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1453,7 +1461,7 @@ class TestDeploy:
 
         with (
             patch("sys.argv", ["ai", "update"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
             patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
         ):
@@ -1479,7 +1487,7 @@ class TestDeploy:
 
         with (
             patch("sys.argv", ["ai", "update"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1512,7 +1520,7 @@ class TestDeploy:
 
         with (
             patch("sys.argv", ["ai", "update"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1540,7 +1548,7 @@ class TestDeploy:
 
         with (
             patch("sys.argv", ["ai", "update"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1562,7 +1570,7 @@ class TestDeploy:
         with (
             patch("sys.argv", ["ai", "update"]),
             patch(
-                "ai_cli.main.load_config",
+                "ai_cli.config.load_config",
                 return_value={
                     "deploy": {"project_path": str(tmp_path)},
                     "update": {"extra_venvs": [str(extra_venv)]},
@@ -1589,7 +1597,7 @@ class TestDeploy:
         with (
             patch("sys.argv", ["ai", "update"]),
             patch(
-                "ai_cli.main.load_config",
+                "ai_cli.config.load_config",
                 return_value={
                     "deploy": {"project_path": str(tmp_path)},
                     "update": {"extra_venvs": [str(tmp_path / "nonexistent" / ".venv")]},
@@ -1613,7 +1621,7 @@ class TestTriggerBackgroundUpdate:
         state_file = tmp_path / "update_check.json"
         state_file.write_text(json.dumps({"last_checked": 0}))
 
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             with patch("subprocess.Popen") as mock_popen:
                 trigger_background_update()
         mock_popen.assert_called_once()
@@ -1623,13 +1631,13 @@ class TestTriggerBackgroundUpdate:
         state_file = tmp_path / "update_check.json"
         state_file.write_text(json.dumps({"last_checked": time.time()}))
 
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             with patch("subprocess.Popen") as mock_popen:
                 trigger_background_update()
         mock_popen.assert_not_called()
 
     def test_trigger_update_when_no_state_file_then_runs(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             with patch("subprocess.Popen") as mock_popen:
                 trigger_background_update()
         mock_popen.assert_called_once()
@@ -1640,7 +1648,7 @@ class TestTriggerBackgroundUpdateBadJson:
         state_file = tmp_path / "update_check.json"
         state_file.write_text("not valid json {{{")
 
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             with patch("subprocess.Popen") as mock_popen:
                 trigger_background_update()
         mock_popen.assert_called_once()
@@ -1651,7 +1659,7 @@ class TestTriggerBackgroundUpdateRecent:
         state_file = tmp_path / "update_check.json"
         state_file.write_text(json.dumps({"last_checked": time.time()}))
 
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             with patch("subprocess.Popen") as mock_popen:
                 trigger_background_update()
         mock_popen.assert_not_called()
@@ -1671,7 +1679,7 @@ class TestAutoUpdateIfStale:
             return MagicMock(returncode=0, stdout="abc123\n")
 
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.run", side_effect=fake_run) as mock_run,
         ):
             _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
@@ -1693,7 +1701,7 @@ class TestAutoUpdateIfStale:
             return MagicMock(returncode=0, stdout="new_hash\n")
 
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.run", side_effect=fake_run),
             patch("shutil.which", return_value="/usr/bin/ai"),
         ):
@@ -1714,7 +1722,7 @@ class TestAutoUpdateIfStale:
             return MagicMock(returncode=0, stdout="abc123\n")
 
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.run", side_effect=fake_run),
             patch("shutil.which", return_value="/usr/bin/ai"),
         ):
@@ -1724,7 +1732,7 @@ class TestAutoUpdateIfStale:
 
     def test_when_no_pyproject_then_skips(self, tmp_path):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.run") as mock_run,
         ):
             _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
@@ -1737,7 +1745,7 @@ class TestAutoUpdateIfStale:
         pyproject.write_text('[project]\nname = "ai-cli-utils"\n')  # no version field
         with (
             patch("sys.argv", ["ai", "deploy"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1757,7 +1765,7 @@ class TestAutoUpdateIfStale:
 
         with (
             patch("sys.argv", ["ai", "deploy", "--force"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1783,7 +1791,7 @@ class TestAutoUpdateIfStale:
         }
         with (
             patch("sys.argv", ["ai", "deploy", "--force"]),
-            patch("ai_cli.main.load_config", return_value=config),
+            patch("ai_cli.config.load_config", return_value=config),
             patch("subprocess.run", side_effect=fake_run),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -1802,9 +1810,9 @@ class TestAutoUpdateIfStale:
 
         with (
             patch("sys.argv", ["ai", "update"]),
-            patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1822,8 +1830,8 @@ class TestSignalWatchCliDispatch:
     def test_cli_signal_watch_start_dispatches(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "signal-watch", "start", "myproject", "c-sw-1"]),
-            patch("ai_cli.main._cmd_signal_watch_start") as mock_start,
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.process_manager._cmd_signal_watch_start") as mock_start,
+            patch("ai_cli.config.load_config", return_value={}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1833,8 +1841,8 @@ class TestSignalWatchCliDispatch:
     def test_cli_signal_watch_stop_dispatches(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "signal-watch", "stop", "c-sw-1"]),
-            patch("ai_cli.main._cmd_signal_watch_stop") as mock_stop,
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.process_manager._cmd_signal_watch_stop") as mock_stop,
+            patch("ai_cli.config.load_config", return_value={}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1844,7 +1852,7 @@ class TestSignalWatchCliDispatch:
     def test_cli_signal_watch_missing_args_exits_1(self):
         with (
             patch("sys.argv", ["ai", "signal-watch"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1972,8 +1980,8 @@ class TestTunnel:
     def test_cli_tunnel_start_dispatches(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "tunnel", "start", "9222"]),
-            patch("ai_cli.main._cmd_tunnel_start") as mock_start,
-            patch("ai_cli.main.load_config", return_value=_TUNNEL_CONFIG),
+            patch("ai_cli.tunnel._cmd_tunnel_start") as mock_start,
+            patch("ai_cli.config.load_config", return_value=_TUNNEL_CONFIG),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -2009,7 +2017,7 @@ class TestTunnel:
     def test_cli_tunnel_missing_args_exits_1(self):
         with (
             patch("sys.argv", ["ai", "tunnel", "start"]),
-            patch("ai_cli.main.load_config", return_value=_TUNNEL_CONFIG),
+            patch("ai_cli.config.load_config", return_value=_TUNNEL_CONFIG),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -2025,18 +2033,18 @@ class TestLocalProjectChdir:
         project_dir.mkdir(parents=True)
         with (
             patch("sys.argv", ["ai", "g", "1", "-p", "myproject"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
-            patch("ai_cli.main._find_project_dir", return_value=project_dir),
-            patch("ai_cli.main.validate_registry_completeness", return_value=True),
-            patch("ai_cli.main.cleanup_stale_sessions"),
-            patch("ai_cli.main.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.main.build_session_name", return_value=("g-myproject-1", "myproject-1")),
-            patch("ai_cli.main.get_session_map", return_value={}),
-            patch("ai_cli.main.create_worktree", return_value=None),
-            patch("ai_cli.main._load_iterm2_config", return_value={}),
-            patch("ai_cli.main._assign_iterm2_color_slot", return_value=None),
-            patch("ai_cli.main._emit_iterm2_profile_setup"),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.config._find_project_dir", return_value=project_dir),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.session.build_session_name", return_value=("g-myproject-1", "myproject-1")),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir") as mock_chdir,
         ):
@@ -2047,17 +2055,17 @@ class TestLocalProjectChdir:
     def test_when_no_project_flag_then_no_chdir(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "g", "1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
-            patch("ai_cli.main.validate_registry_completeness", return_value=True),
-            patch("ai_cli.main.cleanup_stale_sessions"),
-            patch("ai_cli.main.get_current_project_name", return_value="sw"),
-            patch("ai_cli.main.build_session_name", return_value=("g-sw-1", "sw-1")),
-            patch("ai_cli.main.get_session_map", return_value={}),
-            patch("ai_cli.main.create_worktree", return_value=None),
-            patch("ai_cli.main._load_iterm2_config", return_value={}),
-            patch("ai_cli.main._assign_iterm2_color_slot", return_value=None),
-            patch("ai_cli.main._emit_iterm2_profile_setup"),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.config.get_current_project_name", return_value="sw"),
+            patch("ai_cli.session.build_session_name", return_value=("g-sw-1", "sw-1")),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir") as mock_chdir,
         ):
@@ -2076,20 +2084,20 @@ class TestLocalProjectChdir:
 
         with (
             patch("sys.argv", ["ai", "c", "1", "-p", "myapp-mobile"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main.get_project_aliases", return_value={}),
-            patch("ai_cli.main._find_project_dir", return_value=project_dir),
-            patch("ai_cli.main._get_project_prefix_by_name", return_value="hm"),
-            patch("ai_cli.main.validate_registry_completeness", return_value=True),
-            patch("ai_cli.main.cleanup_stale_sessions"),
-            patch("ai_cli.main.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.main.get_project_prefix", return_value="sw"),
-            patch("ai_cli.main.build_session_name", side_effect=capture_build),
-            patch("ai_cli.main.get_session_map", return_value={}),
-            patch("ai_cli.main.create_worktree", return_value=None),
-            patch("ai_cli.main._load_iterm2_config", return_value={}),
-            patch("ai_cli.main._assign_iterm2_color_slot", return_value=None),
-            patch("ai_cli.main._emit_iterm2_profile_setup"),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.config._find_project_dir", return_value=project_dir),
+            patch("ai_cli.config._get_project_prefix_by_name", return_value="hm"),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.build_session_name", side_effect=capture_build),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir"),
         ):

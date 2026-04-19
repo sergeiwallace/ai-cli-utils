@@ -77,7 +77,7 @@ class TestEnsureVpnWatcher:
         mock_client.send_message = MagicMock(return_value={"statuses": {}})
         with (
             patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
+            patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
             patch("ai_cli.main.shutil.which", return_value="/usr/local/bin/ai"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
@@ -94,7 +94,7 @@ class TestEnsureVpnWatcher:
         mock_client = MagicMock()
         with (
             patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
+            patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _ensure_vpn_watcher(CONFIG)
@@ -106,7 +106,7 @@ class TestEnsureVpnWatcher:
         mock_client.send_message = MagicMock(return_value={"statuses": {"vpn-watch": "active"}})
         with (
             patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
+            patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _ensure_vpn_watcher(CONFIG)
@@ -117,7 +117,7 @@ class TestEnsureVpnWatcher:
     def test_when_circus_unavailable_then_does_not_raise(self, tmp_path):
         with (
             patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", side_effect=RuntimeError("circus down")),
+            patch("ai_cli.process_manager._ensure_circusd", side_effect=RuntimeError("circus down")),
         ):
             _ensure_vpn_watcher(CONFIG)  # Should not raise
 

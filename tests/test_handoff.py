@@ -43,7 +43,7 @@ class TestHandoff:
         mock_client.publish = AsyncMock(return_value=True)
 
         with patch("ai_cli.handoff._get_handoff_queue_dir", return_value=queue_dir):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
                     post_handoff("Deploy done", "P1", "artelier", "Details", for_machine="hetzner")
 
@@ -57,7 +57,7 @@ class TestHandoff:
     def test_post_handoff_when_nats_fails_then_file_still_written(self, tmp_path):
         queue_dir = tmp_path / ".handoff-queue"
         with patch("ai_cli.handoff._get_handoff_queue_dir", return_value=queue_dir):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient", side_effect=Exception("NATS unavailable")):
                     post_handoff("Fix bug", "P1", "myapp", "Details", for_machine="hetzner")
         pending_files = list((queue_dir / "pending").glob("*.md"))
@@ -86,7 +86,7 @@ class TestHandoff:
         mock_client = MagicMock()
         mock_client.publish = AsyncMock(return_value=True)
         with patch("ai_cli.handoff._get_handoff_queue_dir", return_value=queue_dir):
-            with patch("ai_cli.main.load_config", return_value={}):
+            with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
                     post_handoff("Task", "P1", "proj", "msg", for_machine="mac")
         _, payload = mock_client.publish.call_args[0]
@@ -222,10 +222,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=None),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=None),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=None),
-            patch("ai_cli.main.get_xdg_state_home", return_value=Path("/tmp")),
+            patch("ai_cli.config.get_xdg_state_home", return_value=Path("/tmp")),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=Path("/tmp")),
             patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
             patch("asyncio.sleep", new=AsyncMock()),
@@ -266,10 +266,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -319,10 +319,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -362,10 +362,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-2"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -380,7 +380,7 @@ class TestSignalWatchCli:
     def test_signal_watch_when_too_few_args_then_exits_with_error(self):
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "only-one-arg"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -411,10 +411,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-3"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=None),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=None),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=None),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -474,10 +474,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-4"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -531,10 +531,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-3"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -576,10 +576,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-4"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -620,10 +620,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-4"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -671,10 +671,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-5"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -726,10 +726,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-6"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -777,10 +777,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-7"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -818,10 +818,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-8"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -860,10 +860,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-9"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -921,10 +921,10 @@ class TestSignalWatchCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "ai-cli-utils", "c-mobile-1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -946,7 +946,7 @@ class TestHandoffPostRemote:
     def test_post_handoff_remote_flag_when_no_remote_config_then_exits_1(self):
         with (
             patch("sys.argv", ["ai", "handoff", "post", "--remote", "Fix bug", "P1", "myapp", "Details"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -956,7 +956,7 @@ class TestHandoffPostRemote:
         config = {"remote": {"host": "9.9.9.9", "user": "alice"}}
         with (
             patch("sys.argv", ["ai", "handoff", "post", "--remote", "Task", "P2", "proj", "Msg"]),
-            patch("ai_cli.main.load_config", return_value=config),
+            patch("ai_cli.config.load_config", return_value=config),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
@@ -990,7 +990,7 @@ class TestHandoffPostRemote:
 
         with (
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=queue_dir),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch.object(msg_mod, "NATSClient", FakeNATSClient),
         ):
             post_handoff("Cross-machine task", "P1", "myapp", "Do this remotely", for_machine="hetzner")
@@ -1251,10 +1251,10 @@ class TestSignalWatchEventLogging:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-5"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -1322,10 +1322,10 @@ class TestSignalWatchEventLogging:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-6"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -1367,10 +1367,10 @@ class TestSignalWatchEventLogging:
 
         with (
             patch("sys.argv", ["ai", "internal", "signal-watch", "myapp", "c-sw-7"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=fake_sleep),
@@ -1461,10 +1461,10 @@ class TestHandoffDrain:
 
         with (
             patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
             patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
@@ -1486,10 +1486,10 @@ class TestHandoffDrain:
 
         with (
             patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
         ):
@@ -1517,10 +1517,10 @@ class TestHandoffDrain:
 
         with (
             patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-1"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
         ):
@@ -1543,10 +1543,10 @@ class TestHandoffDrain:
 
         with (
             patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-2"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
             patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
@@ -1567,10 +1567,10 @@ class TestHandoffDrain:
 
         with (
             patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-3"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=tmp_path / ".handoff-queue"),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=tmp_path / ".handoff-queue"),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=tmp_path / ".handoff-queue"),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
         ):
@@ -1595,10 +1595,10 @@ class TestHandoffDrain:
 
         with (
             patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-4"]),
-            patch("ai_cli.main.load_config", return_value={}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("nats.connect", side_effect=Exception("no nats")),
             patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
@@ -1655,10 +1655,10 @@ class TestHandoffDrain:
 
         with (
             patch("sys.argv", ["ai", "internal", "handoff-drain", "myapp", "c-sw-5"]),
-            patch("ai_cli.main.load_config", return_value={"messaging": {"nats_servers": ["nats://localhost:4222"]}}),
-            patch("ai_cli.main._get_handoff_queue_dir", return_value=handoff_dir),
+            patch("ai_cli.config.load_config", return_value={"messaging": {"nats_servers": ["nats://localhost:4222"]}}),
+            patch("ai_cli.config._get_handoff_queue_dir", return_value=handoff_dir),
             patch("ai_cli.handoff._get_handoff_queue_dir", return_value=handoff_dir),
-            patch("ai_cli.main.get_xdg_state_home", return_value=state_dir),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.handoff.get_xdg_state_home", return_value=state_dir),
             patch("ai_cli.messaging.NATSClient") as mock_client_cls,
             patch.dict("os.environ", {"AI_CLI_HOST": "mac"}),
@@ -1748,7 +1748,7 @@ class TestSignalWatchCircus:
     def test_cmd_signal_watch_start_registers_watcher_with_copy_env(self, tmp_path):
         client = self._mock_client()
         with (
-            patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
+            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=client),
             patch("shutil.which", return_value="/usr/bin/ai"),
         ):
@@ -1821,7 +1821,7 @@ class TestQuotaSubscriberCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "quota-subscriber"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
             patch("asyncio.sleep", new=AsyncMock()),
         ):
@@ -1855,7 +1855,7 @@ class TestQuotaSubscriberCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "quota-subscriber"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)),
             patch("ai_cli.quota_db.record_quota_snapshot", side_effect=lambda **kw: recorded.append(kw)),
@@ -1892,7 +1892,7 @@ class TestQuotaSubscriberCli:
 
         with (
             patch("sys.argv", ["ai", "internal", "quota-subscriber"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
             patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)),
             patch("ai_cli.quota_db.record_quota_snapshot", side_effect=RuntimeError("db error")),
