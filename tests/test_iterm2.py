@@ -79,7 +79,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_when_lc_terminal_is_iterm2_and_claude_engine_then_emits_dynamic_profile_and_color(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         _emit_iterm2_profile_setup("sw-3", "c")
@@ -89,7 +89,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_when_lc_terminal_is_iterm2_and_gemini_engine_then_emits_dynamic_profile(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         _emit_iterm2_profile_setup("ai-dojo-1", "g")
@@ -99,7 +99,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_when_term_program_is_iterm_app_then_also_activates(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": "iTerm.app"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         _emit_iterm2_profile_setup("sw-1", "c")
@@ -107,7 +107,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_when_session_arg_provided_then_profile_uses_ai_name_not_session(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
@@ -117,7 +117,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_uses_osc1_not_osc0_for_title(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
@@ -127,7 +127,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_when_slot_provided_then_uses_slot_color(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         _emit_iterm2_profile_setup("sw-5", "c", session="c-sw-5", slot="#1abc9c")
@@ -137,7 +137,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_icon_generation_failure_does_not_block_launch(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", side_effect=RuntimeError("fail")):
                     _emit_iterm2_profile_setup("sw-1", "c")
         out = capsys.readouterr().out
@@ -149,7 +149,7 @@ class TestEmitIterm2ProfileSetupGeminiWithIterm2Env:
 
     def test_when_gemini_engine_and_iterm_session_id_set_then_emits_dynamic_profile(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
-            with patch("ai_cli.main._load_iterm2_config", return_value={}):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         _emit_iterm2_profile_setup("research-1", "g")
@@ -178,7 +178,7 @@ class TestIterm2StateDir:
 
 class TestLoadIterm2Config:
     def test_when_config_missing_then_writes_defaults_and_returns_dict(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_config_home", return_value=tmp_path):
+        with patch("ai_cli.iterm2.get_xdg_config_home", return_value=tmp_path):
             result = _load_iterm2_config()
         assert isinstance(result, dict)
         assert "iterm2" in result
@@ -187,14 +187,14 @@ class TestLoadIterm2Config:
     def test_when_config_exists_then_reads_it(self, tmp_path):
         config_path = tmp_path / "iterm2.toml"
         config_path.write_text("[iterm2]\nenabled = false\n")
-        with patch("ai_cli.main.get_xdg_config_home", return_value=tmp_path):
+        with patch("ai_cli.iterm2.get_xdg_config_home", return_value=tmp_path):
             result = _load_iterm2_config()
         assert result["iterm2"]["enabled"] is False
 
     def test_when_config_corrupted_then_falls_back_to_defaults(self, tmp_path):
         config_path = tmp_path / "iterm2.toml"
         config_path.write_bytes(b"\xff\xfe invalid toml")
-        with patch("ai_cli.main.get_xdg_config_home", return_value=tmp_path):
+        with patch("ai_cli.iterm2.get_xdg_config_home", return_value=tmp_path):
             result = _load_iterm2_config()
         assert isinstance(result, dict)
 
@@ -223,8 +223,8 @@ class TestAssignIterm2ColorSlot:
     def test_when_iterm2_then_returns_hex_string(self, tmp_path):
         cfg = make_iterm2_config()
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     result = _assign_iterm2_color_slot("sw-1", "c")
         assert result is not None
         assert isinstance(result, str)
@@ -233,8 +233,8 @@ class TestAssignIterm2ColorSlot:
     def test_when_collision_avoidance_assigns_unique_slots(self, tmp_path):
         cfg = make_iterm2_config()
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     slot1 = _assign_iterm2_color_slot("sw-1", "c")
                     slot2 = _assign_iterm2_color_slot("sw-2", "c")
                     slot3 = _assign_iterm2_color_slot("sw-3", "c")
@@ -245,8 +245,8 @@ class TestAssignIterm2ColorSlot:
         # md5("sw-3") % 2 == 1, so slot 1 = blue (#1e88e5)
         cfg = make_iterm2_config(palette={"red": "#e74c3c", "blue": "#1e88e5"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     _assign_iterm2_color_slot("sw-1", "c")
                     _assign_iterm2_color_slot("sw-2", "c")
                     slot3 = _assign_iterm2_color_slot("sw-3", "c")
@@ -257,8 +257,8 @@ class TestAssignIterm2ColorSlot:
         lease_file = tmp_path / "color-leases.json"
         lease_file.write_text(json.dumps({"leases": {"sw-dead": {"slot": 0, "pid": 999999999, "ts": "0"}}}))
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     slot = _assign_iterm2_color_slot("sw-1", "c")
         leases = json.loads(lease_file.read_text())["leases"]
         assert "sw-dead" not in leases
@@ -268,8 +268,8 @@ class TestAssignIterm2ColorSlot:
     def test_when_collision_avoidance_disabled_uses_modulo(self, tmp_path):
         cfg = make_iterm2_config(collision_avoidance=False)
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     slot = _assign_iterm2_color_slot("sw-2", "c")
         assert slot is not None
         assert slot.lstrip("#") == "1e88e5"
@@ -277,8 +277,8 @@ class TestAssignIterm2ColorSlot:
     def test_project_tab_color_pins_preferred_slot(self, tmp_path):
         cfg = make_iterm2_config(projects={"myproject": {"tab_color": "green"}})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     slot = _assign_iterm2_color_slot("sw-1", "c", project_name="myproject")
         assert slot is not None
         assert slot.lstrip("#") == "2ecc71"
@@ -286,8 +286,8 @@ class TestAssignIterm2ColorSlot:
     def test_project_tab_color_falls_back_when_preferred_occupied(self, tmp_path):
         cfg = make_iterm2_config(projects={"myproject": {"tab_color": "red"}})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     _assign_iterm2_color_slot("other-session", "c")
                     slot = _assign_iterm2_color_slot("sw-1", "c", project_name="myproject")
         assert slot is not None
@@ -296,8 +296,8 @@ class TestAssignIterm2ColorSlot:
     def test_session_tab_color_pins_preferred_slot(self, tmp_path):
         cfg = make_iterm2_config(sessions={"c-sw-1": {"tab_color": "blue"}})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     slot = _assign_iterm2_color_slot("c-sw-1", "c")
         assert slot is not None
         assert slot.lstrip("#") == "1e88e5"
@@ -308,8 +308,8 @@ class TestAssignIterm2ColorSlot:
             sessions={"c-sw-1": {"tab_color": "blue"}},
         )
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     slot = _assign_iterm2_color_slot("c-sw-1", "c", project_name="myproject")
         assert slot is not None
         assert slot.lstrip("#") == "1e88e5"  # session wins over project
@@ -317,8 +317,8 @@ class TestAssignIterm2ColorSlot:
     def test_defaults_tab_color_used_when_no_project_or_session(self, tmp_path):
         cfg = make_iterm2_config(defaults={"tab_color": "green"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
-                with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
+                with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     slot = _assign_iterm2_color_slot("c-sw-1", "c")
         assert slot is not None
         assert slot.lstrip("#") == "2ecc71"
@@ -328,7 +328,7 @@ class TestReleaseIterm2ColorSlot:
     def test_when_lease_exists_then_removes_it(self, tmp_path):
         lease_file = tmp_path / "color-leases.json"
         lease_file.write_text(json.dumps({"leases": {"sw-5": {"slot": 2, "pid": 123, "ts": "0"}}}))
-        with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+        with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
             _release_iterm2_color_slot("sw-5")
         leases = json.loads(lease_file.read_text())["leases"]
         assert "sw-5" not in leases
@@ -336,11 +336,11 @@ class TestReleaseIterm2ColorSlot:
     def test_when_lease_missing_then_no_error(self, tmp_path):
         lease_file = tmp_path / "color-leases.json"
         lease_file.write_text(json.dumps({"leases": {}}))
-        with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+        with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
             _release_iterm2_color_slot("sw-99")
 
     def test_when_file_missing_then_no_error(self, tmp_path):
-        with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+        with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
             _release_iterm2_color_slot("sw-1")
 
 
@@ -349,7 +349,7 @@ class TestReleaseColorSlotCommand:
         lease_file = tmp_path / "color-leases.json"
         lease_file.write_text(json.dumps({"leases": {"sw-3": {"slot": 0, "pid": 1, "ts": "0"}}}))
         with patch("sys.argv", ["ai", "internal", "release-color-slot", "sw-3"]):
-            with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
+            with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with pytest.raises(SystemExit) as exc:
                     cli()
         assert exc.value.code == 0

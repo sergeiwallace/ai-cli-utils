@@ -285,7 +285,7 @@ class TestGetResetAnchorUtc:
         """Exception in load_config falls back to _DEFAULT_RESET_ANCHOR."""
         missing = tmp_path / "no-anchor.txt"
         with patch.object(quota_db, "_get_reset_anchor_path", return_value=missing):
-            with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
+            with patch("ai_cli.config.load_config", side_effect=Exception("no config")):
                 result = quota_db._get_reset_anchor_utc()
         assert result == datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
 

@@ -101,7 +101,7 @@ def _default_remote_bare_url(remote_host: str) -> str:
 
 def load_sync_config() -> SyncConfig:
     """Load sync config, falling back to sensible defaults."""
-    from .main import load_config
+    from .config import load_config
 
     config = load_config()
     sync_cfg = config.get("sync", {})
@@ -610,7 +610,7 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
     if not history_path.exists():
         return 0
 
-    from .main import _get_projects_dir
+    from .config import _get_projects_dir
 
     projects_base = _get_projects_dir()
     entries = history_path.read_text().strip().split("\n")
@@ -914,7 +914,7 @@ def _replicate_to_worktrees(
     Returns the number of files replicated.
     """
 
-    from .main import _get_projects_dir
+    from .config import _get_projects_dir
 
     projects_base = _get_projects_dir()
     count = 0
@@ -1106,7 +1106,7 @@ def repair_worktree_cc_dir(
 
     Returns the number of files copied.
     """
-    from .main import _get_projects_dir
+    from .config import _get_projects_dir
 
     projects_base = _get_projects_dir()
     project_path = projects_base / project_name
@@ -1706,7 +1706,7 @@ def sync_conflicts(flags: list[str]) -> int:
 
 def _pid_file_path(name: str) -> Path:
     """Return path for a daemon PID file under XDG state dir."""
-    from .main import get_xdg_state_home
+    from .config import get_xdg_state_home
 
     return get_xdg_state_home() / f"{name}.pid"
 

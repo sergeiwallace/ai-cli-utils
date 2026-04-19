@@ -189,7 +189,7 @@ def _cleanup(config, panes_output, now=None):
             kill_calls.append(cmd[cmd.index("-t") + 1])
         return MagicMock(returncode=0)
 
-    with patch("subprocess.run", side_effect=fake_run), patch("ai_cli.main.time") as mock_time:
+    with patch("subprocess.run", side_effect=fake_run), patch("ai_cli.session.time") as mock_time:
         mock_time.time.return_value = now
         cleanup_stale_sessions(config)
     return kill_calls
@@ -294,15 +294,15 @@ def test_cleanup_when_old_format_session_then_ignores_it():
 
 class TestSessionMap:
     def test_get_session_map_path_when_gemini_then_returns_gemini_path(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             result = get_session_map_path(engine="g")
         assert "gemini_sessions.json" in str(result)
 
     def test_get_session_map_when_invalid_json_then_returns_empty(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             path = tmp_path / "gemini_sessions.json"
             path.write_text("not json {{{")
-            with patch("ai_cli.main.get_session_map_path", return_value=path):
+            with patch("ai_cli.config.get_session_map_path", return_value=path):
                 result = get_session_map(engine="g")
         assert result == {}
 
@@ -310,20 +310,20 @@ class TestSessionMap:
         import json
 
         path = tmp_path / "test_sessions.json"
-        with patch("ai_cli.main.get_session_map_path", return_value=path):
+        with patch("ai_cli.config.get_session_map_path", return_value=path):
             save_session_map({"sw-1": "uuid123"}, engine="c")
         assert json.loads(path.read_text()) == {"sw-1": "uuid123"}
 
 
 class TestSessionMapEdgeCases:
     def test_get_session_map_path_when_engine_c_then_returns_claude_path(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             result = get_session_map_path(engine="c")
         assert "cc-sessions.json" in str(result)
 
     def test_get_session_map_when_file_not_exists_then_returns_empty(self, tmp_path):
         path = tmp_path / "nonexistent.json"
-        with patch("ai_cli.main.get_session_map_path", return_value=path):
+        with patch("ai_cli.config.get_session_map_path", return_value=path):
             result = get_session_map(engine="c")
         assert result == {}
 
@@ -612,7 +612,7 @@ class TestGetLatestGeminiSessionId:
         chats.mkdir(parents=True)
         (chats / "session-abc.json").write_text('{"sessionId": "chats-uuid"}')
         with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch("ai_cli.main._get_main_project_name", return_value=None):
+            with patch("ai_cli.config._get_main_project_name", return_value=None):
                 result = get_latest_gemini_session_id("art-1")
         assert result == "chats-uuid"
 
@@ -625,7 +625,7 @@ class TestGetLatestGeminiSessionId:
         (logs_dir / "logs.json").write_text('{"sessionId": "logs-uuid"}')
         with patch("pathlib.Path.cwd", return_value=tmp_path / "artelier"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id("art-1")
         assert result is None
 
@@ -637,14 +637,14 @@ class TestGetLatestGeminiSessionId:
 
         with patch("pathlib.Path.cwd", return_value=tmp_path / "testproject"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result == "def456"
 
     def test_latest_gemini_id_when_no_logs_then_returns_none(self, tmp_path):
         with patch("pathlib.Path.cwd", return_value=tmp_path / "noproject"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result is None
 
@@ -657,7 +657,7 @@ class TestGetLatestGeminiEdgeCases:
 
         with patch("pathlib.Path.cwd", return_value=tmp_path / "otherproject"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value="myproject"):
+                with patch("ai_cli.session._get_main_project_name", return_value="myproject"):
                     result = get_latest_gemini_session_id()
         assert result == "main-id-123"
 
@@ -670,7 +670,7 @@ class TestGetLatestGeminiEdgeCases:
 
         with patch("pathlib.Path.cwd", return_value=tmp_path / "bigproject"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.session._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result == "tail-id-456"
 
@@ -694,7 +694,7 @@ class TestGetLatestGeminiSessionIdException:
 
         with patch("pathlib.Path.home", return_value=tmp_path):
             with patch("pathlib.Path.cwd", return_value=tmp_path / "projects" / "testproj"):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     with patch("builtins.open", side_effect=fail_on_log):
                         result = get_latest_gemini_session_id()
         assert result is None
@@ -786,7 +786,7 @@ class TestDetectRepoRoot:
         mock_result.returncode = 0
         mock_result.stdout = "../../.git\n"
         with patch("subprocess.run", return_value=mock_result):
-            with patch("ai_cli.main.Path.cwd", return_value=Path("/home/user/projects/myapp/.worktrees/sw-1")):
+            with patch("ai_cli.session.Path.cwd", return_value=Path("/home/user/projects/myapp/.worktrees/sw-1")):
                 result = detect_repo_root()
         assert result == Path("/home/user/projects/myapp")
 
@@ -804,7 +804,7 @@ class TestDetectRepoRoot:
 
 class TestCreateWorktree:
     def test_create_worktree_when_no_repo_then_returns_none(self):
-        with patch("ai_cli.main.detect_repo_root", return_value=None):
+        with patch("ai_cli.session.detect_repo_root", return_value=None):
             result = create_worktree("sw-1")
         assert result is None
 
@@ -822,7 +822,7 @@ class TestCreateWorktree:
                 return mock_list
             return MagicMock(returncode=0)
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-1")
         assert result == wt_dir
@@ -840,7 +840,7 @@ class TestCreateWorktree:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return m
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-2")
         assert result == wt_dir
@@ -864,7 +864,7 @@ class TestCreateWorktreeEdgeCases:
                 m.stdout = ""
             return m
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-3")
         assert result == wt_dir
@@ -885,7 +885,7 @@ class TestCreateWorktreeEdgeCases2:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return m
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-4")
         assert result == wt_dir
@@ -902,7 +902,7 @@ class TestCreateWorktreeEdgeCases2:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return m
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-5")
         assert result == wt_dir
@@ -915,7 +915,7 @@ class TestCreateWorktreeEdgeCases2:
             m = MagicMock(returncode=1, stdout="")
             return m
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-6")
         assert result is None
@@ -934,8 +934,8 @@ class TestCreateWorktreeSymlink:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return MagicMock(returncode=0, stdout="")
 
-        with patch("ai_cli.main.detect_repo_root", return_value=repo_root):
-            with patch("ai_cli.main.get_project_prefix", return_value="sw"):
+        with patch("ai_cli.session.detect_repo_root", return_value=repo_root):
+            with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                 with patch("subprocess.run", side_effect=fake_run):
                     result = create_worktree("sw-1")
 
@@ -949,12 +949,12 @@ class TestCreateWorktreeSymlink:
 class TestCleanupWorktree:
     def test_cleanup_worktree_when_no_repo_then_noop(self):
         """Covers lines 461-463: no repo root."""
-        with patch("ai_cli.main.detect_repo_root", return_value=None):
+        with patch("ai_cli.session.detect_repo_root", return_value=None):
             cleanup_worktree("sw-1")
 
     def test_cleanup_worktree_when_dir_not_exists_then_noop(self, tmp_path):
         """Covers lines 465-466: worktree dir doesn't exist."""
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             cleanup_worktree("nonexistent")
 
     def test_cleanup_worktree_when_dirty_then_skips_remove(self, tmp_path):
@@ -972,7 +972,7 @@ class TestCleanupWorktree:
                 m.returncode = 0
             return m
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 cleanup_worktree("sw-7")
         remove_calls = [c for c in calls if "remove" in c]
@@ -988,7 +988,7 @@ class TestCleanupWorktree:
             calls.append(cmd)
             return MagicMock(returncode=0)
 
-        with patch("ai_cli.main.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 cleanup_worktree("sw-8")
         remove_calls = [c for c in calls if "remove" in c]
@@ -1086,6 +1086,6 @@ class TestProjectRegistryExceptionBranches:
 
         with patch("pathlib.Path.cwd", return_value=tmp_path / "testproj"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result is None

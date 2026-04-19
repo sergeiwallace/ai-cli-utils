@@ -280,7 +280,7 @@ class TestCliSetupDispatch:
 
         with (
             patch("sys.argv", ["ai", "setup"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.setup.run_setup", return_value=0) as mock_setup,
             patch("sys.exit", side_effect=fake_exit),
         ):
@@ -302,7 +302,7 @@ class TestCliSetupDispatch:
 
         with (
             patch("sys.argv", ["ai", "setup"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.setup.run_setup", return_value=1),
             patch("sys.exit", side_effect=fake_exit),
         ):

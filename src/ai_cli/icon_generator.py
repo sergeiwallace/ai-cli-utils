@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from .config import get_xdg_state_home
+
 try:
     from PIL import Image
 
@@ -57,8 +59,6 @@ _SOURCE_LOGOS: dict[str, str] = {
 
 def _icon_cache_dir() -> Path:
     """~/.local/state/ai-cli-utils/iterm2-icons/"""
-    from .main import get_xdg_state_home  # deferred to avoid circular import
-
     d = get_xdg_state_home() / "iterm2-icons"
     d.mkdir(parents=True, exist_ok=True)
     return d

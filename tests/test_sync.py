@@ -1527,7 +1527,7 @@ def test_load_sync_config_when_remote_host_set_then_uses_it():
         "sync": {"remote_host": "user@myhost"},
         "remote": {},
     }
-    with patch("ai_cli.main.load_config", return_value=config):
+    with patch("ai_cli.config.load_config", return_value=config):
         cfg = load_sync_config()
     assert cfg.remote_host == "user@myhost"
     assert isinstance(cfg, SyncConfig)
@@ -1538,14 +1538,14 @@ def test_load_sync_config_when_no_sync_host_then_derives_from_remote():
         "sync": {},
         "remote": {"host": "1.2.3.4", "user": "ubuntu"},
     }
-    with patch("ai_cli.main.load_config", return_value=config):
+    with patch("ai_cli.config.load_config", return_value=config):
         cfg = load_sync_config()
     assert cfg.remote_host == "ubuntu@1.2.3.4"
 
 
 def test_load_sync_config_when_no_host_at_all_then_exits():
     config = {"sync": {}, "remote": {}}
-    with patch("ai_cli.main.load_config", return_value=config):
+    with patch("ai_cli.config.load_config", return_value=config):
         import pytest
 
         with pytest.raises(SystemExit):
@@ -1557,7 +1557,7 @@ def test_load_sync_config_when_server_then_uses_file_url():
         "sync": {"remote_host": "user@host"},
         "remote": {},
     }
-    with patch("ai_cli.main.load_config", return_value=config):
+    with patch("ai_cli.config.load_config", return_value=config):
         with patch("ai_cli.sync._is_mac", return_value=False):
             cfg = load_sync_config()
     assert cfg.remote_url.startswith("file://")
@@ -1569,7 +1569,7 @@ def test_load_sync_config_when_mac_then_uses_ssh_url():
         "sync": {"remote_host": "user@host"},
         "remote": {},
     }
-    with patch("ai_cli.main.load_config", return_value=config):
+    with patch("ai_cli.config.load_config", return_value=config):
         with patch("ai_cli.sync._is_mac", return_value=True):
             cfg = load_sync_config()
     assert cfg.remote_url.startswith("ssh://")
@@ -2283,7 +2283,7 @@ def test_replicate_history_to_worktrees_when_worktrees_exist_then_adds_entries(t
     (wt_dir / ".git").write_text("gitdir: ...")
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
             result = replicate_history_to_worktrees(verbose=False)
     assert result >= 1
 
@@ -2383,7 +2383,7 @@ def test_replicate_history_to_worktrees_when_empty_line_then_skips(tmp_path):
     history.write_text("\n{}\n")
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+        with patch("ai_cli.config._get_projects_dir", return_value=tmp_path / "projects"):
             result = replicate_history_to_worktrees()
     assert result == 0
 
@@ -2395,7 +2395,7 @@ def test_replicate_history_to_worktrees_when_json_error_then_skips(tmp_path):
     history.write_text('"project":bad json\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+        with patch("ai_cli.config._get_projects_dir", return_value=tmp_path / "projects"):
             result = replicate_history_to_worktrees()
     assert result == 0
 
@@ -2410,7 +2410,7 @@ def test_replicate_history_to_worktrees_when_project_not_dir_then_skips(tmp_path
     history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+        with patch("ai_cli.config._get_projects_dir", return_value=projects_dir):
             result = replicate_history_to_worktrees()
     assert result == 0
 
@@ -2426,7 +2426,7 @@ def test_replicate_history_to_worktrees_when_no_worktrees_dir_then_skips(tmp_pat
     history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+        with patch("ai_cli.config._get_projects_dir", return_value=projects_dir):
             result = replicate_history_to_worktrees()
     assert result == 0
 
@@ -2444,7 +2444,7 @@ def test_replicate_history_to_worktrees_when_wt_not_dir_then_skips(tmp_path):
     history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+        with patch("ai_cli.config._get_projects_dir", return_value=projects_dir):
             result = replicate_history_to_worktrees()
     assert result == 0
 
@@ -2465,7 +2465,7 @@ def test_replicate_history_to_worktrees_when_wt_already_in_existing_then_skips(t
     history.write_text(f'{{"project":"{tmp_path}/projects/myapp"}}\n{{"project":"{wt_cwd}"}}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+        with patch("ai_cli.config._get_projects_dir", return_value=projects_dir):
             result = replicate_history_to_worktrees()
     assert result == 0  # wt already present, no new entries
 
@@ -2485,7 +2485,7 @@ def test_replicate_history_to_worktrees_when_verbose_then_prints(tmp_path, capsy
     history.write_text(f'{{"project":"{main_cwd}"}}\n')
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch("ai_cli.main._get_projects_dir", return_value=projects_dir):
+        with patch("ai_cli.config._get_projects_dir", return_value=projects_dir):
             result = replicate_history_to_worktrees(verbose=True)
     assert result == 1
     assert "replicate history" in capsys.readouterr().out
@@ -2646,7 +2646,7 @@ def test_replicate_to_worktrees_when_non_dir_entry_then_skips(tmp_path):
     cc_projects.mkdir()
     (cc_projects / "file.txt").write_text("not a dir")
 
-    with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+    with patch("ai_cli.config._get_projects_dir", return_value=tmp_path / "projects"):
         result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
     assert result == 0
 
@@ -2658,7 +2658,7 @@ def test_replicate_to_worktrees_when_bare_name_none_then_skips(tmp_path):
     # Dir name doesn't match server prefix → normalize returns None
     (cc_projects / "other-prefix-myapp").mkdir()
 
-    with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+    with patch("ai_cli.config._get_projects_dir", return_value=tmp_path / "projects"):
         result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
     assert result == 0
 
@@ -2671,7 +2671,7 @@ def test_replicate_to_worktrees_when_worktrees_in_name_then_skips(tmp_path):
     wt_cc = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
     wt_cc.mkdir()
 
-    with patch("ai_cli.main._get_projects_dir", return_value=tmp_path / "projects"):
+    with patch("ai_cli.config._get_projects_dir", return_value=tmp_path / "projects"):
         result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
     assert result == 0
 
@@ -2686,7 +2686,7 @@ def test_replicate_to_worktrees_when_project_not_on_disk_then_skips(tmp_path):
     projects_base = tmp_path / "projects"
     projects_base.mkdir()
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
     assert result == 0
 
@@ -2712,7 +2712,7 @@ def test_replicate_to_worktrees_when_dst_exists_not_symlink_then_skips(tmp_path)
     wt_cc_dir.mkdir(parents=True)
     (wt_cc_dir / "conv.jsonl").write_text("existing content")
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
     # File already existed, not a symlink → skipped
     assert (wt_cc_dir / "conv.jsonl").read_text() == "existing content"
@@ -2742,7 +2742,7 @@ def test_replicate_to_worktrees_when_matching_conv_then_replicates(tmp_path, cap
     lock_dir.mkdir()
     (lock_dir / "lock").write_text("lock data")
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=True)
 
     # Should have replicated the JSONL file
@@ -3532,7 +3532,7 @@ def test_replicate_history_to_worktrees_when_blank_lines_then_skips(tmp_path):
     app = projects_base / "app"
     app.mkdir(parents=True)
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = replicate_history_to_worktrees()
     assert result == 0  # no worktrees → nothing replicated, but blank line branch was exercised
@@ -3652,7 +3652,7 @@ def test_replicate_to_worktrees_when_project_has_no_worktrees_then_continues(tmp
     cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp"
     cc_dir.mkdir(parents=True)
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         count = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
     assert count == 0
 
@@ -3674,7 +3674,7 @@ def test_replicate_to_worktrees_when_unreadable_jsonl_then_continues(tmp_path):
     unreadable.chmod(0o000)
 
     try:
-        with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+        with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
             count = _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
         assert count == 0  # skipped unreadable file
     finally:
@@ -3702,7 +3702,7 @@ def test_replicate_to_worktrees_when_lock_dir_not_in_replicated_then_skips(tmp_p
     lock_dir = cc_dir / "abc123"
     lock_dir.mkdir()
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         _replicate_to_worktrees(cc_projects, _SERVER_PREFIX, verbose=False)
     # Lock dir was skipped (UUID not in replicated set)
     wt_cc_dir = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
@@ -4163,7 +4163,7 @@ def test_repair_worktree_cc_dir_when_project_missing_then_returns_zero(tmp_path,
     projects_base = tmp_path / "projects"
     projects_base.mkdir()
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = repair_worktree_cc_dir("missing-project", "session-1", cc_projects, _SERVER_PREFIX)
     assert result == 0
     assert "not found" in capsys.readouterr().err
@@ -4176,7 +4176,7 @@ def test_repair_worktree_cc_dir_when_worktree_missing_then_returns_zero(tmp_path
     myapp = projects_base / "myapp"
     myapp.mkdir(parents=True)
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = repair_worktree_cc_dir("myapp", "no-such-wt", cc_projects, _SERVER_PREFIX)
     assert result == 0
     assert "not found" in capsys.readouterr().err
@@ -4190,7 +4190,7 @@ def test_repair_worktree_cc_dir_when_no_main_cc_dir_then_returns_zero(tmp_path, 
     wt_dir = myapp / ".worktrees" / "myapp-1"
     wt_dir.mkdir(parents=True)
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX)
     assert result == 0
     assert "no CC dir" in capsys.readouterr().err
@@ -4212,7 +4212,7 @@ def test_repair_worktree_cc_dir_when_conversations_exist_then_copies(tmp_path, c
     conv = main_cc / "abc123.jsonl"
     conv.write_text(f'{{"cwd":"{main_cwd}", "msg":"hello"}}\n')
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX, verbose=True)
 
     assert result == 1
@@ -4244,7 +4244,7 @@ def test_repair_worktree_cc_dir_when_file_already_exists_then_skips(tmp_path):
     existing = wt_cc / "abc123.jsonl"
     existing.write_text("already here\n")
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX)
 
     assert result == 0
@@ -4269,7 +4269,7 @@ def test_repair_worktree_cc_dir_when_orphan_lock_exists_then_removes(tmp_path):
     orphan = wt_cc / "deadbeef-0000"
     orphan.mkdir()
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX)
 
     assert not orphan.exists()
@@ -4286,7 +4286,7 @@ def test_repair_worktree_cc_dir_when_dry_run_then_no_writes(tmp_path, capsys):
     main_cc.mkdir(parents=True)
     (main_cc / "abc123.jsonl").write_text('{"cwd": "/projects/myapp"}\n')
 
-    with patch("ai_cli.main._get_projects_dir", return_value=projects_base):
+    with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
         result = repair_worktree_cc_dir("myapp", "myapp-1", cc_projects, _SERVER_PREFIX, dry_run=True)
 
     assert result == 1

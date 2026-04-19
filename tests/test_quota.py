@@ -344,31 +344,40 @@ class TestScrapeUsageHiddenPane:
         r.stdout = stdout
         return r
 
-    def test_when_tmux_new_window_fails_then_returns_none(self):
+    def test_when_tmux_new_session_fails_then_returns_none(self):
+        ok = MagicMock()
+        ok.returncode = 0
         fail = MagicMock()
         fail.returncode = 1
-        with patch("subprocess.run", return_value=fail):
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return fail
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run):
             result = _scrape_usage_hidden_pane()
         assert result is None
 
-    def _make_new_window_result(self, index: str = "3") -> MagicMock:
+    def _make_new_session_result(self) -> MagicMock:
         r = MagicMock()
         r.returncode = 0
-        r.stdout = f"{index}\n"
+        r.stdout = ""
         return r
 
     def test_when_cc_prompt_never_appears_then_returns_none(self):
         """No ❯ in capture output → timeout → returns None."""
         no_prompt = self._make_cap_result("Starting claude...\n")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
         killed = []
 
         def fake_run(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "kill-session":
                 killed.append(True)
-                return ok
-            if cmd[0] == "tmux" and cmd[1] == "new-session":
                 return ok
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 return no_prompt
@@ -380,12 +389,15 @@ class TestScrapeUsageHiddenPane:
         assert killed, "kill-session must be called on timeout path"
 
     def test_when_session_name_used_as_capture_target(self):
-        """Session name is used as target for capture-pane (not window index :N)."""
+        """Session-name target is used for capture-pane, not index-based :N."""
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
         targets_seen = []
 
         def fake_run(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 if "-t" in cmd:
                     targets_seen.append(cmd[cmd.index("-t") + 1])
@@ -400,7 +412,7 @@ class TestScrapeUsageHiddenPane:
 
     def test_when_usage_output_captured_then_returns_snapshot(self):
         """Happy path: prompt appears, /usage output appears, snapshot returned."""
-        new_win = self._make_new_window_result("3")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
 
@@ -413,8 +425,8 @@ class TestScrapeUsageHiddenPane:
 
         def fake_run(cmd, **kwargs):
             nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count <= 1:
@@ -439,7 +451,7 @@ class TestScrapeUsageHiddenPane:
         the headline figure is a local-only estimate.  The scraper accepts the first
         output that contains 'Current week (all models)' and '% used'.
         """
-        new_win = self._make_new_window_result("5")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
 
@@ -450,8 +462,8 @@ class TestScrapeUsageHiddenPane:
 
         def fake_run(cmd, **kwargs):
             nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count == 1:
@@ -472,7 +484,7 @@ class TestScrapeUsageHiddenPane:
         (e.g. Mac hidden pane sessions), the scraper exhausts its poll budget and
         returns the best local-session estimate seen instead of None.
         """
-        new_win = self._make_new_window_result("6")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
 
@@ -488,8 +500,8 @@ class TestScrapeUsageHiddenPane:
 
         def fake_run(cmd, **kwargs):
             nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count == 1:
@@ -527,6 +539,7 @@ class TestScrapeUsageHiddenPane:
         The scraper must call `set-option window-size latest` immediately after
         resize-window so that iTerm2 pane resize keeps working in the host session.
         """
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
         cmds_seen = []
@@ -534,6 +547,8 @@ class TestScrapeUsageHiddenPane:
         def fake_run(cmd, **kwargs):
             if isinstance(cmd, list) and cmd[0] == "tmux":
                 cmds_seen.append(cmd[1:])
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             return ok
 
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
@@ -575,7 +590,7 @@ class TestSendNotification:
     def test_when_no_slack_url_then_uses_notify_send(self):
         snap = self._make_snapshot(78.5)
         with (
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(75, snap)
@@ -587,7 +602,7 @@ class TestSendNotification:
     def test_when_threshold_90_then_slow_down_message(self):
         snap = self._make_snapshot(92.0)
         with (
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(90, snap)
@@ -597,7 +612,7 @@ class TestSendNotification:
     def test_when_notify_send_raises_then_no_crash(self):
         snap = self._make_snapshot(78.5)
         with (
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("subprocess.run", side_effect=FileNotFoundError("not found")),
         ):
             _send_notification(75, snap)  # should not raise
@@ -606,7 +621,7 @@ class TestSendNotification:
         snap = self._make_snapshot(78.5)
         cfg = {"quota": {"slack_webhook_url": "https://hooks.slack.com/test"}}
         with (
-            patch("ai_cli.main.load_config", return_value=cfg),
+            patch("ai_cli.config.load_config", return_value=cfg),
             patch("ai_cli.quota._send_slack_notification") as mock_slack,
         ):
             _send_notification(75, snap)
@@ -616,7 +631,7 @@ class TestSendNotification:
         """lines 223-224: load_config exception → webhook_url="" → uses notify-send."""
         snap = self._make_snapshot(78.5)
         with (
-            patch("ai_cli.main.load_config", side_effect=Exception("no config")),
+            patch("ai_cli.config.load_config", side_effect=Exception("no config")),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(75, snap)
@@ -1478,13 +1493,13 @@ class TestQuotaStatuslinePart:
 class TestTryReadKvSnapshot:
     def test_returns_none_when_nats_servers_not_configured(self):
         """_try_read_kv_snapshot returns None when config has no nats_servers."""
-        with patch("ai_cli.main.load_config", return_value={}):
+        with patch("ai_cli.config.load_config", return_value={}):
             result = _try_read_kv_snapshot()
         assert result is None
 
     def test_returns_none_on_load_config_failure(self):
         """_try_read_kv_snapshot returns None when load_config raises."""
-        with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
+        with patch("ai_cli.config.load_config", side_effect=Exception("no config")):
             result = _try_read_kv_snapshot()
         assert result is None
 
@@ -1551,7 +1566,7 @@ class TestQuotaSyncFromRemote:
         """Missing host/user in config → returns 1 without running SSH."""
         with (
             patch("ai_cli.quota.subprocess.run") as mock_run,
-            patch("ai_cli.main.load_config", return_value={"remote": {}}),
+            patch("ai_cli.config.load_config", return_value={"remote": {}}),
         ):
             result = quota_sync_from_remote()
 
@@ -1565,7 +1580,7 @@ class TestQuotaSyncFromRemote:
         mock_result.stderr = "Connection refused"
         with (
             patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-            patch("ai_cli.main.load_config", return_value=self._make_config()),
+            patch("ai_cli.config.load_config", return_value=self._make_config()),
         ):
             result = quota_sync_from_remote()
 
@@ -1577,7 +1592,7 @@ class TestQuotaSyncFromRemote:
         """SSH raises (e.g. timeout) → returns 1 with error message."""
         with (
             patch("ai_cli.quota.subprocess.run", side_effect=TimeoutError("timed out")),
-            patch("ai_cli.main.load_config", return_value=self._make_config()),
+            patch("ai_cli.config.load_config", return_value=self._make_config()),
         ):
             result = quota_sync_from_remote()
 
@@ -1592,7 +1607,7 @@ class TestQuotaSyncFromRemote:
         mock_result.stdout = ""
         with (
             patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-            patch("ai_cli.main.load_config", return_value=self._make_config()),
+            patch("ai_cli.config.load_config", return_value=self._make_config()),
         ):
             result = quota_sync_from_remote()
 
@@ -1611,7 +1626,7 @@ class TestQuotaSyncFromRemote:
             mock_result.stdout = "55.0|10.0|30.0|0.0|2026-04-07T00:00:00Z|2026-04-07T10:00:00Z\n"
             with (
                 patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-                patch("ai_cli.main.load_config", return_value=self._make_config()),
+                patch("ai_cli.config.load_config", return_value=self._make_config()),
             ):
                 result = quota_sync_from_remote()
 
@@ -1648,7 +1663,7 @@ class TestQuotaSyncFromRemote:
             mock_result.stdout = "55.0|10.0|30.0|0.0|2026-04-07T00:00:00Z|2026-04-07T10:00:00Z\n"
             with (
                 patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-                patch("ai_cli.main.load_config", return_value=self._make_config()),
+                patch("ai_cli.config.load_config", return_value=self._make_config()),
             ):
                 result = quota_sync_from_remote()
 
@@ -1666,7 +1681,7 @@ class TestQuotaSyncFromRemote:
         with (
             patch("ai_cli.quota.subprocess.run", return_value=mock_result) as mock_run,
             patch(
-                "ai_cli.main.load_config",
+                "ai_cli.config.load_config",
                 return_value=self._make_config(identity="~/.ssh/id_ed25519"),
             ),
         ):
@@ -1677,7 +1692,7 @@ class TestQuotaSyncFromRemote:
 
     def test_when_config_load_fails_then_returns_1(self, capsys):
         """Exception loading config → returns 1."""
-        with patch("ai_cli.main.load_config", side_effect=RuntimeError("no config")):
+        with patch("ai_cli.config.load_config", side_effect=RuntimeError("no config")):
             result = quota_sync_from_remote()
 
         assert result == 1

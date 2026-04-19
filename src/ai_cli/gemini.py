@@ -169,7 +169,7 @@ def _publish_gemini_event_nats(entry: dict) -> None:
     from .messaging import NATSClient
 
     try:
-        from .main import load_config as _load_config
+        from .config import load_config as _load_config
 
         cfg = _load_config()
         nats_servers = cfg.get("messaging", {}).get("nats_servers")
@@ -547,7 +547,7 @@ def _load_paid_fallback_config() -> bool:
     for all models, and Deep Research exits with an actionable error.
     """
     try:
-        from .main import load_config
+        from .config import load_config
 
         return bool(load_config().get("gemini", {}).get("paid_fallback_enabled", False))
     except Exception:

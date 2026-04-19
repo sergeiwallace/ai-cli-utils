@@ -9,8 +9,9 @@ import json
 import sys
 from datetime import datetime, timezone
 
-from .main import _is_vpn_active, get_xdg_state_home
+from .config import get_xdg_state_home
 from .messaging import NATSClient
+from .transport import _is_vpn_active
 
 
 def run_vpn_watch(config: dict) -> None:

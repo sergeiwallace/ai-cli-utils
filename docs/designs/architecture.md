@@ -32,7 +32,15 @@ The tool installs as a single `ai` command. There is no server component — all
 
 | File | Description |
 |------|-------------|
-| `main.py` | Monolithic CLI entrypoint (`ai` command); all command dispatch, session management, worktree logic, project registry, handoff queue, config loading, and XDG path management |
+| `main.py` | CLI entrypoint (`ai` command); command dispatch, session-launch plumbing, update/deploy helpers. Thin after AI-CLI-39 refactor — most subsystems now live in dedicated modules below |
+| `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `sergei.toml`) |
+| `session.py` | Session naming (`c-myproject-1` etc.), worktree creation/cleanup, Gemini UUID/checkpoint lookup |
+| `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
+| `handoff.py` | Handoff queue (`post`, `check`, `claim`, `complete`) + signal-watch helper `_claim_handoff_for_signal` |
+| `transport.py` | VPN-aware mosh/SSH loop for `ai c -R`; auto-starts Tailscale on Mac when host unreachable |
+| `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
+| `process_manager.py` | Circus daemon bootstrap + `signal-watch` process lifecycle |
+| `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop with watcher, handoff drain, iTerm2 status |
 | `gemini.py` | Gemini CLI/API wrapper with 3-tier auth fallback; defines `GeminiResult`, `AttemptLog`; handles OAuth, free-key REST, paid-key REST; writes JSONL run logs; publishes `hw.events.usage.gemini.event` to NATS |
 | `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors |

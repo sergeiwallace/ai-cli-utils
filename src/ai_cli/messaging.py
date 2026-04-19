@@ -44,7 +44,7 @@ class NATSClient:
             pass
         # Use configured remote host so Tailscale/direct-IP preference is respected.
         try:
-            from .main import load_config as _load_config
+            from .config import load_config as _load_config
 
             _cfg = _load_config()
             _remote = _cfg.get("remote", {})
@@ -59,7 +59,7 @@ class NATSClient:
         # Use vpn_host (direct IP) only when VPN is active — Tailscale is
         # unreachable under VPN so the tunnel must go via the direct IP instead.
         try:
-            from .main import _is_vpn_active as _vpn_check
+            from .transport import _is_vpn_active as _vpn_check
 
             _tunnel_host = (_remote.get("vpn_host", "") or _host) if _vpn_check() else _host
         except Exception:

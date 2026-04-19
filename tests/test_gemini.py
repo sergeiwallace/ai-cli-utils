@@ -149,7 +149,7 @@ class TestPublishGeminiEventNats:
         """No nats_servers in config → returns without spawning a thread or raising."""
         from ai_cli.gemini import _publish_gemini_event_nats
 
-        with patch("ai_cli.main.load_config", return_value={"messaging": {}}):
+        with patch("ai_cli.config.load_config", return_value={"messaging": {}}):
             with patch("threading.Thread") as mock_thread:
                 _publish_gemini_event_nats({"id": "x", "provider": "gemini"})
         mock_thread.assert_not_called()
@@ -158,7 +158,7 @@ class TestPublishGeminiEventNats:
         """Empty nats_servers list is treated as no-config."""
         from ai_cli.gemini import _publish_gemini_event_nats
 
-        with patch("ai_cli.main.load_config", return_value={"messaging": {"nats_servers": []}}):
+        with patch("ai_cli.config.load_config", return_value={"messaging": {"nats_servers": []}}):
             with patch("threading.Thread") as mock_thread:
                 _publish_gemini_event_nats({"id": "x", "provider": "gemini"})
         mock_thread.assert_not_called()
@@ -167,7 +167,7 @@ class TestPublishGeminiEventNats:
         """A config-load failure must not propagate; publish becomes a no-op."""
         from ai_cli.gemini import _publish_gemini_event_nats
 
-        with patch("ai_cli.main.load_config", side_effect=RuntimeError("boom")):
+        with patch("ai_cli.config.load_config", side_effect=RuntimeError("boom")):
             with patch("threading.Thread") as mock_thread:
                 _publish_gemini_event_nats({"id": "x", "provider": "gemini"})
         mock_thread.assert_not_called()

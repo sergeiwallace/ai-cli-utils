@@ -76,8 +76,8 @@ class TestEnsureVpnWatcher:
         mock_client = MagicMock()
         mock_client.send_message = MagicMock(return_value={"statuses": {}})
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
+            patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
             patch("ai_cli.main.shutil.which", return_value="/usr/local/bin/ai"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
@@ -93,8 +93,8 @@ class TestEnsureVpnWatcher:
         existing.write_text('{"parent_pid": 999}')
         mock_client = MagicMock()
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
+            patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _ensure_vpn_watcher(CONFIG)
@@ -105,8 +105,8 @@ class TestEnsureVpnWatcher:
         mock_client = MagicMock()
         mock_client.send_message = MagicMock(return_value={"statuses": {"vpn-watch": "active"}})
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
+            patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _ensure_vpn_watcher(CONFIG)
@@ -116,8 +116,8 @@ class TestEnsureVpnWatcher:
 
     def test_when_circus_unavailable_then_does_not_raise(self, tmp_path):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.main._ensure_circusd", side_effect=RuntimeError("circus down")),
+            patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.process_manager._ensure_circusd", side_effect=RuntimeError("circus down")),
         ):
             _ensure_vpn_watcher(CONFIG)  # Should not raise
 
@@ -131,7 +131,7 @@ class TestMaybeStopVpnWatcher:
     def test_when_no_sessions_remain_then_stops_watcher(self, tmp_path):
         mock_client = MagicMock()
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _maybe_stop_vpn_watcher()
@@ -143,7 +143,7 @@ class TestMaybeStopVpnWatcher:
         existing.write_text('{"parent_pid": 999}')
         mock_client = MagicMock()
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _maybe_stop_vpn_watcher()
@@ -152,7 +152,7 @@ class TestMaybeStopVpnWatcher:
 
     def test_when_circus_unavailable_then_does_not_raise(self, tmp_path):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", side_effect=Exception("circus down")),
         ):
             _maybe_stop_vpn_watcher()  # Should not raise
@@ -184,11 +184,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc) as mock_popen,
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -204,11 +204,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=True),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=True),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc) as mock_popen,
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -248,13 +248,13 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", side_effect=vpn_states),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", side_effect=vpn_states),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=lambda args: next(procs)),
                 patch("asyncio.sleep", side_effect=fake_sleep),
                 # iter 1: start=0.0, end=0.0 (vpn_changed→continue); iter 2: start=0.0, end=10.0
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 0.0, 0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 0.0, 0.0, 10.0]),
                 patch("subprocess.run"),
             ):
                 await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
@@ -268,11 +268,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -289,11 +289,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", side_effect=vpn_states),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", side_effect=vpn_states),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=lambda args: next(procs)) as mock_popen,
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 5.0, 0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 5.0, 0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
                 patch("ai_cli.main.time.sleep"),
@@ -315,11 +315,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=popen_calls),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -338,11 +338,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=popen_calls),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 1.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0, 0.0, 1.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
                 patch("time.sleep"),
@@ -361,14 +361,14 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=popen_calls),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
-                patch("ai_cli.main._ensure_tailscale_up", new_callable=AsyncMock, return_value=True),
+                patch("ai_cli.transport._ensure_tailscale_up", new_callable=AsyncMock, return_value=True),
             ):
                 await _run_transport_loop(
                     SSH_ARGS,
@@ -394,14 +394,14 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=popen_calls),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0, 0.0, 5.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
-                patch("ai_cli.main._ensure_tailscale_up", new_callable=AsyncMock, return_value=False),
+                patch("ai_cli.transport._ensure_tailscale_up", new_callable=AsyncMock, return_value=False),
             ):
                 await _run_transport_loop(
                     SSH_ARGS,
@@ -447,11 +447,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", side_effect=vpn_side_effect),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", side_effect=vpn_side_effect),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=lambda args: next(procs)) as mock_popen,
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 0.0, 0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 0.0, 0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -476,12 +476,12 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc),
-                patch("ai_cli.main._write_transport_state", side_effect=capture_write),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 10.0]),
+                patch("ai_cli.transport._write_transport_state", side_effect=capture_write),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -497,11 +497,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -517,11 +517,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 10.0]),
                 patch("subprocess.run") as mock_run,
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -538,11 +538,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=False),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc) as mock_popen,
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 10.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 10.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -567,11 +567,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", return_value=True),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=True),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", side_effect=lambda args: next(procs)),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
                 patch("ai_cli.main.time.sleep"),
@@ -590,11 +590,11 @@ class TestRunTransportLoop:
 
         async def run():
             with (
-                patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
-                patch("ai_cli.main._is_vpn_active", side_effect=vpn_states),
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", side_effect=vpn_states),
                 patch("ai_cli.messaging.NATSClient", return_value=nc),
                 patch("subprocess.Popen", return_value=proc),
-                patch("ai_cli.main._monotonic", side_effect=[0.0, 1.0]),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0]),
                 patch("subprocess.run"),
                 patch("asyncio.sleep", new_callable=AsyncMock),
             ):
@@ -607,7 +607,7 @@ class TestRunTransportLoop:
 class TestEnsureTailscaleUp:
     def test_when_host_already_reachable_then_returns_true(self):
         async def run():
-            with patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=True):
+            with patch("ai_cli.transport.asyncio.to_thread", new_callable=AsyncMock, return_value=True):
                 return await _ensure_tailscale_up("100.64.0.1")
 
         assert asyncio.run(run()) is True
@@ -615,7 +615,7 @@ class TestEnsureTailscaleUp:
     def test_when_host_unreachable_and_not_darwin_then_returns_false(self):
         async def run():
             with (
-                patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
+                patch("ai_cli.transport.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
                 patch("ai_cli.main.sys.platform", "linux"),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=0)
@@ -641,9 +641,9 @@ class TestEnsureTailscaleUp:
                 return bool_results[idx]
 
             with (
-                patch("ai_cli.main.asyncio.to_thread", side_effect=mock_to_thread),
+                patch("ai_cli.transport.asyncio.to_thread", side_effect=mock_to_thread),
                 patch("ai_cli.main.sys.platform", "darwin"),
-                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport.asyncio.sleep", new_callable=AsyncMock),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)
 
@@ -669,9 +669,9 @@ class TestEnsureTailscaleUp:
                 return bool_results[idx]
 
             with (
-                patch("ai_cli.main.asyncio.to_thread", side_effect=mock_to_thread),
+                patch("ai_cli.transport.asyncio.to_thread", side_effect=mock_to_thread),
                 patch("ai_cli.main.sys.platform", "darwin"),
-                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport.asyncio.sleep", new_callable=AsyncMock),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)
 
@@ -682,9 +682,9 @@ class TestEnsureTailscaleUp:
     def test_when_tailscale_does_not_come_up_within_timeout_then_returns_false(self):
         async def run():
             with (
-                patch("ai_cli.main.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
+                patch("ai_cli.transport.asyncio.to_thread", new_callable=AsyncMock, return_value=False),
                 patch("ai_cli.main.sys.platform", "darwin"),
-                patch("ai_cli.main.asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport.asyncio.sleep", new_callable=AsyncMock),
                 patch("ai_cli.main.time.monotonic", side_effect=[0.0, 0.0, 100.0]),
             ):
                 return await _ensure_tailscale_up("100.64.0.1", timeout=5)
