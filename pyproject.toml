@@ -24,6 +24,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "click>=8.1",
     "nats-py>=2.9.0",
     "circus>=0.18.0",
     "libtmux>=0.30.0",

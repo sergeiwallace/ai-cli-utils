@@ -1,4 +1,3 @@
-import argparse
 import sys
 import os
 import json
@@ -8,6 +7,8 @@ import subprocess
 import re
 import shlex
 from pathlib import Path
+
+import click
 
 from .config import (  # noqa: F401 — re-exported for backwards compatibility with tests
     DEFAULT_CONFIG,
@@ -109,7 +110,7 @@ from .tunnel import (  # noqa: F401 — re-exported for backwards compatibility 
 #   - CLAUDE.md ai-cli deploy note (reinstall in 3 places: Mac uv tool, server uv tool, extra_venvs)
 
 
-# --- Subcommands ---
+# --- Helpers ---
 
 
 def _find_aicli_project_path(config: dict) -> "Path | None":
@@ -216,1181 +217,816 @@ def trigger_background_update():
     )
 
 
-# --- CLI Entry Point ---
+def _pkg_version_string() -> str:
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("ai-cli-utils")
+    except Exception:
+        return "unknown"
 
 
-def cli():
-    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
-        try:
-            from importlib.metadata import version as _pkg_version
+# --- `ai internal` fast-path — machine-to-machine commands ---
 
-            print(_pkg_version("ai-cli-utils"))
-        except Exception:
-            print("unknown")
-        sys.exit(0)
 
+def _handle_internal(argv: list[str]) -> None:
+    """Handle `ai internal <action> [args...]` — invoked from bash hooks.
+
+    Kept out of Click so sub-millisecond startup is preserved for hot paths.
+    Always calls ``sys.exit`` — never returns.
+    """
+    if not argv:
+        print("Usage: ai internal <action> [args...]", file=sys.stderr)
+        sys.exit(1)
+    action = argv[0]
     config = load_config()
 
-    if len(sys.argv) > 1 and sys.argv[1] == "internal":
-        if len(sys.argv) < 3:
-            print("Usage: ai internal <action> [args...]", file=sys.stderr)
+    if action == "get-latest-gemini-id":
+        _ai_name_arg = argv[1] if len(argv) > 1 else None
+        res = get_latest_gemini_session_id(_ai_name_arg)
+        if res:
+            print(res)
+        sys.exit(0)
+    elif action == "update-session-map":
+        if len(argv) < 4:
+            print("Usage: ai internal update-session-map <engine> <ai_name> <uuid>", file=sys.stderr)
             sys.exit(1)
-        action = sys.argv[2]
-        if action == "get-latest-gemini-id":
-            _ai_name_arg = sys.argv[3] if len(sys.argv) > 3 else None
-            res = get_latest_gemini_session_id(_ai_name_arg)
-            if res:
-                print(res)
-            sys.exit(0)
-        elif action == "update-session-map":
-            if len(sys.argv) < 6:
-                print("Usage: ai internal update-session-map <engine> <ai_name> <uuid>", file=sys.stderr)
-                sys.exit(1)
-            engine, ai_name, uuid = sys.argv[3], sys.argv[4], sys.argv[5]
-            d = get_session_map(engine)
-            d[ai_name] = uuid
-            save_session_map(d, engine)
-            sys.exit(0)
-        elif action == "cleanup-worktree":
-            if len(sys.argv) < 4:
-                print("Usage: ai internal cleanup-worktree <ai_name>", file=sys.stderr)
-                sys.exit(1)
-            cleanup_worktree(sys.argv[3])
-            sys.exit(0)
-        elif action == "release-color-slot":
-            if len(sys.argv) < 4:
-                print("Usage: ai internal release-color-slot <ai_name>", file=sys.stderr)
-                sys.exit(1)
-            _release_iterm2_color_slot(sys.argv[3])
-            sys.exit(0)
-        elif action == "cleanup-session-files":
-            if len(sys.argv) < 4:
-                print("Usage: ai internal cleanup-session-files <ai_name>", file=sys.stderr)
-                sys.exit(1)
-            from . import icon_generator as _ig_cs
+        engine, ai_name, uuid = argv[1], argv[2], argv[3]
+        d = get_session_map(engine)
+        d[ai_name] = uuid
+        save_session_map(d, engine)
+        sys.exit(0)
+    elif action == "cleanup-worktree":
+        if len(argv) < 2:
+            print("Usage: ai internal cleanup-worktree <ai_name>", file=sys.stderr)
+            sys.exit(1)
+        cleanup_worktree(argv[1])
+        sys.exit(0)
+    elif action == "release-color-slot":
+        if len(argv) < 2:
+            print("Usage: ai internal release-color-slot <ai_name>", file=sys.stderr)
+            sys.exit(1)
+        _release_iterm2_color_slot(argv[1])
+        sys.exit(0)
+    elif action == "cleanup-session-files":
+        if len(argv) < 2:
+            print("Usage: ai internal cleanup-session-files <ai_name>", file=sys.stderr)
+            sys.exit(1)
+        from . import icon_generator as _ig_cs
 
-            _ig_cs.cleanup_session_files(sys.argv[3])
+        _ig_cs.cleanup_session_files(argv[1])
+        sys.exit(0)
+    elif action == "get-version":
+        print(_pkg_version_string())
+        sys.exit(0)
+    elif action == "notify":
+        if len(argv) < 3:
+            print("Usage: ai internal notify <session_id> <message>", file=sys.stderr)
+            sys.exit(1)
+        from .notifications import NotificationManager
+
+        NotificationManager(argv[1]).notify(argv[2])
+        sys.exit(0)
+    elif action == "publish-event":
+        if len(argv) < 3:
+            print("Usage: ai internal publish-event <session_id> <event_type>", file=sys.stderr)
+            sys.exit(1)
+        import asyncio
+        from .messaging import NATSClient
+
+        nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+        client = NATSClient(servers=nats_servers)
+        try:
+            asyncio.run(client.publish_event(argv[1], argv[2]))
+        except Exception:
+            pass  # NATS unavailable — non-fatal
+        sys.exit(0)
+    elif action == "publish-heartbeat":
+        if len(argv) < 3:
+            print("Usage: ai internal publish-heartbeat <session_id> <data_json>", file=sys.stderr)
+            sys.exit(1)
+        import asyncio
+        from .messaging import NATSClient
+
+        try:
+            data = json.loads(argv[2])
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON: {e}", file=sys.stderr)
+            sys.exit(1)
+        nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+        client = NATSClient(servers=nats_servers)
+        try:
+            asyncio.run(client.publish_heartbeat(argv[1], data))
+        except Exception:
+            pass  # NATS unavailable — non-fatal
+        sys.exit(0)
+    elif action == "publish-session-event":
+        if len(argv) < 3:
+            print("Usage: ai internal publish-session-event <session_id> <started|stopped>", file=sys.stderr)
+            sys.exit(1)
+        import asyncio
+        from .messaging import NATSClient
+
+        session_id = argv[1]
+        event_verb = argv[2]
+        subject = f"session.{session_id}.{event_verb}"
+        nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+        client = NATSClient(servers=nats_servers)
+        try:
+            asyncio.run(client.publish(subject, {"session_id": session_id, "event": event_verb, "ts": time.time()}))
+        except Exception:
+            pass  # NATS unavailable — non-fatal
+        sys.exit(0)
+    elif action == "publish":
+        if len(argv) < 3:
+            print("Usage: ai internal publish <subject> <json_payload>", file=sys.stderr)
+            sys.exit(1)
+        import asyncio
+        from .messaging import NATSClient
+
+        subject = argv[1]
+        try:
+            payload = json.loads(argv[2])
+        except (json.JSONDecodeError, IndexError):
+            payload = {}
+        nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+        client = NATSClient(servers=nats_servers)
+        try:
+            asyncio.run(client.publish(subject, payload))
+        except Exception:
+            pass  # NATS unavailable — non-fatal
+        sys.exit(0)
+    elif action == "signal-watch":
+        if len(argv) < 3:
+            print("Usage: ai internal signal-watch <project> <session_id>", file=sys.stderr)
+            sys.exit(1)
+        _internal_signal_watch(argv[1], argv[2], config)
+        sys.exit(0)
+    elif action == "quota-subscriber":
+        _internal_quota_subscriber(config)
+        sys.exit(0)
+    elif action == "handoff-drain":
+        if len(argv) < 3:
             sys.exit(0)
-        elif action == "get-version":
-            try:
-                from importlib.metadata import version as _pkg_version
+        _internal_handoff_drain(argv[1], argv[2], config)
+        sys.exit(0)
+    else:
+        print(f"Usage: ai internal <action> [args...] (unknown action: {action})", file=sys.stderr)
+        sys.exit(1)
 
-                print(_pkg_version("ai-cli-utils"))
-            except Exception:
-                print("unknown")
-            sys.exit(0)
-        elif action == "notify":
-            if len(sys.argv) < 5:
-                print("Usage: ai internal notify <session_id> <message>", file=sys.stderr)
-                sys.exit(1)
-            from .notifications import NotificationManager
 
-            session_id = sys.argv[3]
-            msg = sys.argv[4]
-            NotificationManager(session_id).notify(msg)
-            sys.exit(0)
-        elif action == "publish-event":
-            if len(sys.argv) < 5:
-                print("Usage: ai internal publish-event <session_id> <event_type>", file=sys.stderr)
-                sys.exit(1)
-            import asyncio
-            from .messaging import NATSClient
+def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) -> None:
+    import asyncio
+    from .messaging import NATSClient
 
-            session_id = sys.argv[3]
-            event_type = sys.argv[4]
-            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-            client = NATSClient(servers=nats_servers)
-            try:
-                asyncio.run(client.publish_event(session_id, event_type))
-            except Exception:
-                pass  # NATS unavailable — non-fatal
-            sys.exit(0)
-        elif action == "publish-heartbeat":
-            if len(sys.argv) < 5:
-                print("Usage: ai internal publish-heartbeat <session_id> <data_json>", file=sys.stderr)
-                sys.exit(1)
-            import asyncio
-            from .messaging import NATSClient
+    sw_handoff_dir = _get_handoff_queue_dir()
+    sw_pending_file = get_xdg_state_home() / f"handoff-pending-{sw_session_id}"
+    nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+    sw_client = NATSClient(servers=nats_servers)
 
-            session_id = sys.argv[3]
-            try:
-                data = json.loads(sys.argv[4])
-            except json.JSONDecodeError as e:
-                print(f"Invalid JSON: {e}", file=sys.stderr)
-                sys.exit(1)
-            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-            client = NATSClient(servers=nats_servers)
-            try:
-                asyncio.run(client.publish_heartbeat(session_id, data))
-            except Exception:
-                pass  # NATS unavailable — non-fatal
-            sys.exit(0)
-        elif action == "publish-session-event":
-            if len(sys.argv) < 5:
-                print("Usage: ai internal publish-session-event <session_id> <started|stopped>", file=sys.stderr)
-                sys.exit(1)
-            import asyncio
-            from .messaging import NATSClient
-
-            session_id = sys.argv[3]
-            event_verb = sys.argv[4]  # "started" or "stopped"
-            subject = f"session.{session_id}.{event_verb}"
-            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-            client = NATSClient(servers=nats_servers)
-            try:
-                asyncio.run(client.publish(subject, {"session_id": session_id, "event": event_verb, "ts": time.time()}))
-            except Exception:
-                pass  # NATS unavailable — non-fatal
-            sys.exit(0)
-        elif action == "publish":
-            if len(sys.argv) < 5:
-                print("Usage: ai internal publish <subject> <json_payload>", file=sys.stderr)
-                sys.exit(1)
-            import asyncio
-            from .messaging import NATSClient
-
-            subject = sys.argv[3]
-            try:
-                payload = json.loads(sys.argv[4])
-            except (json.JSONDecodeError, IndexError):
-                payload = {}
-            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-            client = NATSClient(servers=nats_servers)
-            try:
-                asyncio.run(client.publish(subject, payload))
-            except Exception:
-                pass  # NATS unavailable — non-fatal
-            sys.exit(0)
-        elif action == "signal-watch":
-            # ai internal signal-watch <project> <session_id>
-            if len(sys.argv) < 5:
-                print("Usage: ai internal signal-watch <project> <session_id>", file=sys.stderr)
-                sys.exit(1)
-            import asyncio
-            from .messaging import NATSClient
-
-            sw_project = sys.argv[3]
-            sw_session_id = sys.argv[4]
-            sw_handoff_dir = _get_handoff_queue_dir()
-            sw_pending_file = get_xdg_state_home() / f"handoff-pending-{sw_session_id}"
-            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-            sw_client = NATSClient(servers=nats_servers)
-
-            # Not covered: entire _on_handoff closure is only invoked when a live NATS
-            # JetStream message arrives. Requires a real NATS server + network delivery.
-            # Inner exception branches (OSError on file write, ValueError on filename parse)
-            # additionally require specific filesystem failure conditions inside a live
-            # async callback. See docs/test/unit-tests.md §Intentionally Uncovered Lines.
-            async def _on_handoff(data):
-                handoff_id = data.get("id")
-                title = data.get("title", "")
-                priority = data.get("priority", "")
-                message = data.get("message", "")
-                for_machine = data.get("for_machine", "")
-                if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
-                    return  # not intended for this machine
-                print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
-                if sw_handoff_dir is None or not handoff_id:
-                    return
-                # Cross-machine delivery: if file doesn't exist locally but payload carries content, write it
-                content = data.get("content")
-                filename = data.get("filename")
-                if content and filename:
-                    pending_dir = sw_handoff_dir / "pending"
-                    claimed_dir = sw_handoff_dir / "claimed"
-                    local_file = pending_dir / filename
-                    # Skip if already claimed in a previous session
-                    if (claimed_dir / filename).exists():
-                        return
-                    if not local_file.exists():
-                        pending_dir.mkdir(parents=True, exist_ok=True)
-                        try:
-                            local_file.write_text(content)
-                        except OSError:
-                            pass
-                claimed = _claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
-                if claimed is None:
-                    return  # another session claimed it first
-                _log_handoff_event(
-                    "handoff.claimed",
-                    handoff_id=handoff_id,
-                    session=sw_session_id,
-                    layer="nats_realtime" if data.get("_source") != "startup_scan" else "startup_scan",
-                )
-                resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-                sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
-                sw_pending_file.write_text(resume_msg)
-                # Touch signal_file to wake the watcher. The watcher's idle guard
-                # (counter >= 10 + double ❯ check) ensures /exit is only injected
-                # when CC is at the empty prompt — safe to touch unconditionally here.
-                # Without this, the pending file sits unread until CC exits naturally.
-                sw_signal_file = get_xdg_state_home() / f"cc-exit-{sw_session_id}"
+    # Not covered: entire _on_handoff closure is only invoked when a live NATS
+    # JetStream message arrives. Requires a real NATS server + network delivery.
+    # Inner exception branches (OSError on file write, ValueError on filename parse)
+    # additionally require specific filesystem failure conditions inside a live
+    # async callback. See docs/test/unit-tests.md §Intentionally Uncovered Lines.
+    async def _on_handoff(data):
+        handoff_id = data.get("id")
+        title = data.get("title", "")
+        priority = data.get("priority", "")
+        message = data.get("message", "")
+        for_machine = data.get("for_machine", "")
+        if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
+            return  # not intended for this machine
+        print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
+        if sw_handoff_dir is None or not handoff_id:
+            return
+        # Cross-machine delivery: if file doesn't exist locally but payload carries content, write it
+        content = data.get("content")
+        filename = data.get("filename")
+        if content and filename:
+            pending_dir = sw_handoff_dir / "pending"
+            claimed_dir = sw_handoff_dir / "claimed"
+            local_file = pending_dir / filename
+            # Skip if already claimed in a previous session
+            if (claimed_dir / filename).exists():
+                return
+            if not local_file.exists():
+                pending_dir.mkdir(parents=True, exist_ok=True)
                 try:
-                    sw_signal_file.touch()
+                    local_file.write_text(content)
                 except OSError:
                     pass
+        claimed = _claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
+        if claimed is None:
+            return  # another session claimed it first
+        _log_handoff_event(
+            "handoff.claimed",
+            handoff_id=handoff_id,
+            session=sw_session_id,
+            layer="nats_realtime" if data.get("_source") != "startup_scan" else "startup_scan",
+        )
+        resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
+        sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
+        sw_pending_file.write_text(resume_msg)
+        # Touch signal_file to wake the watcher. The watcher's idle guard
+        # (counter >= 10 + double ❯ check) ensures /exit is only injected
+        # when CC is at the empty prompt — safe to touch unconditionally here.
+        # Without this, the pending file sits unread until CC exits naturally.
+        sw_signal_file = get_xdg_state_home() / f"cc-exit-{sw_session_id}"
+        try:
+            sw_signal_file.touch()
+        except OSError:
+            pass
 
-            # Startup scan: pick up any unclaimed files already in the pending queue
-            if sw_handoff_dir is not None:
-                pending_dir = sw_handoff_dir / "pending"
-                if pending_dir.exists():
-                    for f in sorted(pending_dir.glob("*.md")):
-                        try:
-                            fid = int(f.name.split("-")[0])
-                        except ValueError:
-                            continue
-                        try:
-                            raw = f.read_text()
-                            fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
-                            fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
-                            fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
-                            body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
-                            scan_title = fm_title.group(1).strip() if fm_title else f.stem
-                            scan_priority = fm_priority.group(1) if fm_priority else ""
-                            scan_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
-                        except OSError:
-                            scan_title, scan_priority, body, scan_for_machine = f.stem, "", "", ""
-                        asyncio.run(
-                            _on_handoff(
-                                {
-                                    "id": fid,
-                                    "title": scan_title,
-                                    "priority": scan_priority,
-                                    "message": body,
-                                    "for_machine": scan_for_machine,
-                                    "_source": "startup_scan",
-                                }
-                            )
-                        )
-
-            consumer_name = f"{sw_session_id}-signal-watcher"
-
-            async def _run_subscriptions() -> None:
-                await sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff)
-
-            try:
-                asyncio.run(_run_subscriptions())
-            except Exception:
-                # Not covered: _run_subscriptions blocks indefinitely on success; exception
-                # path requires a live NATS server to fail mid-subscription.
-                pass
-            sys.exit(0)
-        elif action == "quota-subscriber":
-            # ai internal quota-subscriber
-            # Persistent daemon: subscribes to quota.snapshot via JetStream durable consumer.
-            # Runs as a Circus-managed process on Mac, independent of CC session lifecycle.
-            # Missed messages during downtime are replayed on reconnect (JetStream durability).
-            import asyncio
-            from .messaging import NATSClient
-
-            qs_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-            qs_client = NATSClient(servers=qs_servers)
-
-            # Not covered: _on_quota_snapshot_msg is only invoked on live JetStream delivery.
-            # Requires a real NATS server + published quota.snapshot message.
-            async def _on_quota_snapshot_msg(data: dict) -> None:
-                from .quota_db import record_quota_snapshot
-
+    # Startup scan: pick up any unclaimed files already in the pending queue
+    if sw_handoff_dir is not None:
+        pending_dir = sw_handoff_dir / "pending"
+        if pending_dir.exists():
+            for f in sorted(pending_dir.glob("*.md")):
                 try:
-                    record_quota_snapshot(
-                        usage_percent=data["usage_percent"],
-                        session_pct=data.get("session_pct"),
-                        weekly_sonnet_pct=data.get("weekly_sonnet_pct"),
-                        extra_pct=data.get("extra_pct"),
-                        reset_at=data.get("reset_at"),
+                    fid = int(f.name.split("-")[0])
+                except ValueError:
+                    continue
+                try:
+                    raw = f.read_text()
+                    fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
+                    fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
+                    fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
+                    body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
+                    scan_title = fm_title.group(1).strip() if fm_title else f.stem
+                    scan_priority = fm_priority.group(1) if fm_priority else ""
+                    scan_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
+                except OSError:
+                    scan_title, scan_priority, body, scan_for_machine = f.stem, "", "", ""
+                asyncio.run(
+                    _on_handoff(
+                        {
+                            "id": fid,
+                            "title": scan_title,
+                            "priority": scan_priority,
+                            "message": body,
+                            "for_machine": scan_for_machine,
+                            "_source": "startup_scan",
+                        }
+                    )
+                )
+
+    consumer_name = f"{sw_session_id}-signal-watcher"
+
+    async def _run_subscriptions() -> None:
+        await sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff)
+
+    try:
+        asyncio.run(_run_subscriptions())
+    except Exception:
+        # Not covered: _run_subscriptions blocks indefinitely on success; exception
+        # path requires a live NATS server to fail mid-subscription.
+        pass
+
+
+def _internal_quota_subscriber(config: dict) -> None:
+    # Persistent daemon: subscribes to quota.snapshot via JetStream durable consumer.
+    # Runs as a Circus-managed process on Mac, independent of CC session lifecycle.
+    # Missed messages during downtime are replayed on reconnect (JetStream durability).
+    import asyncio
+    from .messaging import NATSClient
+
+    qs_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+    qs_client = NATSClient(servers=qs_servers)
+
+    # Not covered: _on_quota_snapshot_msg is only invoked on live JetStream delivery.
+    # Requires a real NATS server + published quota.snapshot message.
+    async def _on_quota_snapshot_msg(data: dict) -> None:
+        from .quota_db import record_quota_snapshot
+
+        try:
+            record_quota_snapshot(
+                usage_percent=data["usage_percent"],
+                session_pct=data.get("session_pct"),
+                weekly_sonnet_pct=data.get("weekly_sonnet_pct"),
+                extra_pct=data.get("extra_pct"),
+                reset_at=data.get("reset_at"),
+            )
+        except Exception:
+            pass
+
+    try:
+        asyncio.run(
+            qs_client.subscribe_durable(
+                "quota.snapshot",
+                "quota-subscriber-mac",
+                _on_quota_snapshot_msg,
+            )
+        )
+    except Exception:
+        # Not covered: subscribe_durable blocks indefinitely on success; exception
+        # path requires a live NATS server to fail mid-subscription.
+        pass
+
+
+def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> None:
+    # Synchronous: drain pending NATS messages + local file scan, then exit.
+    # Called BEFORE CC launches so prompt_file is ready on first invocation.
+    import asyncio
+    from .messaging import NATSClient
+
+    hd_handoff_dir = _get_handoff_queue_dir()
+    hd_prompt_file = get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
+    nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+    hd_client = NATSClient(servers=nats_servers)
+    _log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
+
+    # Not covered: _write_pending_if_claimed is only reachable via _drain() which
+    # requires a live NATS JetStream connection, or from the local-scan path which
+    # is covered. Inner branches (for_machine mismatch, hd_handoff_dir is None,
+    # cross-machine file write, claimed is None) all require live handoff delivery
+    # or specific filesystem failure conditions inside an async context.
+    # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
+    def _write_pending_if_claimed(data):
+        handoff_id = data.get("id")
+        title = data.get("title", "")
+        priority = data.get("priority", "")
+        message = data.get("message", "")
+        for_machine = data.get("for_machine", "")
+        if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
+            return False  # not intended for this machine
+        if hd_handoff_dir is None or not handoff_id:
+            return False
+        # Cross-machine: write file locally from payload if missing
+        content = data.get("content")
+        filename = data.get("filename")
+        if content and filename:
+            pending_dir = hd_handoff_dir / "pending"
+            claimed_dir = hd_handoff_dir / "claimed"
+            local_file = pending_dir / filename
+            # Skip if already claimed in a previous session
+            if (claimed_dir / filename).exists():
+                return False
+            if not local_file.exists():
+                pending_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    local_file.write_text(content)
+                except OSError:
+                    return False
+        claimed = _claim_handoff_for_signal(hd_handoff_dir, int(handoff_id), hd_session)
+        if claimed is None:
+            return False
+        _log_handoff_event(
+            "handoff.claimed",
+            handoff_id=handoff_id,
+            session=hd_session,
+            layer="pre_launch_drain",
+        )
+        resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
+        hd_prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        hd_prompt_file.write_text(resume_msg)
+        return True
+
+    # 1. Local file scan first (fast, no network)
+    if hd_handoff_dir is not None:
+        pending_dir = hd_handoff_dir / "pending"
+        if pending_dir.exists():
+            best = _find_best_handoff(pending_dir, project_filter=hd_project)
+            if best is not None:
+                try:
+                    fid = int(best.name.split("-")[0])
+                    raw = best.read_text()
+                    fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
+                    fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
+                    fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
+                    body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
+                    local_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
+                    _log_handoff_event(
+                        "handoff.drain.local_found",
+                        session=hd_session,
+                        handoff_id=fid,
+                        for_machine=local_for_machine,
+                    )
+                    _write_pending_if_claimed(
+                        {
+                            "id": fid,
+                            "title": fm_title.group(1).strip() if fm_title else best.stem,
+                            "priority": fm_priority.group(1) if fm_priority else "",
+                            "message": body,
+                            "for_machine": local_for_machine,
+                        }
                     )
                 except Exception:
+                    # Not covered: requires filesystem error reading a pending
+                    # handoff file that exists and was just discovered by glob.
                     pass
 
+    # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
+    if not hd_prompt_file.exists():
+        _log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
+
+        # Not covered: _drain() is an async closure that requires a live NATS
+        # JetStream server. Inner branches (js is None, message decode error,
+        # _write_pending_if_claimed returning True, fetch timeout, subscribe
+        # failure) all require specific live-server or network-failure conditions.
+        # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
+        async def _drain():
             try:
-                asyncio.run(
-                    qs_client.subscribe_durable(
-                        "quota.snapshot",
-                        "quota-subscriber-mac",
-                        _on_quota_snapshot_msg,
-                    )
-                )
-            except Exception:
-                # Not covered: subscribe_durable blocks indefinitely on success; exception
-                # path requires a live NATS server to fail mid-subscription.
-                pass
-            sys.exit(0)
-        elif action == "handoff-drain":
-            # ai internal handoff-drain <project> <session_id>
-            # Synchronous: drain pending NATS messages + local file scan, then exit.
-            # Called BEFORE CC launches so prompt_file is ready on first invocation.
-            if len(sys.argv) < 5:
-                sys.exit(0)
-            import asyncio
-            from .messaging import NATSClient
-
-            hd_project = sys.argv[3]
-            hd_session = sys.argv[4]
-            hd_handoff_dir = _get_handoff_queue_dir()
-            hd_prompt_file = get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
-            nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-            hd_client = NATSClient(servers=nats_servers)
-            _log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
-
-            # Not covered: _write_pending_if_claimed is only reachable via _drain() which
-            # requires a live NATS JetStream connection, or from the local-scan path which
-            # is covered. Inner branches (for_machine mismatch, hd_handoff_dir is None,
-            # cross-machine file write, claimed is None) all require live handoff delivery
-            # or specific filesystem failure conditions inside an async context.
-            # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
-            def _write_pending_if_claimed(data):
-                handoff_id = data.get("id")
-                title = data.get("title", "")
-                priority = data.get("priority", "")
-                message = data.get("message", "")
-                for_machine = data.get("for_machine", "")
-                if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
-                    return False  # not intended for this machine
-                if hd_handoff_dir is None or not handoff_id:
-                    return False
-                # Cross-machine: write file locally from payload if missing
-                content = data.get("content")
-                filename = data.get("filename")
-                if content and filename:
-                    pending_dir = hd_handoff_dir / "pending"
-                    claimed_dir = hd_handoff_dir / "claimed"
-                    local_file = pending_dir / filename
-                    # Skip if already claimed in a previous session
-                    if (claimed_dir / filename).exists():
-                        return False
-                    if not local_file.exists():
-                        pending_dir.mkdir(parents=True, exist_ok=True)
-                        try:
-                            local_file.write_text(content)
-                        except OSError:
-                            return False
-                claimed = _claim_handoff_for_signal(hd_handoff_dir, int(handoff_id), hd_session)
-                if claimed is None:
-                    return False
-                _log_handoff_event(
-                    "handoff.claimed",
-                    handoff_id=handoff_id,
-                    session=hd_session,
-                    layer="pre_launch_drain",
-                )
-                resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-                hd_prompt_file.parent.mkdir(parents=True, exist_ok=True)
-                hd_prompt_file.write_text(resume_msg)
-                return True
-
-            # 1. Local file scan first (fast, no network)
-            if hd_handoff_dir is not None:
-                pending_dir = hd_handoff_dir / "pending"
-                if pending_dir.exists():
-                    best = _find_best_handoff(pending_dir, project_filter=hd_project)
-                    if best is not None:
-                        try:
-                            fid = int(best.name.split("-")[0])
-                            raw = best.read_text()
-                            fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
-                            fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
-                            fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
-                            body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
-                            local_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
-                            _log_handoff_event(
-                                "handoff.drain.local_found",
-                                session=hd_session,
-                                handoff_id=fid,
-                                for_machine=local_for_machine,
-                            )
-                            _write_pending_if_claimed(
-                                {
-                                    "id": fid,
-                                    "title": fm_title.group(1).strip() if fm_title else best.stem,
-                                    "priority": fm_priority.group(1) if fm_priority else "",
-                                    "message": body,
-                                    "for_machine": local_for_machine,
-                                }
-                            )
-                        except Exception:
-                            # Not covered: requires filesystem error reading a pending
-                            # handoff file that exists and was just discovered by glob.
-                            pass
-
-            # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
-            if not hd_prompt_file.exists():
-                _log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
-
-                # Not covered: _drain() is an async closure that requires a live NATS
-                # JetStream server. Inner branches (js is None, message decode error,
-                # _write_pending_if_claimed returning True, fetch timeout, subscribe
-                # failure) all require specific live-server or network-failure conditions.
-                # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
-                async def _drain():
+                await hd_client.connect()
+            except Exception as e:
+                _log_handoff_event("handoff.drain.nats_connect_failed", session=hd_session, error=str(e))
+                return
+            if not hd_client.js:
+                _log_handoff_event("handoff.drain.nats_no_js", session=hd_session)
+                return
+            consumer_name = f"{hd_session}-pre-launch"
+            subject = f"handoff.{hd_project}"
+            try:
+                await hd_client._ensure_stream(subject)
+                sub = await hd_client.js.pull_subscribe(subject, durable=consumer_name)
+                while True:
                     try:
-                        await hd_client.connect()
-                    except Exception as e:
-                        _log_handoff_event("handoff.drain.nats_connect_failed", session=hd_session, error=str(e))
-                        return
-                    if not hd_client.js:
-                        _log_handoff_event("handoff.drain.nats_no_js", session=hd_session)
-                        return
-                    consumer_name = f"{hd_session}-pre-launch"
-                    subject = f"handoff.{hd_project}"
-                    try:
-                        await hd_client._ensure_stream(subject)
-                        sub = await hd_client.js.pull_subscribe(subject, durable=consumer_name)
-                        while True:
+                        msgs = await sub.fetch(1, timeout=2)
+                        for msg in msgs:
                             try:
-                                msgs = await sub.fetch(1, timeout=2)
-                                for msg in msgs:
-                                    try:
-                                        data = json.loads(msg.data.decode())
-                                    except Exception:
-                                        data = {}
-                                    await msg.ack()
-                                    if _write_pending_if_claimed(data):
-                                        return
+                                data = json.loads(msg.data.decode())
                             except Exception:
-                                break
-                    except Exception as e:
-                        _log_handoff_event("handoff.drain.nats_subscribe_failed", session=hd_session, error=str(e))
-                    finally:
-                        await hd_client.close()
+                                data = {}
+                            await msg.ack()
+                            if _write_pending_if_claimed(data):
+                                return
+                    except Exception:
+                        break
+            except Exception as e:
+                _log_handoff_event("handoff.drain.nats_subscribe_failed", session=hd_session, error=str(e))
+            finally:
+                await hd_client.close()
 
-                try:
-                    asyncio.run(_drain())
-                except Exception as e:
-                    # Not covered: requires asyncio.run() itself to raise, which needs a
-                    # broken event loop or NATS server in a specific failure state.
-                    _log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
-
-            sys.exit(0)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "upgrade":
-        print("Upgrading ai-cli-utils...", file=sys.stderr)
-        os.execvp("uv", ["uv", "tool", "upgrade", "ai-cli-utils"])
-
-    if len(sys.argv) > 1 and sys.argv[1] == "setup":
-        from .setup import run_setup
-
-        sys.exit(run_setup())
-
-    if len(sys.argv) > 1 and sys.argv[1] == "handoff":
-        if len(sys.argv) == 2:
-            print("Usage: ai handoff [post|check|claim|complete]")
-            sys.exit(1)
-        action = sys.argv[2]
-        if action == "post":
-            post_args = sys.argv[3:]
-            if "--remote" in post_args or "-R" in post_args:
-                post_args = [a for a in post_args if a not in ("--remote", "-R")]
-                remote_cfg = load_config().get("remote", {})
-                remote_host = remote_cfg.get("host", "")
-                remote_user = remote_cfg.get("user", "ubuntu")
-                if not remote_host:
-                    print("Error: [remote] host not set in config", file=sys.stderr)
-                    sys.exit(1)
-                os.execvp("ssh", ["ssh", f"{remote_user}@{remote_host}", "ai", "handoff", "post"] + post_args)
-            for_machine = None
-            for flag in ("--for-machine", "-m"):
-                if flag in post_args:
-                    idx = post_args.index(flag)
-                    for_machine = post_args[idx + 1]
-                    post_args = post_args[:idx] + post_args[idx + 2 :]
-                    break
-            if not for_machine:
-                print("Error: --for-machine <machine> is required", file=sys.stderr)
-                sys.exit(1)
-            if len(post_args) < 4:
-                print(
-                    "Usage: ai handoff post --for-machine <machine> <title> <priority> <project> <message>",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
-        elif action == "check":
-            check_handoff()
-        elif action == "check-project":
-            if len(sys.argv) < 4:
-                print("Usage: ai handoff check-project <project_name>", file=sys.stderr)
-                sys.exit(1)
-            check_handoff_project(sys.argv[3])
-        elif action == "claim":
-            if len(sys.argv) < 4:
-                print("Usage: ai handoff claim <file_path>", file=sys.stderr)
-                sys.exit(1)
-            claim_handoff(sys.argv[3])
-        elif action == "complete":
-            if len(sys.argv) < 4:
-                print("Usage: ai handoff complete <file_path>", file=sys.stderr)
-                sys.exit(1)
-            complete_handoff(sys.argv[3])
-        else:
-            print(f"Error: unknown handoff action '{action}'", file=sys.stderr)
-            print("Usage: ai handoff [post|check|check-project|claim|complete]", file=sys.stderr)
-            sys.exit(1)
-        sys.exit(0)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "memory":
-        if len(sys.argv) < 3 or sys.argv[2] != "watch":
-            print("Usage: ai memory watch", file=sys.stderr)
-            sys.exit(1)
-        from .memory import memory_watch
-
-        sys.exit(memory_watch())
-
-    if len(sys.argv) > 1 and sys.argv[1] == "quota":
-        if len(sys.argv) < 3:
-            print("Usage: ai quota [watch|status|history|scrape|statusline-part|record|sync]", file=sys.stderr)
-            sys.exit(1)
-        subcmd = sys.argv[2]
-        if subcmd == "watch":
-            from .quota import quota_watch
-
-            sys.exit(quota_watch())
-        elif subcmd == "status":
-            from .quota import quota_status
-
-            sys.exit(quota_status())
-        elif subcmd == "history":
-            from .quota import quota_history
-
-            sys.exit(quota_history())
-        elif subcmd == "scrape":
-            from .quota import quota_scrape
-
-            sys.exit(quota_scrape())
-        elif subcmd == "statusline-part":
-            from .quota import quota_statusline_part
-
-            sys.exit(quota_statusline_part())
-        elif subcmd == "sync":
-            from .quota import quota_sync_from_remote
-
-            sys.exit(quota_sync_from_remote())
-        elif subcmd == "record":
-            if len(sys.argv) < 7:
-                print("Usage: ai quota record SESSION_ID MACHINE_ID MODEL TOTAL_TOKENS [COST_USD]", file=sys.stderr)
-                sys.exit(1)
-            from .quota import quota_record
-
-            _session_id = sys.argv[3]
-            _machine_id = sys.argv[4]
-            _model = sys.argv[5]
-            _total_tokens = int(sys.argv[6])
-            _cost_usd = float(sys.argv[7]) if len(sys.argv) > 7 else None
-            sys.exit(quota_record(_session_id, _machine_id, _model, _total_tokens, _cost_usd))
-        else:
-            print(f"Unknown quota subcommand: {subcmd}", file=sys.stderr)
-            print("Usage: ai quota [watch|status|history|scrape|statusline-part|record|sync]", file=sys.stderr)
-            sys.exit(1)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "telemetry":
-        if len(sys.argv) < 3 or sys.argv[2] != "writer":
-            print("Usage: ai telemetry writer", file=sys.stderr)
-            sys.exit(1)
-        from .telemetry import telemetry_writer
-
-        sys.exit(telemetry_writer())
-
-    if len(sys.argv) > 1 and sys.argv[1] == "gemini":
-        from .gemini import gemini_cli
-
-        gemini_cli(sys.argv[2:])
-        sys.exit(0)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "spend":
-        if len(sys.argv) < 3 or sys.argv[2] != "gemini":
-            print("Usage: ai spend gemini", file=sys.stderr)
-            sys.exit(1)
-        from .spend import cmd_spend_gemini
-
-        sys.exit(cmd_spend_gemini(load_config()))
-
-    if len(sys.argv) > 1 and sys.argv[1] == "cc-usage":
-        from .cc_usage import scan_and_push, get_cursor_summary
-
-        subcmd = sys.argv[2] if len(sys.argv) > 2 else None
-        if subcmd == "push":
-            dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
-            result = scan_and_push(config=config, dry_run=dry_run)
-            if result.error:
-                print(f"Error: {result.error}", file=sys.stderr)
-                sys.exit(1)
-            if dry_run:
-                print(f"Dry run: {result.new_events} new events across {result.scanned_sessions} sessions (not pushed)")
-            else:
-                print(
-                    f"Pushed {result.inserted} new events, {result.skipped} skipped "
-                    f"({result.scanned_sessions} sessions scanned)"
-                )
-            sys.exit(0)
-        elif subcmd == "status":
-            summary = get_cursor_summary()
-            print(f"Sessions tracked: {summary['sessions_tracked']}")
-            print(f"Last push:        {summary['last_push'] or 'never'}")
-            sys.exit(0)
-        else:
-            print("Usage: ai cc-usage <push [-d/--dry-run] | status>", file=sys.stderr)
-            sys.exit(1)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "copier-update":
-        if os.environ.get("AI_CLI_HOST") != "mac":
-            print("Error: copier-update is Mac only", file=sys.stderr)
-            sys.exit(1)
-
-        from .copier_update import run_copier_update
-
-        dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
-        project_filter = None
-        for _pflag in ("--project", "-p"):
-            if _pflag in sys.argv:
-                idx = sys.argv.index(_pflag)
-                if idx + 1 < len(sys.argv):
-                    project_filter = sys.argv[idx + 1]
-                break
-        sys.exit(run_copier_update(dry_run=dry_run, project_filter=project_filter))
-
-    if len(sys.argv) > 1 and sys.argv[1] == "layout":
-        from .layout import run_layout_command
-
-        sys.exit(run_layout_command(sys.argv[2:]))
-
-    if len(sys.argv) > 1 and sys.argv[1] == "color":
-        # ai color <palette_name_or_hex> — reassign iTerm2 color for the current session
-        if len(sys.argv) < 3:
-            print("Usage: ai color <palette-color-name-or-hex>", file=sys.stderr)
-            sys.exit(1)
-        _color_arg = sys.argv[2]
-        _ai_name_env = os.environ.get("AI_TMUX_SESSION", "")
-        if not _ai_name_env:
-            print("ai color: not inside an ai session (AI_TMUX_SESSION not set)", file=sys.stderr)
-            sys.exit(1)
-        # Resolve color arg: named palette entry or raw hex
-        _iterm2_cfg_c = _load_iterm2_config()
-        _palette_c = dict(_iterm2_palette(_iterm2_cfg_c))
-        if _color_arg.startswith("#"):
-            _new_hex = _color_arg
-        elif _color_arg in _palette_c:
-            _new_hex = f"#{_palette_c[_color_arg]}"
-        else:
-            print(f"ai color: unknown color '{_color_arg}'. Use a palette name or #RRGGBB.", file=sys.stderr)
-            sys.exit(1)
-        # Determine engine from session name convention
-        _engine_c = "g" if _ai_name_env.startswith("g-") else "c"
-        _session_type_c = _iterm2_session_type(_engine_c)
         try:
-            from . import icon_generator as _ig_c
-
-            _icon_color_c = _resolve_iterm2_config(_iterm2_cfg_c, _ai_name_env).get("icon_color")
-            _ig_c.cleanup_session_files(_ai_name_env)
-            _icon_path_c = _ig_c.generate_session_icon(_ai_name_env, _new_hex, _session_type_c, _icon_color_c)
-            _ig_c.generate_dynamic_profile(_ai_name_env, _new_hex, _session_type_c, _icon_path_c)
+            asyncio.run(_drain())
         except Exception as e:
-            print(f"ai color: icon generation failed: {e}", file=sys.stderr)
-        _color_no_hash_c = _new_hex.lstrip("#")
-        _profile_name_c = f"ai-cli:{_ai_name_env}"
-        sys.stdout.write(f"\033]1337;SetProfile={_profile_name_c}\007")
-        sys.stdout.write(f"\033]1337;SetColors=tab={_color_no_hash_c}\007")
-        sys.stdout.flush()
-        print(f"Color updated to {_new_hex}")
-        sys.exit(0)
+            # Not covered: requires asyncio.run() itself to raise, which needs a
+            # broken event loop or NATS server in a specific failure state.
+            _log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
-    if len(sys.argv) > 1 and sys.argv[1] == "tunnel":
-        if len(sys.argv) < 3:
-            print(
-                "Usage: ai tunnel [start <local-port> [remote-port] [-L|--forward] | stop <port> | status]",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        tn_action = sys.argv[2]
-        if tn_action == "start":
-            if len(sys.argv) < 4:
-                print("Usage: ai tunnel start <local-port> [remote-port] [-L|--forward]", file=sys.stderr)
-                sys.exit(1)
-            local_port = int(sys.argv[3])
-            args_rest = sys.argv[4:]
-            forward = "--forward" in args_rest or "-L" in args_rest
-            non_flag = [a for a in args_rest if not a.startswith("--")]
-            remote_port = int(non_flag[0]) if non_flag else local_port
-            _cmd_tunnel_start(local_port, remote_port, forward=forward, config=config)
-            sys.exit(0)
-        elif tn_action == "stop":
-            if len(sys.argv) < 4:
-                print("Usage: ai tunnel stop <port>", file=sys.stderr)
-                sys.exit(1)
-            _cmd_tunnel_stop(int(sys.argv[3]))
-            sys.exit(0)
-        elif tn_action == "status":
-            _cmd_tunnel_status()
-            sys.exit(0)
-        else:
-            print(f"Unknown tunnel action: {tn_action}. Use start, stop, or status.", file=sys.stderr)
-            sys.exit(1)
 
-    if len(sys.argv) > 1 and sys.argv[1] == "signal-watch":
-        if len(sys.argv) < 3:
-            print("Usage: ai signal-watch [start <project> <session> | stop <session> | status]", file=sys.stderr)
-            sys.exit(1)
-        sw_action = sys.argv[2]
-        if sw_action == "start":
-            if len(sys.argv) < 5:
-                print("Usage: ai signal-watch start <project> <session>", file=sys.stderr)
-                sys.exit(1)
-            _cmd_signal_watch_start(sys.argv[3], sys.argv[4])
-            sys.exit(0)
-        elif sw_action == "stop":
-            if len(sys.argv) < 4:
-                print("Usage: ai signal-watch stop <session>", file=sys.stderr)
-                sys.exit(1)
-            _cmd_signal_watch_stop(sys.argv[3])
-            sys.exit(0)
-        elif sw_action == "status":
-            _cmd_signal_watch_status()
-            sys.exit(0)
-        else:
-            print(f"Unknown signal-watch action: {sw_action}. Use start, stop, or status.", file=sys.stderr)
-            sys.exit(1)
+# --- Command implementations (invoked by Click handlers below) ---
 
-    if len(sys.argv) > 1 and sys.argv[1] == "cdp":
-        if len(sys.argv) < 3:
-            print(
-                "Usage: ai cdp [start [-p N] [-I] [-t] [-L] | stop [-p N] [-t] | status]",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        cdp_action = sys.argv[2]
-        _cdp_default_port = config.get("cdp", {}).get("port", 9222)
-        if cdp_action == "start":
-            _cdp_parser = argparse.ArgumentParser(prog="ai cdp start")
-            _cdp_parser.add_argument("-p", "--port", type=int, default=_cdp_default_port)
-            _cdp_parser.add_argument("-I", "--no-incognito", action="store_true")
-            _cdp_parser.add_argument("-t", "--tunnel", action="store_true", help="start SSH tunnel alongside Chrome")
-            _cdp_parser.add_argument(
-                "-L", "--forward", action="store_true", help="use forward tunnel (default: reverse)"
-            )
-            _cdp_args = _cdp_parser.parse_args(sys.argv[3:])
-            _cmd_cdp_start(
-                _cdp_args.port, not _cdp_args.no_incognito, config, tunnel=_cdp_args.tunnel, forward=_cdp_args.forward
-            )
-            sys.exit(0)
-        elif cdp_action == "stop":
-            _cdp_parser = argparse.ArgumentParser(prog="ai cdp stop")
-            _cdp_parser.add_argument("-p", "--port", type=int, default=_cdp_default_port)
-            _cdp_parser.add_argument(
-                "-t", "--tunnel", action="store_true", help="also stop the SSH tunnel for this port"
-            )
-            _cdp_args = _cdp_parser.parse_args(sys.argv[3:])
-            _cmd_cdp_stop(_cdp_args.port, tunnel=_cdp_args.tunnel)
-            sys.exit(0)
-        elif cdp_action == "status":
-            _cmd_cdp_status()
-            sys.exit(0)
-        else:
-            print(f"Unknown cdp action: {cdp_action}. Use start, stop, or status.", file=sys.stderr)
-            sys.exit(1)
 
-    if len(sys.argv) > 1 and sys.argv[1] == "vpn-watch":
-        from .vpn_watch import run_vpn_watch
-
-        run_vpn_watch(config)
-        sys.exit(0)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "ps":
-        from .process_hygiene import cmd_ps
-
-        _ps_exit = cmd_ps(sys.argv[2:], config)
-        sys.exit(_ps_exit)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "sync":
-        if len(sys.argv) == 2:
-            print(
-                "Usage: ai sync [push|pull|conflicts|watch|cleanup|repair-worktree] [-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]"
-            )
-            sys.exit(1)
-        from .sync import (
-            sync_push,
-            sync_pull,
-            sync_conflicts,
-            sync_watch,
-            repair_worktree_cc_dir,
-            clean_worktree_cc_dirs,
-            _cc_projects_dir,
-            get_local_prefix,
+def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
+    project_path = _find_aicli_project_path(config)
+    if project_path is None:
+        print(
+            "Error: could not locate ai-cli-utils source. Set [deploy] project_path in config.",
+            file=sys.stderr,
         )
-
-        action = sys.argv[2]
-        flags = sys.argv[3:]
-        if action == "push":
-            sys.exit(sync_push(flags))
-        elif action == "pull":
-            sys.exit(sync_pull(flags))
-        elif action == "conflicts":
-            sys.exit(sync_conflicts(flags))
-        elif action == "watch":
-            sys.exit(sync_watch(flags))
-        elif action == "repair-worktree":
-            # Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]
-            positional = [a for a in flags if not a.startswith("-")]
-            if len(positional) < 2:
-                print(
-                    "Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]\n"
-                    "Example: ai sync repair-worktree job-pilot job-1\n"
-                    "Copies all conversations from the main project CC dir into the worktree CC dir\n"
-                    "so they are accessible from the worktree session.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            project_name = positional[0]
-            wt_name = positional[1]
-            dry_run = "-n" in flags or "--dry-run" in flags
-            verbose = "-v" in flags or "--verbose" in flags
-            copied = repair_worktree_cc_dir(
-                project_name=project_name,
-                wt_name=wt_name,
-                cc_projects_dir=_cc_projects_dir(),
-                local_prefix=get_local_prefix(),
-                dry_run=dry_run,
-                verbose=verbose,
-            )
-            sys.exit(0 if copied >= 0 else 1)
-        elif action == "cleanup":
-            # Usage: ai sync cleanup [-n|--dry-run] [-v|--verbose]
-            # Removes stale duplicate JSONL copies and orphan lock dirs from worktree CC dirs.
-            dry_run = "-n" in flags or "--dry-run" in flags
-            verbose = "-v" in flags or "--verbose" in flags
-            removed_jsonl, removed_lock = clean_worktree_cc_dirs(
-                _cc_projects_dir(),
-                get_local_prefix(),
-                dry_run=dry_run,
-                verbose=verbose,
-            )
-            verb = "Would remove" if dry_run else "Removed"
-            print(f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
-            sys.exit(0)
-        else:
-            print(
-                f"Unknown sync action: {action}. Use push, pull, conflicts, watch, cleanup, or repair-worktree.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "reconnect":
-        # List remote tmux sessions and print reconnect commands.
-        # Usage: ai reconnect [session_numbers...]
-        # Examples: ai reconnect (all), ai reconnect 1 3 (specific)
-        remote_cfg = config.get("remote", {})
-        host = remote_cfg.get("host", "")
-        user = remote_cfg.get("user", "ubuntu")
-        if not host:
-            print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
-            sys.exit(1)
-
-        requested = [int(x) for x in sys.argv[2:] if x.isdigit()] if len(sys.argv) > 2 else None
-
-        # Find tmux sessions matching remote pattern on the server
-        probe = subprocess.run(
-            ["ssh", f"{user}@{host}", "tmux", "list-sessions", "-F", "#{session_name}"],
-            capture_output=True,
-            text=True,
+        sys.exit(1)
+    pyproject = project_path / "pyproject.toml"
+    if not pyproject.exists():
+        print(
+            f"Error: pyproject.toml not found at {project_path}. Set [deploy] project_path in config.",
+            file=sys.stderr,
         )
-        if probe.returncode != 0:
-            print("Error: could not list remote tmux sessions", file=sys.stderr)
-            sys.exit(1)
-
-        remote_sessions = [s.strip() for s in probe.stdout.splitlines() if s.strip().startswith("c-r-")]
-        if not remote_sessions:
-            print("No remote CC sessions found on server.")
-            sys.exit(0)
-
-        # Filter to requested sessions if specified
-        if requested:
-            remote_sessions = [s for s in remote_sessions if any(s.endswith(f"-{n}") for n in requested)]
-
-        if not remote_sessions:
-            print(f"No matching remote sessions for: {requested}")
-            sys.exit(0)
-
-        aliases = get_project_aliases()
-
-        # Load active transport state files for annotation
-        _state_dir = get_xdg_state_home()
-        _transport_by_session: dict[str, str] = {}
-        for _tf in _state_dir.glob("transport-*.json"):
+        sys.exit(1)
+    # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
+    subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, check=False)
+    print("Pulling latest from origin...")
+    subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=project_path, check=False)
+    # Abort if pull left unresolved conflict markers — installing with conflicts produces a broken package
+    src_dir = project_path / "src"
+    conflict_files = []
+    if src_dir.is_dir():
+        for py_file in src_dir.rglob("*.py"):
             try:
-                _td = json.loads(_tf.read_text())
-                _transport_by_session[_td.get("session", "")] = _td.get("transport", "")
-            except Exception:
+                text = py_file.read_text(errors="replace")
+                if any(ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> ") for ln in text.splitlines()):
+                    conflict_files.append(py_file.relative_to(project_path))
+            except OSError:
                 pass
+    if conflict_files:
+        print(
+            "Error: unresolved git conflict markers found — resolve before installing:",
+            file=sys.stderr,
+        )
+        for f in conflict_files:
+            print(f"  {f}", file=sys.stderr)
+        sys.exit(1)
+    # Read version after pull so the bump applies to the current remote state
+    original = pyproject.read_text()
+    m = re.search(r'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
+    if not m:
+        print("Error: could not find version in pyproject.toml", file=sys.stderr)
+        sys.exit(1)
+    base = re.sub(r"\.post\d+$", "", m.group(2))
+    new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
+    print(f"Updating {m.group(2)} → {new_version}")
+    uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
+    exit_code = 0
+    try:
+        pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
+        uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
+        if force_reinstall:
+            uv_cmd.append("--reinstall")
+        result = subprocess.run(uv_cmd, cwd=project_path)
+        exit_code = result.returncode
+    finally:
+        pyproject.write_text(original)
+    if exit_code == 0:
+        # Install into any configured extra venvs (e.g. tool venvs that depend on ai-cli-utils)
+        extra_venvs = config.get("update", {}).get("extra_venvs", [])
+        for venv_path_str in extra_venvs:
+            venv_path = Path(venv_path_str).expanduser()
+            if venv_path.exists():
+                pip_cmd = [uv_bin, "pip", "install", str(project_path)]
+                if force_reinstall:
+                    pip_cmd.append("--force-reinstall")
+                subprocess.run(
+                    pip_cmd,
+                    env={**os.environ, "VIRTUAL_ENV": str(venv_path)},
+                    check=False,
+                )
+        # Clear pycache
+        subprocess.run(
+            ["find", str(project_path), "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
+            check=False,
+        )
+        # Record HEAD hash so session start can detect staleness
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
+        if head.returncode == 0:
+            stamp_file = get_xdg_state_home() / "last_update_commit.txt"
+            stamp_file.parent.mkdir(parents=True, exist_ok=True)
+            stamp_file.write_text(head.stdout.strip())
+        # Deploy bundled CC config files to ~/.claude/ — write as plain files so any
+        # pre-existing symlinks are replaced. These files are owned by ai-cli-utils and
+        # should not be managed by ai sync or tracked in any project git repo.
+        _deploy_cc_config_files(project_path)
+    sys.exit(exit_code)
 
-        print(f"Found {len(remote_sessions)} remote session(s). Run each in a separate terminal:\n")
-        for session_name in sorted(remote_sessions):
-            parts = session_name.split("-")
-            if len(parts) >= 4:
-                num = parts[-1]
-                proj_prefix = "-".join(parts[2:-1])
-            else:
-                continue
-            project_name = aliases.get(proj_prefix, proj_prefix)
-            _transport_tag = ""
-            _transport = _transport_by_session.get(session_name, "")
-            if _transport:
-                _transport_tag = f"  [{_transport} connected]"
-            if project_name == proj_prefix:
-                print(f"  ai c {num} -R{_transport_tag}")
-            else:
-                print(f"  ai c {num} -R -p {proj_prefix}{_transport_tag}")
-        print()
+
+def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
+    # List remote tmux sessions and print reconnect commands.
+    remote_cfg = config.get("remote", {})
+    host = remote_cfg.get("host", "")
+    user = remote_cfg.get("user", "ubuntu")
+    if not host:
+        print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
+        sys.exit(1)
+
+    probe = subprocess.run(
+        ["ssh", f"{user}@{host}", "tmux", "list-sessions", "-F", "#{session_name}"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        print("Error: could not list remote tmux sessions", file=sys.stderr)
+        sys.exit(1)
+
+    remote_sessions = [s.strip() for s in probe.stdout.splitlines() if s.strip().startswith("c-r-")]
+    if not remote_sessions:
+        print("No remote CC sessions found on server.")
         sys.exit(0)
 
-    if len(sys.argv) > 1 and sys.argv[1] in ("update", "deploy"):
-        force_reinstall = "--force" in sys.argv or "-f" in sys.argv
-        project_path = _find_aicli_project_path(config)
-        if project_path is None:
-            print(
-                "Error: could not locate ai-cli-utils source. Set [deploy] project_path in config.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        pyproject = project_path / "pyproject.toml"
-        if not pyproject.exists():
-            print(
-                f"Error: pyproject.toml not found at {project_path}. Set [deploy] project_path in config.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
-        subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, check=False)
-        print("Pulling latest from origin...")
-        subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=project_path, check=False)
-        # Abort if pull left unresolved conflict markers — installing with conflicts produces a broken package
-        src_dir = project_path / "src"
-        conflict_files = []
-        if src_dir.is_dir():
-            for py_file in src_dir.rglob("*.py"):
-                try:
-                    text = py_file.read_text(errors="replace")
-                    if any(ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> ") for ln in text.splitlines()):
-                        conflict_files.append(py_file.relative_to(project_path))
-                except OSError:
-                    pass
-        if conflict_files:
-            print(
-                "Error: unresolved git conflict markers found — resolve before installing:",
-                file=sys.stderr,
-            )
-            for f in conflict_files:
-                print(f"  {f}", file=sys.stderr)
-            sys.exit(1)
-        # Read version after pull so the bump applies to the current remote state
-        original = pyproject.read_text()
-        m = re.search(r'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
-        if not m:
-            print("Error: could not find version in pyproject.toml", file=sys.stderr)
-            sys.exit(1)
-        base = re.sub(r"\.post\d+$", "", m.group(2))
-        new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
-        print(f"Updating {m.group(2)} → {new_version}")
-        uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
-        exit_code = 0
+    if requested:
+        remote_sessions = [s for s in remote_sessions if any(s.endswith(f"-{n}") for n in requested)]
+
+    if not remote_sessions:
+        print(f"No matching remote sessions for: {requested}")
+        sys.exit(0)
+
+    aliases = get_project_aliases()
+
+    # Load active transport state files for annotation
+    _state_dir = get_xdg_state_home()
+    _transport_by_session: dict[str, str] = {}
+    for _tf in _state_dir.glob("transport-*.json"):
         try:
-            pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
-            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
-            if force_reinstall:
-                uv_cmd.append("--reinstall")
-            result = subprocess.run(uv_cmd, cwd=project_path)
-            exit_code = result.returncode
-        finally:
-            pyproject.write_text(original)
-        if exit_code == 0:
-            # Install into any configured extra venvs (e.g. tool venvs that depend on ai-cli-utils)
-            extra_venvs = config.get("update", {}).get("extra_venvs", [])
-            for venv_path_str in extra_venvs:
-                venv_path = Path(venv_path_str).expanduser()
-                if venv_path.exists():
-                    pip_cmd = [uv_bin, "pip", "install", str(project_path)]
-                    if force_reinstall:
-                        pip_cmd.append("--force-reinstall")
-                    subprocess.run(
-                        pip_cmd,
-                        env={**os.environ, "VIRTUAL_ENV": str(venv_path)},
-                        check=False,
-                    )
-            # Clear pycache
-            subprocess.run(
-                ["find", str(project_path), "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
-                check=False,
-            )
-            # Record HEAD hash so session start can detect staleness
-            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
-            if head.returncode == 0:
-                stamp_file = get_xdg_state_home() / "last_update_commit.txt"
-                stamp_file.parent.mkdir(parents=True, exist_ok=True)
-                stamp_file.write_text(head.stdout.strip())
-            # Deploy bundled CC config files to ~/.claude/ — write as plain files so any
-            # pre-existing symlinks are replaced. These files are owned by ai-cli-utils and
-            # should not be managed by ai sync or tracked in any project git repo.
-            _deploy_cc_config_files(project_path)
-        sys.exit(exit_code)
+            _td = json.loads(_tf.read_text())
+            _transport_by_session[_td.get("session", "")] = _td.get("transport", "")
+        except Exception:
+            pass
 
-    if len(sys.argv) > 1 and sys.argv[1] == "attach":
-        if len(sys.argv) < 3:
-            print("Usage: ai attach <session-name>", file=sys.stderr)
-            sys.exit(1)
-        session_name = sys.argv[2]
-        check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True)
-        if check.returncode != 0:
-            print(f"No tmux session named '{session_name}'", file=sys.stderr)
-            sys.exit(1)
-        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+    print(f"Found {len(remote_sessions)} remote session(s). Run each in a separate terminal:\n")
+    for session_name in sorted(remote_sessions):
+        parts = session_name.split("-")
+        if len(parts) >= 4:
+            num = parts[-1]
+            proj_prefix = "-".join(parts[2:-1])
+        else:
+            continue
+        project_name = aliases.get(proj_prefix, proj_prefix)
+        _transport_tag = ""
+        _transport = _transport_by_session.get(session_name, "")
+        if _transport:
+            _transport_tag = f"  [{_transport} connected]"
+        if project_name == proj_prefix:
+            print(f"  ai c {num} -R{_transport_tag}")
+        else:
+            print(f"  ai c {num} -R -p {proj_prefix}{_transport_tag}")
+    print()
+    sys.exit(0)
 
-    if len(sys.argv) > 1 and sys.argv[1] == "ls":
-        show_all = "--all" in sys.argv or "-a" in sys.argv
 
-        res = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+def _do_attach(session_name: str) -> None:
+    check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True)
+    if check.returncode != 0:
+        print(f"No tmux session named '{session_name}'", file=sys.stderr)
+        sys.exit(1)
+    os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+
+
+def _do_ls(show_all: bool) -> None:
+    res = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        print("No tmux sessions found (is tmux running?)", file=sys.stderr)
+        sys.exit(0)
+
+    now = int(time.time())
+    sessions = []
+    for line in res.stdout.strip().splitlines():
+        if not line:
+            continue
+        parts = line.split()
+        name = parts[0]
+        try:
+            activity = int(parts[1]) if len(parts) > 1 else 0
+        except ValueError:
+            activity = 0
+        if not show_all and not _AI_SESSION_RE.match(name):
+            continue
+        sessions.append((name, activity))
+
+    if not sessions:
+        msg = (
+            "No tmux sessions found." if show_all else "No ai-cli sessions found. Use --all to show all tmux sessions."
+        )
+        print(msg)
+        sys.exit(0)
+
+    sessions.sort(key=lambda x: x[1], reverse=True)
+
+    def _human_age(ts: int) -> str:
+        delta = now - ts
+        if delta < 60:
+            return f"{delta}s"
+        if delta < 3600:
+            return f"{delta // 60}m"
+        if delta < 86400:
+            return f"{delta // 3600}h"
+        return f"{delta // 86400}d"
+
+    def _project_from_session(name: str) -> str:
+        """Extract project prefix from session name: c-myproject-1 → myproject, c-r-myproject-1 → myproject."""
+        parts = name.split("-")
+        # Format: {c|g}[-r]-{project}-{index}
+        if len(parts) >= 3 and parts[0] in ("c", "g"):
+            start = 2 if parts[1] == "r" else 1
+            # project is everything between start and last segment
+            return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
+        return name
+
+    fzf = shutil.which("fzf")
+    if fzf is None:
+        # Try to install fzf
+        apt = shutil.which("apt")
+        if apt:
+            print("fzf not found — installing with apt...")
+            subprocess.run(["apt", "install", "-y", "fzf"], check=False)
+            fzf = shutil.which("fzf")
+
+    if fzf:
+        lines = [f"{name}\t{_project_from_session(name)}\t{_human_age(activity)}" for name, activity in sessions]
+        result = subprocess.run(
+            [
+                fzf,
+                "--ansi",
+                "--reverse",
+                "--prompt=session> ",
+                "--delimiter=\t",
+                "--with-nth=1,3",
+                "--preview-window=hidden",
+            ],
+            input="\n".join(lines),
             capture_output=True,
             text=True,
         )
-        if res.returncode != 0:
-            print("No tmux sessions found (is tmux running?)", file=sys.stderr)
+        if result.returncode != 0 or not result.stdout.strip():
             sys.exit(0)
+        selected = result.stdout.strip().split("\t")[0]
+        os.execvp("tmux", ["tmux", "attach-session", "-t", selected])
+    else:
+        # Plain list fallback
+        for i, (name, activity) in enumerate(sessions, 1):
+            project = _project_from_session(name)
+            print(f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
+        print("\nTo attach: ai attach <name>")
+        sys.exit(0)
 
-        now = int(time.time())
-        sessions = []
-        for line in res.stdout.strip().splitlines():
-            if not line:
-                continue
-            parts = line.split()
-            name = parts[0]
-            try:
-                activity = int(parts[1]) if len(parts) > 1 else 0
-            except ValueError:
-                activity = 0
-            if not show_all and not _AI_SESSION_RE.match(name):
-                continue
-            sessions.append((name, activity))
 
-        if not sessions:
-            msg = (
-                "No tmux sessions found."
-                if show_all
-                else "No ai-cli sessions found. Use --all to show all tmux sessions."
-            )
-            print(msg)
-            sys.exit(0)
+def _do_color(color_arg: str) -> None:
+    _ai_name_env = os.environ.get("AI_TMUX_SESSION", "")
+    if not _ai_name_env:
+        print("ai color: not inside an ai session (AI_TMUX_SESSION not set)", file=sys.stderr)
+        sys.exit(1)
+    # Resolve color arg: named palette entry or raw hex
+    _iterm2_cfg_c = _load_iterm2_config()
+    _palette_c = dict(_iterm2_palette(_iterm2_cfg_c))
+    if color_arg.startswith("#"):
+        _new_hex = color_arg
+    elif color_arg in _palette_c:
+        _new_hex = f"#{_palette_c[color_arg]}"
+    else:
+        print(f"ai color: unknown color '{color_arg}'. Use a palette name or #RRGGBB.", file=sys.stderr)
+        sys.exit(1)
+    # Determine engine from session name convention
+    _engine_c = "g" if _ai_name_env.startswith("g-") else "c"
+    _session_type_c = _iterm2_session_type(_engine_c)
+    try:
+        from . import icon_generator as _ig_c
 
-        sessions.sort(key=lambda x: x[1], reverse=True)
+        _icon_color_c = _resolve_iterm2_config(_iterm2_cfg_c, _ai_name_env).get("icon_color")
+        _ig_c.cleanup_session_files(_ai_name_env)
+        _icon_path_c = _ig_c.generate_session_icon(_ai_name_env, _new_hex, _session_type_c, _icon_color_c)
+        _ig_c.generate_dynamic_profile(_ai_name_env, _new_hex, _session_type_c, _icon_path_c)
+    except Exception as e:
+        print(f"ai color: icon generation failed: {e}", file=sys.stderr)
+    _color_no_hash_c = _new_hex.lstrip("#")
+    _profile_name_c = f"ai-cli:{_ai_name_env}"
+    sys.stdout.write(f"\033]1337;SetProfile={_profile_name_c}\007")
+    sys.stdout.write(f"\033]1337;SetColors=tab={_color_no_hash_c}\007")
+    sys.stdout.flush()
+    print(f"Color updated to {_new_hex}")
+    sys.exit(0)
 
-        def _human_age(ts: int) -> str:
-            delta = now - ts
-            if delta < 60:
-                return f"{delta}s"
-            if delta < 3600:
-                return f"{delta // 60}m"
-            if delta < 86400:
-                return f"{delta // 3600}h"
-            return f"{delta // 86400}d"
 
-        def _project_from_session(name: str) -> str:
-            """Extract project prefix from session name: c-myproject-1 → myproject, c-r-myproject-1 → myproject."""
-            parts = name.split("-")
-            # Format: {c|g}[-r]-{project}-{index}
-            if len(parts) >= 3 and parts[0] in ("c", "g"):
-                start = 2 if parts[1] == "r" else 1
-                # project is everything between start and last segment
-                return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
-            return name
+def _do_handoff_post(remote: bool, for_machine: str, post_args: "list[str]") -> None:
+    if remote:
+        remote_cfg = load_config().get("remote", {})
+        remote_host = remote_cfg.get("host", "")
+        remote_user = remote_cfg.get("user", "ubuntu")
+        if not remote_host:
+            print("Error: [remote] host not set in config", file=sys.stderr)
+            sys.exit(1)
+        ssh_args = ["ssh", f"{remote_user}@{remote_host}", "ai", "handoff", "post"]
+        # Preserve the --for-machine flag for the remote side.
+        ssh_args += ["--for-machine", for_machine]
+        ssh_args += list(post_args)
+        os.execvp("ssh", ssh_args)
+    if not for_machine:
+        print("Error: --for-machine <machine> is required", file=sys.stderr)
+        sys.exit(1)
+    if len(post_args) < 4:
+        print(
+            "Usage: ai handoff post --for-machine <machine> <title> <priority> <project> <message>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
+    sys.exit(0)
 
-        fzf = shutil.which("fzf")
-        if fzf is None:
-            # Try to install fzf
-            apt = shutil.which("apt")
-            if apt:
-                print("fzf not found — installing with apt...")
-                subprocess.run(["apt", "install", "-y", "fzf"], check=False)
-                fzf = shutil.which("fzf")
 
-        if fzf:
-            lines = [f"{name}\t{_project_from_session(name)}\t{_human_age(activity)}" for name, activity in sessions]
-            result = subprocess.run(
-                [
-                    fzf,
-                    "--ansi",
-                    "--reverse",
-                    "--prompt=session> ",
-                    "--delimiter=\t",
-                    "--with-nth=1,3",
-                    "--preview-window=hidden",
-                ],
-                input="\n".join(lines),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0 or not result.stdout.strip():
-                sys.exit(0)
-            selected = result.stdout.strip().split("\t")[0]
-            os.execvp("tmux", ["tmux", "attach-session", "-t", selected])
-        else:
-            # Plain list fallback
-            for i, (name, activity) in enumerate(sessions, 1):
-                project = _project_from_session(name)
-                print(f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
-            print("\nTo attach: ai attach <name>")
-            sys.exit(0)
+# --- Session launch (default command — `ai c NAME`, `ai g NAME`) ---
 
-    trigger_background_update()
-    _auto_update_if_stale(config)
-    _ensure_nats_tunnel(config)
 
-    parser = argparse.ArgumentParser(description="Unified AI CLI for Claude and Gemini")
-    parser.add_argument("engine", choices=["c", "g"], help="c for Claude, g for Gemini")
-    parser.add_argument("name", nargs="?", default="", help="Session name or index")
-    parser.add_argument("-r", "--resume", action="store_true", help="Resume an existing session")
-    parser.add_argument("-o", "--once", action="store_true", help="Run once without tmux auto-resume loop")
-    parser.add_argument("-b", "--bare", action="store_true", help="Run bare tool without tmux at all")
-    parser.add_argument("-n", "--notify", action="store_true", help="Fire system notifications on task completion")
-    parser.add_argument("-s", "--sandbox", action="store_true", help="Enable sandboxing (default: off)")
-    # parser.add_argument("-S", "--no-sandbox", action="store_true", help="Explicitly disable sandboxing")
-    parser.add_argument("-W", "--no-worktree", action="store_true", help="Disable git worktree isolation")
-    parser.add_argument(
-        "-R", "--remote", action="store_true", help="Run session on remote server (configured in [remote])"
-    )
-    parser.add_argument(
-        "-p",
-        "--project",
-        default="",
-        help="Project to open on remote server (directory name, e.g. 'myproject', 'webapp')",
-    )
-    parser.add_argument("--is-remote", action="store_true", help=argparse.SUPPRESS)  # set by local machine when SSHing
-    parser.add_argument("--project-prefix", default="", help=argparse.SUPPRESS)  # override auto-detected project prefix
-
-    args, unknown = parser.parse_known_args()
+def _do_session_launch(
+    engine: str,
+    name: str,
+    resume: bool,
+    once: bool,
+    bare: bool,
+    notify: bool,
+    sandbox: bool,
+    no_worktree: bool,
+    remote: bool,
+    project: str,
+    is_remote: bool,
+    project_prefix_override: str,
+    extra_args: "list[str]",
+    config: dict,
+) -> None:
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
-    args.is_remote = _resolve_is_remote(args.is_remote)
-    engine = args.engine
-    if args.project_prefix:
-        project_prefix = args.project_prefix
-    elif args.project and not args.remote:
+    is_remote = _resolve_is_remote(is_remote)
+    if project_prefix_override:
+        project_prefix = project_prefix_override
+    elif project and not remote:
         # Local -p flag: derive prefix from the target project, not cwd
         _lp_aliases = get_project_aliases()
-        _lp_name = _lp_aliases.get(args.project, args.project)
+        _lp_name = _lp_aliases.get(project, project)
         project_prefix = _get_project_prefix_by_name(_lp_name)
     else:
         project_prefix = get_project_prefix()
     engine_short = "c" if engine == "c" else "g"
-    remote_seg = "-r" if args.is_remote else ""
+    remote_seg = "-r" if is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
 
-    # whitelist = config.get("gemini", {}).get("sandbox_whitelist", ["sw"])
-    # use_sandbox = False if args.no_sandbox else (True if args.sandbox else project_prefix not in whitelist)
-    use_sandbox = args.sandbox
-
+    use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
     gemini_cmd = config.get("gemini", {}).get("command", "gemini")
 
-    name = args.name
-    if not name and unknown:
-        name = unknown[0]
+    if not name and extra_args:
+        name = extra_args[0]
+        extra_args = extra_args[1:]
 
-    if args.remote:
+    if remote:
         remote_cfg = config.get("remote", {})
         host = remote_cfg.get("host", "")
         if not host:
@@ -1401,13 +1037,13 @@ def cli():
         id_file = remote_cfg.get("identity_file", "")
         transport = remote_cfg.get("transport", "mosh")
         aliases = get_project_aliases()
-        raw_project = args.project or get_current_project_name()
-        if args.project and ("/" in args.project or "\\" in args.project):
+        raw_project = project or get_current_project_name()
+        if project and ("/" in project or "\\" in project):
             print("Error: --project name must not contain path separators", file=sys.stderr)
             sys.exit(1)
         remote_project = aliases.get(raw_project, raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
-        if args.project:
+        if project:
             remote_prefix = _get_project_prefix_by_name(remote_project)
         else:
             remote_prefix = project_prefix
@@ -1415,7 +1051,7 @@ def cli():
         # when the shell is a non-interactive login shell (zsh -l -c) that does
         # not source ~/.zshrc where the uv env PATH setup typically lives.
         remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {remote_prefix} --project {shlex.quote(remote_project)}'
-        if args.resume:
+        if resume:
             remote_cmd += " --resume"
         if name:
             remote_cmd += f" {shlex.quote(name)}"
@@ -1470,33 +1106,33 @@ def cli():
 
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.
-    if args.is_remote:
+    if is_remote:
         aliases = get_project_aliases()
-        raw_project = args.project or config.get("remote", {}).get("project") or _get_main_project_name()
+        raw_project = project or config.get("remote", {}).get("project") or _get_main_project_name()
         if raw_project:
             project_name = aliases.get(raw_project, raw_project)
             project_dir = _find_project_dir(project_name)
             if project_dir.exists():
                 os.chdir(project_dir)
-    elif args.project:
+    elif project:
         # Local session with explicit -p PROJECT: cd to the project directory so that
         # git worktrees and Gemini chats directories resolve relative to the correct root.
         # Mirrors the is_remote path above.
         aliases = get_project_aliases()
-        _local_project = aliases.get(args.project, args.project)
+        _local_project = aliases.get(project, project)
         _local_project_dir = _find_project_dir(_local_project)
         if _local_project_dir.exists():
             os.chdir(_local_project_dir)
 
-    if args.bare:
+    if bare:
         if engine == "c":
             perms = [] if os.getuid() == 0 else ["--dangerously-skip-permissions"]
-            os.execvp("claude", ["claude"] + perms + unknown)
+            os.execvp("claude", ["claude"] + perms + extra_args)
         else:
             _gcmd = shlex.split(gemini_cmd)
-            os.execvp(_gcmd[0], _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + unknown)
+            os.execvp(_gcmd[0], _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + extra_args)
 
-    if args.resume:
+    if resume:
         session = resolve_session(prefix, name)
         if not session:
             print(f"No matching session found for '{prefix}{name or '*'}'")
@@ -1509,11 +1145,11 @@ def cli():
 
     cleanup_stale_sessions(config)
     current_project_name = get_current_project_name()
-    session_id, ai_name = build_session_name(engine, project_prefix, name, config, is_remote=args.is_remote)
+    session_id, ai_name = build_session_name(engine, project_prefix, name, config, is_remote=is_remote)
 
     # Worktree setup
     worktree_path = None
-    if config.get("worktree", {}).get("enabled", True) and not args.no_worktree:
+    if config.get("worktree", {}).get("enabled", True) and not no_worktree:
         worktree_path = create_worktree(ai_name)
         if worktree_path:
             # Sync worktree with any changes that landed on main from other sessions
@@ -1537,7 +1173,7 @@ def cli():
         if _val := os.environ.get(_var):
             _iterm_env_flags += ["-e", f"{_var}={_val}"]
 
-    if args.once:
+    if once:
         cd_pref = f"cd {worktree_path} && " if worktree_path else ""
         if engine == "c":
             perms = "" if os.getuid() == 0 else "--dangerously-skip-permissions"
@@ -1578,8 +1214,8 @@ def cli():
         uuid,
         use_sandbox,
         str(worktree_path) if worktree_path else None,
-        notify=args.notify,
-        is_remote=args.is_remote,
+        notify=notify,
+        is_remote=is_remote,
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
@@ -1593,8 +1229,7 @@ def cli():
 
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
-    explicit_sandbox = args.sandbox
-    if existing.returncode == 0 and explicit_sandbox:
+    if existing.returncode == 0 and sandbox:
         # Explicit sandbox flag — kill old session so it recreates with new settings
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
@@ -1614,5 +1249,629 @@ def cli():
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
 
 
-if __name__ == "__main__":  # pragma: no cover
+# --- Click command tree ---
+
+
+SESSION_CONTEXT = {
+    "ignore_unknown_options": True,
+    "allow_extra_args": True,
+    "help_option_names": ["-h", "--help"],
+}
+
+
+def _session_command(engine: str):
+    """Factory for the shared ``ai c`` / ``ai g`` session-launch command."""
+
+    def _impl(
+        ctx,
+        name,
+        resume,
+        once,
+        bare,
+        notify,
+        sandbox,
+        no_worktree,
+        remote,
+        project,
+        is_remote,
+        project_prefix,
+    ):
+        # Startup hooks happen only when launching a new session.
+        config = load_config()
+        trigger_background_update()
+        _auto_update_if_stale(config)
+        _ensure_nats_tunnel(config)
+        _do_session_launch(
+            engine=engine,
+            name=name,
+            resume=resume,
+            once=once,
+            bare=bare,
+            notify=notify,
+            sandbox=sandbox,
+            no_worktree=no_worktree,
+            remote=remote,
+            project=project,
+            is_remote=is_remote,
+            project_prefix_override=project_prefix,
+            extra_args=list(ctx.args),
+            config=config,
+        )
+
+    _impl.__name__ = f"cmd_session_{engine}"
+    return _impl
+
+
+@click.group(
+    name="ai",
+    invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.option("-V", "--version", is_flag=True, help="Show version and exit")
+@click.pass_context
+def _cli_group(ctx, version):
+    """Unified AI CLI for Claude and Gemini."""
+    if version:
+        click.echo(_pkg_version_string())
+        ctx.exit(0)
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+        ctx.exit(0)
+
+
+def _session_options(func):
+    """Decorator that adds the shared session-launch options."""
+    func = click.pass_context(func)
+    func = click.argument("name", required=False, default="")(func)
+    func = click.option("-r", "--resume", is_flag=True, help="Resume an existing session")(func)
+    func = click.option("-o", "--once", is_flag=True, help="Run once without tmux auto-resume loop")(func)
+    func = click.option("-b", "--bare", is_flag=True, help="Run bare tool without tmux at all")(func)
+    func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
+    func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
+    func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
+    func = click.option("-R", "--remote", is_flag=True, help="Run session on remote server (configured in [remote])")(
+        func
+    )
+    func = click.option(
+        "-p",
+        "--project",
+        default="",
+        help="Project to open on remote server (directory name, e.g. 'myproject', 'webapp')",
+    )(func)
+    func = click.option("--is-remote", is_flag=True, hidden=True)(func)
+    func = click.option("--project-prefix", default="", hidden=True)(func)
+    return func
+
+
+@_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
+@_session_options
+def cmd_c(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix):
+    _session_command("c")(
+        ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix
+    )
+
+
+@_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
+@_session_options
+def cmd_g(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix):
+    _session_command("g")(
+        ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix
+    )
+
+
+@_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
+def cmd_upgrade():
+    print("Upgrading ai-cli-utils...", file=sys.stderr)
+    os.execvp("uv", ["uv", "tool", "upgrade", "ai-cli-utils"])
+
+
+@_cli_group.command("setup", help="Run interactive setup wizard")
+def cmd_setup():
+    from .setup import run_setup
+
+    sys.exit(run_setup())
+
+
+# --- handoff group ---
+
+
+@_cli_group.group("handoff", help="Post and claim handoffs from the shared queue")
+def cmd_handoff_group():
+    pass
+
+
+@cmd_handoff_group.command(
+    "post",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+    help="Post a new handoff (run ssh when --remote is passed)",
+)
+@click.option("-m", "--for-machine", default="", help="Machine the handoff targets (required)")
+@click.option("-R", "--remote", is_flag=True, help="Post on the remote server instead of locally")
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def cmd_handoff_post(for_machine, remote, args):
+    _do_handoff_post(remote=remote, for_machine=for_machine, post_args=list(args))
+
+
+@cmd_handoff_group.command("check", help="Check for handoffs targeted at this machine")
+def cmd_handoff_check():
+    check_handoff()
+    sys.exit(0)
+
+
+@cmd_handoff_group.command("check-project", help="Check pending handoffs for a specific project")
+@click.argument("project_name")
+def cmd_handoff_check_project(project_name):
+    check_handoff_project(project_name)
+    sys.exit(0)
+
+
+@cmd_handoff_group.command("claim", help="Mark a handoff as claimed")
+@click.argument("file_path")
+def cmd_handoff_claim(file_path):
+    claim_handoff(file_path)
+    sys.exit(0)
+
+
+@cmd_handoff_group.command("complete", help="Mark a handoff as complete")
+@click.argument("file_path")
+def cmd_handoff_complete(file_path):
+    complete_handoff(file_path)
+    sys.exit(0)
+
+
+# --- memory group ---
+
+
+@_cli_group.group("memory", help="Memory-file watchers and helpers")
+def cmd_memory_group():
+    pass
+
+
+@cmd_memory_group.command("watch", help="Run the memory-file watcher daemon")
+def cmd_memory_watch():
+    from .memory import memory_watch
+
+    sys.exit(memory_watch())
+
+
+# --- quota group ---
+
+
+@_cli_group.group("quota", help="Claude weekly-quota tracking and statusline helpers")
+def cmd_quota_group():
+    pass
+
+
+@cmd_quota_group.command("watch", help="Watch quota updates (long-running)")
+def cmd_quota_watch():
+    from .quota import quota_watch
+
+    sys.exit(quota_watch())
+
+
+@cmd_quota_group.command("status", help="Print current quota snapshot")
+def cmd_quota_status():
+    from .quota import quota_status
+
+    sys.exit(quota_status())
+
+
+@cmd_quota_group.command("history", help="Print quota history")
+def cmd_quota_history():
+    from .quota import quota_history
+
+    sys.exit(quota_history())
+
+
+@cmd_quota_group.command("scrape", help="Scrape /usage from a fresh CC session")
+def cmd_quota_scrape():
+    from .quota import quota_scrape
+
+    sys.exit(quota_scrape())
+
+
+@cmd_quota_group.command("statusline-part", help="Emit the quota section of the CC statusline")
+def cmd_quota_statusline_part():
+    from .quota import quota_statusline_part
+
+    sys.exit(quota_statusline_part())
+
+
+@cmd_quota_group.command("sync", help="Sync quota snapshot from the remote server")
+def cmd_quota_sync():
+    from .quota import quota_sync_from_remote
+
+    sys.exit(quota_sync_from_remote())
+
+
+@cmd_quota_group.command("record", help="Record a single AI-usage event into the quota DB")
+@click.argument("session_id")
+@click.argument("machine_id")
+@click.argument("model")
+@click.argument("total_tokens", type=int)
+@click.argument("cost_usd", type=float, required=False, default=None)
+def cmd_quota_record(session_id, machine_id, model, total_tokens, cost_usd):
+    from .quota import quota_record
+
+    sys.exit(quota_record(session_id, machine_id, model, total_tokens, cost_usd))
+
+
+# --- telemetry group ---
+
+
+@_cli_group.group("telemetry", help="Telemetry writer daemon")
+def cmd_telemetry_group():
+    pass
+
+
+@cmd_telemetry_group.command("writer", help="Run the telemetry writer daemon")
+def cmd_telemetry_writer():
+    from .telemetry import telemetry_writer
+
+    sys.exit(telemetry_writer())
+
+
+# --- gemini, spend, cc-usage, copier-update, layout, color ---
+
+
+@_cli_group.command(
+    "gemini",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
+    help="Run the ai-cli Gemini wrapper (pass-through to .gemini)",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def cmd_gemini(args):
+    from .gemini import gemini_cli
+
+    gemini_cli(list(args))
+    sys.exit(0)
+
+
+@_cli_group.group("spend", help="Usage-cost reports")
+def cmd_spend_group():
+    pass
+
+
+@cmd_spend_group.command("gemini", help="Report Gemini CLI spend totals")
+def cmd_spend_gemini_cli():
+    from .spend import cmd_spend_gemini
+
+    sys.exit(cmd_spend_gemini(load_config()))
+
+
+@_cli_group.group("cc-usage", help="Claude Code CLI per-call token usage")
+def cmd_cc_usage_group():
+    pass
+
+
+@cmd_cc_usage_group.command("push", help="Scan JSONL session files and push new events")
+@click.option("-d", "--dry-run", is_flag=True, help="Parse but do not push")
+def cmd_cc_usage_push(dry_run):
+    from .cc_usage import scan_and_push
+
+    config = load_config()
+    result = scan_and_push(config=config, dry_run=dry_run)
+    if result.error:
+        print(f"Error: {result.error}", file=sys.stderr)
+        sys.exit(1)
+    if dry_run:
+        print(f"Dry run: {result.new_events} new events across {result.scanned_sessions} sessions (not pushed)")
+    else:
+        print(
+            f"Pushed {result.inserted} new events, {result.skipped} skipped "
+            f"({result.scanned_sessions} sessions scanned)"
+        )
+    sys.exit(0)
+
+
+@cmd_cc_usage_group.command("status", help="Print cc-usage cursor summary")
+def cmd_cc_usage_status():
+    from .cc_usage import get_cursor_summary
+
+    summary = get_cursor_summary()
+    print(f"Sessions tracked: {summary['sessions_tracked']}")
+    print(f"Last push:        {summary['last_push'] or 'never'}")
+    sys.exit(0)
+
+
+@_cli_group.command("copier-update", help="Propagate project-template changes to downstream projects (Mac only)")
+@click.option("-d", "--dry-run", is_flag=True, help="Show diffs without applying")
+@click.option("-p", "--project", default=None, help="Only update the given project")
+def cmd_copier_update(dry_run, project):
+    if os.environ.get("AI_CLI_HOST") != "mac":
+        print("Error: copier-update is Mac only", file=sys.stderr)
+        sys.exit(1)
+    from .copier_update import run_copier_update
+
+    sys.exit(run_copier_update(dry_run=dry_run, project_filter=project))
+
+
+@_cli_group.command(
+    "layout",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
+    help="Apply a tmux pane layout",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def cmd_layout(args):
+    from .layout import run_layout_command
+
+    sys.exit(run_layout_command(list(args)))
+
+
+@_cli_group.command("color", help="Reassign iTerm2 color for the current ai session")
+@click.argument("color_arg")
+def cmd_color(color_arg):
+    _do_color(color_arg)
+
+
+# --- tunnel group ---
+
+
+@_cli_group.group("tunnel", help="autossh SSH tunnels to the remote server")
+def cmd_tunnel_group():
+    pass
+
+
+@cmd_tunnel_group.command("start", help="Start an SSH tunnel")
+@click.argument("local_port", type=int)
+@click.argument("remote_port", type=int, required=False, default=None)
+@click.option("-L", "--forward", is_flag=True, help="Create a forward tunnel (default: reverse)")
+def cmd_tunnel_start(local_port, remote_port, forward):
+    config = load_config()
+    if remote_port is None:
+        remote_port = local_port
+    _cmd_tunnel_start(local_port, remote_port, forward=forward, config=config)
+    sys.exit(0)
+
+
+@cmd_tunnel_group.command("stop", help="Stop an SSH tunnel")
+@click.argument("port", type=int)
+def cmd_tunnel_stop(port):
+    _cmd_tunnel_stop(port)
+    sys.exit(0)
+
+
+@cmd_tunnel_group.command("status", help="Show running SSH tunnels")
+def cmd_tunnel_status():
+    _cmd_tunnel_status()
+    sys.exit(0)
+
+
+# --- signal-watch group ---
+
+
+@_cli_group.group("signal-watch", help="Handoff signal-watch Circus daemon management")
+def cmd_signal_watch_group():
+    pass
+
+
+@cmd_signal_watch_group.command("start", help="Start signal-watch for a session")
+@click.argument("project")
+@click.argument("session")
+def cmd_signal_watch_start(project, session):
+    _cmd_signal_watch_start(project, session)
+    sys.exit(0)
+
+
+@cmd_signal_watch_group.command("stop", help="Stop signal-watch for a session")
+@click.argument("session")
+def cmd_signal_watch_stop(session):
+    _cmd_signal_watch_stop(session)
+    sys.exit(0)
+
+
+@cmd_signal_watch_group.command("status", help="Show signal-watch status")
+def cmd_signal_watch_status():
+    _cmd_signal_watch_status()
+    sys.exit(0)
+
+
+# --- cdp group ---
+
+
+@_cli_group.group("cdp", help="Chrome DevTools Protocol browser management")
+def cmd_cdp_group():
+    pass
+
+
+@cmd_cdp_group.command("start", help="Launch Chrome with a CDP port")
+@click.option("-p", "--port", type=int, default=None, help="CDP port (default: [cdp].port in config)")
+@click.option("-I", "--no-incognito", is_flag=True, help="Use a normal (persistent) profile")
+@click.option("-t", "--tunnel", is_flag=True, help="Start an SSH tunnel alongside Chrome")
+@click.option("-L", "--forward", is_flag=True, help="Use forward tunnel (default: reverse)")
+def cmd_cdp_start(port, no_incognito, tunnel, forward):
+    config = load_config()
+    _default_port = config.get("cdp", {}).get("port", 9222)
+    if port is None:
+        port = _default_port
+    _cmd_cdp_start(port, not no_incognito, config, tunnel=tunnel, forward=forward)
+    sys.exit(0)
+
+
+@cmd_cdp_group.command("stop", help="Stop a CDP-launched Chrome instance")
+@click.option("-p", "--port", type=int, default=None, help="CDP port")
+@click.option("-t", "--tunnel", is_flag=True, help="Also stop the SSH tunnel for this port")
+def cmd_cdp_stop(port, tunnel):
+    config = load_config()
+    _default_port = config.get("cdp", {}).get("port", 9222)
+    if port is None:
+        port = _default_port
+    _cmd_cdp_stop(port, tunnel=tunnel)
+    sys.exit(0)
+
+
+@cmd_cdp_group.command("status", help="Show CDP Chrome status")
+def cmd_cdp_status():
+    _cmd_cdp_status()
+    sys.exit(0)
+
+
+# --- vpn-watch / ps / sync / reconnect / update / deploy / attach / ls ---
+
+
+@_cli_group.command("vpn-watch", help="Run the VPN-watch daemon")
+def cmd_vpn_watch():
+    from .vpn_watch import run_vpn_watch
+
+    run_vpn_watch(load_config())
+    sys.exit(0)
+
+
+@_cli_group.command(
+    "ps",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
+    help="Process hygiene — show/kill stale ai-cli processes",
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def cmd_ps(args):
+    from .process_hygiene import cmd_ps as _cmd_ps
+
+    sys.exit(_cmd_ps(list(args), load_config()))
+
+
+@_cli_group.command(
+    "sync",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
+    help="Sync CC session data (JSONL + memory files) across machines",
+)
+@click.argument("action", required=False, default="")
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def cmd_sync(action, args):
+    if not action:
+        print(
+            "Usage: ai sync [push|pull|conflicts|watch|cleanup|repair-worktree] "
+            "[-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]"
+        )
+        sys.exit(1)
+    from .sync import (
+        sync_push,
+        sync_pull,
+        sync_conflicts,
+        sync_watch,
+        repair_worktree_cc_dir,
+        clean_worktree_cc_dirs,
+        _cc_projects_dir,
+        get_local_prefix,
+    )
+
+    flags = list(args)
+    if action == "push":
+        sys.exit(sync_push(flags))
+    elif action == "pull":
+        sys.exit(sync_pull(flags))
+    elif action == "conflicts":
+        sys.exit(sync_conflicts(flags))
+    elif action == "watch":
+        sys.exit(sync_watch(flags))
+    elif action == "repair-worktree":
+        positional = [a for a in flags if not a.startswith("-")]
+        if len(positional) < 2:
+            print(
+                "Usage: ai sync repair-worktree <project> <worktree> [-n|--dry-run] [-v|--verbose]\n"
+                "Example: ai sync repair-worktree myproject wt-1\n"
+                "Copies all conversations from the main project CC dir into the worktree CC dir\n"
+                "so they are accessible from the worktree session.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        project_name = positional[0]
+        wt_name = positional[1]
+        dry_run = "-n" in flags or "--dry-run" in flags
+        verbose = "-v" in flags or "--verbose" in flags
+        copied = repair_worktree_cc_dir(
+            project_name=project_name,
+            wt_name=wt_name,
+            cc_projects_dir=_cc_projects_dir(),
+            local_prefix=get_local_prefix(),
+            dry_run=dry_run,
+            verbose=verbose,
+        )
+        sys.exit(0 if copied >= 0 else 1)
+    elif action == "cleanup":
+        dry_run = "-n" in flags or "--dry-run" in flags
+        verbose = "-v" in flags or "--verbose" in flags
+        removed_jsonl, removed_lock = clean_worktree_cc_dirs(
+            _cc_projects_dir(),
+            get_local_prefix(),
+            dry_run=dry_run,
+            verbose=verbose,
+        )
+        verb = "Would remove" if dry_run else "Removed"
+        print(f"{verb}: {removed_jsonl} stale JSONL copies, {removed_lock} orphan lock dirs")
+        sys.exit(0)
+    else:
+        print(
+            f"Unknown sync action: {action}. Use push, pull, conflicts, watch, cleanup, or repair-worktree.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+@_cli_group.command("reconnect", help="Print reconnect commands for remote tmux sessions")
+@click.argument("sessions", nargs=-1)
+def cmd_reconnect(sessions):
+    config = load_config()
+    requested = [int(x) for x in sessions if x.isdigit()] if sessions else None
+    _do_reconnect(requested, config)
+
+
+@_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")
+@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install")
+def cmd_update(force):
+    config = load_config()
+    _do_update_or_deploy(force_reinstall=force, config=config)
+
+
+@_cli_group.command("deploy", help="Alias for update (historical)")
+@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install")
+def cmd_deploy(force):
+    config = load_config()
+    _do_update_or_deploy(force_reinstall=force, config=config)
+
+
+@_cli_group.command("attach", help="Attach to a tmux session by name")
+@click.argument("session_name")
+def cmd_attach(session_name):
+    _do_attach(session_name)
+
+
+@_cli_group.command("ls", help="List tmux sessions (fzf picker when available)")
+@click.option("-a", "--all", "show_all", is_flag=True, help="Show all tmux sessions (not just ai-cli ones)")
+def cmd_ls(show_all):
+    _do_ls(show_all)
+
+
+# --- Public entry points ---
+
+
+def cli() -> None:
+    """Top-level CLI entry point.
+
+    Handles the ``ai internal`` machine-to-machine fast path directly (sub-
+    millisecond startup for bash-hook callers) and delegates everything else
+    to the Click command group. Click usage errors exit with code 1 so the
+    exit contract matches the argparse/sys.argv dispatcher it replaces.
+    """
+    if len(sys.argv) > 1 and sys.argv[1] == "internal":
+        _handle_internal(sys.argv[2:])
+        return
+    try:
+        _cli_group(standalone_mode=False)
+    except click.exceptions.UsageError as exc:
+        exc.show(file=sys.stderr)
+        sys.exit(1)
+    except click.exceptions.ClickException as exc:
+        exc.show()
+        sys.exit(exc.exit_code)
+    except click.exceptions.Abort:
+        sys.exit(1)
+    sys.exit(0)
+
+
+def main() -> None:
+    """uv-tool console-script entry. Alias for :func:`cli`."""
     cli()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

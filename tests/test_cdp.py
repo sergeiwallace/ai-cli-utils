@@ -600,7 +600,8 @@ class TestCdpDispatch:
                 cli()
 
         assert exc.value.code == 1
-        assert "Unknown cdp action" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "No such command 'restart'" in err or "Unknown cdp action" in err
 
     def test_when_cdp_no_action_then_exits_1(self, capsys):
         with (
