@@ -312,6 +312,48 @@ def _handle_internal(argv: list[str]) -> None:
     elif action == "get-version":
         print(_pkg_version_string())
         sys.exit(0)
+    elif action == "refresh-template":
+        if len(argv) < 2:
+            print("Usage: ai internal refresh-template <tmux_session>", file=sys.stderr)
+            sys.exit(1)
+        tmux_session = argv[1]
+        meta_path = _config.get_xdg_state_home() / f"session-meta-{tmux_session}.json"
+        if not meta_path.exists():
+            print(f"No session metadata for {tmux_session}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception as exc:
+            print(f"Failed to read session metadata: {exc}", file=sys.stderr)
+            sys.exit(1)
+        from .session_script import get_engine_script
+
+        script = get_engine_script(
+            engine=meta["engine"],
+            ai_name=meta["ai_name"],
+            session=meta["session"],
+            prefix=meta["prefix"],
+            project_prefix=meta["project_prefix"],
+            session_id_uuid=meta.get("session_id_uuid") or None,
+            sandbox=meta.get("sandbox", False),
+            worktree_dir=meta.get("worktree_dir") or None,
+            notify=meta.get("notify", False),
+            is_remote=meta.get("is_remote", False),
+            project_name=meta.get("project_name", ""),
+            iterm2_slot=meta.get("iterm2_slot") or None,
+            iterm2_cfg=meta.get("iterm2_cfg") or None,
+            config_reload_idle_secs=meta.get("config_reload_idle_secs", 90),
+            gemini_cmd=meta.get("gemini_cmd", "gemini"),
+        )
+        import tempfile
+
+        fd, tmp_path = tempfile.mkstemp(prefix=f"ai-refresh-{tmux_session}-", suffix=".sh")
+        with os.fdopen(fd, "w") as fh:
+            fh.write("#!/usr/bin/env bash\n")
+            fh.write(f'rm -f "{tmp_path}"\n')  # self-delete on exec
+            fh.write(script)
+        print(tmp_path)
+        sys.exit(0)
     elif action == "notify":
         if len(argv) < 3:
             print("Usage: ai internal notify <session_id> <message>", file=sys.stderr)

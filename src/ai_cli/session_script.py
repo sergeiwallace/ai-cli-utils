@@ -3,6 +3,7 @@
 Depends on: nothing (self-contained).
 """
 
+import json
 import re
 
 
@@ -43,6 +44,27 @@ def get_engine_script(
     _it2_show_type = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_type_symbol", True) else "0"
     _it2_show_status = "1" if _cfg.get("iterm2", {}).get("tab_title", {}).get("show_status_symbol", True) else "0"
 
+    # Metadata baked into the template so `ai internal refresh-template` can regenerate it.
+    _meta = json.dumps(
+        {
+            "engine": engine,
+            "ai_name": ai_name,
+            "session": session,
+            "prefix": prefix,
+            "project_prefix": project_prefix,
+            "session_id_uuid": session_id_uuid or "",
+            "sandbox": sandbox,
+            "worktree_dir": worktree_dir or "",
+            "notify": notify,
+            "is_remote": is_remote,
+            "project_name": project_name,
+            "iterm2_slot": iterm2_slot or "",
+            "iterm2_cfg": iterm2_cfg or {},
+            "config_reload_idle_secs": config_reload_idle_secs,
+            "gemini_cmd": gemini_cmd,
+        }
+    )
+
     script = f"""
     {cd_cmd}
     first_run=true
@@ -55,6 +77,7 @@ def get_engine_script(
     project_name="{project_name}"
     _ai_state_dir="$HOME/.local/state/ai-cli-utils"
     mkdir -p "$_ai_state_dir/iterm2"
+    printf '%s' {json.dumps(_meta)} > "$_ai_state_dir/session-meta-$tmux_session.json"
 
     # iTerm2 slot assigned by Python at launch time (collision-free lease system).
     # These variables are constant for the lifetime of this session.
@@ -383,11 +406,19 @@ if found: sys.stdout.write(found)
         printf '{{"event":"handoff.while_loop_pickup","session":"%s","ts":%s}}\n' \
           "$tmux_session" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
       fi
-      # Self-update: if ai-cli was reinstalled, note it and continue (exec restart breaks mosh sessions)
+      # Self-update: if ai-cli was reinstalled, exec a fresh template so new changes take effect.
+      # exec bash <new-script> replaces only this bash process inside the tmux window;
+      # mosh connects to the tmux session (not this PID) so it is unaffected.
       _current_ver=$(ai internal get-version 2>/dev/null || echo "unknown")
       if [[ "$_current_ver" != "unknown" && "$_current_ver" != "$_template_version" ]]; then
-        echo "ai-cli updated ($_template_version → $_current_ver) — run 'ai c $ai_name' to get new template"
-        _template_version="$_current_ver"
+        echo "ai-cli updated ($_template_version → $_current_ver) — reloading session template..."
+        _refresh_script=$(ai internal refresh-template "$tmux_session" 2>/dev/null)
+        if [[ -n "$_refresh_script" && -f "$_refresh_script" ]]; then
+          exec bash "$_refresh_script"
+        else
+          echo "Template refresh failed — run 'ai c $ai_name' to get new template"
+          _template_version="$_current_ver"
+        fi
       fi
       echo "Resuming... (Ctrl-C to exit)"
       sleep 0.5 || break
