@@ -1379,6 +1379,7 @@ class TestDeploy:
             patch("sys.argv", ["ai", "deploy"]),
             patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")) as mock_run,
+            patch("shutil.which", return_value="uv"),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -1531,7 +1532,7 @@ class TestDeploy:
         uv_called = []
 
         def fake_run(cmd, **kwargs):
-            if "uv" in cmd and "tool" in cmd:
+            if any("uv" in part for part in cmd) and "tool" in cmd:
                 uv_called.append(cmd)
             return MagicMock(returncode=0, stdout="")
 
@@ -1539,6 +1540,7 @@ class TestDeploy:
             patch("sys.argv", ["ai", "update"]),
             patch("ai_cli.main.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="uv"),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
