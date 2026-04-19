@@ -198,6 +198,16 @@ def get_engine_script(
       watcher_pid=$!
     }}
 
+    # Kill predecessor mosh-servers for this project prefix.
+    # ai ps cron only kills score>=80 (needs 24h age), but rapid reconnects leave
+    # ~60-score suspects accumulating for hours. Current mosh-server was just spawned
+    # (<60s ago), so anything older with the same prefix is a stale predecessor.
+    while read -r _mpid _mage; do
+      [[ "$_mage" -gt 60 ]] && kill "$_mpid" 2>/dev/null || true
+    done < <(ps -ax -o pid=,etime=,args= 2>/dev/null | grep "mosh-server" | grep -- "--project-prefix {project_prefix}" | \
+      awk '{{pid=$1; etime=$2; n=split(etime,t,"[-:]"); if(n==4) s=t[1]*86400+t[2]*3600+t[3]*60+t[4]; else if(n==3) s=t[1]*3600+t[2]*60+t[3]; else s=t[1]*60+t[2]; print pid, s}}')
+    unset _mpid _mage
+
     # Auto-clean orphaned processes at session start (score >= 80, local only).
     # Runs in foreground so orphans are gone before CC launches. Suppressed
     # when process_hygiene.auto_clean is false in config.toml.
