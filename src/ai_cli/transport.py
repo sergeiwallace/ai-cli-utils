@@ -87,7 +87,7 @@ def _ensure_vpn_watcher(config: dict) -> None:
     if list(state_dir.glob("transport-*.json")):
         return
     try:
-        from .main import _ensure_circusd
+        from .process_manager import _ensure_circusd
 
         endpoint = _ensure_circusd()
         from circus.client import CircusClient
