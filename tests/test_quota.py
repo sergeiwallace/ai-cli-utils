@@ -582,7 +582,7 @@ class TestSendNotification:
     def test_when_no_slack_url_then_uses_notify_send(self):
         snap = self._make_snapshot(78.5)
         with (
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(75, snap)
@@ -594,7 +594,7 @@ class TestSendNotification:
     def test_when_threshold_90_then_slow_down_message(self):
         snap = self._make_snapshot(92.0)
         with (
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(90, snap)
@@ -604,7 +604,7 @@ class TestSendNotification:
     def test_when_notify_send_raises_then_no_crash(self):
         snap = self._make_snapshot(78.5)
         with (
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("subprocess.run", side_effect=FileNotFoundError("not found")),
         ):
             _send_notification(75, snap)  # should not raise
@@ -613,7 +613,7 @@ class TestSendNotification:
         snap = self._make_snapshot(78.5)
         cfg = {"quota": {"slack_webhook_url": "https://hooks.slack.com/test"}}
         with (
-            patch("ai_cli.main.load_config", return_value=cfg),
+            patch("ai_cli.config.load_config", return_value=cfg),
             patch("ai_cli.quota._send_slack_notification") as mock_slack,
         ):
             _send_notification(75, snap)
@@ -623,7 +623,7 @@ class TestSendNotification:
         """lines 223-224: load_config exception → webhook_url="" → uses notify-send."""
         snap = self._make_snapshot(78.5)
         with (
-            patch("ai_cli.main.load_config", side_effect=Exception("no config")),
+            patch("ai_cli.config.load_config", side_effect=Exception("no config")),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(75, snap)
@@ -1485,13 +1485,13 @@ class TestQuotaStatuslinePart:
 class TestTryReadKvSnapshot:
     def test_returns_none_when_nats_servers_not_configured(self):
         """_try_read_kv_snapshot returns None when config has no nats_servers."""
-        with patch("ai_cli.main.load_config", return_value={}):
+        with patch("ai_cli.config.load_config", return_value={}):
             result = _try_read_kv_snapshot()
         assert result is None
 
     def test_returns_none_on_load_config_failure(self):
         """_try_read_kv_snapshot returns None when load_config raises."""
-        with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
+        with patch("ai_cli.config.load_config", side_effect=Exception("no config")):
             result = _try_read_kv_snapshot()
         assert result is None
 
@@ -1558,7 +1558,7 @@ class TestQuotaSyncFromRemote:
         """Missing host/user in config → returns 1 without running SSH."""
         with (
             patch("ai_cli.quota.subprocess.run") as mock_run,
-            patch("ai_cli.main.load_config", return_value={"remote": {}}),
+            patch("ai_cli.config.load_config", return_value={"remote": {}}),
         ):
             result = quota_sync_from_remote()
 
@@ -1572,7 +1572,7 @@ class TestQuotaSyncFromRemote:
         mock_result.stderr = "Connection refused"
         with (
             patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-            patch("ai_cli.main.load_config", return_value=self._make_config()),
+            patch("ai_cli.config.load_config", return_value=self._make_config()),
         ):
             result = quota_sync_from_remote()
 
@@ -1584,7 +1584,7 @@ class TestQuotaSyncFromRemote:
         """SSH raises (e.g. timeout) → returns 1 with error message."""
         with (
             patch("ai_cli.quota.subprocess.run", side_effect=TimeoutError("timed out")),
-            patch("ai_cli.main.load_config", return_value=self._make_config()),
+            patch("ai_cli.config.load_config", return_value=self._make_config()),
         ):
             result = quota_sync_from_remote()
 
@@ -1599,7 +1599,7 @@ class TestQuotaSyncFromRemote:
         mock_result.stdout = ""
         with (
             patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-            patch("ai_cli.main.load_config", return_value=self._make_config()),
+            patch("ai_cli.config.load_config", return_value=self._make_config()),
         ):
             result = quota_sync_from_remote()
 
@@ -1618,7 +1618,7 @@ class TestQuotaSyncFromRemote:
             mock_result.stdout = "55.0|10.0|30.0|0.0|2026-04-07T00:00:00Z|2026-04-07T10:00:00Z\n"
             with (
                 patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-                patch("ai_cli.main.load_config", return_value=self._make_config()),
+                patch("ai_cli.config.load_config", return_value=self._make_config()),
             ):
                 result = quota_sync_from_remote()
 
@@ -1655,7 +1655,7 @@ class TestQuotaSyncFromRemote:
             mock_result.stdout = "55.0|10.0|30.0|0.0|2026-04-07T00:00:00Z|2026-04-07T10:00:00Z\n"
             with (
                 patch("ai_cli.quota.subprocess.run", return_value=mock_result),
-                patch("ai_cli.main.load_config", return_value=self._make_config()),
+                patch("ai_cli.config.load_config", return_value=self._make_config()),
             ):
                 result = quota_sync_from_remote()
 
@@ -1673,7 +1673,7 @@ class TestQuotaSyncFromRemote:
         with (
             patch("ai_cli.quota.subprocess.run", return_value=mock_result) as mock_run,
             patch(
-                "ai_cli.main.load_config",
+                "ai_cli.config.load_config",
                 return_value=self._make_config(identity="~/.ssh/id_ed25519"),
             ),
         ):
@@ -1684,7 +1684,7 @@ class TestQuotaSyncFromRemote:
 
     def test_when_config_load_fails_then_returns_1(self, capsys):
         """Exception loading config → returns 1."""
-        with patch("ai_cli.main.load_config", side_effect=RuntimeError("no config")):
+        with patch("ai_cli.config.load_config", side_effect=RuntimeError("no config")):
             result = quota_sync_from_remote()
 
         assert result == 1

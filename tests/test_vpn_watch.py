@@ -37,7 +37,7 @@ class TestRunVpnWatch:
     def test_when_keyboard_interrupt_then_exits_cleanly(self, tmp_path):
         with (
             patch("ai_cli.vpn_watch._vpn_watch_loop", side_effect=KeyboardInterrupt),
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
         ):
             # Should not raise
             run_vpn_watch({})

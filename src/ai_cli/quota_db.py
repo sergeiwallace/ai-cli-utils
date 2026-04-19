@@ -54,7 +54,7 @@ def _get_reset_anchor_utc() -> datetime:
 
     # 2. Config file
     try:
-        from .main import load_config
+        from .config import load_config
 
         anchor_str = load_config().get("quota", {}).get("reset_anchor_utc", _DEFAULT_RESET_ANCHOR)
     except Exception:

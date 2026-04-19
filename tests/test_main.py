@@ -64,7 +64,7 @@ class TestXdgHelpers:
 class TestLoadConfig:
     def test_load_config_when_no_config_file_then_creates_default_with_known_keys(self, tmp_path):
         config_dir = tmp_path / "ai-cli-utils"
-        with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
             result = load_config()
         assert (config_dir / "config.toml").exists()
         # Default config has [behavior], [worktree], [session], [messaging] sections
@@ -78,7 +78,7 @@ class TestLoadConfig:
         config_dir = tmp_path / "ai-cli-utils"
         config_dir.mkdir(parents=True)
         (config_dir / "config.toml").write_text("not valid toml [[[")
-        with patch("ai_cli.main.get_xdg_config_home", return_value=config_dir):
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
             result = load_config()
         assert result == {}
 
@@ -127,7 +127,7 @@ class TestLoadIterm2Config:
         config_dir.mkdir(parents=True)
         (config_dir / "iterm2.toml").write_text("valid = true")
         with (
-            patch("ai_cli.main.get_xdg_config_home", return_value=config_dir),
+            patch("ai_cli.config.get_xdg_config_home", return_value=config_dir),
             patch("tomllib.load", side_effect=Exception("parse fail")),
             patch("tomllib.loads", side_effect=Exception("parse fail")),
         ):
@@ -383,7 +383,7 @@ class TestGetEngineScript:
 class TestLogHandoffEvent:
     def test_when_log_file_write_raises_then_suppressed(self, tmp_path):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("builtins.open", side_effect=OSError("disk full")),
         ):
             _log_handoff_event("test.event", session="session-1")
@@ -421,7 +421,7 @@ class TestAutoUpdateIfStaleFailure:
 
         with (
             patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.run", side_effect=fake_run),
             patch("shutil.which", return_value="/usr/bin/ai"),
         ):
@@ -435,7 +435,7 @@ class TestAutoUpdateIfStaleFailure:
 class TestCmdTunnelStartNoHost:
     def test_when_remote_host_not_set_then_exits_1(self, tmp_path, capsys):
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("shutil.which", return_value="/usr/bin/autossh"),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -488,7 +488,7 @@ class TestCmdSignalWatchStart:
         mock_client = MagicMock()
         mock_client.send_message.return_value = {"status": "ok"}
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
@@ -502,7 +502,7 @@ class TestCmdSignalWatchStart:
         mock_client = MagicMock()
         mock_client.send_message.return_value = {"status": "ok"}
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.main._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
@@ -516,7 +516,7 @@ class TestCmdSignalWatchStatus:
         mock_client = MagicMock()
         mock_client.send_message.return_value = {"statuses": {"other-watcher": "active"}}
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _cmd_signal_watch_status()
@@ -530,7 +530,7 @@ class TestCliDispatchExtended:
     def test_when_quota_status_subcommand_then_dispatches(self):
         with (
             patch("sys.argv", ["ai", "quota", "status"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.quota.quota_status", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -540,7 +540,7 @@ class TestCliDispatchExtended:
     def test_when_quota_history_subcommand_then_dispatches(self):
         with (
             patch("sys.argv", ["ai", "quota", "history"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.quota.quota_history", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -550,7 +550,7 @@ class TestCliDispatchExtended:
     def test_when_quota_scrape_subcommand_then_dispatches(self):
         with (
             patch("sys.argv", ["ai", "quota", "scrape"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.quota.quota_scrape", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -560,7 +560,7 @@ class TestCliDispatchExtended:
     def test_when_quota_record_subcommand_then_dispatches(self):
         with (
             patch("sys.argv", ["ai", "quota", "record", "sid1", "mac1", "claude-sonnet", "1000"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.quota.quota_record", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -570,7 +570,7 @@ class TestCliDispatchExtended:
     def test_when_quota_record_missing_args_then_exits_1(self):
         with (
             patch("sys.argv", ["ai", "quota", "record"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
@@ -602,7 +602,7 @@ class TestCliDispatchExtended:
         mock_ig.generate_dynamic_profile = MagicMock()
         with (
             patch("sys.argv", ["ai", "color", "#e74c3c"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
             patch("ai_cli.main._load_iterm2_config", return_value=cfg),
@@ -620,7 +620,7 @@ class TestCliDispatchExtended:
     def test_when_tunnel_stop_dispatches(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "tunnel", "stop", "9222"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._cmd_tunnel_stop") as mock_stop,
         ):
@@ -636,7 +636,7 @@ class TestCliDispatchExtended:
     def test_when_tunnel_status_dispatches(self):
         with (
             patch("sys.argv", ["ai", "tunnel", "status"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._cmd_tunnel_status") as mock_status,
         ):
@@ -660,7 +660,7 @@ class TestCliDispatchExtended:
     def test_when_signal_watch_status_dispatches(self):
         with (
             patch("sys.argv", ["ai", "signal-watch", "status"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._cmd_signal_watch_status") as mock_status,
         ):
@@ -677,7 +677,7 @@ class TestCliDispatchExtended:
         """lines 2272-2282: copier-update with project filter flag."""
         with (
             patch("sys.argv", ["ai", "copier-update", "--project", "myproject"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_CLI_HOST": "mac"}),
             patch("ai_cli.copier_update.run_copier_update", return_value=0),
@@ -696,7 +696,7 @@ class TestCliDispatchExtended:
         first_name = next(iter(palette))
         with (
             patch("sys.argv", ["ai", "color", first_name]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
             patch("ai_cli.main._load_iterm2_config", return_value=cfg),
@@ -712,7 +712,7 @@ class TestCliDispatchExtended:
         cfg = make_iterm2_config()
         with (
             patch("sys.argv", ["ai", "color", "notacolor"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
             patch("ai_cli.main._load_iterm2_config", return_value=cfg),
@@ -726,7 +726,7 @@ class TestCliDispatchExtended:
         cfg = make_iterm2_config()
         with (
             patch("sys.argv", ["ai", "color", "#e74c3c"]),
-            patch("ai_cli.main.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch.dict(os.environ, {"AI_TMUX_SESSION": "session-1"}),
             patch("ai_cli.main._load_iterm2_config", return_value=cfg),
@@ -798,7 +798,7 @@ class TestEnsureNatsTunnel:
         pid_file.write_text("99999")  # nonexistent PID
         config = {"messaging": {"tunnel_port": 4222}}
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.main._cmd_tunnel_start", side_effect=SystemExit(1)),
         ):
             _ensure_nats_tunnel(config)  # must not raise or propagate SystemExit
@@ -817,7 +817,7 @@ class TestEnsureCircusd:
         mock_circus_client_module.CircusClient = mock_client_class
 
         with (
-            patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("subprocess.Popen"),
             patch.dict("sys.modules", {"circus.client": mock_circus_client_module}),
             patch("time.sleep"),

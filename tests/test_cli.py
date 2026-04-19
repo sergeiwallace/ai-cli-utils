@@ -1167,8 +1167,8 @@ class TestCliRegistryValidation:
             patch("ai_cli.main.load_config", return_value={}),
             patch("ai_cli.main.get_project_prefix", return_value="app"),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._get_project_registry_path", return_value=registry),
-            patch("ai_cli.main._get_projects_dir", return_value=projects_dir),
+            patch("ai_cli.config._get_project_registry_path", return_value=registry),
+            patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
             patch("sys.stdin", MagicMock(isatty=MagicMock(return_value=False))),
         ):
             with pytest.raises(SystemExit) as exc:

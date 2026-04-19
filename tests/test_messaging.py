@@ -277,7 +277,7 @@ class TestSshTunnel:
         with patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection):
             with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen:
                 with patch("asyncio.sleep", new=AsyncMock()):
-                    with patch("ai_cli.main.load_config", return_value=fake_cfg):
+                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
                         with patch("ai_cli.main._is_vpn_active", return_value=False):
                             asyncio.run(client._open_ssh_tunnel())
 
@@ -296,7 +296,7 @@ class TestSshTunnel:
         with patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")):
             with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
                 with patch("asyncio.sleep", new=AsyncMock()):
-                    with patch("ai_cli.main.load_config", return_value=fake_cfg):
+                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
                         with patch("ai_cli.main._is_vpn_active", return_value=False):
                             asyncio.run(client._open_ssh_tunnel())
         assert client._tunnel_proc is mock_proc  # proc stored even if port never came up
@@ -346,7 +346,7 @@ class TestOpenSshTunnel:
             with patch("socket.create_connection", side_effect=OSError):
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock(side_effect=lambda _: None)):
-                        with patch("ai_cli.main.load_config", return_value=config):
+                        with patch("ai_cli.config.load_config", return_value=config):
                             with patch("ai_cli.main._is_vpn_active", return_value=True):
                                 asyncio.run(client._open_ssh_tunnel())
 
@@ -372,7 +372,7 @@ class TestOpenSshTunnel:
             with patch("socket.create_connection", side_effect=OSError):
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)):
-                        with patch("ai_cli.main.load_config", return_value=config):
+                        with patch("ai_cli.config.load_config", return_value=config):
                             with patch("ai_cli.main._is_vpn_active", return_value=False):
                                 asyncio.run(client._open_ssh_tunnel())
 
@@ -394,7 +394,7 @@ class TestOpenSshTunnel:
             with patch("socket.create_connection", side_effect=OSError):
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock()):
-                        with patch("ai_cli.main.load_config", side_effect=Exception("no config")):
+                        with patch("ai_cli.config.load_config", side_effect=Exception("no config")):
                             asyncio.run(client._open_ssh_tunnel())
 
         # No tunnel opened — no host/user available when config fails
@@ -421,7 +421,7 @@ class TestOpenSshTunnel:
             with patch("socket.create_connection", side_effect=OSError):
                 with patch("subprocess.Popen", side_effect=fake_popen):
                     with patch("asyncio.sleep", new=AsyncMock()):
-                        with patch("ai_cli.main.load_config", return_value=config):
+                        with patch("ai_cli.config.load_config", return_value=config):
                             with patch("ai_cli.main._is_vpn_active", return_value=False):
                                 asyncio.run(client._open_ssh_tunnel())
 

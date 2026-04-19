@@ -44,7 +44,7 @@ class NATSClient:
             pass
         # Use configured remote host so Tailscale/direct-IP preference is respected.
         try:
-            from .main import load_config as _load_config
+            from .config import load_config as _load_config
 
             _cfg = _load_config()
             _remote = _cfg.get("remote", {})

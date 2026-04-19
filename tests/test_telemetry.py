@@ -77,22 +77,22 @@ class TestRecordEvent:
 
 class TestIsEnabled:
     def test_is_enabled_when_config_true_then_true(self):
-        with patch("ai_cli.main.load_config", return_value={"telemetry": {"enabled": True}}):
+        with patch("ai_cli.config.load_config", return_value={"telemetry": {"enabled": True}}):
             assert _is_enabled() is True
 
     def test_is_enabled_when_config_false_then_false(self):
-        with patch("ai_cli.main.load_config", return_value={"telemetry": {"enabled": False}}):
+        with patch("ai_cli.config.load_config", return_value={"telemetry": {"enabled": False}}):
             assert _is_enabled() is False
 
     def test_is_enabled_when_no_config_then_defaults_true(self):
-        with patch("ai_cli.main.load_config", return_value={}):
+        with patch("ai_cli.config.load_config", return_value={}):
             assert _is_enabled() is True
 
     def test_is_enabled_when_load_config_raises_then_defaults_true(self):
         """Lines 44-45: exception path in _is_enabled."""
         # _is_enabled imports load_config via relative import: from .main import load_config
         # We need to patch it where it's looked up
-        with patch("ai_cli.main.load_config", side_effect=RuntimeError("broken")):
+        with patch("ai_cli.config.load_config", side_effect=RuntimeError("broken")):
             # Force re-evaluation by calling directly
             result = _is_enabled()
         assert result is True

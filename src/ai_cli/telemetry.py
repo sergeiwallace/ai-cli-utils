@@ -37,7 +37,7 @@ def _get_machine_id() -> str:
 def _is_enabled() -> bool:
     """Check if telemetry is enabled in config."""
     try:
-        from .main import load_config
+        from .config import load_config
 
         config = load_config()
         return config.get("telemetry", {}).get("enabled", True)

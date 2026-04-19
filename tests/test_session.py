@@ -294,15 +294,15 @@ def test_cleanup_when_old_format_session_then_ignores_it():
 
 class TestSessionMap:
     def test_get_session_map_path_when_gemini_then_returns_gemini_path(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             result = get_session_map_path(engine="g")
         assert "gemini_sessions.json" in str(result)
 
     def test_get_session_map_when_invalid_json_then_returns_empty(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             path = tmp_path / "gemini_sessions.json"
             path.write_text("not json {{{")
-            with patch("ai_cli.main.get_session_map_path", return_value=path):
+            with patch("ai_cli.config.get_session_map_path", return_value=path):
                 result = get_session_map(engine="g")
         assert result == {}
 
@@ -310,20 +310,20 @@ class TestSessionMap:
         import json
 
         path = tmp_path / "test_sessions.json"
-        with patch("ai_cli.main.get_session_map_path", return_value=path):
+        with patch("ai_cli.config.get_session_map_path", return_value=path):
             save_session_map({"sw-1": "uuid123"}, engine="c")
         assert json.loads(path.read_text()) == {"sw-1": "uuid123"}
 
 
 class TestSessionMapEdgeCases:
     def test_get_session_map_path_when_engine_c_then_returns_claude_path(self, tmp_path):
-        with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
+        with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             result = get_session_map_path(engine="c")
         assert "cc-sessions.json" in str(result)
 
     def test_get_session_map_when_file_not_exists_then_returns_empty(self, tmp_path):
         path = tmp_path / "nonexistent.json"
-        with patch("ai_cli.main.get_session_map_path", return_value=path):
+        with patch("ai_cli.config.get_session_map_path", return_value=path):
             result = get_session_map(engine="c")
         assert result == {}
 
@@ -612,7 +612,7 @@ class TestGetLatestGeminiSessionId:
         chats.mkdir(parents=True)
         (chats / "session-abc.json").write_text('{"sessionId": "chats-uuid"}')
         with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch("ai_cli.main._get_main_project_name", return_value=None):
+            with patch("ai_cli.config._get_main_project_name", return_value=None):
                 result = get_latest_gemini_session_id("art-1")
         assert result == "chats-uuid"
 
@@ -625,7 +625,7 @@ class TestGetLatestGeminiSessionId:
         (logs_dir / "logs.json").write_text('{"sessionId": "logs-uuid"}')
         with patch("pathlib.Path.cwd", return_value=tmp_path / "artelier"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id("art-1")
         assert result is None
 
@@ -637,14 +637,14 @@ class TestGetLatestGeminiSessionId:
 
         with patch("pathlib.Path.cwd", return_value=tmp_path / "testproject"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result == "def456"
 
     def test_latest_gemini_id_when_no_logs_then_returns_none(self, tmp_path):
         with patch("pathlib.Path.cwd", return_value=tmp_path / "noproject"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result is None
 
@@ -694,7 +694,7 @@ class TestGetLatestGeminiSessionIdException:
 
         with patch("pathlib.Path.home", return_value=tmp_path):
             with patch("pathlib.Path.cwd", return_value=tmp_path / "projects" / "testproj"):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     with patch("builtins.open", side_effect=fail_on_log):
                         result = get_latest_gemini_session_id()
         assert result is None
@@ -1086,6 +1086,6 @@ class TestProjectRegistryExceptionBranches:
 
         with patch("pathlib.Path.cwd", return_value=tmp_path / "testproj"):
             with patch("pathlib.Path.home", return_value=tmp_path):
-                with patch("ai_cli.main._get_main_project_name", return_value=None):
+                with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result is None

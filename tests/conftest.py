@@ -4,15 +4,15 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-import ai_cli.main as _main_module
+import ai_cli.config as _config_module
 
 
 @pytest.fixture(autouse=True)
 def _reset_registry_cache():
     """Reset the project registry cache before each test."""
-    _main_module._registry_cache = None
+    _config_module._registry_cache = None
     yield
-    _main_module._registry_cache = None
+    _config_module._registry_cache = None
 
 
 def _run_cli_with_args(argv, config_override=None):

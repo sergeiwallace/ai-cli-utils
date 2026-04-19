@@ -483,7 +483,7 @@ def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
 
     # Try Slack webhook first if configured
     try:
-        from .main import load_config
+        from .config import load_config
 
         cfg = load_config().get("quota", {})
         webhook_url = cfg.get("slack_webhook_url", "")
@@ -678,7 +678,7 @@ def quota_sync_from_remote() -> int:
     from .quota_db import _get_conn
 
     try:
-        from .main import load_config
+        from .config import load_config
 
         cfg = load_config()
         remote = cfg.get("remote", {})
@@ -787,7 +787,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
     from .messaging import NATSClient
 
     try:
-        from .main import load_config
+        from .config import load_config
 
         cfg = load_config()
         nats_servers = cfg.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
@@ -852,7 +852,7 @@ def _try_read_kv_snapshot() -> dict | None:
 
     def _read() -> None:
         try:
-            from .main import load_config as _load_config
+            from .config import load_config as _load_config
 
             cfg = _load_config()
             nats_servers = cfg.get("messaging", {}).get("nats_servers")
