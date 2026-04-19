@@ -206,11 +206,28 @@ def _auto_update_if_stale(config: dict) -> None:
     stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
     if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
         return
-    print("ai-cli-utils has new commits — running ai update --force...")
-    ai_bin = shutil.which("ai") or "ai"
-    result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path)
-    if result.returncode != 0:
-        print("Warning: auto-update failed, continuing with current version", file=sys.stderr)
+    # Serialize concurrent workers with an exclusive create-only lockfile.
+    # O_CREAT|O_EXCL is atomic on both POSIX and Windows.
+    lock_path = stamp_file.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except OSError:
+        return  # Another process already claimed the update
+    try:
+        # Re-check after acquiring lock — another process may have just updated.
+        if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
+            return
+        # Write stamp before running update so any remaining concurrent readers skip.
+        stamp_file.write_text(current_hash)
+        print("ai-cli-utils has new commits — running ai update --force...")
+        ai_bin = shutil.which("ai") or "ai"
+        result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path)
+        if result.returncode != 0:
+            print("Warning: auto-update failed, continuing with current version", file=sys.stderr)
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 def trigger_background_update():
