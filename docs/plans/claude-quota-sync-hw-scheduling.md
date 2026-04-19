@@ -63,7 +63,7 @@ Claude-specific job.
 >   (T-02/T-03) is fallback/catch-up only. Session % stored in DB but not displayed in
 >   statusline. Weekly all-models % only in statusline. Three new prerequisite tasks added
 >   (T-00a, T-00b, T-00c). Key discovery: `_on_quota_snapshot` already exists in signal-watch
->   (`main.py:2692`) — T-00a extracts it into a persistent Circus daemon rather than writing
+>   — T-00a extracts it into a persistent Circus daemon rather than writing
 >   from scratch.
 
 ---
@@ -162,7 +162,7 @@ subscribes and upserts the snapshot into local SQLite on receipt.
 
 Option C is the primary path: Hetzner publishes `quota.snapshot` after each scrape;
 a persistent Mac Circus daemon subscribes and upserts into local SQLite in real-time.
-`_on_quota_snapshot` already exists in signal-watch (`main.py:2692`) — it only needs
+`_on_quota_snapshot` already exists in signal-watch — it only needs
 to be extracted into a standalone persistent process (T-00a) rather than built from
 scratch. Option A (10-min hw-scheduling SSH pull) runs as a catch-up layer, filling
 gaps during Mac NATS tunnel outages or missed messages. Option B is rejected — NATS KV
@@ -178,7 +178,7 @@ to KV — Hetzner owns the data and Hetzner writes it.
 
 > **AI Response Round 1:**
 > - Revised to Option C primary + Option A fallback. Three prerequisites added:
->   - **T-00a**: Extract `_on_quota_snapshot` (already at `main.py:2692`) into a persistent
+>   - **T-00a**: Extract `_on_quota_snapshot` (already in signal-watch) into a persistent
 >     Circus-managed Mac daemon. Uses JetStream durable consumer (not NATS core) so missed
 >     messages are buffered and replayed on reconnect — same pattern as handoffs. Largely
 >     pre-written; subscriber logic already exists.
@@ -215,7 +215,7 @@ to KV — Hetzner owns the data and Hetzner writes it.
 **Size:** M
 **Batch:** 1
 
-Extract `_on_quota_snapshot` from `signal-watch` (`main.py:2692`) into a standalone
+Extract `_on_quota_snapshot` from `signal-watch` into a standalone
 `ai internal quota-subscriber` daemon. Register as a persistent Circus watcher on Mac.
 Uses a **JetStream durable consumer** (not NATS core) so messages published while the
 daemon is down (restart, tunnel blip) are buffered and replayed on reconnect — the same
@@ -223,7 +223,7 @@ pattern as handoffs (`subscribe_durable`). This makes Option C self-healing and 
 reliance on Option A as a recovery mechanism.
 
 **Deliverables:**
-- `src/ai_cli/main.py` — `ai internal quota-subscriber` command entry point
+- `src/ai_cli/process_manager.py` or `main.py` — `ai internal quota-subscriber` command entry point
 - Mac Circus config — new watcher entry for the subscriber daemon
 
 **Acceptance criteria:**

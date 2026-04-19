@@ -870,7 +870,8 @@ def _try_read_kv_snapshot() -> dict | None:
                 if client.js:
                     kv = await asyncio.wait_for(client.js.key_value("hw_state"), timeout=0.1)
                     entry = await asyncio.wait_for(kv.get("quota.claude.current"), timeout=0.1)
-                    result[0] = json.loads(entry.value)
+                    if entry.value is not None:
+                        result[0] = json.loads(entry.value)
             except Exception:
                 pass
             finally:

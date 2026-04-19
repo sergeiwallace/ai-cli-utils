@@ -315,11 +315,11 @@ Implement `_hue_similar(hex1: str, hex2: str, threshold_deg: float = 60.0) -> bo
 **Size:** M  
 **Batch:** 1
 
-Implement `_tmux_pane_adjacency(window_id: str | None = None) -> dict[str, list[str]]` in `main.py`. Uses `tmux list-panes` to get geometry, resolves each pane's PID to its `AI_TMUX_SESSION` env var via `tmux show-environment`, returns an adjacency dict `{session_name: [neighbor_session_name, ...]}`.
+Implement `_tmux_pane_adjacency(window_id: str | None = None) -> dict[str, list[str]]` in `iterm2.py`. Uses `tmux list-panes` to get geometry, resolves each pane's PID to its `AI_TMUX_SESSION` env var via `tmux show-environment`, returns an adjacency dict `{session_name: [neighbor_session_name, ...]}`.
 
 **Deliverables:**
-- `src/ai_cli/main.py` — `_tmux_pane_adjacency()` and supporting geometry helpers
-- `tests/test_cli.py` — tests with mocked `subprocess.run` for tmux commands
+- `src/ai_cli/iterm2.py` — `_tmux_pane_adjacency()` and supporting geometry helpers
+- `tests/test_iterm2.py` — tests with mocked `subprocess.run` for tmux commands
 
 **Acceptance criteria:**
 - [ ] Correctly identifies geometric neighbors (shared edge, not just corner)
@@ -340,8 +340,8 @@ Implement `_tmux_pane_adjacency(window_id: str | None = None) -> dict[str, list[
 New top-level command `ai recolor [-w WINDOW]`. Uses T-02 for adjacency, runs greedy graph coloring (sort panes by descending degree, assign lowest-hue-distinct palette slot), then for each changed session: updates `color-leases.json`, regenerates Dynamic Profile JSON, and sends `SetColors` escape to the live pane via tmux `send-keys`.
 
 **Deliverables:**
-- `src/ai_cli/main.py` — `run_recolor()` function + dispatch in `cli()`
-- `tests/test_cli.py` — recolor tests
+- `src/ai_cli/iterm2.py` — `run_recolor()` function; registered via Click command group in `main.py`
+- `tests/test_iterm2.py` — recolor tests
 - `docs/tools/ai-cli-usage.md` — `ai recolor` entry
 
 **Acceptance criteria:**
@@ -366,8 +366,8 @@ New top-level command `ai recolor [-w WINDOW]`. Uses T-02 for adjacency, runs gr
 Extend `_assign_iterm2_color()` to call `_tmux_pane_adjacency()` when inside tmux. After building the occupied-slots set, also exclude any slots whose hue is similar to a neighbor's current color. Controlled by config: `[iterm2.color] neighbor_aware = true` (default: `true`).
 
 **Deliverables:**
-- `src/ai_cli/main.py` — updated `_assign_iterm2_color()`
-- `tests/test_cli.py` — tests for neighbor exclusion path
+- `src/ai_cli/iterm2.py` — updated `_assign_iterm2_color()`
+- `tests/test_iterm2.py` — tests for neighbor exclusion path
 
 **Acceptance criteria:**
 - [ ] New session does not receive a color similar to any neighbor's color
@@ -388,7 +388,7 @@ Update all relevant docs and the default config template.
 
 **Deliverables:**
 - `docs/tools/ai-cli-usage.md` — `ai recolor` section (if not done in T-03)
-- `src/ai_cli/main.py` — config template comments for `similarity_threshold_degrees` and `neighbor_aware`
+- `src/ai_cli/config.py` — config template comments for `similarity_threshold_degrees` and `neighbor_aware`
 - `CHANGELOG.md` — entry for this feature
 
 **Acceptance criteria:**

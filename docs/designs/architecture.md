@@ -100,7 +100,7 @@ The tool installs as a single `ai` command. There is no server component — all
 ### Infrastructure / iTerm2
 - `ai layout NAME|list|validate|profiles` — YAML-driven window/tab/pane definitions
 - `ai color COLOR` — set session tab color and icon tint
-- `ai tunnel open|close|status` — persistent SSH tunnels via autossh
+- `ai tunnel start|stop|status` — persistent SSH tunnels via autossh
 - `ai cdp start|stop|status` — Chrome DevTools Protocol debug server
 
 ### Maintenance / Setup
@@ -136,7 +136,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `quota.snapshot` | `quota.py` | Legacy cross-machine quota sync |
 | `hw.events.usage.gemini.event` | `gemini.py` | Per-Gemini-call event (humanware ingest) |
 | `hw.events.usage.claude.snapshot` | `quota.py` | Claude quota snapshot (humanware ingest) |
-| `handoff.{project}` | `main.py` | Cross-session task delegation |
+| `handoff.{project}` | `handoff.py` | Cross-session task delegation |
 | `memory.dream.started/completed` | `memory.py` | Memory consolidation lifecycle |
 
 **NATS KV bucket `hw_state`:**
@@ -182,7 +182,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 **Cursor-based CC token tracking** — `cc_usage.py` tracks last-seen `occurred_at` per session UUID in `cc-usage-cursor.json`. Only entries newer than the cursor are pushed. Idempotent: humanware ingest deduplicates by `event_id`.
 
-**Monolithic `main.py` dispatch** — command routing is a chain of `if sys.argv[1] == ...` checks rather than argparse subparsers. Acknowledged tech debt; planned refactor in AI-CLI-39.
+**Click command group dispatch** — command routing uses a `@click.group()` tree. `ai internal` is kept as a pre-Click fast path for bash hook performance (avoids Click startup overhead). Migrated from `if sys.argv[1] == ...` argparse hybrid in AI-CLI-39/47.
 
 **Machine self-awareness via `AI_CLI_HOST`** — NATS tunnel auto-open, SSH command routing, and sync source labeling all branch on the `AI_CLI_HOST` env var (`mac`, `hetzner`).
 

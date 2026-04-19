@@ -78,7 +78,7 @@ class TestEnsureVpnWatcher:
         with (
             patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.process_manager._ensure_circusd", return_value="ipc:///tmp/circus.endpoint"),
-            patch("ai_cli.main.shutil.which", return_value="/usr/local/bin/ai"),
+            patch("ai_cli.transport.shutil.which", return_value="/usr/local/bin/ai"),
             patch("circus.client.CircusClient", return_value=mock_client),
         ):
             _ensure_vpn_watcher(CONFIG)
