@@ -50,6 +50,23 @@ ai -V          # same, short form
 
 Subcommands are dispatched via `sys.argv` inspection before Click takes over for the default `ai c` session-launch flow.
 
+### Module layout
+
+Behaviour is split across focused modules so `main.py` stays thin:
+
+| Module | Purpose |
+|--------|---------|
+| `ai_cli.config` | XDG paths, `load_config`, session map, project registry |
+| `ai_cli.session` | session naming, worktree ops, Gemini UUID lookup |
+| `ai_cli.iterm2` | iTerm2 color slots, profile emit, tmux passthrough |
+| `ai_cli.icon_generator` | tinted PNG generation and Dynamic Profile JSON |
+| `ai_cli.handoff` | handoff queue post/claim/complete + signal helpers |
+| `ai_cli.transport` | VPN-aware mosh/SSH transport loop, Tailscale recovery |
+| `ai_cli.tunnel` | autossh SSH tunnels, CDP (Chrome DevTools) management |
+| `ai_cli.process_manager` | Circus daemon + `signal-watch` lifecycle |
+| `ai_cli.session_script` | bash template that wraps each session's engine loop |
+| `ai_cli.main` | CLI dispatch + session launch + update/deploy helpers |
+
 ---
 
 ## Session Management
