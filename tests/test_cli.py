@@ -1386,7 +1386,10 @@ class TestDeploy:
 
         assert pyproject.read_text() == '[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n'
         all_cmds = [call[0][0] for call in mock_run.call_args_list]
-        uv_cmd = next((c for c in all_cmds if "uv" in c and "--force" in c and "--reinstall" not in c), None)
+        uv_cmd = next(
+            (c for c in all_cmds if c and c[0].endswith("uv") and "--force" in c and "--reinstall" not in c),
+            None,
+        )
         assert uv_cmd is not None
 
     def test_deploy_strips_existing_post_before_bumping(self, tmp_path):
@@ -1503,7 +1506,7 @@ class TestDeploy:
         uv_called = []
 
         def fake_run(cmd, **kwargs):
-            if "uv" in cmd and "tool" in cmd:
+            if cmd and cmd[0].endswith("uv") and "tool" in cmd:
                 uv_called.append(cmd)
             return MagicMock(returncode=0, stdout="")
 
@@ -1531,7 +1534,7 @@ class TestDeploy:
         uv_called = []
 
         def fake_run(cmd, **kwargs):
-            if "uv" in cmd and "tool" in cmd:
+            if cmd and cmd[0].endswith("uv") and "tool" in cmd:
                 uv_called.append(cmd)
             return MagicMock(returncode=0, stdout="")
 
