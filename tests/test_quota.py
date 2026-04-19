@@ -344,31 +344,39 @@ class TestScrapeUsageHiddenPane:
         r.stdout = stdout
         return r
 
-    def test_when_tmux_new_window_fails_then_returns_none(self):
+    def test_when_tmux_new_session_fails_then_returns_none(self):
+        ok = MagicMock()
+        ok.returncode = 0
         fail = MagicMock()
         fail.returncode = 1
-        with patch("subprocess.run", return_value=fail):
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return fail
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run):
             result = _scrape_usage_hidden_pane()
         assert result is None
 
-    def _make_new_window_result(self, index: str = "3") -> MagicMock:
+    def _make_new_session_result(self) -> MagicMock:
         r = MagicMock()
         r.returncode = 0
-        r.stdout = f"{index}\n"
+        r.stdout = ""
         return r
 
     def test_when_cc_prompt_never_appears_then_returns_none(self):
         """No ❯ in capture output → timeout → returns None."""
         no_prompt = self._make_cap_result("Starting claude...\n")
-        new_win = self._make_new_window_result("3")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
         killed = []
 
         def fake_run(cmd, **kwargs):
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
-            if cmd[0] == "tmux" and cmd[1] == "kill-window":
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
+            if cmd[0] == "tmux" and cmd[1] == "kill-session":
                 killed.append(True)
                 return ok
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
@@ -378,18 +386,18 @@ class TestScrapeUsageHiddenPane:
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             result = _scrape_usage_hidden_pane()
         assert result is None
-        assert killed, "kill-window must be called on timeout path"
+        assert killed, "kill-session must be called on timeout path"
 
-    def test_when_window_index_used_as_capture_target(self):
-        """Index-based target (:N) from new-window is used for capture-pane, not =name."""
-        new_win = self._make_new_window_result("7")
+    def test_when_session_name_used_as_capture_target(self):
+        """Session-name target is used for capture-pane, not index-based :N."""
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
         targets_seen = []
 
         def fake_run(cmd, **kwargs):
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 if "-t" in cmd:
                     targets_seen.append(cmd[cmd.index("-t") + 1])
@@ -400,11 +408,11 @@ class TestScrapeUsageHiddenPane:
             _scrape_usage_hidden_pane()
 
         assert targets_seen, "capture-pane must be called"
-        assert all(t == ":7" for t in targets_seen), f"expected :7, got {targets_seen}"
+        assert all(t == "ai-quota-scrape" for t in targets_seen), f"expected ai-quota-scrape, got {targets_seen}"
 
     def test_when_usage_output_captured_then_returns_snapshot(self):
         """Happy path: prompt appears, /usage output appears, snapshot returned."""
-        new_win = self._make_new_window_result("3")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
 
@@ -417,8 +425,8 @@ class TestScrapeUsageHiddenPane:
 
         def fake_run(cmd, **kwargs):
             nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count <= 1:
@@ -443,7 +451,7 @@ class TestScrapeUsageHiddenPane:
         the headline figure is a local-only estimate.  The scraper accepts the first
         output that contains 'Current week (all models)' and '% used'.
         """
-        new_win = self._make_new_window_result("5")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
 
@@ -454,8 +462,8 @@ class TestScrapeUsageHiddenPane:
 
         def fake_run(cmd, **kwargs):
             nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count == 1:
@@ -476,7 +484,7 @@ class TestScrapeUsageHiddenPane:
         (e.g. Mac hidden pane sessions), the scraper exhausts its poll budget and
         returns the best local-session estimate seen instead of None.
         """
-        new_win = self._make_new_window_result("6")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
 
@@ -492,8 +500,8 @@ class TestScrapeUsageHiddenPane:
 
         def fake_run(cmd, **kwargs):
             nonlocal call_count
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 call_count += 1
                 if call_count == 1:
@@ -507,12 +515,12 @@ class TestScrapeUsageHiddenPane:
         assert isinstance(result, QuotaSnapshot), "should fall back to local estimate, not None"
         assert result.weekly_all_models_pct == 3.0, "should return the local session value"
 
-    def test_when_exception_raised_then_returns_none_and_kills_window(self):
-        """Exception mid-scrape must not propagate; kill-window must still fire."""
+    def test_when_exception_raised_then_returns_none_and_kills_session(self):
+        """Exception mid-scrape must not propagate; kill-session must still fire."""
         killed = []
 
         def fake_run(cmd, **kwargs):
-            if cmd[0] == "tmux" and cmd[1] == "kill-window":
+            if cmd[0] == "tmux" and cmd[1] == "kill-session":
                 killed.append(True)
                 r = MagicMock()
                 r.returncode = 0
@@ -523,7 +531,7 @@ class TestScrapeUsageHiddenPane:
             result = _scrape_usage_hidden_pane()
 
         assert result is None
-        assert killed, "kill-window must be called even on exception"
+        assert killed, "kill-session must be called even on exception"
 
     def test_window_size_latest_restored_after_resize(self):
         """resize-window sets window-size=manual as a tmux side effect.
@@ -531,7 +539,7 @@ class TestScrapeUsageHiddenPane:
         The scraper must call `set-option window-size latest` immediately after
         resize-window so that iTerm2 pane resize keeps working in the host session.
         """
-        new_win = self._make_new_window_result("3")
+        new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
         cmds_seen = []
@@ -539,8 +547,8 @@ class TestScrapeUsageHiddenPane:
         def fake_run(cmd, **kwargs):
             if isinstance(cmd, list) and cmd[0] == "tmux":
                 cmds_seen.append(cmd[1:])
-            if cmd[0] == "tmux" and cmd[1] == "new-window":
-                return new_win
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
             return ok
 
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
@@ -548,7 +556,7 @@ class TestScrapeUsageHiddenPane:
 
         resize_idx = next((i for i, c in enumerate(cmds_seen) if c[0] == "resize-window"), None)
         restore_idx = next(
-            (i for i, c in enumerate(cmds_seen) if c[:3] == ["set-option", "window-size", "latest"]),
+            (i for i, c in enumerate(cmds_seen) if c[0] == "set-option" and "window-size" in c and "latest" in c),
             None,
         )
         assert resize_idx is not None, "resize-window must be called"
