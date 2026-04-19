@@ -56,6 +56,13 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 - Run: `pytest`
 - **`# pragma: no cover` is a hard human gate** — never add it autonomously. If a line cannot be covered, document it in the UAT report with the specific line, why it can't be mocked, and options. Wait for explicit user approval before adding any pragma.
 
+## Versioning Convention (semver)
+
+- **Minor bump (`0.x.0`)** — significant new features. Not necessarily every task — Claude asks after each task.
+- **Patch bump (`0.x.y`)** — bug fixes only. Plain integers: `0.5.1`, `0.5.2`. Never `.post` suffixes.
+- **CHANGELOG required** with every bump — one entry per task, reference the task ID.
+- **Tag format:** `vX.Y.Z` — push tag to trigger PyPI publish.
+
 ## Your Role
 
 - Research topics in parallel with Claude — results are synthesized
