@@ -70,7 +70,8 @@ if [ "${SKIP_TESTS:-0}" != "1" ]; then
         [ -z "$PYTEST" ] && [ -f "$REPO_ROOT/.venv/bin/pytest" ] && PYTEST="$REPO_ROOT/.venv/bin/pytest"
         [ -z "$PYTEST" ] && command -v pytest &>/dev/null && PYTEST="pytest"
         if [ -n "$PYTEST" ]; then
-            if ! "$PYTEST" "$REPO_ROOT" --tb=short -q 2>&1; then
+            # Run without xdist (-n auto) to avoid intermittent parallel failures.
+            if ! "$PYTEST" "$REPO_ROOT" --tb=short -q --override-ini="addopts=" 2>&1; then
                 echo "[pre-push] ERROR: Python tests failed."
                 ERRORS=1
             fi
