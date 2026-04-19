@@ -9,9 +9,9 @@ task: AI-CLI-39
 
 # main.py Refactor — Module Extraction + CLI Dispatch Redesign
 
-**Status:** IMPLEMENTED (Phase 1 complete; Phase 2 deferred to separate PR)
+**Status:** IMPLEMENTED (Phase 1 done under AI-CLI-39; Phase 2 done under AI-CLI-47)
 **Created:** 2026-04-07
-**Task:** `[AI-CLI-39]`
+**Tasks:** `[AI-CLI-39]` Phase 1, `[AI-CLI-47]` Phase 2
 
 ## Table of Contents
 
@@ -566,3 +566,4 @@ All batches on `feature/main-py-refactor` branch. Each batch is a separate commi
 |------|----------|-------|
 | 2026-04-18 | Plan approved | process_manager.py naming; icon_generator.py stays separate; Phase 2 (Click) included in scope |
 | 2026-04-18 | Phase 2 deferred | During implementation, re-scoped Phase 2 (Click migration) to a separate PR after Phase 1 production validation. See Open Questions §3. |
+| 2026-04-18 | Phase 2 shipped (AI-CLI-47) | Click command groups replace the sys.argv dispatcher. ``ai internal`` kept as a pre-Click fast path. ``standalone_mode=False`` wrapper maps Click ``UsageError`` to exit 1 for contract parity with argparse. Re-exports in ``main.py`` retained so existing ``patch("ai_cli.main.<name>")`` targets keep working. |

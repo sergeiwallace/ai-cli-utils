@@ -48,7 +48,7 @@ ai --version   # print installed version
 ai -V          # same, short form
 ```
 
-Subcommands are dispatched via `sys.argv` inspection before Click takes over for the default `ai c` session-launch flow.
+Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai handoff post --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
 ### Module layout
 
