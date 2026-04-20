@@ -1350,10 +1350,25 @@ def _do_session_launch(
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
-        subprocess.run(
+        result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script],
             capture_output=True,
         )
+        if result.returncode != 0:
+            raw = result.stderr
+            stderr = (raw.decode() if isinstance(raw, bytes) else raw).strip()
+            # Mac tmux may not support `--` separator — retry without it
+            result2 = subprocess.run(
+                ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["zsh", "-c", script],
+                capture_output=True,
+            )
+            if result2.returncode != 0:
+                raw2 = result2.stderr
+                stderr2 = (raw2.decode() if isinstance(raw2, bytes) else raw2).strip()
+                print(f"Error: failed to create tmux session '{session_id}'", file=sys.stderr)
+                print(f"  (with --): {stderr}", file=sys.stderr)
+                print(f"  (without --): {stderr2}", file=sys.stderr)
+                sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(session_id)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
 

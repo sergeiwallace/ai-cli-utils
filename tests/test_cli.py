@@ -831,6 +831,9 @@ class TestCliSessionExecvp:
 
         def fake_run(cmd, *args, **kwargs):
             run_calls.append(list(cmd))
+            # has-session returns 1 (no existing session); new-session returns 0 (success)
+            if "new-session" in cmd:
+                return MagicMock(returncode=0)
             return MagicMock(returncode=1)
 
         with patch("sys.argv", ["ai", "c", "1"]):

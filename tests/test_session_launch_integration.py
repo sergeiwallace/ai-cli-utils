@@ -158,6 +158,7 @@ def test_given_new_session_when_launched_then_tmux_session_created(patched_subpr
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
         patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
             _do_session_launch(**_base_launch_kwargs(name="1"))
@@ -185,6 +186,7 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
         patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
             _do_session_launch(**_base_launch_kwargs(name="2"))
@@ -216,6 +218,7 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
         patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
             _do_session_launch(**kwargs)
