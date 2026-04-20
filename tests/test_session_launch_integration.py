@@ -50,40 +50,76 @@ def tmux_server():
 
 @pytest.fixture
 def patched_subprocess(tmux_server):
-    """Patch ``subprocess.run`` and ``os.execvp`` in main.py so that all tmux
-    calls are rerouted to our isolated server, and attach-session calls become
-    a no-op instead of exec'ing.
+    """Intercept tmux calls made by ``_do_session_launch`` and route them
+    through the isolated libtmux server.
+
+    Rather than re-invoking the tmux binary (which requires a bootstrapped
+    server process and a valid TERM in CI), we service the two calls that
+    matter — ``has-session`` and ``new-session`` — directly via libtmux, which
+    handles server lifecycle internally.  All other tmux sub-commands and git
+    calls are silently swallowed.  ``os.execvp`` is replaced so the final
+    ``tmux attach-session`` exec doesn't replace the test process.
 
     Yields the tmux server so tests can inspect created sessions.
     """
-    sock = tmux_server.socket_path
-    real_run = subprocess.run
+    server = tmux_server
+
+    class _OK:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    class _FAIL:
+        returncode = 1
+        stdout = ""
+        stderr = ""
 
     def fake_run(cmd, *args, **kwargs):
-        if isinstance(cmd, (list, tuple)) and len(cmd) > 0 and cmd[0] == "tmux":
-            # Reroute every tmux call to our isolated socket.
-            new_cmd = ["tmux", "-S", sock] + list(cmd[1:])
-            return real_run(new_cmd, *args, **kwargs)
-        if isinstance(cmd, (list, tuple)) and len(cmd) > 0 and cmd[0] == "git":
-            # No-op git (pull --rebase etc.) — return success without touching the FS
-            class _R:
-                returncode = 0
-                stdout = ""
-                stderr = ""
+        if not isinstance(cmd, (list, tuple)) or not cmd:
+            return subprocess.run.__wrapped__(cmd, *args, **kwargs)  # type: ignore[attr-defined]
+        head = cmd[0]
+        sub = cmd[1] if len(cmd) > 1 else ""
 
-            return _R()
-        return real_run(cmd, *args, **kwargs)
+        if head == "tmux":
+            if sub == "has-session":
+                # Check via libtmux — no tmux binary call needed.
+                try:
+                    target = cmd[cmd.index("-t") + 1]
+                except (ValueError, IndexError):
+                    return _FAIL()
+                return _OK() if any(s.name == target for s in server.sessions) else _FAIL()
+
+            if sub == "new-session":
+                # Create via libtmux — avoids server bootstrap / TERM requirements.
+                try:
+                    s_idx = cmd.index("-s")
+                    session_name = cmd[s_idx + 1]
+                except (ValueError, IndexError):
+                    session_name = "unknown"
+                try:
+                    server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
+                except Exception:
+                    pass
+                return _OK()
+
+            # kill-session, set-option, etc. — silently succeed.
+            return _OK()
+
+        if head == "git":
+            return _OK()
+
+        return subprocess.run(cmd, *args, **kwargs)
 
     def fake_execvp(file, args):
-        # tmux attach-session is the final exec in _do_session_launch — swallow it
-        # so the test process survives. Raise SystemExit to mimic process replacement.
+        # tmux attach-session is the final exec — raise SystemExit so the
+        # test process survives while the call is still recorded.
         raise SystemExit(0)
 
     with (
         patch("ai_cli.main.subprocess.run", side_effect=fake_run),
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
     ):
-        yield tmux_server
+        yield server
 
 
 def _base_launch_kwargs(name: str = "1") -> dict:
