@@ -30,7 +30,8 @@ def tmux_server():
     Each test gets its own socket path so sessions created in one test do not
     leak into another.
     """
-    sock = tempfile.mktemp(prefix="ai-cli-test-", suffix=".sock")
+    sock_dir = tempfile.mkdtemp(prefix="ai-cli-test-")
+    sock = f"{sock_dir}/tmux.sock"
     server = libtmux.Server(socket_path=sock)
     yield server
     try:
@@ -46,6 +47,7 @@ def tmux_server():
         subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True)
     except Exception:
         pass
+    shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 @pytest.fixture
