@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# record-demo.sh — coordinator: opens a dedicated demo window, records it, converts to GIF/MP4.
-# Your current iTerm2 session is completely untouched.
+# record-demo.sh — coordinator: finds the persistent demo window by name, records it.
+# The demo window ("ai-cli-utils demo") must already be open in iTerm2.
+# Your current session focus is never touched.
 #
-# Requires: ffmpeg, screencapture (macOS), iTerm2, python3 (stdlib only),
+# Requires: ffmpeg, screencapture (macOS), iTerm2, python3 (with pyobjc Quartz),
 #           screen recording permission for iTerm2 (System Settings → Privacy → Screen Recording)
 #
 # Usage: bash demo/record-demo.sh
@@ -13,9 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARCHIVE_DIR="$SCRIPT_DIR/archive"
 PALETTE_FILE="/tmp/ai-cli-demo-palette.png"
 SENTINEL="/tmp/ai-cli-demo-done"
-
-# Demo window position and size — must match DEMO_BOUNDS in demo-runner.sh
-DEMO_X=200; DEMO_Y=80; DEMO_W=1200; DEMO_H=780
+DEMO_WINDOW_NAME="ai-cli-utils demo"
 
 BOLD="\033[1m"
 GREEN="\033[1;32m"
@@ -53,53 +52,79 @@ done
 pkill -f "screencapture.*demo" 2>/dev/null || true
 rm -f "$OUTPUT_MOV" "$OUTPUT_MP4" "$OUTPUT_GIF" "$PALETTE_FILE" "$SENTINEL"
 
-# --- Create demo window ---
+# --- Find the demo window and get its actual bounds ---
 
-printf "${DIM}Creating demo window…${RESET}\n"
+printf "${DIM}Locating demo window \"${DEMO_WINDOW_NAME}\"…${RESET}\n"
 
-# Create a new iTerm2 window, exit full-screen if it opened that way (checked by
-# comparing its width to a threshold — no System Events accessibility needed),
-# position it at the known demo bounds, then return focus to the main session.
-osascript <<'APPLESCRIPT'
-tell application "iTerm2"
-  set mainWin to window 1
-  set newWin to (create window with default profile)
-  delay 1.5
-  select newWin
-  delay 0.5
-
-  -- Check if new window opened full-screen by its width.
-  -- Full-screen windows span the display (typically >1400pt); the demo window is 1200pt.
-  set wb to bounds of newWin
-  set winW to (item 3 of wb) - (item 1 of wb)
-end tell
-
-if winW > 1400 then
-  tell application "System Events"
-    tell process "iTerm2"
-      keystroke "f" using {control down, command down}
-    end tell
+WINDOW_BOUNDS=$(osascript - "$DEMO_WINDOW_NAME" <<'APPLESCRIPT'
+on run argv
+  set winName to item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      if name of w contains winName then
+        set wb to bounds of w
+        set wx to item 1 of wb
+        set wy to item 2 of wb
+        set wr to item 3 of wb
+        set wb2 to item 4 of wb
+        return (wx as string) & "," & (wy as string) & "," & (wr as string) & "," & (wb2 as string)
+      end if
+    end repeat
   end tell
-  delay 1.5
-end if
+  return ""
+end run
+APPLESCRIPT)
 
-tell application "iTerm2"
-  set bounds of newWin to {200, 80, 1400, 860}
-  delay 0.3
-  select mainWin
-end tell
+if [[ -z "$WINDOW_BOUNDS" ]]; then
+  echo "Error: could not find iTerm2 window named \"${DEMO_WINDOW_NAME}\" — open it first" >&2
+  exit 1
+fi
+
+ACTUAL_X=$(echo "$WINDOW_BOUNDS" | cut -d',' -f1 | tr -d ' ')
+ACTUAL_Y=$(echo "$WINDOW_BOUNDS" | cut -d',' -f2 | tr -d ' ')
+ACTUAL_R=$(echo "$WINDOW_BOUNDS" | cut -d',' -f3 | tr -d ' ')
+ACTUAL_B=$(echo "$WINDOW_BOUNDS" | cut -d',' -f4 | tr -d ' ')
+DEMO_W=$(( ACTUAL_R - ACTUAL_X ))
+DEMO_H=$(( ACTUAL_B - ACTUAL_Y ))
+
+printf "${DIM}Demo window at (${ACTUAL_X}, ${ACTUAL_Y}) size ${DEMO_W}x${DEMO_H}${RESET}\n"
+
+# --- Reset demo window to a fresh single tab (no focus change) ---
+
+osascript - "$DEMO_WINDOW_NAME" <<'APPLESCRIPT'
+on run argv
+  set winName to item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      if name of w contains winName then
+        tell w
+          repeat while (count of tabs) > 1
+            tell last tab to close
+          end repeat
+          tell current tab
+            tell current session
+              write text "clear"
+            end tell
+          end tell
+        end tell
+        exit repeat
+      end if
+    end repeat
+  end tell
+end run
 APPLESCRIPT
 
-sleep 0.5
-printf "${DIM}Demo window created at {200, 80, 1400, 860}${RESET}\n"
+sleep 1
+printf "${DIM}Demo window reset to fresh tab${RESET}\n"
 
-# --- Find the demo window's CGWindowID by matching on known position ---
-# screencapture -l <CGWindowID> records silently in the background with no UI overlay.
-# We match by owner "iTerm2" and bounds (X=DEMO_X, Y=DEMO_Y) after setting them above.
+# --- Find the demo window's CGWindowID via Quartz ---
 
-printf "${DIM}Identifying demo window…${RESET}\n"
-WINDOW_ID=$(python3 - <<PYEOF
+printf "${DIM}Identifying demo window CGWindowID…${RESET}\n"
+WINDOW_ID=$(python3 - "$ACTUAL_X" "$ACTUAL_Y" <<'PYEOF'
 import Quartz, sys
+
+target_x = int(sys.argv[1])
+target_y = int(sys.argv[2])
 
 wl = Quartz.CGWindowListCopyWindowInfo(
     Quartz.kCGWindowListOptionAll | Quartz.kCGWindowListExcludeDesktopElements,
@@ -109,7 +134,7 @@ for w in wl:
     if w.get("kCGWindowOwnerName") != "iTerm2":
         continue
     b = w.get("kCGWindowBounds", {})
-    if int(b.get("X", -1)) == ${DEMO_X} and int(b.get("Y", -1)) == ${DEMO_Y}:
+    if abs(int(b.get("X", -9999)) - target_x) <= 2 and abs(int(b.get("Y", -9999)) - target_y) <= 2:
         print(w["kCGWindowNumber"])
         sys.exit(0)
 print("", end="")
@@ -117,45 +142,51 @@ PYEOF
 )
 
 if [[ -z "$WINDOW_ID" ]]; then
-  echo "Error: could not find demo window at (${DEMO_X}, ${DEMO_Y}) — ensure iTerm2 screen recording permission is granted" >&2
+  echo "Error: could not find demo window in Quartz at (${ACTUAL_X}, ${ACTUAL_Y}) — check screen recording permission for iTerm2" >&2
   exit 1
 fi
 printf "${DIM}Demo window CGWindowID: ${WINDOW_ID}${RESET}\n"
 
-# --- Start recording the demo window by ID (silent, no UI overlay) ---
-# -l records a specific window; runs fully in the background.
+# --- Start recording (silent, no UI overlay) ---
 
 printf "${DIM}Starting recording…${RESET}\n"
 screencapture -v -l "$WINDOW_ID" "$OUTPUT_MOV" &
 SCAP_PID=$!
 sleep 1.5
 
-# --- Launch the demo runner inside the demo window ---
-# Target by known bounds — never by frontmost or window 1, since focus stays
-# on the user's main session throughout.
+# --- Launch the demo runner inside the demo window (no focus change) ---
 
 rm -f "$SENTINEL"
-osascript <<APPLESCRIPT
-tell application "iTerm2"
-  repeat with w in windows
-    if bounds of w = {200, 80, 1400, 860} then
-      tell w
-        tell current tab
-          tell current session
-            write text "bash '$SCRIPT_DIR/demo-runner.sh' '$SENTINEL'"
+osascript - "$DEMO_WINDOW_NAME" "$SCRIPT_DIR" "$SENTINEL" "$ACTUAL_X" "$ACTUAL_Y" "$ACTUAL_R" "$ACTUAL_B" <<'APPLESCRIPT'
+on run argv
+  set winName to item 1 of argv
+  set scriptDir to item 2 of argv
+  set sentinel to item 3 of argv
+  set wx to item 4 of argv
+  set wy to item 5 of argv
+  set wr to item 6 of argv
+  set wb to item 7 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      if name of w contains winName then
+        tell w
+          tell current tab
+            tell current session
+              write text "bash '" & scriptDir & "/demo-runner.sh' '" & sentinel & "' '" & wx & "' '" & wy & "' '" & wr & "' '" & wb & "'"
+            end tell
           end tell
         end tell
-      end tell
-      exit repeat
-    end if
-  end repeat
-end tell
+        exit repeat
+      end if
+    end repeat
+  end tell
+end run
 APPLESCRIPT
 
 # --- Wait for runner to signal completion ---
 
 printf "${DIM}Recording demo sequence (waiting for completion)…${RESET}\n"
-TIMEOUT=120
+TIMEOUT=180
 ELAPSED=0
 until [[ -f "$SENTINEL" ]]; do
   sleep 2
@@ -182,16 +213,16 @@ sleep 1
 printf "${DIM}Converting to GIF and MP4…${RESET}\n"
 
 ffmpeg -y -i "$OUTPUT_MOV" \
-  -vf "fps=15,scale=1200:-2:flags=lanczos,palettegen=stats_mode=full" \
+  -vf "fps=15,scale=${DEMO_W}:-2:flags=lanczos,palettegen=stats_mode=full" \
   "$PALETTE_FILE" 2>/dev/null
 
 ffmpeg -y -i "$OUTPUT_MOV" -i "$PALETTE_FILE" \
-  -filter_complex "fps=15,scale=1200:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5" \
+  -filter_complex "fps=15,scale=${DEMO_W}:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5" \
   -loop 0 \
   "$OUTPUT_GIF" 2>/dev/null
 
 ffmpeg -y -i "$OUTPUT_MOV" \
-  -vf "fps=30,scale=1200:-2:flags=lanczos" \
+  -vf "fps=30,scale=${DEMO_W}:-2:flags=lanczos" \
   -c:v libx264 -crf 22 -preset slow -pix_fmt yuv420p \
   "$OUTPUT_MP4" 2>/dev/null
 

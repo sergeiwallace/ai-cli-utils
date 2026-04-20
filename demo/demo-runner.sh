@@ -2,9 +2,13 @@
 # demo-runner.sh — demo sequence, runs inside the dedicated demo window.
 # Invoked by record-demo.sh; do not run directly.
 #
-# Usage: bash demo/demo-runner.sh <sentinel-file>
+# Usage: bash demo/demo-runner.sh <sentinel-file> <win-x> <win-y> <win-r> <win-b>
 
 SENTINEL="${1:-/tmp/ai-cli-demo-done}"
+DEMO_WIN_X="${2:-200}"
+DEMO_WIN_Y="${3:-80}"
+DEMO_WIN_R="${4:-1400}"
+DEMO_WIN_B="${5:-860}"
 
 BOLD="\033[1m"
 GREEN="\033[1;32m"
@@ -20,11 +24,8 @@ type_text() {
   done
 }
 
-# Show command typed in demo tab, open it in a new tab of the demo window,
-# wait briefly so viewer sees the new tab loading, then switch back.
-# Always targets the demo window by its known bounds — never by frontmost or current,
-# since focus stays on the user's main session throughout the recording.
-DEMO_BOUNDS="{200, 80, 1400, 860}"
+# Target demo window by its actual bounds passed in from coordinator.
+DEMO_BOUNDS="{$DEMO_WIN_X, $DEMO_WIN_Y, $DEMO_WIN_R, $DEMO_WIN_B}"
 
 open_in_new_tab() {
   local cmd="$1"
@@ -44,8 +45,9 @@ tell application "iTerm2"
         set t to (create tab with default profile)
         tell t
           tell current session
-            -- Poll until output stops changing (shell + direnv fully loaded).
-            -- Two consecutive identical snapshots with content = prompt is ready.
+            -- Minimum wait for shell + direnv to initialize before polling.
+            delay 4
+            -- Poll until output stops changing for 4 consecutive 0.5s intervals.
             set prevContents to ""
             set stableCount to 0
             repeat 60 times
@@ -53,7 +55,7 @@ tell application "iTerm2"
               set curContents to contents
               if curContents is equal to prevContents and length of curContents > 0 then
                 set stableCount to stableCount + 1
-                if stableCount >= 2 then exit repeat
+                if stableCount >= 4 then exit repeat
               else
                 set stableCount to 0
               end if
@@ -91,10 +93,10 @@ clear
 printf "${CYAN}${BOLD}  ai-cli-utils — AI session management for power users${RESET}\n\n"
 pause 1.5
 
-# Session launches — each opens a new tab in this demo window
-open_in_new_tab "ai c 1" 10       # Claude Code session — wait for CC to fully load
-open_in_new_tab "ai g 1" 8        # Gemini CLI session — wait for Gemini to load
-open_in_new_tab "ai c -R 1" 14    # Remote CC session — SSH + remote tmux + CC init
+# Session launches — each opens a new tab in the demo window
+open_in_new_tab "ai c 1" 20       # Claude Code session — wait for CC UI to fully render
+open_in_new_tab "ai g 1" 12       # Gemini CLI session
+open_in_new_tab "ai c -R 1" 25    # Remote CC session — SSH + remote tmux + CC init
 
 # Show all active sessions
 run "ai ls"
