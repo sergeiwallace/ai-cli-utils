@@ -227,3 +227,51 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
     assert any(n.startswith("c-myproject-myname-") for n in session_names), (
         f"expected a c-myproject-myname-* session in {session_names}"
     )
+
+
+def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_uses_new_prefix(
+    patched_subprocess,
+):
+    """When validate_registry_completeness registers a new prefix interactively,
+    the current session must use that prefix — not the 3-char fallback."""
+    server = patched_subprocess
+
+    def _register_and_return_true(*, interactive):
+        # Simulate the registry completing with 'newpfx' as the saved prefix.
+        # After this call, load_project_registry should return the new entry.
+        return True
+
+    with (
+        patch(
+            "ai_cli.config.validate_registry_completeness",
+            side_effect=_register_and_return_true,
+        ),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        # Registry now has 'newproject' -> task_prefix 'newpfx'
+        patch(
+            "ai_cli.config.load_project_registry",
+            return_value=[{"name": "newproject", "task_prefix": "newpfx"}],
+        ),
+        patch(
+            "ai_cli.session.load_project_registry",
+            return_value=[{"name": "newproject", "task_prefix": "newpfx"}],
+        ),
+        patch("ai_cli.config.get_current_project_name", return_value="newproject"),
+        patch("ai_cli.session.get_current_project_name", return_value="newproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        kwargs = _base_launch_kwargs(name="1")
+        kwargs["project_prefix_override"] = ""  # don't bypass registry resolution
+        with pytest.raises(SystemExit):
+            _do_session_launch(**kwargs)
+
+    session_names = [s.name for s in server.sessions]
+    assert any(n.startswith("c-newpfx-") for n in session_names), (
+        f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"
+    )

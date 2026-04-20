@@ -1111,6 +1111,14 @@ def _do_session_launch(
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
     is_remote = _session._resolve_is_remote(is_remote)
+
+    # Validate registry before resolving the project prefix so that a prefix
+    # entered interactively on first run is used for the current session, not
+    # just future ones.
+    if not project_prefix_override:
+        if not _config.validate_registry_completeness(interactive=sys.stdin.isatty()):
+            sys.exit(1)
+
     if project_prefix_override:
         project_prefix = project_prefix_override
     elif project and not remote:
@@ -1246,10 +1254,6 @@ def _do_session_launch(
             print(f"No matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
-
-    # Registry validation: ensure all projects are registered before launching session
-    if not _config.validate_registry_completeness(interactive=sys.stdin.isatty()):
-        sys.exit(1)
 
     _session.cleanup_stale_sessions(config)
     current_project_name = _config.get_current_project_name()
