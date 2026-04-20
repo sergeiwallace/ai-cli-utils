@@ -176,11 +176,11 @@ All CC sessions MUST be launched via `ai c` (not bare `claude`). `ai c` is the e
 2. **Schema validation** — every `[[projects]]` entry must have `name` and `task_prefix`. Both must be unique (case-insensitive). Fail with error if violated.
 3. **Completeness scan** — diff `~/projects/*/` directories against registered `name` fields
 4. **Unregistered directory found** → interactive prompt:
-   ```
+   ```text
    Unregistered project: "menos" (~/projects/menos)
    Suggested task_prefix: MENOS
    Add to registry? [Y/n, or enter custom prefix]:
-   ```
+   ```text
    - User confirms → append entry to `platform.toml` with sensible defaults (type, active, etc.)
    - User declines → **exit to shell**. Hard requirement — no session launch with incomplete registry.
 5. **Proceed** — registry is guaranteed complete and valid for this session

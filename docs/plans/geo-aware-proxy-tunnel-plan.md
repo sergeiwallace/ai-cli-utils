@@ -100,7 +100,7 @@ Cons: wastes one API call per new restricted model; adds latency on first detect
   ```toml
   [gemini.geo_restricted_models]
   models = ["deep-research", "deep-research-pro-preview-12-2025"]
-  ```
+  ```text
 
 Pros: config-fast for known models; automatically self-updating for new ones.
 Cons: slightly more complex; requires writing config on runtime detection.

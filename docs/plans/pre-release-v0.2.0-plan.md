@@ -203,7 +203,7 @@ Phase 4 is split into two sub-phases: **4a (backup — Claude executes)** and **
    ```bash
    git clone --mirror /Users/sergeiwallace/projects/ai-cli-utils \
      /Users/sergeiwallace/projects-archive/ai-cli-utils-history.git
-   ```
+   ```text
 
 2. **Create private GitHub backup repo and push:**
    ```bash
@@ -212,7 +212,7 @@ Phase 4 is split into two sub-phases: **4a (backup — Claude executes)** and **
    git -C /Users/sergeiwallace/projects-archive/ai-cli-utils-history.git \
      remote set-url origin git@github.com:sergeiwallace/ai-cli-utils-history.git
    git -C /Users/sergeiwallace/projects-archive/ai-cli-utils-history.git push --mirror
-   ```
+   ```text
 
 3. **Add README to backup repo** noting its purpose (pre-squash history archive, not the active repo).
 
@@ -232,12 +232,12 @@ Once backup is confirmed and approved:
    git commit -m "Initial release"
    git branch -D main
    git branch -m main
-   ```
+   ```text
 
 2. **Force-push clean history:**
    ```bash
    git push origin main --force
-   ```
+   ```text
 
 **Gate:** Force-push to main. Irreversible without the backup. Do not execute without explicit human approval.
 

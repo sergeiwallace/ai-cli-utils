@@ -253,13 +253,13 @@ In Settings > Code security and analysis:
    cd ai-cli-utils
    uv tool install .
    ai --help
-   ```
+   ```text
 3. **Check Security tab** — verify no secret scanning alerts
 4. **Verify Codecov** — check that coverage data appears at codecov.io
 5. **Add Codecov badge to README** — only if coverage > 80%:
    ```markdown
    [![codecov](https://codecov.io/gh/sergeiwallace/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/sergeiwallace/ai-cli-utils)
-   ```
+   ```text
 
 ## Deferred Items
 

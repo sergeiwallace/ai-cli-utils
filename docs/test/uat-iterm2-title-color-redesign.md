@@ -106,9 +106,9 @@ related_docs:
 
 **Steps:**
 1. From a project directory that is NOT the target project, run:
-   ```
+   ```bash
    ai g 1 -p myproject
-   ```
+   ```text
 2. Observe whether the session opens and whether it can resume
 
 **Expected:** Session opens in another project directory; Gemini finds the correct chats directory; no "Invalid session identifier" error loop

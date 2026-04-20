@@ -99,7 +99,7 @@ def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = Fals
 2. Read `host` and `user` from config `[remote]` section
 3. Build direction flag: `-L` if `forward=True`, otherwise `-R`
 4. Build command:
-   ```
+   ```text
    autossh -M 0
      -o ServerAliveInterval=30
      -o ServerAliveCountMax=3
@@ -107,7 +107,7 @@ def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = Fals
      -N
      {direction_flag} {remote_port}:localhost:{local_port}
      {user}@{host}
-   ```
+   ```text
 5. Launch via `subprocess.Popen(cmd)`, detached from terminal
 6. Write PID to `{state_dir}/tunnel-{local_port}.pid`
 7. Print confirmation: `Tunnel started: localhost:{local_port} -> {host}:{remote_port} (PID {pid})`

@@ -31,3 +31,15 @@ MD060: false
 # Allow H1 in body when frontmatter has title (research docs and design docs use both)
 MD025:
   front_matter_title: ""
+
+# Don't validate link fragments (anchors with special chars and auto-generated READMEs break the checker)
+MD051: false
+
+# Don't enforce horizontal rule style
+MD035: false
+
+# Don't require files to end with newline (auto-generated files often don't)
+MD047: false
+
+# Don't enforce unordered list indentation style (AI-generated docs use varied indentation)
+MD007: false
