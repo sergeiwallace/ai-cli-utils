@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-20
+
+### Fixed
+
+- iTerm2 Session Name not updating for local CC sessions (`ai c`). Added `_set_iterm2_name_applescript` which targets the iTerm2 session directly by GUID via the AppleScript API, bypassing DCS passthrough failures caused by nested tmux, process-tracking title overrides, and double-wrap requirements.
+
 ## [0.4.1] - 2026-04-19
 
 ### Added
