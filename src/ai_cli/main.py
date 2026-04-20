@@ -1355,9 +1355,7 @@ def _do_session_launch(
         # Write the script to a temp file to avoid tmux's inline command-length limit
         # (~2 KB on macOS). The file is cleaned up by the session script itself via
         # a trap, so we don't need to unlink it here.
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".sh", prefix="ai-session-", delete=False
-        ) as _tf:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", prefix="ai-session-", delete=False) as _tf:
             _tf.write(script)
             _script_path = _tf.name
         os.chmod(_script_path, 0o700)

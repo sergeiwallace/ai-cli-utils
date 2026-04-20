@@ -67,8 +67,7 @@ def get_engine_script(
 
     script = f"""
     # Remove the launch script file now that it's loaded into memory.
-    # This covers both the temp-file launch path and legacy inline invocations.
-    [[ -f "$0" && "$0" == /tmp/ai-session-* ]] && rm -f "$0"
+    [[ -f "$0" && "$0" == */ai-session-*.sh ]] && rm -f "$0"
     {cd_cmd}
     first_run=true
     ai_name="{ai_name}"
@@ -297,7 +296,6 @@ def get_engine_script(
     _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
-    _iterm2_fleet_setup "$tmux_session"
 
     # Export for CC Notification hook to use
     export ITERM2_SESSION_NUM="$_session_num"
@@ -308,7 +306,16 @@ def get_engine_script(
     while true; do
       start_watcher
       start_ts=$(date +%s)
-      # Re-emit iTerm2 setup + set status to running
+      # Re-emit iTerm2 setup + set status to running.
+      # On first launch, wait for the tmux client to attach — DCS passthrough sequences
+      # are discarded when no client is connected, so firing before attach is a no-op.
+      if $first_run && [[ -n "$TMUX" ]]; then
+        _cli_wait=0
+        while [[ $( tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l ) -eq 0 ]] && (( _cli_wait < 20 )); do
+          sleep 0.05
+          (( _cli_wait++ ))
+        done
+      fi
       _iterm2_fleet_setup "$tmux_session"
       _iterm2_status "running" "$_session_type" "$tmux_session"
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &

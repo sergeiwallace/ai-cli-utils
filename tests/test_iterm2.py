@@ -449,3 +449,13 @@ class TestGetEngineScriptIterm2Slot:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "\\033]1;" in script
         assert "\\033]0;" not in script
+
+    def test_script_waits_for_tmux_client_on_first_run_before_fleet_setup(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "tmux list-clients -t" in script
+        assert "$first_run" in script
+
+    def test_script_self_delete_uses_portable_glob_not_tmp_prefix(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "*/ai-session-*.sh" in script
+        assert "/tmp/ai-session-" not in script
