@@ -20,8 +20,12 @@ type_text() {
   done
 }
 
-# Show command typed in demo tab, open it in a new tab of the same window,
+# Show command typed in demo tab, open it in a new tab of the demo window,
 # wait briefly so viewer sees the new tab loading, then switch back.
+# Always targets the demo window by its known bounds — never by frontmost or current,
+# since focus stays on the user's main session throughout the recording.
+DEMO_BOUNDS="{200, 80, 1400, 860}"
+
 open_in_new_tab() {
   local cmd="$1"
   local wait_secs="${2:-3}"
@@ -33,17 +37,22 @@ open_in_new_tab() {
 
   osascript <<APPLESCRIPT
 tell application "iTerm2"
-  tell current window
-    set demoTabIdx to count of tabs
-    set t to (create tab with default profile)
-    tell t
-      tell current session
-        write text "$cmd"
+  repeat with w in windows
+    if bounds of w = $DEMO_BOUNDS then
+      tell w
+        set demoTabIdx to count of tabs
+        set t to (create tab with default profile)
+        tell t
+          tell current session
+            write text "$cmd"
+          end tell
+        end tell
+        delay $wait_secs
+        select tab demoTabIdx
       end tell
-    end tell
-    delay $wait_secs
-    select tab demoTabIdx
-  end tell
+      exit repeat
+    end if
+  end repeat
 end tell
 APPLESCRIPT
 
