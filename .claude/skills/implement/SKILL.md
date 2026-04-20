@@ -50,7 +50,7 @@ Run all checks — must ALL pass before UAT:
 
 ```bash
 pytest
-```json
+```text
 
 
 

@@ -5,7 +5,7 @@
 
 ## Unit Test Results
 
-```json
+```text
 [paste test output here]
 ```text
 
