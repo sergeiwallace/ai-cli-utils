@@ -576,13 +576,17 @@ class TestCliDispatchExtended:
                 cli()
             assert exc.value.code == 1
 
-    def test_when_copier_update_on_non_mac_then_exits_1(self):
-        exit_code, _, stderr = run_cli(
-            ["ai", "copier-update"],
-            env={"AI_CLI_HOST": "hetzner"},
-        )
-        assert exit_code == 1
-        assert "Mac only" in stderr
+    def test_when_copier_update_dispatches_on_any_host(self):
+        with (
+            patch("sys.argv", ["ai", "copier-update"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch.dict(os.environ, {"AI_CLI_HOST": "hetzner"}),
+            patch("ai_cli.copier_update.run_copier_update", return_value=0),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
 
     def test_when_color_subcommand_no_arg_then_exits_1(self):
         exit_code, _, _ = run_cli(["ai", "color"])
@@ -673,13 +677,11 @@ class TestCliDispatchExtended:
         exit_code, _, _ = run_cli(["ai", "signal-watch", "bad"])
         assert exit_code == 1
 
-    def test_when_copier_update_on_mac_then_dispatches(self, tmp_path):
-        """lines 2272-2282: copier-update with project filter flag."""
+    def test_when_copier_update_with_project_flag_then_dispatches(self, tmp_path):
         with (
             patch("sys.argv", ["ai", "copier-update", "--project", "myproject"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch.dict(os.environ, {"AI_CLI_HOST": "mac"}),
             patch("ai_cli.copier_update.run_copier_update", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
