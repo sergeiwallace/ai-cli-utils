@@ -1,4 +1,4 @@
-_commit: v1.4.4-12-ge3ee3c6
+_commit: v1.4.4-14-g8fb537f
 _src_path: git@github.com:sergeiwallace/project-template.git
 orchestrator: agent-teams
 project_description: Unified AI session manager for Claude Code and Gemini CLI

@@ -7,17 +7,22 @@ echo "=== Git Hooks Setup ==="
 
 # Point git at the shared hooks directory
 git config core.hooksPath .githooks
-echo "[1/3] Git hooks path set to .githooks/"
+echo "[1/4] Git hooks path set to .githooks/"
+
+# Make hooks executable (git stores 100644; this ensures they run)
+chmod +x .githooks/install.sh .githooks/pre-commit .githooks/pre-push 2>/dev/null || true
+git update-index --chmod=+x .githooks/install.sh .githooks/pre-commit .githooks/pre-push 2>/dev/null || true
+echo "[2/4] Hook files marked executable"
 
 # Install Node.js dev dependencies (markdownlint-cli2)
 if command -v npm &> /dev/null; then
     npm install --silent
-    echo "[2/3] Node.js tools installed (markdownlint-cli2)"
+    echo "[3/4] Node.js tools installed (markdownlint-cli2)"
 else
-    echo "[2/3] SKIP: npm not found — install Node.js for markdown linting"
+    echo "[3/4] SKIP: npm not found — install Node.js for markdown linting"
 fi
 
-echo "[3/3] Done!"
+echo "[4/4] Done!"
 echo "  - Pre-commit:  lints markdown"
 echo "  - Commit-msg:  blocks feat: commits missing a CHANGELOG.md [Unreleased] entry"
 echo "  - Pre-push:    lints markdown, runs hook tests, runs Python tests"

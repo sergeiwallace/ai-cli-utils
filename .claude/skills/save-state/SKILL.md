@@ -5,54 +5,65 @@ description: Save session state to memory and docs before compaction or context 
 
 # save-state
 
-Persist all important session state to memory files and docs before compaction or session end.
+Snapshot session state to memory files, docs, and git before compaction or session end. This preserves *what happened* and *what's next* — for changing *how to behave*, use `/persist` instead.
 
 **Usage:** `/save-state` or triggered automatically by PreCompact hook
 
-## What to Save
+## Process
 
-### 1. MEMORY.md — Update Active Work Section
+Complete ALL steps before signaling done. Do not ask for confirmation between steps — run autonomously through the full checklist. **Steps are ordered by priority** — if auto-compaction fires mid-process, the most critical state is already saved.
 
+### Step 1: Update Memory (HIGHEST PRIORITY — do this first)
+
+This is the fastest write and most critical for post-compaction continuity.
+
+**MEMORY.md — Active Work Section:**
 - Current task status (what's in progress, what's done)
-- Test count (current passing count)
-- Any in-progress implementation work
-- Commits made this session (add new ones, don't duplicate)
+- **What is planned next** (critical — this is what the post-compaction summary needs)
+- Key decisions made this session
+- Any in-progress implementation work and current step
 - Unapproved fixes or pending user decisions
+- Test count (current passing count)
 
-### 2. Memory Files — Create/Update as Needed
-
+**Memory Files — Create/Update as Needed:**
 - New feedback memories from user corrections this session
 - New project memories from decisions or context learned
 - Update existing memories if information changed
 
-### 3. Research Docs
+### Step 2: Update Docs (save what's in your head to files)
 
-- Update `docs/research/` with any completed research
-- Add new topics if ad-hoc research was done
+Priority order — most unsaved discussion synthesis first:
 
-### 4. Plans and Docs
+1. **Active docs being edited** — design docs, plan docs, architecture docs that have unsaved discussion synthesis from this session
+2. **Plan docs** — if implementation was in progress, update current step/status
+3. **Roadmap** — mark completed tasks `[x]`, update progress notes on in-progress tasks
 
-- If a plan was being worked on, ensure the plan doc is up to date
-- If implementation was in progress, note the current step/status
+Research docs should already be on disk (research-output-to-file rule). If not, write them before anything else.
 
-### 5. Task List
+### Step 3: Commit and Push (clean git state — lowest priority, survives compaction)
 
-- Check TaskList — note any incomplete tasks in MEMORY.md Active Work section
+Git state is unaffected by compaction. This step is for clean backup, not data preservation.
 
-## Checklist
+**Memory files (`~/.claude/projects/.../memory/`) are NOT git-tracked — they live outside the project repo. Do not attempt to `git add` or commit them.**
 
-Run through this before saving:
+- `git status` — check for uncommitted project files
+- If there are uncommitted changes: commit them with an appropriate message
+- Push all commits to origin/main
+- Sync main tree: `git -C ~/projects/<project> pull --rebase`
+- **If there are changes that should be discarded:** present a summary for user review. Do NOT discard without approval.
 
-- [ ] MEMORY.md Active Work section reflects current state
-- [ ] MEMORY.md Commits section has all new commits
-- [ ] Any new feedback memories created and indexed
-- [ ] Research docs updated if runs completed
-- [ ] Any in-progress plans have current status noted
-- [ ] Git status clean (no uncommitted implementation code)
+### Step 4: Verify
+
+- [ ] MEMORY.md Active Work section reflects current state and next steps
+- [ ] Any new feedback/project memories created and indexed in MEMORY.md
+- [ ] Active docs updated with session progress
+- [ ] Roadmap tasks updated (completed items marked, progress noted)
+- [ ] Git status clean (all changes committed and pushed)
 
 ## Rules
 
 - Read MEMORY.md first to avoid duplicating existing entries
-- Don't remove old entries — only add/update
-- Keep MEMORY.md under 200 lines (it gets truncated beyond that)
-- Commit and push the memory/doc updates
+- **Revise and compact freely** — update, merge, or remove stale entries to keep files focused
+- Keep MEMORY.md under ~200 lines
+- **Complete ALL steps autonomously** — do not stop to ask for confirmation
+- **Include "what's next"** — always note planned next work in MEMORY.md Active Work section
