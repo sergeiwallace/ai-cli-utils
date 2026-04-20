@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import shutil
+import tempfile
 import time
 import subprocess
 import re
@@ -1350,8 +1351,18 @@ def _do_session_launch(
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
+        #
+        # Write the script to a temp file to avoid tmux's inline command-length limit
+        # (~2 KB on macOS). The file is cleaned up by the session script itself via
+        # a trap, so we don't need to unlink it here.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", prefix="ai-session-", delete=False
+        ) as _tf:
+            _tf.write(script)
+            _script_path = _tf.name
+        os.chmod(_script_path, 0o700)
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["--", "zsh", "-c", script],
+            ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["--", "zsh", _script_path],
             capture_output=True,
         )
         if result.returncode != 0:
@@ -1359,12 +1370,13 @@ def _do_session_launch(
             stderr = (raw.decode() if isinstance(raw, bytes) else raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["zsh", "-c", script],
+                ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["zsh", _script_path],
                 capture_output=True,
             )
             if result2.returncode != 0:
                 raw2 = result2.stderr
                 stderr2 = (raw2.decode() if isinstance(raw2, bytes) else raw2).strip()
+                os.unlink(_script_path)
                 print(f"Error: failed to create tmux session '{session_id}'", file=sys.stderr)
                 print(f"  (with --): {stderr}", file=sys.stderr)
                 print(f"  (without --): {stderr2}", file=sys.stderr)

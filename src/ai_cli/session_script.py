@@ -66,6 +66,9 @@ def get_engine_script(
     )
 
     script = f"""
+    # Remove the launch script file now that it's loaded into memory.
+    # This covers both the temp-file launch path and legacy inline invocations.
+    [[ -f "$0" && "$0" == /tmp/ai-session-* ]] && rm -f "$0"
     {cd_cmd}
     first_run=true
     ai_name="{ai_name}"
