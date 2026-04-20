@@ -268,6 +268,40 @@ def _iterm2_session_type(engine: str) -> str:
     return "cc" if engine == "c" else "gemini" if engine == "g" else "shell"
 
 
+def _set_iterm2_name_applescript(iterm_session_id: str, name: str) -> None:
+    """Set iTerm2 session Name directly via AppleScript (macOS only).
+
+    This is the most reliable way to set the session Name — it bypasses DCS
+    passthrough layers, nested tmux, and process-tracking title overrides.
+
+    ``iterm_session_id`` must contain a GUID (the part after the colon in the
+    ITERM_SESSION_ID env var, e.g. ``w0t0p0:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx``).
+    If the GUID is absent the call is a no-op.
+    """
+    if sys.platform != "darwin":
+        return
+    if not iterm_session_id or ":" not in iterm_session_id:
+        return
+    guid = iterm_session_id.split(":")[-1]
+    safe_guid = guid.replace("\\", "\\\\").replace('"', '\\"')
+    safe_name = name.replace("\\", "\\\\").replace('"', '\\"')
+    script = f"""tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                try
+                    if unique id of s is "{safe_guid}" then
+                        set name of s to "{safe_name}"
+                        return
+                    end if
+                end try
+            end repeat
+        end repeat
+    end repeat
+end tell"""
+    subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+
+
 def _configure_tmux_for_iterm2(session_id: str) -> None:
     """Enable DCS passthrough and disable auto-rename for a tmux session.
 
@@ -351,3 +385,9 @@ def _emit_iterm2_profile_setup(
     # OSC 1 sets the iTerm2 "Name" field — mosh does not intercept it
     sys.stdout.write(f"\033]1;{session_name}\007")
     sys.stdout.flush()
+    # AppleScript fallback: set the session Name directly via the iTerm2 API.
+    # This is the authoritative fix for local sessions where OSC 1 may be
+    # overridden by tmux rendering, process tracking, or nested-tmux passthrough
+    # failures. Runs synchronously here (before os.execvp) so the Name is set
+    # before the process is replaced by tmux/mosh/ssh.
+    _set_iterm2_name_applescript(os.environ.get("ITERM_SESSION_ID", ""), session_name)

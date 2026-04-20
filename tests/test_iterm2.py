@@ -13,6 +13,7 @@ from ai_cli.main import (
     _load_iterm2_config,
     _release_iterm2_color_slot,
     _resolve_iterm2_config,
+    _set_iterm2_name_applescript,
     cli,
     get_engine_script,
 )
@@ -459,3 +460,101 @@ class TestGetEngineScriptIterm2Slot:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "*/ai-session-*.sh" in script
         assert "/tmp/ai-session-" not in script
+
+    def test_script_calls_set_iterm2_name_on_first_run(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "ai internal set-iterm2-name" in script
+        assert "$ITERM_SESSION_ID" in script
+        assert "$first_run" in script
+
+    def test_script_set_iterm2_name_guarded_by_darwin_check(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "darwin" in script
+
+
+class TestSetIterm2NameApplescript:
+    """Tests for _set_iterm2_name_applescript."""
+
+    def test_given_non_darwin_when_called_then_no_subprocess(self):
+        with patch("ai_cli.iterm2.subprocess") as mock_sp:
+            with patch("ai_cli.iterm2.sys") as mock_sys:
+                mock_sys.platform = "linux"
+                _set_iterm2_name_applescript("w0t0p0:abc123", "c-sw-1")
+        mock_sp.run.assert_not_called()
+
+    def test_given_empty_iterm_session_id_when_called_then_no_subprocess(self):
+        with patch("ai_cli.iterm2.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("ai_cli.iterm2.subprocess") as mock_sp:
+                _set_iterm2_name_applescript("", "c-sw-1")
+        mock_sp.run.assert_not_called()
+
+    def test_given_iterm_session_id_without_colon_then_no_subprocess(self):
+        with patch("ai_cli.iterm2.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("ai_cli.iterm2.subprocess") as mock_sp:
+                _set_iterm2_name_applescript("no-colon-here", "c-sw-1")
+        mock_sp.run.assert_not_called()
+
+    def test_given_darwin_with_valid_session_id_when_called_then_runs_osascript(self):
+        with patch("ai_cli.iterm2.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("ai_cli.iterm2.subprocess") as mock_sp:
+                _set_iterm2_name_applescript("w0t0p0:abc-guid-123", "c-sw-1")
+        mock_sp.run.assert_called_once()
+        call_args = mock_sp.run.call_args[0][0]
+        assert call_args[0] == "osascript"
+        assert "abc-guid-123" in mock_sp.run.call_args[0][0][2]
+        assert "c-sw-1" in mock_sp.run.call_args[0][0][2]
+
+    def test_guid_extracted_correctly_from_iterm_session_id(self):
+        captured_script = []
+        with patch("ai_cli.iterm2.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("ai_cli.iterm2.subprocess") as mock_sp:
+                mock_sp.run = lambda cmd, **kw: captured_script.append(cmd[2])
+                _set_iterm2_name_applescript("w0t0p0:my-actual-guid", "test-session")
+        assert len(captured_script) == 1
+        assert "my-actual-guid" in captured_script[0]
+        assert "test-session" in captured_script[0]
+
+
+class TestSetIterm2NameInternalCommand:
+    """Tests for ai internal set-iterm2-name."""
+
+    def test_set_iterm2_name_command_calls_applescript(self):
+        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "w0t0p0:myguid", "c-sw-5"]):
+            with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+        assert exc.value.code == 0
+        mock_fn.assert_called_once_with("w0t0p0:myguid", "c-sw-5")
+
+    def test_set_iterm2_name_missing_args_exits_1(self):
+        with patch("sys.argv", ["ai", "internal", "set-iterm2-name"]):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+        assert exc.value.code == 1
+
+
+class TestEmitIterm2ProfileSetupCallsApplescript:
+    """Verify _emit_iterm2_profile_setup calls _set_iterm2_name_applescript."""
+
+    def test_given_iterm2_env_when_emit_called_then_applescript_invoked(self):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:myguid"}, clear=False):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
+                            _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+        mock_fn.assert_called_once_with("w0t0p0:myguid", "c-sw-1")
+
+    def test_given_no_iterm_session_id_when_emit_called_then_applescript_with_empty_id(self):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            os.environ.pop("ITERM_SESSION_ID", None)
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
+                            _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+        mock_fn.assert_called_once_with("", "c-sw-1")

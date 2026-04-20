@@ -62,6 +62,7 @@ from .iterm2 import (  # noqa: E402,F401
     _load_iterm2_config,
     _release_iterm2_color_slot,
     _resolve_iterm2_config,
+    _set_iterm2_name_applescript,
 )
 from .handoff import (  # noqa: E402,F401
     _claim_handoff_for_signal,
@@ -445,6 +446,12 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) < 3:
             sys.exit(0)
         _internal_handoff_drain(argv[1], argv[2], config)
+        sys.exit(0)
+    elif action == "set-iterm2-name":
+        if len(argv) < 3:
+            print("Usage: ai internal set-iterm2-name <iterm_session_id> <name>", file=sys.stderr)
+            sys.exit(1)
+        _iterm2._set_iterm2_name_applescript(argv[1], argv[2])
         sys.exit(0)
     else:
         print(f"Usage: ai internal <action> [args...] (unknown action: {action})", file=sys.stderr)
