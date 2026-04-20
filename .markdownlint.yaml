@@ -7,9 +7,6 @@ MD024: false
 # No line length limit (editor word-wrap handles display)
 MD013: false
 
-# Don't require language on fenced code blocks
-MD040: false
-
 # Allow inline HTML
 MD033: false
 
