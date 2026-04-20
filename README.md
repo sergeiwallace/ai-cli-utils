@@ -9,6 +9,8 @@
 
 Unified AI session manager and automation toolkit for Claude Code and Gemini CLI.
 
+![demo](demo/demo.gif)
+
 Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, resilient Gemini API access with automatic auth fallback, and persistent SSH tunnels via autossh. Every command and subcommand supports `--help` for inline usage reference.
 
 ## What it does
