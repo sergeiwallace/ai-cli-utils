@@ -1,5 +1,6 @@
 """Tests for quota tracking — hidden pane scraper, notification, quota_watch, quota_record."""
 
+import json
 import os
 import time
 from datetime import datetime, timezone, timedelta
@@ -16,7 +17,7 @@ from ai_cli.quota import (
     _publish_quota_snapshot,
     _scrape_usage_hidden_pane,
     _send_notification,
-    _send_slack_notification,
+    _send_webhook_notification,
     _try_read_kv_snapshot,
     quota_record,
     quota_scrape,
@@ -617,15 +618,15 @@ class TestSendNotification:
         ):
             _send_notification(75, snap)  # should not raise
 
-    def test_when_slack_url_configured_then_uses_slack(self):
+    def test_when_webhook_url_configured_then_uses_webhook(self):
         snap = self._make_snapshot(78.5)
-        cfg = {"quota": {"slack_webhook_url": "https://hooks.slack.com/test"}}
+        cfg = {"quota": {"webhook_url": "https://hooks.slack.com/test"}}
         with (
             patch("ai_cli.config.load_config", return_value=cfg),
-            patch("ai_cli.quota._send_slack_notification") as mock_slack,
+            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
         ):
             _send_notification(75, snap)
-        mock_slack.assert_called_once()
+        mock_wh.assert_called_once()
 
     def test_when_load_config_raises_then_falls_back_to_notify_send(self):
         """lines 223-224: load_config exception → webhook_url="" → uses notify-send."""
@@ -639,28 +640,58 @@ class TestSendNotification:
         assert mock_run.call_args[0][0][0] == "notify-send"
 
 
-# --- _send_slack_notification ---
+# --- _send_webhook_notification ---
 
 
-class TestSendSlackNotification:
-    def test_when_called_then_posts_to_webhook(self):
+class TestSendWebhookNotification:
+    def test_when_slack_url_then_posts_text_field(self):
         snap = QuotaSnapshot(
             weekly_all_models_pct=78.5,
             session_pct=12.0,
             weekly_sonnet_pct=40.0,
         )
+        posted_data = []
+
         import urllib.request
 
-        with patch.object(urllib.request, "urlopen") as mock_open:
-            _send_slack_notification("https://hooks.slack.com/test", 75, snap)
-        mock_open.assert_called_once()
+        class FakeReq:
+            def __init__(self, url, data, headers, method):
+                posted_data.append(json.loads(data.decode()))
+
+        with (
+            patch("urllib.request.Request", side_effect=FakeReq),
+            patch.object(urllib.request, "urlopen"),
+        ):
+            _send_webhook_notification("https://hooks.slack.com/test", 75, snap)
+
+        assert posted_data and "text" in posted_data[0]
+        assert "content" not in posted_data[0]
+
+    def test_when_discord_url_then_posts_content_field(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=78.5)
+        posted_data = []
+
+        import urllib.request
+
+        class FakeReq:
+            def __init__(self, url, data, headers, method):
+                posted_data.append(json.loads(data.decode()))
+
+        with (
+            patch("urllib.request.Request", side_effect=FakeReq),
+            patch.object(urllib.request, "urlopen"),
+        ):
+            _send_webhook_notification("https://discord.com/api/webhooks/123/abc", 75, snap)
+
+        assert posted_data and "content" in posted_data[0]
+        assert "text" not in posted_data[0]
 
     def test_when_urlopen_raises_then_no_crash(self):
         snap = QuotaSnapshot(weekly_all_models_pct=78.5)
         import urllib.request
 
         with patch.object(urllib.request, "urlopen", side_effect=Exception("network error")):
-            _send_slack_notification("https://hooks.slack.com/test", 75, snap)  # should not raise
+            _send_webhook_notification("https://hooks.slack.com/test", 75, snap)
 
     def test_when_threshold_90_then_message_includes_slow_down(self):
         snap = QuotaSnapshot(weekly_all_models_pct=92.0)
@@ -676,7 +707,7 @@ class TestSendSlackNotification:
             patch("urllib.request.Request", side_effect=FakeReq),
             patch.object(urllib.request, "urlopen"),
         ):
-            _send_slack_notification("https://hooks.slack.com/test", 90, snap)
+            _send_webhook_notification("https://hooks.slack.com/test", 90, snap)
 
         assert any("slow down" in d.lower() or "Slow down" in d for d in posted_data)
 

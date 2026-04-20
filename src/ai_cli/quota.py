@@ -475,23 +475,22 @@ def quota_watch(poll_interval: int = 300) -> int:
 
 
 def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
-    """Send alert for quota threshold via Slack webhook (if configured) or notify-send."""
+    """Send alert for quota threshold via webhook (if configured) or notify-send."""
     usage = snapshot.weekly_all_models_pct
     msg = f"Claude usage at {usage:.0f}% (threshold: {threshold}%)"
     if threshold >= 90:
         msg += " — slow down!"
 
-    # Try Slack webhook first if configured
     try:
         from .config import load_config
 
         cfg = load_config().get("quota", {})
-        webhook_url = cfg.get("slack_webhook_url", "")
+        webhook_url = cfg.get("webhook_url", "")
     except Exception:
         webhook_url = ""
 
     if webhook_url:
-        _send_slack_notification(webhook_url, threshold, snapshot)
+        _send_webhook_notification(webhook_url, threshold, snapshot)
         return
 
     # Fallback: OS notification via notify-send
@@ -505,8 +504,13 @@ def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
         pass
 
 
-def _send_slack_notification(webhook_url: str, threshold: int, snapshot: QuotaSnapshot) -> None:
-    """POST a Slack webhook message for a quota threshold crossing."""
+def _send_webhook_notification(webhook_url: str, threshold: int, snapshot: QuotaSnapshot) -> None:
+    """POST a quota alert to a Slack or Discord incoming webhook.
+
+    Auto-detects the provider from the URL:
+    - discord.com  → Discord format  (``{"content": "..."}``).
+    - everything else → Slack format (``{"text": "..."}``)
+    """
     import urllib.request
 
     usage = snapshot.weekly_all_models_pct
@@ -519,7 +523,8 @@ def _send_slack_notification(webhook_url: str, threshold: int, snapshot: QuotaSn
     if threshold >= 90:
         text += "\n*Slow down — quota nearly exhausted.*"
 
-    payload = json.dumps({"text": text}).encode()
+    is_discord = "discord.com" in webhook_url
+    payload = json.dumps({"content": text} if is_discord else {"text": text}).encode()
     try:
         req = urllib.request.Request(
             webhook_url,
