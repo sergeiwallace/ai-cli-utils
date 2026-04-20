@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-04-20
+
+### Fixed
+
+- `ai sync push` no longer creates new git blobs for unchanged files — SHA-256 check before `shutil.copy2` skips files with identical content, eliminating the primary driver of staging repo pack bloat.
+- `git gc --auto` runs after each sync commit to repack loose objects when needed.
+- Memory directory non-markdown files (e.g. `.consolidate-lock`) are now excluded from sync via `should_sync_file`, preventing spurious conflict detections and `.conflict.conflict` cascades.
+
 ## [0.4.2] - 2026-04-20
 
 ### Fixed
