@@ -1683,13 +1683,10 @@ def cmd_cc_usage_status():
     sys.exit(0)
 
 
-@_cli_group.command("copier-update", help="Propagate project-template changes to downstream projects (Mac only)")
+@_cli_group.command("copier-update", help="Propagate project-template changes to downstream projects")
 @click.option("-d", "--dry-run", is_flag=True, help="Show diffs without applying")
 @click.option("-p", "--project", default=None, help="Only update the given project")
 def cmd_copier_update(dry_run, project):
-    if os.environ.get("AI_CLI_HOST") != "mac":
-        print("Error: copier-update is Mac only", file=sys.stderr)
-        sys.exit(1)
     from .copier_update import run_copier_update
 
     sys.exit(run_copier_update(dry_run=dry_run, project_filter=project))
