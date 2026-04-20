@@ -75,16 +75,14 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 **All feature work follows this pipeline:**
 
 ```
-Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR → Merge
+Plan → Implement → /simplify → Checks → UAT → Push to main
 ```
 
 ### Branch Strategy
 
-- All dev work branches from `main`: `feature/short-description`
-- Never push feature branches directly to `main` — always PR
+- Push directly to `main` — no PRs. Feature branches only when work spans multiple sessions or has a hard human gate mid-flight.
 - Atomic commits
-- **Commit at working checkpoints** — commit and push to your feature branch at each working checkpoint (feature functional, doc ready, task added, etc.). Don't leave uncommitted changes at end of session.
-- Non-dev changes (docs, tooling, markdown) commit directly to `main`
+- **Commit at working checkpoints** — commit and push at each working checkpoint (feature functional, doc ready, task added, etc.). Don't leave uncommitted changes at end of session.
 
 ### Implementation Pipeline
 
@@ -94,8 +92,7 @@ Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR �
 | **Implement** | Tests must pass locally |
 | **Simplify** | Run `/simplify` — scope creep, dead code, over-engineering removed |
 | **Automated Checks** | **Hard gate** — `ruff check src/ tests/ && ruff format --check src/ tests/ && pytest` must pass. Always run **after** `/simplify` (it modifies code). |
-| **UAT** | **Human approves** before PR |
-| **PR** | Open PR to `main` |
+| **UAT** | **Human approves** before pushing |
 | **Version bump** | After every task or bug fix, ask: "Minor or patch bump?" Then update CHANGELOG, bump version, tag, publish. |
 
 ### Versioning Convention (semver)
