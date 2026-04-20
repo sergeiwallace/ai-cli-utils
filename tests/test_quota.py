@@ -628,11 +628,36 @@ class TestSendNotification:
             _send_notification(75, snap)
         mock_wh.assert_called_once()
 
-    def test_when_load_config_raises_then_falls_back_to_notify_send(self):
-        """lines 223-224: load_config exception → webhook_url="" → uses notify-send."""
+    def test_when_env_var_set_then_uses_webhook(self):
+        snap = self._make_snapshot(78.5)
+        with (
+            patch("ai_cli.config.load_config", return_value={}),
+            patch.dict(
+                "os.environ", {"DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc"}
+            ),
+            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
+        ):
+            _send_notification(75, snap)
+        mock_wh.assert_called_once()
+
+    def test_when_load_config_raises_then_env_var_used(self):
         snap = self._make_snapshot(78.5)
         with (
             patch("ai_cli.config.load_config", side_effect=Exception("no config")),
+            patch.dict(
+                "os.environ", {"DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc"}
+            ),
+            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
+        ):
+            _send_notification(75, snap)
+        mock_wh.assert_called_once()
+
+    def test_when_load_config_raises_and_no_env_var_then_notify_send(self):
+        snap = self._make_snapshot(78.5)
+        env = {k: v for k, v in __import__("os").environ.items() if k != "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL"}
+        with (
+            patch("ai_cli.config.load_config", side_effect=Exception("no config")),
+            patch.dict("os.environ", env, clear=True),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(75, snap)

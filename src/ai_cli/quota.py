@@ -9,6 +9,7 @@ at ~/.local/state/ai-cli/quota.db (no external server dependency).
 
 import asyncio
 import json
+import os
 import re
 import subprocess
 import sys
@@ -485,9 +486,9 @@ def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
         from .config import load_config
 
         cfg = load_config().get("quota", {})
-        webhook_url = cfg.get("webhook_url", "")
+        webhook_url = cfg.get("webhook_url", "") or os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "")
     except Exception:
-        webhook_url = ""
+        webhook_url = os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "")
 
     if webhook_url:
         _send_webhook_notification(webhook_url, threshold, snapshot)
