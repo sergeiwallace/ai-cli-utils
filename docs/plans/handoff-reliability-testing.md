@@ -88,7 +88,7 @@ Each scenario is tested manually, results recorded below.
 ai handoff post --for-machine <hetzner|mac> \
   "Test handoff $(date +%s)" P1 <project-name> \
   "Task body: verify pickup works"
-```
+```text
 
 Note: `ai handoff post` takes positional args (`<title> <priority> <project> <message>`), not named flags.
 

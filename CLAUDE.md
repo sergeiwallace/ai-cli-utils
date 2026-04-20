@@ -74,9 +74,9 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 **All feature work follows this pipeline:**
 
-```
+```text
 Plan → Implement → /simplify → Checks → UAT → Push to main
-```
+```text
 
 ### Branch Strategy
 
@@ -106,7 +106,7 @@ Plan → Implement → /simplify → Checks → UAT → Push to main
 
 ### UAT Presentation Format
 
-```
+```markdown
 ## UAT Summary
 
 ### What was built — [1-3 bullet points]
@@ -114,7 +114,7 @@ Plan → Implement → /simplify → Checks → UAT → Push to main
 ### Test results — [test output summary]
 ### How to verify — [steps the human can take to manually test]
 ### Acceptance criteria status — [x] Criterion 1 ...
-```
+```text
 
 ## Document Structure
 
@@ -133,8 +133,8 @@ Required: `github`, `gemini-cli`.
 
 **Always pass an explicit `model` argument.** Do not rely on defaults. `gemini-3-flash-preview` is the universal safety net.
 
-```
+```text
 mcp__gemini-cli__ask-gemini(prompt="...", model="gemini-3-flash-preview")
-```
+```text
 
 Models ranked by capability: `gemini-3.1-pro-preview` → `gemini-3-flash-preview` → `gemini-2.5-pro` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`.

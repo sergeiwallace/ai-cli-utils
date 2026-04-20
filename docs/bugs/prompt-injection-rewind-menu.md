@@ -81,7 +81,7 @@ if [[ -f "$signal_file" ]]; then
     break
   fi
 fi
-```
+```text
 
 **Known problems identified — 5 confirmed issues:**
 
@@ -121,7 +121,7 @@ if [[ -f "$config_changed_file" && ! -f "$signal_file" ]]; then
     fi
   fi
 fi
-```
+```text
 
 **Status:** This path creates `signal_file`, which is handled by path 1. Has the SAME stale `❯` false-positive problem (P3): during CC startup, the pane shows old conversation content with `❯`, and this guard passes, creating a `signal_file` that path 1 then processes. The config change guard at line 1143 is an independent `capture-pane` check that suffers from the same stale-pane problem.
 
@@ -350,7 +350,7 @@ if [[ -f "$signal_file" ]]; then
   fi
   # CC not at idle prompt or within grace period — keep signal_file, retry next cycle
 fi
-```
+```text
 
 ### Proposed change to config change detection at `main.py:1137-1151`
 
@@ -373,7 +373,7 @@ if [[ -f "$config_changed_file" && ! -f "$signal_file" ]] && (( counter >= 10 ))
     fi
   fi
 fi
-```
+```text
 
 ### Summary of all changes
 

@@ -5,9 +5,9 @@
 
 ## Unit Test Results
 
-```
+```json
 [paste test output here]
-```
+```text
 
 ## UAT Test Cases
 

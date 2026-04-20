@@ -32,7 +32,7 @@ source: session-2026-04-01
 ```bash
 ai internal signal-watch "$project_name" "$tmux_session" &>/dev/null &
 signal_watch_pid=$!
-```
+```text
 
 ## Problem
 
@@ -63,7 +63,7 @@ endpoint        = ipc:///home/user/.local/state/ai-cli/circus.endpoint
 pubsub_endpoint = ipc:///home/user/.local/state/ai-cli/circus.pubsub
 logoutput       = /home/user/.local/state/ai-cli/circus.log
 umask           = 0o022
-```
+```text
 
 - IPC (not TCP) — no port collision, no network exposure
 - No `[watcher:*]` sections — all watchers added dynamically via API
@@ -74,7 +74,7 @@ umask           = 0o022
 ```python
 def _ensure_circusd() -> str:
     """Start circusd if not already running. Returns the endpoint URI."""
-```
+```text
 
 1. Compute `state_dir = get_xdg_state_home()`, ensure it exists
 2. Compute `endpoint = f"ipc://{state_dir}/circus.endpoint"`
@@ -91,7 +91,7 @@ def _ensure_circusd() -> str:
 
 ```python
 def _cmd_signal_watch_start(project: str, session: str) -> None:
-```
+```text
 
 1. `endpoint = _ensure_circusd()`
 2. `watcher_name = f"sw-{session}"`
@@ -109,7 +109,7 @@ Options:
 
 ```python
 def _cmd_signal_watch_stop(session: str) -> None:
-```
+```text
 
 Sends `rm sw-{session}` to circusd. **Never raises** — EXIT trap calls this unconditionally; circusd may not be running.
 
@@ -117,7 +117,7 @@ Sends `rm sw-{session}` to circusd. **Never raises** — EXIT trap calls this un
 
 ```python
 def _cmd_signal_watch_status() -> None:
-```
+```text
 
 Calls `circusd status`, filters to `sw-*` watchers, prints `{session}: {status}`.
 
@@ -133,7 +133,7 @@ signal_watch_pid=$!
 # NEW:
 ai signal-watch start "$project_name" "$tmux_session" &>/dev/null
 signal_watch_pid=""
-```
+```text
 
 **EXIT trap — replace `kill "$signal_watch_pid"`:**
 
@@ -143,7 +143,7 @@ kill "$signal_watch_pid" 2>/dev/null
 
 # NEW:
 ai signal-watch stop "$tmux_session" &>/dev/null
-```
+```text
 
 ### 7. Tests
 

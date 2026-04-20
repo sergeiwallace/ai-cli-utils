@@ -151,7 +151,7 @@ For `ai-cli-utils`, the best approach is `softprops/action-gh-release` triggered
         with:
           body_path: release_notes.md
           generate_release_notes: false
-```
+```text
 
 **Why this over alternatives:**
 
@@ -168,7 +168,7 @@ If you want zero third-party action dependencies:
         run: gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes-file release_notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
+```text
 
 Both approaches work. `softprops/action-gh-release` has 7K+ stars and is well-maintained. The `gh` CLI approach has no dependency but requires the `GH_TOKEN` env var. [VERIFIABLE FACT: gh CLI docs at https://cli.github.com/manual/gh_release_create]
 
@@ -230,7 +230,7 @@ The project claims Python 3.11+ support in `pyproject.toml` classifiers but only
           python-version: ${{ matrix.python-version }}
       - run: uv sync --dev
       - run: uv run pytest --tb=short -q
-```
+```text
 
 **Why 3.11/3.12/3.13:** The project declares `requires-python = ">=3.11"` and includes classifiers for all three. Test what you claim to support. [INDUSTRY HEURISTIC]
 
@@ -248,7 +248,7 @@ Add coverage collection and upload to the test matrix:
         with:
           file: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
-```
+```text
 
 Upload from a single matrix entry (3.12) to avoid duplicate reports. The `CODECOV_TOKEN` is required even for public repos as of 2024. [VERIFIABLE FACT: https://github.com/codecov/codecov-action — token requirement documented in v5 README]
 
@@ -263,7 +263,7 @@ The `astral-sh/setup-uv` action provides built-in caching. Ensure you are using 
         with:
           python-version: "3.12"
           # Caching is enabled by default in v5+
-```
+```text
 
 The action caches the uv package cache directory (`~/.cache/uv`), keyed on OS + `uv.lock` hash. This avoids re-downloading wheels on every CI run. [VERIFIABLE FACT: https://github.com/astral-sh/setup-uv — caching docs in README]
 
@@ -298,7 +298,7 @@ GitHub Actions defaults to 90-day artifact retention. For a CLI project that pub
           python-version: "3.12"
       - run: uv sync --dev
       - run: uv run pyright src/
-```
+```text
 
 Add to `pyproject.toml`:
 
@@ -306,7 +306,7 @@ Add to `pyproject.toml`:
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
-```
+```text
 
 [SYNTHESIZED INFERENCE: pyright in basic mode is the best risk/reward for an existing Python 3.11+ CLI project. It catches real bugs (wrong argument types, missing attributes) without the false-positive noise of strict mode.]
 
@@ -371,7 +371,7 @@ typeCheckingMode = "basic"
     "schedule": ["before 6am on monday"]
   }
 }
-```
+```text
 
 **Key decisions in this config:**
 
@@ -417,7 +417,7 @@ updates:
       actions:
         patterns:
           - "*"
-```
+```text
 
 Then add an automerge workflow:
 
@@ -442,7 +442,7 @@ jobs:
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
+```text
 
 [VERIFIABLE FACT: Dependabot automerge pattern from https://docs.github.com/en/code-security/dependabot/working-with-dependabot/automating-dependabot-with-github-actions]
 
@@ -487,7 +487,7 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
         args: [--maxkb=500]
-```
+```text
 
 **Why these hooks and no others:**
 
@@ -601,7 +601,7 @@ body:
         - Other
     validations:
       required: true
-```
+```text
 
 ### 8.2 Feature Request Template
 
@@ -632,7 +632,7 @@ body:
       description: Any workarounds or alternative approaches you have tried.
     validations:
       required: false
-```
+```text
 
 ### 8.3 Issue Template Config
 
@@ -643,7 +643,7 @@ contact_links:
   - name: Security Vulnerability
     url: https://github.com/sergeiwallace/ai-cli-utils/blob/main/SECURITY.md
     about: Please report security issues privately via SECURITY.md
-```
+```text
 
 ### 8.4 Pull Request Template
 
@@ -662,7 +662,7 @@ contact_links:
 - [ ] Tests pass (`pytest`)
 - [ ] Linting passes (`ruff check src/ tests/ && ruff format --check src/ tests/`)
 - [ ] CHANGELOG.md updated (if user-facing change)
-```
+```text
 
 [SYNTHESIZED INFERENCE: These templates are deliberately minimal. Long templates with many required fields discourage contributions. The YAML issue forms provide structure (dropdowns, required fields) without the wall-of-text problem that markdown templates have. The PR template is a lightweight checklist -- contributors can delete irrelevant sections.]
 

@@ -44,13 +44,13 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 
 ```bash
 uv tool install ai-cli-utils
-```
+```text
 
 Or with pipx:
 
 ```bash
 pipx install ai-cli-utils
-```
+```text
 
 ## Quick Start
 
@@ -75,7 +75,7 @@ ai c -R 1
 
 # Sync Claude Code memory to another machine
 ai sync push
-```
+```text
 
 ## Usage
 
@@ -90,14 +90,14 @@ ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
 ai c -s/--sandbox      # Explicitly enable sandboxing
 ai c -W/--no-worktree  # Disable git worktree isolation
-```
+```text
 
 ### Remote sessions
 
 ```bash
 ai c -R/--remote <name>            # Connect to remote server (uses config)
 ai c -R -p/--project myproject <name>  # Specify remote project directory
-```
+```text
 
 ### Cross-machine sync
 
@@ -106,7 +106,7 @@ ai sync push [-m] [-n] [-v] [-f]   # Push state to remote; aborts if remote has 
 ai sync pull [-m] [-n] [-v] [-f]   # Pull remote state to local
 ai sync conflicts                   # Show unresolved sync conflicts
 ai sync watch [-v]                  # Watch for sync events via NATS
-```
+```text
 
 Flags: `-m`/`--memories-only`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force`
 
@@ -121,7 +121,7 @@ ai gemini "prompt" -m flash -F            # Stdout only, no file (-F/--no-file)
 ai gemini "prompt" -m flash -t 120        # 120s timeout (-t/--timeout)
 ai gemini "prompt" -m deep-research       # Gemini Deep Research (Interactions API, polls until done)
 ai gemini "prompt" -m deep-think -s 2     # Skip OAuth, go straight to REST API key
-```
+```text
 
 **Auth fallback chain (automatic on 429/capacity errors):**
 1. Gemini CLI OAuth (free — Google AI subscription)
@@ -140,7 +140,7 @@ ai gemini "prompt" -m deep-think -s 2     # Skip OAuth, go straight to REST API 
 ai ls              # Interactive fzf session picker (installs fzf via apt if absent)
 ai ls -a/--all     # Show all tmux sessions, not just ai-cli sessions
 ai attach <name>   # Attach directly to a named tmux session
-```
+```text
 
 ### SSH tunnels
 
@@ -152,7 +152,7 @@ ai tunnel start 9222 9223         # Different remote port
 ai tunnel start 9222 -L/--forward # Forward tunnel instead of reverse
 ai tunnel stop 9222               # Stop the tunnel
 ai tunnel status                  # List all active tunnels
-```
+```text
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Host/user from `[remote]` config.
 
@@ -163,7 +163,7 @@ ai handoff post      # Post a task for another session to pick up
 ai handoff check     # Check for pending handoffs
 ai handoff claim     # Claim a handoff
 ai handoff complete  # Mark a handoff as done
-```
+```text
 
 ### iTerm2 layouts
 
@@ -172,7 +172,7 @@ ai layout list                   # List available layouts in ~/.config/iterm2/la
 ai layout validate <name>        # Validate YAML schema
 ai layout profiles <name>        # Regenerate Dynamic Profiles without relaunching window
 ai layout <name>                 # Apply layout: open new iTerm2 window with tabs/panes as defined
-```
+```text
 
 Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define a base profile, tab color, icon tint, and a root pane with optional nested vertical/horizontal splits, each with a startup directory and command.
 
@@ -187,7 +187,7 @@ ai quota watch           # Monitor API quota usage
 ai telemetry writer      # Run telemetry writer daemon
 ai update [-f/--force]   # Update to latest from source; --force also reinstalls all deps
 ai reconnect             # Print reconnect commands for remote sessions
-```
+```text
 
 ## Configuration
 
@@ -202,7 +202,7 @@ After installing, run `ai setup` once to automatically detect your environment a
 
 ```bash
 ai setup
-```
+```text
 
 `ai setup` checks for a shared `~/projects/CLAUDE.md`. If found, it confirms the lean `CLAUDE.md` is correct and takes no action. If not found, it copies `CLAUDE-full.md` → `CLAUDE.md` and marks the file as `assume-unchanged` in git so it won't show as locally modified.
 
@@ -238,7 +238,7 @@ notify_on_exit = true          # desktop notifications on task completion
 
 [update]
 # extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
-```
+```text
 
 ### iTerm2 Config
 
@@ -259,7 +259,7 @@ shell      = "ShellUtility"
 [iterm2.icon_color_overrides]
 # Override auto-contrast icon tint per palette color slot
 # purple = "#da7756"
-```
+```text
 
 The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. Each session gets a collision-free slot via lease files. When a tab color is set, the session icon is automatically tinted with a contrasting color (180° HSL hue rotation). When no color is set, the Claude brand orange (`#da7756`) is used as fallback.
 
@@ -267,7 +267,7 @@ Set `AI_CLI_HOST` in `~/.zshenv` (sourced by all zsh sessions, including non-int
 
 ```bash
 export AI_CLI_HOST=mac    # or "hetzner", "work-laptop", etc.
-```
+```text
 
 ## Requirements
 

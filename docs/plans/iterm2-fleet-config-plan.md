@@ -82,7 +82,7 @@ Detect iTerm2 via `$TERM_PROGRAM == "iTerm.app"` — skip on other terminals (Gh
 
 Set up and save a named Window Arrangement in iTerm2:
 
-```
+```text
 ┌──────────────────┬──────────┐
 │                  │ sw-2     │
 │     sw-1         │          │
@@ -90,7 +90,7 @@ Set up and save a named Window Arrangement in iTerm2:
 │                  │ sw-3     │
 │                  │          │
 └──────────────────┴──────────┘
-```
+```text
 
 Save via Window → Save Window Arrangement. Can be restored via Window → Restore Window Arrangement or `Cmd+Shift+R`.
 

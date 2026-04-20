@@ -9,7 +9,7 @@ This project uses a Claude-native multi-agent orchestration setup where Claude C
 
 ## Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────┐
 │                     HUMAN (you)                       │
 │              Reviews, approves, steers                │
@@ -32,7 +32,7 @@ This project uses a Claude-native multi-agent orchestration setup where Claude C
 │  (.claude/ │  │   review,    │  │   TaskUpdate,     │
 │   agents/) │  │   analysis)  │  │   TaskList)       │
 └────────────┘  └──────────────┘  └──────────────────┘
-```
+```text
 
 ## Operating Principles
 
@@ -86,9 +86,9 @@ Five pre-defined team configurations:
 
 ### Feature implementation (`feature`)
 
-```
+```yaml
 Teammates: researcher → engineer → reviewer
-```
+```text
 
 - **Phase 1**: researcher finds API docs, usage examples, prior art
 - **Phase 2**: engineer implements using research findings
@@ -97,9 +97,9 @@ Teammates: researcher → engineer → reviewer
 
 ### Architecture / design (`design`)
 
-```
+```yaml
 Teammates: researcher → architect → planner
-```
+```text
 
 - **Phase 1**: researcher explores alternatives, finds prior art, benchmarks
 - **Phase 2**: architect evaluates tradeoffs, produces design doc
@@ -108,9 +108,9 @@ Teammates: researcher → architect → planner
 
 ### Code review (`review-PR-NNN`)
 
-```
+```yaml
 Teammates: reviewer + researcher (parallel)
-```
+```text
 
 - reviewer checks quality, style, slop, security
 - researcher verifies external API usage, checks docs for correctness
@@ -119,9 +119,9 @@ Teammates: reviewer + researcher (parallel)
 
 ### Bug investigation (`fix`)
 
-```
+```yaml
 Teammates: researcher + engineer (parallel)
-```
+```text
 
 - researcher searches for known issues, CVEs, related upstream bugs
 - engineer traces local code paths, reads stacktraces
@@ -130,9 +130,9 @@ Teammates: researcher + engineer (parallel)
 
 ### Sprint planning (`sprint-planning`)
 
-```
+```yaml
 Teammates: analyst → planner
-```
+```text
 
 - analyst summarizes current project state, extracts metrics from DB
 
@@ -141,7 +141,7 @@ Teammates: analyst → planner
 
 ## Team Workflow
 
-```
+```text
 1. TeamCreate("feature")
 2. Agent(name="researcher", team_name="...", prompt="Research...")
    Agent(name="engineer", team_name="...", prompt="Implement...")
@@ -153,7 +153,7 @@ Teammates: analyst → planner
 7. SendMessage(target="researcher", type="shutdown_request")
    SendMessage(target="engineer", type="shutdown_request")
    TeamDelete()
-```
+```text
 
 ## Claude + Gemini Coordination
 

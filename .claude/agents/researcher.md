@@ -43,7 +43,7 @@ Always save your findings to `docs/research/{topic-slug}.md` using this format:
 ## Open Questions
 - Question 1
 - Question 2
-```
+```text
 
 Use kebab-case for filenames (e.g., `docs/research/auth-middleware-options.md`). If a file for the topic already exists, update it rather than creating a duplicate.
 
@@ -76,4 +76,4 @@ Before finalizing any research output:
 - Check for contradictions between sources
 - If a claim lacks a verifiable source, mark it [NO SOURCE FOUND] rather than omitting or guessing
 </researcher_verification>
-```
+```text

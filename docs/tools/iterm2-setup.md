@@ -27,19 +27,19 @@ manual configuration required.
 ### Extended Keys for tmux
 
 Already configured in `.tmux.conf` on Hetzner:
-```
+```bash
 set -s extended-keys on
 set -as terminal-features 'xterm*:extkeys'
-```
+```text
 
 ### tmux Passthrough for iTerm2 Escape Sequences
 
 Required for tab colors, badges, profile switching, and icons to work through SSH+tmux.
 
 **Configured in Hetzner `.tmux.conf`:**
-```
+```bash
 set -g allow-passthrough on
-```
+```text
 
 Without this, none of the fleet management features (rolling tab colors, badges, profile switching) reach iTerm2 through the tmux session.
 
@@ -123,7 +123,7 @@ Pin a project or session to a specific palette color in `~/.config/ai-cli-utils/
 [iterm2.project_colors]
 myproject = "purple"
 research  = "teal"
-```
+```text
 
 If the preferred slot is already occupied, ai-cli falls back to the lowest free slot.
 
@@ -170,7 +170,7 @@ printf '\e]1337;SetUserVar=%s=%s\a' "sessionType" "$(echo -n 'cc' | base64)"
 
 # Set tab title
 printf '\e]0;CC sw-3\a'
-```
+```text
 
 ## Tab & Window Titles (ai-cli)
 
@@ -219,7 +219,7 @@ For repeatable multi-tab/pane window configurations, use the YAML layout system 
 ai layout list              # see available layouts
 ai layout <name>            # open a new window with the defined tabs/panes
 ai layout validate <name>   # check YAML schema
-```
+```text
 
 Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Supports nested pane splits, per-tab colors, icons, and startup commands. See `docs/designs/iterm2-layout-system.md`.
 

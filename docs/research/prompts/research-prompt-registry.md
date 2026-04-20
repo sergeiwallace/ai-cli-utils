@@ -77,7 +77,7 @@ to satisfy a formatting instruction. Accuracy > completeness.
 Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
-```
+```text
 
 ## Table of Contents
 
@@ -127,7 +127,7 @@ NEVER generate binary images.
 <details>
 <summary>Prompt (R-1)</summary>
 
-```
+```text
 Research best practices for maintaining a professional open-source Python CLI
 package on GitHub + PyPI. The package is `ai-cli-utils` (command: `ai`), a
 unified CLI for managing Claude Code and Gemini CLI sessions with tmux, mosh,
@@ -135,7 +135,7 @@ git worktrees, and cross-machine sync. Cover: README structure and badges,
 GitHub project configuration (CI, releases, community files, security), Python
 packaging conventions (pyproject.toml, type hints, docs), and exemplary Python
 CLI projects to emulate (1K-50K stars range).
-```
+```text
 
 </details>
 
@@ -162,7 +162,7 @@ Key findings informed the iTerm2 Tab Title and Color System design (now implemen
 <details>
 <summary>Prompt (R-2)</summary>
 
-```
+```text
 You are a senior open-source maintainer who has shipped and maintained Python CLI
 packages with 5K-50K stars on GitHub. You know the difference between "looks
 professional" and "runs itself."
@@ -253,7 +253,7 @@ to satisfy a formatting instruction. Accuracy > completeness.
 Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
-```
+```text
 
 </details>
 
@@ -271,9 +271,9 @@ NEVER generate binary images.
 <details>
 <summary>Prompt (R-N)</summary>
 
-```
+```text
 [Full prompt text here. Must include grounding_instructions block at the end.]
-```
+```text
 
 </details>
 

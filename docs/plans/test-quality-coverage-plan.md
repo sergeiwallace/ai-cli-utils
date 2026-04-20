@@ -45,7 +45,7 @@ with patch("sys.argv", ["ai", "quota", "status"]):
 # After:
 code, out, err = run_cli(["ai", "quota", "status"])
 assert code == 0
-```
+```text
 
 Keep `_run_cli_with_args` as-is for the SSH/execvp tests that need it.
 
@@ -61,7 +61,7 @@ result.stdout = "abc123\n"
 
 # After:
 result = make_subprocess_result(stdout="abc123\n")
-```
+```text
 
 **`make_iterm2_config(palette=None, enabled=True, color_enabled=True, project_colors=None, icon_color_overrides=None) → dict`**
 
@@ -99,7 +99,7 @@ assert result.session_pct == 12
 assert result.week_all_pct == 86
 assert result.week_sonnet_pct == 49
 assert result.extra_enabled is False
-```
+```text
 Also fix the `fake_run` logic — the `if "% used" in cap_with_prompt.stdout` branch always returns `cap_with_prompt` either way (dead conditional). Replace with a call counter so the first capture-pane returns just `❯` and subsequent ones return the full usage output, matching the real scrape flow.
 
 Add missing cleanup assertion on the timeout path: `test_when_cc_prompt_never_appears_then_returns_none` does not assert `kill-window` was called. Audit noted the exception test does check for `killed`. Add the same `killed` assertion to the timeout path.
@@ -111,7 +111,7 @@ Current assertion: `assert slot3 is not None` — doesn't verify wrapping behavi
 Fix: Assert slot3 wraps to the first palette color:
 ```python
 assert slot3 == "e74c3c"  # wrapped back to first slot
-```
+```text
 
 **Deliverables:**
 - Fix `test_quota.py`: `test_when_usage_output_captured_then_returns_snapshot` — real value assertions + fix dead conditional in `fake_run`
@@ -143,7 +143,7 @@ mock_client.publish.assert_called_once()
 subject, payload = mock_client.publish.call_args[0]
 assert subject == "session.event"   # or whichever subject applies
 assert payload["session_id"] == "sess1"
-```
+```text
 
 **M2 — `test_handoff.py:40,84` — wrong patch target for NATSClient**
 
@@ -160,7 +160,7 @@ def test_get_claude_usage_snapshot_when_scraper_returns_snapshot_then_returns_it
     with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap):
         result = _get_claude_usage_snapshot()
     assert result is snap
-```
+```text
 
 **M4 — `test_session.py:115` — `test_build_session_name_with_index_when_called_then_respects_index` calls real subprocess**
 
@@ -172,7 +172,7 @@ def test_build_session_name_with_index_when_called_then_respects_index():
         session_id, ai_name = build_session_name("c", "sw", "3")
     assert session_id == "c-sw-3"
     assert ai_name == "sw-3"
-```
+```text
 
 **M5 — `test_session.py:343` — real `time.sleep(0.01)` to get distinct mtimes**
 
@@ -189,14 +189,14 @@ def fake_stat(self):
 
 with patch.object(Path, "stat", fake_stat):
     result = _find_latest_gemini_uuid("art-1")
-```
+```text
 
 **M6 — `test_messaging.py:346` — dead code in test body**
 
 ```python
 with patch("ai_cli.messaging.NATSClient.__module__"):
     pass
-```
+```text
 This `with` block is empty (`pass`). The context manager enters and exits with no code running. It neither sets up state nor asserts anything. Delete it.
 
 **Deliverables:**
@@ -229,7 +229,7 @@ All three `# pragma: no cover` annotations in sync.py were added lazily during t
 ```python
 except Exception:  # pragma: no cover
     pass
-```
+```text
 This fires if `memory_file.stat()` raises (e.g. file deleted between glob and stat — race condition guard). Testable by patching `Path.stat` to raise `PermissionError` for a specific file.
 
 ```python
@@ -239,7 +239,7 @@ def test_wait_for_dream_completion_when_stat_raises_then_continues(tmp_path, ...
     with patch.object(Path, "stat", side_effect=PermissionError("no access")):
         # Should not raise; recent_write stays False
         _wait_for_dream_completion(verbose=False)
-```
+```text
 
 Remove `# pragma: no cover`.
 
@@ -248,7 +248,7 @@ Remove `# pragma: no cover`.
 ```python
 async def on_completed(data):  # pragma: no cover
     completed.set()
-```
+```text
 This fires when a NATS message arrives on `memory.dream.completed`. Testable by mocking the NATS subscription to immediately invoke the callback:
 
 ```python
@@ -258,7 +258,7 @@ async def fake_subscribe(subject, cb):
 
 with patch.object(mock_client.nc, "subscribe", side_effect=fake_subscribe):
     _wait_for_dream_completion(verbose=True)
-```
+```text
 
 Remove `# pragma: no cover`.
 
@@ -267,14 +267,14 @@ Remove `# pragma: no cover`.
 ```python
 except Exception:  # pragma: no cover
     pass
-```
+```text
 Fires if `asyncio.run(check())` raises. Testable by mocking `asyncio.run` to raise:
 
 ```python
 def test_wait_for_dream_completion_when_asyncio_raises_then_nonfatal():
     with patch("asyncio.run", side_effect=RuntimeError("event loop broken")):
         _wait_for_dream_completion(verbose=False)  # must not raise
-```
+```text
 
 Remove `# pragma: no cover`.
 
@@ -309,7 +309,7 @@ def test_migrate_xdg_dir_when_old_exists_and_new_does_not_then_renames(tmp_path)
     assert not old.exists()
     assert new.exists()
     assert result == new
-```
+```text
 
 **`_load_iterm2_config` lines 721-722 — double-exception fallback**
 
@@ -320,7 +320,7 @@ def test_load_iterm2_config_when_default_config_also_fails_then_returns_empty(tm
         with patch("tomllib.loads", side_effect=Exception("bad toml")):
             result = _load_iterm2_config()
     assert result == {}
-```
+```text
 
 **`_assign_iterm2_color_slot` lines 745, 747, 751 — disabled/empty cases**
 ```python
@@ -344,7 +344,7 @@ def test_assign_iterm2_color_slot_when_palette_empty_then_returns_none(tmp_path)
     with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}):
         with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
             assert _assign_iterm2_color_slot("sw-1", "c") is None
-```
+```text
 
 **Lines 770-771 — corrupt lease file JSON**
 ```python
@@ -357,7 +357,7 @@ def test_assign_iterm2_color_slot_when_lease_file_corrupt_then_continues(tmp_pat
             with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
                 result = _assign_iterm2_color_slot("sw-1", "c")
     assert result is not None  # recovered from corrupt file
-```
+```text
 
 **Lines 823-824 — additional lease/slot branch** *(read before implementing — exact lines TBD)*
 
@@ -367,7 +367,7 @@ def test_log_handoff_event_when_write_fails_then_silent(tmp_path):
     with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
         with patch("builtins.open", side_effect=OSError("disk full")):
             _log_handoff_event("test.event", key="val")  # must not raise
-```
+```text
 
 **`_find_aicli_project_path` lines 1470-1471 — importlib exception**
 ```python
@@ -378,7 +378,7 @@ def test_find_aicli_project_path_when_importlib_raises_then_falls_back_to_cwd(tm
         with patch("pathlib.Path.cwd", return_value=tmp_path):
             result = _find_aicli_project_path({})
     assert result == tmp_path
-```
+```text
 
 **`_auto_update_if_stale` line 1500 — failed update warning**
 ```python
@@ -395,7 +395,7 @@ def test_auto_update_if_stale_when_update_fails_then_prints_warning(tmp_path, ca
             ]
             _auto_update_if_stale({})
     assert "Warning: auto-update failed" in capsys.readouterr().err
-```
+```text
 
 **`_cmd_tunnel_start` lines 1553-1554 — no host configured**
 ```python
@@ -404,7 +404,7 @@ def test_cmd_tunnel_start_when_no_host_then_exits_1(capsys):
         _cmd_tunnel_start(4222, 4222, forward=False, config={})
     assert exc.value.code == 1
     assert "host not set" in capsys.readouterr().err
-```
+```text
 
 **`_ensure_nats_tunnel` lines 1594-1595, 1598-1599 — SystemExit from missing autossh**
 ```python
@@ -413,7 +413,7 @@ def test_ensure_nats_tunnel_when_autossh_missing_then_silent(tmp_path):
     with patch("ai_cli.main._cmd_tunnel_start", side_effect=SystemExit(1)):
         with patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path):
             _ensure_nats_tunnel(config)  # must not raise
-```
+```text
 
 **`_cmd_tunnel_stop` lines 1613-1614 — ProcessLookupError**
 ```python
@@ -424,7 +424,7 @@ def test_cmd_tunnel_stop_when_process_already_dead_then_cleans_pid_file(tmp_path
         with patch("os.kill", side_effect=ProcessLookupError):
             _cmd_tunnel_stop(4222)
     assert not pid_file.exists()
-```
+```text
 
 **`_cmd_tunnel_status` lines 1631-1633 — dead tunnel removed**
 ```python
@@ -436,7 +436,7 @@ def test_cmd_tunnel_status_when_pid_dead_then_removes_pid_file(tmp_path, capsys)
             _cmd_tunnel_status()
     assert not pid_file.exists()
     assert "dead" in capsys.readouterr().out
-```
+```text
 
 **`_ensure_circusd` lines 1682-1685 — circusd timeout RuntimeError**
 ```python
@@ -448,7 +448,7 @@ def test_ensure_circusd_when_daemon_never_ready_then_raises(tmp_path):
                 with patch("time.sleep"):
                     with pytest.raises(RuntimeError, match="circusd did not start"):
                         _ensure_circusd()
-```
+```text
 
 **Signal-watch NATS callback `except OSError` lines 1923-1924**
 *(Tested in T-05 alongside other signal-watch handler coverage)*
@@ -475,7 +475,7 @@ def test_cli_when_quota_status_then_dispatches():
 # color — hex value
 # copier-update non-mac host
 # copier-update --project filter
-```
+```text
 
 Lines 2617-2638 (project prefix branches in `cli()`):
 ```python
@@ -486,7 +486,7 @@ def test_cli_when_project_prefix_arg_set_then_uses_it():
 def test_cli_when_local_project_flag_then_derives_prefix():
     # -p flag without --remote
     ...
-```
+```text
 
 **Deliverables:**
 - New tests in appropriate domain files covering all 155 uncovered lines in `main.py`
@@ -510,7 +510,7 @@ def test_quota_watch_when_already_running_then_returns_2(tmp_path):
     with patch("ai_cli.quota._acquire_pid_file", return_value=False):
         result = quota_watch()
     assert result == 2
-```
+```text
 
 **`quota.py` lines 223-224 — threshold-boundary publish**
 
@@ -521,7 +521,7 @@ def test_quota_watch_when_threshold_crossed_then_publishes_alert():
     with patch("ai_cli.quota._get_claude_usage_snapshot", return_value=snap):
         with patch("ai_cli.messaging.NATSClient") as mock_nats:
             ...
-```
+```text
 
 **`quota_db.py` lines 27-28, 44-46, 98, 114, 121 — DB error paths**
 
@@ -531,7 +531,7 @@ def test_init_db_when_path_unwritable_then_raises():
     with patch("sqlite3.connect", side_effect=sqlite3.OperationalError("disk full")):
         with pytest.raises(sqlite3.OperationalError):
             init_db(Path("/bad/path/quota.db"))
-```
+```text
 
 **`gemini.py` lines 149-169 — `_load_doppler_env` with doppler found**
 ```python
@@ -548,7 +548,7 @@ def test_load_doppler_env_when_doppler_fails_then_nonfatal():
     with patch("shutil.which", return_value="/usr/bin/doppler"):
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
             _load_doppler_env()  # must not raise
-```
+```text
 
 **`icon_generator.py` line 78 — exception branch**
 *(Read line 78 before implementing to determine exact mock needed)*
@@ -573,7 +573,7 @@ def test_cmd_layout_apply_when_layout_not_found_then_returns_1(capsys):
         result = cmd_layout_apply("missing")
     assert result == 1
     assert "Error" in capsys.readouterr().err
-```
+```text
 
 **`layout.py` lines 350-399 — `_write_launch_script`**
 ```python
@@ -586,7 +586,7 @@ def test_write_launch_script_when_called_then_creates_runnable_python_file():
     assert "async def main" in content
     assert "async_create" in content
     path.unlink()
-```
+```text
 
 **`copier_update.py` line 54 — exception branch**
 *(Read line 54 before implementing)*
@@ -603,7 +603,7 @@ def test_signal_watch_handler_when_file_write_fails_then_continues():
     # mock local_file.write_text to raise OSError
     # verify _claim_handoff_for_signal is still called
     ...
-```
+```text
 
 **Deliverables:**
 - New tests in `test_quota.py`, `test_sync.py`, `test_gemini.py`, `test_layout.py`, `test_icon_generator.py`, `test_main.py`/domain files

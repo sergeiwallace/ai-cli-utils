@@ -22,7 +22,7 @@ uv run pre-commit install
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 uv run pytest
-```
+```text
 
 ## Running Tests
 
@@ -38,7 +38,7 @@ uv run pytest tests/test_main.py
 
 # Single test
 uv run pytest tests/test_main.py::test_remote_flag_when_host_configured_then_sshs_to_host
-```
+```text
 
 ## Code Style
 
@@ -56,7 +56,7 @@ uv run ruff format --check src/ tests/
 
 # Auto-format
 uv run ruff format src/ tests/
-```
+```text
 
 ## Hard Gate
 
@@ -64,7 +64,7 @@ All contributions must pass this before merge:
 
 ```bash
 ruff check src/ tests/ && ruff format --check src/ tests/ && pytest
-```
+```text
 
 ## Pull Request Process
 
@@ -83,7 +83,7 @@ ruff check src/ tests/ && ruff format --check src/ tests/ && pytest
 
 ## Project Structure
 
-```
+```text
 src/ai_cli/
   main.py          # CLI entry point, session management, argparse
   sync.py          # Cross-machine sync (push/pull/watch/conflicts)
@@ -99,7 +99,7 @@ tests/
   test_sync.py     # Sync tests
   test_messaging.py # NATS messaging tests
   ...
-```
+```text
 
 ## Reporting Issues
 

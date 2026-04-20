@@ -20,7 +20,7 @@ Structured status update pulling from active work, tests, and git.
 
 ## Output Template
 
-```
+```markdown
 ## Status
 
 **Tests:** [count] passing
@@ -49,7 +49,7 @@ Structured status update pulling from active work, tests, and git.
 ### Known Issues
 
 [Any bugs, blockers, or deferred items relevant to active work]
-```
+```text
 
 ## Rules
 

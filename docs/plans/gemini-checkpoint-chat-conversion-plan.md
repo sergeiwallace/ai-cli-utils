@@ -45,7 +45,7 @@ The result: the art-1 session lost 8 user turns (Apr 7 22:49 → Apr 8 06:18) be
   ],
   "authType": "oauth-personal"
 }
-```
+```text
 
 ### Chat file format (`chats/session-{ts}-{uuid8}.json`)
 ```json
@@ -70,7 +70,7 @@ The result: the art-1 session lost 8 user turns (Apr 7 22:49 → Apr 8 06:18) be
   ],
   "kind": "main"
 }
-```
+```text
 
 Key differences:
 - `role: "model"` → `type: "gemini"`
@@ -126,7 +126,7 @@ Would require maintaining a fork of gemini-cli.
 ```python
 def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
     """Convert a checkpoint JSON to a chat session file. Returns the new UUID."""
-```
+```text
 
 **Algorithm:**
 1. Load `checkpoint-{ai_name}.json`
@@ -141,7 +141,7 @@ def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
 
 ### Update `_find_latest_gemini_uuid`
 
-```
+```python
 def _find_latest_gemini_uuid(ai_name):
     gemini_tmp = ~/.gemini/tmp/{ai_name}
     chats_dir = gemini_tmp / "chats"
@@ -169,7 +169,7 @@ def _find_latest_gemini_uuid(ai_name):
         return _extract_uuid_from_chat_file(latest_chat)
 
     return None  # No checkpoint, no chat files → fresh session
-```
+```text
 
 **Key design note — mtime vs last message timestamp:**
 
@@ -196,7 +196,7 @@ Track conversion state in `~/.local/state/ai-cli/gemini_checkpoint_map.json`:
     "converted_uuid": "abc12345-0000-0000-0000-000000000000"
   }
 }
-```
+```text
 
 This allows idempotent re-conversion: if checkpoint mtime matches the stored value, skip.
 

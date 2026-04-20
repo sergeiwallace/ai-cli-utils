@@ -117,7 +117,7 @@ Implementation of the approved design. A separate implementation plan will be cr
 
 The following is the exact prompt used to spawn the opus sub-agent in Step 4.
 
-```
+```text
 You are an architect agent. Your job is to read all relevant code and documentation,
 then produce a design doc for the iTerm2 tab title and color system in the
 ai-cli-utils project. You are explicitly free to propose a full redesign or clean
@@ -261,7 +261,7 @@ The doc must include a ## Table of Contents. Required sections:
 - Open questions and constraints — anything that needs a decision or has an
   unresolved technical dependency
 - Approval Log — empty table with headers (Date / Round / Decisions)
-```
+```text
 
 ---
 

@@ -186,7 +186,7 @@ The current implementation uses `(num - 1) % 12` where `num` is the trailing dig
 
 **Mechanism:** A JSON file at `~/.local/state/ai-cli-utils/iterm2/color-leases.json` tracks which color slots are currently in use.
 
-```
+```text
 // color-leases.json
 {
   "leases": {
@@ -195,7 +195,7 @@ The current implementation uses `(num - 1) % 12` where `num` is the trailing dig
     "g-art-1": { "slot": 2, "pid": 12347, "ts": "2026-04-02T10:32:00" }
   }
 }
-```
+```text
 
 **Assignment algorithm:**
 
@@ -235,7 +235,7 @@ show_status_symbol = true       # include ▶ ✓ ✗ ↻ ⏸ status prefix in t
 [iterm2.color]
 enabled = true                  # set tab/pane background color on session launch
 collision_avoidance = true      # use lease-file-based slot assignment (vs. simple modulo)
-```
+```text
 
 ### Color Palette
 
@@ -259,7 +259,7 @@ lime        = "#7cb342"
 # Add your own — will be included in auto-rotation:
 # midnight    = "#1a1a2e"
 # rose        = "#f43f5e"
-```
+```text
 
 **Default config:** The TOML file ships as part of ai-cli-utils at `src/ai_cli/data/iterm2-defaults.toml` and is copied to `~/.config/ai-cli-utils/iterm2.toml` on first run if missing. Users edit their local copy; the shipped defaults are never modified.
 
@@ -305,7 +305,7 @@ Every profile type — not just Claude and Gemini — uses the runtime generatio
     "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/c-sw-5.png"
   }]
 }
-```
+```text
 
 GUIDs are deterministic per session name — re-launching a session regenerates the same GUID, so iTerm2 updates the existing profile in place rather than accumulating duplicates.
 
@@ -341,7 +341,7 @@ emerald     = "#059669"
 # Add any color — icon tint auto-derived, no other config needed:
 # midnight   = "#1a1a2e"
 # lavender   = "#7c3aed"
-```
+```text
 
 **Palette size:** 16+ entries by default. No upper limit — add any color to the palette and it works immediately. The lease-file system handles collision avoidance regardless of palette size.
 
@@ -369,10 +369,10 @@ emerald     = "#059669"
 
 When inside a tmux session, iTerm2-proprietary sequences must be wrapped in DCS passthrough. The `_it2` bash helper does this:
 
-```
+```yaml
 Raw:     \033]1337;SetProfile=ClaudeCode-Purple\007
 Wrapped: \033Ptmux;\033\033]1337;SetProfile=ClaudeCode-Purple\007\033\\
-```
+```text
 
 Rules:
 - Every `\033` (ESC) inside the payload must be doubled to `\033\033`

@@ -407,7 +407,7 @@ flowchart TD
     db --> pacing
     pacing --> slack
     pacing --> tmux
-```
+```text
 
 ### Data Capture (The Edge)
 
@@ -482,7 +482,7 @@ CREATE TABLE weekly_state (
     last_anchor_at TEXT,
     reset_at TEXT                    -- when the week resets
 );
-```
+```text
 
 ### Configuration
 
@@ -502,7 +502,7 @@ slack_webhook_url = "https://hooks.slack.com/services/..."
 
 [anchoring]
 min_anchor_interval_hours = 12     # don't accept anchors more frequently
-```
+```text
 
 ## Integration
 
@@ -629,7 +629,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 **Model:** `deep-think` (Gemini 3.1 Pro + HIGH reasoning)
 **Date:** 2026-04-01
 
-```
+```text
 You are a developer tooling engineer who has built observability and cost
 management systems for AI API workloads. You know the community tooling
 landscape — what developers actually build and share for this problem, what
@@ -714,4 +714,4 @@ Hard constraint: never invent a citation. Accuracy > completeness.
 Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
-```
+```text

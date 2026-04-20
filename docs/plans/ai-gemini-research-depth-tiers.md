@@ -123,7 +123,7 @@ depth_presets:
     retries:
       cli_timeout_retries: 1
       step_node_retries: 2
-```
+```text
 
 ---
 
@@ -207,7 +207,7 @@ search_providers:
   - type: keyword        # Gemini native grounding or Serper (fast, named entities)
   - type: semantic       # Future: embedding-based search if provider supports it
   - type: direct_read    # Firecrawl — for known URLs or specific documents
-```
+```text
 
 Allow the planning model to select modality per query via structured JSON output:
 `{"tool": "keyword|semantic|direct_read", "query": "..."}`

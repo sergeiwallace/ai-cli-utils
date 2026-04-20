@@ -151,7 +151,7 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 **Audit command to verify clean:**
 ```bash
 git grep -rn "humanware\|aido\|\bsergei\b\|sergeiwallace\|178\.104" -- src/ tests/
-```
+```text
 
 Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (where these names appear in their correct context as rule definitions), and `setup.py`/`test_setup.py` pending the humanware rename decision.
 
@@ -295,7 +295,7 @@ ai --help            # commands render correctly
 ai gemini --help
 ai layout --help     # shows usage (not treated as layout name)
 ai ps                # shows process health list
-```
+```text
 
 #### Step 7 — TestPyPI Upload
 
@@ -335,7 +335,7 @@ ai ps                # shows process health list
 
 ## Sequence and Gates
 
-```
+```text
 Phase 1 (Tests)
     ↓ CI green + Codecov at target
 Phase 2 (Process Hygiene)
@@ -355,7 +355,7 @@ Phase 5 (Final Review)   ← human approves before bump
 Phase 6 (Version Bump + Publish)
     ↓ PyPI confirmed
 Done
-```
+```text
 
 | Gate | After | Who |
 |------|-------|-----|

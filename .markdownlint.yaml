@@ -21,3 +21,13 @@ MD031: false
 
 # Don't require blank lines around lists
 MD032: false
+
+# Don't require H1 as first line (agent files, signal files, and templates don't need headings)
+MD041: false
+
+# Don't enforce table column alignment style
+MD060: false
+
+# Allow H1 in body when frontmatter has title (research docs and design docs use both)
+MD025:
+  front_matter_title: ""

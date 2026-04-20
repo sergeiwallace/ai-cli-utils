@@ -44,12 +44,12 @@ Check that links between docs are valid:
 ## Output
 
 Print a summary:
-```
+```text
 Doc Audit Results:
   [check] File structure: [result]
   [check] Test count: [result]
   [check] Plan status: [result]
   [check] Cross-references: [result]
-```
+```text
 
 Commit any fixes with message: `docs: audit-docs — fix stale {details}`

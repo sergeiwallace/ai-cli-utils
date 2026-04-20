@@ -43,7 +43,7 @@ All of the following must be true before tagging v1.0.0:
 
 ## Version Milestone Map
 
-```
+```text
 0.1.1 (current)
   ↓
 0.2.0  Test quality · Process hygiene · Privacy audit · CLAUDE/GEMINI alignment · Git squash
@@ -62,7 +62,7 @@ All of the following must be true before tagging v1.0.0:
          [AI-CLI-3] [AI-CLI-11] [AI-CLI-32] [AI-CLI-33]
   ↓
 1.0.0  Stability declaration — all criteria met
-```
+```text
 
 ## Milestone Breakdown
 

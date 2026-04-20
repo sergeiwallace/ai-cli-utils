@@ -68,9 +68,9 @@ source: "[model]-[date]"
 **Model:** `opus researcher` / `gemini-3.1-pro-preview` / `deep-think`
 **Date:** YYYY-MM-DD
 
-```
+```text
 [Full prompt text here]
-```
+```text
 
 <!-- If this research doc predates the prompt appendix convention, note:
 "This research doc predates the prompt appendix template. The original prompt

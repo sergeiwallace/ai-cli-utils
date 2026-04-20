@@ -83,9 +83,9 @@ Also update `~/projects/CLAUDE.md`: remove the `/propagate is deprecated` note a
 
 **Files:** `src/ai_cli/main.py`, `src/ai_cli/copier_update.py` (new), `tests/test_copier_update.py` (new)
 
-```
+```bash
 ai copier-update [--dry-run] [--project PROJECT]
-```
+```text
 
 **Discovery:** scan `Path("~/projects").expanduser().glob("*/.copier-answers.yml")`, parse YAML, filter where `_src_path` contains `project-template`. No hardcoded list — new projects are picked up automatically.
 
@@ -125,7 +125,7 @@ Every 10 seconds (not every second — reduce overhead):
 3. If hash changed: write a `$_ai_state_dir/config-changed-$tmux_session` flag with timestamp
 
 Then, every second (existing poll cadence), check:
-```
+```bash
 if [[ -f "$config_changed_file" ]]; then
     changed_at=$(cat "$config_changed_file")
     now=$(date +%s)
@@ -140,13 +140,13 @@ if [[ -f "$config_changed_file" ]]; then
         fi
     fi
 fi
-```
+```text
 
 `IDLE_THRESHOLD` defaults to 90 seconds, configurable via `config.toml`:
 ```toml
 [session]
 config_reload_idle_secs = 90   # seconds to wait before auto-restarting idle session
-```
+```text
 
 #### B. `config-reload-check.sh` (no change needed)
 

@@ -12,10 +12,10 @@ Full implementation workflow with human gates.
 
 ### 1. Create Feature Branch
 
-```
+```bash
 git checkout main && git pull origin main
 git checkout -b feature/short-description
-```
+```text
 
 ### 2. Present Implementation Plan
 
@@ -50,7 +50,7 @@ Run all checks — must ALL pass before UAT:
 
 ```bash
 pytest
-```
+```json
 
 
 
@@ -64,7 +64,7 @@ Present the UAT summary and **WAIT FOR APPROVAL**. Do not create a PR until the 
 git push -u origin <branch>
 gh pr create --base main --head <branch> \
   --title "summary" --body "..."
-```
+```text
 
 ### 8. Report
 

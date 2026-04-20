@@ -135,15 +135,15 @@ Spread across `ai signal-watch status`, `ai tunnel status`, etc.
 
 ## CLI Design
 
-```
+```bash
 ai ps                    # list all managed processes (local + cached Hetzner)
 ai ps --refresh          # force SSH re-check of Hetzner (updates cache)
 ai ps clean              # show suspect/orphaned, prompt to kill
 ai ps clean --force      # kill all orphaned (score ≥ 80) without prompting
-```
+```text
 
 **`ai ps` output:**
-```
+```text
 LOCAL (mac)
   mosh-server   pid=9414   age=27d  score=90  ⚠ orphaned (no client)
   mosh-server   pid=24205  age=0h   score=0   ✓ active (client: artelier)
@@ -155,10 +155,10 @@ LOCAL (mac)
 HETZNER (cached 8m ago — run `ai ps --refresh` to update)
   mosh-server   pid=518783 age=0h   score=0   ✓ active (art session)
   nats-server   pid=29579  age=4d   score=0   ✓ active
-```
+```text
 
 **`ai ps clean` output:**
-```
+```text
 Orphaned (score ≥ 80):
   LOCAL  mosh-server  pid=9414   age=27d  score=90  (no active client)
   LOCAL  mosh-server  pid=25170  age=10d  score=85  (no active client)
@@ -167,7 +167,7 @@ Suspect (score 40–79):
   LOCAL  sync-watch   pid=44201  age=18h  score=55  (tmux session gone?)
 
 Kill 2 orphan(s)? Suspects require --force to include. [y/N]
-```
+```text
 
 **Auto-hygiene (session start + daily cron):**
 - Silently kills processes with score ≥ 80 only

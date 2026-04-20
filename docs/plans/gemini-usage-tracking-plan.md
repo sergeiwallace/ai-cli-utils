@@ -287,29 +287,29 @@ Add a boolean config key to `config.toml` under `[gemini]`:
 ```toml
 [gemini]
 paid_fallback_enabled = false   # set true only after AI-CLI-43 confirms billing credit status
-```
+```text
 
 When `false` (default): `ai_studio_paid` is removed from the fallback chain entirely for
 all models. If OAuth and free-tier both fail or are unavailable, the run exits cleanly:
 
-```
+```json
 [ai gemini] No available auth method succeeded.
   OAuth: unavailable  |  AI Studio free tier: not eligible for this model
   AI Studio paid fallback is disabled (paid_fallback_enabled = false in config).
   To enable: set paid_fallback_enabled = true in ~/.config/ai-cli/config.toml
   (Do this only after confirming billing credit status — see AI-CLI-43)
-```
+```text
 
 When `true`: `ai_studio_paid` re-enters the fallback chain. For deep-research
 specifically, the `-P` / `--confirm-paid` flag is still required as an additional
 runtime gate (conscious opt-in, even when paid is enabled in config):
 
-```
+```json
 [deep-research] OAuth unavailable. AI Studio paid key is enabled in config.
   This run may incur charges — billing credit status: unconfirmed (see AI-CLI-43).
   To proceed: ai gemini "..." -m deep-research -P
   To check spend: ai spend gemini
-```
+```text
 
 The `-P` / `--confirm-paid` flag is implemented now (for when paid is eventually
 re-enabled) but has no effect while `paid_fallback_enabled = false`.
@@ -326,29 +326,29 @@ completion. Schema:
   "paid_count": 1,
   "last_run": "2026-04-11T18:30:00"
 }
-```
+```text
 
 Constants in `gemini.py`:
 
 ```python
 DEEP_RESEARCH_DAILY_LIMIT: int = 20       # approx. daily cap; unverified — update empirically
 DEEP_RESEARCH_DAILY_WARNING: int = 18     # warn when this many OAuth runs used
-```
+```text
 
 Stderr output after each OAuth deep-research run:
-```
+```json
 [deep-research] OAuth runs today: 3/20
-```
+```text
 
 After each paid deep-research run (only reachable when `paid_fallback_enabled = true`):
-```
+```json
 [deep-research] Paid (AI Studio) runs today: 1 — check `ai spend gemini` for charges
-```
+```text
 
 Warning when `oauth_count >= DEEP_RESEARCH_DAILY_WARNING`:
-```
+```json
 [deep-research] Warning: 18/20 OAuth runs used today. Approaching daily limit.
-```
+```text
 
 Counter increments on **completion** only. Cancelled/errored runs not counted. File
 created on first run. `quiet=True` suppresses counter output.
@@ -396,7 +396,7 @@ amounts and local JSONL logs + `dr-daily.json` for OAuth and free-tier run count
 gcp_project_id = "gen-lang-client-0651020461"
 billing_account_id = "01AC33-5BE8AD-2F4E8A"
 billing_export_table = ""   # filled after BigQuery export is enabled
-```
+```text
 
 **BigQuery query:** filter `service.description = 'Gemini API'`, group by
 `DATE(usage_start_time)` and `sku.description`. On first successful query, print
@@ -404,7 +404,7 @@ raw SKU strings so model→SKU mapping can be confirmed.
 
 **Example output:**
 
-```
+```text
 Gemini usage — today (2026-04-11)
   Deep Research:  3 OAuth runs (17 remaining free)  |  0 paid runs
   Other models:   flash ×12  •  deep-think ×2
@@ -413,22 +413,22 @@ This month (Apr 2026)
   Deep Research:  18 OAuth  •  1 paid run
   Paid API spend: $0.00  (source: GCP billing export, as of 2026-04-10)
     → Ultra credit appears to be applied ✓
-```
+```text
 
 Or, if billing shows a charge:
 
-```
+```text
   Paid API spend: $3.20  (source: GCP billing export, as of 2026-04-10)
     → Charges are being applied — Ultra credit may not cover AI Studio API keys
-```
+```text
 
 When BigQuery not configured:
-```
+```text
 Paid API spend: not available — BigQuery billing export not configured.
   To enable: Cloud Console → Billing → Billing export → Detailed usage cost
   One-time setup (~5 min); data appears within 24-48h.
   GCP project: gen-lang-client-0651020461
-```
+```text
 
 **Deliverables:**
 

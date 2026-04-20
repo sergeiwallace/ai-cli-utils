@@ -40,7 +40,7 @@ Icons appear in the **tab bar** and the **window title bar**. [VERIFIABLE FACT: 
 ```python
 await profile.async_set_icon_mode(iterm2.profile.IconMode.CUSTOM)  # value = 2
 await profile.async_set_custom_icon_path("/path/to/icon.png")
-```
+```text
 
 The corresponding Dynamic Profile JSON keys are: [VERIFIABLE FACT: [iTerm2 source code, profile.py](https://github.com/gnachman/iTerm2/blob/master/api/library/python/iterm2/iterm2/profile.py)]
 
@@ -49,7 +49,7 @@ The corresponding Dynamic Profile JSON keys are: [VERIFIABLE FACT: [iTerm2 sourc
   "Icon": 2,
   "Custom Icon Path": "~/.config/iterm2/icons/claude-logo.png"
 }
-```
+```text
 
 **Icon format/size:** The documentation does not specify accepted formats or recommended sizes. [NO SOURCE FOUND for explicit format docs.] [INDUSTRY HEURISTIC] Standard practice is PNG, 32x32 or 64x64 pixels, with transparency. The icon is displayed at tab-bar scale (~16-20px rendered), so larger images are downscaled. Test with PNG first.
 
@@ -94,7 +94,7 @@ printf '\e]1337;SetProfile=ClaudeCode\a'
 
 # Or using the older OSC 50 form (also works):
 echo -e "\033]50;SetProfile=ClaudeCode\a"
-```
+```text
 
 [VERIFIABLE FACT: [Proprietary Escape Codes docs](https://iterm2.com/documentation-escape-codes.html), [community examples](https://til-engineering.nulogy.com/Changing-Your-iterm2-Profile-Programmatically/)]
 
@@ -154,7 +154,7 @@ Dynamic Profiles let you define profiles as JSON files that iTerm2 hot-reloads. 
     }
   ]
 }
-```
+```text
 
 **Key points:**
 - Files are monitored for changes and auto-reloaded. [VERIFIABLE FACT]
@@ -177,7 +177,7 @@ printf '\e]6;1;bg;blue;brightness;220\a'
 
 # Reset to default
 printf '\e]6;1;bg;*;default\a'
-```
+```text
 
 **Method 2: OSC 1337 SetColors (newer)**
 ```bash
@@ -186,7 +186,7 @@ printf '\e]1337;SetColors=tab=6440dc\a'
 
 # Reset tab color
 printf '\e]1337;SetColors=tab=default\a'
-```
+```text
 
 ### Color Cycling Implementation for ai-cli
 
@@ -215,7 +215,7 @@ set_tab_color() {
   local hex_color="${CC_COLORS[$color_index]}"
   printf '\e]1337;SetColors=tab=%s\a' "$hex_color"
 }
-```
+```text
 
 ### Persistence After Reconnect
 
@@ -245,14 +245,14 @@ Badges appear as large, faint text in the top-right corner of a terminal session
 # Set badge (value must be base64-encoded)
 printf '\e]1337;SetBadgeFormat=%s\a' \
   "$(echo -n 'CC sw-\(user.sessionNum)' | base64)"
-```
+```text
 
 **Via profile (Dynamic Profile JSON):**
 ```json
 {
   "Badge Text": "\\(user.sessionType) sw-\\(user.sessionNum)"
 }
-```
+```text
 
 ### User-Defined Variables for Badges
 
@@ -266,7 +266,7 @@ printf '\e]1337;SetUserVar=%s=%s\a' \
   "sessionNum" "$(echo -n '3' | base64)"
 printf '\e]1337;SetUserVar=%s=%s\a' \
   "tmuxSession" "$(echo -n 'c-r-sw-3' | base64)"
-```
+```text
 
 Badge text can then interpolate: `\(user.sessionType) sw-\(user.sessionNum)` [VERIFIABLE FACT]
 
@@ -355,7 +355,7 @@ for window in app.terminal_windows:
         for session in tab.sessions:
             name = await session.async_get_variable("name")
             # match by name pattern
-```
+```text
 
 [VERIFIABLE FACT for Python API methods; NO SOURCE FOUND for a built-in fuzzy search feature]
 
@@ -424,7 +424,7 @@ _iterm2_setup() {
 
 # Called from ai-cli after tmux attach succeeds:
 _iterm2_setup 3 "cc"
-```
+```text
 
 **Option B: AppleScript from Mac (for initial layout creation)**
 
@@ -439,7 +439,7 @@ tell application "iTerm2"
     end tell
   end tell
 end tell
-```
+```text
 
 Invoke from terminal: `osascript -e 'tell application "iTerm2" ...'`
 
@@ -491,7 +491,7 @@ async def main(connection):
         await launch_cc_session(connection, n)
 
 iterm2.run_until_complete(main)
-```
+```text
 
 Note: `command` and `profile_customizations` are mutually exclusive in `async_create_tab()`. Use `profile_customizations` for visual setup + `async_send_text()` for the SSH command. [VERIFIABLE FACT: [Window API docs](https://iterm2.com/python-api/window.html)]
 
@@ -502,7 +502,7 @@ Escape sequences emitted on the remote server travel through SSH to iTerm2 on th
 ```bash
 # In remote ~/.tmux.conf:
 set -g allow-passthrough on
-```
+```text
 
 ## 7. Persistence Across Restarts
 
@@ -603,7 +603,7 @@ Create the file `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-ses
     }
   ]
 }
-```
+```text
 
 ### Step 2: Prepare Icons
 
@@ -618,7 +618,7 @@ mkdir -p ~/.config/iterm2/icons
 # coffee.png       -- coffee cup for caffeinate
 # ssh.png          -- lock/key icon for SSH tunnels
 # chrome.png       -- Chrome logo for debug browser
-```
+```text
 
 ### Step 3: Configure tmux Passthrough
 
@@ -627,7 +627,7 @@ On the remote server, add to `~/.tmux.conf`:
 ```bash
 # Allow iTerm2 escape sequences to pass through tmux
 set -g allow-passthrough on
-```
+```text
 
 Reload: `tmux source-file ~/.tmux.conf`
 
@@ -676,7 +676,7 @@ tell application "iTerm2"
 end tell
 EOF
 done
-```
+```text
 
 ### Step 7 (Optional): 4-Pane Monitoring Layout
 
@@ -706,7 +706,7 @@ tell application "iTerm2"
     end tell
   end tell
 end tell
-```
+```text
 
 [Note: AppleScript split pane commands use `split horizontally/vertically with profile "X"`. The exact nesting for 4-pane layouts may require testing -- the above is illustrative. [INDUSTRY HEURISTIC]]
 
@@ -768,7 +768,7 @@ Skip tmux -CC integration mode for now. It adds complexity without benefit for y
 **Model:** `claude-opus-4-6` (1M context)
 **Date:** 2026-03-29
 
-```
+```text
 Research iTerm2 power user configuration for managing 5-10 parallel AI coding agent SSH sessions.
 
 CONTEXT:
@@ -791,4 +791,4 @@ QUESTIONS:
 8. Configuration walkthrough: step-by-step for the use case
 
 IMPORTANT: Verify ALL claims against iTerm2 documentation. Tag unverifiable claims.
-```
+```text

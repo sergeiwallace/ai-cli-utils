@@ -64,7 +64,7 @@ NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messa
 
 ```bash
 brew install nats-server
-```
+```text
 
 ### Linux (Debian/Ubuntu)
 
@@ -76,20 +76,20 @@ wget https://github.com/nats-io/nats-server/releases/download/VERSION/nats-serve
 unzip nats-server-VERSION-linux-amd64.zip
 sudo mv nats-server /usr/local/bin/
 nats-server --version
-```
+```text
 
 Or via the official install script:
 
 ```bash
 curl -sf https://binaries.nats.dev/nats-io/nats-server/v2@latest | sh
 sudo mv nats-server /usr/local/bin/
-```
+```text
 
 ### Docker
 
 ```bash
 docker run -d --name nats -p 4222:4222 nats:latest --jetstream
-```
+```text
 
 ---
 
@@ -100,21 +100,21 @@ Edit `~/.config/ai-cli/config.toml`:
 ```toml
 [messaging]
 nats_servers = ["nats://localhost:4222"]
-```
+```text
 
 For a remote NATS server (e.g. on your dev server):
 
 ```toml
 [messaging]
 nats_servers = ["nats://your-server.example.com:4222"]
-```
+```text
 
 Multiple servers (cluster):
 
 ```toml
 [messaging]
 nats_servers = ["nats://server1:4222", "nats://server2:4222"]
-```
+```text
 
 ---
 
@@ -126,7 +126,7 @@ Start with JetStream:
 
 ```bash
 nats-server --jetstream
-```
+```text
 
 Or in your config file (`/etc/nats/nats.conf` or `~/.config/nats/nats-server.conf`):
 
@@ -134,13 +134,13 @@ Or in your config file (`/etc/nats/nats.conf` or `~/.config/nats/nats-server.con
 jetstream {
   store_dir: "/tmp/nats-jetstream"
 }
-```
+```text
 
 Verify JetStream is active:
 
 ```bash
 nats server info | grep -i jetstream
-```
+```text
 
 ---
 
@@ -158,7 +158,7 @@ nats server ping
 
 # Publish a test message
 nats pub test.hello "world"
-```
+```text
 
 When you start an AI session with `ai c 1`, heartbeat events will appear on `heartbeat.*` if NATS is connected.
 
@@ -172,7 +172,7 @@ After `brew install nats-server`, enable as a service:
 
 ```bash
 brew services start nats-server
-```
+```text
 
 To enable JetStream, edit the Homebrew plist or create `~/Library/LaunchAgents/nats-server.plist`:
 
@@ -191,11 +191,11 @@ To enable JetStream, edit the Homebrew plist or create `~/Library/LaunchAgents/n
     <key>KeepAlive</key><true/>
 </dict>
 </plist>
-```
+```text
 
 ```bash
 launchctl load ~/Library/LaunchAgents/nats-server.plist
-```
+```text
 
 ### Linux (systemd)
 
@@ -213,13 +213,13 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-```
+```text
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now nats-server
 sudo systemctl status nats-server
-```
+```text
 
 ---
 
@@ -231,14 +231,14 @@ To share NATS between your local machine and a remote dev server, run NATS on th
 
 ```bash
 nats-server --jetstream --addr 0.0.0.0
-```
+```text
 
 **On both machines** — point `ai-cli-utils` at the server:
 
 ```toml
 [messaging]
 nats_servers = ["nats://your-server-ip:4222"]
-```
+```text
 
 This enables cross-machine handoff delivery and session event coordination between your local and remote CC sessions.
 

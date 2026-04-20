@@ -57,7 +57,7 @@ Auto-determined by what files changed. No user input needed.
 
 Send this to Gemini along with the diff:
 
-```
+```text
 Review this code diff for a Python/TypeScript/Rust project. Check for:
 
 1. **Scope creep** — changes beyond what was requested
@@ -74,12 +74,12 @@ For each finding, specify:
 - What's wrong and how to fix it
 
 If the code looks good, say so briefly. Don't invent issues.
-```
+```text
 
 ## Output Format
 
 Present findings as:
-```
+```markdown
 ## /review results (model: gemini-3-flash-preview)
 
 ### CRITICAL
@@ -92,7 +92,7 @@ Present findings as:
 - [file:line] Issue description
 
 ### Verdict: PASS / NEEDS FIXES
-```
+```text
 
 ## Rules
 

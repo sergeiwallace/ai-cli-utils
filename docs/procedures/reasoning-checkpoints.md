@@ -28,7 +28,7 @@ BEFORE executing this operation:
 3. VERIFY: After completing the operation, check the result against the original
    intent. If tests exist, run them. If not, state explicitly what you verified and how.
 </reasoning_checkpoint>
-```
+```text
 
 ---
 
@@ -45,7 +45,7 @@ Run the universal core first, then extend with:
 - Write the rollback migration before the forward migration
 - Run the full test suite after applying the migration, not just migration tests
 </db_migration_checkpoint>
-```
+```text
 
 ### 2. Architecture Decisions
 
@@ -56,7 +56,7 @@ Run the universal core first, then extend with:
 - List concrete failure modes of the proposed approach
 - Verify the decision aligns with the platform design philosophy in CLAUDE.md
 </architecture_checkpoint>
-```
+```text
 
 ### 3. Test Derivation from Plan ACs
 
@@ -67,7 +67,7 @@ Run the universal core first, then extend with:
 - Write at least one failure-path test per public function
 - Confirm each test would fail if the function body were replaced with `pass` or `return None`
 </test_derivation_checkpoint>
-```
+```text
 
 ### 4. Complex Multi-File Implementation
 
@@ -80,7 +80,7 @@ Use when a task touches 3+ files or involves shared state across modules:
 - Sequence edits so the codebase is in a valid state after each commit
 - Run the full test suite after each logical unit of work, not just at the end
 </implementation_checkpoint>
-```
+```text
 
 ### 5. Research Synthesis to Design Doc
 
@@ -91,7 +91,7 @@ Use when a task touches 3+ files or involves shared state across modules:
 - Check for contradictions between source documents
 - Ensure every design decision traces to a research finding
 </synthesis_checkpoint>
-```
+```text
 
 ### 6. Agent Spawn
 
@@ -102,7 +102,7 @@ Use when a task touches 3+ files or involves shared state across modules:
 - Confirm there are no file conflicts with other running agents or the parent session
 - Specify the expected output format and success criteria
 </agent_spawn_checkpoint>
-```
+```text
 
 ### 7. Post-Implementation Architecture Doc Update
 
@@ -115,4 +115,4 @@ Trigger: completing work that adds or changes a service, MCP tool, data model, s
 - If no change needed: state explicitly why (e.g., "internal refactor, no interface or component changes")
 - Ship the update in the same commit as implementation, or immediately after — never batch it for later
 </architecture_update_checkpoint>
-```
+```text

@@ -102,12 +102,12 @@ Gemini tabs should show: `✦ ▶ {session-name}` (e.g., `✦ ▶ g-art-1`) with
 
 Running `ai g N -p PROJECT` from a directory that is not the target project root (e.g., running `ai g 1 -p myproject` from a different project directory) when an existing Gemini session conversation exists for that project produces a repeating error loop:
 
-```
+```text
 Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4db0688464".
   Searched for sessions in ~/.gemini/tmp/sw-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.
 Resuming... (Ctrl-C to exit)
-```
+```text
 
 The error repeats indefinitely. The session is never resumed.
 
@@ -183,7 +183,7 @@ bugs I've noticed:
 4. for local gemini sessions, there are couple issues:
    4a. if you're in the correct directory and use or don't use the `-p {PROJECT_NAME`, then it's able to start and the tab color appears as a custom color lighter blue with a white gemini logo icon but no tab/session title. it just says "Default". it's able to start a new gemini session conversation or successfully resume an existing one.
    4b. if you're in a different directory than the project root you want to open gemini session from (e.g. running `ai g 1 -p myproject` from a different project directory) and there's an existing gemini session to resume in the target project's git worktree (e.g. `c-proj-1` and `wt-proj-1`), then you get this error on repeat and can't resume the existing gemini session if there is one:
-```
+```text
 YOLO mode is enabled. All tool calls will be automatically approved.
 Keychain initialization encountered an error: Cannot find module '../build/Release/keytar.node'
 Require stack:
@@ -196,7 +196,7 @@ Detected terminal name: tmux 3.6a
 Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4db0688464".
   Searched for sessions in ~/.gemini/tmp/sw-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.Resuming... (Ctrl-C to exit)
-```
+```text
    4c. if you're in a different directory than the target directory you want to launch a gemini session (e.g. `ai g 2 -p myproject` from a different project directory) and there's no existing git worktree or gemini session conversation to resume, then you just get a blank screen that never even gets to the `session context written to .gemini/signals/session-context.md` text. it just stays blank black screen indefinitely until you ctrl + C out of it. if you ctrl + C quickly enough, it's take you back to local machine shell. if you wait a bit, it'll start doing the same failure to resume existing gemini session error above in 4b. also, sometimes the custom light blue tab color and "Default" tab title persist and sometimes it goes back to terminal logo with "Default" title.
 5. for remote gemini sessions that are in different directory than the target direct you want to launch gemini session from, you get same can't resume existing gemini session error from 4b. it exiting me back to a `sw-1` git worktree root on dev server once (the tab title was the usual "[mosh] ..." and other times it kicked me back to local machine shell. not sure what to make of that inconsistency.
 

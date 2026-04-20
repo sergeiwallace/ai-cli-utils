@@ -96,11 +96,11 @@ promote to Option C.
 
 ### Command signatures
 
-```
+```bash
 ai cdp start [--port 9222] [--no-incognito]
 ai cdp stop  [--port 9222]
 ai cdp status
-```
+```text
 
 ### Chrome binary detection (cross-platform)
 
@@ -131,7 +131,7 @@ def _find_chrome_binary(config: dict) -> str | None:
         if found:
             return str(found)
     return None
-```
+```text
 
 ### Start function
 
@@ -191,7 +191,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict) -> None:
         print(f"CDP ready at localhost:{port}")
     else:
         print(f"CDP started (PID {proc.pid}) — endpoint not yet responding on port {port}")
-```
+```text
 
 ### Stop function
 
@@ -209,7 +209,7 @@ def _cmd_cdp_stop(port: int) -> None:
         pass
     pid_file.unlink(missing_ok=True)
     print(f"CDP stopped: port {port}")
-```
+```text
 
 ### Status function
 
@@ -230,7 +230,7 @@ def _cmd_cdp_status() -> None:
             status = "dead"
             pid_file.unlink(missing_ok=True)
         print(f"port {port}: PID {pid} ({status})")
-```
+```text
 
 ### Dispatch block (in `cli()`)
 
@@ -262,7 +262,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "cdp":
     else:
         print(f"Unknown cdp action: {cdp_action}. Use start, stop, or status.", file=sys.stderr)
         sys.exit(1)
-```
+```text
 
 ### Config section
 
@@ -274,7 +274,7 @@ Add to `DEFAULT_CONFIG` comment block:
 # binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ## Default CDP port
 # port = 9222
-```
+```text
 
 Config access: `config.get("cdp", {}).get("port", 9222)` / `.get("binary_path", "")`.
 

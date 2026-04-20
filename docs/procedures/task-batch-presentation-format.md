@@ -76,7 +76,7 @@ A lightweight hybrid for mid-session check-ins ("where are we?", "give me a stat
 ### Recommended next steps
 - [2-3 options with model recommendations, cheapest first]
 - **Recommendation:** [which and why]
-```
+```text
 
 ### When to use
 

@@ -42,4 +42,4 @@ Before each of these operations, pause and run the relevant checkpoint from `doc
 - Test writing: Read full AC list first. Map ACs to tests 1:1. Include failure-path tests. Verify each test fails with `pass` body.
 - Architecture doc update (new service/tool/model/subsystem/integration): follow docs/procedures/reasoning-checkpoints.md §7. If no change needed, state why explicitly — don't silently skip.
 </engineer_checkpoints>
-```
+```text

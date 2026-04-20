@@ -25,7 +25,7 @@ Set global default:
 claude --model sonnet
 # or
 export ANTHROPIC_MODEL="sonnet"
-```
+```text
 
 ## Effort Levels
 
@@ -97,7 +97,7 @@ This isolates expensive "discovery" context to the cheapest model.
 npx claude-spend          # web dashboard at localhost:3456
 npx ccusage@latest weekly # terminal weekly report
 npx ccusage@latest blocks # 5-hour billing blocks (most granular)
-```
+```text
 
 ## Your Usage Baseline (from ccusage)
 
@@ -114,7 +114,7 @@ At $2,600+/week on API pricing, the Max subscription (~$200/mo) provides ~13x le
 
 ## Quick Reference
 
-```
+```text
 /model haiku     → cheap discovery work
 /model sonnet    → standard implementation (default)
 /model opus      → architecture + hard problems only
@@ -122,4 +122,4 @@ At $2,600+/week on API pricing, the Max subscription (~$200/mo) provides ~13x le
 /effort high     → complex reasoning
 /compact         → at 70% context
 /clear           → after each task
-```
+```text

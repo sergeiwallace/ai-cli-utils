@@ -93,7 +93,7 @@ Define the tunnel as a user-level systemd service (Linux) or launchd plist (macO
 
 ```python
 def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = False) -> None:
-```
+```text
 
 1. Check `shutil.which("autossh")` — if not found, print install instructions (`brew install autossh` / `apt install autossh`) and `sys.exit(1)`
 2. Read `host` and `user` from config `[remote]` section
@@ -116,7 +116,7 @@ def _cmd_tunnel_start(local_port: int, remote_port: int, *, forward: bool = Fals
 
 ```python
 def _cmd_tunnel_stop(local_port: int) -> None:
-```
+```text
 
 1. Read PID from `{state_dir}/tunnel-{local_port}.pid`
 2. If PID file does not exist, exit silently (exit 0)
@@ -128,7 +128,7 @@ def _cmd_tunnel_stop(local_port: int) -> None:
 
 ```python
 def _cmd_tunnel_status() -> None:
-```
+```text
 
 1. Glob `{state_dir}/tunnel-*.pid`
 2. For each PID file: read PID, check if process is alive (`os.kill(pid, 0)`)
@@ -137,11 +137,11 @@ def _cmd_tunnel_status() -> None:
 
 ### 4. CLI dispatch block
 
-```
+```bash
 ai tunnel start <local-port> [remote-port] [--forward]
 ai tunnel stop <port>
 ai tunnel status
-```
+```text
 
 - `remote-port` defaults to `local-port` if omitted
 - `--forward` flag switches from `-R` (reverse) to `-L` (forward)
@@ -171,7 +171,7 @@ New `TestTunnel` class in `tests/test_main.py`:
 [remote]
 host = "192.0.2.1"
 user = "user"
-```
+```text
 
 ### 6. Checks
 

@@ -54,12 +54,12 @@ You are working on ~/projects/{project}. Your task:
 - Run: ai handoff complete "$CC_HANDOFF_FILE"
 HANDOFF_MSG
 )"
-```
+```text
 
 ### 4. Report
 
 Print confirmation:
-```
+```text
 Posted handoff to queue: ~/projects/sergei/.handoff-queue/pending/001-title.md
 Priority: P0 | Project: project-name | Requires human: yes/no
 
@@ -67,7 +67,7 @@ Any idle AI session (`ai c` or `ai g`) will pick this up on its next restart.
 To manually trigger: 
 - Claude: touch /tmp/cc-exit-claude-sw-{N}
 - Gemini: touch /tmp/gg-exit-gemini-sw-{N}
-```
+```text
 
 ## How Sessions Pick Up Handoffs
 
@@ -79,12 +79,12 @@ The auto-resume loops (both `ai c` and `ai g`) automatically check `~/projects/s
 
 ## Queue Structure
 
-```
+```text
 ~/projects/sergei/.handoff-queue/
 ├── pending/     # Unclaimed — any session can pick up
 ├── claimed/     # Being worked on
 └── completed/   # Done (audit trail)
-```
+```text
 
 ## Rules
 

@@ -86,9 +86,9 @@ This is a **public open-source package**. All code, docs, comments, tests, and c
 
 **All feature work follows this pipeline:**
 
-```
+```text
 Feature Branch → Plan → Implement → /simplify → Checks → UAT → PR → Merge
-```
+```text
 
 ### Branch Strategy
 
@@ -134,7 +134,7 @@ Before presenting for UAT, verify none of these exist:
 
 When presenting for UAT, always use this template:
 
-```
+```markdown
 ## UAT Summary
 
 ### What was built — [1-3 bullet points]
@@ -142,7 +142,7 @@ When presenting for UAT, always use this template:
 ### Test results — [test output summary]
 ### How to verify — [steps the human can take to manually test]
 ### Acceptance criteria status — [x] Criterion 1 ...
-```
+```text
 
 ## Document Structure
 
@@ -186,9 +186,9 @@ Claude is the lead — it owns the conversation, writes code, uses tools, and ma
 
 **Always pass an explicit `model` argument.** Do not rely on defaults. On quota exhaustion, fall down the tier list. `gemini-3.0-flash` is the universal safety net.
 
-```
+```text
 mcp__gemini-cli__ask-gemini(prompt="...", model="gemini-3.0-flash")
-```
+```text
 
 Models ranked by capability: `gemini-3.1-pro-preview` (preview, high quota risk) → `gemini-3.0-pro` (flagship, high) → `gemini-3.0-flash` (workhorse, low) → `gemini-2.5-pro` (previous gen, moderate) → `gemini-2.5-flash` (bulk, low) → `gemini-2.5-flash-lite` (simple extraction, minimal).
 

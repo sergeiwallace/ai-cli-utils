@@ -34,9 +34,9 @@ They diverge because free tier usage doesn't bill and Ultra pricing may differ f
 User: `/spend 8.43`
 
 Action: Update MEMORY.md line to:
-```
+```text
 - **Current spend: $8.43 as of 2026-03-14** ($91.57 remaining, resets April 1)
-```
+```text
 
 Response: "Updated. $8.43/$100 — $91.57 remaining."
 

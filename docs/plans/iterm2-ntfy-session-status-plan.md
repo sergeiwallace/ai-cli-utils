@@ -92,7 +92,7 @@ All stored at `~/.config/iterm2/icons/` on Mac.
 
 ### Three-Layer Status Pipeline
 
-```
+```text
 Layer 1: ai-cli escape sequences (Hetzner-side, <100ms)
   ┌──────────────┐    escape seq    ┌─────────────┐
   │ ai-cli       │ ───────────────→ │ iTerm2 tab  │
@@ -132,7 +132,7 @@ Layer 3: Mac daemon → iTerm2 Python API (Mac-side, 1-5s)
                                      │    "Jump to tab"    │
                                      └─────────────────────┘
                                      Runs as launchd agent on Mac
-```
+```text
 
 ## Implementation Tasks
 
@@ -152,7 +152,7 @@ Extend `~/.claude/hooks/notify.sh` to emit iTerm2 escape sequence when CC fires 
 ```bash
 printf '\e]1337;SetBadgeFormat=%s\a' "$(echo -n '⏸ WAIT sw-N' | base64)"
 printf '\e]0;⏸ WAIT sw-N\a'
-```
+```text
 
 Need to extract the session number from the environment (`$AI_TMUX_SESSION`).
 

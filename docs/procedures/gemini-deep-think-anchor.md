@@ -51,7 +51,7 @@ When generating your final output, adhere to these epistemic boundaries:
 - State what you would need to verify empirically before adopting the recommendation
 </operational_reasoning>
 </grounding_instructions>
-```
+```text
 
 ## Prompt Patterns
 
@@ -61,11 +61,11 @@ When researching what's new in a specific time window (e.g., "what did this fiel
 
 **Inside `<grounding_instructions>`, add as a hard constraint:**
 
-```
+```text
 Hard constraint: if [period] is genuinely thin on a topic, "[period]: no significant new
 developments found" is the correct answer. Do not backfill with [earlier period] sources
 already covered in prior research. Backfilling is a failure mode, not a hedge.
-```
+```text
 
 Naming the specific failure ("backfill") is more effective than generic abstention instructions because it gives the model a label to apply during its CoVe hostile cross-examination step.
 
@@ -73,7 +73,7 @@ Naming the specific failure ("backfill") is more effective than generic abstenti
 
 When a research run follows a prior run on the same topic, add a `## Background` section at the top of the prompt body (before your research questions, outside `<grounding_instructions>`). This prevents the model from re-surveying terrain already covered.
 
-```
+```markdown
 ## Background
 
 Prior research ([registry ID], [date]) on [topic] found:
@@ -83,7 +83,7 @@ Prior research ([registry ID], [date]) on [topic] found:
 
 This run should build on — not repeat — those findings. Assume all Background points
 are established and do not re-derive them.
-```
+```text
 
 The model uses the Background section during its planning step to scope what's already known, directing its reasoning toward the delta rather than a full re-survey.
 

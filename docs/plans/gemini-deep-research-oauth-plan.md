@@ -129,7 +129,7 @@ an orphaned symlink.
 **Fix:**
 ```bash
 npm install -g agent-browser --ignore-scripts
-```
+```text
 `--ignore-scripts` skips the problematic postinstall. The CLI works normally once installed.
 
 **Version:** 0.25.3. CDP usage: `agent-browser --cdp <port> <command>`.

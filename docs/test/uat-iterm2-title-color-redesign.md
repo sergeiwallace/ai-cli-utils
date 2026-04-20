@@ -43,13 +43,13 @@ related_docs:
 
 ## Unit Test Results
 
-```
+```text
 768 passed, 2 skipped (2026-04-02)
 49 new iTerm2 tests added:
   TestIsIterm2, TestLoadIterm2Config, TestIterm2Palette, TestIterm2ColorSchemes,
   TestAssignIterm2ColorSlot, TestReleaseIterm2ColorSlot, TestReleaseColorSlotCommand,
   TestGetEngineScriptIterm2Slot, TestLocalProjectChdir
-```
+```text
 
 ---
 

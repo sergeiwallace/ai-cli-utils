@@ -158,7 +158,7 @@ def main():
         _handle_internal(sys.argv[2:])
         return
     cli()  # Click handles everything else
-```
+```text
 
 This keeps `ai internal` startup at <1ms while Click handles all user-facing commands.
 
@@ -179,7 +179,7 @@ Rationale: Phase 1 cleans the foundation without changing dispatch behavior. Aft
 
 Critical constraint: no circular imports. The dependency graph must be a strict DAG with `config.py` at the bottom and `main.py` at the top.
 
-```
+```text
 main.py (cli dispatch)
   ├── session_script.py (get_engine_script)
   │     ├── iterm2.py
@@ -201,7 +201,7 @@ main.py (cli dispatch)
   │     └── config.py
   └── config.py (XDG, load_config, session map, project registry)
         └── (stdlib + external only)
-```
+```text
 
 After Phase 1, existing modules that currently do `from .main import load_config` etc. will import from `config.py` directly — eliminating all deferred import workarounds.
 
@@ -436,7 +436,7 @@ def main():
         handle_internal(sys.argv[2:], load_config())
         return
     cli()  # Click handles everything else
-```
+```text
 
 This keeps `ai internal` at <1ms while giving all user-facing commands full Click subcommand dispatch.
 
@@ -480,7 +480,7 @@ def tunnel_start(local_port, remote_port, forward):
     cmd_tunnel_start(local_port, remote_port or local_port, forward)
 
 # etc.
-```
+```text
 
 The session-launch fast path (`run_session`) is a module function called by the Click handler — same code, cleaner dispatch.
 

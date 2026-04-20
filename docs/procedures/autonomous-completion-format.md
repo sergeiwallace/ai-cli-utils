@@ -10,9 +10,9 @@ When Claude completes autonomous work (multiple tasks without human gates), the 
 
 ## The Flow
 
-```
+```text
 Autonomous work completes → Present UAT Summary → User reviews → Approve / Revise / Reject
-```
+```text
 
 ## Format
 
@@ -56,7 +56,7 @@ After completing autonomous work, always present results using this template:
 - [x] Criterion 1
 - [x] Criterion 2
 - [ ] Criterion 3 (blocked by X)
-```
+```text
 
 ## Rules
 

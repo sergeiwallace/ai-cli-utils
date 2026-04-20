@@ -20,13 +20,13 @@ npx @resvg/resvg-js-cli \
   --font-default-family "DejaVu Sans Mono" \
   --fit-width 400 \
   assets/logo.svg assets/logo.png
-```
+```text
 
 Commit and push both files. Then purge the jsDelivr cache so socialify picks up the new version:
 
 ```bash
 curl https://purge.jsdelivr.net/gh/sergeiwallace/ai-cli-utils@main/assets/logo.png
-```
+```text
 
 ### 2. Regenerate the socialify image
 

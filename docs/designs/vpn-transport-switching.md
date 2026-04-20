@@ -75,14 +75,14 @@ Each CC session has a Circus-managed `signal-watch` watcher (`sw-{session}`) tha
 
 ### Process Hierarchy (Remote Session)
 
-```
+```text
 iTerm2 pane
   +-- ai c N -R  (Python process, PID A)
         +-- mosh-client user@host  (PID B, blocks Python via subprocess.run)
               +-- [mosh protocol over UDP to remote mosh-server]
                     +-- tmux session c-r-prefix-N on Hetzner
                           +-- bash -> claude
-```
+```text
 
 When mosh dies, `subprocess.run()` returns to the Python process. This is the key leverage point.
 
@@ -196,7 +196,7 @@ Write `{state_dir}/transport-{session}.json` containing:
   "host": "1.2.3.4",
   "started": "2026-04-06T10:00:00Z"
 }
-```
+```text
 
 **Pros:**
 - External tools can inspect transport state (`ai ps` enhancement)
@@ -345,11 +345,11 @@ async def _run_transport_loop(
         transport_file.unlink(missing_ok=True)
         await nc.drain()
         subprocess.run(cleanup_cmd, capture_output=True)
-```
+```text
 
 ### Circus Watcher Lifecycle
 
-```
+```bash
 ai c N -R launched
   → _ensure_vpn_watcher(config)
       → reads transport state files to count active sessions
@@ -361,13 +361,13 @@ ai c N -R exits
   → transport-{session}.json deleted (finally block)
   → _maybe_stop_vpn_watcher(config)
       → if no transport-*.json remain: CircusClient.stop("vpn-watch")
-```
+```text
 
 `ai vpn-watch` is a new subcommand (entry point for the Circus watcher process).
 
 ### State Transitions
 
-```
+```text
                     +------------------+
                     |   Launch ai c -R |
                     +--------+---------+
@@ -398,7 +398,7 @@ ai c N -R exits
                   | Check VPN state  |
                   | -> loop back     |
                   +------------------+
-```
+```text
 
 ---
 
@@ -417,17 +417,17 @@ Location: `~/.local/state/ai-cli-utils/transport-{session_name}.json`
   "host": "178.104.70.139",
   "started_at": "2026-04-06T10:00:00Z"
 }
-```
+```text
 
 Written when a transport process starts, deleted on clean exit (in `finally` block). Stale files (where `parent_pid` is dead) are cleaned up by `ai ps cron`.
 
 ### Integration with `ai ps`
 
 The `ai ps` command can read transport state files to show:
-```
+```text
 c-r-sw-1  mosh  178.104.70.139  pid=12346  2h uptime
 c-r-sw-2  ssh   178.104.70.139  pid=12350  5m uptime (VPN active)
-```
+```text
 
 ### Integration with `ai reconnect`
 
