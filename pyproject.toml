@@ -1,6 +1,6 @@
 [project]
 name = "ai-cli-utils"
-version = "0.4.0.post20260418180348"
+version = "0.4.1"
 description = "Unified AI session manager for Claude Code and Gemini CLI"
 readme = "README.md"
 license = "MIT"
