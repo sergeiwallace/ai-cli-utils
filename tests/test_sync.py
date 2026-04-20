@@ -219,6 +219,19 @@ def test_should_sync_file_when_subagents_file_and_memories_only_then_false():
     assert should_sync_file(Path("c444508f/subagents/agent-abc123.jsonl"), memories_only=True) is False
 
 
+def test_should_sync_file_when_memory_lock_file_then_false():
+    # Lock files in memory/ dirs are machine-local state and must not cross machines.
+    assert should_sync_file(Path("memory/.consolidate-lock"), memories_only=False) is False
+
+
+def test_should_sync_file_when_memory_non_md_file_then_false():
+    assert should_sync_file(Path("memory/scratch.txt"), memories_only=False) is False
+
+
+def test_should_sync_file_when_memory_md_file_and_not_memories_only_then_true():
+    assert should_sync_file(Path("memory/user_profile.md"), memories_only=False) is True
+
+
 # ---------------------------------------------------------------------------
 # translate_history_jsonl
 # ---------------------------------------------------------------------------

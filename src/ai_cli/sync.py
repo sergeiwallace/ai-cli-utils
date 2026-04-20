@@ -249,6 +249,11 @@ def should_sync_file(path: Path, memories_only: bool) -> bool:
         return False
     if path.suffix == ".conflict":
         return False
+    # Non-markdown files in memory/ subdirs (e.g. .consolidate-lock) are machine-local
+    # state and must never cross machines — syncing them triggers spurious conflict
+    # detections and can block consolidation on the remote.
+    if "memory" in path.parts and path.suffix != ".md":
+        return False
     if memories_only:
         return is_memory_file(path)
     return True
