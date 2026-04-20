@@ -530,12 +530,16 @@ def _send_webhook_notification(webhook_url: str, threshold: int, snapshot: Quota
         req = urllib.request.Request(
             webhook_url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "ai-cli-utils/1.0",
+            },
             method="POST",
         )
-        urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
+        resp = urllib.request.urlopen(req, timeout=5)
+        print(f"[quota] webhook sent (HTTP {resp.status})", file=sys.stderr)
+    except Exception as exc:
+        print(f"[quota] webhook failed: {exc}", file=sys.stderr)
 
 
 def quota_status() -> int:

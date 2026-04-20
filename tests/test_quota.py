@@ -675,13 +675,13 @@ class TestSendWebhookNotification:
             session_pct=12.0,
             weekly_sonnet_pct=40.0,
         )
-        posted_data = []
+        captured = []
 
         import urllib.request
 
         class FakeReq:
             def __init__(self, url, data, headers, method):
-                posted_data.append(json.loads(data.decode()))
+                captured.append({"payload": json.loads(data.decode()), "headers": headers})
 
         with (
             patch("urllib.request.Request", side_effect=FakeReq),
@@ -689,18 +689,19 @@ class TestSendWebhookNotification:
         ):
             _send_webhook_notification("https://hooks.slack.com/test", 75, snap)
 
-        assert posted_data and "text" in posted_data[0]
-        assert "content" not in posted_data[0]
+        assert captured and "text" in captured[0]["payload"]
+        assert "content" not in captured[0]["payload"]
+        assert captured[0]["headers"].get("User-Agent") == "ai-cli-utils/1.0"
 
     def test_when_discord_url_then_posts_content_field(self):
         snap = QuotaSnapshot(weekly_all_models_pct=78.5)
-        posted_data = []
+        captured = []
 
         import urllib.request
 
         class FakeReq:
             def __init__(self, url, data, headers, method):
-                posted_data.append(json.loads(data.decode()))
+                captured.append({"payload": json.loads(data.decode()), "headers": headers})
 
         with (
             patch("urllib.request.Request", side_effect=FakeReq),
@@ -708,8 +709,9 @@ class TestSendWebhookNotification:
         ):
             _send_webhook_notification("https://discord.com/api/webhooks/123/abc", 75, snap)
 
-        assert posted_data and "content" in posted_data[0]
-        assert "text" not in posted_data[0]
+        assert captured and "content" in captured[0]["payload"]
+        assert "text" not in captured[0]["payload"]
+        assert captured[0]["headers"].get("User-Agent") == "ai-cli-utils/1.0"
 
     def test_when_urlopen_raises_then_no_crash(self):
         snap = QuotaSnapshot(weekly_all_models_pct=78.5)
