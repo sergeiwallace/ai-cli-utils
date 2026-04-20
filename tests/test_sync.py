@@ -722,6 +722,59 @@ def test_stage_project_files_when_worktree_cc_dir_multiple_machines_then_both_st
     assert "ai-cli-utils--worktrees-ai-cli-1" in result["project_names"]
 
 
+def test_stage_project_files_when_file_unchanged_then_not_staged(tmp_path):
+    """Unchanged files (same hash in staging and CC dir) are skipped to avoid git blob churn."""
+    cc_projects_dir = tmp_path / "cc_projects"
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
+    project_dir.mkdir(parents=True)
+    (project_dir / "session.jsonl").write_text('{"type":"human"}\n')
+
+    staging_dir = tmp_path / "staging"
+    staged_project = staging_dir / "myproject"
+    staged_project.mkdir(parents=True)
+    # Pre-populate staging with identical content
+    (staged_project / "session.jsonl").write_text('{"type":"human"}\n')
+
+    result = stage_project_files(
+        staging_dir=staging_dir,
+        cc_projects_dir=cc_projects_dir,
+        local_prefix=_MAC_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+
+    # Unchanged file must not appear in staged_files (no git blob created)
+    assert result["staged_files"] == []
+
+
+def test_stage_project_files_when_file_changed_then_staged(tmp_path):
+    """Modified files (different hash) are staged even when they exist in staging."""
+    cc_projects_dir = tmp_path / "cc_projects"
+    project_dir = cc_projects_dir / "-Users-user-projects-myproject"
+    project_dir.mkdir(parents=True)
+    (project_dir / "session.jsonl").write_text('{"type":"human"}\n{"type":"assistant"}\n')
+
+    staging_dir = tmp_path / "staging"
+    staged_project = staging_dir / "myproject"
+    staged_project.mkdir(parents=True)
+    # Staging has older content
+    (staged_project / "session.jsonl").write_text('{"type":"human"}\n')
+
+    result = stage_project_files(
+        staging_dir=staging_dir,
+        cc_projects_dir=cc_projects_dir,
+        local_prefix=_MAC_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+
+    assert len(result["staged_files"]) == 1
+    # Staging file must be updated
+    assert (staged_project / "session.jsonl").read_text() == '{"type":"human"}\n{"type":"assistant"}\n'
+
+
 # ---------------------------------------------------------------------------
 # apply_pull_files — worktree CC dir cross-machine sync
 # ---------------------------------------------------------------------------

@@ -467,7 +467,12 @@ def stage_project_files(
 
             if not dry_run:
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+                # Skip copy if content is identical — avoids creating new git blobs
+                # for unchanged files, which is the primary driver of pack bloat.
+                if not dst.exists() or file_hash(src) != file_hash(dst):
+                    shutil.copy2(src, dst)
+                else:
+                    continue  # unchanged — exclude from staged_files too
 
             staged_files.append((src, dst))
             if is_memory_file(rel):
@@ -518,6 +523,10 @@ def git_commit_staged(
     )
 
     _git(["commit", "-m", msg], staging_dir)
+    # Repack loose objects periodically to keep pack files lean.
+    # --auto only runs when git's internal heuristics decide it's needed
+    # (loose objects > gc.auto threshold, typically 6700).
+    _git(["gc", "--auto", "--quiet"], staging_dir)
     return True
 
 
