@@ -4,7 +4,7 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "ai-cli-utils"
-version = "0.4.0.post20260418180348"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "circus" },

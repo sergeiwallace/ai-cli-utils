@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-19
+
+### Added
+
+- Session auto-refresh on update: when the `ai c` session loop detects a version change after `ai update`, the bash template is reloaded via `ai internal refresh-template` and exec-replaced in the same shell. No user action required; mosh-safe. (AI-CLI-39)
+- `ai sync` subcommands: `push`, `pull`, `conflicts`, `watch` — each exposed as a Click subcommand with `--help` at the subcommand level. (AI-CLI-47)
+
+### Fixed
+
+- `_auto_update_if_stale` now uses an `O_CREAT|O_EXCL` lockfile instead of a stamp-file read/write race. Prevents double-update on concurrent session launches.
+- `transport.py` deferred import `from .main import _ensure_circusd` was left over after the module split; updated to `from .process_manager import _ensure_circusd`. Caused a test regression where the function was imported before the patch was applied.
+- Pyright type error: `entry.value` (`bytes | None`) in `quota.py` now guarded with `if entry.value is not None` before `json.loads`.
+- Architecture doc updated: monolithic `main.py` dispatch → Click command group dispatch; `ai tunnel open|close` → `start|stop`; handoff publisher attribution corrected to `handoff.py`.
+- Integration tests for `_do_session_launch` now use libtmux directly for `has-session` / `new-session` instead of subprocess rerouting, fixing failures in non-interactive CI environments.
+
+### Refactored
+
+- `main.py` split into 8 modules (`config`, `handoff`, `iterm2`, `layout`, `process_manager`, `session`, `session_script`, `transport`); `main.py` reduced from ~4 000 to ~1 900 lines. All patch targets in tests updated to owning modules. (AI-CLI-39, AI-CLI-47)
+- NATS callback closures extracted to module-level functions (`_on_handoff_signal_watch`, `_write_pending_if_claimed_drain`, `_on_quota_snapshot_handler`) so they can be unit-tested without a live NATS server. (AI-CLI-17)
+
 ## [0.4.0] - 2026-04-17
 
 ### Added
@@ -138,7 +158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale session cleanup
 - Session reconnection (`ai reconnect`)
 
-[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.1...v0.2.0
