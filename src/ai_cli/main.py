@@ -450,6 +450,134 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(1)
 
 
+async def _on_handoff_signal_watch(
+    data: dict,
+    *,
+    handoff_dir: "Path | None",
+    pending_file: "Path",
+    session_id: str,
+    machine_id: str,
+) -> None:
+    """Process one inbound handoff message for signal-watch.
+
+    Extracted from the ``_on_handoff`` closure inside ``_internal_signal_watch``
+    so it can be imported and unit-tested independently of the NATS subscription.
+    """
+    handoff_id = data.get("id")
+    title = data.get("title", "")
+    priority = data.get("priority", "")
+    message = data.get("message", "")
+    for_machine = data.get("for_machine", "")
+    if not for_machine or for_machine != machine_id:
+        return
+    print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
+    if handoff_dir is None or not handoff_id:
+        return
+    content = data.get("content")
+    filename = data.get("filename")
+    if content and filename:
+        pending_dir = handoff_dir / "pending"
+        claimed_dir = handoff_dir / "claimed"
+        local_file = pending_dir / filename
+        if (claimed_dir / filename).exists():
+            return
+        if not local_file.exists():
+            pending_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                local_file.write_text(content)
+            except OSError:
+                pass
+    claimed = _handoff._claim_handoff_for_signal(handoff_dir, int(handoff_id), session_id)
+    if claimed is None:
+        return
+    _handoff._log_handoff_event(
+        "handoff.claimed",
+        handoff_id=handoff_id,
+        session=session_id,
+        layer="nats_realtime" if data.get("_source") != "startup_scan" else "startup_scan",
+    )
+    resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
+    pending_file.parent.mkdir(parents=True, exist_ok=True)
+    pending_file.write_text(resume_msg)
+    signal_file = _config.get_xdg_state_home() / f"cc-exit-{session_id}"
+    try:
+        signal_file.touch()
+    except OSError:
+        pass
+
+
+def _write_pending_if_claimed_drain(
+    data: dict,
+    *,
+    handoff_dir: "Path | None",
+    prompt_file: "Path",
+    session: str,
+    machine_id: str,
+) -> bool:
+    """Claim a handoff from drain data and write the resume prompt file.
+
+    Extracted from the ``_write_pending_if_claimed`` closure inside
+    ``_internal_handoff_drain`` so it can be unit-tested independently.
+    Returns ``True`` if a handoff was claimed and the prompt file written.
+    """
+    handoff_id = data.get("id")
+    title = data.get("title", "")
+    priority = data.get("priority", "")
+    message = data.get("message", "")
+    for_machine = data.get("for_machine", "")
+    if not for_machine or for_machine != machine_id:
+        return False
+    if handoff_dir is None or not handoff_id:
+        return False
+    content = data.get("content")
+    filename = data.get("filename")
+    if content and filename:
+        pending_dir = handoff_dir / "pending"
+        claimed_dir = handoff_dir / "claimed"
+        local_file = pending_dir / filename
+        if (claimed_dir / filename).exists():
+            return False
+        if not local_file.exists():
+            pending_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                local_file.write_text(content)
+            except OSError:
+                return False
+    claimed = _handoff._claim_handoff_for_signal(handoff_dir, int(handoff_id), session)
+    if claimed is None:
+        return False
+    _handoff._log_handoff_event(
+        "handoff.claimed",
+        handoff_id=handoff_id,
+        session=session,
+        layer="pre_launch_drain",
+    )
+    resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file.write_text(resume_msg)
+    return True
+
+
+async def _on_quota_snapshot_handler(data: dict) -> None:
+    """Process one inbound quota.snapshot message.
+
+    Extracted from the ``_on_quota_snapshot_msg`` closure inside
+    ``_internal_quota_subscriber`` so it can be unit-tested independently.
+    """
+    from .quota_db import record_quota_snapshot
+
+    try:
+        record_quota_snapshot(
+            usage_percent=data["usage_percent"],
+            session_pct=data.get("session_pct"),
+            weekly_sonnet_pct=data.get("weekly_sonnet_pct"),
+            extra_pct=data.get("extra_pct"),
+            reset_at=data.get("reset_at"),
+        )
+    except Exception:
+        pass
+
+
 def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) -> None:
     import asyncio
     from .messaging import NATSClient
@@ -459,59 +587,14 @@ def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) ->
     nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
     sw_client = NATSClient(servers=nats_servers)
 
-    # Not covered: entire _on_handoff closure is only invoked when a live NATS
-    # JetStream message arrives. Requires a real NATS server + network delivery.
-    # Inner exception branches (OSError on file write, ValueError on filename parse)
-    # additionally require specific filesystem failure conditions inside a live
-    # async callback. See docs/test/unit-tests.md §Intentionally Uncovered Lines.
     async def _on_handoff(data):
-        handoff_id = data.get("id")
-        title = data.get("title", "")
-        priority = data.get("priority", "")
-        message = data.get("message", "")
-        for_machine = data.get("for_machine", "")
-        if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
-            return  # not intended for this machine
-        print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
-        if sw_handoff_dir is None or not handoff_id:
-            return
-        # Cross-machine delivery: if file doesn't exist locally but payload carries content, write it
-        content = data.get("content")
-        filename = data.get("filename")
-        if content and filename:
-            pending_dir = sw_handoff_dir / "pending"
-            claimed_dir = sw_handoff_dir / "claimed"
-            local_file = pending_dir / filename
-            # Skip if already claimed in a previous session
-            if (claimed_dir / filename).exists():
-                return
-            if not local_file.exists():
-                pending_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    local_file.write_text(content)
-                except OSError:
-                    pass
-        claimed = _handoff._claim_handoff_for_signal(sw_handoff_dir, int(handoff_id), sw_session_id)
-        if claimed is None:
-            return  # another session claimed it first
-        _handoff._log_handoff_event(
-            "handoff.claimed",
-            handoff_id=handoff_id,
-            session=sw_session_id,
-            layer="nats_realtime" if data.get("_source") != "startup_scan" else "startup_scan",
+        await _on_handoff_signal_watch(
+            data,
+            handoff_dir=sw_handoff_dir,
+            pending_file=sw_pending_file,
+            session_id=sw_session_id,
+            machine_id=os.environ.get("AI_CLI_HOST", ""),
         )
-        resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-        sw_pending_file.parent.mkdir(parents=True, exist_ok=True)
-        sw_pending_file.write_text(resume_msg)
-        # Touch signal_file to wake the watcher. The watcher's idle guard
-        # (counter >= 10 + double ❯ check) ensures /exit is only injected
-        # when CC is at the empty prompt — safe to touch unconditionally here.
-        # Without this, the pending file sits unread until CC exits naturally.
-        sw_signal_file = _config.get_xdg_state_home() / f"cc-exit-{sw_session_id}"
-        try:
-            sw_signal_file.touch()
-        except OSError:
-            pass
 
     # Startup scan: pick up any unclaimed files already in the pending queue
     if sw_handoff_dir is not None:
@@ -569,28 +652,12 @@ def _internal_quota_subscriber(config: dict) -> None:
     qs_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
     qs_client = NATSClient(servers=qs_servers)
 
-    # Not covered: _on_quota_snapshot_msg is only invoked on live JetStream delivery.
-    # Requires a real NATS server + published quota.snapshot message.
-    async def _on_quota_snapshot_msg(data: dict) -> None:
-        from .quota_db import record_quota_snapshot
-
-        try:
-            record_quota_snapshot(
-                usage_percent=data["usage_percent"],
-                session_pct=data.get("session_pct"),
-                weekly_sonnet_pct=data.get("weekly_sonnet_pct"),
-                extra_pct=data.get("extra_pct"),
-                reset_at=data.get("reset_at"),
-            )
-        except Exception:
-            pass
-
     try:
         asyncio.run(
             qs_client.subscribe_durable(
                 "quota.snapshot",
                 "quota-subscriber-mac",
-                _on_quota_snapshot_msg,
+                _on_quota_snapshot_handler,
             )
         )
     except Exception:
@@ -611,51 +678,14 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
     hd_client = NATSClient(servers=nats_servers)
     _handoff._log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
 
-    # Not covered: _write_pending_if_claimed is only reachable via _drain() which
-    # requires a live NATS JetStream connection, or from the local-scan path which
-    # is covered. Inner branches (for_machine mismatch, hd_handoff_dir is None,
-    # cross-machine file write, claimed is None) all require live handoff delivery
-    # or specific filesystem failure conditions inside an async context.
-    # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
     def _write_pending_if_claimed(data):
-        handoff_id = data.get("id")
-        title = data.get("title", "")
-        priority = data.get("priority", "")
-        message = data.get("message", "")
-        for_machine = data.get("for_machine", "")
-        if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
-            return False  # not intended for this machine
-        if hd_handoff_dir is None or not handoff_id:
-            return False
-        # Cross-machine: write file locally from payload if missing
-        content = data.get("content")
-        filename = data.get("filename")
-        if content and filename:
-            pending_dir = hd_handoff_dir / "pending"
-            claimed_dir = hd_handoff_dir / "claimed"
-            local_file = pending_dir / filename
-            # Skip if already claimed in a previous session
-            if (claimed_dir / filename).exists():
-                return False
-            if not local_file.exists():
-                pending_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    local_file.write_text(content)
-                except OSError:
-                    return False
-        claimed = _handoff._claim_handoff_for_signal(hd_handoff_dir, int(handoff_id), hd_session)
-        if claimed is None:
-            return False
-        _handoff._log_handoff_event(
-            "handoff.claimed",
-            handoff_id=handoff_id,
+        return _write_pending_if_claimed_drain(
+            data,
+            handoff_dir=hd_handoff_dir,
+            prompt_file=hd_prompt_file,
             session=hd_session,
-            layer="pre_launch_drain",
+            machine_id=os.environ.get("AI_CLI_HOST", ""),
         )
-        resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-        hd_prompt_file.parent.mkdir(parents=True, exist_ok=True)
-        hd_prompt_file.write_text(resume_msg)
-        return True
 
     # 1. Local file scan first (fast, no network)
     if hd_handoff_dir is not None:
