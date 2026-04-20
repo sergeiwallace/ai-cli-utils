@@ -2,7 +2,7 @@
 # record-demo.sh — coordinator: opens a dedicated demo window, records it, converts to GIF/MP4.
 # Your current iTerm2 session is completely untouched.
 #
-# Requires: ffmpeg, screencapture (macOS), iTerm2,
+# Requires: ffmpeg, screencapture (macOS), iTerm2, python3 (stdlib only),
 #           screen recording permission for iTerm2 (System Settings → Privacy → Screen Recording)
 #
 # Usage: bash demo/record-demo.sh
@@ -32,9 +32,14 @@ OUTPUT_GIF="$SCRIPT_DIR/${BASENAME}.gif"
 
 # --- Preflight ---
 
-for dep in ffmpeg screencapture osascript ai; do
+for dep in ffmpeg screencapture osascript python3 ai; do
   command -v "$dep" &>/dev/null || { echo "Error: $dep not found" >&2; exit 1; }
 done
+
+python3 -c "import Quartz" 2>/dev/null || {
+  echo "Error: python3 Quartz module not available (install pyobjc-framework-Quartz)" >&2
+  exit 1
+}
 
 # --- Archive old demo files ---
 
@@ -88,12 +93,40 @@ APPLESCRIPT
 sleep 0.5
 printf "${DIM}Demo window created at {200, 80, 1400, 860}${RESET}\n"
 
-# --- Start recording the demo window region (no window ID needed) ---
-# screencapture -R x,y,w,h records a fixed screen region in logical points —
-# matches the bounds set above. No Quartz/Python dependency required.
+# --- Find the demo window's CGWindowID by matching on known position ---
+# screencapture -l <CGWindowID> records silently in the background with no UI overlay.
+# We match by owner "iTerm2" and bounds (X=DEMO_X, Y=DEMO_Y) after setting them above.
+
+printf "${DIM}Identifying demo window…${RESET}\n"
+WINDOW_ID=$(python3 - <<PYEOF
+import Quartz, sys
+
+wl = Quartz.CGWindowListCopyWindowInfo(
+    Quartz.kCGWindowListOptionAll | Quartz.kCGWindowListExcludeDesktopElements,
+    Quartz.kCGNullWindowID,
+)
+for w in wl:
+    if w.get("kCGWindowOwnerName") != "iTerm2":
+        continue
+    b = w.get("kCGWindowBounds", {})
+    if int(b.get("X", -1)) == ${DEMO_X} and int(b.get("Y", -1)) == ${DEMO_Y}:
+        print(w["kCGWindowNumber"])
+        sys.exit(0)
+print("", end="")
+PYEOF
+)
+
+if [[ -z "$WINDOW_ID" ]]; then
+  echo "Error: could not find demo window at (${DEMO_X}, ${DEMO_Y}) — ensure iTerm2 screen recording permission is granted" >&2
+  exit 1
+fi
+printf "${DIM}Demo window CGWindowID: ${WINDOW_ID}${RESET}\n"
+
+# --- Start recording the demo window by ID (silent, no UI overlay) ---
+# -l records a specific window; runs fully in the background.
 
 printf "${DIM}Starting recording…${RESET}\n"
-screencapture -v -R "${DEMO_X},${DEMO_Y},${DEMO_W},${DEMO_H}" "$OUTPUT_MOV" &
+screencapture -v -l "$WINDOW_ID" "$OUTPUT_MOV" &
 SCAP_PID=$!
 sleep 1.5
 
@@ -149,16 +182,16 @@ sleep 1
 printf "${DIM}Converting to GIF and MP4…${RESET}\n"
 
 ffmpeg -y -i "$OUTPUT_MOV" \
-  -vf "fps=15,scale=1200:-1:flags=lanczos,palettegen=stats_mode=full" \
+  -vf "fps=15,scale=1200:-2:flags=lanczos,palettegen=stats_mode=full" \
   "$PALETTE_FILE" 2>/dev/null
 
 ffmpeg -y -i "$OUTPUT_MOV" -i "$PALETTE_FILE" \
-  -filter_complex "fps=15,scale=1200:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5" \
+  -filter_complex "fps=15,scale=1200:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5" \
   -loop 0 \
   "$OUTPUT_GIF" 2>/dev/null
 
 ffmpeg -y -i "$OUTPUT_MOV" \
-  -vf "fps=30,scale=1200:-1:flags=lanczos" \
+  -vf "fps=30,scale=1200:-2:flags=lanczos" \
   -c:v libx264 -crf 22 -preset slow -pix_fmt yuv420p \
   "$OUTPUT_MP4" 2>/dev/null
 

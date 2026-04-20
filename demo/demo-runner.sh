@@ -44,6 +44,21 @@ tell application "iTerm2"
         set t to (create tab with default profile)
         tell t
           tell current session
+            -- Poll until output stops changing (shell + direnv fully loaded).
+            -- Two consecutive identical snapshots with content = prompt is ready.
+            set prevContents to ""
+            set stableCount to 0
+            repeat 60 times
+              delay 0.5
+              set curContents to contents
+              if curContents is equal to prevContents and length of curContents > 0 then
+                set stableCount to stableCount + 1
+                if stableCount >= 2 then exit repeat
+              else
+                set stableCount to 0
+              end if
+              set prevContents to curContents
+            end repeat
             write text "$cmd"
           end tell
         end tell
@@ -77,9 +92,9 @@ printf "${CYAN}${BOLD}  ai-cli-utils — AI session management for power users${
 pause 1.5
 
 # Session launches — each opens a new tab in this demo window
-open_in_new_tab "ai c 1" 3        # Claude Code session
-open_in_new_tab "ai g 1" 2.5      # Gemini CLI session
-open_in_new_tab "ai c -R 1" 4     # Remote CC session on dev server
+open_in_new_tab "ai c 1" 10       # Claude Code session — wait for CC to fully load
+open_in_new_tab "ai g 1" 8        # Gemini CLI session — wait for Gemini to load
+open_in_new_tab "ai c -R 1" 14    # Remote CC session — SSH + remote tmux + CC init
 
 # Show all active sessions
 run "ai ls"
