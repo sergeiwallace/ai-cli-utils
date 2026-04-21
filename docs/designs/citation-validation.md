@@ -77,7 +77,7 @@ ai-cli-utils is a **public open-source package**. The aido validator is a privat
 
 **Recommendation: C.**
 
-> **Feedback:**
+> **Feedback:** Approved.
 
 ---
 
@@ -88,11 +88,11 @@ ai-cli-utils is a **public open-source package**. The aido validator is a privat
 | A: Shell out to aido script | `subprocess.run(["python3", "~/projects/aido/..."])` | Couples to private path. Breaks for all public users. Non-starter. |
 | B: Separate PyPI package | `ai-citation-validator` published independently | Correct separation but ~600 lines of code doesn't warrant a new repo at this stage. |
 | **C: Port into `src/ai_cli/citation_validator/`** (recommended) | Port aido `citation_validator/` subpackage, adapted for ai-cli-utils conventions | Self-contained, testable, no new repo. Straightforward mechanical port. |
-| D: Plugin hook | Configurable `[research.citation_validator_script]` in config.toml | No default behavior for public users. Power-user escape hatch only. |
+| D: Plugin hook | `[research] citation_validator_script = "/path/to/script.py"` in config.toml. If set, `validate_citations()` shells out to that script with the doc path as argument; the script is responsible for appending `## Citation Validation` to the doc. Skips the built-in pipeline entirely. | Power-user escape hatch. ~10 lines of shim code. Good for CI pipelines that run a custom validator. No default behavior for public users who don't configure it. |
 
-**Recommendation: C.** The aido validator is already modular (extractor, s2_client, crossref_client, openalex_client, body_text, nli, reporter). Option D can be layered on top later.
+**Recommendation: C + D.** Built-in pipeline always available (C). Plugin hook (D) adds a low-cost escape hatch for custom validators; `[research] citation_validator_script` overrides the built-in when set.
 
-> **Feedback:**
+> **Feedback:** Option C works. Add Option D as well — plugin hook is worth including.
 
 ---
 
@@ -101,18 +101,18 @@ ai-cli-utils is a **public open-source package**. The aido validator is a privat
 Validation deps span three tiers:
 
 - **Tier 1 (light):** `lychee` external binary (Rust, ~10MB) — no Python dep, detected via `shutil.which`
-- **Tier 2 (medium):** `semanticscholar`, `arxiv`, `pdfplumber`, `habanero`, `pyalex`, `beautifulsoup4` — ~30MB combined
-- **Tier 3 (heavy):** `transformers` + `torch` (CPU-only) — NLI model, ~500MB
+- **Tier 2 (medium):** `semanticscholar`, `arxiv`, `pdfplumber`, `habanero`, `pyalex`, `beautifulsoup4` — ~30MB combined, fast install
+- **Tier 3 (heavy):** `transformers` + `torch` (CPU-only) — NLI model, ~500MB first-run download
 
 | Option | Description | Tradeoffs |
 |--------|-------------|-----------|
-| A: Hard dependencies | All deps required at install | `torch` as a hard dep for a CLI session manager is a non-starter. |
-| **B: Optional extras (recommended)** | `pip install ai-cli-utils[citation]` adds Tier 2; `[citation-nli]` adds Tier 3 | Standard Python packaging. Validation available but not forced. |
-| C: Soft imports, no extras defined | Try to import; warn and skip if absent | Undiscoverable — no `pip install` path advertised. |
+| A: Hard dependencies | All deps required at install | `torch` as a hard dep means a ~500MB download for every `pip install ai-cli-utils`. Non-starter for a CLI session manager. |
+| **B: Tier 2 hard + Tier 3 optional (recommended)** | Tier 2 deps are hard dependencies in `[project.dependencies]`; Tier 3 (NLI) in `[citation-nli]` optional extra | Validation always works out of the box (no `pip install ai-cli-utils[citation]` required). NLI stays opt-in because of the model size. |
+| C: All optional extras | `[citation]` + `[citation-nli]` extras | Undiscoverable without docs. |
 
-**Recommendation: B.**
+**Recommendation: B.** Tier 2 deps are small enough (~30MB) to be hard deps. The only thing kept optional is the NLI model (`transformers` + `torch`, ~500MB download on first use). `lychee` remains an optional external binary — detected via `shutil.which`, skipped gracefully if absent.
 
-> **Feedback:**
+> **Feedback:** Make them hard dependencies. (Note: `torch`/`transformers` for NLI kept as `[citation-nli]` optional extra due to ~500MB model size — making that a hard dep would force a 500MB download on every install of the CLI.)
 
 ---
 
@@ -122,12 +122,12 @@ Validation deps span three tiers:
 |--------|----------|-----------|
 | A: Separate command only | `ai research validate <file>` | Doesn't remove the manual step that causes it to be skipped. |
 | B: Opt-in flag | `ai gemini --depth standard --validate` | Easily forgotten. Same problem. |
-| **C: Auto on `--depth standard/quick`, suppressible (recommended)** | Runs automatically after synthesis. `--no-validate` to suppress. | Satisfies session config mandate. Skipping is the explicit choice, not the default. |
-| D: Config gate | `[research] auto_validate = false` | Default-off recreates the skip problem. |
+| **C: Config-driven default, CLI flag to override (recommended)** | `[research] auto_validate = true` in config.toml (default). `--no-validate` flag suppresses on a per-run basis. `--validate` flag forces on when config default is `false`. | Config controls the default; CLI flag overrides it either way. Default-on satisfies the session config mandate. |
+| D: Config gate only | `[research] auto_validate = false` default | Default-off recreates the skip problem. |
 
-**Recommendation: C.** Validation is non-blocking (D5) so it never holds up the primary output. `--no-validate` and `[research] validate = false` are the escape hatches.
+**Recommendation: C.** Default config ships with `auto_validate = true`. Users who want to disable globally set `auto_validate = false`. Per-run override: `--no-validate` (when default is on) or `--validate` (when default is off). No issues with this approach — both flags are straightforward Click options.
 
-> **Feedback:**
+> **Feedback:** Config-driven default with opt-out flag. Default `auto_validate = true`. `--no-validate` to suppress per run. `--validate` to force on when config default is false. Approved.
 
 ---
 
@@ -135,13 +135,19 @@ Validation deps span three tiers:
 
 | Option | Behavior | Tradeoffs |
 |--------|----------|-----------|
-| **A: Non-blocking by default (recommended)** | FAILs reported in doc; exit code 0. `--validate-strict` exits non-zero on any FAIL. | Real papers occasionally fail S2 lookup. Blocking would cause false negatives. |
-| B: Always blocking | Exit non-zero on any FAIL | Too aggressive. |
-| C: Block on FAIL only, not WARN | Exit non-zero on hard failures | Can be added later if needed. |
+| **A: Non-blocking by default, configurable strictness (recommended)** | FAILs reported; exit code 0 by default. Strictness configurable via config + CLI flag. | Non-blocking default prevents false negatives (real papers occasionally fail S2 lookup). Configurable levels let CI pipelines tighten the gate. |
+| B: Always blocking | Exit non-zero on any FAIL | Too aggressive for interactive use. |
+| C: Block on FAIL, not WARN | Hard failures only | Subset of A with `validate_strict = "fail"`. |
 
-**Recommendation: A.**
+**Recommendation: A.** Three strictness levels:
 
-> **Feedback:**
+| Level | Config value | CLI flag | Behavior |
+|-------|-------------|----------|----------|
+| Off (default) | `validate_strict = "none"` | *(default)* | Exit 0 always; FAILs visible in doc only |
+| Fail | `validate_strict = "fail"` | `--validate-strict fail` | Exit non-zero on any FAIL verdict |
+| Warn | `validate_strict = "warn"` | `--validate-strict warn` | Exit non-zero on any FAIL or WARN verdict |
+
+> **Feedback:** Option A, make strictness configurable.
 
 ---
 
@@ -156,7 +162,7 @@ Validation deps span three tiers:
 
 **Recommendation: D.**
 
-> **Feedback:**
+> **Feedback:** Approved.
 
 ---
 
@@ -173,7 +179,7 @@ Validation deps span three tiers:
 
 **Deduplication rule:** DOIs co-occurring with an arXiv ID on the same line are skipped for separate DOI processing — the arXiv pipeline already covers that citation.
 
-> **Feedback:**
+> **Feedback:** Approved.
 
 ---
 
@@ -188,7 +194,7 @@ Validation deps span three tiers:
 
 **Recommendation: B.** Same stack, higher coverage, no additional deps. ACL PDF URLs follow a predictable pattern (`aclanthology.org/{year}.{venue}-{paper}.{N}.pdf`).
 
-> **Feedback:**
+> **Feedback:** Approved.
 
 ---
 
@@ -202,6 +208,8 @@ Validation deps span three tiers:
 | **B: EXISTENCE_ONLY (recommended)** | Separate verdict tier: paper confirmed, claim unverifiable | Clean triage signal. Requires a fourth verdict type throughout reporter and downstream. |
 
 **Recommendation: B.** The distinction between "paper found but claim can't be checked" vs "something looks wrong with this citation" is genuinely useful during triage. The reporter cost (one extra verdict enum value) is low.
+
+> **Feedback:** Approved.
 
 **Full verdict taxonomy:**
 
@@ -223,12 +231,22 @@ Validation deps span three tiers:
 
 | Option | Behavior | Tradeoffs |
 |--------|----------|-----------|
-| **A: Rely on DOI detection (recommended)** | Modern NeurIPS/ICML/ICLR papers have DOIs. The D7 DOI pipeline covers them. Older papers without DOIs are out of scope. | NeurIPS 2018+ and most ICML/ICLR papers have `proceedings.mlr.press` or OpenReview DOIs. Coverage is high without per-venue regex. |
-| B: Per-venue URL pattern detection | Per-venue regex for `proceedings.mlr.press/`, `openreview.net/`, `papers.nips.cc/` etc. | Each venue needs its own extractor + body text fetcher. High per-venue implementation cost for marginal coverage gain given DOI coverage. |
+| **A: Rely on DOI detection + unknown venue surfacing (recommended)** | Modern NeurIPS/ICML/ICLR papers have DOIs — covered by D7. For URLs that look academic but match no known extractor pattern, emit an `UNKNOWN_VENUE` notice in the report. | High coverage for DOI-backed papers. Unknown venues surface automatically for triage rather than being silently skipped. |
+| B: Per-venue URL pattern detection | Per-venue regex for `proceedings.mlr.press/`, `openreview.net/`, `papers.nips.cc/` etc. | High per-venue implementation cost for marginal gain given DOI coverage already handles most modern papers. |
 
-**Recommendation: A.** DOI detection already covers the majority of major venue papers. Per-venue URL detection is a follow-on when specific coverage gaps are observed in practice.
+**Recommendation: A.** DOI detection covers the majority of major venue papers. Unknown venues are surfaced — not silently skipped.
 
-> **Feedback:**
+**Unknown venue surfacing mechanism:** The extractor maintains a list of known academic URL patterns (arXiv, doi.org, aclanthology.org, semanticscholar.org, openreview.net, proceedings.mlr.press, papers.nips.cc). Any URL that matches a heuristic "looks academic" pattern (e.g., contains `/paper`, `/abs/`, `/proceedings/`, `conference`, `workshop`, or is linked with citation language in the surrounding text) but doesn't match any known extractor is collected as an `UnknownVenueCitation`. The validation report includes an `### Unrecognized Citation Patterns` subsection listing these URLs with their surrounding context. This surfaces naturally during UAT and gives a basis for deciding whether to add a task or handle on the spot.
+
+```python
+@dataclass
+class UnknownVenueCitation:
+    url: str
+    context: str   # surrounding sentence for triage
+    reason: str    # e.g. "URL path contains /proceedings/ but no known extractor matched"
+```
+
+> **Feedback:** Approved. Add recursive/surfacing mechanism for unknown venues — flag them in the report so we can decide whether to add a task or handle on the spot.
 
 ---
 
@@ -242,6 +260,8 @@ Validation deps span three tiers:
 | B: Generalize `CitationResult` | Unified `CitationResult(citation_id, citation_type, verdict, ...)` | Cleaner unified model but requires refactoring arXiv pipeline and all its callers. Regression risk. |
 
 **Recommendation: A.** Pre-v1 codebase — clean-slate design preferred — but the arXiv pipeline is already the tested baseline. Parallel dataclasses keep the two paths independently modifiable and testable.
+
+> **Feedback:** Approved.
 
 ```python
 @dataclass
@@ -311,12 +331,17 @@ from ai_cli.citation_validator import validate_citations, ValidationReport
 report: ValidationReport = validate_citations(
     doc_path=Path("/path/to/output.md"),
     run_id="20260421-...",
-    run_nli=False,
+    run_nli=False,         # --validate-nli flag
+    strict="none",         # "none" | "fail" | "warn"
     quiet=False,
+    validator_script=None, # D2 plugin hook: path to external script, overrides built-in
 )
 # report.arxiv_results, report.non_arxiv_results, report.dead_links
+# report.unknown_venues    ← UnknownVenueCitation list (D10)
 # report.to_markdown() → ## Citation Validation section text
 ```
+
+**Plugin hook behaviour (D2-D):** if `validator_script` is set (from `[research] citation_validator_script` config), `validate_citations()` calls `subprocess.run([validator_script, str(doc_path)])` and returns immediately. The script is responsible for appending `## Citation Validation` to the doc. The built-in pipeline is skipped entirely.
 
 ### Non-arXiv pipeline per citation
 
@@ -337,12 +362,14 @@ For each DOI / ACL citation:
 
 ### Graceful degradation tiers
 
+Tier 2 deps are hard dependencies — always available after `pip install ai-cli-utils`. The only optional layer is the NLI model.
+
 | Tools installed | What runs |
 |----------------|-----------|
-| Nothing | One-line note: "install `ai-cli-utils[citation]` to enable validation" |
-| `lychee` only | Dead-link check only |
-| `lychee` + `citation` extras | Full arXiv + DOI/ACL pipeline (no NLI) |
-| All + `citation-nli` | Full pipeline including NLI entailment |
+| Base install (no lychee, no NLI) | Full arXiv + DOI/ACL pipeline; dead-link step skipped with one-line note |
+| Base + `lychee` binary | Full arXiv + DOI/ACL pipeline + dead-link check |
+| Base + `lychee` + `citation-nli` extra | Full pipeline including NLI entailment |
+| Plugin hook configured | External script called; built-in pipeline skipped |
 
 ### `## Citation Validation` section format
 
@@ -373,7 +400,17 @@ For each DOI / ACL citation:
 |-----|--------|
 | https://example.com/paper | 404 |
 
-**Summary:** 2 PASS · 1 WARN · 2 FAIL · 1 EXISTENCE_ONLY · 1 dead link
+### Unrecognized Citation Patterns
+
+The following URLs appear to reference academic content but did not match any
+known extractor pattern (arXiv, DOI, ACL, etc.). Review and add extractor
+support if needed.
+
+| URL | Context |
+|-----|---------|
+| https://proceedings.example.org/2023/paper42 | "...as shown by Smith et al. [paper](https://proceedings.example.org/2023/paper42)..." |
+
+**Summary:** 2 PASS · 1 WARN · 2 FAIL · 1 EXISTENCE_ONLY · 1 dead link · 1 unrecognized
 ```
 
 ---
@@ -384,90 +421,104 @@ For each DOI / ACL citation:
 src/ai_cli/
   citation_validator/
     __init__.py            # validate_citations(), ValidationReport
-    extractor.py           # extract arXiv IDs, DOIs, ACL URLs, claim sentences, all URLs
+    extractor.py           # extract arXiv IDs, DOIs, ACL URLs, unknown venues, claim sentences
     s2_client.py           # Semantic Scholar SDK: get_paper (arXiv + DOI) + search_snippet
     crossref_client.py     # habanero: DOI metadata + title search fallback for ACL
     openalex_client.py     # pyalex: tertiary metadata fallback
     body_text.py           # arXiv HTML → PDF fallback; ACL PDF fallback
-    nli.py                 # roberta-large-mnli entailment (optional)
+    nli.py                 # roberta-large-mnli entailment (citation-nli extra)
     reporter.py            # ValidationReport, ArxivCitationResult, NonArxivCitationResult,
-                           # to_markdown(), verdict computation
-  research.py              # Step 4 integrated into run_standard()
+                           # UnknownVenueCitation, to_markdown(), verdict computation
+    venues.py              # known venue URL patterns + "looks academic" heuristic for D10
+  research.py              # Step 4 integrated into run_standard(); reads auto_validate +
+                           # validate_strict + citation_validator_script from config
 
 tests/
   test_citation_validator/
-    test_extractor.py      # arXiv ID, DOI, ACL URL, bare DOI, URL extraction; deduplication
-    test_s2_client.py      # get_paper (arXiv + DOI prefix), search_snippet (mocked)
+    test_extractor.py      # arXiv ID, DOI, ACL URL, bare DOI extraction; dedup; unknown venue detection
+    test_s2_client.py      # get_paper (arXiv + DOI prefix), search_snippet (mocked HTTP)
     test_crossref_client.py  # DOI metadata, title search fallback (mocked)
     test_openalex_client.py
     test_body_text.py      # arXiv HTML/PDF, ACL PDF fallback (mocked HTTP)
-    test_reporter.py       # to_markdown(), all verdict types, mixed arXiv + non-arXiv
-    test_validate_citations.py  # integration: fixture docs with known arXiv + DOI citations
-  test_research.py         # updated: validate_citations called in run_standard
+    test_reporter.py       # to_markdown(), all 5 verdict types, unknown venues, summary line
+    test_venues.py         # known pattern matching, "looks academic" heuristic
+    test_validate_citations.py  # integration: fixture docs with arXiv + DOI + unknown venue
+  test_research.py         # updated: auto_validate config respected; validate_citations in run_standard
 ```
 
 ---
 
 ## Dependencies
 
+**Hard dependencies** (added to `[project.dependencies]`):
+
 ```toml
-[project.optional-dependencies]
-citation = [
-    "semanticscholar>=0.8",
-    "arxiv>=2.0",
-    "pdfplumber>=0.11",
-    "habanero>=1.2",
-    "pyalex>=0.15",
-    "beautifulsoup4>=4.12",
-]
-citation-nli = [
-    "ai-cli-utils[citation]",
-    "transformers>=4.40",
-    "torch>=2.0",
-]
+"semanticscholar>=0.8",
+"arxiv>=2.0",
+"pdfplumber>=0.11",
+"habanero>=1.2",
+"pyalex>=0.15",
+"beautifulsoup4>=4.12",
 ```
 
-`lychee` installed separately (`brew install lychee` / `cargo install lychee`). Detected at runtime via `shutil.which("lychee")`.
+**Optional extra** (NLI model — ~500MB first-run download):
+
+```toml
+[project.optional-dependencies]
+citation-nli = ["transformers>=4.40", "torch>=2.0"]
+```
+
+`lychee` installed separately (`brew install lychee` / `cargo install lychee`). Detected at runtime via `shutil.which("lychee")`. Skipped gracefully with a one-line note if absent.
 
 ---
 
 ## Acceptance Criteria
 
 **Pipeline integration:**
-- [ ] `ai gemini --depth standard "topic"` automatically runs citation validation after synthesis; no extra flag required
-- [ ] `ai gemini --depth standard "topic" --no-validate` skips Step 4 entirely
-- [ ] `[research] validate = false` in config.toml globally disables Step 4
-- [ ] `--validate-strict` exits non-zero when any FAIL verdict present
-- [ ] `step_04_citation_validation.json` written to run checkpoint directory; `--resume` skips Step 4 if checkpoint exists
+- [ ] `ai gemini --depth standard "topic"` automatically runs citation validation after synthesis (D4: `auto_validate = true` default)
+- [ ] `[research] auto_validate = false` in config.toml globally disables Step 4
+- [ ] `--no-validate` flag suppresses Step 4 when config default is on
+- [ ] `--validate` flag forces Step 4 when config default is off
+- [ ] `[research] validate_strict = "fail"` causes exit non-zero on any FAIL verdict
+- [ ] `[research] validate_strict = "warn"` causes exit non-zero on any FAIL or WARN verdict
+- [ ] `--validate-strict fail` and `--validate-strict warn` CLI flags override config per run
+- [ ] `[research] citation_validator_script = "/path/to/script"` calls external script instead of built-in pipeline (D2 plugin hook)
+- [ ] `step_04_citation_validation.json` written to run checkpoint; `--resume` skips Step 4 if checkpoint exists
 - [ ] `validate_citations()` never raises — all exceptions surfaced as WARNs in report
 - [ ] Separate `ai research validate <file>` command validates any existing research doc
 
 **arXiv citations:**
-- [ ] arXiv IDs extracted from `arxiv.org/abs/`, `arXiv:NNNN.NNNNN` patterns in markdown
+- [ ] arXiv IDs extracted from `arxiv.org/abs/`, `arXiv:NNNN.NNNNN` patterns
 - [ ] S2 confirms paper exists and title/authors match; WARN on mismatch
-- [ ] S2 snippet search checks claim appears in paper body; HTML/PDF fallback when S2 misses
+- [ ] S2 snippet search checks claim appears in paper body; HTML fallback then PDF when S2 misses
 - [ ] FAIL verdict when paper not found in S2, CrossRef, or OpenAlex
 
 **Non-arXiv DOI/ACL citations:**
-- [ ] `doi.org/` URLs, `doi:` prefixes, and bare `10.XXXX/...` patterns extracted
+- [ ] `doi.org/` URLs, `doi:` prefixes, and bare `10.XXXX/...` patterns extracted (D7)
 - [ ] ACL Anthology URLs (`aclanthology.org/`) extracted and validated
 - [ ] DOIs co-occurring with arXiv IDs on the same line are not double-counted
-- [ ] S2 resolves DOI citations via `get_paper("DOI:{doi}")` 
+- [ ] S2 resolves DOI citations via `get_paper("DOI:{doi}")`
 - [ ] CrossRef validates title/authors in parallel
-- [ ] ACL PDF fallback via `aclanthology.org/{id}.pdf` + pdfplumber when S2 body text absent
-- [ ] EXISTENCE_ONLY verdict emitted for papers confirmed but body text paywalled
+- [ ] ACL PDF fallback via `aclanthology.org/{id}.pdf` + pdfplumber when S2 body text absent (D8)
+- [ ] EXISTENCE_ONLY verdict emitted for papers confirmed but body text paywalled (D9)
 - [ ] FAIL verdict when DOI/ACL paper not found in CrossRef, S2, or OpenAlex
 
+**Unknown venue surfacing (D10):**
+- [ ] URLs matching "looks academic" heuristic but no known extractor pattern collected as `UnknownVenueCitation`
+- [ ] `### Unrecognized Citation Patterns` subsection appears in report when any unknown venues found
+- [ ] Each unknown venue entry includes the URL and surrounding context sentence
+- [ ] Unknown venues counted in summary line: `N unrecognized`
+
 **Output:**
-- [ ] `## Citation Validation` section appended with separate arXiv and DOI/ACL subsections
-- [ ] Dead links listed in their own subsection
-- [ ] Summary line: `N PASS · N WARN · N FAIL · N EXISTENCE_ONLY · N dead links`
-- [ ] Graceful degradation: when no tools installed, one-line note emitted, no crash
+- [ ] `## Citation Validation` section appended with arXiv, DOI/ACL, dead links, and unrecognized subsections
+- [ ] Summary line: `N PASS · N WARN · N FAIL · N EXISTENCE_ONLY · N dead links · N unrecognized`
+- [ ] When lychee not installed, dead-link step skipped with one-line note; rest of pipeline runs normally
 
 **Coverage:**
 - [ ] 90%+ line coverage on `citation_validator/` modules
-- [ ] All failure paths tested: HTTP errors, DNS failures, S2 misses, CrossRef 404s, pdfplumber parse errors
-- [ ] At least one fixture doc with known fabricated citation used in integration test
+- [ ] All failure paths tested: HTTP errors, DNS failures, S2 misses, CrossRef 404s, pdfplumber parse errors, malformed DOI patterns
+- [ ] At least one fixture doc with a known fabricated arXiv ID used in integration test
+- [ ] Plugin hook: test that external script is called and built-in pipeline is skipped
 
 ---
 
@@ -483,4 +534,4 @@ citation-nli = [
 
 | Date | Round | Notes |
 |------|-------|-------|
-| | | |
+| 2026-04-21 | Round 1 | D1 approved. D2: C + D both (plugin hook added). D3: Tier 2 hard deps; Tier 3 (NLI/torch) stays optional extra. D4: config-driven default `auto_validate = true`, `--no-validate`/`--validate` CLI flags. D5: non-blocking default, configurable `validate_strict` (none/fail/warn). D6 approved. D7–D11 approved. D10: unknown venue surfacing mechanism added. |
