@@ -136,7 +136,7 @@ Both gaps have the same root: quota-watch is not managed as a system service.
 
 Config is layered: `[quota]` section in `config.toml` is checked first; env vars are the fallback. This enables Doppler-injected secrets without requiring users to edit files.
 
-```
+```text
 config.toml [quota] section  →  env var fallback
 ```
 
@@ -152,7 +152,7 @@ config.toml [quota] section  →  env var fallback
 
 ### Channel Hierarchy
 
-```
+```text
 quota threshold crossed
         │
         ├─── Discord webhook (if DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL configured)
@@ -172,14 +172,14 @@ Both Discord and ntfy fire in parallel — a failure in one does not affect the 
 ### Message Format
 
 **Discord:** Slack-compatible markdown, auto-detected by URL:
-```
+```text
 :rotating_light: *Claude quota 90% threshold crossed*
 Weekly (all models): 90.2% | Sonnet: 45.1% | Session: 12.3%
 *Slow down — quota nearly exhausted.*
 ```
 
 **ntfy:** Plain text body with structured headers:
-```
+```text
 Title: Claude quota 90% threshold crossed
 Priority: urgent (90%) / high (75%) / default (50%)
 Tags: rotating_light (90%) / warning (75%+)
@@ -254,7 +254,7 @@ The `run` subcommand is the raw daemon entry point (no PID file guard, no Circus
 
 ### CLI Interface
 
-```
+```text
 ai quota watch start    — add watcher to circus.ini, ensure circusd running
 ai quota watch stop     — remove watcher from circus.ini (or circusctl stop)
 ai quota watch status   — circusctl stats quota-watch + last log line
