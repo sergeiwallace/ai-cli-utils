@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-04-20
+
+### Added
+
+- ntfy notification channel for quota threshold alerts. Both Discord webhook and ntfy fire independently on every threshold crossing. Reads `NTFY_BASE_URL`, `NTFY_TOPIC`, and `NTFY_TOKEN` env vars (or `[quota]` config keys). Proper `Title`, `Priority`, and `Tags` headers ensure full message visibility in macOS/iOS notification banners.
+- macOS Notification Center fallback via `osascript` when no push channels are configured (replaces `notify-send` on macOS).
+
 ## [0.4.4] - 2026-04-20
 
 ### Fixed
