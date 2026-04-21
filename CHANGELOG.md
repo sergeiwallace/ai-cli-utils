@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-21
+
+### Fixed
+
+- Discord webhook delivery failing with 400 "empty message" for webhooks hosted on `discordapp.com` (legacy Discord CDN domain). The `is_discord` check only matched `discord.com`, causing the payload to be sent in Slack format (`text` field instead of `content`), which Discord rejects. Both domains now detected correctly.
+
 ## [0.5.0] - 2026-04-20
 
 ### Added
