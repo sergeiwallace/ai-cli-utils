@@ -17,6 +17,7 @@ from ai_cli.quota import (
     _publish_quota_snapshot,
     _scrape_usage_hidden_pane,
     _send_notification,
+    _send_ntfy_notification,
     _send_webhook_notification,
     _try_read_kv_snapshot,
     quota_record,
@@ -584,14 +585,29 @@ class TestGetClaudeUsageSnapshot:
 # --- _send_notification ---
 
 
+_NOTIFICATION_ENV_KEYS = (
+    "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL",
+    "NTFY_BASE_URL",
+    "NTFY_TOPIC",
+    "NTFY_TOKEN",
+)
+
+
+def _clear_notification_env() -> dict:
+    """Return os.environ with all notification channel keys removed."""
+    return {k: v for k, v in os.environ.items() if k not in _NOTIFICATION_ENV_KEYS}
+
+
 class TestSendNotification:
     def _make_snapshot(self, pct: float = 78.5) -> QuotaSnapshot:
         return QuotaSnapshot(weekly_all_models_pct=pct, session_pct=12.0, weekly_sonnet_pct=40.0)
 
-    def test_when_no_slack_url_then_uses_notify_send(self):
+    def test_when_no_channels_on_linux_then_uses_notify_send(self):
         snap = self._make_snapshot(78.5)
         with (
             patch("ai_cli.config.load_config", return_value={}),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
+            patch("sys.platform", "linux"),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(75, snap)
@@ -600,10 +616,24 @@ class TestSendNotification:
         assert args[0] == "notify-send"
         assert "78%" in args[2]
 
+    def test_when_no_channels_on_darwin_then_uses_osascript(self):
+        snap = self._make_snapshot(78.5)
+        with (
+            patch("ai_cli.config.load_config", return_value={}),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
+            patch("sys.platform", "darwin"),
+            patch("subprocess.run") as mock_run,
+        ):
+            _send_notification(75, snap)
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0][0] == "osascript"
+
     def test_when_threshold_90_then_slow_down_message(self):
         snap = self._make_snapshot(92.0)
         with (
             patch("ai_cli.config.load_config", return_value={}),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
+            patch("sys.platform", "linux"),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(90, snap)
@@ -614,6 +644,8 @@ class TestSendNotification:
         snap = self._make_snapshot(78.5)
         with (
             patch("ai_cli.config.load_config", return_value={}),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
+            patch("sys.platform", "linux"),
             patch("subprocess.run", side_effect=FileNotFoundError("not found")),
         ):
             _send_notification(75, snap)  # should not raise
@@ -623,18 +655,55 @@ class TestSendNotification:
         cfg = {"quota": {"webhook_url": "https://hooks.slack.com/test"}}
         with (
             patch("ai_cli.config.load_config", return_value=cfg),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
             patch("ai_cli.quota._send_webhook_notification") as mock_wh,
+            patch("ai_cli.quota._send_ntfy_notification") as mock_ntfy,
         ):
             _send_notification(75, snap)
         mock_wh.assert_called_once()
+        mock_ntfy.assert_not_called()
+
+    def test_when_ntfy_configured_then_uses_ntfy(self):
+        snap = self._make_snapshot(78.5)
+        cfg = {"quota": {"ntfy_base_url": "https://ntfy.example.com", "ntfy_topic": "alerts", "ntfy_token": "tk_abc"}}
+        with (
+            patch("ai_cli.config.load_config", return_value=cfg),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
+            patch("ai_cli.quota._send_ntfy_notification") as mock_ntfy,
+            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
+        ):
+            _send_notification(75, snap)
+        mock_ntfy.assert_called_once()
+        mock_wh.assert_not_called()
+
+    def test_when_both_webhook_and_ntfy_configured_then_both_fire(self):
+        snap = self._make_snapshot(78.5)
+        cfg = {
+            "quota": {
+                "webhook_url": "https://discord.com/api/webhooks/1/x",
+                "ntfy_base_url": "https://ntfy.example.com",
+                "ntfy_topic": "alerts",
+            }
+        }
+        with (
+            patch("ai_cli.config.load_config", return_value=cfg),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
+            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
+            patch("ai_cli.quota._send_ntfy_notification") as mock_ntfy,
+        ):
+            _send_notification(75, snap)
+        mock_wh.assert_called_once()
+        mock_ntfy.assert_called_once()
 
     def test_when_env_var_set_then_uses_webhook(self):
         snap = self._make_snapshot(78.5)
+        env = {
+            **_clear_notification_env(),
+            "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc",
+        }
         with (
             patch("ai_cli.config.load_config", return_value={}),
-            patch.dict(
-                "os.environ", {"DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc"}
-            ),
+            patch.dict("os.environ", env, clear=True),
             patch("ai_cli.quota._send_webhook_notification") as mock_wh,
         ):
             _send_notification(75, snap)
@@ -642,22 +711,24 @@ class TestSendNotification:
 
     def test_when_load_config_raises_then_env_var_used(self):
         snap = self._make_snapshot(78.5)
+        env = {
+            **_clear_notification_env(),
+            "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc",
+        }
         with (
             patch("ai_cli.config.load_config", side_effect=Exception("no config")),
-            patch.dict(
-                "os.environ", {"DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc"}
-            ),
+            patch.dict("os.environ", env, clear=True),
             patch("ai_cli.quota._send_webhook_notification") as mock_wh,
         ):
             _send_notification(75, snap)
         mock_wh.assert_called_once()
 
-    def test_when_load_config_raises_and_no_env_var_then_notify_send(self):
+    def test_when_load_config_raises_and_no_channels_then_fallback(self):
         snap = self._make_snapshot(78.5)
-        env = {k: v for k, v in __import__("os").environ.items() if k != "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL"}
         with (
             patch("ai_cli.config.load_config", side_effect=Exception("no config")),
-            patch.dict("os.environ", env, clear=True),
+            patch.dict("os.environ", _clear_notification_env(), clear=True),
+            patch("sys.platform", "linux"),
             patch("subprocess.run") as mock_run,
         ):
             _send_notification(75, snap)
@@ -737,6 +808,64 @@ class TestSendWebhookNotification:
             _send_webhook_notification("https://hooks.slack.com/test", 90, snap)
 
         assert any("slow down" in d.lower() or "Slow down" in d for d in posted_data)
+
+
+# --- _send_ntfy_notification ---
+
+
+class TestSendNtfyNotification:
+    def _make_snap(self) -> QuotaSnapshot:
+        return QuotaSnapshot(weekly_all_models_pct=78.5, session_pct=12.0, weekly_sonnet_pct=40.0)
+
+    def _capture(self, url: str, token: str, threshold: int, snap: QuotaSnapshot) -> list[dict]:
+        import urllib.request
+
+        captured: list[dict] = []
+
+        class FakeReq:
+            def __init__(self, u, data, headers, method):
+                captured.append({"url": u, "body": data.decode(), "headers": headers})
+
+        with (
+            patch("urllib.request.Request", side_effect=FakeReq),
+            patch.object(urllib.request, "urlopen"),
+        ):
+            _send_ntfy_notification(url, token, threshold, snap)
+        return captured
+
+    def test_when_token_provided_then_sets_bearer_header(self):
+        c = self._capture("https://ntfy.example.com/alerts", "tk_abc123", 75, self._make_snap())
+        assert c and c[0]["headers"].get("Authorization") == "Bearer tk_abc123"
+
+    def test_when_no_token_then_no_auth_header(self):
+        c = self._capture("https://ntfy.example.com/alerts", "", 75, self._make_snap())
+        assert c and "Authorization" not in c[0]["headers"]
+
+    def test_when_threshold_90_then_urgent_priority(self):
+        c = self._capture("https://ntfy.example.com/alerts", "", 90, self._make_snap())
+        assert c and c[0]["headers"].get("Priority") == "urgent"
+
+    def test_when_threshold_75_then_high_priority(self):
+        c = self._capture("https://ntfy.example.com/alerts", "", 75, self._make_snap())
+        assert c and c[0]["headers"].get("Priority") == "high"
+
+    def test_when_threshold_50_then_default_priority(self):
+        c = self._capture("https://ntfy.example.com/alerts", "", 50, self._make_snap())
+        assert c and c[0]["headers"].get("Priority") == "default"
+
+    def test_when_called_then_title_header_set(self):
+        c = self._capture("https://ntfy.example.com/alerts", "", 75, self._make_snap())
+        assert c and "Title" in c[0]["headers"]
+        assert "75%" in c[0]["headers"]["Title"]
+
+    def test_when_urlopen_raises_then_no_crash(self):
+        import urllib.request
+
+        with (
+            patch("urllib.request.Request"),
+            patch.object(urllib.request, "urlopen", side_effect=OSError("timeout")),
+        ):
+            _send_ntfy_notification("https://ntfy.example.com/alerts", "tk_x", 75, self._make_snap())
 
 
 # --- quota_record ---

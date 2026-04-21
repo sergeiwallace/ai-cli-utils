@@ -476,7 +476,7 @@ def quota_watch(poll_interval: int = 300) -> int:
 
 
 def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
-    """Send alert for quota threshold via webhook (if configured) or notify-send."""
+    """Send quota threshold alert via all configured channels (Discord webhook, ntfy)."""
     usage = snapshot.weekly_all_models_pct
     msg = f"Claude usage at {usage:.0f}% (threshold: {threshold}%)"
     if threshold >= 90:
@@ -487,22 +487,46 @@ def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
 
         cfg = load_config().get("quota", {})
         webhook_url = cfg.get("webhook_url", "") or os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "")
+        ntfy_base = cfg.get("ntfy_base_url", "") or os.environ.get("NTFY_BASE_URL", "")
+        ntfy_topic = cfg.get("ntfy_topic", "") or os.environ.get("NTFY_TOPIC", "")
+        ntfy_token = cfg.get("ntfy_token", "") or os.environ.get("NTFY_TOKEN", "")
     except Exception:
         webhook_url = os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "")
+        ntfy_base = os.environ.get("NTFY_BASE_URL", "")
+        ntfy_topic = os.environ.get("NTFY_TOPIC", "")
+        ntfy_token = os.environ.get("NTFY_TOKEN", "")
 
+    fired = False
     if webhook_url:
         _send_webhook_notification(webhook_url, threshold, snapshot)
+        fired = True
+    if ntfy_base and ntfy_topic:
+        ntfy_url = f"{ntfy_base.rstrip('/')}/{ntfy_topic}"
+        _send_ntfy_notification(ntfy_url, ntfy_token, threshold, snapshot)
+        fired = True
+
+    if fired:
         return
 
-    # Fallback: OS notification via notify-send
-    try:
-        subprocess.run(
-            ["notify-send", "ai-cli quota", msg],
-            capture_output=True,
-            timeout=5,
-        )
-    except Exception:
-        pass
+    # Fallback: OS notification via notify-send (Linux) or osascript (macOS)
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{msg}" with title "ai-cli quota"'],
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception as exc:
+            print(f"[quota] osascript notification failed: {exc}", file=sys.stderr)
+    else:
+        try:
+            subprocess.run(
+                ["notify-send", "ai-cli quota", msg],
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception as exc:
+            print(f"[quota] notify-send failed: {exc}", file=sys.stderr)
 
 
 def _send_webhook_notification(webhook_url: str, threshold: int, snapshot: QuotaSnapshot) -> None:
@@ -540,6 +564,45 @@ def _send_webhook_notification(webhook_url: str, threshold: int, snapshot: Quota
         print(f"[quota] webhook sent (HTTP {resp.status})", file=sys.stderr)
     except Exception as exc:
         print(f"[quota] webhook failed: {exc}", file=sys.stderr)
+
+
+def _send_ntfy_notification(ntfy_url: str, token: str, threshold: int, snapshot: QuotaSnapshot) -> None:
+    """POST a quota alert to a self-hosted or public ntfy server.
+
+    Uses Bearer token auth when a token is provided.  Title and Priority headers
+    ensure the full message is visible in the OS notification banner.
+    """
+    import urllib.request
+
+    usage = snapshot.weekly_all_models_pct
+    title = f"Claude quota {threshold}% threshold crossed"
+    body = f"Weekly (all models): {usage:.1f}%"
+    if snapshot.weekly_sonnet_pct is not None:
+        body += f" | Sonnet: {snapshot.weekly_sonnet_pct:.1f}%"
+    if snapshot.session_pct is not None:
+        body += f" | Session: {snapshot.session_pct:.1f}%"
+    if threshold >= 90:
+        body += " — slow down!"
+
+    priority = "urgent" if threshold >= 90 else "high" if threshold >= 75 else "default"
+    tags = "rotating_light" if threshold >= 90 else "warning"
+
+    headers: dict[str, str] = {
+        "Title": title,
+        "Priority": priority,
+        "Tags": tags,
+        "Content-Type": "text/plain",
+        "User-Agent": "ai-cli-utils/1.0",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        req = urllib.request.Request(ntfy_url, data=body.encode(), headers=headers, method="POST")
+        resp = urllib.request.urlopen(req, timeout=5)
+        print(f"[quota] ntfy sent (HTTP {resp.status})", file=sys.stderr)
+    except Exception as exc:
+        print(f"[quota] ntfy failed: {exc}", file=sys.stderr)
 
 
 def quota_status() -> int:
