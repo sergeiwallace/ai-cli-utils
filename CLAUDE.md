@@ -125,6 +125,10 @@ All markdown docs with 3+ sections must include a `## Table of Contents` as the 
 - **Standard names** (ALL_CAPS): README, CLAUDE, GEMINI, SKILL, MEMORY, SCRATCH
 - **All other markdown docs**: kebab-case (e.g., `api-design.md`, `migration-plan.md`)
 
+## Secrets and Credentials
+
+- **Never run credential-listing commands** — `ntfy token list`, `stripe keys list`, or any CLI subcommand that prints secret values inline. Verify auth by sending a test request and checking the HTTP status code. This extends the global banned-commands policy to service-specific CLIs.
+
 ## MCP Servers
 
 Required: `github`, `gemini-cli`.
