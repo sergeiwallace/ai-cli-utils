@@ -348,10 +348,9 @@ Add `quota_alerts` table to `quota.db` to survive restarts without re-alerting. 
 3. Should `ai quota watch status` show the last N alerts fired, or just process state?
 
 > **Feedback Round 1:** Your thoughts on the open questions:
-> 1. <!-- Response to question 1 -->
-> 2. <!-- Response to question 2 -->
-> 3. <!-- Response to question 3 -->
-> - <enter feedback here>
+> 1. OS fallback should fire both when no channel is configured AND as a true last resort when configured channels fail. But a channel should always be configured — why would no channel ever be configured in the first place? Also: add a unified notification API to the design — single interface that fires all configured channels (ntfy, Discord, OS), customizable via config and per-call overrides. Should be easy to configure notifications for any project. What's the best approach for managing and auditing all configured notifications — database or config file?
+> 2. Do all phases in one implementation — no unnecessary phasing/refactoring. Restructure the doc accordingly.
+> 3. Show last N alerts (N as CLI arg), or since DATE/DATETIME, or date range (--from/--to). Design this in the doc.
 
 ## Approval Log
 
