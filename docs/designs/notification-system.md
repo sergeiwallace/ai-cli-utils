@@ -53,7 +53,7 @@ Both gaps have the same root: quota-watch is not managed as a system service.
 |---|----------|-------------------|--------|-----------|--------|
 | 1 | Process management for quota-watch | PID file + manual restart, systemd, Circus | Circus | Already a declared dependency; consistent with signal-watch | Approved |
 | 2 | Notification channel hierarchy | Single channel, parallel all-channels, priority fallback | Parallel primary + OS fallback | Discord and ntfy fire independently; OS notification only when neither is configured | Approved |
-| 3 | Config source | Config file only, env vars only, layered | Layered (config file → env var) | Allows Doppler injection without requiring file edits | Approved |
+| 3 | Config source | Config file only, env vars only, layered | Layered (config file → env var) | Allows Doppler injection without requiring file edits; consistent with existing ai-cli config pattern | Approved |
 
 ### Decision Details
 
@@ -134,18 +134,55 @@ Both gaps have the same root: quota-watch is not managed as a system service.
 
 #### Decision 3: Config Source
 
-Config is layered: `[quota]` section in `config.toml` is checked first; env vars are the fallback. This enables Doppler-injected secrets without requiring users to edit files.
+##### (a) Config file only
 
-```text
-config.toml [quota] section  →  env var fallback
-```
+**Pros:**
+- Explicit — all config in one place
+- Easy to audit what's configured
+
+**Cons:**
+- Secrets in a plain file on disk — rotation requires file edits
+- No Doppler / secrets manager injection without extra tooling
+
+##### (b) Environment variables only
+
+**Pros:**
+- Works naturally with Doppler, direnv, and 12-factor tooling
+- No secrets on disk
+
+**Cons:**
+- No persistent defaults — user must set vars every session or wire them into shell init
+- Harder to distribute across machines without a secrets manager
+
+##### (c) Layered (config file → env var fallback)
+
+**Pros:**
+- Secrets stay in Doppler (env vars), never in files
+- Config file can still hold non-secret defaults (poll interval, topic name)
+- Consistent with how other ai-cli config options work
+
+**Cons:**
+- Two sources of truth require documenting precedence clearly
+
+##### Recommendation
+
+**Option (c): layered.** Config file holds non-secret defaults; env vars (injected by Doppler/direnv) hold credentials. This matches the existing pattern in `_send_notification` and lets users configure the system without touching files.
 
 ---
 
 > **Feedback Round 1:** Your approval/feedback on each decision:
-> 1. Decision 1 (Circus): <approval or feedback>
-> 2. Decision 2 (Parallel channels): <approval or feedback>
-> 3. Decision 3 (Layered config): <approval or feedback>
+> 1. Decision 1 (Circus): Recommendation approved.
+> 2. Decision 2 (Parallel channels): Keep both Discord and ntfy until evaluated in practice. Added AI-CLI-49 to roadmap to evaluate notification channels after using them for a while.
+> 3. Decision 3 (Layered config): Missing options/pros/cons/recommendation — expand.
+>
+> **AI Response Round 1:**
+> - D1: Circus approved, no changes.
+> - D2: Parallel delivery confirmed. Roadmap task AI-CLI-49 added.
+> - D3: Expanded with three options (config file only, env vars only, layered), pros/cons for each, and recommendation for layered.
+
+---
+
+> **Feedback Round 2:** Your approval/feedback on updated D3 and overall design:
 > - <enter feedback here>
 
 ## Notification Channel System
@@ -320,3 +357,4 @@ Add `quota_alerts` table to `quota.db` to survive restarts without re-alerting. 
 
 | Date | Decision | Notes |
 |------|----------|-------|
+| 2026-04-20 | Round 1 | D1 (Circus) approved. D2 (parallel channels) approved — keep both Discord and ntfy; AI-CLI-49 added to evaluate long-term. D3 (layered config) approved after expanding with options/pros/cons/recommendation. |
