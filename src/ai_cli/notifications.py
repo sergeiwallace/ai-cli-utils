@@ -183,7 +183,7 @@ class Notifier:
 
 def _send_discord(webhook_url: str, title: str, body: str, priority: str) -> NotificationResult:
     """POST to a Discord or Slack incoming webhook."""
-    is_discord = "discord.com" in webhook_url
+    is_discord = "discord.com" in webhook_url or "discordapp.com" in webhook_url
     emoji = "\U0001f6a8" if priority == "urgent" else "⚠️" if priority == "high" else "ℹ️"
     text = f"{emoji} **{title}**\n{body}"
     payload = json.dumps({"content": text} if is_discord else {"text": text}).encode()

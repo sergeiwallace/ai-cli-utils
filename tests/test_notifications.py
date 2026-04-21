@@ -206,6 +206,16 @@ class TestSendDiscord:
         assert captured and "content" in captured[0]["payload"]
         assert "text" not in captured[0]["payload"]
 
+    def test_when_discordapp_url_then_posts_content_field(self):
+        captured, FakeReq = self._make_request_capture()
+        with (
+            patch("urllib.request.Request", side_effect=FakeReq),
+            patch.object(urllib.request, "urlopen"),
+        ):
+            _send_discord("https://discordapp.com/api/webhooks/1/x", "Title", "Body", "default")
+        assert captured and "content" in captured[0]["payload"]
+        assert "text" not in captured[0]["payload"]
+
     def test_when_slack_url_then_posts_text_field(self):
         captured, FakeReq = self._make_request_capture()
         with (
