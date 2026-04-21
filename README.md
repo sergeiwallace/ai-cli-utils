@@ -34,7 +34,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to humanware backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Signal-watch** | Handoff delivery via Circus-managed background process — isolated from CC session lifecycle |
-| **Notifications** | Desktop and push notifications on task completion |
+| **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
 | **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
 | **Runtime tinted icons** | Pillow-based PNG icon generation at session launch; auto-contrast tint derived from tab color via HSL color theory |

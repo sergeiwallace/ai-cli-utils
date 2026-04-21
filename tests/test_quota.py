@@ -1,6 +1,5 @@
 """Tests for quota tracking — hidden pane scraper, notification, quota_watch, quota_record."""
 
-import json
 import os
 import time
 from datetime import datetime, timezone, timedelta
@@ -16,9 +15,6 @@ from ai_cli.quota import (
     _parse_usage_output,
     _publish_quota_snapshot,
     _scrape_usage_hidden_pane,
-    _send_notification,
-    _send_ntfy_notification,
-    _send_webhook_notification,
     _try_read_kv_snapshot,
     quota_record,
     quota_scrape,
@@ -582,290 +578,75 @@ class TestGetClaudeUsageSnapshot:
         assert result is None
 
 
-# --- _send_notification ---
+# --- _notify_threshold ---
 
 
-_NOTIFICATION_ENV_KEYS = (
-    "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL",
-    "NTFY_BASE_URL",
-    "NTFY_TOPIC",
-    "NTFY_TOKEN",
-)
+class TestNotifyThreshold:
+    """Tests for _notify_threshold — formats quota alerts and calls Notifier.send()."""
 
-
-def _clear_notification_env() -> dict:
-    """Return os.environ with all notification channel keys removed."""
-    return {k: v for k, v in os.environ.items() if k not in _NOTIFICATION_ENV_KEYS}
-
-
-class TestSendNotification:
     def _make_snapshot(self, pct: float = 78.5) -> QuotaSnapshot:
         return QuotaSnapshot(weekly_all_models_pct=pct, session_pct=12.0, weekly_sonnet_pct=40.0)
 
-    def test_when_no_channels_on_linux_then_uses_notify_send(self):
-        snap = self._make_snapshot(78.5)
-        with (
-            patch("ai_cli.config.load_config", return_value={}),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("sys.platform", "linux"),
-            patch("subprocess.run") as mock_run,
-        ):
-            _send_notification(75, snap)
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
-        assert args[0] == "notify-send"
-        assert "78%" in args[2]
-
-    def test_when_no_channels_on_darwin_then_uses_osascript(self):
-        snap = self._make_snapshot(78.5)
-        with (
-            patch("ai_cli.config.load_config", return_value={}),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("sys.platform", "darwin"),
-            patch("subprocess.run") as mock_run,
-        ):
-            _send_notification(75, snap)
-        mock_run.assert_called_once()
-        assert mock_run.call_args[0][0][0] == "osascript"
-
-    def test_when_threshold_90_then_slow_down_message(self):
-        snap = self._make_snapshot(92.0)
-        with (
-            patch("ai_cli.config.load_config", return_value={}),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("sys.platform", "linux"),
-            patch("subprocess.run") as mock_run,
-        ):
-            _send_notification(90, snap)
-        args = mock_run.call_args[0][0]
-        assert "slow down" in args[2]
-
-    def test_when_notify_send_raises_then_no_crash(self):
-        snap = self._make_snapshot(78.5)
-        with (
-            patch("ai_cli.config.load_config", return_value={}),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("sys.platform", "linux"),
-            patch("subprocess.run", side_effect=FileNotFoundError("not found")),
-        ):
-            _send_notification(75, snap)  # should not raise
-
-    def test_when_webhook_url_configured_then_uses_webhook(self):
-        snap = self._make_snapshot(78.5)
-        cfg = {"quota": {"webhook_url": "https://hooks.slack.com/test"}}
-        with (
-            patch("ai_cli.config.load_config", return_value=cfg),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
-            patch("ai_cli.quota._send_ntfy_notification") as mock_ntfy,
-        ):
-            _send_notification(75, snap)
-        mock_wh.assert_called_once()
-        mock_ntfy.assert_not_called()
-
-    def test_when_ntfy_configured_then_uses_ntfy(self):
-        snap = self._make_snapshot(78.5)
-        cfg = {"quota": {"ntfy_base_url": "https://ntfy.example.com", "ntfy_topic": "alerts", "ntfy_token": "tk_abc"}}
-        with (
-            patch("ai_cli.config.load_config", return_value=cfg),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("ai_cli.quota._send_ntfy_notification") as mock_ntfy,
-            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
-        ):
-            _send_notification(75, snap)
-        mock_ntfy.assert_called_once()
-        mock_wh.assert_not_called()
-
-    def test_when_both_webhook_and_ntfy_configured_then_both_fire(self):
-        snap = self._make_snapshot(78.5)
-        cfg = {
-            "quota": {
-                "webhook_url": "https://discord.com/api/webhooks/1/x",
-                "ntfy_base_url": "https://ntfy.example.com",
-                "ntfy_topic": "alerts",
-            }
-        }
-        with (
-            patch("ai_cli.config.load_config", return_value=cfg),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
-            patch("ai_cli.quota._send_ntfy_notification") as mock_ntfy,
-        ):
-            _send_notification(75, snap)
-        mock_wh.assert_called_once()
-        mock_ntfy.assert_called_once()
-
-    def test_when_env_var_set_then_uses_webhook(self):
-        snap = self._make_snapshot(78.5)
-        env = {
-            **_clear_notification_env(),
-            "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc",
-        }
-        with (
-            patch("ai_cli.config.load_config", return_value={}),
-            patch.dict("os.environ", env, clear=True),
-            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
-        ):
-            _send_notification(75, snap)
-        mock_wh.assert_called_once()
-
-    def test_when_load_config_raises_then_env_var_used(self):
-        snap = self._make_snapshot(78.5)
-        env = {
-            **_clear_notification_env(),
-            "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL": "https://discord.com/api/webhooks/123/abc",
-        }
-        with (
-            patch("ai_cli.config.load_config", side_effect=Exception("no config")),
-            patch.dict("os.environ", env, clear=True),
-            patch("ai_cli.quota._send_webhook_notification") as mock_wh,
-        ):
-            _send_notification(75, snap)
-        mock_wh.assert_called_once()
-
-    def test_when_load_config_raises_and_no_channels_then_fallback(self):
-        snap = self._make_snapshot(78.5)
-        with (
-            patch("ai_cli.config.load_config", side_effect=Exception("no config")),
-            patch.dict("os.environ", _clear_notification_env(), clear=True),
-            patch("sys.platform", "linux"),
-            patch("subprocess.run") as mock_run,
-        ):
-            _send_notification(75, snap)
-        mock_run.assert_called_once()
-        assert mock_run.call_args[0][0][0] == "notify-send"
-
-
-# --- _send_webhook_notification ---
-
-
-class TestSendWebhookNotification:
-    def test_when_slack_url_then_posts_text_field(self):
-        snap = QuotaSnapshot(
-            weekly_all_models_pct=78.5,
-            session_pct=12.0,
-            weekly_sonnet_pct=40.0,
-        )
-        captured = []
-
-        import urllib.request
-
-        class FakeReq:
-            def __init__(self, url, data, headers, method):
-                captured.append({"payload": json.loads(data.decode()), "headers": headers})
-
-        with (
-            patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
-        ):
-            _send_webhook_notification("https://hooks.slack.com/test", 75, snap)
-
-        assert captured and "text" in captured[0]["payload"]
-        assert "content" not in captured[0]["payload"]
-        assert captured[0]["headers"].get("User-Agent") == "ai-cli-utils/1.0"
-
-    def test_when_discord_url_then_posts_content_field(self):
-        snap = QuotaSnapshot(weekly_all_models_pct=78.5)
-        captured = []
-
-        import urllib.request
-
-        class FakeReq:
-            def __init__(self, url, data, headers, method):
-                captured.append({"payload": json.loads(data.decode()), "headers": headers})
-
-        with (
-            patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
-        ):
-            _send_webhook_notification("https://discord.com/api/webhooks/123/abc", 75, snap)
-
-        assert captured and "content" in captured[0]["payload"]
-        assert "text" not in captured[0]["payload"]
-        assert captured[0]["headers"].get("User-Agent") == "ai-cli-utils/1.0"
-
-    def test_when_urlopen_raises_then_no_crash(self):
-        snap = QuotaSnapshot(weekly_all_models_pct=78.5)
-        import urllib.request
-
-        with patch.object(urllib.request, "urlopen", side_effect=Exception("network error")):
-            _send_webhook_notification("https://hooks.slack.com/test", 75, snap)
-
-    def test_when_threshold_90_then_message_includes_slow_down(self):
-        snap = QuotaSnapshot(weekly_all_models_pct=92.0)
-        posted_data = []
-
-        import urllib.request
-
-        class FakeReq:
-            def __init__(self, url, data, headers, method):
-                posted_data.append(data.decode())
-
-        with (
-            patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
-        ):
-            _send_webhook_notification("https://hooks.slack.com/test", 90, snap)
-
-        assert any("slow down" in d.lower() or "Slow down" in d for d in posted_data)
-
-
-# --- _send_ntfy_notification ---
-
-
-class TestSendNtfyNotification:
-    def _make_snap(self) -> QuotaSnapshot:
-        return QuotaSnapshot(weekly_all_models_pct=78.5, session_pct=12.0, weekly_sonnet_pct=40.0)
-
-    def _capture(self, url: str, token: str, threshold: int, snap: QuotaSnapshot) -> list[dict]:
-        import urllib.request
-
-        captured: list[dict] = []
-
-        class FakeReq:
-            def __init__(self, u, data, headers, method):
-                captured.append({"url": u, "body": data.decode(), "headers": headers})
-
-        with (
-            patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
-        ):
-            _send_ntfy_notification(url, token, threshold, snap)
-        return captured
-
-    def test_when_token_provided_then_sets_bearer_header(self):
-        c = self._capture("https://ntfy.example.com/alerts", "tk_abc123", 75, self._make_snap())
-        assert c and c[0]["headers"].get("Authorization") == "Bearer tk_abc123"
-
-    def test_when_no_token_then_no_auth_header(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", 75, self._make_snap())
-        assert c and "Authorization" not in c[0]["headers"]
-
     def test_when_threshold_90_then_urgent_priority(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", 90, self._make_snap())
-        assert c and c[0]["headers"].get("Priority") == "urgent"
+        from ai_cli.quota import _notify_threshold
+
+        mock_notifier = MagicMock()
+        _notify_threshold(mock_notifier, 90, self._make_snapshot(91.0))
+        mock_notifier.send.assert_called_once()
+        _, kwargs = mock_notifier.send.call_args
+        assert kwargs.get("priority") == "urgent"
 
     def test_when_threshold_75_then_high_priority(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", 75, self._make_snap())
-        assert c and c[0]["headers"].get("Priority") == "high"
+        from ai_cli.quota import _notify_threshold
+
+        mock_notifier = MagicMock()
+        _notify_threshold(mock_notifier, 75, self._make_snapshot(76.0))
+        _, kwargs = mock_notifier.send.call_args
+        assert kwargs.get("priority") == "high"
 
     def test_when_threshold_50_then_default_priority(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", 50, self._make_snap())
-        assert c and c[0]["headers"].get("Priority") == "default"
+        from ai_cli.quota import _notify_threshold
 
-    def test_when_called_then_title_header_set(self):
-        c = self._capture("https://ntfy.example.com/alerts", "", 75, self._make_snap())
-        assert c and "Title" in c[0]["headers"]
-        assert "75%" in c[0]["headers"]["Title"]
+        mock_notifier = MagicMock()
+        _notify_threshold(mock_notifier, 50, self._make_snapshot(51.0))
+        _, kwargs = mock_notifier.send.call_args
+        assert kwargs.get("priority") == "default"
 
-    def test_when_urlopen_raises_then_no_crash(self):
-        import urllib.request
+    def test_when_threshold_90_then_slow_down_in_body(self):
+        from ai_cli.quota import _notify_threshold
 
-        with (
-            patch("urllib.request.Request"),
-            patch.object(urllib.request, "urlopen", side_effect=OSError("timeout")),
-        ):
-            _send_ntfy_notification("https://ntfy.example.com/alerts", "tk_x", 75, self._make_snap())
+        mock_notifier = MagicMock()
+        _notify_threshold(mock_notifier, 90, self._make_snapshot(92.0))
+        args, _ = mock_notifier.send.call_args
+        body = args[1]
+        assert "slow down" in body.lower()
+
+    def test_when_sonnet_and_session_present_then_included_in_body(self):
+        from ai_cli.quota import _notify_threshold
+
+        snap = QuotaSnapshot(weekly_all_models_pct=80.0, session_pct=15.0, weekly_sonnet_pct=50.0)
+        mock_notifier = MagicMock()
+        _notify_threshold(mock_notifier, 75, snap)
+        args, _ = mock_notifier.send.call_args
+        body = args[1]
+        assert "Sonnet" in body
+        assert "Session" in body
+
+    def test_when_source_is_quota_watch(self):
+        from ai_cli.quota import _notify_threshold
+
+        mock_notifier = MagicMock()
+        _notify_threshold(mock_notifier, 75, self._make_snapshot())
+        _, kwargs = mock_notifier.send.call_args
+        assert kwargs.get("source") == "quota-watch"
+
+    def test_when_notifier_raises_then_no_crash(self, capsys):
+        from ai_cli.quota import _notify_threshold
+
+        mock_notifier = MagicMock()
+        mock_notifier.send.side_effect = RuntimeError("notifier error")
+        _notify_threshold(mock_notifier, 75, self._make_snapshot())  # must not raise
+        assert "notification failed" in capsys.readouterr().err
 
 
 # --- quota_record ---
@@ -1223,32 +1004,6 @@ class TestQuotaHistory:
 
 
 class TestQuotaWatch:
-    def test_when_already_running_then_returns_2(self):
-        with patch("ai_cli.sync._acquire_pid_file", return_value=False):
-            from ai_cli.quota import quota_watch
-
-            result = quota_watch()
-        assert result == 2
-
-    def test_when_nats_unavailable_then_returns_1(self):
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect():
-            pass
-
-        mock_client.connect = fake_connect
-
-        with (
-            patch("ai_cli.sync._acquire_pid_file", return_value=True),
-            patch("ai_cli.sync._release_pid_file"),
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-        ):
-            from ai_cli.quota import quota_watch
-
-            result = quota_watch()
-        assert result == 1
-
     def test_when_interrupt_then_returns_0(self):
         mock_client = MagicMock()
         mock_client.nc = None
@@ -1266,8 +1021,6 @@ class TestQuotaWatch:
             raise KeyboardInterrupt
 
         with (
-            patch("ai_cli.sync._acquire_pid_file", return_value=True),
-            patch("ai_cli.sync._release_pid_file") as mock_release,
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
             patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
             patch("time.sleep", fake_sleep),
@@ -1276,9 +1029,31 @@ class TestQuotaWatch:
 
             result = quota_watch()
         assert result == 0
-        mock_release.assert_called_with("quota-watch")
 
-    def test_when_usage_crosses_threshold_then_publishes(self):
+    def test_when_nats_unavailable_then_still_starts(self):
+        """NATS unavailable is no longer fatal — quota-watch runs with notifications only."""
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            pass
+
+        mock_client.connect = fake_connect
+
+        def fake_sleep(_):
+            raise KeyboardInterrupt
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
+            patch("time.sleep", fake_sleep),
+        ):
+            from ai_cli.quota import quota_watch
+
+            result = quota_watch()
+        assert result == 0
+
+    def test_when_usage_crosses_threshold_then_publishes_and_notifies(self):
         mock_client = MagicMock()
         mock_client.nc = None
 
@@ -1306,11 +1081,9 @@ class TestQuotaWatch:
         snap = QuotaSnapshot(weekly_all_models_pct=80.0, session_pct=10.0)
 
         with (
-            patch("ai_cli.sync._acquire_pid_file", return_value=True),
-            patch("ai_cli.sync._release_pid_file"),
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
             patch("ai_cli.quota._get_claude_usage_snapshot", return_value=snap),
-            patch("ai_cli.quota._send_notification"),
+            patch("ai_cli.quota._notify_threshold") as mock_notify,
             patch("time.sleep", fake_sleep),
         ):
             from ai_cli.quota import quota_watch
@@ -1322,25 +1095,7 @@ class TestQuotaWatch:
         subjects = [call.args[0] for call in mock_client.publish.call_args_list]
         assert "quota.threshold.50" in subjects
         assert "quota.threshold.75" in subjects
-
-    def test_when_connect_raises_then_handles_unavailable(self):
-        mock_client = MagicMock()
-        mock_client.nc = None
-
-        async def fake_connect_raises():
-            raise Exception("connection error")
-
-        mock_client.connect = fake_connect_raises
-
-        with (
-            patch("ai_cli.sync._acquire_pid_file", return_value=True),
-            patch("ai_cli.sync._release_pid_file"),
-            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
-        ):
-            from ai_cli.quota import quota_watch
-
-            result = quota_watch()
-        assert result == 1
+        assert mock_notify.call_count >= 2
 
     def test_when_publish_raises_then_logs_error(self, capsys):
         mock_client = MagicMock()
@@ -1370,11 +1125,9 @@ class TestQuotaWatch:
         snap = QuotaSnapshot(weekly_all_models_pct=80.0)
 
         with (
-            patch("ai_cli.sync._acquire_pid_file", return_value=True),
-            patch("ai_cli.sync._release_pid_file"),
             patch("ai_cli.messaging.NATSClient", return_value=mock_client),
             patch("ai_cli.quota._get_claude_usage_snapshot", return_value=snap),
-            patch("ai_cli.quota._send_notification"),
+            patch("ai_cli.quota._notify_threshold"),
             patch("time.sleep", fake_sleep),
         ):
             from ai_cli.quota import quota_watch

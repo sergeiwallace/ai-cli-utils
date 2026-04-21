@@ -20,6 +20,7 @@ source: internal
   - [ai memory watch](#ai-memory-watch)
   - [ai quota watch](#ai-quota-watch)
   - [ai telemetry writer](#ai-telemetry-writer)
+  - [ai notifications](#ai-notifications)
 - [Sync Commands](#ai-sync)
 - [Utility Commands](#utility-commands)
   - [ai gemini](#ai-gemini)
@@ -161,12 +162,13 @@ Acquires PID file `memory-watch` — only one instance runs at a time.
 ### ai quota watch
 
 ```bash
-ai quota watch
+ai quota watch start    # register with Circus and start the daemon
+ai quota watch stop     # remove from Circus
+ai quota watch status   # show Circus status
+ai quota watch run      # run the daemon directly (Circus entry point)
 ```text
 
-Starts the quota monitoring daemon. Subscribes to NATS subject `quota.*` and tracks Claude token usage. Publishes quota state updates.
-
-Acquires PID file `quota-watch`.
+Manages the quota-watch daemon via Circus. `start` is idempotent and runs automatically at session launch. The daemon polls Claude usage, fires threshold alerts (50/75/90%) through the unified `Notifier` (Discord, ntfy, OS fallback), and publishes `quota.threshold.{50,75,90}` events to NATS when available.
 
 ### ai telemetry writer
 
@@ -177,6 +179,15 @@ ai telemetry writer
 Starts the telemetry writer daemon. Subscribes to NATS subject `telemetry.action.*` (durable consumer) and persists events to a local SQLite database at `~/.local/state/ai-cli/telemetry.db`.
 
 Acquires PID file `telemetry-writer`.
+
+### ai notifications
+
+```bash
+ai notifications list
+ai notifications log [-n N] [-s SINCE] [--source SRC] [--failed]
+```text
+
+`list` prints configured channels (Discord, ntfy, OS fallback) and whether their credentials are present. `log` shows delivery history from the `notification_log` table in `~/.local/state/ai-cli/quota.db`. Filters: `--last N`, `--since 2h|30m|1d|yesterday|ISO`, `--from`/`--to` date range, `--source` (e.g. `quota-watch`), `--failed` for rows with at least one failed channel.
 
 ---
 

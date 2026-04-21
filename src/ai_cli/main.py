@@ -104,6 +104,9 @@ from .transport import (  # noqa: E402,F401
     _write_transport_state,
 )
 from .process_manager import (  # noqa: E402,F401
+    _cmd_quota_watch_start,
+    _cmd_quota_watch_status,
+    _cmd_quota_watch_stop,
     _cmd_signal_watch_start,
     _cmd_signal_watch_status,
     _cmd_signal_watch_stop,
@@ -1587,11 +1590,35 @@ def cmd_quota_group():
     pass
 
 
-@cmd_quota_group.command("watch", help="Watch quota updates (long-running)")
-def cmd_quota_watch():
+@cmd_quota_group.group("watch", help="Quota-watch Circus daemon management")
+def cmd_quota_watch_group():
+    pass
+
+
+@cmd_quota_watch_group.command("start", help="Register quota-watch with Circus and start it")
+def cmd_quota_watch_start():
+    _process_manager._cmd_quota_watch_start()
+    sys.exit(0)
+
+
+@cmd_quota_watch_group.command("stop", help="Stop quota-watch")
+def cmd_quota_watch_stop():
+    _process_manager._cmd_quota_watch_stop()
+    sys.exit(0)
+
+
+@cmd_quota_watch_group.command("status", help="Show quota-watch Circus status")
+def cmd_quota_watch_status():
+    _process_manager._cmd_quota_watch_status()
+    sys.exit(0)
+
+
+@cmd_quota_watch_group.command("run", help="Run quota-watch daemon (Circus entry point)")
+@click.option("-i", "--interval", "poll_interval", default=300, show_default=True, help="Poll interval in seconds")
+def cmd_quota_watch_run(poll_interval):
     from .quota import quota_watch
 
-    sys.exit(quota_watch())
+    sys.exit(quota_watch(poll_interval))
 
 
 @cmd_quota_group.command("status", help="Print current quota snapshot")
@@ -1639,6 +1666,66 @@ def cmd_quota_record(session_id, machine_id, model, total_tokens, cost_usd):
     from .quota import quota_record
 
     sys.exit(quota_record(session_id, machine_id, model, total_tokens, cost_usd))
+
+
+# --- notifications group ---
+
+
+@_cli_group.group("notifications", help="Notification delivery and history")
+def cmd_notifications_group():
+    pass
+
+
+@cmd_notifications_group.command("list", help="List configured notification channels")
+def cmd_notifications_list():
+    from .notifications import Notifier
+
+    notifier = Notifier()
+    channels = notifier.list_channels()
+    print(f"{'Channel':<10} {'Enabled':<10} {'Credentials'}")
+    print("-" * 55)
+    for ch in channels:
+        enabled_str = "yes" if ch["enabled"] else "no"
+        creds_str = (
+            ", ".join(f"{k}: {v}" for k, v in ch["credentials"].items())
+            if ch["credentials"]
+            else "(no credentials needed)"
+        )
+        print(f"{ch['name']:<10} {enabled_str:<10} {creds_str}")
+    sys.exit(0)
+
+
+@cmd_notifications_group.command("log", help="Show notification history")
+@click.option("-n", "--last", default=10, show_default=True, help="Show last N notifications")
+@click.option("-s", "--since", default=None, help="Since DATETIME or relative (2h, 30m, 1d, yesterday)")
+@click.option("-f", "--from", "from_date", default=None, help="Start of date range (inclusive)")
+@click.option("-t", "--to", "to_date", default=None, help="End of date range (inclusive)")
+@click.option("--source", default=None, help="Filter by source (e.g. quota-watch)")
+@click.option("--failed", is_flag=True, help="Show only notifications with at least one failed channel")
+def cmd_notifications_log(last, since, from_date, to_date, source, failed):
+    from .quota_db import query_notification_log
+
+    rows = query_notification_log(
+        last=last,
+        since=since,
+        from_date=from_date,
+        to_date=to_date,
+        source=source,
+        failed_only=failed,
+    )
+    if not rows:
+        print("No notifications found.")
+        sys.exit(0)
+    print(f"{'Time':<22} {'Source':<14} {'Title':<36} {'Channels'}")
+    print("-" * 90)
+    for row in rows:
+        time_str = row["fired_at"][:19].replace("T", " ")
+        succeeded = row.get("channels_succeeded", [])
+        channels_str = " ".join(f"{ch}✓" if ch in succeeded else f"{ch}✗" for ch in row.get("channels_attempted", []))
+        title_val = row["title"]
+        title_trunc = title_val[:33] + "..." if len(title_val) > 36 else title_val
+        print(f"{time_str:<22} {row.get('source', ''):<14} {title_trunc:<36} {channels_str}")
+    sys.exit(0)
 
 
 # --- telemetry group ---

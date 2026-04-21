@@ -42,8 +42,8 @@ The tool installs as a single `ai` command. There is no server component — all
 | `process_manager.py` | Circus daemon bootstrap + `signal-watch` process lifecycle |
 | `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop with watcher, handoff drain, iTerm2 status |
 | `gemini.py` | Gemini CLI/API wrapper with 3-tier auth fallback; defines `GeminiResult`, `AttemptLog`; handles OAuth, free-key REST, paid-key REST; writes JSONL run logs; publishes `hw.events.usage.gemini.event` to NATS |
-| `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite |
-| `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors |
+| `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |
+| `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
 | `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to humanware REST API; defines `CCTokenEvent`, `PushResult` |
 | `messaging.py` | Async NATS client wrapper with JetStream; SSH tunnel auto-open on Mac when port 4222 is unreachable; defines `NATSClient`, stream configs, heartbeat/event helpers |
 | `sync.py` | Bidirectional CC session data sync (conversation JSONL + memory files) via bare git staging repo over SSH; defines `SyncConfig` |
@@ -51,7 +51,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `research.py` | Multi-step research depth orchestration (Planner-Executor); per-step checkpointing under `~/.local/state/ai-cli/research-runs/` |
 | `spend.py` | Gemini cost reporting; aggregates local JSONL logs + optional GCP BigQuery billing export |
 | `memory.py` | inotify/FSEvents-based memory file watcher; debounces MEMORY.md writes; publishes `memory.dream.*` NATS events |
-| `notifications.py` | OS-level alerting via iTerm2 OSC escape sequences; badge updates; batch suppression via lock files |
+| `notifications.py` | Unified notification delivery: `Notifier` class fires all configured channels in parallel (Discord webhook, ntfy push, OS native); `NotificationResult` per-channel result tracking; OS fallback fires when all primaries fail; `NotificationManager` for iTerm2 badge updates via OSC escape sequences |
 | `vpn_watch.py` | Circus-managed daemon; polls VPN state; publishes `vpn.state.changed` to NATS |
 | `process_hygiene.py` | Orphaned process detection and cleanup for mosh-server, signal-watch, autossh, circusd, nats-server |
 | `layout.py` | iTerm2 YAML layout templating; generates Dynamic Profiles; builds windows/panes via iTerm2 Python API |
@@ -76,9 +76,14 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai spend gemini` — Gemini cost report (JSONL logs + optional BigQuery)
 
 ### Quota Tracking
-- `ai quota watch` — start quota watcher daemon (polls hidden tmux window on schedule)
+- `ai quota watch start|stop|status` — manage quota-watch Circus daemon lifecycle
+- `ai quota watch run [-i/--interval]` — raw daemon entry point (Circus uses this)
 - `ai quota scrape` — one-shot quota scrape, store, and publish
 - `ai quota status` — read current quota from SQLite (with KV sync if stale)
+
+### Notifications
+- `ai notifications list` — audit configured channels (name, enabled, credentials present/absent)
+- `ai notifications log [-n N] [-s SINCE] [-f FROM] [-t TO] [--source TEXT] [--failed]` — query notification delivery history
 
 ### CC Token Tracking
 - `ai cc-usage push` — scan CC JSONL files, push new token events to humanware REST API

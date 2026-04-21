@@ -1197,8 +1197,8 @@ class TestCliDaemonDispatch:
         assert exc.value.code == 0
         mock_watch.assert_called_once()
 
-    def test_cli_when_quota_watch_then_calls_quota_watch(self):
-        with patch("sys.argv", ["ai", "quota", "watch"]):
+    def test_cli_when_quota_watch_run_then_calls_quota_watch(self):
+        with patch("sys.argv", ["ai", "quota", "watch", "run"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.quota.quota_watch", return_value=0) as mock_watch:
                     with pytest.raises(SystemExit) as exc:

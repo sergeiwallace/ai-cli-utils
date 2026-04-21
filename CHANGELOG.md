@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-20
+
+### Added
+
+- Unified notification system (`AI-CLI-25`): `Notifier` class with parallel multi-channel delivery (Discord webhook, ntfy push, OS native). All configured channels fire concurrently; OS notification fires as fallback when all primary channels fail.
+- `NotificationResult` dataclass with per-channel success/failure tracking (channel, status_code, error).
+- `notification_log` SQLite table in `quota.db` — persistent delivery history with per-row JSON lists of attempted/succeeded/failed channels.
+- `ai notifications log` command — query notification history with `--last N`, `--since DATETIME`, `--from DATE`, `--to DATE`, `--source TEXT`, `--failed` filters. Relative time expressions supported (`2h`, `30m`, `1d`, `yesterday`).
+- `ai notifications list` command — audit configured channels showing name, enabled status, and whether credentials are present (no values exposed).
+- `ai quota watch` is now a command group with `start`, `stop`, `status`, and `run` subcommands. `run` is the raw Circus entry point; `start`/`stop`/`status` are the user-facing dispatchers.
+- Quota-watch auto-start at session launch (idempotent `ai quota watch start` in session bash template).
+- `_notify_threshold()` helper routes quota threshold alerts through `Notifier` with priority and tag mapping (`urgent`/`rotating_light` at ≥90%, `high`/`warning` at ≥75%).
+
+### Changed
+
+- `quota_watch()` daemon no longer has a PID file guard — Circus owns restart/lifecycle. NATS connection failure is non-fatal; quota watch runs without NATS if unavailable.
+- Notification send functions (`_send_notification`, `_send_webhook_notification`, `_send_ntfy_notification`) removed from `quota.py` and replaced by channel driver functions (`_send_discord`, `_send_ntfy`, `_send_os_notification`) in `notifications.py`.
+
 ## [0.4.5] - 2026-04-20
 
 ### Added

@@ -9,7 +9,6 @@ at ~/.local/state/ai-cli/quota.db (no external server dependency).
 
 import asyncio
 import json
-import os
 import re
 import subprocess
 import sys
@@ -17,6 +16,7 @@ import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 
 __all__ = ["QuotaSnapshot", "read_latest_snapshot"]
@@ -410,19 +410,14 @@ def read_latest_snapshot() -> QuotaSnapshot | None:
 
 
 def quota_watch(poll_interval: int = 300) -> int:
-    """Run the quota watch daemon.
+    """Run the quota-watch daemon (raw entry point — no PID guard).
 
-    Polls Claude usage and publishes threshold events when crossed.
-    Uses JetStream deduplication to avoid re-alerting same threshold in same day.
-    PID file guard prevents duplicate instances.
-    Exit codes: 0 = clean stop, 1 = error
+    Polls Claude usage and fires threshold alerts via Notifier when thresholds
+    are crossed. Also publishes to NATS when available. Circus owns restart.
+    Exit codes: 0 = clean stop (KeyboardInterrupt), 1 = unrecoverable error.
     """
-    from .sync import _acquire_pid_file, _release_pid_file
     from .messaging import NATSClient
-
-    if not _acquire_pid_file("quota-watch"):
-        print("ai quota watch is already running.", file=sys.stderr)
-        return 2
+    from .notifications import Notifier
 
     client = NATSClient()
     loop = asyncio.new_event_loop()
@@ -431,14 +426,9 @@ def quota_watch(poll_interval: int = 300) -> int:
     except Exception:
         pass
 
-    if not client.nc:
-        print("NATS unavailable — cannot start quota watcher.", file=sys.stderr)
-        loop.close()
-        _release_pid_file("quota-watch")
-        return 1
-
+    notifier = Notifier()
     thresholds = [50, 75, 90]
-    alerted_today: dict[int, str] = {}  # threshold -> date string
+    alerted_today: dict[int, str] = {}
 
     print(f"ai quota watch — polling every {poll_interval}s (Ctrl+C to stop)")
 
@@ -456,124 +446,28 @@ def quota_watch(poll_interval: int = 300) -> int:
                             "usage_percent": round(usage, 1),
                             "ts": time.time(),
                         }
-                        try:
-                            loop.run_until_complete(client.publish(subject, payload))
-                            alerted_today[threshold] = today
-                            print(f"[quota-watch] threshold {threshold}% crossed (usage: {usage:.1f}%)")
-                            _send_notification(threshold, snapshot)
-                        except Exception as e:
-                            print(f"[quota-watch] failed to publish: {e}", file=sys.stderr)
+                        if client.nc:
+                            try:
+                                loop.run_until_complete(client.publish(subject, payload))
+                            except Exception as e:
+                                print(f"[quota-watch] failed to publish: {e}", file=sys.stderr)
+                        alerted_today[threshold] = today
+                        print(f"[quota-watch] threshold {threshold}% crossed (usage: {usage:.1f}%)")
+                        _notify_threshold(notifier, threshold, snapshot)
 
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         pass
     finally:
-        loop.run_until_complete(client.close())
+        if client.nc:
+            loop.run_until_complete(client.close())
         loop.close()
-        _release_pid_file("quota-watch")
 
     return 0
 
 
-def _send_notification(threshold: int, snapshot: QuotaSnapshot) -> None:
-    """Send quota threshold alert via all configured channels (Discord webhook, ntfy)."""
-    usage = snapshot.weekly_all_models_pct
-    msg = f"Claude usage at {usage:.0f}% (threshold: {threshold}%)"
-    if threshold >= 90:
-        msg += " — slow down!"
-
-    try:
-        from .config import load_config
-
-        cfg = load_config().get("quota", {})
-        webhook_url = cfg.get("webhook_url", "") or os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "")
-        ntfy_base = cfg.get("ntfy_base_url", "") or os.environ.get("NTFY_BASE_URL", "")
-        ntfy_topic = cfg.get("ntfy_topic", "") or os.environ.get("NTFY_TOPIC", "")
-        ntfy_token = cfg.get("ntfy_token", "") or os.environ.get("NTFY_TOKEN", "")
-    except Exception:
-        webhook_url = os.environ.get("DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL", "")
-        ntfy_base = os.environ.get("NTFY_BASE_URL", "")
-        ntfy_topic = os.environ.get("NTFY_TOPIC", "")
-        ntfy_token = os.environ.get("NTFY_TOKEN", "")
-
-    fired = False
-    if webhook_url:
-        _send_webhook_notification(webhook_url, threshold, snapshot)
-        fired = True
-    if ntfy_base and ntfy_topic:
-        ntfy_url = f"{ntfy_base.rstrip('/')}/{ntfy_topic}"
-        _send_ntfy_notification(ntfy_url, ntfy_token, threshold, snapshot)
-        fired = True
-
-    if fired:
-        return
-
-    # Fallback: OS notification via notify-send (Linux) or osascript (macOS)
-    if sys.platform == "darwin":
-        try:
-            subprocess.run(
-                ["osascript", "-e", f'display notification "{msg}" with title "ai-cli quota"'],
-                capture_output=True,
-                timeout=5,
-            )
-        except Exception as exc:
-            print(f"[quota] osascript notification failed: {exc}", file=sys.stderr)
-    else:
-        try:
-            subprocess.run(
-                ["notify-send", "ai-cli quota", msg],
-                capture_output=True,
-                timeout=5,
-            )
-        except Exception as exc:
-            print(f"[quota] notify-send failed: {exc}", file=sys.stderr)
-
-
-def _send_webhook_notification(webhook_url: str, threshold: int, snapshot: QuotaSnapshot) -> None:
-    """POST a quota alert to a Slack or Discord incoming webhook.
-
-    Auto-detects the provider from the URL:
-    - discord.com  → Discord format  (``{"content": "..."}``).
-    - everything else → Slack format (``{"text": "..."}``)
-    """
-    import urllib.request
-
-    usage = snapshot.weekly_all_models_pct
-    emoji = ":rotating_light:" if threshold >= 90 else ":warning:" if threshold >= 75 else ":information_source:"
-    text = f"{emoji} *Claude quota {threshold}% threshold crossed*\nWeekly (all models): {usage:.1f}%"
-    if snapshot.weekly_sonnet_pct is not None:
-        text += f" | Sonnet: {snapshot.weekly_sonnet_pct:.1f}%"
-    if snapshot.session_pct is not None:
-        text += f" | Session: {snapshot.session_pct:.1f}%"
-    if threshold >= 90:
-        text += "\n*Slow down — quota nearly exhausted.*"
-
-    is_discord = "discord.com" in webhook_url
-    payload = json.dumps({"content": text} if is_discord else {"text": text}).encode()
-    try:
-        req = urllib.request.Request(
-            webhook_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "ai-cli-utils/1.0",
-            },
-            method="POST",
-        )
-        resp = urllib.request.urlopen(req, timeout=5)
-        print(f"[quota] webhook sent (HTTP {resp.status})", file=sys.stderr)
-    except Exception as exc:
-        print(f"[quota] webhook failed: {exc}", file=sys.stderr)
-
-
-def _send_ntfy_notification(ntfy_url: str, token: str, threshold: int, snapshot: QuotaSnapshot) -> None:
-    """POST a quota alert to a self-hosted or public ntfy server.
-
-    Uses Bearer token auth when a token is provided.  Title and Priority headers
-    ensure the full message is visible in the OS notification banner.
-    """
-    import urllib.request
-
+def _notify_threshold(notifier: Any, threshold: int, snapshot: QuotaSnapshot) -> None:
+    """Send quota threshold alert via Notifier."""
     usage = snapshot.weekly_all_models_pct
     title = f"Claude quota {threshold}% threshold crossed"
     body = f"Weekly (all models): {usage:.1f}%"
@@ -583,26 +477,12 @@ def _send_ntfy_notification(ntfy_url: str, token: str, threshold: int, snapshot:
         body += f" | Session: {snapshot.session_pct:.1f}%"
     if threshold >= 90:
         body += " — slow down!"
-
     priority = "urgent" if threshold >= 90 else "high" if threshold >= 75 else "default"
-    tags = "rotating_light" if threshold >= 90 else "warning"
-
-    headers: dict[str, str] = {
-        "Title": title,
-        "Priority": priority,
-        "Tags": tags,
-        "Content-Type": "text/plain",
-        "User-Agent": "ai-cli-utils/1.0",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
+    tags = ["rotating_light"] if threshold >= 90 else ["warning"]
     try:
-        req = urllib.request.Request(ntfy_url, data=body.encode(), headers=headers, method="POST")
-        resp = urllib.request.urlopen(req, timeout=5)
-        print(f"[quota] ntfy sent (HTTP {resp.status})", file=sys.stderr)
+        notifier.send(title, body, priority=priority, tags=tags, source="quota-watch")
     except Exception as exc:
-        print(f"[quota] ntfy failed: {exc}", file=sys.stderr)
+        print(f"[quota-watch] notification failed: {exc}", file=sys.stderr)
 
 
 def quota_status() -> int:

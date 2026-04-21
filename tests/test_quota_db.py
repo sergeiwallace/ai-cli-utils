@@ -343,3 +343,202 @@ class TestGetResetAtEdgeCases:
         with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
             result = quota_db._get_reset_at(now=now)
         assert result == "2026-04-04T06:00:00Z"
+
+
+# --- log_notification ---
+
+
+class TestLogNotification:
+    def test_when_called_then_row_inserted(self):
+        quota_db.log_notification(
+            source="quota-watch",
+            title="Claude quota 75% threshold crossed",
+            body="Weekly: 76.0%",
+            priority="high",
+            tags=["warning"],
+            channels_attempted=["discord", "ntfy"],
+            channels_succeeded=["discord"],
+            channels_failed=["ntfy"],
+        )
+        conn = quota_db._get_conn()
+        row = conn.execute("SELECT * FROM notification_log").fetchone()
+        conn.close()
+        assert row is not None
+        assert row["source"] == "quota-watch"
+        assert row["title"] == "Claude quota 75% threshold crossed"
+        assert row["priority"] == "high"
+
+    def test_when_multiple_rows_then_all_stored(self):
+        for i in range(3):
+            quota_db.log_notification(
+                source=f"source-{i}",
+                title=f"Title {i}",
+                body="Body",
+                priority="default",
+                tags=[],
+                channels_attempted=["discord"],
+                channels_succeeded=["discord"],
+                channels_failed=[],
+            )
+        conn = quota_db._get_conn()
+        rows = conn.execute("SELECT COUNT(*) FROM notification_log").fetchone()
+        conn.close()
+        assert rows[0] == 3
+
+    def test_when_tags_empty_then_null_stored(self):
+        quota_db.log_notification(
+            source="test",
+            title="Test",
+            body="Body",
+            priority="default",
+            tags=[],
+            channels_attempted=[],
+            channels_succeeded=[],
+            channels_failed=[],
+        )
+        conn = quota_db._get_conn()
+        row = conn.execute("SELECT tags FROM notification_log").fetchone()
+        conn.close()
+        assert row["tags"] is None
+
+
+# --- query_notification_log ---
+
+
+class TestQueryNotificationLog:
+    def _insert(
+        self,
+        *,
+        source="quota-watch",
+        title="Alert",
+        priority="high",
+        channels_attempted=None,
+        channels_succeeded=None,
+        channels_failed=None,
+        fired_at=None,
+    ):
+        if channels_attempted is None:
+            channels_attempted = ["discord"]
+        if channels_succeeded is None:
+            channels_succeeded = ["discord"]
+        if channels_failed is None:
+            channels_failed = []
+        quota_db.log_notification(
+            source=source,
+            title=title,
+            body="Body",
+            priority=priority,
+            tags=[],
+            channels_attempted=channels_attempted,
+            channels_succeeded=channels_succeeded,
+            channels_failed=channels_failed,
+        )
+        if fired_at:
+            conn = quota_db._get_conn()
+            conn.execute(
+                "UPDATE notification_log SET fired_at = ? WHERE id = (SELECT MAX(id) FROM notification_log)",
+                (fired_at,),
+            )
+            conn.commit()
+            conn.close()
+
+    def test_when_no_rows_then_returns_empty(self):
+        rows = quota_db.query_notification_log()
+        assert rows == []
+
+    def test_when_rows_exist_then_returns_last_n(self):
+        for i in range(15):
+            self._insert(title=f"Alert {i}")
+        rows = quota_db.query_notification_log(last=5)
+        assert len(rows) == 5
+
+    def test_when_channels_are_deserialized_as_lists(self):
+        self._insert(
+            channels_attempted=["discord", "ntfy"],
+            channels_succeeded=["discord"],
+            channels_failed=["ntfy"],
+        )
+        rows = quota_db.query_notification_log()
+        assert isinstance(rows[0]["channels_attempted"], list)
+        assert rows[0]["channels_attempted"] == ["discord", "ntfy"]
+        assert rows[0]["channels_succeeded"] == ["discord"]
+        assert rows[0]["channels_failed"] == ["ntfy"]
+
+    def test_when_source_filter_applied_then_only_matching_rows(self):
+        self._insert(source="quota-watch")
+        self._insert(source="manual")
+        rows = quota_db.query_notification_log(source="quota-watch")
+        assert all(r["source"] == "quota-watch" for r in rows)
+        assert len(rows) == 1
+
+    def test_when_failed_only_then_only_rows_with_failures(self):
+        self._insert(channels_failed=[])
+        self._insert(channels_failed=["ntfy"])
+        rows = quota_db.query_notification_log(failed_only=True)
+        assert len(rows) == 1
+        assert rows[0]["channels_failed"] == ["ntfy"]
+
+    def test_when_since_relative_2h_then_filters_old_rows(self):
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
+
+        # Insert old row (3h ago)
+        old_ts = (_dt.now(_tz.utc) - _td(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._insert(title="Old", fired_at=old_ts)
+        # Insert recent row (30min ago)
+        recent_ts = (_dt.now(_tz.utc) - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._insert(title="Recent", fired_at=recent_ts)
+        rows = quota_db.query_notification_log(since="2h")
+        titles = [r["title"] for r in rows]
+        assert "Recent" in titles
+        assert "Old" not in titles
+
+
+# --- _parse_since_datetime ---
+
+
+class TestParseSinceDatetime:
+    def test_when_2h_then_returns_2_hours_ago(self):
+        from datetime import timedelta
+
+        result = quota_db._parse_since_datetime("2h")
+        assert result is not None
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        expected = datetime.now(timezone.utc) - timedelta(hours=2)
+        assert abs((dt - expected).total_seconds()) < 5
+
+    def test_when_30m_then_returns_30_minutes_ago(self):
+        from datetime import timedelta
+
+        result = quota_db._parse_since_datetime("30m")
+        assert result is not None
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        expected = datetime.now(timezone.utc) - timedelta(minutes=30)
+        assert abs((dt - expected).total_seconds()) < 5
+
+    def test_when_1d_then_returns_1_day_ago(self):
+        from datetime import timedelta
+
+        result = quota_db._parse_since_datetime("1d")
+        assert result is not None
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        expected = datetime.now(timezone.utc) - timedelta(days=1)
+        assert abs((dt - expected).total_seconds()) < 5
+
+    def test_when_yesterday_then_returns_start_of_yesterday(self):
+        result = quota_db._parse_since_datetime("yesterday")
+        assert result is not None
+        assert "T00:00:00Z" in result
+
+    def test_when_iso_datetime_then_passes_through(self):
+        result = quota_db._parse_since_datetime("2026-04-20T10:00:00Z")
+        assert result == "2026-04-20T10:00:00Z"
+
+    def test_when_date_only_then_appends_time(self):
+        result = quota_db._parse_since_datetime("2026-04-20")
+        assert result == "2026-04-20T00:00:00Z"
+
+    def test_when_unknown_format_then_returns_none(self):
+        result = quota_db._parse_since_datetime("garbage")
+        assert result is None

@@ -248,6 +248,9 @@ def get_engine_script(
       signal_watch_pid=""
     fi
 
+    # Auto-start quota-watch (idempotent — circusd skips if already registered)
+    ai quota watch start 2>/dev/null || true
+
     # iTerm2 fleet management: set profile, tab color, pane title.
     # Color slot was assigned by Python before tmux launched (collision-free lease).
     # _it2: wraps OSC sequences in DCS passthrough when inside tmux.

@@ -122,6 +122,21 @@ def _init_db(conn: sqlite3.Connection) -> None:
             last_snapshot_at TEXT,
             reset_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS notification_log (
+            id                  INTEGER PRIMARY KEY,
+            fired_at            TEXT NOT NULL,
+            source              TEXT NOT NULL,
+            title               TEXT NOT NULL,
+            body                TEXT NOT NULL,
+            priority            TEXT NOT NULL DEFAULT 'default',
+            tags                TEXT,
+            channels_attempted  TEXT NOT NULL,
+            channels_succeeded  TEXT NOT NULL,
+            channels_failed     TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS notification_log_fired_at ON notification_log (fired_at);
+        CREATE INDEX IF NOT EXISTS notification_log_source   ON notification_log (source);
     """)
     conn.commit()
 
@@ -397,3 +412,132 @@ def get_weekly_history() -> list[dict]:
 
     conn.close()
     return weeks
+
+
+def log_notification(
+    source: str,
+    title: str,
+    body: str,
+    priority: str,
+    tags: list[str],
+    channels_attempted: list[str],
+    channels_succeeded: list[str],
+    channels_failed: list[str],
+) -> None:
+    """Insert a notification delivery record into notification_log."""
+    import json as _json
+
+    conn = _get_conn()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        """INSERT INTO notification_log
+           (fired_at, source, title, body, priority, tags,
+            channels_attempted, channels_succeeded, channels_failed)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            now_iso,
+            source,
+            title,
+            body,
+            priority,
+            _json.dumps(tags) if tags else None,
+            _json.dumps(channels_attempted),
+            _json.dumps(channels_succeeded),
+            _json.dumps(channels_failed),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def query_notification_log(
+    last: int = 10,
+    since: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    source: str | None = None,
+    failed_only: bool = False,
+) -> list[dict]:
+    """Query notification_log with optional filters.
+
+    Returns rows as dicts with channels_attempted/succeeded/failed as lists.
+    ``since`` accepts ISO datetimes or relative strings: "2h", "30m", "1d", "yesterday".
+    """
+    import json as _json
+
+    conn = _get_conn()
+
+    conditions = []
+    params: list = []
+
+    since_dt = _parse_since_datetime(since) if since else None
+    if since_dt:
+        conditions.append("fired_at >= ?")
+        params.append(since_dt)
+
+    if from_date:
+        conditions.append("fired_at >= ?")
+        params.append(from_date if "T" in from_date else f"{from_date}T00:00:00Z")
+
+    if to_date:
+        conditions.append("fired_at <= ?")
+        params.append(to_date if "T" in to_date else f"{to_date}T23:59:59Z")
+
+    if source:
+        conditions.append("source = ?")
+        params.append(source)
+
+    if failed_only:
+        conditions.append("channels_failed != '[]'")
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    rows = conn.execute(
+        f"SELECT * FROM notification_log {where} ORDER BY fired_at DESC LIMIT ?",
+        params + [last],
+    ).fetchall()
+    conn.close()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        for col in ("channels_attempted", "channels_succeeded", "channels_failed"):
+            try:
+                d[col] = _json.loads(d[col]) if d[col] else []
+            except Exception:
+                d[col] = []
+        if d.get("tags"):
+            try:
+                d["tags"] = _json.loads(d["tags"])
+            except Exception:
+                pass
+        result.append(d)
+    return result
+
+
+def _parse_since_datetime(since: str) -> str | None:
+    """Parse a relative or absolute datetime string into an ISO UTC string.
+
+    Supports: "2h", "30m", "1d", "yesterday", ISO datetime strings.
+    """
+    import re as _re
+
+    since = since.strip()
+
+    # Relative: "2h", "30m", "1d", "7d"
+    m = _re.match(r"^(\d+)([hmd])$", since)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        delta_secs = n * {"h": 3600, "m": 60, "d": 86400}[unit]
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=delta_secs)
+        return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if since.lower() == "yesterday":
+        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+        return cutoff.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # ISO datetime (pass through)
+    if "T" in since or "-" in since:
+        return since if "T" in since else f"{since}T00:00:00Z"
+
+    return None
