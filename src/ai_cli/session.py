@@ -214,12 +214,39 @@ def get_latest_gemini_session_id(ai_name: str | None = None) -> str | None:
     return None
 
 
-def get_project_prefix():
+def _prefix_from_session_name(session_name: str) -> str:
+    """Extract the project prefix from a tmux session name.
+
+    e.g. ``c-ai-cli-2`` → ``ai-cli``, ``c-r-myproj-1`` → ``myproj``.
+    Returns empty string if the format is not recognised.
+    """
+    parts = session_name.split("-")
+    if len(parts) >= 3 and parts[0] in ("c", "g"):
+        start = 2 if parts[1] == "r" else 1
+        end = len(parts) - 1
+        if end > start:
+            return "-".join(parts[start:end]).lower()
+        if start < len(parts):
+            return parts[start].lower()
+    return ""
+
+
+def get_project_prefix() -> str:
     project_name = get_current_project_name()
     for p in load_project_registry():
         if p.get("name") == project_name:
-            return p.get("task_prefix", project_name[:3]).lower()
-    return project_name[:3].lower()
+            return p.get("task_prefix", project_name[:3]).lower().strip("-")
+    # Fallback 1: parse AI_TMUX_SESSION set by the session script — reliable when
+    # the user runs `ai c -R` from a pane whose cwd has drifted away from the
+    # project root.
+    ai_session = os.environ.get("AI_TMUX_SESSION", "")
+    if ai_session:
+        prefix = _prefix_from_session_name(ai_session)
+        if prefix:
+            return prefix
+    # Fallback 2: derive from cwd name — strip trailing hyphens so e.g.
+    # "ai-cli-utils"[:3] → "ai-" doesn't produce a double-dash in session names.
+    return project_name[:3].lower().strip("-")
 
 
 def find_next_index(prefix: str) -> int:

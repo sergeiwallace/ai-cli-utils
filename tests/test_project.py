@@ -456,14 +456,18 @@ class TestProjectRegistryExceptionBranches:
 
     def test_get_project_prefix_when_registry_read_fails_then_returns_fallback(self, tmp_path):
         """Covers lines 250-257: exception in get_project_prefix."""
+        import os
+
         registry = tmp_path / "broken.toml"
         registry.write_text("not valid toml {{{")
+        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
         with patch("ai_cli.config._get_project_registry_path", return_value=registry):
             with patch("ai_cli.session.get_current_project_name", return_value="myproject"):
-                from ai_cli.config import load_project_registry
+                with patch.dict(os.environ, env_without_session, clear=True):
+                    from ai_cli.config import load_project_registry
 
-                load_project_registry(_force=True)
-                result = get_project_prefix()
+                    load_project_registry(_force=True)
+                    result = get_project_prefix()
         assert result == "myp"
 
 

@@ -353,8 +353,8 @@ def _get_project_prefix_by_name(project_name: str) -> str:
     """Look up a project's task_prefix from the project registry by directory name."""
     for p in load_project_registry():
         if p.get("name") == project_name:
-            return p.get("task_prefix", project_name[:3]).lower()
-    return project_name[:3].lower()
+            return p.get("task_prefix", project_name[:3]).lower().strip("-")
+    return project_name[:3].lower().strip("-")
 
 
 def get_project_aliases() -> dict:

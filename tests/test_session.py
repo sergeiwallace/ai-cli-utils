@@ -24,6 +24,7 @@ from ai_cli.main import (
     resolve_session,
     save_session_map,
 )
+from ai_cli.session import _prefix_from_session_name, get_project_prefix
 
 from conftest import _make_list_panes_output
 
@@ -1089,3 +1090,54 @@ class TestProjectRegistryExceptionBranches:
                 with patch("ai_cli.config._get_main_project_name", return_value=None):
                     result = get_latest_gemini_session_id()
         assert result is None
+
+
+# --- _prefix_from_session_name tests ---
+
+
+class TestPrefixFromSessionName:
+    def test_when_local_cc_session_then_extracts_prefix(self):
+        assert _prefix_from_session_name("c-ai-cli-2") == "ai-cli"
+
+    def test_when_remote_cc_session_then_extracts_prefix(self):
+        assert _prefix_from_session_name("c-r-myproj-1") == "myproj"
+
+    def test_when_gemini_session_then_extracts_prefix(self):
+        assert _prefix_from_session_name("g-myproj-3") == "myproj"
+
+    def test_when_remote_gemini_session_then_extracts_prefix(self):
+        assert _prefix_from_session_name("g-r-myproj-1") == "myproj"
+
+    def test_when_unrecognised_format_then_returns_empty(self):
+        assert _prefix_from_session_name("something-else") == ""
+
+    def test_when_empty_string_then_returns_empty(self):
+        assert _prefix_from_session_name("") == ""
+
+    def test_when_hyphenated_prefix_then_preserves_hyphens(self):
+        assert _prefix_from_session_name("c-ai-cli-1") == "ai-cli"
+
+
+# --- get_project_prefix tests ---
+
+
+class TestGetProjectPrefix:
+    def test_when_in_registry_then_uses_task_prefix(self, tmp_path):
+        reg = [{"name": "myproject", "task_prefix": "MY-PROJ"}]
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "myproject"):
+            with patch("ai_cli.session.load_project_registry", return_value=reg):
+                assert get_project_prefix() == "my-proj"
+
+    def test_when_not_in_registry_and_ai_tmux_session_set_then_uses_session_name(self, tmp_path):
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "unknown-project"):
+            with patch("ai_cli.session.load_project_registry", return_value=[]):
+                with patch.dict(os.environ, {"AI_TMUX_SESSION": "c-ai-cli-2"}):
+                    assert get_project_prefix() == "ai-cli"
+
+    def test_when_not_in_registry_and_no_session_env_then_fallback_no_trailing_hyphen(self, tmp_path):
+        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "ai-cli-utils"):
+            with patch("ai_cli.session.load_project_registry", return_value=[]):
+                with patch.dict(os.environ, env_without_session, clear=True):
+                    result = get_project_prefix()
+                    assert not result.endswith("-"), f"prefix has trailing hyphen: {result!r}"
