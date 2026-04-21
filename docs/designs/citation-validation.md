@@ -90,9 +90,13 @@ ai-cli-utils is a **public open-source package**. The aido validator is a privat
 | **C: Port into `src/ai_cli/citation_validator/`** (recommended) | Port aido `citation_validator/` subpackage, adapted for ai-cli-utils conventions | Self-contained, testable, no new repo. Straightforward mechanical port. |
 | D: Plugin hook | `[research] citation_validator_script = "/path/to/script.py"` in config.toml. If set, `validate_citations()` shells out to that script with the doc path as argument; the script is responsible for appending `## Citation Validation` to the doc. Skips the built-in pipeline entirely. | Power-user escape hatch. ~10 lines of shim code. Good for CI pipelines that run a custom validator. No default behavior for public users who don't configure it. |
 
-**Recommendation: C + D.** Built-in pipeline always available (C). Plugin hook (D) adds a low-cost escape hatch for custom validators; `[research] citation_validator_script` overrides the built-in when set.
+**Recommendation: B + D.** Shared library on PyPI (`ai-citation-validator`) used by both ai-cli-utils and aido — no drift, single source of truth. Plugin hook (D) adds a power-user escape hatch; `[research] citation_validator_script` overrides the built-in when set.
 
-> **Feedback:** Option C works. Add Option D as well — plugin hook is worth including.
+**Shared library:** `ai-citation-validator` is a new standalone PyPI package. Both ai-cli-utils and aido declare it as a hard dependency. All `citation_validator/` code lives in that package — neither repo vendors a copy. Changes ship to the shared package first; both repos update their pinned version. The shared package bundles the Tier 2 Python deps (`semanticscholar`, `arxiv`, `pdfplumber`, etc.) as its own hard dependencies, so ai-cli-utils and aido get them transitively. NLI extra: `ai-citation-validator[nli]` — both repos can use `ai-cli-utils[citation-nli]` / `aido[citation-nli]` which pull `ai-citation-validator[nli]`.
+
+**Prerequisite:** Create `ai-citation-validator` package repo, publish initial version to PyPI, add as dependency to aido and ai-cli-utils. This is a separate task (AI-CLI-51 or AIDO-40 — TBD).
+
+> **Feedback:** Publish as shared library. No drift. Long-term plan: migrate to aido research as the primary research command; ai-cli-utils `--depth` config will replicate current research workflow. For now, shared library keeps both in sync.
 
 ---
 
@@ -256,47 +260,50 @@ class UnknownVenueCitation:
 
 | Option | Description | Tradeoffs |
 |--------|-------------|-----------|
-| **A: Parallel dataclasses (recommended)** | `ArxivCitationResult` and `NonArxivCitationResult` alongside each other; `ValidationReport` holds both lists | Zero regression to arXiv pipeline. Clean type separation. Parallel lists in report. |
-| B: Generalize `CitationResult` | Unified `CitationResult(citation_id, citation_type, verdict, ...)` | Cleaner unified model but requires refactoring arXiv pipeline and all its callers. Regression risk. |
+| A: Parallel dataclasses | `ArxivCitationResult` and `NonArxivCitationResult`; `ValidationReport` holds both lists | Zero regression but duplicates fields and requires callers to handle two types. |
+| **B: Unified `CitationResult` (recommended)** | `CitationResult(citation_id, citation_type, verdict, ...)` covers all citation types. `ValidationReport.results: list[CitationResult]`. Requires refactoring the arXiv pipeline to use the unified model. | Clean unified API. One type to import, one list to iterate, one set of tests for the data model. `to_markdown()` groups by `citation_type` for display. Worth the refactor. |
 
-**Recommendation: A.** Pre-v1 codebase — clean-slate design preferred — but the arXiv pipeline is already the tested baseline. Parallel dataclasses keep the two paths independently modifiable and testable.
-
-> **Feedback:** Approved.
+**Recommendation: B.** We're building this from scratch in the shared library — do it right. The arXiv pipeline refactor is mechanical (rename fields, update callers). Unified model means callers only ever deal with one type.
 
 ```python
-@dataclass
-class ArxivCitationResult:
-    arxiv_id: str
-    verdict: Literal["PASS", "WARN", "FAIL"]
-    title_found: str | None
-    claim_snippet: str | None
-    nli_score: float | None
-    error: str | None
+from typing import Literal
+
+CitationType = Literal["arxiv", "doi", "acl"]
+Verdict = Literal["PASS", "WARN", "FAIL", "EXISTENCE_ONLY"]
 
 @dataclass
-class NonArxivCitationResult:
-    citation_id: str              # DOI string or ACL ID
-    citation_type: Literal["doi", "acl"]
-    verdict: Literal["PASS", "WARN", "FAIL", "EXISTENCE_ONLY"]
-    title_found: str | None
-    claim_snippet: str | None
-    nli_score: float | None
-    error: str | None
+class CitationResult:
+    citation_id: str              # arXiv ID, DOI string, or ACL ID
+    citation_type: CitationType
+    verdict: Verdict
+    title_found: str | None = None
+    claim_snippet: str | None = None
+    nli_score: float | None = None
+    error: str | None = None
+
+@dataclass
+class UnknownVenueCitation:
+    url: str
+    context: str    # surrounding sentence for triage
+    reason: str     # why it didn't match any known extractor
 
 @dataclass
 class ValidationReport:
-    arxiv_results: list[ArxivCitationResult]
-    non_arxiv_results: list[NonArxivCitationResult]
+    results: list[CitationResult]            # all arXiv + DOI + ACL
     dead_links: list[str]
+    unknown_venues: list[UnknownVenueCitation]
     tools_used: list[str]
     validated_at: str
-    def to_markdown(self) -> str: ...
-    def passes(self) -> int: ...
-    def warns(self) -> int: ...
-    def fails(self) -> int: ...
+
+    def passes(self) -> int: ...             # count where verdict == "PASS"
+    def warns(self) -> int: ...              # count where verdict == "WARN"
+    def fails(self) -> int: ...              # count where verdict == "FAIL"
+    def existence_only(self) -> int: ...     # count where verdict == "EXISTENCE_ONLY"
+    def by_type(self, t: CitationType) -> list[CitationResult]: ...
+    def to_markdown(self) -> str: ...        # groups by citation_type for ## Citation Validation section
 ```
 
-> **Feedback:**
+> **Feedback:** Option B — unified model. Refactor. Let's do it right.
 
 ---
 
@@ -325,23 +332,26 @@ Step 4 never raises. All exceptions are caught and surfaced as WARNs. If no vali
 
 ### `validate_citations()` interface
 
+Code lives in the `ai-citation-validator` shared package; both ai-cli-utils and aido import from it:
+
 ```python
-from ai_cli.citation_validator import validate_citations, ValidationReport
+from citation_validator import validate_citations, ValidationReport, CitationResult
 
 report: ValidationReport = validate_citations(
     doc_path=Path("/path/to/output.md"),
     run_id="20260421-...",
-    run_nli=False,         # --validate-nli flag
+    run_nli=False,         # --validate-nli / citation-nli extra
     strict="none",         # "none" | "fail" | "warn"
     quiet=False,
     validator_script=None, # D2 plugin hook: path to external script, overrides built-in
 )
-# report.arxiv_results, report.non_arxiv_results, report.dead_links
-# report.unknown_venues    ← UnknownVenueCitation list (D10)
-# report.to_markdown() → ## Citation Validation section text
+# report.results           ← list[CitationResult] (arXiv + DOI + ACL unified)
+# report.dead_links
+# report.unknown_venues    ← list[UnknownVenueCitation] (D10)
+# report.to_markdown()     → ## Citation Validation section text
 ```
 
-**Plugin hook behaviour (D2-D):** if `validator_script` is set (from `[research] citation_validator_script` config), `validate_citations()` calls `subprocess.run([validator_script, str(doc_path)])` and returns immediately. The script is responsible for appending `## Citation Validation` to the doc. The built-in pipeline is skipped entirely.
+**Plugin hook behaviour (D2-D):** if `validator_script` is set (from `[research] citation_validator_script` config), `validate_citations()` calls `subprocess.run([validator_script, str(doc_path)])` and returns immediately. The script appends `## Citation Validation` to the doc. Built-in pipeline is skipped entirely.
 
 ### Non-arXiv pipeline per citation
 
@@ -417,55 +427,92 @@ support if needed.
 
 ## File Layout
 
+### `ai-citation-validator` shared package (new repo — prerequisite task)
+
 ```text
-src/ai_cli/
-  citation_validator/
-    __init__.py            # validate_citations(), ValidationReport
-    extractor.py           # extract arXiv IDs, DOIs, ACL URLs, unknown venues, claim sentences
-    s2_client.py           # Semantic Scholar SDK: get_paper (arXiv + DOI) + search_snippet
-    crossref_client.py     # habanero: DOI metadata + title search fallback for ACL
-    openalex_client.py     # pyalex: tertiary metadata fallback
-    body_text.py           # arXiv HTML → PDF fallback; ACL PDF fallback
-    nli.py                 # roberta-large-mnli entailment (citation-nli extra)
-    reporter.py            # ValidationReport, ArxivCitationResult, NonArxivCitationResult,
-                           # UnknownVenueCitation, to_markdown(), verdict computation
-    venues.py              # known venue URL patterns + "looks academic" heuristic for D10
-  research.py              # Step 4 integrated into run_standard(); reads auto_validate +
-                           # validate_strict + citation_validator_script from config
+src/citation_validator/
+  __init__.py            # validate_citations(), ValidationReport, CitationResult, UnknownVenueCitation
+  extractor.py           # extract arXiv IDs, DOIs, ACL URLs, unknown venues, claim sentences
+  s2_client.py           # Semantic Scholar SDK: get_paper("ARXIV:|DOI:|ACL:") + search_snippet
+  crossref_client.py     # habanero: DOI metadata + title search fallback
+  openalex_client.py     # pyalex: tertiary metadata fallback
+  body_text.py           # arXiv HTML → PDF fallback; ACL PDF fallback
+  nli.py                 # roberta-large-mnli entailment (nli extra)
+  reporter.py            # ValidationReport, CitationResult (unified D11), to_markdown()
+  venues.py              # known venue URL patterns + "looks academic" heuristic (D10)
 
 tests/
-  test_citation_validator/
-    test_extractor.py      # arXiv ID, DOI, ACL URL, bare DOI extraction; dedup; unknown venue detection
-    test_s2_client.py      # get_paper (arXiv + DOI prefix), search_snippet (mocked HTTP)
-    test_crossref_client.py  # DOI metadata, title search fallback (mocked)
-    test_openalex_client.py
-    test_body_text.py      # arXiv HTML/PDF, ACL PDF fallback (mocked HTTP)
-    test_reporter.py       # to_markdown(), all 5 verdict types, unknown venues, summary line
-    test_venues.py         # known pattern matching, "looks academic" heuristic
-    test_validate_citations.py  # integration: fixture docs with arXiv + DOI + unknown venue
-  test_research.py         # updated: auto_validate config respected; validate_citations in run_standard
+  test_extractor.py      # arXiv, DOI, ACL, bare DOI extraction; dedup; unknown venue detection
+  test_s2_client.py      # get_paper all citation_type prefixes, search_snippet (mocked)
+  test_crossref_client.py
+  test_openalex_client.py
+  test_body_text.py      # arXiv HTML/PDF, ACL PDF (mocked HTTP)
+  test_reporter.py       # to_markdown(), all 5 verdict types, by_type(), summary line
+  test_venues.py         # known pattern matching, "looks academic" heuristic
+  test_validate_citations.py  # integration: fixture docs with arXiv + DOI + unknown venue
+```
+
+### ai-cli-utils (this repo)
+
+```text
+src/ai_cli/
+  research.py    # Step 4: calls validate_citations() from citation_validator package;
+                 # reads auto_validate, validate_strict, citation_validator_script from config
+
+tests/
+  test_research.py   # updated: auto_validate config, --no-validate, --validate-strict, plugin hook
+```
+
+### aido (existing)
+
+```text
+scripts/
+  verify-research-citations.py   # updated to import from citation_validator package
+  citation_validator/            # REMOVED — replaced by shared package dependency
 ```
 
 ---
 
 ## Dependencies
 
-**Hard dependencies** (added to `[project.dependencies]`):
+### `ai-citation-validator` package (pyproject.toml)
 
 ```toml
-"semanticscholar>=0.8",
-"arxiv>=2.0",
-"pdfplumber>=0.11",
-"habanero>=1.2",
-"pyalex>=0.15",
-"beautifulsoup4>=4.12",
+[project]
+dependencies = [
+    "semanticscholar>=0.8",
+    "arxiv>=2.0",
+    "pdfplumber>=0.11",
+    "habanero>=1.2",
+    "pyalex>=0.15",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+nli = ["transformers>=4.40", "torch>=2.0"]
 ```
 
-**Optional extra** (NLI model — ~500MB first-run download):
+### ai-cli-utils (this repo)
 
 ```toml
+[project]
+dependencies = [
+    "ai-citation-validator>=0.1",
+    # ... existing deps
+]
+
 [project.optional-dependencies]
-citation-nli = ["transformers>=4.40", "torch>=2.0"]
+citation-nli = ["ai-citation-validator[nli]"]
+```
+
+### aido
+
+```toml
+[project]
+dependencies = [
+    "ai-citation-validator>=0.1",
+    # ... existing deps
+]
 ```
 
 `lychee` installed separately (`brew install lychee` / `cargo install lychee`). Detected at runtime via `shutil.which("lychee")`. Skipped gracefully with a one-line note if absent.
@@ -524,9 +571,11 @@ citation-nli = ["transformers>=4.40", "torch>=2.0"]
 
 ## Open Questions
 
-- **OQ1:** S2 unauthenticated rate limit is ~1 rps. A research doc with 20 citations = ~20s for S2 alone, ~40s with DOI pipeline. Should `[research] citation_s2_api_key` be documented at install? Default 1 rps; authenticated S2 allows higher. Affects wall time for Step 4.
-- **OQ2:** Gemini research docs cite inline in prose (e.g., "According to [paper](https://arxiv.org/abs/1234.5678)"). The extractor must handle inline link format, bare `arXiv:NNNN.NNNNN`, and DOI variants. A fixture corpus of real Gemini output should be assembled before implementation to validate extraction coverage.
-- **OQ3:** Port strategy — the aido `citation_validator/` modules are the authoritative implementation. Verbatim port then diverge independently vs. publishing as a shared library? At this stage, verbatim port is simpler. Flag if the two implementations drift significantly.
+~~**OQ1:** S2 unauthenticated rate limit is ~1 rps. A research doc with 20 citations = ~20s for S2 alone.~~ **Resolved:** No S2 API key for now (request pending in aido roadmap; not guaranteed to be granted). Work within the 1 rps unauthenticated limit. Wall time is acceptable for a post-synthesis step — not a blocking issue.
+
+~~**OQ2:** Gemini research docs cite inline in prose — extractor must handle both inline link format and bare `arXiv:NNNN.NNNNN`.~~ **Resolved:** This is an implementation note, not a design question. The extractor handles all formats: inline markdown links (`[title](url)`), bare `arXiv:NNNN.NNNNN`, `doi:10.XXXX/...` prefixes, and bare `10.XXXX/...` patterns. The fixture docs in `tests/fixtures/` will be seeded from real Gemini output before implementation.
+
+~~**OQ3:** Port into ai-cli-utils and diverge, or publish as shared library?~~ **Resolved:** Publish as `ai-citation-validator` shared PyPI package. Both ai-cli-utils and aido depend on it. No drift possible. See D2 and File Layout. Prerequisite: create `ai-citation-validator` repo and publish initial version (separate task).
 
 ---
 
@@ -535,3 +584,4 @@ citation-nli = ["transformers>=4.40", "torch>=2.0"]
 | Date | Round | Notes |
 |------|-------|-------|
 | 2026-04-21 | Round 1 | D1 approved. D2: C + D both (plugin hook added). D3: Tier 2 hard deps; Tier 3 (NLI/torch) stays optional extra. D4: config-driven default `auto_validate = true`, `--no-validate`/`--validate` CLI flags. D5: non-blocking default, configurable `validate_strict` (none/fail/warn). D6 approved. D7–D11 approved. D10: unknown venue surfacing mechanism added. |
+| 2026-04-21 | Round 2 | D2 revised: B + D — shared library (`ai-citation-validator` on PyPI) replaces port-into-ai-cli-utils. OQ3 resolved. D11 revised: Option B — unified `CitationResult` model, refactor arXiv pipeline. OQ1 resolved (1 rps, no action). OQ2 closed (implementation note). All decisions fully resolved. |
