@@ -60,12 +60,12 @@ if [ "${SKIP_TESTS:-0}" != "1" ]; then
     fi
 
     if [ -d "$REPO_ROOT/src" ] || [ -d "$REPO_ROOT/tests" ]; then
-        # Resolve pytest: pyenv .python-version → project venv → system
+        # Resolve pytest: mise .python-version → project venv → system
         PYTEST=""
         if [ -f "$REPO_ROOT/.python-version" ]; then
             PY_VER=$(cat "$REPO_ROOT/.python-version")
-            PYENV_PYTEST="$HOME/.pyenv/versions/$PY_VER/bin/pytest"
-            [ -f "$PYENV_PYTEST" ] && PYTEST="$PYENV_PYTEST"
+            MISE_PYTEST="$HOME/.local/share/mise/installs/python/$PY_VER/bin/pytest"
+            [ -f "$MISE_PYTEST" ] && PYTEST="$MISE_PYTEST"
         fi
         [ -z "$PYTEST" ] && [ -f "$REPO_ROOT/.venv/bin/pytest" ] && PYTEST="$REPO_ROOT/.venv/bin/pytest"
         [ -z "$PYTEST" ] && command -v pytest &>/dev/null && PYTEST="pytest"
