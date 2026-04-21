@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-04-20
+
+### Fixed
+
+- `ai c` / `ai c -R`: iTerm2 session name now correctly uses the project prefix (e.g. `c-r-ai-cli-1`) when `ai c -R` is run from a pane whose cwd has drifted away from the project root. `get_project_prefix()` now falls back to parsing `AI_TMUX_SESSION` (set by the session script) before resorting to the `[:3]` truncation. Also fixed a trailing-hyphen bug in the `[:3]` fallback that produced double-dash names like `c-r-ai--1` for project names whose 3rd character is a hyphen (e.g. `ai-cli-utils`).
+
 ## [0.4.3] - 2026-04-20
 
 ### Fixed
