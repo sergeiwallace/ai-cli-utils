@@ -28,22 +28,22 @@ task: AI-CLI-25
 
 - [Problem Statement](#problem-statement)
 - [Design Decisions](#design-decisions)
-- [Notification Channel System](#notification-channel-system)
+- [Notifier API](#notifier-api)
 - [Configuration Schema](#configuration-schema)
+- [Notification Log](#notification-log)
 - [quota-watch Daemon and Circus Auto-Start](#quota-watch-daemon-and-circus-auto-start)
-- [Implementation Phases](#implementation-phases)
+- [Implementation Plan](#implementation-plan)
 - [Risks and Mitigations](#risks-and-mitigations)
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
 ## Problem Statement
 
-`ai quota watch` polls Claude usage and fires threshold alerts (50%, 75%, 90%), but it has two gaps:
+`ai quota watch` polls Claude usage and fires threshold alerts (50%, 75%, 90%), but it has three gaps:
 
 1. **No auto-start** — the watcher must be launched manually. If it crashes or the session restarts, alerts stop silently.
-2. **Notification delivery** — the system needs reliable multi-channel delivery so alerts reach the user regardless of what device they're on and whether a desktop session is active.
-
-Both gaps have the same root: quota-watch is not managed as a system service.
+2. **No unified notification API** — notification logic is embedded in `quota.py` with no reusable interface for other callers or projects.
+3. **No notification history** — there is no record of when alerts fired, which channels succeeded, or what was sent.
 
 ## Design Decisions
 
@@ -52,8 +52,9 @@ Both gaps have the same root: quota-watch is not managed as a system service.
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
 | 1 | Process management for quota-watch | PID file + manual restart, systemd, Circus | Circus | Already a declared dependency; consistent with signal-watch | Approved |
-| 2 | Notification channel hierarchy | Single channel, parallel all-channels, priority fallback | Parallel primary + OS fallback | Discord and ntfy fire independently; OS notification only when neither is configured | Approved |
+| 2 | OS fallback behaviour | Only when no primary channel configured, always as last resort | Always fire on failure too | Better than silent miss; a channel should always be configured but new installs need protection | Approved |
 | 3 | Config source | Config file only, env vars only, layered | Layered (config file → env var) | Allows Doppler injection without requiring file edits; consistent with existing ai-cli config pattern | Approved |
+| 4 | Notifier API storage | Database, config file, hybrid | Config file for channels + SQLite for history | Config is static structure (config file); history is mutable state (SQLite) | Pending |
 
 ### Decision Details
 
@@ -128,7 +129,7 @@ Both gaps have the same root: quota-watch is not managed as a system service.
 
 ##### Recommendation
 
-**Parallel delivery for primary channels, OS fallback only when no primary is configured.** Discord webhook and ntfy fire independently — both succeed or fail independently. The OS fallback (osascript/notify-send) is last resort for users with no webhook configured, not a backup for webhook failures.
+**Parallel delivery for all primary channels; OS fallback always fires when all primaries fail (or when none are configured).** A channel should always be configured, but new installs need protection before setup is complete. The OS fallback ensures no alert is silently dropped.
 
 ---
 
@@ -170,6 +171,43 @@ Both gaps have the same root: quota-watch is not managed as a system service.
 
 ---
 
+#### Decision 4: Notifier API — Channel Config Storage and History
+
+##### (a) Database for both channel config and history
+
+**Pros:**
+- Single source of truth
+
+**Cons:**
+- Channel config is static structure — a database is overkill
+- Requires schema migration to change channel config
+- Harder to read/edit by hand
+
+##### (b) Config file for both channel config and history
+
+**Pros:**
+- Everything in one place
+
+**Cons:**
+- History is mutable append-only state — a flat file is the wrong shape
+- No efficient querying by time range or source
+
+##### (c) Config file for channel config + SQLite for history
+
+**Pros:**
+- Config file is the right shape for static channel definitions — readable, auditable, version-controllable
+- SQLite is the right shape for notification history — queryable, indexed, persistent across restarts
+- Consistent with how quota snapshots are stored (already SQLite in `quota.db`)
+
+**Cons:**
+- Two storage mechanisms, but they serve fundamentally different purposes
+
+##### Recommendation
+
+**Option (c): config file for channel config, SQLite for notification history.** Channel config is something you set up once and audit occasionally — a TOML file is perfect. Notification history is mutable append-only state that needs to be queried by time and source — SQLite is the right fit and is already in use for quota data.
+
+---
+
 > **Feedback Round 1:** Your approval/feedback on each decision:
 > 1. Decision 1 (Circus): Recommendation approved.
 > 2. Decision 2 (Parallel channels): Keep both Discord and ntfy until evaluated in practice. Added AI-CLI-49 to roadmap to evaluate notification channels after using them for a while.
@@ -182,92 +220,175 @@ Both gaps have the same root: quota-watch is not managed as a system service.
 
 ---
 
-> **Feedback Round 2:** Your approval/feedback on updated D3 and overall design:
+> **Feedback Round 2:** Your approval/feedback on D4 and revisions:
 > - <enter feedback here>
 
-## Notification Channel System
+## Notifier API
 
-### Channel Hierarchy
+### Overview
 
-```text
-quota threshold crossed
-        │
-        ├─── Discord webhook (if DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL configured)
-        │         POST {"content": "..."} — auto-detected from url containing "discord.com"
-        │
-        ├─── ntfy (if NTFY_BASE_URL + NTFY_TOPIC configured)
-        │         POST to {base}/{topic} with Title/Priority/Tags headers
-        │         Bearer token auth if NTFY_TOKEN set
-        │
-        └─── OS fallback (only if neither Discord nor ntfy is configured)
-                  macOS: osascript display notification
-                  Linux: notify-send
+`ai_cli.notifications` exposes a `Notifier` class — the single entry point for all notification delivery. Internal callers (quota-watch, future daemons) and external code (other projects) all use the same interface.
+
+```python
+from ai_cli.notifications import Notifier
+
+n = Notifier()
+n.send("Build complete", "project-x passed all tests")
+
+# Target specific channels only
+n.send("Critical alert", "quota at 90%", priority="urgent", channels=["discord", "ntfy"])
+
+# Override config at construction time
+n = Notifier(channels_config={"ntfy": {"base_url": "...", "topic": "..."}})
 ```
 
-Both Discord and ntfy fire in parallel — a failure in one does not affect the other. Errors are logged to stderr but never raise.
+### `Notifier` Class
 
-### Message Format
+```python
+class Notifier:
+    def __init__(self, channels_config: dict | None = None) -> None:
+        """Load channel config from config.toml + env vars, or accept an override dict."""
 
-**Discord:** Slack-compatible markdown, auto-detected by URL:
-```text
-:rotating_light: *Claude quota 90% threshold crossed*
-Weekly (all models): 90.2% | Sonnet: 45.1% | Session: 12.3%
-*Slow down — quota nearly exhausted.*
+    def send(
+        self,
+        title: str,
+        body: str,
+        priority: str = "default",      # "urgent" | "high" | "default" | "low"
+        tags: list[str] | None = None,
+        channels: list[str] | None = None,  # None = all enabled channels
+        source: str = "",               # caller identifier, stored in notification_log
+    ) -> list[NotificationResult]:
+        """Fire all enabled channels in parallel. Returns per-channel results."""
 ```
 
-**ntfy:** Plain text body with structured headers:
-```text
-Title: Claude quota 90% threshold crossed
-Priority: urgent (90%) / high (75%) / default (50%)
-Tags: rotating_light (90%) / warning (75%+)
-Body: Weekly (all models): 90.2% | Sonnet: 45.1%
+### `NotificationResult`
+
+```python
+@dataclass
+class NotificationResult:
+    channel: str       # "discord" | "ntfy" | "os"
+    success: bool
+    status_code: int | None
+    error: str | None
 ```
 
-### Priority Mapping
+### Delivery Logic
 
-| Threshold | ntfy Priority | ntfy Tag | Discord Emoji |
-|-----------|--------------|----------|---------------|
-| 90% | `urgent` | `rotating_light` | `:rotating_light:` |
-| 75% | `high` | `warning` | `:warning:` |
-| 50% | `default` | `warning` | `:information_source:` |
+1. Collect enabled channels from config (Discord, ntfy, OS — whichever are configured and enabled).
+2. Fire all primary channels concurrently (thread pool, short timeout per channel).
+3. If **all primary channels fail or none are configured**, fire the OS fallback.
+4. Log each result to `notification_log` in SQLite.
+5. Return results to caller — never raise.
 
 > **Feedback Round 1:** Does this approach feel right? What's missing?
 > - <enter feedback here>
 
 ## Configuration Schema
 
-### config.toml `[quota]` section
+### `[notifications]` section in config.toml
+
+Non-secret defaults live here. Secrets (URLs, tokens) are in env vars.
 
 ```toml
-[quota]
-# Incoming webhook URL — Discord or Slack auto-detected by URL
-webhook_url = ""
+[notifications]
+# OS fallback fires when all primary channels fail or when none are configured
+os_fallback = true
 
-# ntfy server config
-ntfy_base_url = ""   # e.g. "https://ntfy.example.com"
-ntfy_topic = ""      # e.g. "my-alerts"
-ntfy_token = ""      # Bearer token (optional for public topics)
+[notifications.discord]
+# enabled defaults to true when DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL is set
+enabled = true
 
-# quota-watch poll interval in seconds (default: 300)
-poll_interval = 300
+[notifications.ntfy]
+# enabled defaults to true when NTFY_BASE_URL + NTFY_TOPIC are set
+enabled = true
+# Non-secret defaults (topic, priority cap) may be set here
+# topic = "my-alerts"  # overridden by NTFY_TOPIC env var
 ```
 
-### Environment Variables (override config.toml)
+### Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL` | Discord incoming webhook URL |
-| `NTFY_BASE_URL` | ntfy server base URL |
-| `NTFY_TOPIC` | ntfy topic name |
-| `NTFY_TOKEN` | ntfy Bearer token |
+| Variable | Channel | Purpose |
+|----------|---------|---------|
+| `DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL` | discord | Incoming webhook URL |
+| `NTFY_BASE_URL` | ntfy | Server base URL, e.g. `https://ntfy.example.com` |
+| `NTFY_TOPIC` | ntfy | Topic name |
+| `NTFY_TOKEN` | ntfy | Bearer token (omit for public topics) |
 
-All four are managed in Doppler (`project: ai-cli-utils`, `config: dev`) and injected at runtime via direnv/Doppler.
+All four managed in Doppler and injected via direnv/Doppler.
+
+### Auditing Configured Channels
+
+```text
+ai notifications list
+```
+
+Prints each channel, its enabled state, and whether credentials are present (not values):
+
+```text
+Channel   Enabled   Credentials
+discord   yes       webhook_url: set
+ntfy      yes       base_url: set, topic: set, token: set
+os        yes       (no credentials needed)
+```
+
+## Notification Log
+
+### SQLite Schema
+
+New table added to the existing `quota.db`:
+
+```sql
+CREATE TABLE notification_log (
+    id          INTEGER PRIMARY KEY,
+    fired_at    TEXT NOT NULL,          -- ISO UTC timestamp
+    source      TEXT NOT NULL,          -- e.g. "quota-watch", "manual"
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    priority    TEXT NOT NULL DEFAULT 'default',
+    tags        TEXT,                   -- JSON array, nullable
+    channels_attempted  TEXT NOT NULL,  -- JSON array: ["discord", "ntfy"]
+    channels_succeeded  TEXT NOT NULL,  -- JSON array: ["discord"]
+    channels_failed     TEXT NOT NULL   -- JSON array: ["ntfy"]
+);
+CREATE INDEX notification_log_fired_at ON notification_log (fired_at);
+CREATE INDEX notification_log_source   ON notification_log (source);
+```
+
+### `ai notifications log` CLI
+
+```text
+ai notifications log [OPTIONS]
+
+Options:
+  -n, --last INTEGER          Show last N notifications (default: 10)
+  -s, --since DATETIME        All notifications since this datetime (ISO or
+                              natural: "2h", "yesterday", "2026-04-01")
+  -f, --from DATE             Start of date range (inclusive)
+  -t, --to DATE               End of date range (inclusive)
+      --source TEXT           Filter by source (e.g. "quota-watch")
+      --failed                Show only notifications where at least one
+                              channel failed
+```
+
+Examples:
+
+```text
+ai notifications log                     # last 10
+ai notifications log -n 50               # last 50
+ai notifications log --since 2h          # last 2 hours
+ai notifications log -f 2026-04-01 -t 2026-04-07
+ai notifications log --source quota-watch --failed
+```
+
+Output format (table):
+
+```text
+Time                  Source        Title                           Channels
+2026-04-20 14:32:01   quota-watch   Claude quota 75% threshold...  discord✓ ntfy✓
+2026-04-20 09:11:44   quota-watch   Claude quota 50% threshold...  discord✓ ntfy✗
+```
 
 ## quota-watch Daemon and Circus Auto-Start
-
-### Current State
-
-`ai quota watch` runs as a foreground process with a PID file guard (`quota-watch.pid`). It must be started manually and does not restart on crash.
 
 ### Target State
 
@@ -310,36 +431,36 @@ This is idempotent — if quota-watch is already registered and running, it no-o
 
 ### Deduplication
 
-Threshold alerts are deduplicated per calendar day using an in-memory dict (`alerted_today: dict[int, str]`). If quota-watch restarts mid-day (crash + respawn), it loses in-memory state and may re-alert the same threshold. This is acceptable: better to get a duplicate alert than to miss one. A persistent dedup store (SQLite `quota_alerts` table) can be added later if duplicate noise becomes a problem.
+Threshold alerts are deduplicated per calendar day using an in-memory dict (`alerted_today: dict[int, str]`). If quota-watch restarts mid-day (crash + respawn), it loses in-memory state and may re-alert the same threshold. This is acceptable: better to get a duplicate alert than to miss one.
+
+The `notification_log` table provides a persistent record so duplicates are visible after the fact.
 
 > **Feedback Round 1:** Does the Circus wiring feel right — any concerns about the `run` subcommand or session script integration?
 > - <enter feedback here>
 
-## Implementation Phases
+## Implementation Plan
 
-### Phase 1 — Circus wiring (next)
-
-1. Add `ai quota watch run` subcommand as raw daemon entry point (no PID file guard)
-2. Update `ai quota watch` to dispatch `start/stop/status/run`
-3. Extend `_ensure_circusd()` to register quota-watch watcher in `circus.ini`
-4. Add `ai quota watch start` to session launch template
-5. Tests: start/stop/status, Circus config generation, session template integration
-
-### Phase 2 — Persistent dedup (later, if needed)
-
-Add `quota_alerts` table to `quota.db` to survive restarts without re-alerting. Gate on whether duplicate alert noise is actually a problem in practice.
-
-> **Feedback Round 1:** Does the phasing feel right — too big, too small?
-> - <enter feedback here>
+1. Create `src/ai_cli/notifications.py` — `Notifier`, `NotificationResult`, channel drivers (Discord, ntfy, OS)
+2. Move `_send_webhook_notification`, `_send_ntfy_notification`, `_send_notification` from `quota.py` into `notifications.py` as channel drivers behind `Notifier`
+3. Add `notification_log` table migration to `quota_db.py` (alongside existing quota tables)
+4. Add `ai notifications log` command with `--last`, `--since`, `--from`, `--to`, `--source`, `--failed` options
+5. Add `ai notifications list` command (audit configured channels)
+6. Update `quota_watch()` to use `Notifier` instead of calling send functions directly
+7. Add `ai quota watch run` subcommand (raw daemon entry point for Circus)
+8. Update `ai quota watch` dispatcher to handle `start/stop/status/run`
+9. Extend `_ensure_circusd()` to register quota-watch watcher in `circus.ini`
+10. Add `ai quota watch start` to session launch template
+11. Tests: Notifier delivery logic, channel drivers, notification_log writes, log CLI, Circus wiring
 
 ## Risks and Mitigations
 
 | # | Risk | Impact | Mitigation |
 |---|------|--------|------------|
 | 1 | circusd not running when session starts | quota-watch never starts | `_ensure_circusd()` starts circusd if not running — same pattern as signal-watch |
-| 2 | Duplicate alerts after crash+respawn | Alert noise | Acceptable — dedup can be persisted in Phase 2 if needed |
+| 2 | Duplicate alerts after crash+respawn | Alert noise | In-memory dedup is best-effort; `notification_log` makes duplicates visible |
 | 3 | ntfy token rotation leaves old token in config | Silent ntfy failures | Token is in Doppler, not config.toml — rotation updates Doppler only |
-| 4 | Both webhook and ntfy down simultaneously | No alert delivery | OS fallback fires if neither fires (though today OS fallback only fires when unconfigured — see Open Questions) |
+| 4 | All primary channels fail simultaneously | No alert delivery | OS fallback always fires when all primaries fail |
+| 5 | OS fallback unavailable (headless server) | Silent miss on OS fallback | OS fallback failure is logged; primary channels should be configured on servers |
 
 ## Open Questions
 
@@ -351,9 +472,15 @@ Add `quota_alerts` table to `quota.db` to survive restarts without re-alerting. 
 > 1. OS fallback should fire both when no channel is configured AND as a true last resort when configured channels fail. But a channel should always be configured — why would no channel ever be configured in the first place? Also: add a unified notification API to the design — single interface that fires all configured channels (ntfy, Discord, OS), customizable via config and per-call overrides. Should be easy to configure notifications for any project. What's the best approach for managing and auditing all configured notifications — database or config file?
 > 2. Do all phases in one implementation — no unnecessary phasing/refactoring. Restructure the doc accordingly.
 > 3. Show last N alerts (N as CLI arg), or since DATE/DATETIME, or date range (--from/--to). Design this in the doc.
+>
+> **AI Response Round 1:**
+> - OQ1: Agreed — OS fallback now fires when all primaries fail, not only when unconfigured. D2 updated accordingly. A channel should always be configured; the OS fallback protects new installs before setup is complete. Unified `Notifier` API added as a new section. D4 added: config file for channel config (static structure, auditable), SQLite for notification history (queryable state). `ai notifications list` audits configured channels. `ai notifications log` queries history.
+> - OQ2: Phasing removed — single flat implementation plan, no refactoring steps.
+> - OQ3: `ai notifications log` designed with `--last N`, `--since DATETIME`, `--from`/`--to` date range, `--source`, `--failed`. Default shows last 10. See Notification Log section.
 
 ## Approval Log
 
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-20 | Round 1 | D1 (Circus) approved. D2 (parallel channels) approved — keep both Discord and ntfy; AI-CLI-49 added to evaluate long-term. D3 (layered config) approved after expanding with options/pros/cons/recommendation. |
+| 2026-04-20 | Round 2 | OQ1 → OS fallback fires on failure too; Notifier API added; D4 added (config file + SQLite hybrid). OQ2 → phases removed, flat implementation plan. OQ3 → ai notifications log CLI designed. |
