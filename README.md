@@ -9,7 +9,9 @@
 
 Unified AI session manager and automation toolkit for Claude Code and Gemini CLI.
 
-![demo](demo/demo.gif)
+<video src="demo/demo-20260420-053045-1cdf560.mp4" autoplay loop muted playsinline width="100%"></video>
+
+*Four iTerm2 panes: launching Claude Code (`ai c 1`), Gemini CLI (`ai g 1`), and a remote dev server session (`ai c -R 1`), then browsing active sessions with `ai ls`, checking token quota with `ai quota status`, and running a Gemini query with automatic auth fallback.*
 
 Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, resilient Gemini API access with automatic auth fallback, and persistent SSH tunnels via autossh. Every command and subcommand supports `--help` for inline usage reference.
 
