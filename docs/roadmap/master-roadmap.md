@@ -2,6 +2,8 @@
 
 ## Open
 
+- [ ] `[P0]` `[AI-CLI-53]` **Design/plan doc audit** — review all docs in `docs/designs/` and `docs/plans/`: for unimplemented docs without roadmap tasks, create the task; for completed docs, verify full implementation + robust tests + updated docs. Procedure: `~/projects/sergei/docs/plans/design-plan-doc-audit.md`.
+
 - [x] `[P1]` `[AI-CLI-45]` **Gemini deep-research auth: OAuth client setup + billing resolution** — Track A: `_run_deep_research()` currently returns error on HTTP 403 (insufficient scope) instead of falling through to paid key. Fix: catch 403 on submit and fall through same as OAuth-unavailable path. Track B: set up custom Desktop-app OAuth client in GCP (billing acct `01AC33-5BE8AD-2F4E8A`) so Interactions API can use OAuth scopes (`generative-language.retriever`). Track C: investigate `agent-browser` CLI not found (symlink error, likely not installed). Track D: retry R-12 artelier deep-research run after A or B resolves. Plan: `docs/plans/gemini-deep-research-oauth-plan.md`.
 
 - [x] `[P0]` `[AI-CLI-43]` **Investigate: does Google AI Ultra credit apply to AI Studio paid key charges?** Due: 2026-04-11. — Resolved: billing confirmed working correctly; `-P` / `--confirm-paid` redundancy gate removed 2026-04-17 (deep-research now runs with only `paid_fallback_enabled = true` in config).
