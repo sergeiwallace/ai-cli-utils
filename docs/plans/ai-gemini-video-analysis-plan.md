@@ -31,16 +31,20 @@ dropping out of the `ai gemini` abstraction layer.
 
 **Research already done:**
 
-- **R-18** (`docs/research/video-analysis-agentic-2026.md` in the artelier repo, or ask
-  the session for a copy): Gemini CLI OAuth free-tier video ingestion, supported formats,
-  free-tier constraints (Flash model, ~5min cap), and open-source fallback options.
+- **R-51** (`docs/research/video-analysis-agentic-2026.md` in this repo — canonical): Gemini
+  CLI OAuth free-tier video ingestion, supported formats, free-tier constraints (Flash model,
+  ~5min cap), open-source fallback options (Qwen2.5-VL-3B, docTR, PySceneDetect).
 - **Gemini video understanding API docs:** https://ai.google.dev/gemini-api/docs/video-understanding
   — review before finalizing the design. Covers: supported MIME types, File API upload flow,
   inline vs. file-API video, timestamp-based prompting, token counts for video, and model
   support matrix.
 
-Both sources must be reviewed and synthesized into the design section of the full plan doc
-before any implementation tasks are written.
+**Important:** R-51 is acknowledged to be light on the computer vision / local model landscape.
+The CC session must read R-51 critically, identify gaps (see Research Follow-up section below),
+and propose a deep-research follow-up prompt before writing the Options section of the plan.
+
+Both R-51 and the Gemini video docs must be reviewed and synthesized into the design section of
+the full plan doc before any implementation tasks are written.
 
 ---
 
@@ -120,7 +124,7 @@ tools only:
 1. **Scene detection:** `PySceneDetect` (`scenedetect detect-adaptive -t 15`) to identify
    keyframe boundaries. Use `--crop` to isolate the changing content area — UI recordings
    have a static background that defeats the default threshold.
-2. **OCR:** `docTR` (the recommended 2026 default per R-18 — fastest, most robust to video
+2. **OCR:** `docTR` (the recommended 2026 default per R-51 — fastest, most robust to video
    compression artifacts) reads text from each keyframe image.
 3. **Keyword assertion:** extracted text is checked against a required-keyword list (passed
    via prompt or a dedicated `--keywords` flag). Outputs a PASS/FAIL report per scene.
@@ -189,18 +193,172 @@ in the output doc when the local backend is used.
 
 ---
 
+## Research Follow-up — Proposed Deep-Research Prompt (R-52)
+
+R-51 is acknowledged to be light on the computer vision and local model landscape. Specifically:
+
+- **Gap 1:** R-51 says "Claude Code cannot ingest MP4 directly" but does not explore whether
+  modern frontier models (GPT-4o, Gemini 1.5 Pro, Claude 3.5+ via API) can analyze video
+  frames or full video natively via their APIs in 2026. Many frontier models now have native
+  video understanding — this should have been covered.
+- **Gap 2:** The open-source VLM section names Qwen2.5-VL-3B, MiniCPM-V, and Moondream but
+  doesn't cover: LLaVA-NeXT-Video, VideoLLaMA, InternVideo, mPLUG-Owl3, or any model
+  specifically trained on screen recordings / UI interactions. These are relevant to the
+  local-backend option.
+- **Gap 3:** No coverage of `mlx-vlm` Python API integration, how to prompt VLMs for
+  structured JSON output (scene timestamps, pass/fail), or comparative accuracy benchmarks
+  on UI screenshot tasks.
+- **Gap 4:** The Gemini File API flow (upload → poll → query) is described but not the
+  token cost implications, rate limits per video duration, or how the API handles silent
+  processing errors.
+
+**The CC session must draft the following deep-research follow-up prompt and present it to
+the user before implementation begins. Do NOT run this prompt — present it for approval.**
+
+---
+
+### Proposed R-52: Computer Vision & Video Analysis Landscape for CLI Integration (2025–2026)
+
+**Proposed model:** `deep-research`
+**Task:** AI-CLI-54
+**Gate:** Present to user for approval before running
+
+```text
+You are a senior AI infrastructure engineer designing a CLI feature for video content
+analysis. The feature (`ai gemini --backend`) must choose between: (A) cloud LLM APIs
+(Gemini, Claude, GPT-4o) via file upload, (B) local open-source VLMs running on Apple
+Silicon, and (C) classical CV pipelines (scene detection + OCR). You have hands-on
+experience shipping Python CLI tools and have followed the open-source VLM ecosystem
+from 2024 through 2026.
+
+## Context
+
+We are building `ai gemini @filepath` — a CLI command that accepts a local video file
+and returns a structured analysis (JSON scene list, timestamps, pass/fail per scene).
+The primary use case is agentic demo validation: confirm that a screen recording of a
+web app walkthrough shows the expected UI screens (login form, DAG graph, Flask UI,
+Gradio app) with no error pages.
+
+Prior research (R-51) established basic Gemini CLI @filepath support and named a few
+open-source models, but was thin on depth. This follow-up fills the gaps.
+
+## Research Questions
+
+### 1. Frontier model video understanding (2025–2026 state of the art)
+
+For each of the following, answer: can it analyze a local MP4 via API? What's the exact
+upload mechanism? What are the free-tier / rate limits? What's the token cost for a 5-min
+1080p recording? What structured output formats does it support?
+
+- **Gemini 1.5 Flash / Pro** via File API (REST, not CLI)
+- **GPT-4o** via OpenAI Files API
+- **Claude 3.5+ Sonnet / Claude 4** via Anthropic API (vision on extracted frames vs
+  native video — has this changed in 2026?)
+- Any other frontier model with native video understanding announced 2025–2026
+
+### 2. Open-source VLMs for screen recording / UI analysis (2025–2026)
+
+Beyond Qwen2.5-VL-3B, MiniCPM-V, and Moondream (covered in R-51), research:
+
+- **LLaVA-NeXT-Video**, **VideoLLaMA 2/3**, **InternVideo 2.5** — do these run on
+  Apple Silicon CPU? What are the model sizes and MLX compatibility status?
+- **mPLUG-Owl3**, **Aria**, or any 2025–2026 multimodal model specifically designed
+  for long video or document/UI understanding
+- **UI-specific models:** any VLMs fine-tuned on screen recordings, UI screenshots,
+  or web app navigation tasks (e.g., models from the GUI Agent / WebVoyager space)
+- For each: macOS CPU runtime estimate for a 2-min 1080p recording, model download size,
+  `mlx-vlm` or `ollama` compatibility, structured JSON output support
+
+### 3. mlx-vlm Python API integration patterns
+
+For VLMs running via `mlx-vlm` on Apple Silicon:
+- What is the correct Python API for batch frame analysis? (not just CLI invocation)
+- How do you prompt for structured JSON output (scene classification, timestamp, pass/fail)?
+- What is the practical throughput (frames/second) for Qwen2.5-VL-3B on M1/M2/M3?
+- Are there known accuracy issues on Retina/HiDPI screen captures (2x pixel density)?
+
+### 4. Classical CV pipeline accuracy benchmarks
+
+For PySceneDetect + docTR OCR on UI screen recordings:
+- Concrete accuracy numbers: what % of UI transitions does detect-adaptive catch at
+  threshold 15 vs 25 vs 50 on browser recordings with static backgrounds?
+- docTR character error rate on HiDPI browser text (Chrome, Retina display)?
+- Are there 2025–2026 alternatives to PySceneDetect that handle static-background UI
+  recordings better?
+
+### 5. CLI design patterns for multi-backend video analysis tools
+
+Survey existing CLI tools (2024–2026) that implement a --backend flag for AI video analysis:
+- What flag/config patterns are established (auto/local/cloud, model selection, output format)?
+- How do similar tools handle the auto-split + combine problem for long videos?
+- Any prior art for streaming analysis results as segments complete?
+
+### 6. Practical recommendation for CLI implementation
+
+Given the constraints (Python CLI, macOS primary, Linux secondary, optional extras via pip,
+no mandatory cloud API key):
+
+Recommend the concrete backend stack for each tier:
+- **Tier 1 (default, zero-install):** what to use when only `gemini` binary is available
+- **Tier 2 (optional local):** best single open-source model + library combo for
+  `ai-cli-utils[video-local]` extra — balance accuracy, download size, and M-series perf
+- **Tier 3 (classical CV, ultra-fast):** PySceneDetect + what OCR engine for the fastest
+  possible local analysis (no LLM weights required)
+
+For each tier: exact package names, install command, Python import, and a 5-line code
+sketch of how to invoke it for a single frame classification.
+```
+
+<grounding_instructions>
+[ROLE: senior AI infrastructure engineer with hands-on experience shipping Python CLI tools
+integrating multimodal AI, open-source VLMs on Apple Silicon, and classical CV pipelines.
+You have followed the open-source video understanding ecosystem from 2024 through 2026 and
+distinguish documented capabilities from community-verified practical behavior on macOS CPU.]
+
+Before generating your final output, execute a Chain-of-Verification (CoVe).
+
+Inside your thought process:
+1. Isolate the core facts required.
+2. Draft a tentative response.
+3. Hostile Cross-Examination: flag any claim where you are citing a source because the
+   prompt implied you should, rather than because you verified it. Pay special attention
+   to model capabilities and MLX compatibility — these change rapidly.
+4. Strip away any claim that cannot be empirically verified.
+
+Classify every major claim:
+- [VERIFIABLE FACT]: backed by docs, GitHub commits/issues, release notes, or official
+  announcements (2024–2026). Provide the direct URL or commit SHA.
+- [INDUSTRY HEURISTIC]: widely accepted best practice without a specific citation.
+- [SYNTHESIZED INFERENCE]: logical conclusion from context. Provide reasoning. No fabricated sources.
+- [NO SOURCE FOUND]: explicitly state when you cannot find verifiable data.
+
+Hard constraint: never invent a citation. Accuracy > completeness.
+Temporal scope: 2026 first, then 2025, then 2024. Always disclose which year.
+</grounding_instructions>
+
+---
+
 ## Instructions for the ai-cli-utils CC Session
 
 This is a requirements stub. Before implementation can begin, the CC session must:
 
 1. **Read and synthesize the reference material:**
-   - R-18: `docs/research/video-analysis-agentic-2026.md` (in the artelier repo, or ask
-     the user for the content) — covers Gemini CLI `@filepath` syntax, free-tier limits,
-     and open-source fallback options
+   - R-51: `docs/research/video-analysis-agentic-2026.md` (in this repo — canonical) — covers
+     Gemini CLI `@filepath` syntax, free-tier limits, and open-source fallback options. **Read
+     it critically — it is acknowledged to be light. Do not treat it as complete.**
    - Gemini video understanding API docs: https://ai.google.dev/gemini-api/docs/video-understanding
      — covers File API upload flow, inline vs. file-API, timestamp prompting, token limits
 
-2. **Flesh out this stub into a full plan doc** conforming to `docs/plans/TEMPLATE.md`:
+2. **Review R-51 gaps and present R-52 for approval:**
+   - Read the `## Research Follow-up — Proposed Deep-Research Prompt (R-52)` section above
+   - Assess whether R-51 is sufficient for the Options section, or whether R-52 is needed
+     to fill the gaps (computer vision landscape, frontier model video APIs, mlx-vlm patterns)
+   - Present the R-52 prompt to the user with your assessment. **Do NOT run it — present and wait.**
+   - If user approves: register R-52 in the registry, run it, write output to
+     `docs/research/cv-video-analysis-2026.md`, commit and push, then continue to step 3
+   - If user defers: note in the plan doc which Options sections are uncertain pending R-52
+
+3. **Flesh out this stub into a full plan doc** conforming to `docs/plans/TEMPLATE.md`:
    - Add Options section (at least 2 implementation approaches with pros/cons + recommendation)
    - Expand Task Breakdown into concrete T-01/T-02/... tasks with sizes, deliverables, and ACs
    - Add Batch Plan table
@@ -208,12 +366,12 @@ This is a requirements stub. Before implementation can begin, the CC session mus
    - Resolve or document the Open Questions above (some can be answered by reading the docs)
    - Update frontmatter: `status: pending_review`
 
-3. **Ship git changes** — commit and push the updated plan doc to `origin/main`
+4. **Ship git changes** — commit and push the updated plan doc to `origin/main`
 
-4. **Present to user for review** — paste a summary of the plan and key decisions, then wait
+5. **Present to user for review** — paste a summary of the plan and key decisions, then wait
    for approval before starting implementation
 
-5. **Once the plan is approved:**
+6. **Once the plan is approved:**
    - Create internal CC tasks via `TaskCreate` for each T-N task in the plan so implementation
      progress can be tracked in the CC TUI
    - Ship another git commit with any plan doc updates from the approval round
