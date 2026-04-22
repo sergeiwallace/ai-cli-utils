@@ -258,9 +258,6 @@ MENU_ACTIONS+=("plan")
 MENU_LABELS+=("Customize session config      — tailor CLAUDE.md, GEMINI.md, agents, skills")
 MENU_ACTIONS+=("config")
 
-MENU_LABELS+=("Configure orchestrator        — review and adjust lgx graphs, nodes, CLI")
-MENU_ACTIONS+=("orchestrator")
-
 MENU_LABELS+=("Explore the scaffold          — walk through what was generated")
 MENU_ACTIONS+=("explore")
 
@@ -306,10 +303,6 @@ for choice in "${SELECTED[@]}"; do
         config)
             info "Launching Claude Code to customize session config..."
             claude --prompt "Help me customize the session configuration for this project. Walk me through each file and ask what I want to change: 1) CLAUDE.md — instructions, workflow rules, test conventions, 2) GEMINI.md — Gemini-specific instructions, 3) .claude/agents/ — agent definitions, 4) .claude/skills/ — skill definitions, 5) .mcp.json — MCP server connections. Show me current contents and suggest project-specific adjustments."
-            ;;
-        orchestrator)
-            info "Launching Claude Code to configure orchestrator..."
-            claude --prompt "Help me review and configure the lgx orchestrator for this project. Walk me through: 1) available graphs (research, review, build, test, implement, fix), 2) node behavior and prompts in nodes.py, 3) CLI commands and flags in cli.py, 4) graph wiring in graphs.py. Ask what I want to customize for this project's workflow."
             ;;
         explore)
             info "Launching Claude Code to explore..."
