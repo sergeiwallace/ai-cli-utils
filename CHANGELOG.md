@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-04-21
+
+### Fixed
+
+- `__init__.__version__` was `0.3.0` while `pyproject.toml` was at `0.5.1` — now synced (`AI-CLI-46`).
+
+### Added
+
+- Programmatic API contract tests (`tests/test_public_api.py` expanded from 6 to 12 tests): version sync guard, `run_gemini()` parameter signature enforcement, and field-completeness checks for `GeminiResult`, `AttemptLog`, and `QuotaSnapshot`. These catch breaking API changes before downstream callers (e.g. aido) break (`AI-CLI-46`).
+
 ## [0.5.1] - 2026-04-21
 
 ### Fixed

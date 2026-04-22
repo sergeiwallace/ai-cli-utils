@@ -2,7 +2,7 @@
 title: "AI-CLI-46: Stabilize Programmatic API for aido Integration"
 category: plan
 tags: [api, programmatic, aido, versioning]
-status: approved
+status: complete
 ---
 
 ## Table of Contents
@@ -146,3 +146,4 @@ from ai_cli.quota import read_latest_snapshot, QuotaSnapshot
 ## Approval Log
 
 - 2026-04-21, Round 1: Plan approved by user. Proceed with implementation.
+- 2026-04-21, Complete: v0.5.2 shipped. `__init__.__version__` fixed, 12 contract tests passing, AIDO-18 pin floor confirmed as `ai-cli-utils>=0.5.2`.
