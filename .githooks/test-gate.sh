@@ -15,6 +15,21 @@ if [ "${SKIP_TESTS:-0}" = "1" ]; then
     exit 0
 fi
 
+# HEAD-sentinel cache: if tests already passed on this HEAD, skip the re-run.
+# Sentinel is written at end of this script after all tests pass; it's also
+# written by running this script directly (e.g. `bash .githooks/test-gate.sh`
+# after manual pytest). Cache lives in .git/ (not tracked, per-clone).
+SENTINEL=".git/pytest-last-pass"
+if [ -f "$SENTINEL" ]; then
+    CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+    LAST_PASS=$(cat "$SENTINEL" 2>/dev/null || echo "")
+    if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" = "$LAST_PASS" ]; then
+        echo "[test-gate] Tests already passed on this HEAD ($CURRENT_HEAD) — skipping"
+        echo "[test-gate] (delete $SENTINEL or move HEAD to force a re-run)"
+        exit 0
+    fi
+fi
+
 # ── Rust ────────────────────────────────────────────────────────────────────
 if [ -f "$REPO_ROOT/Cargo.toml" ]; then
     echo "[test-gate] Rust detected → cargo test --workspace"
@@ -91,6 +106,13 @@ fi
 if [ "$ERRORS" -ne 0 ]; then
     echo "[test-gate] Push blocked. Fix failing tests or override with SKIP_TESTS=1 git push."
     exit 1
+fi
+
+# Tests passed — record this HEAD so subsequent pushes on the same SHA skip the
+# re-run. Future commits bump HEAD and invalidate the cache automatically.
+CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+if [ -n "$CURRENT_HEAD" ] && [ -d .git ]; then
+    echo "$CURRENT_HEAD" > .git/pytest-last-pass
 fi
 
 exit 0

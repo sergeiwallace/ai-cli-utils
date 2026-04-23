@@ -39,16 +39,19 @@
 
 ### Decision Summary
 
-| # | Decision | Options Considered | Chosen | Rationale | Status |
-|---|----------|-------------------|--------|-----------|--------|
-| 1 | | | | | Pending |
-| 2 | | | | | Pending |
+<!-- Update Status to `APPROVED — (x) Option name` when decided. -->
+
+| # | Decision | Options Considered | Status |
+|---|----------|-------------------|--------|
+| D1 | [Decision name] | (a) Option A, (b) Option B | `PENDING` |
+| D2 | [Decision name] | (a) Option A, (b) Option B | `PENDING` |
 
 ### Decision Details
 
-<!-- For each decision, expand with options, pros/cons, and recommendation. -->
+<!-- For each decision, expand with options, pros/cons, and recommendation.
+     Add `— \`[APPROVED: (x)]\`` or `— \`[PENDING]\`` suffix to each decision header. -->
 
-#### Decision 1: [Name]
+#### Decision 1: [Name] — `[PENDING]`
 
 ##### (a) [Option A name]
 
@@ -67,6 +70,8 @@
 - <!-- con -->
 
 ##### Recommendation
+
+> **Decision:** `PENDING` <!-- Update to `APPROVED — (x) Full option name` when approved -->
 
 <!-- 2-3 sentences: which option and why. Reference research docs if applicable. -->
 

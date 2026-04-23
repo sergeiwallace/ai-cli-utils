@@ -73,10 +73,13 @@ bash scripts/airflow-watch.sh <dag_id> <run_id> [task_id]
 | `1`  | Pipeline failed    | diagnose → fix → re-trigger → re-launch watcher |
 | `2`  | Timeout (12h)      | check Airflow UI manually |
 
-**Files written** (all on the AI session's local machine):
+**Files written** (scoped to the triggering CC session's project root, so other
+CC sessions' hooks never see them and cannot fire false positives):
 
-- `/tmp/airflow_watch.pid` — written at startup, removed on clean exit
-- `/tmp/airflow_watcher_needed` — cleared at startup (written by trigger script)
+- `<project_root>/.claude/state/airflow-watch.pid` — written at startup, removed on clean exit
+- `<project_root>/.claude/state/airflow-watcher-needed` — cleared at startup (written by trigger script)
+
+Project root resolves via `$CLAUDE_PROJECT_DIR` (set by CC in hook env) → `git rev-parse --show-toplevel` → `$PWD`. The `.claude/state/` directory is gitignored.
 
 **Environment knobs:**
 
@@ -101,13 +104,15 @@ Prints the exact watcher command to launch as a background Bash tool call.
 
 Two hooks enforce the pattern so a watcher can never be silently forgotten:
 
+Both hooks read only from the CC session's own project root (`$CLAUDE_PROJECT_DIR` / git worktree root), so a trigger in one CC session never fires the hooks in another session — even if both sessions are running on the same host.
+
 ### `PostToolUse` — `airflow-watcher-required.sh`
 
-Fires after every `Bash` tool call. Checks for `/tmp/airflow_watcher_needed`. If present, exits `2` (blocks further tool calls) and prints the required watcher command. Fast no-op when no sentinel exists.
+Fires after every `Bash` tool call. Checks for `<project_root>/.claude/state/airflow-watcher-needed`. If present, exits `2` (blocks further tool calls) and prints the required watcher command. Fast no-op when no sentinel exists.
 
 ### `UserPromptSubmit` — `airflow-watcher-resume.sh`
 
-Fires on every new user prompt. Checks for `/tmp/airflow_watch.pid`. If present but the PID is dead (i.e., the AI session restarted while a watcher was running), recreates `/tmp/airflow_watcher_needed` — so the next tool call hits the `PostToolUse` block and the AI session is forced to re-launch.
+Fires on every new user prompt. Checks for `<project_root>/.claude/state/airflow-watch.pid`. If present but the PID is dead (i.e., the AI session restarted while a watcher was running), recreates `<project_root>/.claude/state/airflow-watcher-needed` — so the next tool call hits the `PostToolUse` block and the AI session is forced to re-launch.
 
 ---
 
@@ -150,7 +155,7 @@ When the watcher exits, the background task-notification lands in the session:
 If the AI session ends (crash, compaction, user `/clear`) while a pipeline is in-flight:
 
 - The pipeline keeps running — Airflow scheduler owns it.
-- The watcher process dies with the session, leaving `/tmp/airflow_watch.pid` behind.
+- The watcher process dies with the session, leaving `.claude/state/airflow-watch.pid` behind.
 - Next session start → `UserPromptSubmit` hook detects dead PID → recreates sentinel.
 - First `Bash` tool call → `PostToolUse` hook blocks with the watcher command.
 - AI re-launches the watcher; polling resumes where it left off (fresh poll loop, same run_id).
@@ -176,6 +181,8 @@ These belong in the global session config (`~/projects/CLAUDE.md` and `~/project
 
 **Watcher loops with `state=unknown`** — run_id is wrong, or the DAG hasn't registered yet. Verify with `airflow dags list-runs --dag-id <dag>`.
 
-**Sentinel keeps appearing after watcher runs** — the hook may be firing before the watcher removes the sentinel. Check the watcher startup: it should `rm -f /tmp/airflow_watcher_needed` in the first few lines.
+**Sentinel keeps appearing after watcher runs** — the hook may be firing before the watcher removes the sentinel. Check the watcher startup: it should `rm -f .claude/state/airflow-watcher-needed` in the first few lines.
 
-**`PostToolUse` hook blocks even though watcher is running** — check `/tmp/airflow_watch.pid` exists and its `PID` is alive (`kill -0 $PID`). If stale, `rm /tmp/airflow_watch.pid /tmp/airflow_watcher_needed` and relaunch.
+**`PostToolUse` hook blocks even though watcher is running** — check `<project_root>/.claude/state/airflow-watch.pid` exists and its `PID` is alive (`kill -0 $PID`). If stale, `rm <project_root>/.claude/state/airflow-watch.pid <project_root>/.claude/state/airflow-watcher-needed` and relaunch.
+
+**Hook fires in a CC session that did NOT trigger the DAG** — historical bug: the sentinel used to live at `/tmp/airflow_watcher_needed`, a global path shared across all CC sessions. As of 2026-04-23 it is project-root-scoped, so this cannot happen. If you hit it anyway, check the hook source — it should read from `${PROJECT_ROOT}/.claude/state/airflow-watcher-needed`, not `/tmp/`.

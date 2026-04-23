@@ -32,6 +32,7 @@ narrative grounded in the research domain.
 - `deep-research` — broad multi-source research requiring web + reasoning
 
 **Prompt patterns:**
+- **Temporal scope (required for all prompts)** — every prompt must include a temporal scope statement. For AI/ML and cutting-edge tech research: weight 2026 (primary) → 2025 → 2024; pre-2024 is background context only unless foundational. Include this as a hard constraint inside `<grounding_instructions>`: "Weight sources by recency: 2026 (primary) → 2025 → 2024. Pre-2024 sources are background context only unless foundational to the topic. If post-2024 literature is genuinely sparse for a subtopic, state '[subtopic]: no significant post-2024 developments found' rather than backfilling with older sources. Backfilling is a failure mode, not a hedge." Adjust the window as appropriate — e.g., historical/legal/foundational topics may warrant broader scope.
 - **Gap-fill / temporal-scoping** — add a hard constraint inside `<grounding_instructions>`: "if [period] is genuinely thin, '[period]: no significant new developments found' is the correct answer. Do not backfill with [earlier period] sources. Backfilling is a failure mode, not a hedge." Generic `[NO SOURCE FOUND]` alone is insufficient — naming the failure prevents it.
 - **Follow-up / sequential runs** — add a `## Background` section at the top of the prompt body (before questions, outside `<grounding_instructions>`) summarizing what prior runs found: "Assume all Background points are established and do not re-derive them." This scopes the model to the delta.
 
@@ -49,6 +50,14 @@ narrative grounded in the research domain.
 [ROLE IDENTITY — specific to the research domain. A grounded persona reduces
 compliance pressure — the model reasons from a position rather than defaulting
 to sycophantic completeness.]
+
+Temporal scope: Weight sources by recency — 2026 (primary) → 2025 → 2024.
+Pre-2024 sources are background context only unless foundational to the topic.
+If post-2024 literature is genuinely sparse for a subtopic, state
+"[subtopic]: no significant post-2024 developments found" rather than
+backfilling with older sources. Backfilling is a failure mode, not a hedge.
+[Adjust or broaden this window if the topic's relevant literature predates 2024
+— e.g., foundational theory, legal precedent, historical analysis.]
 
 Before generating your final output, execute a Chain-of-Verification (CoVe)
 to ensure factual fidelity over compliance.
@@ -283,6 +292,8 @@ NEVER generate binary images.
 **Task:** [TASK-ID]
 
 **Output:** `docs/research/[topic].md`
+
+**Temporal scope:** 2026 primary → 2025 → 2024 <!-- adjust as needed -->
 
 <!-- Always put a blank line between consecutive **Label:** metadata fields.
      Markdown joins consecutive non-blank lines into one paragraph, so without

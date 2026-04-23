@@ -21,7 +21,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
-- [Options](#options)
+- [Decisions](#decisions)
 - [Task Breakdown](#task-breakdown)
 - [Batch Plan](#batch-plan)
 - [Human Gates](#human-gates)
@@ -47,27 +47,48 @@
 
 -->
 
-## Options
+## Decisions
 
-<!-- Implementation approach options with pros/cons. Always include at least 2 options. -->
+<!-- Implementation approach decisions with pros/cons. Always include at least 2 options.
+     Use numbered decisions (D1, D2, ...) when there are multiple architectural choices to track.
+     Use a single decision for simpler plans. -->
 
-### Option A: [Name]
+### Decision Summary
+
+<!-- Add one row per decision. Update Status column as decisions are approved. -->
+
+| # | Decision | Options | Status |
+|---|----------|---------|--------|
+| D1 | [Decision name] | (a) Option A, (b) Option B | `PENDING` |
+| D2 | [Decision name] | (a) Option A, (b) Option B | `PENDING` |
+
+### D1: [Decision name] — `[PENDING]`
+
+<!-- Change header suffix to `[APPROVED: (x)]` when decided. -->
+
+#### (a) [Option A name]
 
 **Pros:**
+
 - <!-- pro -->
 
 **Cons:**
+
 - <!-- con -->
 
-### Option B: [Name]
+#### (b) [Option B name]
 
 **Pros:**
+
 - <!-- pro -->
 
 **Cons:**
+
 - <!-- con -->
 
-### Recommendation
+#### Recommendation
+
+> **Decision:** `PENDING` <!-- Update to `APPROVED — (x) Full option name` when approved -->
 
 <!-- Which option and why. 2-3 sentences. -->
 
