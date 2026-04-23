@@ -76,6 +76,20 @@ Two-pass approach: generate palette from full video stats → apply palette with
 - [ ] GIF loops cleanly (no flash/jump at loop point)
 - [ ] README updated to embed GIF
 
+## Tool Consideration — Claude Code `computer-use` MCP (added 2026-04-23)
+
+Claude Code ships a **built-in `computer-use` MCP server** (Anthropic-bundled, currently disabled on this machine) that exposes screenshot + keyboard + mouse + multi-display control to Claude itself.
+
+**For future (re-)recordings of this demo**, consider enabling it instead of (or alongside) the current automation stack (`record-demo.sh`, `demo-runner.sh`, osascript). Could let Claude drive the iTerm2 window and terminal interactions end-to-end without AppleScript / screencapture intermediaries, potentially simplifying timing reliability.
+
+- **Enable per-session:** `/mcp` → `computer-use` → Enable. Scopes per-project. Disable after recording.
+- **Requires:** macOS only, Claude Code v2.1.85+, Pro/Max claude.ai auth, interactive session, Accessibility + Screen Recording permissions.
+- **Safety:** machine-wide lock, per-app approval, terminal excluded from screenshots, global `Esc` to abort.
+
+Full details: `~/projects/sergei/docs/plans/mcp-config-hygiene-cleanup.md`
+
+---
+
 ## Approval Log
 
 - **2026-04-19, Round 1**: Plan drafted. Approach approved — screencapture + ffmpeg, full-screen iTerm2 recording, autonomous script.
