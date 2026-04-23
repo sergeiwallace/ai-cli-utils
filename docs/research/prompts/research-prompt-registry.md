@@ -122,9 +122,13 @@ NEVER generate binary images.
 ### R-1: Open-Source Python CLI Package Best Practices — SW-672
 
 **Status:** ✅ Complete
+
 **Task:** SW-672 (Extract ai-cli to standalone repo)
+
 **Results:** [`docs/research/open-source-package-best-practices.md`](../open-source-package-best-practices.md)
+
 **Model:** `opus researcher`
+
 **Date:** 2026-03-29
 
 <details>
@@ -147,8 +151,11 @@ CLI projects to emulate (1K-50K stars range).
 ### R-50: Terminal Tab/Pane Title, Color, and Icon Customization for AI Fleet Management — AI-CLI
 
 **Status:** ✅ Complete — 2026-04-02
+
 **Model:** `deep-think` (gemini-2.5-pro with HIGH thinking)
+
 **Task:** AI-CLI (iTerm2 tab title/color redesign)
+
 **Results:** [`docs/research/iterm2-terminal-customization-research.md`](../iterm2-terminal-customization-research.md)
 
 Key findings informed the iTerm2 Tab Title and Color System design (now implemented). Research covered OSC sequences for tab title/color control, iTerm2 DCS passthrough for tmux, pre-launch vs in-session layer architecture, mosh/remote session constraints, and profile-based color assignment.
@@ -158,8 +165,11 @@ Key findings informed the iTerm2 Tab Title and Color System design (now implemen
 ### R-2: GitHub Repository Automation & Ecosystem Tooling
 
 **Status:** ✅ Complete
+
 **Task:** AI-CLI-3 (extended to cover full remaining professionalization gaps)
+
 **Target doc:** `docs/research/github-repo-automation.md`
+
 **Model:** `opus researcher`
 
 <details>
@@ -267,8 +277,11 @@ NEVER generate binary images.
 ### R-N: [Topic] — [TASK-ID]
 
 **Status:** Ready to run / Pending approval / Approved — run with opus researcher
+
 **Model:** `opus researcher`
+
 **Task:** [TASK-ID]
+
 **Output:** `docs/research/[topic].md`
 
 <details>
