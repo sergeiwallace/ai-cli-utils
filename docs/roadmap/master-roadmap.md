@@ -2,6 +2,8 @@
 
 ## Open
 
+- [ ] `[P0]` `[AI-CLI-56]` **Bug: duplicate statusline/prompt boxes appear when scrolling CC session history** — When scrolling up through terminal history inside a CC session, multiple copies of the prompt box and statusline are visible, breaking readability of the conversation history. Root cause unknown — likely the statusline rendering re-drawing on scroll events or being emitted more often than expected. Investigate how the statusLine hook fires and whether ANSI escape sequences are being emitted in a way that leaves artifacts in the scrollback buffer.
+
 - [ ] `[P0]` `[AI-CLI-55]` **Add Sonnet quota % to statusline** — `weekly_sonnet_pct` is already scraped and stored in the DB but not shown in `quota_statusline_part()`. Read the field from the snapshot row and append it to the statusline output (e.g. `📊 42% all | 87% son`). Motivated by hitting the Sonnet weekly limit without prior visibility. Color-code Sonnet % independently (same thresholds: <50% green, <75% yellow, ≥75% red).
 
 - [ ] `[P0]` `[AI-CLI-53]` **Design/plan doc audit** — review all docs in `docs/designs/` and `docs/plans/`: for unimplemented docs without roadmap tasks, create the task; for completed docs, verify full implementation + robust tests + updated docs. Procedure: `~/projects/sergei/docs/plans/design-plan-doc-audit.md`.
