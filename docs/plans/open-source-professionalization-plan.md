@@ -282,11 +282,11 @@ Autonomous review of the completed work:
 > - GitHub auto-redirects old URLs (permanent redirect, low risk)
 > - PyPI package name stays `ai-cli-utils` regardless (no PyPI impact)
 
-2. **Installation method** — Should README recommend `pipx install ai-cli-utils` or `uv tool install ai-cli-utils`?
+1. **Installation method** — Should README recommend `pipx install ai-cli-utils` or `uv tool install ai-cli-utils`?
 
 > **Recommendation: `uv tool install` as primary, `pipx` as alternative.** uv is the modern standard, faster than pipx, and what we already use. Document both for users without uv.
 
-3. **Trusted Publisher setup** — Requires manual configuration on pypi.org. Should the implementing session do this, or is it a separate manual step?
+1. **Trusted Publisher setup** — Requires manual configuration on pypi.org. Should the implementing session do this, or is it a separate manual step?
 
 > **Recommendation: Include as a manual step in the batch.** ~5 minutes on pypi.org — fill in repo name, workflow filename, environment name. The implementing session can document the steps but the user needs to do the PyPI web UI part.
 

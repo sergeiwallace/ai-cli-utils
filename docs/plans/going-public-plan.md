@@ -137,7 +137,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 
 #### Step 1: Install Renovate GitHub App
 
-1. Go to https://github.com/apps/renovate
+1. Go to <https://github.com/apps/renovate>
 2. Click "Install" and select the `sergeiwallace/ai-cli-utils` repo
 3. Renovate will open an onboarding PR — the `renovate.json5` already in the repo should be detected automatically
 4. Merge or close the onboarding PR (config is already committed)
@@ -145,7 +145,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 
 #### Step 2: Set up Codecov
 
-1. Go to https://codecov.io and sign in with GitHub
+1. Go to <https://codecov.io> and sign in with GitHub
 2. Add the `sergeiwallace/ai-cli-utils` repo
 3. Copy the `CODECOV_TOKEN` from Codecov's repo settings
 4. In GitHub: repo Settings > Secrets and variables > Actions > New repository secret
@@ -154,7 +154,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 
 #### Step 3: Generate social preview image
 
-1. Go to https://socialify.git.ci/sergeiwallace/ai-cli-utils
+1. Go to <https://socialify.git.ci/sergeiwallace/ai-cli-utils>
 2. Configure: enable description, language, stars, forks, issues
 3. Download the 1280x640px image
 4. In GitHub: repo Settings > Social preview > Upload image

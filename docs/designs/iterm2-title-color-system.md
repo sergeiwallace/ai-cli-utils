@@ -89,20 +89,20 @@ The system operates at two timing layers:
 |----------|-------|
 | **Profile** | One of `ClaudeCode-{color}` variants, set pre-launch (before mosh) |
 | **Tab color** | Rolling color, set pre-launch (before mosh) |
-| **Tab title** | `[mosh] ▶ c-r-sw-1` — mosh prepends `[mosh] ` to all OSC 0 titles; this is unavoidable |
+| **Tab title** | `[mosh] ▶ c-r-sw-1` — mosh prepends `[mosh]` to all OSC 0 titles; this is unavoidable |
 | **Pane header** | Same as tab title (mosh controls it) |
 | **Status updates** | Initial title only; in-session status updates are filtered by mosh |
 
 **Hard constraint — mosh filters all `\033]1337;` sequences.** This means:
 - `SetProfile` emitted from inside the remote tmux session never reaches iTerm2
 - `SetColors=tab=` emitted from inside the remote tmux session never reaches iTerm2
-- OSC 0 title updates DO pass through mosh, but with `[mosh] ` prepended
+- OSC 0 title updates DO pass through mosh, but with `[mosh]` prepended
 
 **Design response:**
 
 The pre-launch layer (Python `_emit_iterm2_profile_setup`) already runs on the local Mac before `os.execvp("mosh", ...)`. This is the correct and only place to set the profile and tab color for remote sessions. The current implementation already does this (line 2409 in main.py fires before the remote branch at line 2306).
 
-The in-session bash functions (`_iterm2_fleet_setup`, `_iterm2_status`) will silently fail for `SetProfile` and `SetColors` when running over mosh, but OSC 0 title updates will partially work (with `[mosh] ` prefix). This is acceptable degradation.
+The in-session bash functions (`_iterm2_fleet_setup`, `_iterm2_status`) will silently fail for `SetProfile` and `SetColors` when running over mosh, but OSC 0 title updates will partially work (with `[mosh]` prefix). This is acceptable degradation.
 
 **What works for remote sessions:**
 - Profile icon (Claude logo) — set pre-launch, persists for tab lifetime
@@ -120,7 +120,7 @@ The in-session bash functions (`_iterm2_fleet_setup`, `_iterm2_status`) will sil
 - The pre-launch `_emit_iterm2_profile_setup` must be called for remote sessions with the correct profile and color. Currently it IS called (line 2409), but the `_emit_iterm2_profile_setup` function emits `* ▶ {session_name}` as the title. The `*` should be removed from the tab title (per requirement 2). The profile and color are correctly set pre-launch.
 - The current bug where the terminal/shell icon appears instead of the Claude logo suggests the pre-launch profile switch is being overridden. Root cause: the `_ai_iterm2_precmd` function in `~/.zshrc` fires on every prompt and unconditionally sets `SetProfile=ShellUtility`. When the local zsh prompt appears (between the pre-launch setup and the mosh connection establishing), precmd fires and overrides the profile. The fix: `_ai_iterm2_precmd` must check whether the current shell is about to hand off to mosh/ssh and skip the override, or ai-cli must suppress precmd during the launch sequence.
 
-> **Feedback (2026-04-03):** The `[mosh]` prefix is avoidable. Use **OSC 1** (`\033]1;name\007`) instead of OSC 0 to set the session name. OSC 1 sets the iTerm2 "Name" field — mosh does not intercept or prepend to OSC 1, only to OSC 0. The user has already configured the iTerm2 "Session Title" dropdown to `Name` mode (not `Shell`). With this approach, the `[mosh] ` prefix never appears. The "permanent constraint" assessment above no longer applies. Additional constraint: `SetProfile` must not point to a profile that has its own title-mode override (e.g., a profile configured to use `Shell` mode) — if it does, applying the profile will revert the user's `Name` dropdown setting. Profiles should only set icon and tab color, not title configuration. Symbols (type/status) are dropped for now — defer to follow-up (can be embedded in the OSC 1 name string when re-introduced).
+> **Feedback (2026-04-03):** The `[mosh]` prefix is avoidable. Use **OSC 1** (`\033]1;name\007`) instead of OSC 0 to set the session name. OSC 1 sets the iTerm2 "Name" field — mosh does not intercept or prepend to OSC 1, only to OSC 0. The user has already configured the iTerm2 "Session Title" dropdown to `Name` mode (not `Shell`). With this approach, the `[mosh]` prefix never appears. The "permanent constraint" assessment above no longer applies. Additional constraint: `SetProfile` must not point to a profile that has its own title-mode override (e.g., a profile configured to use `Shell` mode) — if it does, applying the profile will revert the user's `Name` dropdown setting. Profiles should only set icon and tab color, not title configuration. Symbols (type/status) are dropped for now — defer to follow-up (can be embedded in the OSC 1 name string when re-introduced).
 
 ### Gemini Local
 
