@@ -2,6 +2,8 @@
 
 ## Open
 
+- [ ] `[P0]` `[AI-CLI-55]` **Add Sonnet quota % to statusline** — `weekly_sonnet_pct` is already scraped and stored in the DB but not shown in `quota_statusline_part()`. Read the field from the snapshot row and append it to the statusline output (e.g. `📊 42% all | 87% son`). Motivated by hitting the Sonnet weekly limit without prior visibility. Color-code Sonnet % independently (same thresholds: <50% green, <75% yellow, ≥75% red).
+
 - [ ] `[P0]` `[AI-CLI-53]` **Design/plan doc audit** — review all docs in `docs/designs/` and `docs/plans/`: for unimplemented docs without roadmap tasks, create the task; for completed docs, verify full implementation + robust tests + updated docs. Procedure: `~/projects/sergei/docs/plans/design-plan-doc-audit.md`.
 
 - [x] `[AI-CLI-54]` **`ai gemini` video analysis** — Migrated to aido as AIDO-46 (2026-04-23).
