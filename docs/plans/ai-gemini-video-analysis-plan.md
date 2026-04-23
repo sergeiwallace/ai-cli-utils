@@ -2,11 +2,14 @@
 title: Implementation Plan — ai gemini Video Analysis (@filepath support, auto-split, output docs)
 category: plan
 tags: [ai-gemini, video-analysis, gemini-cli, filepath, ai-cli-54]
-status: pending_review
+status: archived
 source: claude-sonnet-4-6
 date: 2026-04-22
 related_tasks: [AI-CLI-54]
 ---
+
+> **ARCHIVED 2026-04-23:** This plan has been migrated to aido as `AIDO-46`. Canonical location:
+> `~/projects/aido/docs/plans/aido-video-analysis-plan.md`. R-52 research prompt migrated to aido research registry as R-23. Do not implement here.
 
 # `ai gemini` Video Analysis — Implementation Plan
 
