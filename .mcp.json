@@ -2,13 +2,12 @@
   "mcpServers": {
     "gemini-cli": {
       "type": "stdio",
-      "command": "sh",
-      "args": ["-c", "doppler run -- sh -c 'GEMINI_API_KEY=$GOOGLE_API_KEY_FREE_TIER npx -y gemini-mcp-tool'"]
-    },
-    "github": {
-      "type": "stdio",
-      "command": "doppler",
-      "args": ["run", "--", "npx", "-y", "@modelcontextprotocol/server-github"]
+      "command": "npx",
+      "args": ["-y", "gemini-mcp-tool"],
+      "env": {
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      }
     }
   }
 }
+
