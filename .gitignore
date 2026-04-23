@@ -59,6 +59,7 @@ SCRATCH.md
 
 # Claude Code workflow (transient, per-session)
 .claude/signals/
+.claude/state/
 .claude/handoff-queue/claimed/
 .claude/handoff-queue/completed/
 .worktrees/

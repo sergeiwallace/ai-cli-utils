@@ -20,9 +20,13 @@
 #   1 = failed        — AI session should diagnose, fix, re-trigger, re-launch watcher
 #   2 = timeout (12h) — AI session should check Airflow UI for current state
 #
-# Sentinel/PID files (written locally on the machine running this script):
-#   /tmp/airflow_watch.pid        — written at startup, removed on clean exit
-#   /tmp/airflow_watcher_needed   — written by airflow-trigger.sh, cleared here
+# Sentinel/PID files (scoped to the triggering CC session's project root so
+# other CC sessions' hooks don't fire false positives):
+#   ${project_root}/.claude/state/airflow-watch.pid        — written at startup, removed on clean exit
+#   ${project_root}/.claude/state/airflow-watcher-needed   — written by airflow-trigger.sh, cleared here
+#
+# project_root = $CLAUDE_PROJECT_DIR (set by CC) → git toplevel → $PWD.
+# .claude/state/ is gitignored.
 #
 # The PostToolUse hook (airflow-watcher-required.sh) blocks CC/Gemini until this
 # script is launched. The UserPromptSubmit hook (airflow-watcher-resume.sh)
@@ -50,14 +54,18 @@ else
                "$AIRFLOW_BIN $(printf '%q ' "$@")" 2>/dev/null; }
 fi
 
-PID_FILE="/tmp/airflow_watch.pid"
-SENTINEL="/tmp/airflow_watcher_needed"
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+STATE_DIR="${PROJECT_ROOT}/.claude/state"
+mkdir -p "$STATE_DIR"
+PID_FILE="${STATE_DIR}/airflow-watch.pid"
+SENTINEL="${STATE_DIR}/airflow-watcher-needed"
 
 cat > "$PID_FILE" <<EOF
 PID=$$
 DAG_ID=${DAG_ID}
 RUN_ID=${RUN_ID}
 TASK_ID=${TASK_ID}
+OWNER_DIR=${PROJECT_ROOT}
 STARTED_AT=$(date '+%Y-%m-%d %H:%M:%S')
 WATCH_CMD=bash scripts/airflow-watch.sh ${DAG_ID} ${RUN_ID} ${TASK_ID}
 EOF

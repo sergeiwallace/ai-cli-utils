@@ -1,12 +1,15 @@
 #!/bin/bash
-# PostToolUse hook: enforce watcher launch after every Airflow pipeline trigger.
+# PostToolUse hook: enforce watcher launch after an Airflow pipeline trigger
+# from THIS CC session only.
 #
-# Checks /tmp/airflow_watcher_needed (written by scripts/airflow-trigger.sh).
-# If the sentinel exists, blocks the session with exit 2 and prints the exact
-# command to launch. scripts/airflow-watch.sh deletes the sentinel at startup,
-# lifting the block. Fast no-op when no sentinel is present.
+# The sentinel is project-root-scoped (via $CLAUDE_PROJECT_DIR or git worktree
+# root), so only the CC session that triggered the pipeline blocks — other
+# sessions (different worktrees / projects) see no sentinel and pass through.
+# scripts/airflow-watch.sh deletes the sentinel at startup, lifting the block.
+# Fast no-op when no sentinel is present.
 
-SENTINEL="/tmp/airflow_watcher_needed"
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+SENTINEL="${PROJECT_ROOT}/.claude/state/airflow-watcher-needed"
 [ -f "$SENTINEL" ] || exit 0
 
 DAG_ID=$(grep       '^DAG_ID='      "$SENTINEL" 2>/dev/null | cut -d= -f2-)

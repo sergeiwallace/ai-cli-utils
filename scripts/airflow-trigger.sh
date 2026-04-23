@@ -68,18 +68,26 @@ SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 WATCH_CMD="bash ${SCRIPTS_DIR}/airflow-watch.sh ${DAG_ID} ${RUN_ID}"
 [[ -n "$TASK_ID" ]] && WATCH_CMD="${WATCH_CMD} ${TASK_ID}"
 
-SENTINEL="/tmp/airflow_watcher_needed"
+# Sentinel lives in the triggering CC session's project root so other CC
+# sessions' PostToolUse hooks don't see it. The hook resolves the same
+# project root via $CLAUDE_PROJECT_DIR (set by CC) → git toplevel → $PWD.
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+STATE_DIR="${PROJECT_ROOT}/.claude/state"
+mkdir -p "$STATE_DIR"
+SENTINEL="${STATE_DIR}/airflow-watcher-needed"
 cat > "$SENTINEL" <<EOF
 DAG_ID=${DAG_ID}
 RUN_ID=${RUN_ID}
 TASK_ID=${TASK_ID}
 TRIGGERED_AT=$(date '+%Y-%m-%d %H:%M:%S')
+OWNER_DIR=${PROJECT_ROOT}
 WATCHER_CMD=${WATCH_CMD}
 EOF
 
 echo ""
 echo "[airflow-trigger] Run: ${RUN_ID}"
-echo "[airflow-trigger] Sentinel: ${SENTINEL} (PostToolUse hook will block until watcher launches)"
+echo "[airflow-trigger] Sentinel: ${SENTINEL}"
+echo "[airflow-trigger] PostToolUse hook in this CC session will block until watcher launches"
 echo ""
 echo "╔══════════════════════════════════════════════════════════════════════╗"
 echo "║  MANDATORY NEXT STEP: launch this as a background Bash tool call   ║"
