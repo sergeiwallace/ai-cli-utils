@@ -17,7 +17,6 @@ Also copies to assets/iterm2-icons/ for repo check-in.
 import argparse
 import shutil
 import sys
-import tomllib
 from pathlib import Path
 
 try:
@@ -28,6 +27,7 @@ except ImportError:
 
 try:
     import cairosvg
+
     HAS_CAIROSVG = True
 except ImportError:
     HAS_CAIROSVG = False
@@ -35,20 +35,20 @@ except ImportError:
 
 # Icon color definitions: name → (R, G, B) 0-255
 ICON_COLORS = {
-    "coral":  (232, 116, 97),   # brand coral / Claude orange-red
-    "white":  (255, 255, 255),
-    "navy":   (26,  26,  46),   # dark navy
-    "purple": (139, 92,  246),  # purple (violet-500)
-    "gold":   (245, 158, 11),   # amber/gold
-    "cyan":   (6,   182, 212),  # cyan-500
-    "teal":   (20,  184, 166),  # teal-500
-    "green":  (34,  197, 94),   # green-500
+    "coral": (232, 116, 97),  # brand coral / Claude orange-red
+    "white": (255, 255, 255),
+    "navy": (26, 26, 46),  # dark navy
+    "purple": (139, 92, 246),  # purple (violet-500)
+    "gold": (245, 158, 11),  # amber/gold
+    "cyan": (6, 182, 212),  # cyan-500
+    "teal": (20, 184, 166),  # teal-500
+    "green": (34, 197, 94),  # green-500
 }
 
 GEMINI_ICON_COLORS = {
     "white": (255, 255, 255),
-    "navy":  (26,  26,  46),
-    "gold":  (245, 158, 11),
+    "navy": (26, 26, 46),
+    "gold": (245, 158, 11),
 }
 
 
@@ -58,6 +58,7 @@ def load_svg_as_image(svg_path: Path, size: int) -> Image.Image:
         raise RuntimeError("cairosvg required for SVG rendering: pip install cairosvg")
     png_bytes = cairosvg.svg2png(url=str(svg_path), output_width=size, output_height=size)
     import io
+
     return Image.open(io.BytesIO(png_bytes)).convert("RGBA")
 
 
@@ -123,6 +124,7 @@ def add_outline(img: Image.Image, outline_color: tuple[int, int, int], width: in
     # Outline pixels = dilated alpha mask minus original alpha
     import ImageChops  # noqa: F401 — might not exist
     from PIL import ImageChops
+
     diff = ImageChops.subtract(dilated.convert("L"), a)
     outline_img.putalpha(diff)
 

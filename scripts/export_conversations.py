@@ -15,8 +15,7 @@ Run ad hoc when you want to review past conversations.
 import argparse
 import json
 import re
-import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -136,12 +135,12 @@ def render_markdown(conv: dict, project: str) -> str:
 
     lines = [
         f"# {title}",
-        f"",
+        "",
         f"**Project:** {project}  ",
         f"**Session:** {session_id}  ",
         f"**Date:** {first_ts}  ",
         f"**Turns:** {len(conv['turns'])}  ",
-        f"",
+        "",
         "---",
         "",
     ]
@@ -152,11 +151,11 @@ def render_markdown(conv: dict, project: str) -> str:
         text = turn["text"]
 
         if role == "user":
-            lines.append(f"## User  ")
+            lines.append("## User  ")
             if ts:
                 lines.append(f"*{ts}*  ")
         else:
-            lines.append(f"## Claude  ")
+            lines.append("## Claude  ")
             if ts:
                 lines.append(f"*{ts}*  ")
 
@@ -223,10 +222,7 @@ def main():
 
     project_dirs = sorted(CLAUDE_PROJECTS_DIR.iterdir())
     if args.project:
-        project_dirs = [
-            d for d in project_dirs
-            if args.project.lower() in decode_project_name(d.name).lower()
-        ]
+        project_dirs = [d for d in project_dirs if args.project.lower() in decode_project_name(d.name).lower()]
 
     exported = 0
     skipped_empty = 0
@@ -243,8 +239,7 @@ def main():
             # Incremental: skip if output exists and is newer than source
             if not args.force:
                 existing = find_existing_output(
-                    {"title": None, "session_id": jsonl_path.stem, "first_ts": None, "turns": []},
-                    project, OUTPUT_DIR
+                    {"title": None, "session_id": jsonl_path.stem, "first_ts": None, "turns": []}, project, OUTPUT_DIR
                 )
                 if existing and existing.stat().st_mtime >= jsonl_path.stat().st_mtime:
                     skipped_fresh += 1
@@ -278,7 +273,9 @@ def main():
             label = "stub" if is_stub else "conv"
             print(f"[{label}] {out_path.name}")
 
-    print(f"\nDone: {exported} exported, {stubs} stubs, {skipped_fresh} skipped (up to date), {skipped_empty} skipped (empty)")
+    print(
+        f"\nDone: {exported} exported, {stubs} stubs, {skipped_fresh} skipped (up to date), {skipped_empty} skipped (empty)"
+    )
 
 
 if __name__ == "__main__":

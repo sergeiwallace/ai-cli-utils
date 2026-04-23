@@ -74,9 +74,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
     try:
         run_curation()
         queue = get_curated_queue(project=project)
-        has_items = any(
-            queue.get(cat) for cat in ("OVERDUE", "RECOMMENDED", "QUICK_WINS", "STALE", "NEWLY_GENERATED")
-        )
+        has_items = any(queue.get(cat) for cat in ("OVERDUE", "RECOMMENDED", "QUICK_WINS", "STALE", "NEWLY_GENERATED"))
         if has_items:
             sections.append("## Curated Queue\n")
             for cat in ("OVERDUE", "RECOMMENDED", "QUICK_WINS", "STALE", "NEWLY_GENERATED"):
@@ -115,9 +113,7 @@ def main():
     parser.add_argument("--project", help="Current project name")
     parser.add_argument("--config", help="Path to platform config file")
     parser.add_argument("--engine", choices=["c", "g"], help="AI engine (c for Claude, g for Gemini)")
-    parser.add_argument(
-        "--output", help="Output file path (default based on engine)"
-    )
+    parser.add_argument("--output", help="Output file path (default based on engine)")
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else None

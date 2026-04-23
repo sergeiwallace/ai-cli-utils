@@ -15,7 +15,6 @@ import argparse
 import json
 import re
 import shutil
-import sys
 from datetime import date
 from pathlib import Path
 
@@ -138,15 +137,10 @@ def scan_dir(
                 reason = f"stub({file_size // 1024}KB,{line_count}lines)"
                 title_info = f", customTitle={custom_title}" if custom_title else ""
                 archive_dest = archive_base / dir_name / jsonl_path.name
-                print(
-                    f"  ARCHIVE({reason}): {jsonl_path}"
-                    f"{title_info} -> {archive_dest}"
-                )
+                print(f"  ARCHIVE({reason}): {jsonl_path}{title_info} -> {archive_dest}")
                 if execute:
                     _archive_file(jsonl_path, archive_dest)
-                    counts["uuid_dirs"] += _archive_uuid_dir(
-                        uuid_dir, archive_base / dir_name / uuid_stem
-                    )
+                    counts["uuid_dirs"] += _archive_uuid_dir(uuid_dir, archive_base / dir_name / uuid_stem)
                 counts["stubs"] += 1
                 continue
 
@@ -163,9 +157,7 @@ def scan_dir(
                     )
                     if execute:
                         _archive_file(jsonl_path, archive_dest)
-                        counts["uuid_dirs"] += _archive_uuid_dir(
-                            uuid_dir, archive_base / dir_name / uuid_stem
-                        )
+                        counts["uuid_dirs"] += _archive_uuid_dir(uuid_dir, archive_base / dir_name / uuid_stem)
                     counts["cross_project"] += 1
                     continue
 
@@ -190,9 +182,7 @@ def _archive_uuid_dir(uuid_dir: Path, archive_dest: Path) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Clean up contaminated CC session files."
-    )
+    parser = argparse.ArgumentParser(description="Clean up contaminated CC session files.")
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -225,7 +215,7 @@ def main() -> None:
     print()
 
     print("=" * 60)
-    print(f"Summary:")
+    print("Summary:")
     print(f"  Stubs archived (<{STUB_SIZE_THRESHOLD // 1024}KB or <{STUB_LINE_THRESHOLD}lines):  {total['stubs']}")
     print(f"  Cross-project archived:       {total['cross_project']}")
     print(f"  UUID dirs archived:           {total['uuid_dirs']}")
