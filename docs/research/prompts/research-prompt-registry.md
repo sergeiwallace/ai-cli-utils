@@ -86,9 +86,8 @@ NEVER generate binary images.
   - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672)
   - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
   - [R-50: Terminal tab/pane title, color, and icon customization for AI fleet management (AI-CLI)](#r-50-terminal-tabpane-title-color-and-icon-customization-for-ai-fleet-management--ai-cli) ✅
-  - [R-51: Video content analysis for agentic AI — Gemini CLI OAuth, open-source tools (AI-CLI-54)](#r-51-video-content-analysis-for-agentic-ai--gemini-cli-oauth-open-source-tools--ai-cli-54) ✅
 - [Deprecated / Archived](#deprecated--archived)
-  - [R-52: Computer vision and video analysis landscape for CLI integration (AI-CLI-54)](#r-52-computer-vision--video-analysis-landscape-for-cli-integration--ai-cli-54) 🗄️
+  - R-51, R-52: migrated to aido R-24 (complete) + R-23 (pending) — see aido `docs/research/prompts/research-prompt-registry.md`
 
 ## Status Overview
 
@@ -111,7 +110,6 @@ NEVER generate binary images.
 | R-1 | opus | Open-source Python CLI package best practices | SW-672 | `opus researcher` | [`open-source-package-best-practices.md`](../open-source-package-best-practices.md) |
 | R-2 | opus | GitHub repo automation & ecosystem tooling | AI-CLI-3 | `opus researcher` | [`github-repo-automation.md`](../github-repo-automation.md) |
 | R-50 | deep-think | Terminal tab/pane title, color, and icon customization for AI fleet management | AI-CLI | `deep-think` | [`iterm2-terminal-customization-research.md`](../iterm2-terminal-customization-research.md) |
-| R-51 | deep-think | Video content analysis for agentic AI — Gemini CLI OAuth, open-source tools (2024–2026) | AI-CLI-54 | `deep-think` | [`video-analysis-agentic-2026.md`](../video-analysis-agentic-2026.md) |
 
 ---
 
@@ -121,142 +119,7 @@ NEVER generate binary images.
 
 ## Completed
 
-### R-51: Video Content Analysis for Agentic AI — Gemini CLI OAuth, Open-Source Tools — AI-CLI-54
-
-**Status:** ✅ Complete — 2026-04-22
-**Model:** `deep-think`
-**Task:** `AI-CLI-54` (`ai gemini` video analysis feature)
-**Output:** [`docs/research/video-analysis-agentic-2026.md`](../video-analysis-agentic-2026.md)
-**Note:** Migrated from artelier repo (was R-18 there). Canonical location is ai-cli-utils.
-
-<details>
-<summary>Prompt (R-51)</summary>
-
-```text
-You are a senior AI engineer who builds agentic automation pipelines and has hands-on
-experience integrating multimodal AI into CI/CD and QA tooling. You work primarily with
-open-source tools, CLI-based workflows, and zero-cost or near-zero-cost solutions. You
-have followed the evolution of video understanding capabilities across LLM providers,
-CLI tools, and open-source Python libraries from 2024 through 2026. You distinguish
-between what is documented versus what actually works in practice, and you call out
-tool limitations and gotchas explicitly rather than glossing over them.
-
-## Context
-
-We have an agentic demo recording pipeline that:
-1. Records a screen capture of a web app walkthrough (~2 min, ~2–5 MB MP4)
-2. Burns in captions
-3. Needs automated content validation — confirm that each scene in the recording shows
-   the expected UI content (e.g., "frame at 0:10 shows an Airflow login form",
-   "frame at 1:30 shows a Flask image comparison UI", "frame at 2:00 shows a Gradio app")
-
-The constraint: **no paid API calls**. We have:
-- Claude Code (the Anthropic CLI) running on macOS — with full tool use, bash execution,
-  and the ability to run scripts and read/write files
-- Gemini CLI (`gemini` command) authenticated via Google OAuth (free tier) — not the
-  paid API. We use it as `ai gemini -m deep-think/pro/flash` via a wrapper.
-- Standard macOS + Python 3.11 environment (ffmpeg available)
-- Any open-source tools or libraries
-
-## Research Questions
-
-### 1. Claude Code native video understanding (2026 state-of-the-art)
-
-- Can Claude Code read a local video file directly and understand its content?
-- If not directly: can Claude Code extract frames using ffmpeg, then analyze those frames
-  using its vision capability? What's the most effective workflow — how many frames, at
-  what cadence, what prompt structure?
-- What are the known limitations of Claude's vision on screen recording frames?
-- Prioritize 2026 findings first, then 2025, then 2024.
-
-### 2. Gemini CLI OAuth (free tier) video understanding (2026 state-of-the-art)
-
-- Can the Gemini CLI (`gemini` binary, OAuth auth, free tier) accept a local video
-  file as input? What's the exact invocation syntax if so?
-- Is there a `@filepath` syntax, `--file` flag, or pipe mechanism that works for
-  binary video files? What does the community report about actual working syntax vs
-  documented syntax?
-- Are there known GitHub issues, workarounds, or community patches (2025–2026) that
-  enable video input in the Gemini CLI?
-- What video/image file formats does free-tier Gemini CLI OAuth support?
-- Prioritize 2026 findings first. Note any capability gaps vs the paid Gemini API.
-
-### 3. Open-source Python tools for video content understanding (2024–2026)
-
-**Frame extraction + vision model analysis:**
-- What are the best open-source vision models for screen recording analysis
-  (UI element recognition, text OCR, layout understanding)?
-- Which models run efficiently on macOS CPU (no GPU required for a 2-min clip)?
-- Compare: CLIP, LLaVA, Qwen-VL, InternVL, MiniCPM-V, Moondream, and any 2025–2026
-  releases specifically optimized for UI/screenshot understanding.
-
-**OCR-based approaches:**
-- For screen recordings showing web app UIs: is OCR (e.g., pytesseract, EasyOCR,
-  Surya, docTR) sufficient to detect UI scenes by reading text labels?
-- What's the performance profile (speed, accuracy) of OCR-only vs vision model analysis?
-
-**Scene detection:**
-- PySceneDetect, scenedetect — can these identify when the active tab/URL changes
-  in a browser recording? What's the detection accuracy for UI transitions?
-
-### 4. Practical recommendation
-
-Given the constraints (no paid API, macOS, ~2 MB MP4, agentic pipeline via bash/Claude Code),
-provide a concrete ranked recommendation: Option A (best overall), Option B (fallback),
-Option C (if nothing reliable exists). For each option: tools needed, runtime, downloads
-required, accuracy expectations for detecting login forms, DAG graphs, Flask UIs, Gradio apps.
-
-### 5. Gemini video processing: API-only or also available via Gemini CLI OAuth?
-
-- Is Gemini's video/multimodal file understanding exclusively via paid REST API, or also
-  accessible through Gemini CLI OAuth (free tier)?
-- Does a Google AI Ultra subscription change what's available via Gemini CLI OAuth?
-- Are there any 2025–2026 announcements, GitHub issues, or community reports confirming
-  whether `gemini` CLI OAuth users can pass video files?
-```
-
-<grounding_instructions>
-You are a senior AI engineer who builds agentic automation pipelines integrating
-multimodal AI into CI/CD and QA tooling, with hands-on experience across open-source
-video understanding tools, CLI-based LLM workflows, and screen recording analysis.
-You have followed the field from 2024 through 2026 and distinguish documented behavior
-from community-verified practical behavior.
-
-Before generating your final output, execute a Chain-of-Verification (CoVe)
-to ensure factual fidelity over compliance.
-
-Inside your thought process:
-1. Isolate the core facts required.
-2. Draft a tentative response.
-3. Hostile Cross-Examination: flag any claim where you are citing a source because
-   the prompt implied you should, rather than because you verified it. Pay special
-   attention to CLI tool capabilities — these change rapidly and documentation often
-   lags behind or overstates what actually works.
-4. Strip away any claim that cannot be empirically verified.
-
-When generating your final output, classify every major claim. Write your rationale
-before appending the tag — writing the tag first causes post-hoc rationalization.
-Rationale → evidence check → tag.
-
-- [VERIFIABLE FACT]: backed by documentation, GitHub commits/issues, release notes,
-  or official announcements (2024–2026). Provide the direct URL or commit SHA.
-- [INDUSTRY HEURISTIC]: widely accepted best practice without a specific citation.
-- [SYNTHESIZED INFERENCE]: a logical conclusion drawn from context. Provide reasoning.
-  Do not fabricate a source.
-- [NO SOURCE FOUND]: explicitly state when you cannot find verifiable data for a
-  specific year or capability. Do not backfill with older data without disclosure.
-
-Hard constraint: never invent a citation to satisfy a formatting instruction.
-Accuracy > completeness. A gap in the research is more valuable than a fabricated answer.
-
-Temporal prioritization: search for 2026 developments first. If 2026 is thin,
-explicitly state so, then report 2025 findings. If 2025 is also thin, report 2024.
-Always disclose which year a finding comes from.
-</grounding_instructions>
-
-</details>
-
----
+<!-- R-51 and R-52 migrated to aido 2026-04-23. Canonical location: aido R-24 (complete) + R-23 (pending deep-research). -->
 
 ### R-1: Open-Source Python CLI Package Best Practices — SW-672
 
