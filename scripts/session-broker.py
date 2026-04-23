@@ -77,7 +77,13 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
         has_items = any(queue.get(cat) for cat in ("OVERDUE", "RECOMMENDED", "QUICK_WINS", "STALE", "NEWLY_GENERATED"))
         if has_items:
             sections.append("## Curated Queue\n")
-            for cat in ("OVERDUE", "RECOMMENDED", "QUICK_WINS", "STALE", "NEWLY_GENERATED"):
+            for cat in (
+                "OVERDUE",
+                "RECOMMENDED",
+                "QUICK_WINS",
+                "STALE",
+                "NEWLY_GENERATED",
+            ):
                 items = queue.get(cat, [])
                 if items:
                     sections.append(f"### {cat.replace('_', ' ').title()}")

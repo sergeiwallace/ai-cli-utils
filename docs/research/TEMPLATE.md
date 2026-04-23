@@ -75,4 +75,3 @@ source: "[model]-[date]"
 <!-- If this research doc predates the prompt appendix convention, note:
 "This research doc predates the prompt appendix template. The original prompt
 and model information are not available." -->
-

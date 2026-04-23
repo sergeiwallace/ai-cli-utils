@@ -56,7 +56,14 @@ def extract_text(content) -> str:
                     inp = block.get("input", {})
                     # Compact summary
                     summary_parts = []
-                    for key in ("command", "file_path", "path", "pattern", "query", "prompt"):
+                    for key in (
+                        "command",
+                        "file_path",
+                        "path",
+                        "pattern",
+                        "query",
+                        "prompt",
+                    ):
                         if key in inp:
                             val = str(inp[key])
                             if len(val) > 80:

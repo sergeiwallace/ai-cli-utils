@@ -152,7 +152,7 @@ Already implemented. signal-watch scans pending queue before NATS subscribe, cla
 ==========================================
 ⚠ STALE HANDOFF: #42 "Fix login regression"
   Pending 32 min — not picked up by c-sw-1
-  
+
   To resolve: direct the target CC session to
   create a P0 task in its project roadmap with
   due date today, or manually run:

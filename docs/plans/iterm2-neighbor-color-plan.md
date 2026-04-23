@@ -290,7 +290,7 @@ This threshold is configurable: `[iterm2.color] similarity_threshold_degrees = 6
 
 ### T-01: Color similarity function
 
-**Size:** S  
+**Size:** S
 **Batch:** 1
 
 Implement `_hue_similar(hex1: str, hex2: str, threshold_deg: float = 60.0) -> bool` in `icon_generator.py` (alongside the existing color math). Handles achromatic edge case. Unit tested.
@@ -312,7 +312,7 @@ Implement `_hue_similar(hex1: str, hex2: str, threshold_deg: float = 60.0) -> bo
 
 ### T-02: tmux pane geometry + adjacency
 
-**Size:** M  
+**Size:** M
 **Batch:** 1
 
 Implement `_tmux_pane_adjacency(window_id: str | None = None) -> dict[str, list[str]]` in `iterm2.py`. Uses `tmux list-panes` to get geometry, resolves each pane's PID to its `AI_TMUX_SESSION` env var via `tmux show-environment`, returns an adjacency dict `{session_name: [neighbor_session_name, ...]}`.
@@ -334,7 +334,7 @@ Implement `_tmux_pane_adjacency(window_id: str | None = None) -> dict[str, list[
 
 ### T-03: `ai recolor` command
 
-**Size:** M  
+**Size:** M
 **Batch:** 2
 
 New top-level command `ai recolor [-w WINDOW]`. Uses T-02 for adjacency, runs greedy graph coloring (sort panes by descending degree, assign lowest-hue-distinct palette slot), then for each changed session: updates `color-leases.json`, regenerates Dynamic Profile JSON, and sends `SetColors` escape to the live pane via tmux `send-keys`.
@@ -360,7 +360,7 @@ New top-level command `ai recolor [-w WINDOW]`. Uses T-02 for adjacency, runs gr
 
 ### T-04: Neighbor-aware `_assign_iterm2_color()` extension
 
-**Size:** S  
+**Size:** S
 **Batch:** 2
 
 Extend `_assign_iterm2_color()` to call `_tmux_pane_adjacency()` when inside tmux. After building the occupied-slots set, also exclude any slots whose hue is similar to a neighbor's current color. Controlled by config: `[iterm2.color] neighbor_aware = true` (default: `true`).
@@ -381,7 +381,7 @@ Extend `_assign_iterm2_color()` to call `_tmux_pane_adjacency()` when inside tmu
 
 ### T-05: Docs + config template update
 
-**Size:** S  
+**Size:** S
 **Batch:** 3
 
 Update all relevant docs and the default config template.

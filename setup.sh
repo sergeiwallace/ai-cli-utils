@@ -313,4 +313,3 @@ for choice in "${SELECTED[@]}"; do
             ;;
     esac
 done
-

@@ -488,9 +488,9 @@ class TestSignalWatchCli:
                 cli()
             assert exc.value.code == 0
 
-        assert not any("send-keys" in str(cmd) for cmd in subprocess_calls), (
-            "send-keys must never be called — pending file is the pickup mechanism"
-        )
+        assert not any(
+            "send-keys" in str(cmd) for cmd in subprocess_calls
+        ), "send-keys must never be called — pending file is the pickup mechanism"
 
     def test_signal_watch_when_cross_machine_payload_then_writes_file_and_claims(self, tmp_path):
         """File doesn't exist locally; content in NATS payload should be written before claiming."""

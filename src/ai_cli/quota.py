@@ -93,8 +93,7 @@ def _parse_reset_datetime(text: str) -> str | None:
     # Primary format: "week (all models) ... Resets {time}"
     # Handles: "6:59am", "6:59 AM", "11pm", "11 PM", "11:00 PM"
     m = re.search(
-        r"week\s*\(all\s*models\)[^·\n]*[·\u00b7\u2019·]\s*[Rr]eset[s]?\s+"
-        r"(\d{1,2})(?::(\d{2}))?\s*([AP]M?)\b",
+        r"week\s*\(all\s*models\)[^·\n]*[·\u00b7\u2019·]\s*[Rr]eset[s]?\s+" r"(\d{1,2})(?::(\d{2}))?\s*([AP]M?)\b",
         text,
         re.IGNORECASE,
     )

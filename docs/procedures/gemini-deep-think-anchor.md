@@ -12,7 +12,7 @@ When running deep research tasks using Reasoning Models with Extended Thinking (
 
 If a prompt contains an overly rigid constraint (e.g., "Always cite an academic paper for every claim"), the model's internal reinforcement learning loop will prioritize *following the instruction* over *telling the truth*. If a paper doesn't exist for a niche industry fact, the model will hallucinate a fake arXiv title just to comply.
 
-To prevent this, **ALL research prompts executed via Reasoning Models MUST append this standardized "Zero-Slop" Anchor Text.** 
+To prevent this, **ALL research prompts executed via Reasoning Models MUST append this standardized "Zero-Slop" Anchor Text.**
 
 It forces "Claim Classification" and provides an explicit "Abstention Pathway," relieving compliance pressure and keeping the model's scratchpad grounded.
 
@@ -37,9 +37,9 @@ When generating your final output, adhere to these epistemic boundaries:
    - [INDUSTRY HEURISTIC]: A widely accepted best practice without a specific academic citation.
    - [SYNTHESIZED INFERENCE]: A logical jump, architectural proposal, or heuristic you are inventing based on the context. Do not attempt to cite a source for this; provide your logical rationale instead.
 
-2. NO COMPLIANCE FABRICATION: Do not fabricate paper titles, arXiv IDs, or URLs to satisfy citation constraints. 
+2. NO COMPLIANCE FABRICATION: Do not fabricate paper titles, arXiv IDs, or URLs to satisfy citation constraints.
 
-3. EXPLICIT ABSTENTION: I value the admission of ignorance. If a specific value, constant, or source cannot be found, you MUST explicitly state [NO SOURCE FOUND] or "I lack verifiable data on this" rather than guessing. 
+3. EXPLICIT ABSTENTION: I value the admission of ignorance. If a specific value, constant, or source cannot be found, you MUST explicitly state [NO SOURCE FOUND] or "I lack verifiable data on this" rather than guessing.
 
 4. FORMATTING: Format diagrams using Mermaid.js or ASCII. Format math using LaTeX. NEVER generate binary images.
 

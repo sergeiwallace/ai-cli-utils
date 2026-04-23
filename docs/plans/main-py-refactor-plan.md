@@ -230,7 +230,7 @@ After Phase 1, existing modules that currently do `from .main import load_config
 
 #### T-01: Extract `config.py`
 
-**Size:** M  
+**Size:** M
 **Batch:** 1
 
 Extract XDG path helpers, `load_config`, session map r/w, and project registry functions. This is the most critical extraction because it eliminates all deferred import workarounds in the existing modules.
@@ -254,7 +254,7 @@ Extract XDG path helpers, `load_config`, session map r/w, and project registry f
 
 #### T-02: Extract `session.py`
 
-**Size:** M  
+**Size:** M
 **Batch:** 2
 
 Extract session naming, index management, worktree operations, and Gemini UUID lookup.
@@ -275,7 +275,7 @@ Extract session naming, index management, worktree operations, and Gemini UUID l
 
 #### T-03: Extract `iterm2.py` + merge `icon_generator.py`
 
-**Size:** M  
+**Size:** M
 **Batch:** 2
 
 Consolidate all iTerm2 logic (color slots, profile emit, dynamic profiles, icon generation) into a single `iterm2.py`. Delete `icon_generator.py`.
@@ -298,7 +298,7 @@ Consolidate all iTerm2 logic (color slots, profile emit, dynamic profiles, icon 
 
 #### T-04: Extract `handoff.py`
 
-**Size:** S  
+**Size:** S
 **Batch:** 2
 
 Move all handoff queue functions. The inline `_on_handoff` closure in `cli()` signal-watch dispatch must be extracted to `handoff.py` as a proper `build_handoff_callback(config, session_id, handoff_dir)` factory function.
@@ -319,7 +319,7 @@ Move all handoff queue functions. The inline `_on_handoff` closure in `cli()` si
 
 #### T-05: Extract `transport.py`
 
-**Size:** S  
+**Size:** S
 **Batch:** 2
 
 Move VPN detection and transport loop. `vpn_watch.py` currently imports `_is_vpn_active` and `get_xdg_state_home` from `main.py` — after this extraction, it imports from `transport.py` and `config.py` respectively.
@@ -341,7 +341,7 @@ Move VPN detection and transport loop. `vpn_watch.py` currently imports `_is_vpn
 
 #### T-06: Extract `tunnel.py`
 
-**Size:** S  
+**Size:** S
 **Batch:** 3
 
 Move tunnel and CDP command implementations. These are self-contained except for `get_xdg_state_home` and `load_config`.
@@ -360,7 +360,7 @@ Move tunnel and CDP command implementations. These are self-contained except for
 
 #### T-07: Extract `process_manager.py`
 
-**Size:** S  
+**Size:** S
 **Batch:** 3
 
 Move Circus process management (signal-watch start/stop/status + `_ensure_circusd`).
@@ -379,7 +379,7 @@ Move Circus process management (signal-watch start/stop/status + `_ensure_circus
 
 #### T-08: Extract `session_script.py`
 
-**Size:** S  
+**Size:** S
 **Batch:** 3
 
 Move `get_engine_script` (365-line bash template generator). This is the highest single-function line count in `main.py`.
@@ -398,7 +398,7 @@ Move `get_engine_script` (365-line bash template generator). This is the highest
 
 #### T-09: Update docs + roadmap
 
-**Size:** S  
+**Size:** S
 **Batch:** 4
 
 Update `docs/tools/ai-cli-usage.md` (module references), architecture memory, and roadmap.

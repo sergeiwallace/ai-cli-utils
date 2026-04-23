@@ -204,4 +204,3 @@ Claude and Gemini play complementary roles. Claude leads; Gemini advises.
 | `.claude/hooks/enforce-workflow.sh` | Claude PreToolUse hook (branch naming) |
 | `.githooks/pre-commit` | Markdown lint on staged files |
 | `.githooks/pre-push` | markdown lint, tests |
-

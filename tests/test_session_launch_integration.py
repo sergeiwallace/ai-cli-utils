@@ -224,9 +224,9 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
             _do_session_launch(**kwargs)
 
     session_names = [s.name for s in server.sessions]
-    assert any(n.startswith("c-myproject-myname-") for n in session_names), (
-        f"expected a c-myproject-myname-* session in {session_names}"
-    )
+    assert any(
+        n.startswith("c-myproject-myname-") for n in session_names
+    ), f"expected a c-myproject-myname-* session in {session_names}"
 
 
 def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_uses_new_prefix(
@@ -272,6 +272,6 @@ def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_use
             _do_session_launch(**kwargs)
 
     session_names = [s.name for s in server.sessions]
-    assert any(n.startswith("c-newpfx-") for n in session_names), (
-        f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"
-    )
+    assert any(
+        n.startswith("c-newpfx-") for n in session_names
+    ), f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"

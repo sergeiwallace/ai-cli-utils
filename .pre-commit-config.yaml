@@ -1,15 +1,65 @@
+---
+# Pre-commit framework config (SW-796 — adopted Option 1c Round 1, 2026-04-23).
+# Runs on every `git commit` (pre-commit stage) and `git push` (pre-push stage).
+#
+# Install: `pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push`
+# (Auto-run by copier `_tasks` on copy + update.)
+#
+# Update hook pins: `pre-commit autoupdate` (quarterly — see D-02 in
+# sergei/docs/plans/pre-commit-linting-expansion.md).
+#
+# Skip hooks: `SKIP=hook-id git commit` (specific hook) or `SKIP_TESTS=1 git push`
+# (test-gate.sh only — not a pre-commit-framework env var).
+
 repos:
+  # ── File-level sanity checks (D-03 Option 3c: maximal bundle) ────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        exclude: \.jinja$
+      - id: check-json
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: detect-private-key
+        exclude: ^(tests?/fixtures/|docs/examples?/)
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ── Markdown lint ────────────────────────────────────────────────────────
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.14.0
+    hooks:
+      - id: markdownlint-cli2
+        exclude: ^(\.claude/|\.githooks/|node_modules/)
+
+
+  # ── Python: ruff (check --fix + format) ──────────────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.4
+    rev: v0.8.0
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+
+
+  # ── Shell: shellcheck (warning+ only — suppress info/style noise) ───────
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
     hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-added-large-files
-        args: [--maxkb=500]
+      - id: shellcheck
+        args: [--severity=warning]
+
+  # ── Local: test gate + optional branch-name gate, stage=pre-push ─────────
+  - repo: local
+    hooks:
+      - id: test-gate
+        name: test gate (mise-aware, tech-stack auto-detect)
+        entry: .githooks/test-gate.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

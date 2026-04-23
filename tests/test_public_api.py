@@ -113,9 +113,9 @@ def test_run_gemini_signature_has_all_documented_parameters():
     }
     for name, default in expected_kwargs.items():
         assert name in params, f"documented kwarg {name!r} missing from run_gemini()"
-        assert params[name].default == default, (
-            f"run_gemini kwarg {name!r}: expected default {default!r}, got {params[name].default!r}"
-        )
+        assert (
+            params[name].default == default
+        ), f"run_gemini kwarg {name!r}: expected default {default!r}, got {params[name].default!r}"
 
 
 def test_gemini_result_has_all_documented_fields():

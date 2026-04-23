@@ -64,7 +64,7 @@ Posted handoff to queue: ~/projects/sergei/.handoff-queue/pending/001-title.md
 Priority: P0 | Project: project-name | Requires human: yes/no
 
 Any idle AI session (`ai c` or `ai g`) will pick this up on its next restart.
-To manually trigger: 
+To manually trigger:
 - Claude: touch /tmp/cc-exit-claude-sw-{N}
 - Gemini: touch /tmp/gg-exit-gemini-sw-{N}
 ```text

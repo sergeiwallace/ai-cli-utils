@@ -284,6 +284,10 @@ NEVER generate binary images.
 
 **Output:** `docs/research/[topic].md`
 
+<!-- Always put a blank line between consecutive **Label:** metadata fields.
+     Markdown joins consecutive non-blank lines into one paragraph, so without
+     blank lines the fields render smushed onto a single line in PDF preview. -->
+
 <details>
 <summary>Prompt (R-N)</summary>
 
