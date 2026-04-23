@@ -131,7 +131,7 @@ All markdown docs with 3+ sections must include a `## Table of Contents` as the 
 
 ## MCP Servers
 
-Required: `github`, `gemini-cli`.
+Required: `gemini-cli`. Use `gh` CLI for GitHub operations (per parent `CLAUDE.md`).
 
 ## Gemini CLI
 
