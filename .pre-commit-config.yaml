@@ -11,6 +11,8 @@
 # Skip hooks: `SKIP=hook-id git commit` (specific hook) or `SKIP_TESTS=1 git push`
 # (test-gate.sh only — not a pre-commit-framework env var).
 
+default_stages: [pre-commit]
+
 repos:
   # ── File-level sanity checks (D-03 Option 3c: maximal bundle) ────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks
