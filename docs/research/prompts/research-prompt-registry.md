@@ -87,7 +87,6 @@ NEVER generate binary images.
   - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
   - [R-50: Terminal tab/pane title, color, and icon customization for AI fleet management (AI-CLI)](#r-50-terminal-tabpane-title-color-and-icon-customization-for-ai-fleet-management--ai-cli) ✅
 - [Deprecated / Archived](#deprecated--archived)
-  - R-51, R-52: migrated to aido R-24 (complete) + R-23 (pending) — see aido `docs/research/prompts/research-prompt-registry.md`
 
 ## Status Overview
 
@@ -119,7 +118,6 @@ NEVER generate binary images.
 
 ## Completed
 
-<!-- R-51 and R-52 migrated to aido 2026-04-23. Canonical location: aido R-24 (complete) + R-23 (pending deep-research). -->
 
 ### R-1: Open-Source Python CLI Package Best Practices — SW-672
 
@@ -306,10 +304,3 @@ NEVER generate binary images.
 <!-- Completed prompt sections go here after being moved from Pending / Ready -->
 
 ## Deprecated / Archived
-
-### R-52: Computer Vision & Video Analysis Landscape for CLI Integration — AI-CLI-54
-
-**Status:** 🗄️ Archived 2026-04-23 — migrated to aido registry as R-23 (AIDO-46)
-**Model:** `deep-research`
-**Task:** `AI-CLI-54` (migrated to `AIDO-46` in aido repo)
-**Note:** Full prompt text moved to aido research registry. Do not run here.
