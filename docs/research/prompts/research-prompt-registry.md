@@ -82,6 +82,7 @@ NEVER generate binary images.
 ## Table of Contents
 
 - [Pending / Ready](#pending--ready)
+  - [R-52: Computer vision and video analysis landscape for CLI integration (AI-CLI-54)](#r-52-computer-vision--video-analysis-landscape-for-cli-integration--ai-cli-54) ⏳
 - [Completed](#completed)
   - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672)
   - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
@@ -95,11 +96,13 @@ NEVER generate binary images.
 
 | # | Type | Topic | Task | Model | Status |
 |---|------|-------|------|-------|--------|
+| R-52 | deep-research | Computer vision & video analysis landscape for CLI integration (2025–2026) | AI-CLI-54 | `deep-research` | ⏳ Awaiting approval |
 
 ### Priority and Impact Notes
 
 | # | Prompt | Priority | Model | Tasks Unlocked / Enhanced | Why Now |
 |---|--------|----------|-------|--------------------------|---------|
+| R-52 | Computer vision & video analysis landscape | Medium | `deep-research` | AI-CLI-54 T-05 (local backend) | R-51 is light on open-source VLMs, mlx-vlm Python API, and classical CV accuracy; required before local backend implementation |
 
 ### Completed
 
@@ -113,6 +116,129 @@ NEVER generate binary images.
 ---
 
 ## Pending / Ready
+
+### R-52: Computer Vision & Video Analysis Landscape for CLI Integration — AI-CLI-54
+
+**Status:** ⏳ Awaiting user approval — **hard gate, do not run without explicit approval**
+**Model:** `deep-research`
+**Task:** `AI-CLI-54` (local backend T-05)
+**Output:** `docs/research/cv-video-analysis-2026.md` (to be created after run)
+**Context:** R-51 established the Gemini CLI `@filepath` path but is light on open-source VLMs, mlx-vlm Python API patterns, and classical CV accuracy data. R-52 fills these gaps specifically for the local backend option.
+
+<details>
+<summary>Prompt (R-52)</summary>
+
+```text
+You are a senior AI infrastructure engineer designing a CLI feature for video content
+analysis. The feature (`ai gemini --backend`) must choose between: (A) cloud LLM APIs
+(Gemini, Claude, GPT-4o) via file upload, (B) local open-source VLMs running on Apple
+Silicon, and (C) classical CV pipelines (scene detection + OCR). You have hands-on
+experience shipping Python CLI tools and have followed the open-source VLM ecosystem
+from 2024 through 2026.
+
+## Background
+
+Prior research (R-51) established:
+- Gemini CLI `@filepath` syntax works for free-tier video upload; Flash cap ~5min/call
+- Open-source candidates named: Qwen2.5-VL-3B (best for UI), MiniCPM-V 2.6 (OCR), Moondream (fast)
+- docTR recommended as fastest OCR (2026 default); PySceneDetect works with detect-adaptive + crop
+- R-51 is acknowledged to be light on depth — this prompt fills the gaps
+
+Assume all R-51 Background points are established and do not re-derive them. Focus on the delta.
+
+## Context
+
+We are building `ai gemini @filepath` — a CLI command that accepts a local video file
+and returns a structured analysis (JSON scene list, timestamps, pass/fail per scene).
+Primary use case: agentic demo validation — confirm a screen recording shows expected
+UI screens (login form, DAG graph, Flask UI, Gradio app) with no error pages.
+
+## Research Questions
+
+### 1. Frontier model video understanding (2025–2026 state of the art)
+
+For each: can it analyze a local MP4 via API? Exact upload mechanism? Free-tier / rate limits?
+Token cost for a 5-min 1080p recording? Structured output formats?
+
+- **Gemini 1.5 Flash / Pro** via File API (REST, not CLI)
+- **GPT-4o** via OpenAI Files API
+- **Claude 3.5+ / Claude 4** via Anthropic API (frames vs native video — has this changed in 2026?)
+- Any other frontier model with native video understanding announced 2025–2026
+
+### 2. Open-source VLMs for screen recording / UI analysis (2025–2026)
+
+Beyond Qwen2.5-VL-3B, MiniCPM-V, and Moondream (R-51 coverage — do not re-derive):
+
+- **LLaVA-NeXT-Video**, **VideoLLaMA 2/3**, **InternVideo 2.5** — Apple Silicon CPU support? Model sizes? MLX compatibility?
+- **mPLUG-Owl3**, **Aria**, or 2025–2026 models designed for long video or document/UI understanding
+- **UI-specific models:** VLMs fine-tuned on screen recordings, UI screenshots, or web app navigation (GUI Agent / WebVoyager space)
+- For each: macOS CPU runtime for a 2-min 1080p recording, download size, `mlx-vlm` or `ollama` compatibility, structured JSON output support
+
+### 3. mlx-vlm Python API integration patterns
+
+For VLMs running via `mlx-vlm` on Apple Silicon:
+- Correct Python API for batch frame analysis (not just CLI invocation)
+- How to prompt for structured JSON output (scene classification, timestamp, pass/fail)
+- Practical throughput (frames/second) for Qwen2.5-VL-3B on M1/M2/M3
+- Known accuracy issues on Retina/HiDPI screen captures (2x pixel density)
+
+### 4. Classical CV pipeline accuracy benchmarks
+
+For PySceneDetect + docTR OCR on UI screen recordings:
+- Concrete accuracy numbers: % of UI transitions detect-adaptive catches at threshold 15 vs 25 vs 50 on browser recordings with static backgrounds
+- docTR character error rate on HiDPI browser text (Chrome, Retina display)
+- 2025–2026 alternatives to PySceneDetect that handle static-background UI recordings better
+
+### 5. CLI design patterns for multi-backend video analysis tools
+
+Survey existing CLI tools (2024–2026) implementing `--backend` for AI video analysis:
+- Established flag/config patterns (auto/local/cloud, model selection, output format)
+- How similar tools handle auto-split + combine for long videos
+- Prior art for streaming analysis results as segments complete
+
+### 6. Practical recommendation for CLI implementation
+
+Given constraints (Python CLI, macOS primary, Linux secondary, optional extras via pip, no mandatory cloud API key):
+
+Recommend the concrete backend stack for each tier:
+- **Tier 1 (default, zero-install):** what to use when only `gemini` binary is available
+- **Tier 2 (optional local):** best single open-source model + library for `ai-cli-utils[video-local]` — balance accuracy, download size, M-series perf
+- **Tier 3 (classical CV, ultra-fast):** PySceneDetect + what OCR engine for fastest local analysis (no LLM weights)
+
+For each tier: exact package names, install command, Python import, and a 5-line code sketch.
+```
+
+<grounding_instructions>
+[ROLE: senior AI infrastructure engineer with hands-on experience shipping Python CLI tools
+integrating multimodal AI, open-source VLMs on Apple Silicon, and classical CV pipelines.
+You have followed the open-source video understanding ecosystem from 2024 through 2026 and
+distinguish documented capabilities from community-verified practical behavior on macOS CPU.]
+
+Before generating your final output, execute a Chain-of-Verification (CoVe).
+
+Inside your thought process:
+1. Isolate the core facts required.
+2. Draft a tentative response.
+3. Hostile Cross-Examination: flag any claim where you are citing a source because the
+   prompt implied you should, rather than because you verified it. Pay special attention
+   to model capabilities and MLX compatibility — these change rapidly.
+4. Strip away any claim that cannot be empirically verified.
+
+Classify every major claim:
+- [VERIFIABLE FACT]: backed by docs, GitHub commits/issues, release notes, or official
+  announcements (2024–2026). Provide the direct URL or commit SHA.
+- [INDUSTRY HEURISTIC]: widely accepted best practice without a specific citation.
+- [SYNTHESIZED INFERENCE]: logical conclusion from context. Provide reasoning. No fabricated sources.
+- [NO SOURCE FOUND]: explicitly state when you cannot find verifiable data.
+
+Temporal scope: 2026 first, then 2025, then 2024. Always disclose which year.
+Hard constraint: never invent a citation. Accuracy > completeness.
+
+If 2025–2026 is genuinely thin for a sub-question, '[period]: no significant new developments
+found' is the correct answer. Do not backfill with 2024 sources. Backfilling is a failure mode.
+</grounding_instructions>
+
+</details>
 
 ---
 
