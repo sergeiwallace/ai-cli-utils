@@ -28,6 +28,7 @@ documentation/.obsidian/themes/
 documentation/.obsidian/hotkeys.json
 
 # AI tool config
+.gemini
 .gemini/
 
 # Secrets (envchain loads from macOS Keychain — .env is only for local overrides)
