@@ -225,9 +225,9 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
             _do_session_launch(**kwargs)
 
     session_names = [s.name for s in server.sessions]
-    assert any(
-        n.startswith("c-myproject-myname-") for n in session_names
-    ), f"expected a c-myproject-myname-* session in {session_names}"
+    assert any(n.startswith("c-myproject-myname-") for n in session_names), (
+        f"expected a c-myproject-myname-* session in {session_names}"
+    )
 
 
 def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_uses_new_prefix(
@@ -273,9 +273,9 @@ def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_use
             _do_session_launch(**kwargs)
 
     session_names = [s.name for s in server.sessions]
-    assert any(
-        n.startswith("c-newpfx-") for n in session_names
-    ), f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"
+    assert any(n.startswith("c-newpfx-") for n in session_names), (
+        f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"
+    )
 
 
 def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated(
@@ -340,6 +340,6 @@ def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated
     iterm_env_updates = [c for c in set_env_calls if "ITERM_SESSION_ID" in c]
     assert iterm_env_updates, "expected tmux set-environment call for ITERM_SESSION_ID"
     # The last update must carry the caller's GUID, not any stale inherited value.
-    assert (
-        iterm_env_updates[-1][-1] == new_guid
-    ), f"expected ITERM_SESSION_ID to be updated to {new_guid!r}, got {iterm_env_updates[-1]!r}"
+    assert iterm_env_updates[-1][-1] == new_guid, (
+        f"expected ITERM_SESSION_ID to be updated to {new_guid!r}, got {iterm_env_updates[-1]!r}"
+    )

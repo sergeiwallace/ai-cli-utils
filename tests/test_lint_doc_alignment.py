@@ -69,9 +69,9 @@ class TestCheckAlignmentMatch:
         repo_root = Path(__file__).parent.parent
         claude = repo_root / "CLAUDE.md"
         gemini = repo_root / "GEMINI.md"
-        assert (
-            check_alignment(claude, gemini) == 0
-        ), "CLAUDE.md and GEMINI.md shared sections are out of sync — run lint_doc_alignment.py"
+        assert check_alignment(claude, gemini) == 0, (
+            "CLAUDE.md and GEMINI.md shared sections are out of sync — run lint_doc_alignment.py"
+        )
 
 
 # ---------------------------------------------------------------------------
