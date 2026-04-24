@@ -350,12 +350,7 @@ def get_engine_script(
       fi
       _iterm2_fleet_setup "$tmux_session"
       _iterm2_status "running" "$_session_type" "$tmux_session"
-      # Set session Name directly via AppleScript on first run — bypasses DCS passthrough
-      # failures (nested tmux, process-tracking overrides, etc.). Background so it doesn't
-      # block CC launch; only needed once since the Name persists for the session's lifetime.
-      if $first_run && [[ "$OSTYPE" == darwin* && -n "$ITERM_SESSION_ID" ]]; then
-        ( ai internal set-iterm2-name "$ITERM_SESSION_ID" "$tmux_session" 2>/dev/null ) &
-      fi
+
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
 

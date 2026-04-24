@@ -461,15 +461,15 @@ class TestGetEngineScriptIterm2Slot:
         assert "*/ai-session-*.sh" in script
         assert "/tmp/ai-session-" not in script
 
-    def test_script_calls_set_iterm2_name_on_first_run(self):
+    def test_script_set_iterm2_name_uses_live_iterm_id_not_static_env(self):
+        # set-iterm2-name must always use _live_iterm_id() (reads from tmux session env,
+        # picks up GUID updates on re-attach) — never the static $ITERM_SESSION_ID shell
+        # variable (inherited at session creation, never updated in the running process).
+        # Using the static var caused cross-session pane-title clobbering after template
+        # refresh (ai update → exec bash new-template → first_run=true → stale GUID fired).
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "ai internal set-iterm2-name" in script
-        assert "$ITERM_SESSION_ID" in script
-        assert "$first_run" in script
-
-    def test_script_set_iterm2_name_guarded_by_darwin_check(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert "darwin" in script
+        assert "$ITERM_SESSION_ID" not in script
 
 
 class TestSetIterm2NameApplescript:
