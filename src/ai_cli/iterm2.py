@@ -390,4 +390,21 @@ def _emit_iterm2_profile_setup(
     # overridden by tmux rendering, process tracking, or nested-tmux passthrough
     # failures. Runs synchronously here (before os.execvp) so the Name is set
     # before the process is replaced by tmux/mosh/ssh.
-    _set_iterm2_name_applescript(os.environ.get("ITERM_SESSION_ID", ""), session_name)
+    #
+    # When running inside a tmux session the shell-env ITERM_SESSION_ID is the
+    # original value inherited at session creation and is never updated when the
+    # session is re-attached to a different iTerm2 pane.  The tmux session
+    # environment (kept current by _do_session_launch on each re-attach) is the
+    # authoritative source.  Using the stale shell-env GUID would rename the
+    # *original* pane instead of the *current* one, clobbering whichever session
+    # now occupies that pane.
+    _caller_iterm_id = os.environ.get("ITERM_SESSION_ID", "")
+    if os.environ.get("TMUX") and _caller_iterm_id:
+        _r = subprocess.run(
+            ["tmux", "show-environment", "ITERM_SESSION_ID"],
+            capture_output=True,
+            text=True,
+        )
+        if _r.returncode == 0 and _r.stdout.startswith("ITERM_SESSION_ID="):
+            _caller_iterm_id = _r.stdout.strip()[len("ITERM_SESSION_ID=") :]
+    _set_iterm2_name_applescript(_caller_iterm_id, session_name)

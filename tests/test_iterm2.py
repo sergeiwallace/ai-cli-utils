@@ -538,10 +538,18 @@ class TestSetIterm2NameInternalCommand:
 
 
 class TestEmitIterm2ProfileSetupCallsApplescript:
-    """Verify _emit_iterm2_profile_setup calls _set_iterm2_name_applescript."""
+    """Verify _emit_iterm2_profile_setup calls _set_iterm2_name_applescript.
 
-    def test_given_iterm2_env_when_emit_called_then_applescript_invoked(self):
-        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:myguid"}, clear=False):
+    Two code paths exist:
+      • Outside tmux (TMUX unset): use os.environ ITERM_SESSION_ID directly.
+      • Inside tmux (TMUX set): read the live GUID from ``tmux show-environment``
+        so that stale inherited shell-env values don't clobber the wrong pane.
+    """
+
+    def test_given_iterm2_env_outside_tmux_when_emit_called_then_applescript_uses_env_guid(self):
+        # Outside tmux: shell env ITERM_SESSION_ID is the current pane's GUID.
+        env = {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:myguid", "TMUX": ""}
+        with patch.dict(os.environ, env, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
@@ -549,8 +557,37 @@ class TestEmitIterm2ProfileSetupCallsApplescript:
                             _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
         mock_fn.assert_called_once_with("w0t0p0:myguid", "c-sw-1")
 
+    def test_given_iterm2_env_inside_tmux_when_emit_called_then_applescript_uses_live_guid(self):
+        # Inside tmux: shell env ITERM_SESSION_ID is the original inherited GUID
+        # from session creation (stale).  The tmux session env holds the live GUID
+        # updated on each re-attach.  _emit_iterm2_profile_setup must read the
+        # live GUID so it renames the *current* pane, not the original creation pane.
+        env = {
+            "LC_TERMINAL": "iTerm2",
+            "ITERM_SESSION_ID": "stale-original-guid",
+            "TMUX": "/private/tmp/tmux-502/default,3142,0",
+        }
+
+        class _LiveEnvResult:
+            returncode = 0
+            stdout = "ITERM_SESSION_ID=live-current-guid\n"
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        with patch("ai_cli.iterm2.subprocess.run", return_value=_LiveEnvResult()) as mock_run:
+                            with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
+                                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+        # Must use the live GUID from tmux show-environment, not the stale shell env
+        mock_fn.assert_called_once_with("live-current-guid", "c-sw-1")
+        # Confirm tmux show-environment was called
+        tmux_calls = [c for c in mock_run.call_args_list if c.args[0][0] == "tmux"]
+        assert any("show-environment" in str(c) for c in tmux_calls)
+
     def test_given_no_iterm_session_id_when_emit_called_then_applescript_with_empty_id(self):
-        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+        env = {"LC_TERMINAL": "iTerm2", "TMUX": ""}
+        with patch.dict(os.environ, env, clear=False):
             os.environ.pop("ITERM_SESSION_ID", None)
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
