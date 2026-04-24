@@ -551,6 +551,19 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - Refine pacing algorithm from real usage data
 - Investigate native CC usage API (`AI-CLI-23`)
 
+> **Feedback:** Open design decisions for Phase 4 — please review before implementation starts:
+>
+> **D-6 (AI-CLI-55): Statusline format when Sonnet % is absent**
+> If `weekly_sonnet_pct` is `None` (not yet scraped), should the statusline: (A) omit the Sonnet field entirely, showing only `📊 42% all`; or (B) show a placeholder `📊 42% all | —% son`? Recommendation: A — omit when absent, consistent with how `session_pct` is handled.
+>
+> **D-7 (AI-CLI-55): Label for Sonnet quota**
+> Should the label be `son` (short, fits narrow tmux panes), `sonnet` (explicit), or `S` (minimal)? Recommendation: `son` — matches the existing terse statusline style.
+>
+> **D-8 (AI-CLI-55): Thresholds for Sonnet %**
+> Confirmed same thresholds as all-models %? (<50% green, <50–75% yellow, ≥75% red). Or should Sonnet use tighter thresholds given it's easier to hit? Recommendation: same thresholds for consistency, revisable after observing real usage.
+>
+> - <enter feedback here>
+
 > **Feedback Round 1:** Approved — phasing updated to reflect Option D (tmux scraping) as primary. Option C (anchoring) moved to Phase 4 fallback only. Architecture approved.
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
