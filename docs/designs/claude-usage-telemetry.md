@@ -348,7 +348,7 @@ Option (b), Slack webhook. The ntfy notification bug makes option (a) useless as
 > 4. D-4: approved
 > 5. D-5: open to Slack. ntfy notifications are broken — appear as generic "ntfy message" with no visible information without opening the ntfy app. Need to fix this. If Slack is better and more reliable, fine with that.
 > - Also: on D-1, this is engineering — we create the tools to do empirical testing. We don't passively observe. Build a test harness.
-
+>
 > **AI Response Round 1:**
 > - D-1 through D-4: approved, decision table updated to Approved.
 > - D-5: switched to Slack webhook. ntfy issue noted in cons: notifications appear as generic "ntfy message" with no content visible in OS banner — defeats the purpose of a push alert. Slack delivers full message content in the notification banner natively.
@@ -542,8 +542,10 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - Slack webhook integration for threshold alerts (`AI-CLI-25`)
 - `ai quota history` trends and weekly summaries
 
-### Phase 4: tmux Status Bar Refinement _(pending)_
+### Phase 4: Statusline Improvements _(in progress)_
 
+- **`AI-CLI-55`** — Expose `weekly_sonnet_pct` in `quota_statusline_part()`: append Sonnet % alongside the existing all-models %, e.g. `📊 42% all | 87% son`. Color-code independently using the same thresholds (<50% green, <75% yellow, ≥75% red). Motivated by hitting the Sonnet weekly limit without prior visibility. `weekly_sonnet_pct` is already scraped and stored in the DB.
+- **`AI-CLI-56`** — Investigate and fix duplicate statusline/prompt boxes appearing in CC session scrollback. Root cause unknown — likely ANSI escape sequences left as artifacts on scroll events.
 - Model-level usage breakdown in `ai quota status`
 - Refine pacing algorithm from real usage data
 - Investigate native CC usage API (`AI-CLI-23`)
