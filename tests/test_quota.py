@@ -194,25 +194,40 @@ class TestParseResetDatetime:
         assert result == "2026-04-18T23:59:00Z"
 
     # --- CC v2.1.112 IANA timezone format ---
+    # These tests use year-less dates; mock datetime.now so the year-inference
+    # logic always resolves to the current-year candidate rather than rolling
+    # forward to next year when the test date has already passed.
 
     def test_when_iana_format_with_hour_only_then_converts_to_utc(self):
         # "Resets Apr 23 at 3pm (America/New_York)" — CC v2.1.112 format
         # Apr 23 is in EDT (UTC-4), so 3pm EDT = 19:00 UTC.
         text = "Resets Apr 23 at 3pm (America/New_York)            3% used"
-        result = _parse_reset_datetime(text)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        with patch("datetime.datetime") as MockDT:
+            MockDT.now.return_value = _before_apr23
+            MockDT.side_effect = datetime
+            result = _parse_reset_datetime(text)
         assert result is not None
         assert result == "2026-04-23T19:00:00Z"
 
     def test_when_iana_format_with_minutes_then_converts_to_utc(self):
         # "Resets Apr 23 at 3:30pm (America/New_York)"
         text = "Resets Apr 23 at 3:30pm (America/New_York)"
-        result = _parse_reset_datetime(text)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        with patch("datetime.datetime") as MockDT:
+            MockDT.now.return_value = _before_apr23
+            MockDT.side_effect = datetime
+            result = _parse_reset_datetime(text)
         assert result is not None
         assert result == "2026-04-23T19:30:00Z"
 
     def test_when_iana_format_utc_then_no_offset(self):
         text = "Resets Apr 23 at 7pm (UTC)"
-        result = _parse_reset_datetime(text)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        with patch("datetime.datetime") as MockDT:
+            MockDT.now.return_value = _before_apr23
+            MockDT.side_effect = datetime
+            result = _parse_reset_datetime(text)
         assert result is not None
         assert result == "2026-04-23T19:00:00Z"
 
@@ -248,7 +263,11 @@ class TestParseResetDatetime:
             "  Current week (Sonnet only)\n"
             "  Resets Apr 23 at 3pm (America/New_York)            5% used\n"
         )
-        snap = _parse_usage_output(output)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        with patch("datetime.datetime") as MockDT:
+            MockDT.now.return_value = _before_apr23
+            MockDT.side_effect = datetime
+            snap = _parse_usage_output(output)
         assert snap is not None
         assert snap.weekly_all_models_pct == 3.0
         assert snap.reset_at == "2026-04-23T19:00:00Z"
