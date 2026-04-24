@@ -112,7 +112,7 @@ When `ai c N` launches a CC session, ai-cli automatically configures iTerm2 via 
 1. **Profile switch** — generates a per-session Dynamic Profile JSON (`ai-cli:{ai_name}`) that inherits from the base profile (e.g. `ClaudeCode`) and writes it to `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/`. iTerm2 hot-reloads it instantly. Profile is activated via `SetProfile` escape sequence.
 2. **Collision-free tab color** — assigns a color from the configured palette using lease files at `~/.local/state/ai-cli/iterm2/color-leases.json`. Each session holds a lease on its slot; expired leases are reclaimed automatically. Color is set via `SetColors=tab=` escape.
 3. **Runtime tinted icon** — at session launch, `icon_generator.py` tints the source logo PNG (`src/ai_cli/data/icons/{type}-logo.png`) using a contrast color derived from the tab hex (180° HSL hue rotation + lightness adaptation). Written to `~/.local/state/ai-cli-utils/iterm2-icons/{ai_name}.png` and referenced in the Dynamic Profile. Falls back to Claude brand orange (`#da7756`) when no tab color is set.
-4. **Tab title** — set to the session name (e.g. `c-sw-1`) via OSC 1 (`\033]1;`). OSC 1 is used instead of OSC 0 so mosh does not prepend `[mosh] ` to the title on remote sessions.
+4. **Tab title** — set to the session name (e.g. `c-sw-1`) via `ai internal set-iterm2-name`, which uses AppleScript to target the specific iTerm pane by GUID (`ITERM_SESSION_ID`). GUID-targeted rename is used instead of broadcast OSC 1 (`\033]1;`) to prevent cross-session clobbering when multiple sessions share the same outer pane. The session reads its GUID from `tmux show-environment` (not the static shell env) so that re-attaching to a new pane picks up the correct GUID. The rename only fires when `tmux list-clients` confirms the session is currently attached to a terminal — detached sessions skip the rename to avoid clobbering a different session's pane.
 5. **Cleanup on exit** — the session EXIT trap calls `ai internal cleanup-session-files {ai_name}`, which removes the icon PNG and Dynamic Profile JSON so iTerm2 doesn't accumulate stale profiles.
 
 ### Color Preferences
@@ -174,9 +174,9 @@ printf '\e]0;CC sw-3\a'
 
 ## Tab & Window Titles (ai-cli)
 
-Tab title is set to the session name (e.g. `c-sw-1`) via OSC 1 at session launch and updated on each shell prompt via `_ai_iterm2_precmd` in `~/.zshrc`.
+Tab title is set to the session name (e.g. `c-sw-1`) via `ai internal set-iterm2-name` at session launch and on each CC restart. The command uses AppleScript to target the specific iTerm pane by its GUID (`ITERM_SESSION_ID`). The session reads the GUID from `tmux show-environment` so it picks up updates when the session is re-attached to a new pane. The rename is guarded by `tmux list-clients` — a detached session will not rename a pane it no longer owns.
 
-OSC 1 (`\033]1;`) is used — not OSC 0 — so that mosh on remote sessions does not prepend `[mosh] ` to the title.
+OSC 1 (`\033]1;`) is used as a fallback when no GUID is available (e.g. non-iTerm terminals, mosh). OSC 1 is used — not OSC 0 — so mosh does not prepend `[mosh] ` to the title on remote sessions.
 
 Window title uses a heuristic derived from the active tmux session names (common prefix abbreviated).
 

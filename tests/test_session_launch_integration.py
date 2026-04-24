@@ -6,6 +6,7 @@ behavior — not a mock. Everything downstream of tmux (the engine binary,
 worktree creation, registry checks, etc.) is still mocked.
 """
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -275,3 +276,70 @@ def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_use
     assert any(
         n.startswith("c-newpfx-") for n in session_names
     ), f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"
+
+
+def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated(
+    monkeypatch,
+):
+    """Re-attaching to an existing session must write the current pane's
+    ITERM_SESSION_ID into the session's tmux environment.
+
+    When session B is spawned from inside session A, it inherits A's
+    ITERM_SESSION_ID.  Later, when the user runs ``ai c B`` from a *different*
+    pane (with its own GUID), the re-attach path must overwrite the stale GUID
+    with the current pane's GUID.  Without this update, B would call
+    ``set-iterm2-name`` with A's GUID on its next CC restart, clobbering A's
+    pane title.
+    """
+
+    class _OK:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    # Track tmux set-environment calls emitted during _do_session_launch.
+    set_env_calls: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if not isinstance(cmd, (list, tuple)) or not cmd:
+            return _OK()
+        head, sub = cmd[0], (cmd[1] if len(cmd) > 1 else "")
+        if head == "tmux":
+            if sub == "has-session":
+                return _OK()  # session already exists → re-attach path
+            if sub == "set-environment":
+                set_env_calls.append(list(cmd))
+            return _OK()
+        if head == "git":
+            return _OK()
+        return _OK()
+
+    new_guid = "w0t0p3:BBBB-NEW-GUID"
+    with (
+        patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+        patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+        patch.dict(
+            os.environ,
+            {"ITERM_SESSION_ID": new_guid, "LC_TERMINAL": "iTerm2"},
+            clear=False,
+        ),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_base_launch_kwargs(name="1"))
+
+    iterm_env_updates = [c for c in set_env_calls if "ITERM_SESSION_ID" in c]
+    assert iterm_env_updates, "expected tmux set-environment call for ITERM_SESSION_ID"
+    # The last update must carry the caller's GUID, not any stale inherited value.
+    assert (
+        iterm_env_updates[-1][-1] == new_guid
+    ), f"expected ITERM_SESSION_ID to be updated to {new_guid!r}, got {iterm_env_updates[-1]!r}"

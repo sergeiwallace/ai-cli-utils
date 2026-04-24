@@ -558,3 +558,99 @@ class TestEmitIterm2ProfileSetupCallsApplescript:
                         with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
                             _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
         mock_fn.assert_called_once_with("", "c-sw-1")
+
+
+class TestFleetSetupAttachmentGuard:
+    """The session script must not rename a pane when the session is detached.
+
+    Two sessions share the same ITERM_SESSION_ID when one is spawned from inside
+    the other's shell (the child inherits the env var).  Without an attachment
+    check, a detached session's CC restart calls ``set-iterm2-name`` with the
+    shared GUID, clobbering the visible session's pane title.  The guard ensures
+    ``set-iterm2-name`` only fires when ``tmux list-clients`` shows at least one
+    active client for *this* session.
+    """
+
+    def test_fleet_setup_guards_rename_with_client_count_check(self):
+        """_iterm2_fleet_setup must check attachment before calling set-iterm2-name."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        fn_def_pos = script.index("_iterm2_fleet_setup() ")
+        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
+        fleet_body = script[fn_def_pos:status_def_pos]
+        # Guard and rename must both be present in the function body
+        assert 'tmux list-clients -t "$tmux_session"' in fleet_body
+        assert "ai internal set-iterm2-name" in fleet_body
+
+    def test_fleet_setup_attachment_guard_comes_before_rename(self):
+        """The attachment guard must appear before set-iterm2-name in fleet_setup."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        fn_def_pos = script.index("_iterm2_fleet_setup() ")
+        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
+        fleet_body = script[fn_def_pos:status_def_pos]
+        guard_offset = fleet_body.index('tmux list-clients -t "$tmux_session"')
+        rename_offset = fleet_body.index("ai internal set-iterm2-name")
+        assert guard_offset < rename_offset, "attachment guard must precede set-iterm2-name in _iterm2_fleet_setup"
+
+    def test_fleet_setup_guard_requires_at_least_one_client(self):
+        """Guard condition must be -gt 0 (not -ge 0 or absent)."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        fn_def_pos = script.index("_iterm2_fleet_setup() ")
+        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
+        fleet_body = script[fn_def_pos:status_def_pos]
+        assert "-gt 0" in fleet_body
+
+    def test_iterm2_status_guards_rename_with_client_count_check(self):
+        """_iterm2_status must check attachment before calling set-iterm2-name."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        status_def_pos = script.index("_iterm2_status() ")
+        # Grab a generous slice of _iterm2_status body
+        status_body = script[status_def_pos : status_def_pos + 1000]
+        assert 'tmux list-clients -t "$tmux_session"' in status_body
+        assert "ai internal set-iterm2-name" in status_body
+
+    def test_iterm2_status_attachment_guard_comes_before_rename(self):
+        """The attachment guard must appear before set-iterm2-name in _iterm2_status."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        status_def_pos = script.index("_iterm2_status() ")
+        status_body = script[status_def_pos : status_def_pos + 1000]
+        guard_offset = status_body.index('tmux list-clients -t "$tmux_session"')
+        rename_offset = status_body.index("ai internal set-iterm2-name")
+        assert guard_offset < rename_offset, "attachment guard must precede set-iterm2-name in _iterm2_status"
+
+    def test_iterm2_status_guard_requires_at_least_one_client(self):
+        """_iterm2_status guard condition must be -gt 0."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        status_def_pos = script.index("_iterm2_status() ")
+        status_body = script[status_def_pos : status_def_pos + 1000]
+        assert "-gt 0" in status_body
+
+    def test_fleet_setup_falls_back_to_osc1_when_no_live_guid(self):
+        """When _live_iterm_id returns empty, fleet_setup falls back to OSC 1 (not OSC 0)."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        fn_def_pos = script.index("_iterm2_fleet_setup() ")
+        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
+        fleet_body = script[fn_def_pos:status_def_pos]
+        assert "\\033]1;" in fleet_body  # OSC 1 = title only
+        assert "\\033]0;" not in fleet_body  # OSC 0 = title+icon, must not appear
+
+    def test_iterm2_status_falls_back_to_osc1_when_no_live_guid(self):
+        """When _live_iterm_id returns empty, _iterm2_status falls back to OSC 1."""
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        status_def_pos = script.index("_iterm2_status() ")
+        status_body = script[status_def_pos : status_def_pos + 1000]
+        assert "\\033]1;" in status_body
+        assert "\\033]0;" not in status_body
+
+    def test_live_iterm_id_reads_from_tmux_not_shell_env(self):
+        """_live_iterm_id must use tmux show-environment, not the static shell $ITERM_SESSION_ID.
+
+        Reading from the tmux session environment (not the initial shell env)
+        ensures the function picks up GUID updates made by ``ai c`` when
+        re-attaching the session to a different iTerm pane.
+        """
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        fn_pos = script.index("_live_iterm_id()")
+        fn_body = script[fn_pos : fn_pos + 200]
+        assert "tmux show-environment" in fn_body
+        # Must not rely on the static inherited shell variable
+        assert "$ITERM_SESSION_ID" not in fn_body

@@ -49,7 +49,7 @@ This system provides visual identity and status feedback for parallel AI coding 
 The system operates at two timing layers:
 
 - **Pre-launch layer** (Python, `_emit_iterm2_profile_setup`): Emits SetProfile, SetColors, and OSC 0 directly to stdout before `os.execvp` hands control to tmux. No DCS wrapping needed because we are not yet inside tmux.
-- **In-session layer** (bash, `_iterm2_fleet_setup` / `_iterm2_status`): Runs inside the tmux session. All iTerm2-proprietary sequences (`\033]1337;...`) are DCS-wrapped via the `_it2` helper. OSC 0 title updates also go through `_it2` for tmux passthrough. Status updates fire on session start, restart, exit (done/error), and resume.
+- **In-session layer** (bash, `_iterm2_fleet_setup` / `_iterm2_status`): Runs inside the tmux session. Tab title is set via `ai internal set-iterm2-name` — AppleScript targeting the specific iTerm pane by GUID. The GUID is read from `tmux show-environment ITERM_SESSION_ID` (not the static shell env) so re-attaching the session to a new pane picks up the correct GUID. The rename is guarded by `tmux list-clients -t $tmux_session`: a detached session skips the rename entirely to avoid clobbering a different session's pane. All `\033]1337;` sequences are DCS-wrapped via the `_it2` helper. OSC 1 is the fallback when no GUID is available (non-iTerm terminals, mosh). Status updates fire on session start, restart, exit (done/error), and resume.
 
 **Scope boundary:** This system is the ambient in-terminal status channel only. Push notifications are owned by ntfy. OSC 9 is eliminated. This design does not expand into notification territory.
 
@@ -448,6 +448,7 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 | Bug 2 — Remote icon/title wrong | Fix `_ai_iterm2_precmd` race condition; remove `*` from tab title in pre-launch emission |
 | Bug 3 — Gemini title shows "Default" | Remove `"Title Components": 1` from ClaudeCode profile; ensure OSC 0 fires after SetProfile |
 | Bugs 4/5/6 — Gemini wrong directory | Add `os.chdir()` for local `-p` sessions (matching existing remote behavior) |
+| Bug 7 — Cross-session pane name clobbering | When session B is spawned from session A's shell, it inherits A's `ITERM_SESSION_ID`. A detached B calling `set-iterm2-name` with A's GUID clobbers A's pane title. Fixed with two changes: (1) `_iterm2_fleet_setup` / `_iterm2_status` guard the rename behind `tmux list-clients` — detached sessions skip it; (2) the re-attach path in `_do_session_launch` writes the current pane's GUID into the session's tmux environment so the stale inherited GUID is overwritten on next attach. |
 
 ### Redesigned
 

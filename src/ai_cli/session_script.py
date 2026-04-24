@@ -282,7 +282,13 @@ def get_engine_script(
       local _lid
       _lid=$(_live_iterm_id)
       if [[ -n "$_lid" ]]; then
-        ( ai internal set-iterm2-name "$_lid" "$sname" 2>/dev/null ) &
+        # Only rename when this session is actually attached to a terminal.
+        # A detached session must not clobber a pane that belongs to a different
+        # currently-visible session — both may share the same GUID when one was
+        # spawned from inside the other's shell.
+        if [[ $(tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l) -gt 0 ]]; then
+          ( ai internal set-iterm2-name "$_lid" "$sname" 2>/dev/null ) &
+        fi
       else
         _it2 "\\033]1;$sname\\007"
       fi
@@ -310,7 +316,9 @@ def get_engine_script(
       local _lid
       _lid=$(_live_iterm_id)
       if [[ -n "$_lid" ]]; then
-        ( ai internal set-iterm2-name "$_lid" "${{type_sym}}${{sym}}$sname" 2>/dev/null ) &
+        if [[ $(tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l) -gt 0 ]]; then
+          ( ai internal set-iterm2-name "$_lid" "${{type_sym}}${{sym}}$sname" 2>/dev/null ) &
+        fi
       else
         _it2 "\\033]1;${{type_sym}}${{sym}}$sname\\007"
       fi
