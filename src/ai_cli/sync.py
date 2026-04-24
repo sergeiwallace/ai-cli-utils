@@ -795,6 +795,9 @@ def apply_pull_files(
     """
     conflicts: list[str] = []
     applied_count = 0
+    # Files where staging should be overwritten with local to prevent re-detection.
+    # Populated during divergence handling; committed to staging after apply loop.
+    staging_to_overwrite: list[tuple[Path, Path]] = []  # (local_src, staging_dst)
 
     for staging_project_dir in sorted(staging_dir.iterdir()):
         if not staging_project_dir.is_dir() or staging_project_dir.name.startswith("."):
@@ -859,6 +862,10 @@ def apply_pull_files(
                             f"JSONL CONFLICT: {bare_name}/{rel.name} — remote version saved as {conflict_name}",
                             file=sys.stderr,
                         )
+                        # Queue staging update: overwrite staging with local so future
+                        # pulls don't re-detect the same divergence and fire again.
+                        if dst.exists():
+                            staging_to_overwrite.append((dst, src))
             else:
                 # Memory or other text file — skip if identical, then check for git conflict markers
                 if dst.exists() and file_hash(src) == file_hash(dst):
@@ -878,6 +885,10 @@ def apply_pull_files(
                         f"CONFLICT: {bare_name}/{rel} — resolve manually or in next CC session",
                         file=sys.stderr,
                     )
+                    # Queue staging update: overwrite the marker-laden staging file with
+                    # the local version so future pulls don't re-detect the same conflict.
+                    if dst.exists():
+                        staging_to_overwrite.append((dst, src))
                 else:
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -897,7 +908,11 @@ def apply_pull_files(
         # Running it on every pull would remove files placed by repair_worktree_cc_dir
         # before the user has had a chance to extend them by resuming the conversation.
 
-    return {"conflicts": conflicts, "applied_count": applied_count}
+    return {
+        "conflicts": conflicts,
+        "applied_count": applied_count,
+        "staging_to_overwrite": staging_to_overwrite,
+    }
 
 
 def _find_project_worktrees(project_path: Path) -> list[Path]:
@@ -1674,6 +1689,25 @@ def sync_pull(flags: list[str]) -> int:
     if result["conflicts"]:
         if not dry_run:
             notify_conflicts(result["conflicts"])
+            # Overwrite staging with local versions so future pulls don't
+            # re-detect the same divergence and fire repeated notifications.
+            overwrites = result.get("staging_to_overwrite", [])
+            if overwrites:
+                for local_src, staging_dst in overwrites:
+                    shutil.copy2(local_src, staging_dst)
+                git_add = subprocess.run(
+                    ["git", "add"] + [str(p) for _, p in overwrites],
+                    cwd=cfg.staging_dir,
+                    capture_output=True,
+                    env=_GIT_ENV,
+                )
+                if git_add.returncode == 0:
+                    subprocess.run(
+                        ["git", "commit", "-m", "resolve conflicts (take local)"],
+                        cwd=cfg.staging_dir,
+                        capture_output=True,
+                        env=_GIT_ENV,
+                    )
         return 2
 
     return 0
