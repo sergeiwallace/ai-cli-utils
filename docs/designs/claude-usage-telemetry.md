@@ -1,9 +1,10 @@
 ---
 title: Claude Usage Telemetry — Token Tracking and Quota Pacing
 category: design
-tags: [claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23]
+tags: [claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23, AI-CLI-55, AI-CLI-56]
 status: approved
 source: R-5 deep-think 2026-04-01, opus synthesis 2026-04-01
+citation_review: pending — review claims against citation validation reports as part of AI-CLI-53 doc audit
 ---
 
 # Claude Usage Telemetry — Token Tracking and Quota Pacing
@@ -12,7 +13,7 @@ source: R-5 deep-think 2026-04-01, opus synthesis 2026-04-01
 
 **Created:** 2026-04-01
 
-**Tasks:** AI-CLI-22 (hidden pane scraper), AI-CLI-23 (native API investigation)
+**Tasks:** AI-CLI-22 (hidden pane scraper), AI-CLI-23 (native API investigation), AI-CLI-55 (Sonnet % in statusline), AI-CLI-56 (duplicate statusline boxes)
 **Research:** R-5 (deep-think, 2026-04-01)
 
 <!-- FEEDBACK RULES (for AI agents):
