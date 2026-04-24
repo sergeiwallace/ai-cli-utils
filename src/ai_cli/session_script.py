@@ -262,6 +262,13 @@ def get_engine_script(
       fi
     }}
 
+    # Return the live ITERM_SESSION_ID from the tmux session environment.
+    # Reading from tmux (not the static shell env) picks up updates made by
+    # `ai c` when re-attaching the session to a different iTerm pane.
+    _live_iterm_id() {{
+      tmux show-environment ITERM_SESSION_ID 2>/dev/null | sed 's/^ITERM_SESSION_ID=//'
+    }}
+
     _iterm2_fleet_setup() {{
       [[ "$LC_TERMINAL" != "iTerm2" && "$TERM_PROGRAM" != "iTerm.app" ]] && return 0
       local sname="$1"
@@ -269,8 +276,16 @@ def get_engine_script(
       local _profile="ai-cli:$ai_name"
       _it2 "\\033]1337;SetProfile=$_profile\\007"
       _it2 "\\033]1337;SetColors=tab=$_iterm2_color\\007"
-      # OSC 1 sets the iTerm2 "Name" field; mosh does not intercept it
-      _it2 "\\033]1;$sname\\007"
+      # Rename via AppleScript using the live GUID (targeted to the specific iTerm pane).
+      # This avoids the DCS-broadcast race where multiple sessions share one outer pane
+      # and each session's OSC 1 overwrites the others' labels.
+      local _lid
+      _lid=$(_live_iterm_id)
+      if [[ -n "$_lid" ]]; then
+        ( ai internal set-iterm2-name "$_lid" "$sname" 2>/dev/null ) &
+      else
+        _it2 "\\033]1;$sname\\007"
+      fi
     }}
 
     # iTerm2 status updates: re-emit pane title with optional status symbol.
@@ -292,7 +307,13 @@ def get_engine_script(
         esac
         sym="$sym "
       fi
-      _it2 "\\033]1;${{type_sym}}${{sym}}$sname\\007"
+      local _lid
+      _lid=$(_live_iterm_id)
+      if [[ -n "$_lid" ]]; then
+        ( ai internal set-iterm2-name "$_lid" "${{type_sym}}${{sym}}$sname" 2>/dev/null ) &
+      else
+        _it2 "\\033]1;${{type_sym}}${{sym}}$sname\\007"
+      fi
     }}
 
     # Extract session number from ai_name (e.g., "sw-3" → "3") for downstream hooks.

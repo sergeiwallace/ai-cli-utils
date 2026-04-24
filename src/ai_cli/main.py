@@ -1274,8 +1274,24 @@ def _do_session_launch(
     if config.get("worktree", {}).get("enabled", True) and not no_worktree:
         worktree_path = _session.create_worktree(ai_name)
         if worktree_path:
-            # Sync worktree with any changes that landed on main from other sessions
-            subprocess.run(["git", "pull", "--rebase", "--autostash"], capture_output=True, cwd=worktree_path)
+            # Sync worktree with any changes that landed on main from other sessions.
+            # If stash-pop conflicts (e.g. remote commit touches same files as local changes),
+            # abort cleanly rather than leaving the index in a corrupted state.
+            pull = subprocess.run(
+                ["git", "pull", "--rebase", "--autostash"],
+                capture_output=True,
+                text=True,
+                cwd=worktree_path,
+            )
+            if pull.returncode != 0:
+                # Abort any in-progress rebase and reset index to HEAD to prevent corruption.
+                subprocess.run(["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path)
+                subprocess.run(["git", "restore", "--staged", "."], capture_output=True, cwd=worktree_path)
+                print(
+                    f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
+                    f"(autostash pop conflict?). Index restored to HEAD.",
+                    file=sys.stderr,
+                )
 
     d = _config.get_session_map(engine)
     uuid = d.get(ai_name)
@@ -1358,8 +1374,16 @@ def _do_session_launch(
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
     if existing.returncode == 0:
-        # Session exists — configure for iTerm2, then attach (detach stale clients)
+        # Session exists — configure for iTerm2, then attach (detach stale clients).
+        # Update ITERM_SESSION_ID in the session env so _live_iterm_id() in the
+        # session script picks up the new pane's GUID on the next CC restart.
         _iterm2._configure_tmux_for_iterm2(session_id)
+        _new_iterm_id = os.environ.get("ITERM_SESSION_ID", "")
+        if _new_iterm_id:
+            subprocess.run(
+                ["tmux", "set-environment", "-t", session_id, "ITERM_SESSION_ID", _new_iterm_id],
+                capture_output=True,
+            )
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
