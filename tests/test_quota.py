@@ -1,8 +1,11 @@
 """Tests for quota tracking — hidden pane scraper, notification, quota_watch, quota_record."""
 
 import os
+import shutil
+import subprocess
 import time
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1732,3 +1735,152 @@ class TestMaybeBackgroundScrape:
         lock_path = tmp_path / "quota-scrape.lock"
         with patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path):
             _maybe_trigger_background_scrape("not-a-timestamp")  # must not raise
+
+
+# --- statusline single-line contract ---
+
+
+class TestQuotaStatuslinePartSingleLine:
+    """quota_statusline_part() must always emit exactly one line.
+
+    CC's statusLine hook contract requires single-line output. Multi-line output causes
+    CC to leave orphaned rows in the scrollback buffer on every re-render, producing the
+    duplicate-boxes symptom (AI-CLI-56). These tests enforce the contract at the Python level.
+    """
+
+    def _run_and_capture(self, usage_percent, hours_elapsed, tmp_path, capsys):
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=hours_elapsed)
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=usage_percent)
+                quota_statusline_part()
+            return capsys.readouterr().out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_normal_phase_output_is_single_line(self, tmp_path, capsys):
+        """Normal phase (>24h elapsed): output must be exactly one non-empty line."""
+        out = self._run_and_capture(50.0, hours_elapsed=25, tmp_path=tmp_path, capsys=capsys)
+        non_empty = [l for l in out.split("\n") if l]
+        assert len(non_empty) == 1, f"Expected 1 line, got {len(non_empty)}: {out!r}"
+
+    def test_when_seedling_phase_output_is_single_line(self, tmp_path, capsys):
+        """Seedling phase (<24h elapsed): output must be exactly one non-empty line."""
+        out = self._run_and_capture(10.0, hours_elapsed=6, tmp_path=tmp_path, capsys=capsys)
+        non_empty = [l for l in out.split("\n") if l]
+        assert len(non_empty) == 1, f"Expected 1 line, got {len(non_empty)}: {out!r}"
+
+    def test_when_no_data_placeholder_is_single_line(self, tmp_path, capsys):
+        """No snapshot data: placeholder output must also be a single line."""
+        import ai_cli.quota as q
+        import ai_cli.quota_db as qdb
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        qdb._get_conn().close()
+        q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
+        try:
+            with patch("subprocess.Popen"):
+                quota_statusline_part()
+            out = capsys.readouterr().out
+            non_empty = [l for l in out.split("\n") if l]
+            assert len(non_empty) == 1, f"Expected 1 line, got {len(non_empty)}: {out!r}"
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+            q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not available")
+class TestStatuslineScript:
+    """Integration tests for statusline-command.sh.
+
+    CC's statusLine hook renders the script's stdout as the status bar. Two invariants
+    must hold to prevent duplicate-box artifacts in the scrollback buffer (AI-CLI-56):
+
+    1. Output must be exactly one line — multi-line output spans multiple rows and CC
+       only erases one row per re-render, leaving orphaned rows that accumulate.
+    2. Output must end with ESC[K (erase-to-EOL) — when CC positions the cursor at the
+       start of the status row and writes our output, ESC[K clears any leftover characters
+       from a previously longer render, preventing stale character artifacts.
+    """
+
+    _SCRIPT = Path(__file__).parent.parent / "src/ai_cli/data/statusline-command.sh"
+    _SAMPLE_INPUT = (
+        '{"model":"claude-sonnet-4-6",'
+        '"context_window":{"used_percentage":42,"total_input_tokens":1000,'
+        '"total_output_tokens":200,"current_usage":{'
+        '"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},'
+        '"workspace":{"project_dir":"/tmp"}}'
+    )
+
+    def _run(self, stdin=None, extra_env=None):
+        env = {
+            **os.environ,
+            "TMUX": "",
+            "COLUMNS": "200",
+            "GIT_BRANCH_CACHE": "main",
+        }
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(
+            ["bash", str(self._SCRIPT)],
+            input=stdin or self._SAMPLE_INPUT,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=15,
+        )
+
+    def test_given_valid_input_when_run_then_exits_zero(self):
+        result = self._run()
+        assert result.returncode == 0, f"stderr: {result.stderr!r}"
+
+    def test_given_valid_input_when_run_then_outputs_exactly_one_line(self):
+        """Enforces the single-line contract — multi-line output breaks CC's statusLine rendering."""
+        result = self._run()
+        assert result.returncode == 0
+        non_empty = [line for line in result.stdout.split("\n") if line]
+        assert (
+            len(non_empty) == 1
+        ), f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
+
+    def test_given_valid_input_when_run_then_output_ends_with_erase_to_eol(self):
+        """ESC[K at end of output clears leftover chars when CC overwrites the status line in place."""
+        result = self._run()
+        assert result.returncode == 0
+        output = result.stdout.rstrip("\n")
+        assert output.endswith("\033[K"), f"statusline output must end with ESC[K but ends with: {output[-20:]!r}"
+
+    def test_given_malformed_json_when_run_then_outputs_one_line(self):
+        """Malformed jq input degrades gracefully — must still produce exactly one line."""
+        result = self._run(stdin="not-valid-json")
+        assert result.returncode == 0
+        non_empty = [line for line in result.stdout.split("\n") if line]
+        assert len(non_empty) == 1, f"Expected 1 line on bad JSON input, got {len(non_empty)}: {result.stdout!r}"
+
+    def test_given_quota_part_with_embedded_newline_when_assembled_then_single_line(self):
+        """Embedded newline in quota_part output is stripped — single-line invariant holds."""
+        fake_ai = self._SCRIPT.parent.parent.parent.parent / "tests" / "_fake_ai_newline.sh"
+        fake_ai.write_text(
+            '#!/usr/bin/env bash\nif [[ "$*" == *"statusline-part"* ]]; then printf "line1\\nline2\\n"; fi\n'
+        )
+        fake_ai.chmod(0o755)
+        fake_bin = fake_ai.parent / "_fake_bin_newline"
+        fake_bin.mkdir(exist_ok=True)
+        (fake_bin / "ai").symlink_to(fake_ai)
+        try:
+            result = self._run(extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"})
+            assert result.returncode == 0
+            non_empty = [line for line in result.stdout.split("\n") if line]
+            assert len(non_empty) == 1, f"Embedded newline in quota_part must be stripped; got: {result.stdout!r}"
+        finally:
+            fake_ai.unlink(missing_ok=True)
+            (fake_bin / "ai").unlink(missing_ok=True)
+            fake_bin.rmdir()

@@ -99,6 +99,9 @@ ai quota record "${_telem_session}" "$(hostname)" "${model_id}" "${_telem_tokens
 
 # --- Quota indicator (via ai quota statusline-part — reads NATS KV when local SQLite is stale) ---
 quota_part=$(ai quota statusline-part 2>/dev/null)
+# Strip embedded newlines: statusLine contract requires exactly one output line.
+# Multi-line output causes CC to leave orphaned rows in scrollback on re-render.
+quota_part="${quota_part//$'\n'/ }"
 
 # --- Assemble ---
 sep="\033[2m│\033[0m"
@@ -107,4 +110,8 @@ line="\033[2m${clock}\033[0m ${sep} ${model_short} ${sep} \033[1m${project}\033[
 line="${line} ${sep} ${ctx_part} ${sep} ${session_cost}"
 [ -n "$quota_part" ] && line="${line} ${sep} ${quota_part}"
 line="${line} ${sep} ${tip}"
-printf '%b\n' "$line"
+# \033[0m resets colors; \033[K erases from cursor to end of line.
+# When CC positions the cursor at the start of the status line and writes our output,
+# \033[K clears any leftover characters from a previously longer render — preventing
+# stale character artifacts from accumulating in the scrollback buffer.
+printf '%b\033[0m\033[K\n' "$line"
