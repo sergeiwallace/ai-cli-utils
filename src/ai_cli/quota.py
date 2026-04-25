@@ -415,8 +415,13 @@ def quota_watch(poll_interval: int = 300) -> int:
     are crossed. Also publishes to NATS when available. Circus owns restart.
     Exit codes: 0 = clean stop (KeyboardInterrupt), 1 = unrecoverable error.
     """
+    import os
+    import threading
+
     from .messaging import NATSClient
     from .notifications import Notifier
+
+    machine = os.environ.get("AI_CLI_HOST", "")
 
     client = NATSClient()
     loop = asyncio.new_event_loop()
@@ -430,6 +435,18 @@ def quota_watch(poll_interval: int = 300) -> int:
     alerted_today: dict[int, str] = {}
 
     print(f"ai quota watch — polling every {poll_interval}s (Ctrl+C to stop)")
+
+    # Start background NATS listener for on-demand scrape requests + heartbeat.
+    stop_event = threading.Event()
+    if machine:
+        listener_thread = threading.Thread(
+            target=_run_nats_quota_listener,
+            args=(machine,),
+            kwargs={"stop_event": stop_event},
+            daemon=True,
+            name="nats-quota-listener",
+        )
+        listener_thread.start()
 
     try:
         while True:
@@ -458,11 +475,91 @@ def quota_watch(poll_interval: int = 300) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        stop_event.set()
         if client.nc:
             loop.run_until_complete(client.close())
         loop.close()
 
     return 0
+
+
+def _run_nats_quota_listener(machine: str, *, stop_event: "Any | None" = None) -> None:
+    """NATS listener for on-demand scrape requests and periodic heartbeat.
+
+    Runs in a daemon thread started by quota_watch. Subscribes to
+    ``quota.scrape.request.{machine}`` and publishes a heartbeat to
+    ``hw_state[quota_watch.heartbeat.{machine}]`` every 60 seconds.
+    """
+    import threading as _threading
+
+    _stop = stop_event if stop_event is not None else _threading.Event()
+
+    async def _loop() -> None:
+        from .messaging import NATSClient
+
+        try:
+            from .config import load_config
+
+            cfg = load_config()
+            nats_servers = cfg.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
+        except Exception:
+            nats_servers = ["nats://localhost:4222"]
+
+        client = NATSClient(servers=nats_servers)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=5.0)
+        except Exception:
+            return
+
+        if not client.nc:
+            return
+
+        async def _on_scrape_request(msg: Any) -> None:
+            # Dedup: if scrape lock exists a scrape is already in-flight.
+            if not _SCRAPE_LOCK_PATH.exists():
+                _launch_background_scrape()
+
+        sub = None
+        try:
+            sub = await client.nc.subscribe(f"quota.scrape.request.{machine}", cb=_on_scrape_request)
+        except Exception:
+            pass
+
+        heartbeat_interval = 60.0
+        last_heartbeat = 0.0
+
+        try:
+            while not _stop.is_set():
+                now = time.time()
+                if client.js and now - last_heartbeat >= heartbeat_interval:
+                    try:
+                        kv = await client.js.key_value("hw_state")
+                        await kv.put(
+                            f"quota_watch.heartbeat.{machine}",
+                            json.dumps({"ts": now}).encode(),
+                        )
+                        last_heartbeat = now
+                    except Exception:
+                        pass
+                await asyncio.sleep(2.0)
+        finally:
+            if sub is not None:
+                try:
+                    await sub.unsubscribe()
+                except Exception:
+                    pass
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    event_loop = asyncio.new_event_loop()
+    try:
+        event_loop.run_until_complete(_loop())
+    except Exception:
+        pass
+    finally:
+        event_loop.close()
 
 
 def _notify_threshold(notifier: Any, threshold: int, snapshot: QuotaSnapshot) -> None:
@@ -755,6 +852,8 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
         "ts": time.time(),
     }
 
+    machine = os.environ.get("AI_CLI_HOST", "")
+
     async def _do_publish() -> None:
         client = NATSClient(servers=nats_servers)
         try:
@@ -764,7 +863,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
                 # Publish to humanware subject for UsageConsumer ingest
                 hw_payload = {
                     "id": str(_uuid.uuid4()),
-                    "machine": os.environ.get("AI_CLI_HOST", ""),
+                    "machine": machine,
                     "used_pct": snapshot.weekly_all_models_pct,
                     "tokens_used": None,
                     "tokens_limit": None,
@@ -773,13 +872,20 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
                     "raw": json.dumps(payload),
                 }
                 await client.publish("hw.events.usage.claude.snapshot", hw_payload)
-                # Write latest snapshot to NATS KV so other services can read current
-                # quota without SSHing to the local DB. Only the publisher (Hetzner)
-                # writes this key — subscribers never re-publish.
+                # Write latest snapshot to NATS KV so aido and other services can read
+                # current quota without SSHing to the local DB. Key is
+                # machine-suffixed (AI_CLI_HOST) for multi-machine disambiguation.
                 if client.js:
                     try:
                         kv = await client.js.key_value("hw_state")
-                        await kv.put("quota.claude.current", json.dumps(payload).encode())
+                        kv_key = f"quota.claude.current.{machine}" if machine else "quota.claude.current"
+                        await kv.put(kv_key, json.dumps(payload).encode())
+                        # Ack for aido mid-run quota monitor (AI-CLI-57 / AIDO-48 T-04).
+                        if machine:
+                            await kv.put(
+                                f"quota.scrape.ack.{machine}",
+                                json.dumps({"scraped_at": time.time()}).encode(),
+                            )
                     except Exception:
                         pass
         finally:
@@ -797,9 +903,15 @@ def _try_read_kv_snapshot() -> dict | None:
     Returns the raw payload dict or None if NATS is unreachable or the key
     doesn't exist. Capped at 300ms total via a daemon thread join — never
     blocks the statusline for longer than that.
+
+    Reads from ``quota.claude.current.{AI_CLI_HOST}`` when ``AI_CLI_HOST`` is
+    set, falling back to the legacy ``quota.claude.current`` key otherwise.
     """
+    import os
     import threading
 
+    machine = os.environ.get("AI_CLI_HOST", "")
+    kv_key = f"quota.claude.current.{machine}" if machine else "quota.claude.current"
     result: list[dict | None] = [None]
 
     def _read() -> None:
@@ -821,7 +933,7 @@ def _try_read_kv_snapshot() -> dict | None:
                 await asyncio.wait_for(client.connect(), timeout=0.25)
                 if client.js:
                     kv = await asyncio.wait_for(client.js.key_value("hw_state"), timeout=0.1)
-                    entry = await asyncio.wait_for(kv.get("quota.claude.current"), timeout=0.1)
+                    entry = await asyncio.wait_for(kv.get(kv_key), timeout=0.1)
                     if entry.value is not None:
                         result[0] = json.loads(entry.value)
             except Exception:

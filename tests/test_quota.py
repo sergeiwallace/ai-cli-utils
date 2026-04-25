@@ -17,6 +17,7 @@ from ai_cli.quota import (
     _parse_reset_datetime,
     _parse_usage_output,
     _publish_quota_snapshot,
+    _run_nats_quota_listener,
     _scrape_usage_hidden_pane,
     _try_read_kv_snapshot,
     quota_record,
@@ -870,12 +871,14 @@ class TestPublishQuotaSnapshot:
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)  # must not raise
 
-    def test_when_js_available_then_writes_snapshot_to_kv(self):
+    def test_when_js_available_then_writes_snapshot_to_kv(self, monkeypatch):
+        monkeypatch.delenv("AI_CLI_HOST", raising=False)
         snap = QuotaSnapshot(weekly_all_models_pct=42.0, session_pct=5.0, weekly_sonnet_pct=20.0, extra_pct=1.0)
         mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)
-        mock_kv.put.assert_called_once()
+        # Snapshot key written (ack skipped when machine is empty)
+        assert mock_kv.put.call_count == 1
         key, value = mock_kv.put.call_args[0]
         assert key == "quota.claude.current"
         import json as _json
@@ -899,19 +902,20 @@ class TestPublishQuotaSnapshot:
         # despite KV failure.
         assert mock_client.publish.call_count == 2
 
-    def test_when_js_available_then_kv_key_is_quota_claude_current(self):
-        """KV key must be quota.claude.current (renamed from the older
-        quota.claude.weekly) so consumers read the latest snapshot from a
-        single canonical key."""
+    def test_when_js_available_then_kv_key_is_machine_suffixed(self, monkeypatch):
+        """KV key must be quota.claude.current.{machine} when AI_CLI_HOST is set.
+        Falls back to quota.claude.current (no suffix) when AI_CLI_HOST is unset.
+        The old quota.claude.weekly key must never be written."""
+        monkeypatch.setenv("AI_CLI_HOST", "test-host")
         snap = QuotaSnapshot(weekly_all_models_pct=33.0)
         mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
             _publish_quota_snapshot(snap)
-        key, _ = mock_kv.put.call_args[0]
-        assert key == "quota.claude.current"
-        # Regression guard: the old key name must not be written.
         written_keys = [call.args[0] for call in mock_kv.put.call_args_list]
+        assert "quota.claude.current.test-host" in written_keys
+        # Regression guard: old key names must not be written.
         assert "quota.claude.weekly" not in written_keys
+        assert "quota.claude.current" not in written_keys  # bare key replaced by suffixed
 
     def test_when_publish_then_also_publishes_to_humanware_subject(self, monkeypatch):
         """The second publish call targets hw.events.usage.claude.snapshot with a
@@ -1159,6 +1163,472 @@ class TestQuotaWatch:
         assert result == 0
         assert "failed to publish" in capsys.readouterr().err
 
+    def test_starts_nats_listener_thread_when_machine_is_set(self, monkeypatch):
+        """quota_watch starts the NATS listener daemon thread when AI_CLI_HOST is set."""
+        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            pass
+
+        mock_client.connect = fake_connect
+
+        def fake_sleep(_):
+            raise KeyboardInterrupt
+
+        started_names = []
+
+        real_thread = __import__("threading").Thread
+
+        def capturing_thread(*args, **kwargs):
+            t = real_thread(*args, **kwargs)
+            started_names.append(kwargs.get("name", ""))
+            return t
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
+            patch("ai_cli.quota._run_nats_quota_listener"),
+            patch("time.sleep", fake_sleep),
+            patch("threading.Thread", side_effect=capturing_thread),
+        ):
+            from ai_cli.quota import quota_watch
+
+            quota_watch()
+
+        assert "nats-quota-listener" in started_names
+
+    def test_no_listener_thread_when_machine_is_empty(self, monkeypatch):
+        """quota_watch does NOT start the listener thread when AI_CLI_HOST is unset."""
+        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            pass
+
+        mock_client.connect = fake_connect
+
+        def fake_sleep(_):
+            raise KeyboardInterrupt
+
+        started_names = []
+        real_thread = __import__("threading").Thread
+
+        def capturing_thread(*args, **kwargs):
+            t = real_thread(*args, **kwargs)
+            started_names.append(kwargs.get("name", ""))
+            return t
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("ai_cli.quota._get_claude_usage_snapshot", return_value=None),
+            patch("time.sleep", fake_sleep),
+            patch("threading.Thread", side_effect=capturing_thread),
+        ):
+            from ai_cli.quota import quota_watch
+
+            quota_watch()
+
+        assert "nats-quota-listener" not in started_names
+
+
+# --- _run_nats_quota_listener ---
+
+
+class TestRunNATSQuotaListener:
+    def _make_mock_client(self):
+        mock_client = MagicMock()
+        mock_client.nc = MagicMock()
+        mock_client.js = None
+
+        async def fake_connect():
+            pass
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.close = fake_close
+        return mock_client
+
+    def test_subscribes_to_machine_specific_subject(self):
+        """Listener subscribes to quota.scrape.request.{machine}."""
+        import threading
+
+        stop_event = threading.Event()
+        subscribed_subjects = []
+
+        mock_client = self._make_mock_client()
+
+        async def fake_subscribe(subject, cb):
+            subscribed_subjects.append(subject)
+            return MagicMock()
+
+        mock_client.nc.subscribe = fake_subscribe
+
+        async def fake_wait_for(coro, timeout):
+            return await coro
+
+        async def fake_sleep(n):
+            stop_event.set()
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("asyncio.wait_for", side_effect=fake_wait_for),
+            patch("asyncio.sleep", fake_sleep),
+        ):
+            _run_nats_quota_listener("hetzner", stop_event=stop_event)
+
+        assert "quota.scrape.request.hetzner" in subscribed_subjects
+
+    def test_launches_scrape_when_lock_absent(self, tmp_path):
+        """On scrape request, _launch_background_scrape called when no lock file."""
+        import threading
+
+        stop_event = threading.Event()
+        lock_path = tmp_path / "quota-scrape.lock"
+
+        mock_client = self._make_mock_client()
+        captured_cb = []
+
+        async def fake_subscribe(subject, cb):
+            captured_cb.append(cb)
+            return MagicMock()
+
+        mock_client.nc.subscribe = fake_subscribe
+
+        async def fake_sleep(n):
+            # Deliver a fake scrape request then stop
+            if captured_cb:
+                await captured_cb[0](MagicMock())
+            stop_event.set()
+
+        async def fake_wait_for(coro, timeout):
+            return await coro
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("asyncio.wait_for", side_effect=fake_wait_for),
+            patch("asyncio.sleep", fake_sleep),
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("ai_cli.quota._launch_background_scrape") as mock_launch,
+        ):
+            _run_nats_quota_listener("hetzner", stop_event=stop_event)
+
+        mock_launch.assert_called_once()
+
+    def test_skips_scrape_when_lock_exists(self, tmp_path):
+        """On scrape request, skip launch if lock file exists (scrape already running)."""
+        import threading
+
+        stop_event = threading.Event()
+        lock_path = tmp_path / "quota-scrape.lock"
+        lock_path.touch()
+
+        mock_client = self._make_mock_client()
+        captured_cb = []
+
+        async def fake_subscribe(subject, cb):
+            captured_cb.append(cb)
+            return MagicMock()
+
+        mock_client.nc.subscribe = fake_subscribe
+
+        async def fake_sleep(n):
+            if captured_cb:
+                await captured_cb[0](MagicMock())
+            stop_event.set()
+
+        async def fake_wait_for(coro, timeout):
+            return await coro
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("asyncio.wait_for", side_effect=fake_wait_for),
+            patch("asyncio.sleep", fake_sleep),
+            patch("ai_cli.quota._SCRAPE_LOCK_PATH", lock_path),
+            patch("ai_cli.quota._launch_background_scrape") as mock_launch,
+        ):
+            _run_nats_quota_listener("hetzner", stop_event=stop_event)
+
+        mock_launch.assert_not_called()
+
+    def test_publishes_heartbeat_via_kv(self):
+        """Listener writes heartbeat to hw_state[quota_watch.heartbeat.{machine}]."""
+        import threading
+
+        stop_event = threading.Event()
+        mock_client = self._make_mock_client()
+        mock_client.js = MagicMock()
+
+        heartbeat_keys = []
+
+        mock_kv = MagicMock()
+
+        async def fake_kv_put(key, value):
+            heartbeat_keys.append(key)
+
+        mock_kv.put = fake_kv_put
+
+        async def fake_key_value(bucket):
+            return mock_kv
+
+        mock_client.js.key_value = fake_key_value
+
+        async def fake_subscribe(subject, cb):
+            return MagicMock()
+
+        mock_client.nc.subscribe = fake_subscribe
+
+        call_count = 0
+
+        async def fake_sleep(n):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                stop_event.set()
+
+        async def fake_wait_for(coro, timeout):
+            return await coro
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("asyncio.wait_for", side_effect=fake_wait_for),
+            patch("asyncio.sleep", fake_sleep),
+            patch("ai_cli.quota.time") as mock_time,
+        ):
+            # Force heartbeat_interval condition to always be true
+            mock_time.time.return_value = 9999.0
+            _run_nats_quota_listener("hetzner", stop_event=stop_event)
+
+        assert any("quota_watch.heartbeat.hetzner" in k for k in heartbeat_keys)
+
+    def test_exits_cleanly_when_nats_unavailable(self):
+        """If NATS connect fails, listener exits without raising."""
+        import threading
+
+        stop_event = threading.Event()
+
+        mock_client = MagicMock()
+        mock_client.nc = None
+
+        async def fake_connect():
+            pass
+
+        mock_client.connect = fake_connect
+
+        async def fake_wait_for(coro, timeout):
+            return await coro
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch("asyncio.wait_for", side_effect=fake_wait_for),
+        ):
+            _run_nats_quota_listener("hetzner", stop_event=stop_event)
+        # No assertion needed — must not raise
+
+
+# --- _publish_quota_snapshot — KV key rename + ack (AI-CLI-57) ---
+
+
+class TestPublishQuotaSnapshotKV:
+    def _snap(self, pct: float = 60.0) -> QuotaSnapshot:
+        return QuotaSnapshot(weekly_all_models_pct=pct, session_pct=5.0)
+
+    def _make_mock_client(self):
+        mock_client = MagicMock()
+        mock_client.nc = MagicMock()
+        mock_client.js = MagicMock()
+
+        async def fake_connect():
+            pass
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.close = fake_close
+
+        async def fake_publish(subject, payload):
+            pass
+
+        mock_client.publish = fake_publish
+        return mock_client
+
+    def test_kv_write_uses_machine_suffix_when_ai_cli_host_set(self, monkeypatch):
+        """KV key is quota.claude.current.{machine} when AI_CLI_HOST is set."""
+        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+
+        mock_client = self._make_mock_client()
+        kv_written = {}
+        mock_kv = MagicMock()
+
+        async def fake_put(key, value):
+            kv_written[key] = value
+
+        mock_kv.put = fake_put
+
+        async def fake_key_value(bucket):
+            return mock_kv
+
+        mock_client.js.key_value = fake_key_value
+
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(self._snap())
+
+        assert "quota.claude.current.hetzner" in kv_written
+
+    def test_kv_write_uses_legacy_key_when_machine_empty(self, monkeypatch):
+        """KV key is quota.claude.current (no suffix) when AI_CLI_HOST is unset."""
+        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+
+        mock_client = self._make_mock_client()
+        kv_written = {}
+        mock_kv = MagicMock()
+
+        async def fake_put(key, value):
+            kv_written[key] = value
+
+        mock_kv.put = fake_put
+
+        async def fake_key_value(bucket):
+            return mock_kv
+
+        mock_client.js.key_value = fake_key_value
+
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(self._snap())
+
+        assert "quota.claude.current" in kv_written
+        assert "quota.claude.current." not in kv_written
+
+    def test_writes_ack_key_when_machine_set(self, monkeypatch):
+        """Ack is written to quota.scrape.ack.{machine} after snapshot."""
+        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+
+        mock_client = self._make_mock_client()
+        kv_written = {}
+        mock_kv = MagicMock()
+
+        async def fake_put(key, value):
+            kv_written[key] = value
+
+        mock_kv.put = fake_put
+
+        async def fake_key_value(bucket):
+            return mock_kv
+
+        mock_client.js.key_value = fake_key_value
+
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(self._snap())
+
+        assert "quota.scrape.ack.hetzner" in kv_written
+        import json
+
+        ack = json.loads(kv_written["quota.scrape.ack.hetzner"])
+        assert "scraped_at" in ack
+        assert isinstance(ack["scraped_at"], float)
+
+    def test_no_ack_key_when_machine_empty(self, monkeypatch):
+        """No ack key written when AI_CLI_HOST is unset."""
+        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+
+        mock_client = self._make_mock_client()
+        kv_written = {}
+        mock_kv = MagicMock()
+
+        async def fake_put(key, value):
+            kv_written[key] = value
+
+        mock_kv.put = fake_put
+
+        async def fake_key_value(bucket):
+            return mock_kv
+
+        mock_client.js.key_value = fake_key_value
+
+        with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
+            _publish_quota_snapshot(self._snap())
+
+        assert not any("scrape.ack" in k for k in kv_written)
+
+
+# --- _try_read_kv_snapshot — machine-suffixed key (AI-CLI-57) ---
+
+
+class TestTryReadKvSnapshotMachineKey:
+    def _make_mock_client_with_kv(self, read_keys: list):
+        mock_entry = MagicMock()
+        mock_entry.value = b'{"usage_percent": 55.0}'
+
+        mock_kv = MagicMock()
+
+        async def fake_get(key):
+            read_keys.append(key)
+            return mock_entry
+
+        mock_kv.get = fake_get
+
+        mock_client = MagicMock()
+        mock_client.js = MagicMock()
+        mock_client.nc = MagicMock()
+
+        async def fake_connect():
+            pass
+
+        async def fake_close():
+            pass
+
+        mock_client.connect = fake_connect
+        mock_client.close = fake_close
+
+        async def fake_key_value(bucket):
+            return mock_kv
+
+        mock_client.js.key_value = fake_key_value
+        return mock_client
+
+    def test_reads_machine_suffixed_key_when_ai_cli_host_set(self, monkeypatch):
+        """_try_read_kv_snapshot reads quota.claude.current.{machine} when AI_CLI_HOST set."""
+        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+
+        read_keys: list = []
+        mock_client = self._make_mock_client_with_kv(read_keys)
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch(
+                "ai_cli.config.load_config",
+                return_value={"messaging": {"nats_servers": ["nats://localhost:4222"]}},
+            ),
+        ):
+            _try_read_kv_snapshot()
+
+        assert any(k == "quota.claude.current.hetzner" for k in read_keys)
+
+    def test_reads_legacy_key_when_ai_cli_host_unset(self, monkeypatch):
+        """_try_read_kv_snapshot reads quota.claude.current (no suffix) when AI_CLI_HOST unset."""
+        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+
+        read_keys: list = []
+        mock_client = self._make_mock_client_with_kv(read_keys)
+
+        with (
+            patch("ai_cli.messaging.NATSClient", return_value=mock_client),
+            patch(
+                "ai_cli.config.load_config",
+                return_value={"messaging": {"nats_servers": ["nats://localhost:4222"]}},
+            ),
+        ):
+            _try_read_kv_snapshot()
+
+        assert any(k == "quota.claude.current" for k in read_keys)
+
 
 # --- quota_statusline_part ---
 
@@ -1174,7 +1644,11 @@ class TestQuotaStatuslinePart:
         qdb._get_conn().close()
         q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
         try:
-            with patch("subprocess.Popen") as mock_popen:
+            with (
+                patch("subprocess.Popen") as mock_popen,
+                # Ensure NATS KV returns no data so the no-snapshot path is taken.
+                patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
+            ):
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
@@ -1558,9 +2032,9 @@ class TestQuotaStatuslinePartLegacyDb:
                 result = quota_statusline_part()
             out = capsys.readouterr().out
             assert result == 0
-            assert "42%" in out, (
-                f"Expected quota output but got empty — legacy DB migration likely missing. out={out!r}"
-            )
+            assert (
+                "42%" in out
+            ), f"Expected quota output but got empty — legacy DB migration likely missing. out={out!r}"
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2005,9 +2479,9 @@ class TestStatuslineScript:
         result = self._run()
         assert result.returncode == 0
         non_empty = [line for line in result.stdout.split("\n") if line]
-        assert len(non_empty) == 1, (
-            f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
-        )
+        assert (
+            len(non_empty) == 1
+        ), f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
 
     def test_given_valid_input_when_run_then_output_ends_with_erase_to_eol(self):
         """ESC[K at end of output clears leftover chars when CC overwrites the status line in place."""
