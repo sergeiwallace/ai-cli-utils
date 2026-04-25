@@ -2,12 +2,12 @@
 title: "Windows Out-of-Box Support — Implementation Plan"
 category: plan
 tags: [windows, portability, cross-platform, AI-CLI-29]
-status: complete
+status: audit
 ---
 
 # Windows Out-of-Box Support — Implementation Plan
 
-**Status:** COMPLETE (2026-04-25)
+**Status:** AUDIT IN PROGRESS (2026-04-25)
 
 **Created:** 2026-04-24
 
@@ -632,4 +632,5 @@ helpful error if tmux is not found, rather than crashing with a cryptic subproce
 |------|-------|-----------|
 | 2026-04-25 | Round 1 | D1=C (portalocker+psutil hard deps). D2=plyer optional [notify-win] (no PowerShell). D3=Git Bash primary. D4=0.6.0 minor bump. ai c/ai g moved in scope — work in Git Bash with tmux via MSYS2. No test skipping — mock sys.platform instead. Status: DRAFT → APPROVED. |
 | 2026-04-25 | Round 2 | Batch 1 human gate removed — Gemini Flash research confirmed pip install works on Windows with all deps as pure-Python or pre-built wheels. Autonomous implementation approved for all 9 tasks. Two additional in-scope items added: console encoding (T-03) and os.replace() audit (T-02/T-04). |
-| 2026-04-25 | Complete | All 9 tasks (T-01–T-09) implemented and merged. 1767 tests passing (2 skipped). Version bumped to 0.6.0. CI matrix expanded to include windows-latest. All ACs verified. |
+| 2026-04-25 | Complete | All 9 tasks (T-01–T-09) implemented and merged. 1767 tests passing (2 skipped). Version bumped to 0.6.0. CI matrix expanded to include windows-latest. All ACs self-reported as verified. |
+| 2026-04-25 | Audit | Re-opened for independent implementation audit. Auditor to verify each AC in T-01–T-09 against actual code in src/ai_cli/. Fix any gaps found, re-run full test suite, then re-close. |
