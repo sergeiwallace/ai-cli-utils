@@ -506,18 +506,26 @@ class TestRunGemini:
 
 
 class TestGeminiCli:
-    def test_gemini_cli_when_prompt_given_then_runs(self, tmp_path):
-        ok = GeminiResult(content="cli ok", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+    """ai gemini (quick depth) is now a deprecated thin alias to aido research -d quick."""
+
+    def test_gemini_cli_when_prompt_given_then_delegates_to_aido(self):
+        with patch("subprocess.call", return_value=0) as mock_call:
             with pytest.raises(SystemExit) as exc:
                 gemini_cli(["test prompt", "-m", "flash"])
         assert exc.value.code == 0
-        mock_run.assert_called_once()
-        assert mock_run.call_args[0][0] == "test prompt"
+        cmd = mock_call.call_args[0][0]
+        assert cmd[:4] == ["aido", "research", "-d", "quick"]
+        assert "test prompt" in cmd
+        assert "-m" in cmd and "flash" in cmd
 
-    def test_gemini_cli_when_failure_then_exits_1(self, tmp_path):
-        fail = GeminiResult(model="flash", success=False, error="all tiers failed")
-        with patch("ai_cli.gemini.run_gemini", return_value=fail):
+    def test_gemini_cli_emits_deprecation_warning(self, capsys):
+        with patch("subprocess.call", return_value=0):
+            with pytest.raises(SystemExit):
+                gemini_cli(["prompt", "-m", "flash"])
+        assert "DeprecationWarning" in capsys.readouterr().err
+
+    def test_gemini_cli_when_failure_then_exits_nonzero(self):
+        with patch("subprocess.call", return_value=1):
             with pytest.raises(SystemExit) as exc:
                 gemini_cli(["test prompt"])
         assert exc.value.code == 1
@@ -534,58 +542,56 @@ class TestGeminiCli:
             gemini_cli(["   "])
         assert exc.value.code != 0
 
-    def test_gemini_cli_when_no_file_flag_then_passes_dev_null(self):
-        ok = GeminiResult(content="ok", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+    def test_gemini_cli_when_no_file_flag_then_no_output_arg_to_aido(self):
+        with patch("subprocess.call", return_value=0) as mock_call:
             with pytest.raises(SystemExit):
                 gemini_cli(["prompt", "--no-file"])
-        assert mock_run.call_args[1]["output"] == "/dev/null"
+        cmd = mock_call.call_args[0][0]
+        assert "-o" not in cmd
 
-    def test_gemini_cli_when_stdin_pipe_then_reads_stdin(self):
-        ok = GeminiResult(content="ok", model="flash", success=True)
+    def test_gemini_cli_when_stdin_pipe_then_passes_piped_prompt(self):
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = False
         mock_stdin.read.return_value = "piped prompt"
         with patch("sys.stdin", mock_stdin):
-            with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+            with patch("subprocess.call", return_value=0) as mock_call:
                 with pytest.raises(SystemExit):
                     gemini_cli([])
-        assert mock_run.call_args[0][0] == "piped prompt"
+        cmd = mock_call.call_args[0][0]
+        assert "piped prompt" in cmd
 
-    def test_gemini_cli_when_output_flag_then_passes_path(self):
-        ok = GeminiResult(content="ok", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+    def test_gemini_cli_when_output_flag_then_passes_output_to_aido(self):
+        with patch("subprocess.call", return_value=0) as mock_call:
             with pytest.raises(SystemExit):
                 gemini_cli(["prompt", "-o", "/tmp/test.md"])
-        assert mock_run.call_args[1]["output"] == "/tmp/test.md"
+        cmd = mock_call.call_args[0][0]
+        assert "-o" in cmd
+        assert "/tmp/test.md" in cmd
 
-    def test_gemini_cli_when_quiet_flag_then_passes_quiet(self):
-        ok = GeminiResult(content="ok", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+    def test_gemini_cli_when_quiet_flag_then_passes_quiet_to_aido(self):
+        with patch("subprocess.call", return_value=0) as mock_call:
             with pytest.raises(SystemExit):
                 gemini_cli(["prompt", "--quiet"])
-        assert mock_run.call_args[1]["quiet"] is True
+        cmd = mock_call.call_args[0][0]
+        assert "--quiet" in cmd
 
-    def test_gemini_cli_when_timeout_flag_then_passes_timeout(self):
-        ok = GeminiResult(content="ok", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
-            with pytest.raises(SystemExit):
+    def test_gemini_cli_when_timeout_flag_then_accepts_without_error(self):
+        with patch("subprocess.call", return_value=0):
+            with pytest.raises(SystemExit) as exc:
                 gemini_cli(["prompt", "--timeout", "120"])
-        assert mock_run.call_args[1]["timeout_s"] == 120
+        assert exc.value.code == 0
 
-    def test_gemini_cli_when_start_tier_flag_then_passes_start_tier(self):
-        ok = GeminiResult(content="ok", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
-            with pytest.raises(SystemExit):
+    def test_gemini_cli_when_start_tier_flag_then_accepts_without_error(self):
+        with patch("subprocess.call", return_value=0):
+            with pytest.raises(SystemExit) as exc:
                 gemini_cli(["prompt", "-s", "2"])
-        assert mock_run.call_args[1]["start_tier"] == 2
+        assert exc.value.code == 0
 
-    def test_gemini_cli_when_start_tier_long_flag_then_passes_start_tier(self):
-        ok = GeminiResult(content="ok", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
-            with pytest.raises(SystemExit):
+    def test_gemini_cli_when_start_tier_long_flag_then_accepts_without_error(self):
+        with patch("subprocess.call", return_value=0):
+            with pytest.raises(SystemExit) as exc:
                 gemini_cli(["prompt", "--start-tier", "3"])
-        assert mock_run.call_args[1]["start_tier"] == 3
+        assert exc.value.code == 0
 
 
 # --- Coverage gap tests ---

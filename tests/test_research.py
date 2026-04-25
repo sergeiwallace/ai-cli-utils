@@ -431,12 +431,13 @@ class TestGeminiCliDepthRouting:
         assert exc.value.code == 0
         mock_preset.assert_called_once_with("standard", planning_model_override=None)
 
-    def test_gemini_cli_when_depth_quick_then_routes_to_run_gemini(self):
-        ok = GeminiResult(content="quick result", model="flash", success=True)
-        with patch("ai_cli.gemini.run_gemini", return_value=ok) as mock_run:
+    def test_gemini_cli_when_depth_quick_then_delegates_to_aido(self):
+        with patch("subprocess.call", return_value=0) as mock_call:
             with pytest.raises(SystemExit) as exc:
                 from ai_cli.gemini import gemini_cli
 
                 gemini_cli(["test prompt", "-d", "quick"])
         assert exc.value.code == 0
-        mock_run.assert_called_once()
+        cmd = mock_call.call_args[0][0]
+        assert ["aido", "research", "-d", "quick"] == cmd[:4]
+        assert "test prompt" in cmd

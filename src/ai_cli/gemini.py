@@ -1000,6 +1000,11 @@ def gemini_cli(args: list[str]):
     )
     parsed = parser.parse_args(args)
 
+    print(
+        "DeprecationWarning: `ai gemini` is deprecated — use `aido research -d quick` instead.",
+        file=sys.stderr,
+    )
+
     # Get prompt from arg or stdin
     prompt = parsed.prompt
     if prompt is None:
@@ -1020,15 +1025,15 @@ def gemini_cli(args: list[str]):
         depth = "standard"  # resume always implies standard/deep
 
     if depth == "quick":
-        result = run_gemini(
-            prompt,
-            model=parsed.model,
-            output=output,
-            quiet=parsed.quiet,
-            verbose=parsed.verbose,
-            timeout_s=parsed.timeout,
-            start_tier=parsed.start_tier,
-        )
+        # Delegate to aido research -d quick (AIDO-47 D3 — ai gemini is a thin alias)
+        import subprocess
+
+        cmd = ["aido", "research", "-d", "quick", prompt, "-m", parsed.model]
+        if output and output != "/dev/null":
+            cmd += ["-o", output]
+        if parsed.quiet:
+            cmd.append("--quiet")
+        sys.exit(subprocess.call(cmd))
     else:
         from .research import load_depth_preset, run_standard
 

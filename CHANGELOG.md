@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- `ai gemini` (quick depth) is now a thin alias to `aido research -d quick`. Invocations
+  print a `DeprecationWarning` to stderr and delegate to `aido`. The `--depth standard`
+  path is unaffected. `ai gemini` will be removed in a future release (`AIDO-47`).
+
 ## [0.5.5] - 2026-04-25
 
 ### Fixed
