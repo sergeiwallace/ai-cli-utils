@@ -1992,7 +1992,7 @@ def cmd_ps(args):
 def cmd_sync(action, args):
     if not action:
         print(
-            "Usage: ai sync [push|pull|conflicts|watch|cleanup|repair-worktree] "
+            "Usage: ai sync [push|pull|conflicts|resolve|watch|cleanup|repair-worktree] "
             "[-m|--memories-only] [-n|--dry-run] [-v|--verbose] [-f|--force]"
         )
         sys.exit(1)
@@ -2000,6 +2000,7 @@ def cmd_sync(action, args):
         sync_push,
         sync_pull,
         sync_conflicts,
+        sync_resolve,
         sync_watch,
         repair_worktree_cc_dir,
         clean_worktree_cc_dirs,
@@ -2014,6 +2015,8 @@ def cmd_sync(action, args):
         sys.exit(sync_pull(flags))
     elif action == "conflicts":
         sys.exit(sync_conflicts(flags))
+    elif action == "resolve":
+        sys.exit(sync_resolve(flags))
     elif action == "watch":
         sys.exit(sync_watch(flags))
     elif action == "repair-worktree":

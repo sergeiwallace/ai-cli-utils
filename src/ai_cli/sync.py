@@ -875,20 +875,30 @@ def apply_pull_files(
                 has_conflict_markers = "<<<<<<<" in content and ">>>>>>>" in content
 
                 if has_conflict_markers:
-                    conflict_path = CONFLICT_DIR / bare_name / rel.with_suffix(rel.suffix + ".conflict")
-                    if not dry_run:
-                        conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, conflict_path)
-                    conflict_str = f"memory {bare_name}/{rel} — .conflict file written"
-                    conflicts.append(conflict_str)
-                    print(
-                        f"CONFLICT: {bare_name}/{rel} — resolve manually or in next CC session",
-                        file=sys.stderr,
-                    )
-                    # Queue staging update: overwrite the marker-laden staging file with
-                    # the local version so future pulls don't re-detect the same conflict.
-                    if dst.exists():
-                        staging_to_overwrite.append((dst, src))
+                    # Attempt LLM auto-merge before saving a conflict file.
+                    merged = _llm_merge_memory_conflict(content, src.name) if not dry_run else None
+                    if merged is not None:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        dst.write_text(merged, encoding="utf-8")
+                        src.write_text(merged, encoding="utf-8")  # Update staging to prevent re-detection
+                        applied_count += 1
+                        if verbose:
+                            print(f"  auto-merged: {bare_name}/{rel}")
+                    else:
+                        conflict_path = CONFLICT_DIR / bare_name / rel.with_suffix(rel.suffix + ".conflict")
+                        if not dry_run:
+                            conflict_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src, conflict_path)
+                        conflict_str = f"memory {bare_name}/{rel} — .conflict file written"
+                        conflicts.append(conflict_str)
+                        print(
+                            f"CONFLICT: {bare_name}/{rel} — resolve manually with: ai sync resolve",
+                            file=sys.stderr,
+                        )
+                        # Queue staging update: overwrite the marker-laden staging file with
+                        # the local version so future pulls don't re-detect the same conflict.
+                        if dst.exists():
+                            staging_to_overwrite.append((dst, src))
                 else:
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1222,6 +1232,48 @@ def is_cc_active_locally() -> bool:
     """Check if Claude Code is active on this machine."""
     result = subprocess.run(["pgrep", "-f", "claude"], capture_output=True)
     return result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# LLM memory merge
+# ---------------------------------------------------------------------------
+
+
+def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> Optional[str]:
+    """Use Gemini Flash to resolve git conflict markers in a memory markdown file.
+
+    Returns merged content without conflict markers, or None if merge fails
+    (no API key, network error, or LLM left markers in the output).
+    """
+    import os
+
+    api_key = os.environ.get("GOOGLE_API_KEY_TIER_1") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        from google import genai  # type: ignore
+
+        client = genai.Client(api_key=api_key)
+        prompt = (
+            f"You are resolving a git merge conflict in a memory file named '{filename}'.\n"
+            "The file has git conflict markers (<<<<<<, =======, >>>>>>>).\n"
+            "Merge both versions, preserving ALL information from both sides.\n"
+            "Rules:\n"
+            "- Keep ALL entries from both the HEAD (<<<<<<) and incoming (>>>>>>>) sections.\n"
+            "- For duplicate keys with different values, prefer the HEAD version (local machine).\n"
+            "- Remove ALL conflict markers from the output.\n"
+            "- Preserve original structure, headings, and markdown formatting.\n"
+            "- Output ONLY the merged file content. No explanation, no preamble.\n\n"
+            f"{conflict_content}"
+        )
+        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        merged = response.text
+        if "<<<<<<<" in merged or ">>>>>>>" in merged:
+            return None  # LLM failed to resolve all markers
+        return merged
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1750,6 +1802,147 @@ def sync_conflicts(flags: list[str]) -> int:
                 print(f"  {line}")
 
     return 2 if conflict_files else 0
+
+
+def sync_resolve(flags: list[str]) -> int:
+    """Scan and resolve accumulated conflict files.
+
+    - JSONL conflict backups: delete them (local already won via staging-overwrite).
+    - Memory .conflict files: attempt LLM merge, apply result, clean up.
+    - Cascading .conflict.conflict files: delete (bug artifacts from old code).
+
+    Exit codes: 0 = all resolved, 1 = some memory files could not be auto-merged
+    """
+    dry_run = "--dry-run" in flags or "-n" in flags
+    verbose = "--verbose" in flags or "-v" in flags
+
+    try:
+        cfg = load_sync_config()
+    except Exception as e:
+        print(f"Error loading sync config: {e}", file=sys.stderr)
+        return 1
+
+    cc_projects_dir = _cc_projects_dir()
+    jsonl_deleted = 0
+    mem_merged = 0
+    mem_failed = 0
+    artifacts_deleted = 0
+
+    def _resolve_memory_conflict_file(f: Path, local_cc_file: Optional[Path]) -> str:
+        """Attempt to resolve one .conflict file. Returns 'merged', 'failed', or 'no_markers'."""
+        content = f.read_text(errors="replace")
+        if "<<<<<<<" not in content or ">>>>>>>" not in content:
+            if not dry_run:
+                f.unlink()
+            return "no_markers"
+        merged = _llm_merge_memory_conflict(content, f.stem)
+        if merged:
+            if not dry_run:
+                if local_cc_file and local_cc_file.exists():
+                    local_cc_file.write_text(merged, encoding="utf-8")
+                f.unlink()
+            return "merged"
+        return "failed"
+
+    # Process new location: ~/.claude-sync-conflicts/
+    if CONFLICT_DIR.exists():
+        for f in sorted(CONFLICT_DIR.rglob("*")):
+            if not f.is_file() or f.name == ".DS_Store":
+                continue
+
+            if f.name.startswith("conflict-") and f.suffix == ".jsonl":
+                if verbose:
+                    print(f"  rm (jsonl backup): {f.relative_to(CONFLICT_DIR)}")
+                if not dry_run:
+                    f.unlink()
+                jsonl_deleted += 1
+
+            elif ".conflict.conflict" in f.name:
+                if verbose:
+                    print(f"  rm (cascading artifact): {f.relative_to(CONFLICT_DIR)}")
+                if not dry_run:
+                    f.unlink()
+                artifacts_deleted += 1
+
+            elif f.suffix == ".conflict":
+                rel = f.relative_to(CONFLICT_DIR)
+                parts = rel.parts
+                if len(parts) < 2:
+                    continue
+                bare_name = parts[0]
+                rel_in_project = Path(*parts[1:]).with_suffix("")
+                cc_dir_name = denormalize_project_name(bare_name, cfg.local_prefix)
+                local_cc_file = cc_projects_dir / cc_dir_name / rel_in_project
+                outcome = _resolve_memory_conflict_file(f, local_cc_file)
+                if verbose:
+                    print(f"  {outcome}: {rel}")
+                if outcome == "merged":
+                    mem_merged += 1
+                elif outcome == "failed":
+                    mem_failed += 1
+                else:
+                    artifacts_deleted += 1
+
+    # Process legacy location: .conflict files inside CC projects dir
+    if cc_projects_dir.exists():
+        for f in sorted(cc_projects_dir.rglob("*")):
+            if not f.is_file() or f.name == ".DS_Store":
+                continue
+
+            if f.name.startswith("conflict-") and f.suffix == ".jsonl":
+                if verbose:
+                    print(f"  rm (legacy jsonl backup): {f.name}")
+                if not dry_run:
+                    f.unlink()
+                jsonl_deleted += 1
+
+            elif ".conflict.conflict" in f.name:
+                if verbose:
+                    print(f"  rm (legacy cascading): {f.name}")
+                if not dry_run:
+                    f.unlink()
+                artifacts_deleted += 1
+
+            elif f.suffix == ".conflict":
+                local_cc_file = f.with_suffix("")
+                outcome = _resolve_memory_conflict_file(f, local_cc_file)
+                if verbose:
+                    print(f"  {outcome}: {f.name}")
+                if outcome == "merged":
+                    mem_merged += 1
+                elif outcome == "failed":
+                    mem_failed += 1
+                else:
+                    artifacts_deleted += 1
+
+    # Remove empty conflict subdirectories
+    if not dry_run and CONFLICT_DIR.exists():
+        for d in sorted(CONFLICT_DIR.iterdir(), reverse=True):
+            if d.is_dir():
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+
+    prefix = "[dry-run] " if dry_run else ""
+    total = jsonl_deleted + artifacts_deleted + mem_merged + mem_failed
+    if total == 0:
+        print(f"{prefix}No conflict files found.")
+    else:
+        if jsonl_deleted:
+            print(f"{prefix}Removed {jsonl_deleted} stale JSONL conflict backup(s).")
+        if artifacts_deleted:
+            print(f"{prefix}Removed {artifacts_deleted} cascading conflict artifact(s).")
+        if mem_merged:
+            print(f"{prefix}LLM-merged {mem_merged} memory conflict file(s).")
+        if mem_failed:
+            print(
+                f"{prefix}Could not auto-merge {mem_failed} memory file(s) — "
+                "no API key or LLM error. Resolve manually: ai sync conflicts",
+                file=sys.stderr,
+            )
+
+    return 1 if mem_failed > 0 else 0
 
 
 def _pid_file_path(name: str) -> Path:
