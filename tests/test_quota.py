@@ -2032,9 +2032,9 @@ class TestQuotaStatuslinePartLegacyDb:
                 result = quota_statusline_part()
             out = capsys.readouterr().out
             assert result == 0
-            assert (
-                "42%" in out
-            ), f"Expected quota output but got empty — legacy DB migration likely missing. out={out!r}"
+            assert "42%" in out, (
+                f"Expected quota output but got empty — legacy DB migration likely missing. out={out!r}"
+            )
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2479,9 +2479,9 @@ class TestStatuslineScript:
         result = self._run()
         assert result.returncode == 0
         non_empty = [line for line in result.stdout.split("\n") if line]
-        assert (
-            len(non_empty) == 1
-        ), f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
+        assert len(non_empty) == 1, (
+            f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
+        )
 
     def test_given_valid_input_when_run_then_output_ends_with_erase_to_eol(self):
         """ESC[K at end of output clears leftover chars when CC overwrites the status line in place."""
