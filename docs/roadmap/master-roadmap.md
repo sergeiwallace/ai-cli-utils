@@ -10,7 +10,7 @@
 
 - [x] `[P0]` `[AI-CLI-55]` **Add Sonnet quota % to statusline** — Shipped v0.5.3. Format: `📊 42% W ✅ →8% | 87% S`. Labels: W = weekly all-models, S = weekly Sonnet. Sonnet color-coded independently (<50% green, <75% yellow, ≥75% red). When Sonnet absent: dimmed `-% S` + immediate background scrape. 2 new tests; 11 existing tests updated.
 
-- [x] `[P0]` `[AI-CLI-59]` **Bug: iTerm2 session name changes to random names** — Fixed 2026-04-25. Root cause: `_do_session_launch` used stale shell-env ITERM_SESSION_ID (not updated on re-attach) for `_iterm_env_flags` and `_new_iterm_id`. Fix: extracted `_get_current_iterm_session_id()` helper that reads from tmux session env when inside tmux. 6 tests added. Bug doc updated (Bug 10 in `docs/bugs/iterm2-title-color-system.md`).
+- [ ] `[P0]` `[AI-CLI-59]` **Bug: iTerm2 session name changes to random names** — REOPENED 2026-04-25 — bug persists after initial fix. Previous fix (reading from tmux session env) may itself introduce a new code path that sets wrong GUIDs when `ai c N` is launched from inside an existing tmux session. Root cause under investigation. Bug doc: `docs/bugs/iterm2-title-color-system.md` (Bug 10).
 
 - [ ] `[P1]` `[AI-CLI-64]` **Improve quota statusline format — Sonnet pace %, label repositioning, clearer dividers** — Current format: `📊 42% W ✅ →8% | 87% S`. Requested: (1) Add Sonnet pace % (currently only all-models pace `→8%` shown). (2) Move W/S labels to LEFT of values — e.g. `W 42% →8% | S 87% →X%`. (3) Rename labels for clarity — options: `Week`/`Son`, `W`/`S` with color, or similar — decision TBD. (4) Clearer visual divider between all-models section and Sonnet section. Spec updates in `docs/designs/claude-usage-telemetry.md`.
 
