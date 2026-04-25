@@ -4832,3 +4832,248 @@ def test_sync_resolve_handles_legacy_conflict_files_in_cc_projects_dir(tmp_path)
     assert result == 0
     # Legacy conflict file removed (no markers → artifact)
     assert not legacy_conflict.exists()
+
+
+# ---------------------------------------------------------------------------
+# apply_pull_files — staging_to_commit populated on LLM merge success
+# ---------------------------------------------------------------------------
+
+
+def test_apply_pull_files_when_llm_merge_succeeds_then_staging_to_commit_populated(tmp_path):
+    """LLM merge success must populate staging_to_commit so sync_pull can commit+push it.
+    Without this, the staging file is written on disk but never committed, and the next
+    git fetch+merge re-introduces the conflict-marker content from the remote."""
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
+
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    conflict_content = "<<<<<<< HEAD\n- local\n=======\n- remote\n>>>>>>> main\n"
+    staging_mem = staging_dir / "myproject" / "memory" / "notes.md"
+    staging_mem.write_text(conflict_content)
+
+    (cc_projects_dir / "-Users-user-projects-myproject").mkdir(parents=True)
+
+    merged = "- local\n- remote\n"
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._llm_merge_memory_conflict", return_value=merged):
+            result = apply_pull_files(
+                staging_dir=staging_dir,
+                cc_projects_dir=cc_projects_dir,
+                local_prefix=_MAC_PREFIX,
+                memories_only=False,
+                verbose=False,
+                dry_run=False,
+            )
+
+    # staging_to_commit must contain the staging file so sync_pull can git-add+commit+push it
+    assert staging_mem in result["staging_to_commit"]
+    # No conflicts — LLM resolved it
+    assert result["conflicts"] == []
+
+
+def test_apply_pull_files_when_llm_merge_fails_then_staging_to_overwrite_populated(tmp_path):
+    """LLM merge failure must populate staging_to_overwrite (copy local→staging then commit).
+    This overwrites the conflict-marker content in staging with the clean local file, so
+    future pulls see 'identical' instead of re-detecting the same conflict."""
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
+
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    conflict_content = "<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n"
+    (staging_dir / "myproject" / "memory" / "notes.md").write_text(conflict_content)
+
+    local_project = cc_projects_dir / "-Users-user-projects-myproject" / "memory"
+    local_project.mkdir(parents=True)
+    (local_project / "notes.md").write_text("clean local content\n")
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._llm_merge_memory_conflict", return_value=None):
+            result = apply_pull_files(
+                staging_dir=staging_dir,
+                cc_projects_dir=cc_projects_dir,
+                local_prefix=_MAC_PREFIX,
+                memories_only=False,
+                verbose=False,
+                dry_run=False,
+            )
+
+    # staging_to_overwrite holds (local_cc_file, staging_file) so sync_pull can copy+commit+push
+    overwrite_staging_files = [staging_dst for _, staging_dst in result["staging_to_overwrite"]]
+    staging_mem = staging_dir / "myproject" / "memory" / "notes.md"
+    assert staging_mem in overwrite_staging_files
+    assert len(result["conflicts"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# sync_pull — staging commit+push after conflict resolution
+# ---------------------------------------------------------------------------
+
+
+def _make_pull_cfg(tmp_path):
+    from ai_cli.sync import SyncConfig
+
+    return SyncConfig(
+        remote_host="host",
+        remote_url="ssh://host/repo.git",
+        staging_dir=tmp_path / "staging",
+        source_machine="mac",
+        local_prefix=_MAC_PREFIX,
+    )
+
+
+def test_sync_pull_when_jsonl_conflict_then_staging_commit_and_push(tmp_path):
+    """After a JSONL divergence, sync_pull must commit the staging overwrite AND push it
+    to remote. Without the push the next pull re-fetches the diverged content and re-fires
+    the notification — the double-fire bug observed in the April 20 conflict log."""
+    cfg = _make_pull_cfg(tmp_path)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    local_file = cc_dir / "conflict.jsonl"
+    local_file.write_text('{"type":"human"}\n')
+    staging_file = cfg.staging_dir / "conflict.jsonl"
+    (cfg.staging_dir).mkdir(parents=True)
+    staging_file.write_text('{"type":"human"}\n{"type":"ai"}\n')
+
+    push_called = []
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files",
+                                return_value={
+                                    "conflicts": ["jsonl myproject/conv.jsonl — remote saved as ..."],
+                                    "applied_count": 0,
+                                    "staging_to_overwrite": [(local_file, staging_file)],
+                                    "staging_to_commit": [],
+                                },
+                            ):
+                                with patch("ai_cli.sync.translate_history_jsonl"):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries"):
+                                            with patch("ai_cli.sync.notify_conflicts"):
+                                                with patch(
+                                                    "ai_cli.sync._push_to_remote",
+                                                    side_effect=lambda *a, **kw: push_called.append(True),
+                                                ):
+                                                    result = sync_pull([])
+
+    assert result == 2
+    # Push must be called so the remote staging repo reflects "take local"
+    assert push_called, "staging remote push was not called after JSONL conflict resolution"
+
+
+def test_sync_pull_when_llm_merge_succeeded_then_staging_commit_and_push(tmp_path):
+    """When LLM merge succeeded (no conflicts in result), sync_pull must still commit
+    and push the staging_to_commit files. Without this the merged content lives only in
+    the staging working directory; the next git fetch+merge overwrites it from the remote,
+    re-introducing the conflict markers."""
+    cfg = _make_pull_cfg(tmp_path)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+    (cfg.staging_dir).mkdir(parents=True)
+    staging_file = cfg.staging_dir / "merged.md"
+    staging_file.write_text("merged content\n")
+
+    push_called = []
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files",
+                                return_value={
+                                    "conflicts": [],
+                                    "applied_count": 1,
+                                    "staging_to_overwrite": [],
+                                    "staging_to_commit": [staging_file],
+                                },
+                            ):
+                                with patch("ai_cli.sync.translate_history_jsonl"):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries"):
+                                            with patch(
+                                                "ai_cli.sync._push_to_remote",
+                                                side_effect=lambda *a, **kw: push_called.append(True),
+                                            ):
+                                                result = sync_pull([])
+
+    assert result == 0  # No unresolved conflicts
+    assert push_called, "staging remote push was not called after LLM merge commit"
+
+
+def test_sync_pull_when_no_staging_changes_then_no_push(tmp_path):
+    """When apply_pull_files reports no staging changes, sync_pull must not call push.
+    Pushing on every clean pull would add unnecessary latency."""
+    cfg = _make_pull_cfg(tmp_path)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    push_called = []
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files",
+                                return_value={
+                                    "conflicts": [],
+                                    "applied_count": 2,
+                                    "staging_to_overwrite": [],
+                                    "staging_to_commit": [],
+                                },
+                            ):
+                                with patch("ai_cli.sync.translate_history_jsonl"):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries"):
+                                            with patch(
+                                                "ai_cli.sync._push_to_remote",
+                                                side_effect=lambda *a, **kw: push_called.append(True),
+                                            ):
+                                                result = sync_pull([])
+
+    assert result == 0
+    assert not push_called, "push was called on a clean pull with no staging changes"
+
+
+def test_sync_pull_when_dry_run_with_conflicts_then_no_staging_commit_or_push(tmp_path):
+    """Dry-run must never write to staging or push, even when conflicts are reported."""
+    cfg = _make_pull_cfg(tmp_path)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    push_called = []
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                with patch(
+                    "ai_cli.sync.apply_pull_files",
+                    return_value={
+                        "conflicts": ["memory proj/notes.md — .conflict file written"],
+                        "applied_count": 0,
+                        "staging_to_overwrite": [],
+                        "staging_to_commit": [],
+                    },
+                ):
+                    with patch(
+                        "ai_cli.sync._push_to_remote",
+                        side_effect=lambda *a, **kw: push_called.append(True),
+                    ):
+                        result = sync_pull(["--dry-run"])
+
+    assert result == 2
+    assert not push_called, "push was called in dry-run mode"

@@ -798,6 +798,8 @@ def apply_pull_files(
     # Files where staging should be overwritten with local to prevent re-detection.
     # Populated during divergence handling; committed to staging after apply loop.
     staging_to_overwrite: list[tuple[Path, Path]] = []  # (local_src, staging_dst)
+    # Staging files already written directly (e.g. LLM merge) that need git commit.
+    staging_to_commit: list[Path] = []
 
     for staging_project_dir in sorted(staging_dir.iterdir()):
         if not staging_project_dir.is_dir() or staging_project_dir.name.startswith("."):
@@ -880,7 +882,8 @@ def apply_pull_files(
                     if merged is not None:
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         dst.write_text(merged, encoding="utf-8")
-                        src.write_text(merged, encoding="utf-8")  # Update staging to prevent re-detection
+                        src.write_text(merged, encoding="utf-8")  # Update staging file
+                        staging_to_commit.append(src)  # Track for git commit+push
                         applied_count += 1
                         if verbose:
                             print(f"  auto-merged: {bare_name}/{rel}")
@@ -922,6 +925,7 @@ def apply_pull_files(
         "conflicts": conflicts,
         "applied_count": applied_count,
         "staging_to_overwrite": staging_to_overwrite,
+        "staging_to_commit": staging_to_commit,
     }
 
 
@@ -1738,28 +1742,38 @@ def sync_pull(flags: list[str]) -> int:
         retranslate_project_jsonls(verbose=verbose)
         purge_phantom_history_entries(verbose=verbose)
 
-    if result["conflicts"]:
-        if not dry_run:
-            notify_conflicts(result["conflicts"])
-            # Overwrite staging with local versions so future pulls don't
-            # re-detect the same divergence and fire repeated notifications.
-            overwrites = result.get("staging_to_overwrite", [])
-            if overwrites:
-                for local_src, staging_dst in overwrites:
-                    shutil.copy2(local_src, staging_dst)
-                git_add = subprocess.run(
-                    ["git", "add"] + [str(p) for _, p in overwrites],
+    if not dry_run:
+        # Commit and push any staging files that were modified during apply:
+        # - staging_to_overwrite: local won a divergence, copy local → staging then commit
+        # - staging_to_commit: LLM-merged content already written to staging file directly
+        # Without this push, the remote staging repo still has the old content, so the
+        # next pull re-fetches it and re-detects the same conflict, firing again.
+        staging_to_commit: list[Path] = list(result.get("staging_to_commit", []))
+        overwrites = result.get("staging_to_overwrite", [])
+        if overwrites:
+            for local_src, staging_dst in overwrites:
+                shutil.copy2(local_src, staging_dst)
+            staging_to_commit.extend(staging_dst for _, staging_dst in overwrites)
+        if staging_to_commit:
+            git_add = subprocess.run(
+                ["git", "add"] + [str(p) for p in staging_to_commit],
+                cwd=cfg.staging_dir,
+                capture_output=True,
+                env=_GIT_ENV,
+            )
+            if git_add.returncode == 0:
+                commit = subprocess.run(
+                    ["git", "commit", "-m", "sync: update staging after conflict resolution"],
                     cwd=cfg.staging_dir,
                     capture_output=True,
                     env=_GIT_ENV,
                 )
-                if git_add.returncode == 0:
-                    subprocess.run(
-                        ["git", "commit", "-m", "resolve conflicts (take local)"],
-                        cwd=cfg.staging_dir,
-                        capture_output=True,
-                        env=_GIT_ENV,
-                    )
+                if commit.returncode == 0:
+                    _push_to_remote(cfg.staging_dir, verbose=False)
+
+    if result["conflicts"]:
+        if not dry_run:
+            notify_conflicts(result["conflicts"])
         return 2
 
     return 0
