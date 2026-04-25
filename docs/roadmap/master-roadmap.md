@@ -16,6 +16,8 @@
 
 - [ ] `[P1]` `[AI-CLI-61]` **Windows notifications / backend system for project repos** — Follow-up to AI-CLI-29. Design and implement a Windows-compatible notification and backend system that replaces the Mac/Linux-specific humanware/NATS patterns. Targets: (1) plyer-based toast notifications with deep link support, (2) lightweight file-based or SQLite event bus as NATS substitute on Windows, (3) session state persistence compatible with Windows paths and filesystem semantics. Plan doc required before implementation.
 
+- [ ] `[P2]` `[AI-CLI-63]` **sync_repos — auto-pull affected project repos after ai sync pull** — After a successful `ai sync pull`, identify affected project repos from updated CC dirs and pull them safely. Safety matrix: clean tree → `git pull --rebase`; dirty worktree → skip + log (CC session state determines log severity: idle vs actively executing); dirty main tree → stash + pull + pop + warn. Not called in `--memories-only` or `--dry-run` mode. Plan: `docs/plans/sync-repo-pull-plan.md`.
+
 - [ ] `[P0]` `[AI-CLI-53]` **Design/plan doc audit** — review all docs in `docs/designs/` and `docs/plans/`: for unimplemented docs without roadmap tasks, create the task; for completed docs, verify full implementation + robust tests + updated docs. Also update any design/plan docs informed by research docs corrected in this project's citation validation reports — ensure downstream design decisions remain accurate. Procedure: `~/projects/sergei/docs/plans/design-plan-doc-audit.md`.
 
 - [x] `[AI-CLI-54]` **`ai gemini` video analysis** — Migrated to aido as AIDO-46 (2026-04-23).
