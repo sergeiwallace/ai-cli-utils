@@ -31,10 +31,40 @@ narrative grounded in the research domain.
 - `gemini-3-flash-preview` — simple factual lookups, single-source verification only
 - `deep-research` — broad multi-source research requiring web + reasoning
 
-**Prompt patterns:**
-- **Temporal scope (required for all prompts)** — every prompt must include a temporal scope statement. For AI/ML and cutting-edge tech research: weight 2026 (primary) → 2025 → 2024; pre-2024 is background context only unless foundational. Include this as a hard constraint inside `<grounding_instructions>`: "Weight sources by recency: 2026 (primary) → 2025 → 2024. Pre-2024 sources are background context only unless foundational to the topic. If post-2024 literature is genuinely sparse for a subtopic, state '[subtopic]: no significant post-2024 developments found' rather than backfilling with older sources. Backfilling is a failure mode, not a hedge." Adjust the window as appropriate — e.g., historical/legal/foundational topics may warrant broader scope.
-- **Gap-fill / temporal-scoping** — add a hard constraint inside `<grounding_instructions>`: "if [period] is genuinely thin, '[period]: no significant new developments found' is the correct answer. Do not backfill with [earlier period] sources. Backfilling is a failure mode, not a hedge." Generic `[NO SOURCE FOUND]` alone is insufficient — naming the failure prevents it.
-- **Follow-up / sequential runs** — add a `## Background` section at the top of the prompt body (before questions, outside `<grounding_instructions>`) summarizing what prior runs found: "Assume all Background points are established and do not re-derive them." This scopes the model to the delta.
+**Temporal scope (required for all prompts):**
+
+Every prompt must include an explicit temporal scope statement. The default window
+depends on the research domain — adapt to context, no strict rules:
+
+| Domain | Default window | Notes |
+|--------|---------------|-------|
+| AI/ML, agentic AI, LLMs, ML infra | **2026 primary → 2025 → 2024 foundational** | Fast-moving field; pre-2024 is background context only |
+| Distributed systems, databases, cloud | 2024–2026 current; 2020–2023 for foundational patterns | More stable; older patterns remain authoritative |
+| Regulatory / compliance / legal | Broad — regulations may predate 2024 | Use full history; flag year of enactment |
+| Historical / foundational research | No cutoff — use judgment | Cite publication date; distinguish era from current state |
+
+**Backfill-prevention (hard constraint):** If a period is genuinely thin for a
+subtopic, the correct answer is *"[subtopic]: no significant [period] developments
+found"* — not substitution with older material. Generic `[NO SOURCE FOUND]` alone
+is insufficient; naming the gap prevents backfilling. This constraint belongs both
+in the prompt body and inside `<grounding_instructions>`.
+
+**Where temporal scope belongs in the prompt:**
+
+1. As a dedicated `## Temporal Scope` section in the prompt body (before the first
+   question section) — visible upfront, scopes the entire research task
+2. As the opening clause of `<grounding_instructions>` — re-applied at CoVe
+   verification time, catching any drift toward older sources during generation
+
+**Other prompt patterns:**
+
+- **References as starting points** — named projects, papers, and systems in a
+  prompt are illustrative anchors only. Always instruct the model to explore beyond
+  them and surface relevant work not listed. Anchor bias is a real failure mode.
+- **Follow-up / sequential runs** — add a `## Background` section at the top of the
+  prompt body (before questions, outside `<grounding_instructions>`) summarizing
+  what prior runs found: "Assume all Background points are established and do not
+  re-derive them." This scopes the model to the delta.
 
 **Research run process:**
 1. Run research — pipe output directly to `docs/research/<topic>.md`
@@ -86,7 +116,7 @@ to satisfy a formatting instruction. Accuracy > completeness.
 Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
-```text
+```
 
 ## Table of Contents
 
@@ -126,7 +156,6 @@ NEVER generate binary images.
 ---
 
 ## Completed
-
 
 ### R-1: Open-Source Python CLI Package Best Practices — SW-672
 
@@ -303,8 +332,18 @@ NEVER generate binary images.
 <summary>Prompt (R-N)</summary>
 
 ```text
-[Full prompt text here. Must include grounding_instructions block at the end.]
-```text
+## Temporal Scope
+
+[State the temporal scope. Example for AI/ML topics:
+"Prioritize 2026 sources. Use 2025 freely. Use pre-2025 only when foundational
+or when no later source exists. If a subtopic has no significant post-2024
+developments, state so explicitly — do not backfill. Backfilling is a failure
+mode." Adjust the window for the research domain.]
+
+---
+
+[Prompt questions here. grounding_instructions block at the end.]
+```
 
 </details>
 

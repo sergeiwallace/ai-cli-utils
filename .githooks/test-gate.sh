@@ -15,6 +15,15 @@ if [ "${SKIP_TESTS:-0}" = "1" ]; then
     exit 0
 fi
 
+# Docs-only bypass: if every file changed since origin/main is non-code, skip tests.
+# Covers .md, .yaml/.yml, .toml, .txt, .json, and anything under docs/ or .claude/.
+_CHANGED=$(git diff --name-only "origin/main..HEAD" 2>/dev/null || git diff --name-only "HEAD~1..HEAD" 2>/dev/null || true)
+if [ -n "$_CHANGED" ] && ! echo "$_CHANGED" | grep -qvE '(^docs/|^\.claude/|^\.githooks/|\.md$|\.yaml$|\.yml$|\.toml$|\.txt$|\.json$)'; then
+    echo "[test-gate] Docs-only push — skipping test gate"
+    exit 0
+fi
+unset _CHANGED
+
 # HEAD-sentinel cache: if tests already passed on this HEAD, skip the re-run.
 # Sentinel is written at end of this script after all tests pass; it's also
 # written by running this script directly (e.g. `bash .githooks/test-gate.sh`
