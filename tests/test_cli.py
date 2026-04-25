@@ -1900,7 +1900,7 @@ class TestTunnel:
         (tmp_path / "tunnel-9222.pid").write_text("5555")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel._pid_alive", return_value=True),
             patch("subprocess.Popen") as mock_popen,
         ):
             _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
@@ -1912,7 +1912,7 @@ class TestTunnel:
         mock_proc.pid = 7777
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill", side_effect=ProcessLookupError),
+            patch("ai_cli.tunnel._pid_alive", return_value=False),
             patch("shutil.which", return_value="/usr/bin/autossh"),
             patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
         ):
@@ -1954,14 +1954,15 @@ class TestTunnel:
                 _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
             assert exc.value.code == 1
 
-    def test_cmd_tunnel_stop_when_pid_file_exists_then_kills_and_removes(self, tmp_path):
+    def test_cmd_tunnel_stop_when_pid_file_exists_then_terminates_and_removes(self, tmp_path):
         (tmp_path / "tunnel-9222.pid").write_text("5678")
+        mock_proc = MagicMock()
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill") as mock_kill,
+            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
         ):
             _cmd_tunnel_stop(9222)
-        mock_kill.assert_called_once_with(5678, 15)
+        mock_proc.terminate.assert_called_once()
         assert not (tmp_path / "tunnel-9222.pid").exists()
 
     def test_cmd_tunnel_stop_when_no_pid_file_then_silent(self, tmp_path):
@@ -1972,7 +1973,7 @@ class TestTunnel:
         (tmp_path / "tunnel-9222.pid").write_text("4242")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel._pid_alive", return_value=True),
         ):
             _cmd_tunnel_status()
         out = capsys.readouterr().out
@@ -2011,7 +2012,7 @@ class TestTunnel:
         cfg = {**_TUNNEL_CONFIG, "messaging": {"tunnel_port": 4222}}
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel._pid_alive", return_value=True),
             patch("subprocess.Popen") as mock_popen,
         ):
             _ensure_nats_tunnel(cfg)

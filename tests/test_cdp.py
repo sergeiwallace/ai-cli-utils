@@ -146,7 +146,7 @@ class TestCmdCdpStart:
         pid_file.write_text("55555")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel._pid_alive", return_value=True),
             patch("subprocess.Popen") as mock_popen,
         ):
             _cmd_cdp_start(9222, True, {})
@@ -161,7 +161,7 @@ class TestCmdCdpStart:
         mock_proc.pid = 66666
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill", side_effect=ProcessLookupError),
+            patch("ai_cli.tunnel._pid_alive", return_value=False),
             patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
             patch("subprocess.Popen", return_value=mock_proc),
             patch("urllib.request.urlopen"),
@@ -271,35 +271,41 @@ class TestCmdCdpStart:
 
 
 class TestCmdCdpStop:
-    def test_when_running_then_sends_sigterm_and_removes_pid(self, tmp_path, capsys):
+    def test_when_running_then_terminates_and_removes_pid(self, tmp_path, capsys):
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
+        mock_proc = MagicMock()
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill") as mock_kill,
+            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
         ):
             _cmd_cdp_stop(9222)
 
-        mock_kill.assert_called_once_with(12345, 15)
+        mock_proc.terminate.assert_called_once()
         assert not pid_file.exists()
         assert "stopped" in capsys.readouterr().out
 
     def test_when_no_pid_file_then_prints_message_and_returns(self, tmp_path, capsys):
+        mock_proc = MagicMock()
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill") as mock_kill,
+            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
         ):
             _cmd_cdp_stop(9222)
 
-        mock_kill.assert_not_called()
+        mock_proc.terminate.assert_not_called()
         assert "No CDP process registered" in capsys.readouterr().out
 
     def test_when_process_already_dead_then_still_removes_pid_file(self, tmp_path):
+        import psutil as _psutil
+
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
+        mock_proc = MagicMock()
+        mock_proc.terminate.side_effect = _psutil.NoSuchProcess(12345)
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill", side_effect=ProcessLookupError),
+            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
         ):
             _cmd_cdp_stop(9222)
 
@@ -308,20 +314,22 @@ class TestCmdCdpStop:
     def test_when_custom_port_then_reads_correct_pid_file(self, tmp_path):
         pid_file = tmp_path / "cdp-9333.pid"
         pid_file.write_text("77777")
+        mock_proc = MagicMock()
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill") as mock_kill,
+            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
         ):
             _cmd_cdp_stop(9333)
 
-        mock_kill.assert_called_once_with(77777, 15)
+        mock_proc.terminate.assert_called_once()
 
     def test_when_tunnel_true_then_calls_tunnel_stop(self, tmp_path):
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
+        mock_proc = MagicMock()
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
             patch("ai_cli.tunnel._cmd_tunnel_stop") as mock_tunnel_stop,
         ):
             _cmd_cdp_stop(9222, tunnel=True)
@@ -331,9 +339,10 @@ class TestCmdCdpStop:
     def test_when_tunnel_false_then_does_not_call_tunnel_stop(self, tmp_path):
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
+        mock_proc = MagicMock()
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
             patch("ai_cli.tunnel._cmd_tunnel_stop") as mock_tunnel_stop,
         ):
             _cmd_cdp_stop(9222)
@@ -357,7 +366,7 @@ class TestCmdCdpStatus:
         (tmp_path / "cdp-9222.pid").write_text("12345")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel._pid_alive", return_value=True),
         ):
             _cmd_cdp_status()
 
@@ -368,7 +377,7 @@ class TestCmdCdpStatus:
         pid_file.write_text("12345")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill", side_effect=ProcessLookupError),
+            patch("ai_cli.tunnel._pid_alive", return_value=False),
         ):
             _cmd_cdp_status()
 
@@ -380,7 +389,7 @@ class TestCmdCdpStatus:
         (tmp_path / "cdp-9333.pid").write_text("222")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill"),
+            patch("ai_cli.tunnel._pid_alive", return_value=True),
         ):
             _cmd_cdp_status()
 

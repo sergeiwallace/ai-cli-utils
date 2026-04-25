@@ -3,7 +3,6 @@
 Depends on: config.py
 """
 
-import fcntl
 import json
 import os
 import re
@@ -12,6 +11,8 @@ import sys
 import time
 import tomllib
 from pathlib import Path
+
+import portalocker
 
 from .config import get_xdg_config_home, get_xdg_state_home
 
@@ -190,7 +191,7 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
     lock_path = _iterm2_state_dir() / "color-leases.lock"
 
     with open(lock_path, "w") as lock_fd:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        portalocker.lock(lock_fd, portalocker.LOCK_EX)
         try:
             leases: dict = {}
             if lease_file.exists():
@@ -200,14 +201,13 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
                     leases = {}
 
             # Prune stale leases (dead PIDs)
+            import psutil
+
             active: dict = {}
             for name, info in leases.items():
                 pid = info.get("pid", 0)
-                try:
-                    os.kill(pid, 0)
+                if psutil.pid_exists(pid):
                     active[name] = info
-                except (ProcessLookupError, PermissionError):
-                    pass
 
             occupied = {info["slot"] for info in active.values()}
 
@@ -238,7 +238,7 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
             active[ai_name] = {"slot": slot_idx, "pid": os.getpid(), "ts": str(time.time())}
             lease_file.write_text(json.dumps({"leases": active}, indent=2))
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            portalocker.unlock(lock_fd)
 
     return color_hex
 
@@ -250,7 +250,7 @@ def _release_iterm2_color_slot(ai_name: str) -> None:
         return
     lock_path = _iterm2_state_dir() / "color-leases.lock"
     with open(lock_path, "w") as lock_fd:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        portalocker.lock(lock_fd, portalocker.LOCK_EX)
         try:
             leases: dict = {}
             try:
@@ -260,7 +260,7 @@ def _release_iterm2_color_slot(ai_name: str) -> None:
             leases.pop(ai_name, None)
             lease_file.write_text(json.dumps({"leases": leases}, indent=2))
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            portalocker.unlock(lock_fd)
 
 
 def _iterm2_session_type(engine: str) -> str:

@@ -1119,6 +1119,20 @@ def _do_session_launch(
     extra_args: "list[str]",
     config: dict,
 ) -> None:
+    # On Windows, tmux must be installed via MSYS2 (pacman -S tmux). Give a
+    # clear message rather than crashing with a cryptic FileNotFoundError.
+    if sys.platform == "win32":
+        import shutil
+
+        if not shutil.which("tmux"):
+            print(
+                "Error: tmux not found. Install it via MSYS2:\n"
+                "  pacman -S tmux\n"
+                "See docs for details: https://github.com/sergeiwallace/ai-cli-utils#windows",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
     is_remote = _session._resolve_is_remote(is_remote)

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import signal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 from ai_cli.process_hygiene import (
@@ -516,52 +515,70 @@ class TestCollectRemoteProcesses:
 
 
 class TestAutoCleanOrphans:
-    def test_given_orphaned_local_process_when_cleaned_then_sigterm_sent(self, tmp_path):
+    def _mock_terminate(self, side_effect=None):
+        """Return a context-manager that mocks psutil.Process.terminate()."""
+        mock_proc = MagicMock()
+        if side_effect is not None:
+            mock_proc.terminate.side_effect = side_effect
+        return patch("psutil.Process", return_value=mock_proc), mock_proc
+
+    def test_given_orphaned_local_process_when_cleaned_then_terminate_called(self, tmp_path):
         proc = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
-        with patch("os.kill") as mock_kill:
+        ctx, mock_proc = self._mock_terminate()
+        with ctx:
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt")
-        mock_kill.assert_called_once_with(9999, signal.SIGTERM)
+        mock_proc.terminate.assert_called_once()
         assert len(killed) == 1
 
     def test_given_remote_orphaned_process_when_cleaned_then_skipped(self, tmp_path):
         proc = _proc(pid=9999, verdict="orphaned", score=90, machine="remote")
-        with patch("os.kill") as mock_kill:
+        ctx, mock_proc = self._mock_terminate()
+        with ctx:
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt")
-        mock_kill.assert_not_called()
+        mock_proc.terminate.assert_not_called()
         assert killed == []
 
     def test_given_suspect_process_when_cleaned_then_skipped(self, tmp_path):
         proc = _proc(pid=9999, verdict="suspect", score=55, machine="local")
-        with patch("os.kill") as mock_kill:
+        ctx, mock_proc = self._mock_terminate()
+        with ctx:
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt")
-        mock_kill.assert_not_called()
+        mock_proc.terminate.assert_not_called()
         assert killed == []
 
     def test_given_already_dead_process_when_cleaned_then_counted_as_killed(self, tmp_path):
+        import psutil as _psutil
+
         proc = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
-        with patch("os.kill", side_effect=ProcessLookupError):
+        ctx, _ = self._mock_terminate(side_effect=_psutil.NoSuchProcess(9999))
+        with ctx:
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt")
         assert len(killed) == 1  # already dead — counts as cleaned
 
     def test_given_permission_error_when_cleaned_then_not_in_killed(self, tmp_path):
+        import psutil as _psutil
+
         proc = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
-        with patch("os.kill", side_effect=PermissionError):
+        ctx, _ = self._mock_terminate(side_effect=_psutil.AccessDenied(9999))
+        with ctx:
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt")
         assert killed == []
 
     def test_given_killed_process_when_log_path_writable_then_log_written(self, tmp_path):
         proc = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
         log = tmp_path / "log.txt"
-        with patch("os.kill"):
+        ctx, _ = self._mock_terminate()
+        with ctx:
             auto_clean_orphans([proc], log_path=log)
         assert log.exists()
         assert "9999" in log.read_text()
 
-    def test_given_dry_run_when_called_then_no_sigterm_sent(self, tmp_path):
+    def test_given_dry_run_when_called_then_no_terminate_called(self, tmp_path):
         proc = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
-        with patch("os.kill") as mock_kill:
+        ctx, mock_proc = self._mock_terminate()
+        with ctx:
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt", dry_run=True)
-        mock_kill.assert_not_called()
+        mock_proc.terminate.assert_not_called()
         assert len(killed) == 1
 
     def test_given_no_orphans_when_cleaned_then_no_log_written(self, tmp_path):

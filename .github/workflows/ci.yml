@@ -45,3 +45,16 @@ jobs:
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --dev
+      - run: uv run pytest --tb=short -q

@@ -3,12 +3,12 @@
 Depends on: config.py.
 """
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
 
-from .config import get_xdg_state_home
+
+from .config import _pid_alive, get_xdg_state_home
 
 
 def _ensure_circusd() -> str:
@@ -27,8 +27,9 @@ def _ensure_circusd() -> str:
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # raises ProcessLookupError if dead
-        except (ValueError, ProcessLookupError, PermissionError):
+            if not _pid_alive(pid):
+                raise ProcessLookupError(pid)
+        except (ValueError, ProcessLookupError):
             for _stale in ("circus.endpoint", "circus.pubsub", "circusd.pid"):
                 (state_dir / _stale).unlink(missing_ok=True)
 

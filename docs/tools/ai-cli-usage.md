@@ -49,6 +49,11 @@ ai --version   # print installed version
 ai -V          # same, short form
 ```text
 
+### Platform support
+
+- **Linux / macOS**: full feature set.
+- **Windows (MSYS2 / Git Bash)**: core session management and sync work out of the box. Requires tmux installed via MSYS2 (`pacman -S tmux`). The following features are unavailable on Windows: remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), iTerm2 color slot management. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
+
 Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai handoff post --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
 ### Module layout

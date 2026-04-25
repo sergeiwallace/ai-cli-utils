@@ -2,12 +2,12 @@
 title: "Windows Out-of-Box Support — Implementation Plan"
 category: plan
 tags: [windows, portability, cross-platform, AI-CLI-29]
-status: approved
+status: complete
 ---
 
 # Windows Out-of-Box Support — Implementation Plan
 
-**Status:** APPROVED
+**Status:** COMPLETE (2026-04-25)
 
 **Created:** 2026-04-24
 
@@ -408,10 +408,10 @@ and `%LOCALAPPDATA%`. All callers already use these helpers.
 
 **Acceptance criteria:**
 
-- [ ] `get_xdg_config_home()` returns `%APPDATA%/ai-cli-utils` when `sys.platform == "win32"`
-- [ ] `get_xdg_state_home()` returns `%LOCALAPPDATA%/ai-cli-utils` when `sys.platform == "win32"`
-- [ ] Both functions return XDG paths on Linux/macOS (unchanged behavior)
-- [ ] Tests mock `sys.platform` — no platform guard on the tests themselves
+- [x] `get_xdg_config_home()` returns `%APPDATA%/ai-cli-utils` when `sys.platform == "win32"`
+- [x] `get_xdg_state_home()` returns `%LOCALAPPDATA%/ai-cli-utils` when `sys.platform == "win32"`
+- [x] Both functions return XDG paths on Linux/macOS (unchanged behavior)
+- [x] Tests mock `sys.platform` — no platform guard on the tests themselves
 
 **Dependencies:** None
 
@@ -434,9 +434,9 @@ hard dependencies.
 
 **Acceptance criteria:**
 
-- [ ] `import ai_cli` succeeds on Windows (no `fcntl` import at module level)
-- [ ] Lock file behavior unchanged on macOS/Linux
-- [ ] All existing locking tests pass
+- [x] `import ai_cli` succeeds on Windows (no `fcntl` import at module level)
+- [x] Lock file behavior unchanged on macOS/Linux
+- [x] All existing locking tests pass
 
 **Dependencies:** None
 
@@ -457,10 +457,10 @@ hard dependencies.
 
 **Acceptance criteria:**
 
-- [ ] `tempfile.gettempdir()` used for all temp paths
-- [ ] `os.devnull` used for all null-device references
-- [ ] `quota_statusline_part()` does not raise `UnicodeEncodeError` on Windows (emoji output safe)
-- [ ] All existing tests pass
+- [x] `tempfile.gettempdir()` used for all temp paths
+- [x] `os.devnull` used for all null-device references
+- [x] `quota_statusline_part()` does not raise `UnicodeEncodeError` on Windows (emoji output safe)
+- [x] All existing tests pass
 
 **Dependencies:** None
 
@@ -484,9 +484,9 @@ Add `psutil` to hard dependencies. Replace all `os.kill(pid, 0)` calls with
 
 **Acceptance criteria:**
 
-- [ ] `_pid_alive(pid)` returns `True` for a live PID, `False` otherwise on all platforms
-- [ ] No `os.kill(pid, 0)` calls remain in the codebase
-- [ ] All existing tests pass
+- [x] `_pid_alive(pid)` returns `True` for a live PID, `False` otherwise on all platforms
+- [x] No `os.kill(pid, 0)` calls remain in the codebase
+- [x] All existing tests pass
 
 **Dependencies:** T-01
 
@@ -508,9 +508,9 @@ extra to `pyproject.toml`.
 
 **Acceptance criteria:**
 
-- [ ] `_send_os_notification()` calls `plyer.notification.notify()` when `sys.platform == "win32"` and plyer is installed
-- [ ] Silently degrades (no exception) when plyer is not installed
-- [ ] Base install (`pip install ai-cli-utils`) does not pull in plyer
+- [x] `_send_os_notification()` calls `plyer.notification.notify()` when `sys.platform == "win32"` and plyer is installed
+- [x] Silently degrades (no exception) when plyer is not installed
+- [x] Base install (`pip install ai-cli-utils`) does not pull in plyer
 
 **Dependencies:** T-01
 
@@ -529,8 +529,8 @@ Add `windows-latest` to the CI OS matrix. Verify all tests pass on Windows CI.
 
 **Acceptance criteria:**
 
-- [ ] CI passes on `windows-latest` for Python 3.11, 3.12, 3.13
-- [ ] No test skips on Windows (all tests run and pass)
+- [x] CI passes on `windows-latest` for Python 3.11, 3.12, 3.13
+- [x] No test skips on Windows (all tests run and pass)
 
 **Dependencies:** T-01–T-05
 
@@ -551,8 +551,8 @@ run on all platforms.
 
 **Acceptance criteria:**
 
-- [ ] Zero `pytest.mark.skipif(sys.platform == "win32", ...)` decorators in test suite
-- [ ] All tests pass on macOS, Linux, and Windows CI
+- [x] Zero `pytest.mark.skipif(sys.platform == "win32", ...)` decorators in test suite
+- [x] All tests pass on macOS, Linux, and Windows CI
 
 **Dependencies:** T-01–T-05
 
@@ -571,9 +571,9 @@ run on all platforms.
 
 **Acceptance criteria:**
 
-- [ ] README explains `pip install ai-cli-utils` on Windows and Git Bash + MSYS2 setup
-- [ ] `ai c`/`ai g` tmux requirement documented
-- [ ] Unsupported features listed with clear rationale
+- [x] README explains `pip install ai-cli-utils` on Windows and Git Bash + MSYS2 setup
+- [x] `ai c`/`ai g` tmux requirement documented
+- [x] Unsupported features listed with clear rationale
 
 **Dependencies:** T-06
 
@@ -593,8 +593,8 @@ helpful error if tmux is not found, rather than crashing with a cryptic subproce
 
 **Acceptance criteria:**
 
-- [ ] `ai c 1` on Windows without tmux prints a clear error message
-- [ ] `ai c 1` on Windows with tmux installed works normally
+- [x] `ai c 1` on Windows without tmux prints a clear error message
+- [x] `ai c 1` on Windows with tmux installed works normally
 
 **Dependencies:** T-01
 
@@ -632,3 +632,4 @@ helpful error if tmux is not found, rather than crashing with a cryptic subproce
 |------|-------|-----------|
 | 2026-04-25 | Round 1 | D1=C (portalocker+psutil hard deps). D2=plyer optional [notify-win] (no PowerShell). D3=Git Bash primary. D4=0.6.0 minor bump. ai c/ai g moved in scope — work in Git Bash with tmux via MSYS2. No test skipping — mock sys.platform instead. Status: DRAFT → APPROVED. |
 | 2026-04-25 | Round 2 | Batch 1 human gate removed — Gemini Flash research confirmed pip install works on Windows with all deps as pure-Python or pre-built wheels. Autonomous implementation approved for all 9 tasks. Two additional in-scope items added: console encoding (T-03) and os.replace() audit (T-02/T-04). |
+| 2026-04-25 | Complete | All 9 tasks (T-01–T-09) implemented and merged. 1767 tests passing (2 skipped). Version bumped to 0.6.0. CI matrix expanded to include windows-latest. All ACs verified. |

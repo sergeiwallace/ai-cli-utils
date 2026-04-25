@@ -20,12 +20,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal as _signal
 import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
+
+import psutil
 
 ORPHAN_THRESHOLD = 80
 SUSPECT_THRESHOLD = 40
@@ -62,8 +63,8 @@ def _clean_stale_transport_files() -> None:
         try:
             data = json.loads(f.read_text())
             parent_pid = data.get("parent_pid")
-            if parent_pid:
-                os.kill(parent_pid, 0)  # 0 = check existence only
+            if parent_pid and not psutil.pid_exists(parent_pid):
+                raise ProcessLookupError(parent_pid)
         except (ProcessLookupError, PermissionError):
             f.unlink(missing_ok=True)
         except Exception:
@@ -570,11 +571,11 @@ def auto_clean_orphans(
             killed.append(proc)
             continue
         try:
-            os.kill(proc.pid, _signal.SIGTERM)
+            psutil.Process(proc.pid).terminate()
             killed.append(proc)
-        except ProcessLookupError:
+        except psutil.NoSuchProcess:
             killed.append(proc)  # already dead — count as cleaned
-        except PermissionError:
+        except (PermissionError, psutil.AccessDenied):
             pass
 
     if killed and not dry_run:

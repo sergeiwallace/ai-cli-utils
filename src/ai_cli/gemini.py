@@ -1018,7 +1018,7 @@ def gemini_cli(args: list[str]):
 
     output = parsed.output
     if parsed.no_file:
-        output = "/dev/null"  # effectively discard
+        output = os.devnull  # effectively discard
 
     depth = parsed.depth
     if parsed.resume and depth == "quick":

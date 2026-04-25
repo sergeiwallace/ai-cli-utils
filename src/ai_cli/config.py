@@ -14,6 +14,16 @@ from pathlib import Path
 # --- XDG Directory Support ---
 
 
+def _pid_alive(pid: int) -> bool:
+    """Return True if a process with the given PID exists, False otherwise.
+
+    Uses psutil for cross-platform correctness (Windows, macOS, Linux).
+    """
+    import psutil
+
+    return psutil.pid_exists(pid)
+
+
 def _migrate_xdg_dir(old: Path, new: Path) -> Path:
     """Rename old XDG dir to new name if old exists and new does not."""
     if old.exists() and not new.exists():
@@ -21,18 +31,27 @@ def _migrate_xdg_dir(old: Path, new: Path) -> Path:
     return new
 
 
-def get_xdg_config_home():
-    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+def get_xdg_config_home() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "ai-cli-utils"
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
-def get_xdg_state_home():
-    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+def get_xdg_state_home() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "ai-cli-utils"
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
-def get_xdg_cache_home():
-    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+def get_xdg_cache_home() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "ai-cli-utils" / "cache"
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 

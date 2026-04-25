@@ -18,6 +18,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+# Windows cp1252 cannot encode the emoji used in statusline output (📊, ✅, etc.).
+# Reconfigure stdout to UTF-8 with replacement on errors so emoji never crashes the process.
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 
 __all__ = ["QuotaSnapshot", "read_latest_snapshot"]
 

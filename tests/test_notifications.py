@@ -365,6 +365,60 @@ class TestSendOsNotification:
         assert r.success is False
         assert r.channel == "os"
 
+    def test_when_win32_and_plyer_installed_then_calls_plyer_notify(self):
+        mock_plyer = MagicMock()
+        with (
+            patch("sys.platform", "win32"),
+            patch.dict("sys.modules", {"plyer": mock_plyer, "plyer.notification": mock_plyer.notification}),
+            patch("builtins.__import__", wraps=_make_plyer_import(mock_plyer)),
+        ):
+            r = _send_os_notification("Alert", "Details")
+        assert r.success is True
+        assert r.channel == "os"
+
+    def test_when_win32_and_plyer_not_installed_then_returns_success(self):
+        """Silently degrades when plyer is not installed — no crash, success=True."""
+
+        def raise_import(name, *args, **kwargs):
+            if name == "plyer":
+                raise ImportError("plyer not installed")
+            return original_import(name, *args, **kwargs)
+
+        import builtins
+
+        original_import = builtins.__import__
+        with (
+            patch("sys.platform", "win32"),
+            patch("builtins.__import__", side_effect=raise_import),
+        ):
+            r = _send_os_notification("Alert", "Details")
+        assert r.success is True
+
+    def test_when_win32_and_subprocess_not_called(self):
+        """On Windows, subprocess.run must never be called (no osascript / notify-send)."""
+        mock_plyer = MagicMock()
+        with (
+            patch("sys.platform", "win32"),
+            patch("subprocess.run") as mock_run,
+            patch("builtins.__import__", wraps=_make_plyer_import(mock_plyer)),
+        ):
+            _send_os_notification("Alert", "Body")
+        mock_run.assert_not_called()
+
+
+def _make_plyer_import(mock_plyer):
+    """Helper: returns an __import__ side-effect that resolves 'plyer' to mock_plyer."""
+    import builtins
+
+    original = builtins.__import__
+
+    def _import(name, *args, **kwargs):
+        if name == "plyer":
+            return mock_plyer
+        return original(name, *args, **kwargs)
+
+    return _import
+
 
 class TestNotifierLog:
     def test_when_quota_db_raises_then_no_crash(self):

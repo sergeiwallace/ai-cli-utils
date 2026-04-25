@@ -1972,10 +1972,11 @@ def _acquire_pid_file(name: str) -> bool:
     if pid_path.exists():
         try:
             old_pid = int(pid_path.read_text().strip())
-            # Check if process is alive
-            os.kill(old_pid, 0)
-            return False  # Another instance is running
-        except (ValueError, ProcessLookupError, PermissionError):
+            from .config import _pid_alive
+
+            if _pid_alive(old_pid):
+                return False  # Another instance is running
+        except ValueError:
             pass  # Stale PID file
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()))

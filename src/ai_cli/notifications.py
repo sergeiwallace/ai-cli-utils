@@ -10,9 +10,11 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from dataclasses import dataclass
 
 
@@ -225,7 +227,12 @@ def _send_ntfy(ntfy_url: str, token: str, title: str, body: str, priority: str, 
 
 
 def _send_os_notification(title: str, body: str) -> NotificationResult:
-    """Fire an OS-native desktop notification (osascript on macOS, notify-send on Linux)."""
+    """Fire an OS-native desktop notification.
+
+    - macOS: osascript
+    - Windows: plyer (optional extra ``[notify-win]``); silently degrades if not installed
+    - Linux/other: notify-send
+    """
     try:
         if sys.platform == "darwin":
             subprocess.run(
@@ -233,6 +240,13 @@ def _send_os_notification(title: str, body: str) -> NotificationResult:
                 capture_output=True,
                 timeout=5,
             )
+        elif sys.platform == "win32":
+            try:
+                from plyer import notification as _plyer_notify
+
+                _plyer_notify.notify(title=title, message=body, app_name="ai-cli-utils")
+            except ImportError:
+                pass  # [notify-win] extra not installed — silently degrade
         else:
             subprocess.run(["notify-send", title, body], capture_output=True, timeout=5)
         return NotificationResult(channel="os", success=True)
@@ -245,7 +259,7 @@ class NotificationManager:
 
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.lock_file = __import__("pathlib").Path(f"/tmp/ai-batch-{session_id}.lock")
+        self.lock_file = Path(tempfile.gettempdir()) / f"ai-batch-{session_id}.lock"
 
     def _is_suppressed(self) -> bool:
         return self.lock_file.exists()

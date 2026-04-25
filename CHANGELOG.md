@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   print a `DeprecationWarning` to stderr and delegate to `aido`. The `--depth standard`
   path is unaffected. `ai gemini` will be removed in a future release (`AIDO-47`).
 
+## [0.6.0] - 2026-04-25
+
+### Added
+
+- Windows out-of-box support (`AI-CLI-29`):
+  - Platform-aware config/state/cache paths: `%APPDATA%\ai-cli-utils` (config), `%LOCALAPPDATA%\ai-cli-utils` (state/cache) on Windows; XDG paths unchanged on Linux/macOS.
+  - Replaced `fcntl.flock` with `portalocker` (cross-platform file locking); `portalocker>=2.0` is now a hard dependency.
+  - Added `psutil>=5.9` as a hard dependency; extracted `_pid_alive()` helper in `config.py` using `psutil.pid_exists()`. All `os.kill(pid, 0)` calls eliminated.
+  - `SIGTERM` calls replaced with `psutil.Process(pid).terminate()` (cross-platform).
+  - Lock file paths use `tempfile.gettempdir()` instead of `/tmp` literals.
+  - Null device references use `os.devnull` instead of `"/dev/null"`.
+  - UTF-8 stdout guard in `quota.py` prevents `UnicodeEncodeError` for emoji output on Windows (cp1252 default encoding).
+  - `ai c`/`ai g` on Windows prints a clear error and MSYS2 install instructions if `tmux` is not found.
+  - Optional `[notify-win]` extra (`pip install "ai-cli-utils[notify-win]"`) enables Windows toast notifications via `plyer`. Silently degrades if not installed.
+  - CI matrix expanded to include `windows-latest` for Python 3.11, 3.12, 3.13.
+
 ## [0.5.5] - 2026-04-25
 
 ### Fixed

@@ -449,10 +449,14 @@ class TestCmdTunnelStartNoHost:
 
 class TestCmdTunnelStopProcessDead:
     def test_when_process_already_dead_then_cleans_up_pid_file(self, tmp_path, capsys):
+        import psutil as _psutil
+
         pid_file = tmp_path / "tunnel-9222.pid"
         pid_file.write_text("99999")
+        mock_proc = MagicMock()
+        mock_proc.terminate.side_effect = _psutil.NoSuchProcess(99999)
         with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
-            with patch("os.kill", side_effect=ProcessLookupError):
+            with patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc):
                 _cmd_tunnel_stop(9222)
         assert not pid_file.exists()
         assert "stopped" in capsys.readouterr().out.lower()
@@ -472,7 +476,7 @@ class TestCmdTunnelStatus:
         pid_file.write_text("99999")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("os.kill", side_effect=ProcessLookupError),
+            patch("ai_cli.tunnel._pid_alive", return_value=False),
         ):
             _cmd_tunnel_status()
         assert "dead" in capsys.readouterr().out
@@ -826,3 +830,77 @@ class TestEnsureCircusd:
         ):
             with pytest.raises(RuntimeError, match="circusd did not start in time"):
                 _ensure_circusd()
+
+
+class TestDoSessionLaunchWindowsTmuxGuard:
+    """T-09: on Windows without tmux, _do_session_launch exits with a clear error."""
+
+    def _base_kwargs(self):
+        return dict(
+            engine="c",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=True,
+            sandbox=False,
+            no_worktree=False,
+            remote=False,
+            project="",
+            is_remote=False,
+            project_prefix_override="test",
+            extra_args=[],
+            config={},
+        )
+
+    def test_when_win32_and_tmux_not_found_then_exits_with_message(self, capsys):
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "win32"),
+            patch("shutil.which", return_value=None),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(**self._base_kwargs())
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "tmux" in err
+        assert "MSYS2" in err or "pacman" in err
+
+    def test_when_win32_and_tmux_found_then_does_not_exit_early(self, capsys):
+        from ai_cli.main import _do_session_launch
+
+        # With tmux present on "Windows", the guard passes and execution continues
+        # into the normal launch path (which we stop at session resolution)
+        with (
+            patch("sys.platform", "win32"),
+            patch("shutil.which", return_value="/usr/bin/tmux"),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("ai_cli.main._emit_iterm2_profile_setup"),
+            patch("ai_cli.main._assign_iterm2_color_slot", return_value=None),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(**self._base_kwargs())
+        # Exit must not be the tmux-not-found exit (1) — it's 0 (subprocess mock)
+        # confirming the guard was passed
+        assert exc_info.value.code != 1 or "tmux not found" not in (capsys.readouterr().err)
+
+    def test_when_non_windows_and_tmux_not_found_then_no_guard_exit(self):
+        """Guard must not fire on Linux/macOS even if tmux is absent."""
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "linux"),
+            patch("shutil.which", return_value=None),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(**self._base_kwargs())
+        # Should reach subprocess.run (SystemExit 0) not the guard (SystemExit 1)
+        assert exc_info.value.code != 1

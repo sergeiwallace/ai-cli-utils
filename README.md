@@ -54,6 +54,26 @@ Or with pipx:
 pipx install ai-cli-utils
 ```text
 
+### Windows
+
+Windows is supported via [MSYS2](https://www.msys2.org/) + Git Bash. Before installing:
+
+1. Install [MSYS2](https://www.msys2.org/) and add it to your PATH.
+2. Install tmux inside MSYS2: `pacman -S tmux`
+3. Install Python 3.11+ from [python.org](https://www.python.org/downloads/) (the standard Windows installer).
+4. Install the package: `uv tool install ai-cli-utils` (or `pipx install ai-cli-utils`)
+
+For Windows toast notifications, install the optional extra:
+
+```bash
+uv tool install "ai-cli-utils[notify-win]"
+```text
+
+**Unsupported on Windows:**
+- `ai c -R` / remote sessions (requires SSH + mosh)
+- `ai tunnel` (requires autossh)
+- iTerm2 color slot management (macOS-only)
+
 ## Quick Start
 
 ```bash
@@ -274,10 +294,10 @@ export AI_CLI_HOST=mac    # or "hetzner", "work-laptop", etc.
 ## Requirements
 
 - Python 3.11+
-- [tmux](https://github.com/tmux/tmux)
+- [tmux](https://github.com/tmux/tmux) (on Windows: install via MSYS2 — `pacman -S tmux`)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-- [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH)
-- [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`)
+- [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH; Linux/macOS only)
+- [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`; Linux/macOS only)
 - [NATS](https://nats.io/) (optional — enables real-time handoff delivery, sync watch, and session events; see [NATS Setup Guide](docs/guides/nats-setup.md))
 
 ## Contributing

@@ -3,7 +3,6 @@
 Depends on: config.py, transport.py.
 """
 
-import os
 import shutil
 import subprocess
 import sys
@@ -12,7 +11,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .config import get_xdg_state_home
+import psutil
+
+from .config import _pid_alive, get_xdg_state_home
 from .transport import _is_vpn_active
 
 
@@ -24,12 +25,13 @@ def _cmd_tunnel_start(
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # 0 = check existence only
-            if not quiet:
-                print(f"Tunnel already running: localhost:{local_port} (PID {pid})")
-            return
-        except (ProcessLookupError, ValueError):
-            pid_file.unlink(missing_ok=True)
+            if _pid_alive(pid):
+                if not quiet:
+                    print(f"Tunnel already running: localhost:{local_port} (PID {pid})")
+                return
+        except ValueError:
+            pass
+        pid_file.unlink(missing_ok=True)
 
     autossh_bin = shutil.which("autossh")
     if not autossh_bin:
@@ -86,9 +88,8 @@ def _ensure_nats_tunnel(config: dict) -> None:
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)
-            already_running = True
-        except (ProcessLookupError, ValueError):
+            already_running = _pid_alive(pid)
+        except ValueError:
             pass
     try:
         _cmd_tunnel_start(port, port, forward=True, config=config, quiet=True)
@@ -106,8 +107,8 @@ def _cmd_tunnel_stop(local_port: int) -> None:
         return
     pid = int(pid_file.read_text().strip())
     try:
-        os.kill(pid, 15)  # SIGTERM
-    except ProcessLookupError:
+        psutil.Process(pid).terminate()
+    except psutil.NoSuchProcess:
         pass
     pid_file.unlink(missing_ok=True)
     print(f"Tunnel stopped: port {local_port}")
@@ -122,10 +123,9 @@ def _cmd_tunnel_status() -> None:
     for pid_file in pid_files:
         port = pid_file.stem[len("tunnel-") :]
         pid = int(pid_file.read_text().strip())
-        try:
-            os.kill(pid, 0)
+        if _pid_alive(pid):
             status = "alive"
-        except ProcessLookupError:
+        else:
             status = "dead"
             pid_file.unlink(missing_ok=True)
         print(f"port {port}: PID {pid} ({status})")
@@ -169,11 +169,12 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)
-            print(f"CDP already running on port {port} (PID {pid})")
-            return
-        except (ProcessLookupError, ValueError):
-            pid_file.unlink(missing_ok=True)
+            if _pid_alive(pid):
+                print(f"CDP already running on port {port} (PID {pid})")
+                return
+        except ValueError:
+            pass
+        pid_file.unlink(missing_ok=True)
 
     chrome = _find_chrome_binary(config)
     if not chrome:
@@ -229,8 +230,8 @@ def _cmd_cdp_stop(port: int, tunnel: bool = False) -> None:
         return
     pid = int(pid_file.read_text().strip())
     try:
-        os.kill(pid, 15)  # SIGTERM
-    except ProcessLookupError:
+        psutil.Process(pid).terminate()
+    except psutil.NoSuchProcess:
         pass
     pid_file.unlink(missing_ok=True)
     print(f"CDP stopped: port {port}")
@@ -247,10 +248,9 @@ def _cmd_cdp_status() -> None:
     for pid_file in pid_files:
         port = pid_file.stem[len("cdp-") :]
         pid = int(pid_file.read_text().strip())
-        try:
-            os.kill(pid, 0)
+        if _pid_alive(pid):
             status = "alive"
-        except ProcessLookupError:
+        else:
             status = "dead"
             pid_file.unlink(missing_ok=True)
         print(f"port {port}: PID {pid} ({status})")
