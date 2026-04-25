@@ -44,6 +44,7 @@ features (iTerm2 integration) degrade gracefully rather than crash.
 | `fcntl` replacement | `iterm2.py` — replace with `portalocker` |
 | `/tmp` hardcodes | `notifications.py` — replace with `tempfile.gettempdir()` |
 | `/dev/null` hardcodes | `gemini.py`, `research.py` — replace with `os.devnull` |
+| Console encoding | modules that print emoji/Unicode — add `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` guard on Windows |
 | Process existence checks | `tunnel.py`, `sync.py` — replace `os.kill(pid, 0)` with `psutil` |
 | OS notifications | `notifications.py` — `plyer` optional extra `[notify-win]` |
 | `ai c` / `ai g` session management | requires tmux installed via MSYS2; documented |
@@ -299,13 +300,31 @@ def _pid_alive(pid: int) -> bool:
 `psutil.pid_exists` is cross-platform and handles edge cases (permission errors, zombie
 processes) correctly on all OSes.
 
-### 4. Hardcoded `/tmp` and `/dev/null`
+### 4. Hardcoded `/tmp`, `/dev/null`, and Console Encoding
 
 | File | Current | Fix |
 |------|---------|-----|
 | `notifications.py:248` | `f"/tmp/ai-batch-{session_id}.lock"` | `Path(tempfile.gettempdir()) / f"ai-batch-{session_id}.lock"` |
 | `gemini.py:1016` | `"/dev/null"` string | `os.devnull` |
 | `research.py:546` | `"/dev/null"` string | `os.devnull` |
+
+**Console encoding:** Windows defaults to cp1252, which cannot encode emoji (📊, ✅, etc.) used
+in statusline output — this raises `UnicodeEncodeError` at runtime. Fix: add a UTF-8
+reconfiguration guard in any module that writes emoji to stdout:
+
+```python
+import sys
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+```
+
+Alternatively, document `PYTHONUTF8=1` as a required environment variable for Windows users
+in T-08. Both approaches are implemented: code-level guard for robustness, env var in docs.
+
+**`os.replace()` on Windows:** Windows holds exclusive locks on open files — `os.replace()`
+over a file that another process has open fails with `PermissionError` (POSIX silently
+succeeds). Audit T-02 and T-04 for any `os.replace()` patterns affecting lock or cache
+files; use `try/except PermissionError` where needed.
 
 ### 5. OS Notifications — plyer (`notifications.py`)
 
@@ -423,7 +442,7 @@ hard dependencies.
 
 ---
 
-### T-03: Replace `/tmp` and `/dev/null` hardcodes
+### T-03: Replace `/tmp`, `/dev/null` hardcodes, and fix console encoding
 
 **Size:** S
 **Batch:** 1
@@ -433,11 +452,14 @@ hard dependencies.
 - `src/ai_cli/notifications.py` — `/tmp/...` → `tempfile.gettempdir()`
 - `src/ai_cli/gemini.py` — `"/dev/null"` → `os.devnull`
 - `src/ai_cli/research.py` — `"/dev/null"` → `os.devnull`
+- `src/ai_cli/quota.py` — add UTF-8 stdout reconfigure guard for emoji output on Windows
+- Audit all modules printing emoji/Unicode for `sys.stdout.reconfigure` guard
 
 **Acceptance criteria:**
 
 - [ ] `tempfile.gettempdir()` used for all temp paths
 - [ ] `os.devnull` used for all null-device references
+- [ ] `quota_statusline_part()` does not raise `UnicodeEncodeError` on Windows (emoji output safe)
 - [ ] All existing tests pass
 
 **Dependencies:** None
@@ -582,22 +604,31 @@ helpful error if tmux is not found, rather than crashing with a cryptic subproce
 
 | Batch | Tasks | Focus | Gate |
 |-------|-------|-------|------|
-| 1 | T-01, T-02, T-03, T-09 | Unblock `import ai_cli` on Windows; fix paths and null devices | Human: verify `ai quota status` works on Windows |
+| 1 | T-01, T-02, T-03, T-09 | Unblock `import ai_cli` on Windows; fix paths, null devices, console encoding | — (automated: CI) |
 | 2 | T-04, T-05 | Process checks and notifications | — |
-| 3 | T-06, T-07, T-08 | CI matrix, test audit, docs | Human: CI green on `windows-latest` |
+| 3 | T-06, T-07, T-08 | CI matrix, test audit, docs | Automated: CI green on `windows-latest` |
 
 > **Feedback Round 1:** Batching confirmed. T-09 added to Batch 1 (graceful tmux-not-found message).
+>
+> **Feedback Round 2:** Batch 1 human gate removed. Gemini Flash research (2026-04-25) confirmed
+> `pip install ai-cli-utils` works on Windows with no caveats beyond the POSIX fixes already planned:
+> `portalocker` is a universal wheel (no compiler), `psutil` ships `cp37-abi3-win_amd64.whl`
+> covering Python 3.7–3.13+, `plyer` is pure Python. CI on `windows-latest` (T-06) serves as
+> automated verification. Additional Windows issues surfaced: console encoding (cp1252 breaks emoji),
+> `os.replace()` semantics on open files — both addressed in T-03 and the Technical Design section.
+> Implementation is fully autonomous; no human gates between batches.
 
 ## Human Gates
 
 | Gate | After | Decision needed |
 |------|-------|-----------------|
 | Plan approval | Before any code | Approve scope and approach — **DONE** |
-| Batch 1 UAT | After Batch 1 | Verify `pip install ai-cli-utils` + `ai quota status` works on Windows |
-| CI green | After Batch 3 | Confirm `windows-latest` runner passes before closing AI-CLI-29 |
+| ~~Batch 1 UAT~~ | ~~After Batch 1~~ | ~~Removed — pip install confirmed working via Gemini Flash research~~ |
+| CI green on `windows-latest` | After T-06 lands | Automated gate — CI must pass on `windows-latest` before closing AI-CLI-29 |
 
 ## Approval Log
 
 | Date | Round | Decisions |
 |------|-------|-----------|
 | 2026-04-25 | Round 1 | D1=C (portalocker+psutil hard deps). D2=plyer optional [notify-win] (no PowerShell). D3=Git Bash primary. D4=0.6.0 minor bump. ai c/ai g moved in scope — work in Git Bash with tmux via MSYS2. No test skipping — mock sys.platform instead. Status: DRAFT → APPROVED. |
+| 2026-04-25 | Round 2 | Batch 1 human gate removed — Gemini Flash research confirmed pip install works on Windows with all deps as pure-Python or pre-built wheels. Autonomous implementation approved for all 9 tasks. Two additional in-scope items added: console encoding (T-03) and os.replace() audit (T-02/T-04). |
