@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-25
+
+### Added
+
+- `ai quota statusline-part` now shows Sonnet weekly quota alongside all-models quota (`AI-CLI-55`). Format: `📊 42% W ✅ →8% | 87% S`. Labels: `W` = weekly all-models, `S` = weekly Sonnet. Sonnet % color-coded with same thresholds as all-models % (<50% green, <75% yellow, ≥75% red). When Sonnet data is absent, shows dimmed `-% S` and fires an immediate background scrape to populate it.
+
 ## [0.5.2] - 2026-04-21
 
 ### Fixed
@@ -155,7 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[iterm2.icon_color_overrides]` config section: explicit icon tint override per palette color slot.
 - `ai color <name|#hex>` command: ad hoc tab color reassignment for the current session.
 - `ai internal cleanup-session-files <ai_name>`: remove session icon PNG and Dynamic Profile JSON; called by EXIT trap.
-- OSC 1 title fix: session name now set via `\033]1;` instead of `\033]0;` so mosh on remote sessions does not prepend `[mosh] ` to the tab title.
+- OSC 1 title fix: session name now set via `\033]1;` instead of `\033]0;` so mosh on remote sessions does not prepend `[mosh]` to the tab title.
 - `ai setup` command: detects managed platform vs standalone environment and configures `CLAUDE.md` accordingly; marks file `assume-unchanged` in git after swap so external users don't see local modifications
 - `CLAUDE-full.md`: standalone self-contained Claude Code session config for users without the managed platform; `CLAUDE.md` remains the lean variant for managed platform users
 - pyright basic mode type checking in CI lint job

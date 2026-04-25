@@ -865,7 +865,7 @@ def quota_statusline_part() -> int:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
+            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct FROM quota_snapshots"
             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
             (week_start_str,),
         ).fetchall()
@@ -900,7 +900,7 @@ def quota_statusline_part() -> int:
                         conn2 = sqlite3.connect(str(db_path))
                         conn2.row_factory = sqlite3.Row
                         rows = conn2.execute(
-                            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
+                            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct FROM quota_snapshots"
                             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
                             (week_start_str,),
                         ).fetchall()
@@ -918,6 +918,7 @@ def quota_statusline_part() -> int:
 
         _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         usage_pct = rows[0]["usage_percent"]
+        sonnet_pct = rows[0]["weekly_sonnet_pct"]
         snapshot_age_hours = (
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600
@@ -933,6 +934,7 @@ def quota_statusline_part() -> int:
         YELLOW = "\033[33m"
         RED = "\033[31m"
         BLUE = "\033[34m"
+        DIM = "\033[2m"
         RESET = "\033[0m"
 
         # Quota % color: absolute level
@@ -943,7 +945,20 @@ def quota_statusline_part() -> int:
         else:
             pct_color = RED
 
-        # Arrow: acceleration direction (requires ≥3 snapshots)
+        # Sonnet % — fire a scrape if absent so the field populates on next refresh
+        if sonnet_pct is None:
+            _launch_background_scrape()
+            sonnet_part = f"{DIM}-% S{RESET}"
+        else:
+            if sonnet_pct < 50:
+                s_color = GREEN
+            elif sonnet_pct < 75:
+                s_color = YELLOW
+            else:
+                s_color = RED
+            sonnet_part = f"{s_color}{sonnet_pct:.0f}% S{RESET}"
+
+        # Arrow: acceleration direction (requires \u22653 snapshots)
         arrow_char = "\u2192"  # → steady (default / insufficient data)
         if len(rows) >= 3:
             t0 = datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00")).timestamp()
@@ -965,9 +980,10 @@ def quota_statusline_part() -> int:
             delta_color = BLUE
             stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
             print(
-                f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
+                f"\U0001f4ca {pct_color}{usage_pct:.0f}% W{RESET}"
                 f" \U0001f331{alert} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
-            )  # 📊 N% 🌱 →X% [⏱]
+                f" | {sonnet_part}"
+            )  # 📊 N% W 🌱 →X% [⏱] | M% S
         else:
             # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
             if delta <= 10:
@@ -981,8 +997,10 @@ def quota_statusline_part() -> int:
                 delta_color = RED
             stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
             print(
-                f"\U0001f4ca {pct_color}{usage_pct:.0f}%{RESET} {icon} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
-            )  # 📊 N% ✅/⚠️/🚨 →X% [⏱]
+                f"\U0001f4ca {pct_color}{usage_pct:.0f}% W{RESET} {icon}"
+                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
+                f" | {sonnet_part}"
+            )  # 📊 N% W ✅/⚠️/🚨 →X% [⏱] | M% S
     except Exception:
         pass
     return 0

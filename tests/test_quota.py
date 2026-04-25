@@ -1203,7 +1203,7 @@ class TestQuotaStatuslinePart:
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=5.0)
+                qdb.record_quota_snapshot(usage_percent=5.0, weekly_sonnet_pct=40.0)
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
@@ -1229,7 +1229,7 @@ class TestQuotaStatuslinePart:
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=95.0)
+                qdb.record_quota_snapshot(usage_percent=95.0, weekly_sonnet_pct=40.0)
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
@@ -1252,7 +1252,7 @@ class TestQuotaStatuslinePart:
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=5.0)
+                qdb.record_quota_snapshot(usage_percent=5.0, weekly_sonnet_pct=40.0)
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
@@ -1277,7 +1277,7 @@ class TestQuotaStatuslinePart:
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=18.0)
+                qdb.record_quota_snapshot(usage_percent=18.0, weekly_sonnet_pct=40.0)
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
@@ -1301,7 +1301,7 @@ class TestQuotaStatuslinePart:
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=30.0)
+                qdb.record_quota_snapshot(usage_percent=30.0, weekly_sonnet_pct=40.0)
                 result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
@@ -1327,8 +1327,8 @@ class TestQuotaStatuslinePart:
             for mins_ago, pct in [(60, 20.0), (30, 21.0), (0, 23.0)]:
                 ts = (now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 conn.execute(
-                    "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
-                    (week_start, pct, ts),
+                    "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
+                    (week_start, pct, 40.0, ts),
                 )
             conn.commit()
             conn.close()
@@ -1354,8 +1354,8 @@ class TestQuotaStatuslinePart:
             for mins_ago, pct in [(60, 20.0), (30, 23.0), (0, 24.0)]:
                 ts = (now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 conn.execute(
-                    "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
-                    (week_start, pct, ts),
+                    "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
+                    (week_start, pct, 40.0, ts),
                 )
             conn.commit()
             conn.close()
@@ -1391,8 +1391,8 @@ class TestQuotaStatuslinePart:
             conn = qdb._get_conn()
             stale_ts = (fixed_now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
             conn.execute(
-                "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
-                (week_start_str, 40.0, stale_ts),
+                "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
+                (week_start_str, 40.0, 40.0, stale_ts),
             )
             conn.commit()
             conn.close()
@@ -1420,8 +1420,8 @@ class TestQuotaStatuslinePart:
             conn = qdb._get_conn()
             fresh_ts = (fixed_now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
             conn.execute(
-                "INSERT INTO quota_snapshots (week_start, usage_percent, snapshotted_at) VALUES (?,?,?)",
-                (week_start_str, 40.0, fresh_ts),
+                "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
+                (week_start_str, 40.0, 40.0, fresh_ts),
             )
             conn.commit()
             conn.close()
@@ -1442,12 +1442,64 @@ class TestQuotaStatuslinePart:
 
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            qdb.record_quota_snapshot(usage_percent=50.0)
+            qdb.record_quota_snapshot(usage_percent=50.0, weekly_sonnet_pct=40.0)
             with patch("ai_cli.quota._maybe_trigger_background_scrape") as mock_trigger:
                 quota_statusline_part()
             mock_trigger.assert_called_once()
             ts_arg = mock_trigger.call_args[0][0]
             assert isinstance(ts_arg, str) and len(ts_arg) > 0
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_sonnet_pct_present_then_shown_with_S_label_and_W_label_on_all_models(self, tmp_path, capsys):
+        """weekly_sonnet_pct in snapshot → '87% S' appended; all-models % gets 'W' label."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=30)  # post-seedling
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=87.0)
+                with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
+                    result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "42%" in out
+            assert "W" in out
+            assert "87%" in out
+            assert "S" in out
+            mock_scrape.assert_not_called()
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_sonnet_pct_absent_then_shows_dimmed_placeholder_and_fires_scrape(self, tmp_path, capsys):
+        """weekly_sonnet_pct=None → '-% S' shown in output and _launch_background_scrape called."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=30)  # post-seedling
+
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=None)
+                with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
+                    result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "-%" in out
+            assert "S" in out
+            mock_scrape.assert_called_once()
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -1495,7 +1547,7 @@ class TestQuotaStatuslinePartKvSync:
                 "usage_percent": 42.0,
                 "ts": time.time(),
                 "session_pct": None,
-                "weekly_sonnet_pct": None,
+                "weekly_sonnet_pct": 55.0,
                 "extra_pct": None,
                 "reset_at": None,
             }
