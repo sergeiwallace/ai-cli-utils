@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-25
+
+### Added
+
+- `ai sync pull` now automatically pulls affected project repos and their worktrees after a successful sync (`AI-CLI-63`). Clean trees are pulled with `git pull --rebase`; dirty main trees use stash+pull+pop with a warning; dirty worktrees are skipped with a log message that includes CC session state (idle vs actively executing). Not triggered in `--memories-only` or `--dry-run` mode. 13 new tests.
+
 ### Deprecated
 
 - `ai gemini` (quick depth) is now a thin alias to `aido research -d quick`. Invocations
