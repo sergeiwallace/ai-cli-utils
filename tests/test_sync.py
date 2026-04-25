@@ -5077,3 +5077,386 @@ def test_sync_pull_when_dry_run_with_conflicts_then_no_staging_commit_or_push(tm
 
     assert result == 2
     assert not push_called, "push was called in dry-run mode"
+
+
+# ---------------------------------------------------------------------------
+# sync_repos
+# ---------------------------------------------------------------------------
+
+
+def _make_git_repo(path: Path) -> None:
+    """Create a minimal real git repo at path."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", str(path)], capture_output=True, check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t.com"], capture_output=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "T"], capture_output=True)
+    (path / "README.md").write_text("hi")
+    subprocess.run(["git", "-C", str(path), "add", "."], capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "init", "--allow-empty-message"],
+        capture_output=True,
+    )
+
+
+def test_sync_repos_when_clean_main_tree_then_pulls(tmp_path):
+    """Clean main tree triggers git pull --rebase."""
+    from ai_cli.sync import sync_repos
+
+    project = tmp_path / "myproject"
+    _make_git_repo(project)
+
+    pulled = []
+
+    def fake_run(args, **kwargs):
+        if args[:3] == ["git", "-C", str(project)] and "pull" in args:
+            pulled.append(args)
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"myproject"}, tmp_path, verbose=False)
+
+    assert any("pull" in str(a) for a in pulled), "pull not called for clean main tree"
+
+
+def test_sync_repos_when_dirty_main_tree_then_stash_pull_pop(tmp_path):
+    """Dirty main tree triggers stash+pull+pop in that order."""
+    from ai_cli.sync import sync_repos
+
+    project = tmp_path / "myproject"
+    _make_git_repo(project)
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        # Report dirty status only for status --porcelain call
+        if "status" in args and "--porcelain" in args:
+            m.stdout = " M README.md"
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"myproject"}, tmp_path, verbose=False)
+
+    git_args = [" ".join(str(a) for a in c) for c in calls]
+    stash_idx = next((i for i, a in enumerate(git_args) if "stash push" in a), None)
+    pull_idx = next((i for i, a in enumerate(git_args) if "pull --rebase" in a), None)
+    pop_idx = next((i for i, a in enumerate(git_args) if "stash pop" in a), None)
+    assert stash_idx is not None, "stash push not called"
+    assert pull_idx is not None, "pull --rebase not called"
+    assert pop_idx is not None, "stash pop not called"
+    assert stash_idx < pull_idx < pop_idx, "stash+pull+pop not in order"
+
+
+def test_sync_repos_when_clean_worktree_then_pulls(tmp_path):
+    """Clean worktree under .worktrees/ is pulled."""
+    from ai_cli.sync import sync_repos
+
+    project = tmp_path / "myproject"
+    _make_git_repo(project)
+    wt = project / ".worktrees" / "sw-1"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: ../../.git")  # minimal worktree marker
+
+    pulled_paths = []
+
+    def fake_run(args, **kwargs):
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        if "pull" in args and "--rebase" in args:
+            pulled_paths.append(str(args[args.index("-C") + 1]) if "-C" in args else "")
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"myproject"}, tmp_path, verbose=False)
+
+    assert any(str(wt) in p for p in pulled_paths), "worktree not pulled"
+
+
+def test_sync_repos_when_dirty_worktree_no_session_then_skips_with_log(tmp_path, capsys):
+    """Dirty worktree with no tmux session → skipped, log mentions 'no active CC session'."""
+    from ai_cli.sync import sync_repos
+
+    project = tmp_path / "myproject"
+    _make_git_repo(project)
+    wt = project / ".worktrees" / "sw-2"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: ../../.git")
+
+    pulled = []
+
+    def fake_run(args, **kwargs):
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        if "status" in args and "--porcelain" in args and str(wt) in args:
+            m.stdout = " M file.txt"
+        if "pull" in args and "--rebase" in args and str(wt) in args:
+            pulled.append(True)
+        if args[0] == "tmux" and "has-session" in args:
+            m.returncode = 1  # no session
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"myproject"}, tmp_path, verbose=False)
+
+    assert not pulled, "dirty worktree was pulled (should have been skipped)"
+    out = capsys.readouterr().out
+    assert "no active CC session" in out
+
+
+def test_sync_repos_when_dirty_worktree_idle_session_then_skips_with_idle_log(tmp_path, capsys):
+    """Dirty worktree with idle CC session → skipped, log mentions 'idle'."""
+    from ai_cli.sync import sync_repos
+
+    project = tmp_path / "myproject"
+    _make_git_repo(project)
+    wt = project / ".worktrees" / "sw-3"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: ../../.git")
+
+    pulled = []
+
+    def fake_run(args, **kwargs):
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        if "status" in args and "--porcelain" in args and str(wt) in args:
+            m.stdout = " M file.txt"
+        if "pull" in args and "--rebase" in args and str(wt) in args:
+            pulled.append(True)
+        if args[0] == "tmux" and "has-session" in args:
+            m.returncode = 0
+        if args[0] == "tmux" and "list-panes" in args:
+            m.stdout = "12345\n"
+        if args[0] == "pgrep":
+            m.stdout = "99999\n"
+        if args[0] == "ps":
+            m.stdout = "S"  # sleeping = idle
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"myproject"}, tmp_path, verbose=False)
+
+    assert not pulled, "dirty worktree was pulled (should have been skipped)"
+    out = capsys.readouterr().out
+    assert "idle" in out
+
+
+def test_sync_repos_when_dirty_worktree_active_session_then_skips_with_active_log(tmp_path, capsys):
+    """Dirty worktree with actively running CC session → skipped, log mentions 'actively executing'."""
+    from ai_cli.sync import sync_repos
+
+    project = tmp_path / "myproject"
+    _make_git_repo(project)
+    wt = project / ".worktrees" / "sw-4"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: ../../.git")
+
+    pulled = []
+
+    def fake_run(args, **kwargs):
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        if "status" in args and "--porcelain" in args and str(wt) in args:
+            m.stdout = " M file.txt"
+        if "pull" in args and "--rebase" in args and str(wt) in args:
+            pulled.append(True)
+        if args[0] == "tmux" and "has-session" in args:
+            m.returncode = 0
+        if args[0] == "tmux" and "list-panes" in args:
+            m.stdout = "12345\n"
+        if args[0] == "pgrep":
+            m.stdout = "99999\n"
+        if args[0] == "ps":
+            m.stdout = "R"  # running = active
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"myproject"}, tmp_path, verbose=False)
+
+    assert not pulled, "dirty worktree was pulled (should have been skipped)"
+    out = capsys.readouterr().err
+    assert "actively executing" in out
+
+
+def test_sync_repos_when_nonexistent_project_dir_then_skips_silently(tmp_path, capsys):
+    """Non-existent project dir is silently skipped."""
+    from ai_cli.sync import sync_repos
+
+    sync_repos({"ghost-project"}, tmp_path, verbose=False)
+
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == ""
+
+
+def test_sync_repos_when_non_git_dir_then_skips_silently(tmp_path, capsys):
+    """Existing non-git dir is skipped (no error raised)."""
+    from ai_cli.sync import sync_repos
+
+    not_git = tmp_path / "notarepo"
+    not_git.mkdir()
+
+    def fake_run(args, **kwargs):
+        m = MagicMock()
+        m.returncode = 1 if "rev-parse" in args else 0
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"notarepo"}, tmp_path, verbose=False)
+
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == ""
+
+
+def test_sync_repos_when_worktree_bare_name_then_maps_to_base_project(tmp_path):
+    """Bare name with --worktrees- suffix is mapped to the base project name."""
+    from ai_cli.sync import sync_repos
+
+    project = tmp_path / "myproject"
+    _make_git_repo(project)
+
+    pulled = []
+
+    def fake_run(args, **kwargs):
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        if "pull" in args and "--rebase" in args:
+            pulled.append(args)
+        return m
+
+    with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
+        sync_repos({"myproject--worktrees-sw-1"}, tmp_path, verbose=False)
+
+    assert any(str(project) in str(a) for a in pulled), "base project not pulled from worktree bare name"
+
+
+def test_sync_repos_when_memories_only_then_not_called(tmp_path):
+    """sync_repos must not be called when --memories-only flag is set."""
+    cfg = _make_pull_cfg(tmp_path)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    sync_repos_called = []
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files",
+                                return_value={
+                                    "conflicts": [],
+                                    "applied_count": 1,
+                                    "staging_to_overwrite": [],
+                                    "staging_to_commit": [],
+                                    "updated_bare_names": {"myproject"},
+                                },
+                            ):
+                                with patch(
+                                    "ai_cli.sync.sync_repos",
+                                    side_effect=lambda *a, **kw: sync_repos_called.append(True),
+                                ):
+                                    sync_pull(["--memories-only"])
+
+    assert not sync_repos_called, "sync_repos called in memories-only mode"
+
+
+def test_sync_repos_when_dry_run_then_not_called(tmp_path):
+    """sync_repos must not be called when --dry-run flag is set."""
+    cfg = _make_pull_cfg(tmp_path)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+
+    sync_repos_called = []
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                with patch(
+                    "ai_cli.sync.apply_pull_files",
+                    return_value={
+                        "conflicts": [],
+                        "applied_count": 1,
+                        "staging_to_overwrite": [],
+                        "staging_to_commit": [],
+                        "updated_bare_names": {"myproject"},
+                    },
+                ):
+                    with patch(
+                        "ai_cli.sync.sync_repos",
+                        side_effect=lambda *a, **kw: sync_repos_called.append(True),
+                    ):
+                        sync_pull(["--dry-run"])
+
+    assert not sync_repos_called, "sync_repos called in dry-run mode"
+
+
+def test_apply_pull_files_when_file_applied_then_updated_bare_names_populated(tmp_path):
+    """apply_pull_files returns updated_bare_names containing bare names of projects with applied files."""
+    from ai_cli.sync import apply_pull_files
+
+    staging = tmp_path / "staging"
+    cc_dir = tmp_path / "cc"
+
+    project_staging = staging / "myproject"
+    project_staging.mkdir(parents=True)
+    (project_staging / "MEMORY.md").write_text("# Memory\n\nsome content")
+
+    result = apply_pull_files(
+        staging_dir=staging,
+        cc_projects_dir=cc_dir,
+        local_prefix=_MAC_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+
+    assert "myproject" in result["updated_bare_names"]
+
+
+def test_apply_pull_files_when_no_files_applied_then_updated_bare_names_empty(tmp_path):
+    """apply_pull_files returns empty updated_bare_names when no files are written."""
+    from ai_cli.sync import apply_pull_files
+
+    staging = tmp_path / "staging"
+    cc_dir = tmp_path / "cc"
+
+    project_staging = staging / "myproject"
+    project_staging.mkdir(parents=True)
+    local_mem = cc_dir / (_MAC_PREFIX + "myproject") / "MEMORY.md"
+    local_mem.parent.mkdir(parents=True)
+    local_mem.write_text("# Memory\n\nsome content")
+    (project_staging / "MEMORY.md").write_text("# Memory\n\nsome content")
+
+    result = apply_pull_files(
+        staging_dir=staging,
+        cc_projects_dir=cc_dir,
+        local_prefix=_MAC_PREFIX,
+        memories_only=False,
+        verbose=False,
+        dry_run=False,
+    )
+
+    assert "myproject" not in result["updated_bare_names"]

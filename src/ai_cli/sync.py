@@ -800,6 +800,8 @@ def apply_pull_files(
     staging_to_overwrite: list[tuple[Path, Path]] = []  # (local_src, staging_dst)
     # Staging files already written directly (e.g. LLM merge) that need git commit.
     staging_to_commit: list[Path] = []
+    # Bare project names (staging dir names) that had at least one file applied.
+    updated_bare_names: set[str] = set()
 
     for staging_project_dir in sorted(staging_dir.iterdir()):
         if not staging_project_dir.is_dir() or staging_project_dir.name.startswith("."):
@@ -838,6 +840,7 @@ def apply_pull_files(
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         _write_jsonl_translated(src, dst)
                     applied_count += 1
+                    updated_bare_names.add(bare_name)
                     if verbose:
                         print(f"  apply (ff): {bare_name}/{rel}")
                 elif divergence == "fast_forward_local":
@@ -849,6 +852,7 @@ def apply_pull_files(
                             dst.parent.mkdir(parents=True, exist_ok=True)
                             _write_jsonl_translated(src, dst)
                         applied_count += 1
+                        updated_bare_names.add(bare_name)
                         if verbose:
                             print(f"  apply (prefer-remote): {bare_name}/{rel}")
                     else:
@@ -885,6 +889,7 @@ def apply_pull_files(
                         src.write_text(merged, encoding="utf-8")  # Update staging file
                         staging_to_commit.append(src)  # Track for git commit+push
                         applied_count += 1
+                        updated_bare_names.add(bare_name)
                         if verbose:
                             print(f"  auto-merged: {bare_name}/{rel}")
                     else:
@@ -907,6 +912,7 @@ def apply_pull_files(
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, dst)
                     applied_count += 1
+                    updated_bare_names.add(bare_name)
                     if verbose:
                         print(f"  apply: {bare_name}/{rel}")
 
@@ -926,6 +932,7 @@ def apply_pull_files(
         "applied_count": applied_count,
         "staging_to_overwrite": staging_to_overwrite,
         "staging_to_commit": staging_to_commit,
+        "updated_bare_names": updated_bare_names,
     }
 
 
@@ -938,6 +945,167 @@ def _find_project_worktrees(project_path: Path) -> list[Path]:
     if not worktrees_dir.is_dir():
         return []
     return [d for d in worktrees_dir.iterdir() if d.is_dir() and (d / ".git").exists()]
+
+
+def _git_is_clean(path: Path) -> bool:
+    """Return True if the working tree at path has no uncommitted changes."""
+    r = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    return r.returncode == 0 and r.stdout.strip() == ""
+
+
+def _git_pull_rebase(path: Path) -> tuple[bool, str]:
+    """Run git pull --rebase at path. Returns (success, output)."""
+    r = subprocess.run(
+        ["git", "-C", str(path), "pull", "--rebase"],
+        capture_output=True,
+        text=True,
+    )
+    return r.returncode == 0, (r.stdout + r.stderr).strip()
+
+
+def _git_stash_pull_pop(path: Path) -> tuple[bool, str]:
+    """Stash, pull --rebase, pop. Returns (success, combined output)."""
+    lines: list[str] = []
+    stash = subprocess.run(
+        ["git", "-C", str(path), "stash", "push", "-m", "ai-sync auto-stash"],
+        capture_output=True,
+        text=True,
+    )
+    lines.append(stash.stdout.strip())
+    if stash.returncode != 0:
+        return False, "\n".join(lines)
+    pull = subprocess.run(
+        ["git", "-C", str(path), "pull", "--rebase"],
+        capture_output=True,
+        text=True,
+    )
+    lines.append(pull.stdout.strip())
+    pop = subprocess.run(
+        ["git", "-C", str(path), "stash", "pop"],
+        capture_output=True,
+        text=True,
+    )
+    lines.append(pop.stdout.strip())
+    success = pull.returncode == 0 and pop.returncode == 0
+    return success, "\n".join(l for l in lines if l)
+
+
+def _cc_session_state_for_worktree(project_name: str, wt_dir: Path) -> Optional[str]:
+    """Return CC session state for a worktree: 'active', 'idle', or None (no session).
+
+    Maps .worktrees/<wt_name> to tmux session c-<project>-<N> (trailing digits of wt_name).
+    """
+    m = re.search(r"(\d+)$", wt_dir.name)
+    if not m:
+        return None
+    session_name = f"c-{project_name}-{m.group(1)}"
+
+    has = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        capture_output=True,
+    )
+    if has.returncode != 0:
+        return None
+
+    pane_pid_r = subprocess.run(
+        ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+    )
+    if pane_pid_r.returncode != 0 or not pane_pid_r.stdout.strip():
+        return "idle"
+
+    pane_pid = pane_pid_r.stdout.strip().split()[0]
+    pgrep = subprocess.run(
+        ["pgrep", "-P", pane_pid, "claude"],
+        capture_output=True,
+        text=True,
+    )
+    if pgrep.returncode != 0 or not pgrep.stdout.strip():
+        return "idle"
+
+    claude_pid = pgrep.stdout.strip().split()[0]
+    state_r = subprocess.run(
+        ["ps", "-o", "state=", "-p", claude_pid],
+        capture_output=True,
+        text=True,
+    )
+    state = state_r.stdout.strip()
+    return "active" if state.startswith("R") else "idle"
+
+
+def sync_repos(updated_bare_names: set[str], projects_dir: Path, verbose: bool) -> None:
+    """Pull project repos and worktrees whose CC dirs were updated in a sync pull.
+
+    For each unique project derived from updated_bare_names:
+    - Main tree: pull if clean; stash+pull+pop with warning if dirty.
+    - Each worktree: pull if clean; skip with log if dirty (CC state affects log detail).
+
+    Not called for --memories-only or --dry-run pulls.
+    """
+    # Derive unique project names (strip --worktrees-* suffix from bare names)
+    project_names: set[str] = set()
+    for bare in updated_bare_names:
+        wt_marker = "--worktrees-"
+        idx = bare.find(wt_marker)
+        project_names.add(bare[:idx] if idx != -1 else bare)
+
+    for project_name in sorted(project_names):
+        project_path = projects_dir / project_name
+        if not project_path.is_dir():
+            continue
+        is_repo = subprocess.run(
+            ["git", "-C", str(project_path), "rev-parse", "--git-dir"],
+            capture_output=True,
+        )
+        if is_repo.returncode != 0:
+            continue
+
+        # --- Main tree ---
+        if _git_is_clean(project_path):
+            ok, out = _git_pull_rebase(project_path)
+            if ok:
+                print(f"  sync-repos: pulled {project_name}")
+            else:
+                print(f"  sync-repos: pull failed for {project_name}: {out}", file=sys.stderr)
+            if verbose and out:
+                print(f"    {out}")
+        else:
+            ok, out = _git_stash_pull_pop(project_path)
+            if ok:
+                print(f"  sync-repos: stash+pulled {project_name} (main tree had local changes)", file=sys.stderr)
+            else:
+                print(f"  sync-repos: stash+pull failed for {project_name}: {out}", file=sys.stderr)
+
+        # --- Worktrees ---
+        for wt in _find_project_worktrees(project_path):
+            if _git_is_clean(wt):
+                ok, out = _git_pull_rebase(wt)
+                if ok:
+                    print(f"  sync-repos: pulled {project_name}/{wt.name}")
+                else:
+                    print(f"  sync-repos: pull failed for {project_name}/{wt.name}: {out}", file=sys.stderr)
+                if verbose and out:
+                    print(f"    {out}")
+            else:
+                state = _cc_session_state_for_worktree(project_name, wt)
+                if state == "active":
+                    print(
+                        f"  sync-repos: skipped {project_name}/{wt.name} (dirty, CC actively executing)",
+                        file=sys.stderr,
+                    )
+                elif state == "idle":
+                    print(
+                        f"  sync-repos: skipped {project_name}/{wt.name} (dirty, CC session idle — pull manually when ready)",
+                    )
+                else:
+                    print(
+                        f"  sync-repos: skipped {project_name}/{wt.name} (dirty, no active CC session — pull manually when ready)",
+                    )
 
 
 def _replicate_to_worktrees(
@@ -1741,6 +1909,11 @@ def sync_pull(flags: list[str]) -> int:
         translate_history_jsonl(verbose=verbose)
         retranslate_project_jsonls(verbose=verbose)
         purge_phantom_history_entries(verbose=verbose)
+        updated_bare_names: set[str] = result.get("updated_bare_names", set())
+        if updated_bare_names:
+            from .config import _get_projects_dir
+
+            sync_repos(updated_bare_names, _get_projects_dir(), verbose)
 
     if not dry_run:
         # Commit and push any staging files that were modified during apply:
