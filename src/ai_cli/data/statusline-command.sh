@@ -64,19 +64,19 @@ fi
 
 # --- Git branch (compact: worktree branches shown as #N) ---
 # File-based 5s cache avoids a ~100ms git subprocess on every render cycle.
+# Cache format: line 1 = Unix timestamp written, line 2 = branch name.
 _bcache="${TMPDIR:-/tmp}/.ai-sl-branch-${UID:-0}"
+branch=""
 if [ -n "$GIT_BRANCH_CACHE" ]; then
   branch="$GIT_BRANCH_CACHE"
 elif [[ -f "$_bcache" ]]; then
-  _bmtime=$(stat -f '%m' "$_bcache" 2>/dev/null || stat -c '%Y' "$_bcache" 2>/dev/null || echo 0)
-  if (( $(date +%s) - _bmtime < 5 )); then
-    branch=$(cat "$_bcache" 2>/dev/null)
-  fi
+  { IFS= read -r _bts && IFS= read -r branch; } < "$_bcache" 2>/dev/null
+  [[ "$_bts" =~ ^[0-9]+$ ]] && (( $(date +%s) - _bts < 5 )) || branch=""
 fi
 if [[ -z "$branch" ]]; then
   branch=$(git -C "$_project_dir" branch --show-current 2>/dev/null)
   branch="${branch:-?}"
-  printf '%s' "$branch" > "$_bcache" 2>/dev/null
+  printf '%d\n%s' "$(date +%s)" "$branch" > "$_bcache" 2>/dev/null
 fi
 if [[ "$branch" =~ ^wt-.*-([0-9]+)$ ]]; then branch_display="#${BASH_REMATCH[1]}"
 elif [ "${#branch}" -gt 14 ]; then             branch_display="${branch:0:13}…"
@@ -110,15 +110,16 @@ clock=$(date +%H:%M)
 # ai quota record has ~680ms startup overhead. CC calls statusLine on every render
 # cycle, so recording every call stacks up dozens of competing background processes.
 # Rate-limit to once per 60s — quota data is 10-minute resolution anyway.
+# Cache format: single line containing the Unix timestamp of the last record call.
 _telem_tokens=$(( total_in + total_out ))
 _tcache="${TMPDIR:-/tmp}/.ai-sl-telem-${UID:-0}"
 _do_record=1
 if [[ -f "$_tcache" ]]; then
-  _tmtime=$(stat -f '%m' "$_tcache" 2>/dev/null || stat -c '%Y' "$_tcache" 2>/dev/null || echo 0)
-  (( $(date +%s) - _tmtime < 60 )) && _do_record=0
+  IFS= read -r _tts < "$_tcache" 2>/dev/null
+  [[ "$_tts" =~ ^[0-9]+$ ]] && (( $(date +%s) - _tts < 60 )) && _do_record=0
 fi
 if (( _do_record )); then
-  touch "$_tcache" 2>/dev/null
+  printf '%d' "$(date +%s)" > "$_tcache" 2>/dev/null
   ai quota record "${_telem_session}" "$(hostname)" "${model_id}" "${_telem_tokens}" >/dev/null 2>&1 &
 fi
 
@@ -128,19 +129,19 @@ fi
 # A blocking 1.4s call causes render cycles to overlap, producing duplicate boxes in
 # the scrollback buffer. Cache the output for 30s: quota data changes every 10 minutes,
 # so 30s staleness is negligible.
+# Cache format: line 1 = Unix timestamp written, line 2 = quota output (may be empty).
 _qcache="${TMPDIR:-/tmp}/.ai-sl-quota-${UID:-0}"
 quota_part=""
 if [[ -f "$_qcache" ]]; then
-  _qmtime=$(stat -f '%m' "$_qcache" 2>/dev/null || stat -c '%Y' "$_qcache" 2>/dev/null || echo 0)
-  if (( $(date +%s) - _qmtime < 30 )); then
-    quota_part=$(cat "$_qcache" 2>/dev/null)
-  fi
+  { IFS= read -r _qts && IFS= read -r quota_part; } < "$_qcache" 2>/dev/null
+  # Guard: if first line is not a valid Unix timestamp, treat cache as stale (old format).
+  [[ "$_qts" =~ ^[0-9]+$ ]] && (( $(date +%s) - _qts < 30 )) || quota_part=""
 fi
 if [[ -z "$quota_part" ]]; then
   quota_part=$(ai quota statusline-part 2>/dev/null)
   # Strip embedded newlines: statusLine contract requires exactly one output line.
   quota_part="${quota_part//$'\n'/ }"
-  printf '%s' "$quota_part" > "$_qcache" 2>/dev/null
+  printf '%d\n%s' "$(date +%s)" "$quota_part" > "$_qcache" 2>/dev/null
 fi
 
 # --- Assemble ---

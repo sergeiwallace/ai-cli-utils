@@ -1847,9 +1847,9 @@ class TestStatuslineScript:
         result = self._run()
         assert result.returncode == 0
         non_empty = [line for line in result.stdout.split("\n") if line]
-        assert (
-            len(non_empty) == 1
-        ), f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
+        assert len(non_empty) == 1, (
+            f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
+        )
 
     def test_given_valid_input_when_run_then_output_ends_with_erase_to_eol(self):
         """ESC[K at end of output clears leftover chars when CC overwrites the status line in place."""
@@ -1886,15 +1886,19 @@ class TestStatuslineScript:
             fake_bin.rmdir()
 
     def test_given_fresh_quota_cache_when_run_then_ai_statusline_part_not_called(self):
-        """When the quota cache file is fresh (<30s), ai quota statusline-part is not called."""
+        """When the quota cache file is fresh (<30s), ai quota statusline-part is not called.
+
+        Cache format: line 1 = Unix timestamp, line 2 = quota output (no stat() dependency).
+        """
         import tempfile
+        import time
 
         uid = os.getuid() if hasattr(os, "getuid") else 0
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_file = Path(tmpdir) / f".ai-sl-quota-{uid}"
-            cache_file.write_text("\033[32m📊 42%\033[0m")
+            # Write cache in the format the script expects: timestamp on line 1, content on line 2.
+            cache_file.write_text(f"{int(time.time())}\n42% on-track")
 
-            # Fake 'ai' that exits non-zero for statusline-part — if called, the test fails.
             sentinel = Path(tmpdir) / "ai_statusline_called"
             fake_ai = Path(tmpdir) / "ai"
             fake_ai.write_text(
@@ -1912,16 +1916,16 @@ class TestStatuslineScript:
             assert not sentinel.exists(), "ai quota statusline-part should NOT be called when cache is fresh"
 
     def test_given_stale_quota_cache_when_run_then_ai_statusline_part_called(self):
-        """When the quota cache is >30s old, ai quota statusline-part is called to refresh it."""
+        """When the quota cache timestamp is >30s old, ai quota statusline-part is called to refresh it."""
         import tempfile
         import time
 
         uid = os.getuid() if hasattr(os, "getuid") else 0
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_file = Path(tmpdir) / f".ai-sl-quota-{uid}"
-            cache_file.write_text("stale-value")
-            old_time = time.time() - 35  # beyond the 30s TTL
-            os.utime(str(cache_file), (old_time, old_time))
+            # Write cache with a timestamp 35s in the past — beyond the 30s TTL.
+            old_ts = int(time.time()) - 35
+            cache_file.write_text(f"{old_ts}\nstale-value")
 
             sentinel = Path(tmpdir) / "ai_statusline_called"
             fake_ai = Path(tmpdir) / "ai"
