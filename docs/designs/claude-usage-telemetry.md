@@ -583,7 +583,10 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 > **D-8 (AI-CLI-55): Thresholds for Sonnet %**
 > Confirmed same thresholds as all-models %? (<50% green, <50–75% yellow, ≥75% red). Or should Sonnet use tighter thresholds given it's easier to hit? Recommendation: same thresholds for consistency, revisable after observing real usage.
 >
-> - <enter feedback here>
+> **Feedback Round 2:**
+> - D-6: Show `-% S` (dimmed) when Sonnet is absent — do not omit. Fire an immediate background scrape to populate it. (Same `_launch_background_scrape()` already used when all-models data is missing.)
+> - D-7: `S` for Sonnet %, `W` for all-models weekly %. Both values now labeled. Format: `📊 42% W ✅ →8% | 87% S`. When Sonnet absent: `📊 42% W ✅ →8% | \033[2m-% S\033[0m`.
+> - D-8: Same thresholds as all-models % — confirmed.
 >
 > **Feedback Round 1:** Approved — phasing updated to reflect Option D (tmux scraping) as primary. Option C (anchoring) moved to Phase 4 fallback only. Architecture approved.
 
@@ -657,6 +660,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-01 | Round 1 | D-1 through D-4 approved as-is. D-5 switched to Slack (ntfy notifications broken — no visible content in OS banner). D-1 choice updated to option (d) tmux scraping as primary (option (c) hybrid as fallback). All OQs resolved. Architecture and phasing approved. Status: DRAFT → APPROVED. |
+| 2026-04-25 | Round 2 (Phase 4) | D-6: show dimmed `-% S` when Sonnet absent + fire immediate background scrape. D-7: labels are `W` (all-models weekly) and `S` (Sonnet); format `📊 42% W ✅ →8% \| 87% S`. D-8: same thresholds as all-models %. AI-CLI-55 unblocked. |
 
 ---
 
