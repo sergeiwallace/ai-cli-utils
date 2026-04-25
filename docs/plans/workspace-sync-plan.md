@@ -1,0 +1,272 @@
+---
+title: "ai ws — Workspace-wide git pull/rebase for all repos and worktrees"
+category: plan
+tags: [git, worktrees, workspace, sync]
+status: draft
+source: internal
+date: 2026-04-25
+linked_task: AI-CLI-64
+---
+
+# ai ws — Workspace-wide git pull/rebase
+
+**Status:** DRAFT
+
+**Created:** 2026-04-25
+
+**Task:** `AI-CLI-64`
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Options](#options)
+- [Recommendation](#recommendation)
+- [Design](#design)
+  - [Workspace file parsing](#workspace-file-parsing)
+  - [Per-repo pull logic](#per-repo-pull-logic)
+  - [Output format](#output-format)
+- [Task Breakdown](#task-breakdown)
+- [Batch Plan](#batch-plan)
+- [Human Gates](#human-gates)
+- [Open Questions](#open-questions)
+- [Approval Log](#approval-log)
+
+---
+
+## Overview
+
+Running `git pull --rebase` across all project repos and their worktrees is tedious in VS Code's Source Control panel — each repo requires a separate click. This command automates it: `ai ws pull` reads a VS Code `.code-workspace` file, enumerates all project folders and their worktrees, and runs `git pull --rebase` on each one.
+
+**Primary use case:** after arriving at the Mac from Hetzner work, pull all repos to local main in one command instead of clicking each source-control sync button.
+
+**Workspace files:**
+
+- `~/projects/sergei/humanware-local.code-workspace` — default, local repos (13 folders)
+- `~/projects/sergei/humanware-remote.code-workspace` — optional, remote/server repos
+
+> **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing from the goal?
+> - <enter feedback here>
+
+---
+
+## Options
+
+### Option A: Hardcoded list of repos
+
+Enumerate repos from a config key in `config.toml`.
+
+**Pros:** Simple, no workspace file parsing.
+**Cons:** Duplicates information already in the `.code-workspace` file; two sources of truth diverge over time.
+
+---
+
+### Option B: Parse `.code-workspace` file (recommended)
+
+Read the VS Code workspace JSON (with trailing comma / comment tolerance via `json5` or manual strip) to get folder paths. Derive each repo root. Enumerate worktrees via `git worktree list --porcelain`.
+
+**Pros:**
+- Single source of truth — the workspace file already defines the project fleet
+- No config to maintain separately
+- Works automatically as repos are added/removed from the workspace
+
+**Cons:**
+- VS Code workspace JSON is JSON5 (trailing commas, comments) — standard `json.loads` rejects it; need comment/comma stripping
+
+---
+
+### Option C: `ai ws pull --all` scans `~/projects/`
+
+Walk `~/projects/`, find all git repos.
+
+**Pros:** Requires no workspace file.
+**Cons:** Too broad — `~/projects/` contains throwaway experiments, template checkouts, etc. Workspace file already defines intent.
+
+---
+
+## Recommendation
+
+**Option B** — parse the workspace file. The workspace file is already maintained as the authoritative list of active projects.
+
+JSON5 handling: strip single-line `//` comments and trailing commas before parsing with `json.loads`. No external dependency needed for this simple case.
+
+---
+
+## Design
+
+### Command interface
+
+```text
+ai ws pull [--workspace PATH] [--remote] [--dry-run / -d] [--verbose / -v]
+```
+
+- `--workspace PATH` — explicit workspace file path (default: `~/projects/sergei/humanware-local.code-workspace`)
+- `--remote` — use `humanware-remote.code-workspace` instead of the default local one (mutually exclusive with `--workspace`)
+- `--dry-run` / `-d` — print what would be pulled, no git operations
+- `--verbose` / `-v` — show full git output per repo/worktree
+
+**Short flags:** `-d`/`--dry-run`, `-v`/`--verbose`, `-r`/`--remote`. Both short and long forms required per project CLI conventions.
+
+---
+
+### Workspace file parsing
+
+```python
+def _parse_workspace_folders(workspace_path: Path) -> list[Path]:
+    """Return absolute paths of all folders in a .code-workspace file."""
+    text = workspace_path.read_text()
+    # Strip // comments and trailing commas (JSON5 subset)
+    text = re.sub(r'//[^\n]*', '', text)
+    text = re.sub(r',(\s*[}\]])', r'\1', text)
+    data = json.loads(text)
+    base = workspace_path.parent
+    return [(base / f["path"]).resolve() for f in data.get("folders", [])]
+```
+
+---
+
+### Per-repo pull logic
+
+For each workspace folder path:
+
+1. **Exists check** — skip silently if path doesn't exist
+2. **Git check** — `git -C <path> rev-parse --git-dir` — skip with warning if not a git repo
+3. **Main tree pull:**
+   - `git -C <path> status --porcelain` — if clean: `git -C <path> pull --rebase`; log `✓ <name> main`
+   - If dirty: `git -C <path> stash push -m "ai-ws auto-stash"`, pull, `git stash pop`; log `⚠ <name> main (stashed)`
+4. **Worktree enumeration:** `git -C <path> worktree list --porcelain` — parse `worktree` lines, skip bare and main
+5. **Per-worktree pull:**
+   - `git -C <wt> status --porcelain` — if clean: `git -C <wt> pull --rebase`; log `✓ <name>/<wt>`
+   - If dirty: log `↷ <name>/<wt> (dirty, skipped)` — never touch dirty worktrees
+
+---
+
+### Output format
+
+```text
+Workspace: ~/projects/sergei/humanware-local.code-workspace (13 repos)
+
+✓  sergei          main
+✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
+↷  ai-cli-utils    .worktrees/ai-cli-1  (dirty, skipped)
+✓  humanware       main
+…
+
+Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
+```
+
+---
+
+## Task Breakdown
+
+### T-01: Workspace file parser
+
+**Size:** S | **Batch:** 1
+
+Implement `_parse_workspace_folders(workspace_path)` in a new `src/ai_cli/workspace.py` module. Handles JSON5 comment/trailing-comma stripping.
+
+**Acceptance criteria:**
+- [ ] Parses `humanware-local.code-workspace` correctly — returns 13 absolute paths
+- [ ] Handles `//` comments and trailing commas without error
+- [ ] Missing workspace file raises `FileNotFoundError` with a clear message
+
+---
+
+### T-02: Per-repo pull logic
+
+**Size:** M | **Batch:** 1
+
+Implement `ws_pull(workspace_path, dry_run, verbose)` in `workspace.py`. Handles main tree and worktree enumeration + pull. Returns summary stats.
+
+**Acceptance criteria:**
+- [ ] Clean main tree pulled with `git pull --rebase`
+- [ ] Dirty main tree: stash + pull + pop with warning logged
+- [ ] Clean worktrees pulled
+- [ ] Dirty worktrees skipped (no stash — not safe in active sessions)
+- [ ] Non-existent or non-git folders silently skipped
+- [ ] `--dry-run` prints actions, no git operations performed
+
+---
+
+### T-03: `ai ws pull` CLI command
+
+**Size:** S | **Batch:** 2
+
+Wire `ws_pull` into `main.py` dispatch under `ai ws pull`. Add `--workspace`, `--remote`, `--dry-run`, `--verbose` options with both short and long forms.
+
+Default workspace path: `~/projects/sergei/humanware-local.code-workspace`. `--remote` resolves to `~/projects/sergei/humanware-remote.code-workspace`. `--workspace PATH` overrides both.
+
+**Acceptance criteria:**
+- [ ] `ai ws pull` runs against default workspace
+- [ ] `ai ws pull -r` / `--remote` switches to remote workspace
+- [ ] `ai ws pull --workspace /path/to/file.code-workspace` uses explicit path
+- [ ] `ai ws pull -d` / `--dry-run` prints plan without touching git
+- [ ] `ai ws --help` shows correct usage
+
+---
+
+### T-04: Tests
+
+**Size:** M | **Batch:** 2
+
+Tests for `_parse_workspace_folders` and `ws_pull`. All must fail if function body replaced with `pass`.
+
+Test cases:
+- Parser: valid workspace file → correct paths
+- Parser: JSON5 with comments + trailing commas → parses cleanly
+- Parser: missing file → FileNotFoundError
+- Pull: clean main → git pull called
+- Pull: dirty main → stash+pull+pop called in order
+- Pull: clean worktree → pulled
+- Pull: dirty worktree → skipped, log emitted
+- Pull: non-existent folder → silently skipped
+- Pull: non-git folder → skipped with warning
+- Pull: `--dry-run` → no git subprocess calls
+- Pull: `--remote` → resolves to remote workspace path
+
+---
+
+### T-05: Docs update
+
+**Size:** S | **Batch:** 3
+
+Update `docs/tools/ai-cli-usage.md` with `ai ws pull` usage. Same commit as T-03/T-04.
+
+---
+
+## Batch Plan
+
+| Batch | Tasks | Focus | Gate |
+|-------|-------|-------|------|
+| 1 | T-01, T-02 | Core parsing + pull logic | Tests pass |
+| 2 | T-03, T-04 | CLI wiring + tests | Tests pass |
+| 3 | T-05 | Docs | Human review (plan approval gate) |
+
+---
+
+## Human Gates
+
+| Gate | After | Decision needed |
+|------|-------|-----------------|
+| Plan approval | Before coding | Approve scope, command name, default workspace path |
+| UAT | After Batch 2 | Run `ai ws pull -d` against real workspace, verify output |
+
+---
+
+## Open Questions
+
+1. **Command name** — `ai ws pull` assumes a `ws` command group. Alternative: `ai sync repos` (consistent with `ai sync` family) or `ai pull-all`. Preference?
+2. **Default workspace path** — hardcoded to `~/projects/sergei/humanware-local.code-workspace`. Should this be configurable in `config.toml` under `[workspace]`?
+3. **`--remote` convention** — currently resolves to `humanware-remote.code-workspace` alongside the local one. Should the remote workspace path also be config-driven?
+
+> **Feedback Round 1:** Your thoughts on the open questions:
+> 1. <!-- command name -->
+> 2. <!-- default path config -->
+> 3. <!-- remote path config -->
+> - <enter feedback here>
+
+---
+
+## Approval Log
+
+| Date | Round | Notes |
+|------|-------|-------|
