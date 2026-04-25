@@ -537,7 +537,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - hw-scheduling jobs: `claude_quota_scrape` (Hetzner, 10 min), `claude_quota_sync` (Mac fallback, 10 min)
 - Renamed `quota_sync` → `gemini_cost_sync` in hw-scheduling to eliminate naming ambiguity
 
-### Phase 3: Alerting + Pacing *(partially shipped — gaps remain)*
+### Phase 3: Alerting + Pacing *(partially shipped — gaps remain, tracked in `AI-CLI-58`)*
 
 **What's shipped:**
 - `compute_burn_rate()` in `quota_db.py` — actual vs expected %/day, multiplier, displayed in `ai quota status`
