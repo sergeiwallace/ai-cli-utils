@@ -537,11 +537,32 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - hw-scheduling jobs: `claude_quota_scrape` (Hetzner, 10 min), `claude_quota_sync` (Mac fallback, 10 min)
 - Renamed `quota_sync` → `gemini_cost_sync` in hw-scheduling to eliminate naming ambiguity
 
-### Phase 3: Alerting + Pacing *(pending)*
+### Phase 3: Alerting + Pacing *(partially shipped — gaps remain)*
 
-- Pacing engine: burn rate vs. expected pace, threshold detection
-- Slack webhook integration for threshold alerts (`AI-CLI-25`)
-- `ai quota history` trends and weekly summaries
+**What's shipped:**
+- `compute_burn_rate()` in `quota_db.py` — actual vs expected %/day, multiplier, displayed in `ai quota status`
+- `quota_watch()` daemon — polls every 300s, fires threshold alerts (50/75/90%) via `_notify_threshold()`
+- Notification dispatch via Discord webhook + ntfy + OS native (`Notifier` class, `AI-CLI-25`)
+- `ai quota history` — weekly summaries (peak %, snapshot count, week start)
+- NATS publish on threshold cross (`quota.threshold.{N}` subject)
+
+**Why the doc said "pending":** Original design specified Slack webhook. The notification system was implemented with Discord + ntfy instead (Slack was never set up). The doc was never updated when Phase 3 shipped incrementally.
+
+**Remaining gaps (not yet implemented):**
+- Burn rate-triggered alerts — `compute_burn_rate()` calculates the 1.5x multiplier but `quota_watch()` never checks it; only percentage thresholds fire notifications
+- Session imbalance detection — per-session data exists in `get_current_status()` but no alert when one session exceeds 40% of total usage
+- Weekly trend analysis — `quota_history()` shows per-week peak/count but no week-over-week comparison, per-day breakdowns, or trend direction
+- 5-hour rolling sub-limit alerting — `extra_pct` is scraped and stored but not monitored by `quota_watch()`
+
+> **Feedback:** Phase 3 gap review — should the remaining gaps be implemented?
+>
+> - Burn rate alert (1.5× multiplier): still relevant, or is % threshold sufficient?
+> - Session imbalance (>40% one session): useful or too noisy with 6–10 parallel sessions?
+> - Weekly trends: worth adding to `ai quota history`, or current weekly summary is enough?
+> - 5-hour rolling sub-limit: you mentioned never hitting it — skip alerting?
+> - Notification channel: Discord + ntfy are wired; Slack is not and not needed?
+>
+> - <enter feedback here>
 
 ### Phase 4: Statusline Improvements *(in progress)*
 
