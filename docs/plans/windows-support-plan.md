@@ -2,12 +2,12 @@
 title: "Windows Out-of-Box Support — Implementation Plan"
 category: plan
 tags: [windows, portability, cross-platform, AI-CLI-29]
-status: draft
+status: approved
 ---
 
 # Windows Out-of-Box Support — Implementation Plan
 
-**Status:** DRAFT — awaiting user review before implementation
+**Status:** APPROVED
 
 **Created:** 2026-04-24
 
@@ -16,13 +16,11 @@ status: draft
 ## Table of Contents
 
 - [Overview](#overview)
-- [Scope](#scope)
-- [Options](#options)
+- [Decisions](#decisions)
 - [Technical Design](#technical-design)
 - [Task Breakdown](#task-breakdown)
 - [Batch Plan](#batch-plan)
 - [Human Gates](#human-gates)
-- [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
 ## Overview
@@ -32,96 +30,226 @@ in `iterm2.py`. Beyond import failures, POSIX path assumptions (`~/.config`, `~/
 and shell-specific subprocess calls mean the core commands are non-functional even if the import
 were fixed.
 
-Goal: `pip install ai-cli-utils` on Windows + `ai` should work for the portable subset of
-features (quota display, Gemini CLI, sync, notifications) without manual path configuration.
-macOS-only features (iTerm2 integration, tmux session management, mosh tunneling) are
-explicitly out of scope for Windows — they should degrade gracefully rather than crash.
+Goal: `pip install ai-cli-utils` on Windows + `ai` should work for the full portable feature set
+(quota display, Gemini CLI, sync, notifications, `ai c`/`ai g` session management). macOS-only
+features (iTerm2 integration) degrade gracefully rather than crash.
 
-> **Feedback:** Is the "portable subset" framing right? Any Windows-specific features that
-> should be added (e.g. Windows Terminal integration, PowerShell support)?
-> - <enter feedback here>
-
-## Scope
+**Primary Windows shell target:** Git Bash. PowerShell is a secondary target.
 
 ### In scope
 
 | Area | What changes |
 |------|-------------|
 | XDG path abstraction | `config.py` — use `%APPDATA%`/`%LOCALAPPDATA%` on Windows |
-| `fcntl` import guard | `iterm2.py` — conditional import; lock file uses `msvcrt` or `portalocker` |
-| `/tmp` hardcodes | `notifications.py` — replace `/tmp/...` with `tempfile.gettempdir()` |
+| `fcntl` replacement | `iterm2.py` — replace with `portalocker` |
+| `/tmp` hardcodes | `notifications.py` — replace with `tempfile.gettempdir()` |
 | `/dev/null` hardcodes | `gemini.py`, `research.py` — replace with `os.devnull` |
 | Process existence checks | `tunnel.py`, `sync.py` — replace `os.kill(pid, 0)` with `psutil` |
-| OS notifications | `notifications.py` — add `win32` branch (PowerShell toast) |
+| OS notifications | `notifications.py` — `plyer` optional extra `[notify-win]` |
+| `ai c` / `ai g` session management | requires tmux installed via MSYS2; documented |
 | CI matrix | `.github/workflows/ci.yml` — add `windows-latest` runner |
-| iTerm2 guards | `iterm2.py` — wrap all functions with `sys.platform == "darwin"` guard at call sites |
+| iTerm2 guards | `iterm2.py` — `sys.platform == "darwin"` guard; already mostly present |
+| Test cross-platform coverage | no test skipping — platform-specific code mocked |
 
 ### Out of scope
 
-- tmux session management (`ai c`, `ai g`) — requires tmux, not available on Windows
-- mosh / SSH transport — POSIX-specific; document as macOS/Linux only
-- Bash session script (`session_script.py`) — bash-dependent; document as unsupported
-- signal-watch NATS daemon — POSIX signal infrastructure; document as unsupported
-- Full parity on all features — goal is graceful degradation, not a full Windows port
+- mosh / SSH transport — POSIX-specific; documented as macOS/Linux only
+- signal-watch NATS daemon — POSIX signal infrastructure; documented as unsupported on Windows
+- Full feature parity — goal is graceful degradation for macOS-only features, not a full port
 
-> **Feedback:** Agree with the in/out-of-scope line? Anything that should move between lists?
-> - <enter feedback here>
+> **Feedback Round 1:**
+> - Scope framing confirmed. `ai c`/`ai g` should work on Windows — moved in scope.
+>   User uses Git Bash; tmux is available via MSYS2.
+>
+> **AI Response Round 1:**
+> - `ai c`/`ai g` moved in scope. They invoke `tmux` as a subprocess — works in Git Bash
+>   with tmux installed (MSYS2: `pacman -S tmux`). Bash session scripts work in Git Bash.
+>   Added T-09 to document the MSYS2 tmux requirement.
+> - signal-watch remains out of scope (POSIX signal infrastructure).
 
-## Options
+## Decisions
 
-### Option A: Minimal portability fixes only (no new abstraction layer)
+### Decision Summary
 
-Fix the blocking issues file-by-file with targeted conditionals (`if sys.platform == "win32"`).
-No shared abstraction — each module handles its own platform branching.
+| # | Decision | Options | Status |
+|---|----------|---------|--------|
+| D1 | Cross-platform locking and process checks | (a) targeted conditionals, (b) config.py abstraction, (c) portalocker + psutil | `APPROVED: (c)` |
+| D2 | Windows OS notifications | (a) PowerShell subprocess, (b) plyer optional extra | `APPROVED: (b)` |
+| D3 | Windows shell target | (a) PowerShell primary, (b) Git Bash primary | `APPROVED: (b)` |
+| D4 | Version bump | (a) patch 0.5.x, (b) minor 0.6.0 | `APPROVED: (b)` |
+
+---
+
+### D1: Cross-platform locking and process checks — `[APPROVED: (c) portalocker + psutil]`
+
+The package uses `fcntl.flock` for file locking and `os.kill(pid, 0)` for process existence
+checks. Both are POSIX-only and fail on Windows.
+
+#### (a) Targeted conditionals
+
+Add `if sys.platform == "win32"` branches in each affected file. No new dependencies.
 
 **Pros:**
-- Smallest changeset — minimal risk of regressions
-- No new public API surface to maintain
+
+- Smallest changeset — zero new dependencies
 - Fastest to ship
 
 **Cons:**
+
 - Platform branches scattered across 8+ files — hard to audit
 - Duplicated platform-detection logic
-- CI failures on Windows will be harder to attribute
+- `os.kill` on Windows has subtly different error semantics requiring careful wrapping anyway
 
-### Option B: Path abstraction layer in `config.py` + targeted fixes elsewhere
+#### (b) Path abstraction in `config.py` + in-place fixes elsewhere
 
-Centralize OS-aware path resolution in `config.py` (already owns XDG functions). All other
-modules call `config.py` helpers rather than hard-coding paths. Non-path issues (fcntl,
-signals, /dev/null) fixed in-place with platform conditionals.
+Centralize OS-aware path resolution in `config.py`. Fix `fcntl` and `os.kill` in-place with
+conditional guards.
 
 **Pros:**
-- Platform logic for paths is in one place — easier to test and audit
-- `config.py` already owns this responsibility; no new module needed
-- Other fixes remain small and self-contained
+
+- Path logic in one place
+- No new dependencies
 
 **Cons:**
-- Slightly larger change to `config.py`
-- Tests for path resolution need to cover both platforms
 
-### Option C: Full `portalocker` + `psutil` dependency introduction
+- `fcntl` / `os.kill` still need per-file guards
+- Tests still need to branch on platform for locking/process scenarios
+
+#### (c) `portalocker` + `psutil` as hard dependencies
 
 Add `portalocker` (cross-platform file locking) and `psutil` (cross-platform process checks)
-as hard dependencies. Use them everywhere instead of `fcntl` / `os.kill`.
+as hard dependencies. Replace all `fcntl` and `os.kill` calls with these libraries everywhere.
 
 **Pros:**
-- Cleanest cross-platform solution — no manual branching for locking or signals
-- `psutil` and `portalocker` are well-maintained and widely used
+
+- Cleanest solution — no manual branching for locking or process checks
+- `psutil` and `portalocker` are well-maintained, widely used, and well-tested on Windows
+- Tests run identically on all platforms — no platform guards needed for these code paths
 
 **Cons:**
-- Adds 2 new hard dependencies (heavier install)
-- `psutil` installs native extensions — may complicate lightweight installs
-- Overkill for a package where Windows support is currently secondary
 
-### Recommendation
+- Two new hard dependencies (heavier install)
+- `psutil` installs a native C extension
 
-**Option B** — path abstraction in `config.py` + targeted in-place fixes for the remaining
-issues. This gives a clean, auditable path layer without adding hard dependencies. The `fcntl`
-guard and `/dev/null` / `/tmp` replacements are small enough to fix in-place. If the project
-later needs `psutil` for other reasons, the `os.kill(pid, 0)` calls can migrate then.
+#### Recommendation
 
-> **Feedback:** Option B recommended. Agree? Any preference for Option C (portalocker/psutil)?
-> - <enter feedback here>
+> **Decision:** `APPROVED — (c) portalocker + psutil`
+
+portalocker and psutil are the right tool for this. The native extension in psutil is standard
+and present in virtually every Python environment. This avoids scattered conditionals and makes
+tests cross-platform by default.
+
+---
+
+### D2: Windows OS notifications — `[APPROVED: (b) plyer optional extra]`
+
+The `notifications.py` module uses OS-native notification APIs. On Windows this requires either
+invoking PowerShell or using a cross-platform library.
+
+#### (a) PowerShell subprocess
+
+Invoke PowerShell's `[Windows.UI.Notifications.ToastNotificationManager]` API via subprocess.
+
+**Pros:**
+
+- No additional dependencies
+- Works on any Windows 10+ machine
+
+**Cons:**
+
+- Complex PowerShell one-liner that is fragile and hard to test
+- Requires PowerShell execution policy to allow scripts
+- User prefers Git Bash; PowerShell dependency is undesirable
+
+#### (b) plyer optional extra `[notify-win]`
+
+Use `plyer` (cross-platform notification library) installed as an optional extra.
+
+**Pros:**
+
+- Clean API — one `notification.notify()` call works on Windows, macOS, Linux
+- No PowerShell dependency
+- Optional — base install stays lean; Windows users who want notifications install `[notify-win]`
+
+**Cons:**
+
+- Adds optional dependency
+- `plyer` pulls in some desktop toolkit detection on import
+
+#### Recommendation
+
+> **Decision:** `APPROVED — (b) plyer optional extra [notify-win]`
+
+User does not use PowerShell as their primary shell. plyer provides a clean, testable API
+and keeps PowerShell out of the dependency chain. Made optional so the base install stays lean.
+
+---
+
+### D3: Windows shell target — `[APPROVED: (b) Git Bash primary]`
+
+Which Windows shell to target as the primary environment.
+
+#### (a) PowerShell primary
+
+Design for PowerShell as the main Windows shell. All subprocess calls, path quoting, and
+script invocations use PowerShell conventions.
+
+**Pros:**
+
+- PowerShell is the modern Windows default
+- Better Windows-native integration
+
+**Cons:**
+
+- User does not prefer PowerShell
+- Many existing bash scripts would need PowerShell rewrites
+
+#### (b) Git Bash primary
+
+Target Git Bash (MSYS2 environment bundled with Git for Windows) as the primary shell.
+PowerShell remains a secondary target where no bash-specific calls are made.
+
+**Pros:**
+
+- User's preferred shell
+- Bash scripts work as-is in Git Bash
+- `tmux` available via MSYS2 (`pacman -S tmux`)
+- `ai c`/`ai g` work without modification
+
+**Cons:**
+
+- Requires Git for Windows to be installed
+
+#### Recommendation
+
+> **Decision:** `APPROVED — (b) Git Bash primary`
+
+User uses Git Bash as their primary Windows shell. All bash session scripts work in Git Bash.
+tmux is installable via MSYS2. PowerShell compatibility is maintained where it doesn't conflict.
+
+---
+
+### D4: Version bump — `[APPROVED: (b) 0.6.0]`
+
+This is a significant portability change introducing new hard dependencies and CI matrix expansion.
+
+#### (a) Patch bump 0.5.x
+
+**Pros:** conservative; signals no API changes
+
+**Cons:** misleading — two new hard dependencies is a non-trivial change
+
+#### (b) Minor bump 0.6.0
+
+**Pros:** signals meaningful new capability (Windows support); appropriate for new hard deps
+
+**Cons:** none
+
+#### Recommendation
+
+> **Decision:** `APPROVED — (b) 0.6.0`
+
+---
 
 ## Technical Design
 
@@ -145,71 +273,81 @@ def get_xdg_state_home() -> Path:
 
 All modules already call these helpers — no cascading changes needed.
 
-### 2. `fcntl` Guard (`iterm2.py`)
+### 2. `fcntl` → `portalocker` (`iterm2.py`, `quota.py`)
 
-`fcntl` is used only for the color-lease lock file. On Windows, iTerm2 integration is a no-op
-(`_is_iterm2()` returns `False`), so the lock is never reached. Guard at import time:
+Replace all `fcntl.flock` calls with `portalocker.lock` / `portalocker.unlock`. On Windows,
+portalocker uses `msvcrt.locking`; on POSIX it uses `fcntl`. Same semantics, no branching.
 
 ```python
-try:
-    import fcntl as _fcntl
-    _HAS_FCNTL = True
-except ImportError:
-    _HAS_FCNTL = False
+import portalocker
+
+with open(lock_path, "w") as f:
+    portalocker.lock(f, portalocker.LOCK_EX | portalocker.LOCK_NB)
+    # ... critical section ...
+    portalocker.unlock(f)
 ```
 
-Wrap the `flock` calls: `if _HAS_FCNTL: _fcntl.flock(...)`. On Windows these are no-ops —
-the iTerm2 guard above ensures this code path is never reached on Windows in production.
+### 3. `os.kill(pid, 0)` → `psutil` (`tunnel.py`, `sync.py`)
 
-### 3. Hardcoded `/tmp` and `/dev/null`
+```python
+import psutil
+
+def _pid_alive(pid: int) -> bool:
+    return psutil.pid_exists(pid)
+```
+
+`psutil.pid_exists` is cross-platform and handles edge cases (permission errors, zombie
+processes) correctly on all OSes.
+
+### 4. Hardcoded `/tmp` and `/dev/null`
 
 | File | Current | Fix |
 |------|---------|-----|
 | `notifications.py:248` | `f"/tmp/ai-batch-{session_id}.lock"` | `Path(tempfile.gettempdir()) / f"ai-batch-{session_id}.lock"` |
-| `gemini.py:1016` | `"/dev/null"` string comparison | `os.devnull` |
-| `research.py:546` | `"/dev/null"` string comparison | `os.devnull` |
+| `gemini.py:1016` | `"/dev/null"` string | `os.devnull` |
+| `research.py:546` | `"/dev/null"` string | `os.devnull` |
 
-### 4. Process Existence Checks (`tunnel.py`, `sync.py`)
+### 5. OS Notifications — plyer (`notifications.py`)
 
-Replace `os.kill(pid, 0)` (POSIX-only) with a portable alternative that avoids the `psutil`
-dependency:
-
-```python
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
-    except OSError:
-        # Windows: os.kill raises OSError for non-existent PIDs
-        return False
-```
-
-`os.kill(pid, 0)` actually works on Windows in Python 3.8+ for existence checks — it raises
-`OSError` for missing PIDs rather than `ProcessLookupError`. A unified helper covers both.
-
-### 5. OS Notifications (`notifications.py`)
-
-Add a `win32` branch in `_send_os_notification()`:
+Add a `win32` branch that uses `plyer` when installed:
 
 ```python
 elif sys.platform == "win32":
-    subprocess.run([
-        "powershell", "-Command",
-        f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null; ..."
-    ], capture_output=True)
+    try:
+        from plyer import notification as _plyer_notify
+        _plyer_notify.notify(title=title, message=body, app_name="ai-cli-utils")
+    except ImportError:
+        pass  # [notify-win] extra not installed — silently degrade
 ```
 
-Alternative: use `plyer` (optional extra `ai-cli-utils[notify-win]`) to avoid PowerShell complexity.
+Install: `pip install "ai-cli-utils[notify-win]"`. `pyproject.toml`:
 
-### 6. iTerm2 Guards
+```toml
+[project.optional-dependencies]
+notify-win = ["plyer>=2.1"]
+```
 
-`_is_iterm2()` already returns `False` on non-macOS. The AppleScript call in
-`_set_iterm2_name_applescript` already has `if sys.platform != "darwin": return`. The only
-remaining gap is the top-level `import fcntl` — covered in item 2 above.
+### 6. iTerm2 Guards (`iterm2.py`)
 
-### 7. CI Matrix (`.github/workflows/ci.yml`)
+`_is_iterm2()` already returns `False` on non-macOS. The AppleScript call already has a
+`sys.platform != "darwin"` guard. The only fix needed is replacing `import fcntl` with
+`portalocker` (item 2 above).
+
+### 7. `ai c` / `ai g` on Windows (Git Bash)
+
+`ai c` and `ai g` invoke `tmux` as a subprocess. In Git Bash with tmux installed, this works
+without code changes. The bash session scripts run in Git Bash natively.
+
+**Requirement:** tmux must be installed via MSYS2:
+
+```bash
+# From Git Bash (MSYS2 pacman)
+pacman -S tmux
+```
+
+Document this in README and `docs/tools/ai-cli-usage.md`.
+
+### 8. CI Matrix (`.github/workflows/ci.yml`)
 
 ```yaml
 strategy:
@@ -218,47 +356,248 @@ strategy:
     os: [ubuntu-latest, windows-latest, macos-latest]
 ```
 
-iTerm2 and tmux tests already skip when the relevant env vars are absent — they will skip
-cleanly on Windows CI. Tests that use `fcntl` or POSIX signals directly will need `@pytest.mark.skipif(sys.platform == "win32", ...)` guards.
+### 9. Test Strategy — No Skipping
+
+Since D1=C (portalocker + psutil replace all POSIX-specific calls), most formerly
+platform-specific code paths become cross-platform. Tests run identically everywhere.
+
+For code that truly varies by platform (XDG path helpers, iTerm2 detection):
+
+```python
+# Mock sys.platform in tests — no skipif needed
+with patch("sys.platform", "win32"):
+    assert get_xdg_config_home() == Path.home() / "AppData" / "Roaming" / "ai-cli-utils"
+```
+
+iTerm2 tests mock `_is_iterm2()` to return `True` regardless of OS so the logic is tested
+on all platforms without requiring an actual macOS+iTerm2 environment.
 
 ## Task Breakdown
 
-| # | Task | Files | Notes |
-|---|------|-------|-------|
-| T-01 | Platform-aware path helpers in `config.py` | `config.py`, `tests/test_config.py` | Foundation — do first |
-| T-02 | Guard `fcntl` import in `iterm2.py` | `iterm2.py`, `tests/test_iterm2.py` | Unblocks Windows import |
-| T-03 | Replace `/tmp` and `/dev/null` hardcodes | `notifications.py`, `gemini.py`, `research.py` | Small, low-risk |
-| T-04 | Portable `_pid_alive()` helper | `tunnel.py`, `sync.py` | Shared helper in `config.py` or new `process.py` |
-| T-05 | Windows OS notification branch | `notifications.py` | Low priority; can degrade gracefully |
-| T-06 | CI matrix expansion to `windows-latest` | `.github/workflows/ci.yml` | Add after T-01–T-04 pass locally |
-| T-07 | Tests: platform-specific skipif guards | `tests/` | Co-ship with each fix |
-| T-08 | Docs: document Windows-unsupported features | `README.md`, `docs/tools/ai-cli-usage.md` | Same commit as T-06 |
+### T-01: Platform-aware path helpers in `config.py`
+
+**Size:** S
+**Batch:** 1
+
+Add `get_xdg_config_home()` and `get_xdg_state_home()` Windows branches using `%APPDATA%`
+and `%LOCALAPPDATA%`. All callers already use these helpers.
+
+**Deliverables:**
+
+- `src/ai_cli/config.py` — updated helpers
+- `tests/test_config.py` — platform-mocked tests for Windows paths
+
+**Acceptance criteria:**
+
+- [ ] `get_xdg_config_home()` returns `%APPDATA%/ai-cli-utils` when `sys.platform == "win32"`
+- [ ] `get_xdg_state_home()` returns `%LOCALAPPDATA%/ai-cli-utils` when `sys.platform == "win32"`
+- [ ] Both functions return XDG paths on Linux/macOS (unchanged behavior)
+- [ ] Tests mock `sys.platform` — no platform guard on the tests themselves
+
+**Dependencies:** None
+
+---
+
+### T-02: Replace `fcntl` with `portalocker` (`iterm2.py`, `quota.py`)
+
+**Size:** S
+**Batch:** 1
+
+Replace all `fcntl.flock` usages with `portalocker`. Add `portalocker` to `pyproject.toml`
+hard dependencies.
+
+**Deliverables:**
+
+- `src/ai_cli/iterm2.py` — `fcntl` → `portalocker`
+- `src/ai_cli/quota.py` — any `fcntl` usage → `portalocker`
+- `pyproject.toml` — `portalocker>=4.0` added to dependencies
+- `tests/` — verify locking tests pass on CI
+
+**Acceptance criteria:**
+
+- [ ] `import ai_cli` succeeds on Windows (no `fcntl` import at module level)
+- [ ] Lock file behavior unchanged on macOS/Linux
+- [ ] All existing locking tests pass
+
+**Dependencies:** None
+
+---
+
+### T-03: Replace `/tmp` and `/dev/null` hardcodes
+
+**Size:** S
+**Batch:** 1
+
+**Deliverables:**
+
+- `src/ai_cli/notifications.py` — `/tmp/...` → `tempfile.gettempdir()`
+- `src/ai_cli/gemini.py` — `"/dev/null"` → `os.devnull`
+- `src/ai_cli/research.py` — `"/dev/null"` → `os.devnull`
+
+**Acceptance criteria:**
+
+- [ ] `tempfile.gettempdir()` used for all temp paths
+- [ ] `os.devnull` used for all null-device references
+- [ ] All existing tests pass
+
+**Dependencies:** None
+
+---
+
+### T-04: Portable `_pid_alive()` with `psutil`
+
+**Size:** S
+**Batch:** 2
+
+Add `psutil` to hard dependencies. Replace all `os.kill(pid, 0)` calls with
+`psutil.pid_exists(pid)`. Extract shared `_pid_alive()` helper into `config.py` or a new
+`src/ai_cli/process.py`.
+
+**Deliverables:**
+
+- `src/ai_cli/tunnel.py` — `os.kill(pid, 0)` → `psutil.pid_exists`
+- `src/ai_cli/sync.py` — `os.kill(pid, 0)` → `psutil.pid_exists`
+- `pyproject.toml` — `psutil>=5.9` added to dependencies
+- `tests/` — updated process-existence tests (mock `psutil.pid_exists`)
+
+**Acceptance criteria:**
+
+- [ ] `_pid_alive(pid)` returns `True` for a live PID, `False` otherwise on all platforms
+- [ ] No `os.kill(pid, 0)` calls remain in the codebase
+- [ ] All existing tests pass
+
+**Dependencies:** T-01
+
+---
+
+### T-05: Windows OS notification branch (`notifications.py`)
+
+**Size:** S
+**Batch:** 2
+
+Add `win32` branch in `_send_os_notification()` using `plyer`. Add `[notify-win]` optional
+extra to `pyproject.toml`.
+
+**Deliverables:**
+
+- `src/ai_cli/notifications.py` — Windows branch using plyer
+- `pyproject.toml` — `[project.optional-dependencies] notify-win = ["plyer>=2.1"]`
+- `tests/test_notifications.py` — Windows branch test (mock `sys.platform`, mock plyer import)
+
+**Acceptance criteria:**
+
+- [ ] `_send_os_notification()` calls `plyer.notification.notify()` when `sys.platform == "win32"` and plyer is installed
+- [ ] Silently degrades (no exception) when plyer is not installed
+- [ ] Base install (`pip install ai-cli-utils`) does not pull in plyer
+
+**Dependencies:** T-01
+
+---
+
+### T-06: CI matrix expansion to `windows-latest`
+
+**Size:** S
+**Batch:** 3
+
+Add `windows-latest` to the CI OS matrix. Verify all tests pass on Windows CI.
+
+**Deliverables:**
+
+- `.github/workflows/ci.yml` — `os: [ubuntu-latest, windows-latest, macos-latest]`
+
+**Acceptance criteria:**
+
+- [ ] CI passes on `windows-latest` for Python 3.11, 3.12, 3.13
+- [ ] No test skips on Windows (all tests run and pass)
+
+**Dependencies:** T-01–T-05
+
+---
+
+### T-07: Test cross-platform coverage
+
+**Size:** M
+**Batch:** 3
+
+Audit all tests that use platform-specific assumptions. Replace `skipif win32` guards with
+`patch("sys.platform", "win32")` mocks. Ensure iTerm2 tests mock `_is_iterm2()` so they
+run on all platforms.
+
+**Deliverables:**
+
+- `tests/` — all platform-specific tests updated to mock rather than skip
+
+**Acceptance criteria:**
+
+- [ ] Zero `pytest.mark.skipif(sys.platform == "win32", ...)` decorators in test suite
+- [ ] All tests pass on macOS, Linux, and Windows CI
+
+**Dependencies:** T-01–T-05
+
+---
+
+### T-08: Docs — document Windows requirements and unsupported features
+
+**Size:** S
+**Batch:** 3
+
+**Deliverables:**
+
+- `README.md` — add Windows installation section
+- `docs/tools/ai-cli-usage.md` — note `ai c`/`ai g` require tmux via MSYS2; note signal-watch
+  is unsupported on Windows
+
+**Acceptance criteria:**
+
+- [ ] README explains `pip install ai-cli-utils` on Windows and Git Bash + MSYS2 setup
+- [ ] `ai c`/`ai g` tmux requirement documented
+- [ ] Unsupported features listed with clear rationale
+
+**Dependencies:** T-06
+
+---
+
+### T-09: Document `ai c`/`ai g` tmux requirement for Windows
+
+**Size:** XS
+**Batch:** 1
+
+Add a `sys.platform == "win32"` guard at the top of `_do_session_launch` that prints a
+helpful error if tmux is not found, rather than crashing with a cryptic subprocess error.
+
+**Deliverables:**
+
+- `src/ai_cli/main.py` — graceful "tmux not found — install via MSYS2: `pacman -S tmux`" message if `tmux` is not on PATH on Windows
+
+**Acceptance criteria:**
+
+- [ ] `ai c 1` on Windows without tmux prints a clear error message
+- [ ] `ai c 1` on Windows with tmux installed works normally
+
+**Dependencies:** T-01
+
+---
 
 ## Batch Plan
 
-**Batch 1 (foundation):** T-01, T-02, T-03 — the three changes that unblock `import ai_cli` on Windows.
+| Batch | Tasks | Focus | Gate |
+|-------|-------|-------|------|
+| 1 | T-01, T-02, T-03, T-09 | Unblock `import ai_cli` on Windows; fix paths and null devices | Human: verify `ai quota status` works on Windows |
+| 2 | T-04, T-05 | Process checks and notifications | — |
+| 3 | T-06, T-07, T-08 | CI matrix, test audit, docs | Human: CI green on `windows-latest` |
 
-**Batch 2 (hardening):** T-04, T-05 — process checks and notifications.
-
-**Batch 3 (CI + docs):** T-06, T-07, T-08 — wire Windows into CI and document scope.
+> **Feedback Round 1:** Batching confirmed. T-09 added to Batch 1 (graceful tmux-not-found message).
 
 ## Human Gates
 
-| Gate | Before | Action |
-|------|--------|--------|
-| **Plan review** | Before any code | User approves this doc |
-| **Batch 1 UAT** | After Batch 1 ships | Verify `pip install` + `ai quota status` works on Windows |
-| **CI green** | After Batch 3 | Confirm `windows-latest` runner passes before closing task |
-
-## Open Questions
-
-1. **T-05 PowerShell vs plyer** — Is a `[notify-win]` optional extra acceptable, or should Windows toast notifications be dependency-free (PowerShell script)?
-2. **Test coverage on Windows** — Some tests use `fcntl` directly (not through the module being tested). Should these be marked `skipif win32` or refactored?
-3. **`ai c` / `ai g` on Windows** — Should the session-launch commands print a clear "not supported on Windows" error rather than crashing on the bash template? Recommendation: yes — add a platform guard at the top of `_do_session_launch`.
-4. **Version bump** — This is a significant portability fix. Minor bump (`0.6.0`) or patch (`0.5.x`)?
+| Gate | After | Decision needed |
+|------|-------|-----------------|
+| Plan approval | Before any code | Approve scope and approach — **DONE** |
+| Batch 1 UAT | After Batch 1 | Verify `pip install ai-cli-utils` + `ai quota status` works on Windows |
+| CI green | After Batch 3 | Confirm `windows-latest` runner passes before closing AI-CLI-29 |
 
 ## Approval Log
 
 | Date | Round | Decisions |
 |------|-------|-----------|
-| — | — | — |
+| 2026-04-25 | Round 1 | D1=C (portalocker+psutil hard deps). D2=plyer optional [notify-win] (no PowerShell). D3=Git Bash primary. D4=0.6.0 minor bump. ai c/ai g moved in scope — work in Git Bash with tmux via MSYS2. No test skipping — mock sys.platform instead. Status: DRAFT → APPROVED. |
