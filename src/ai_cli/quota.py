@@ -853,7 +853,12 @@ def quota_statusline_part() -> int:
     """
     import sqlite3
 
-    from .quota_db import _get_current_week_start, _get_quota_db_path, record_quota_snapshot
+    from .quota_db import (
+        _get_current_week_start,
+        _get_quota_db_path,
+        _init_db,
+        record_quota_snapshot,
+    )
 
     try:
         from datetime import datetime, timezone
@@ -864,6 +869,7 @@ def quota_statusline_part() -> int:
         db_path = _get_quota_db_path()
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
+        _init_db(conn)
         rows = conn.execute(
             "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct FROM quota_snapshots"
             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
@@ -899,6 +905,7 @@ def quota_statusline_part() -> int:
                         )
                         conn2 = sqlite3.connect(str(db_path))
                         conn2.row_factory = sqlite3.Row
+                        _init_db(conn2)
                         rows = conn2.execute(
                             "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct FROM quota_snapshots"
                             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",

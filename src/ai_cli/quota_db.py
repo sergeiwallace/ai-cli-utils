@@ -139,6 +139,22 @@ def _init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS notification_log_source   ON notification_log (source);
     """)
     conn.commit()
+    # Migrate columns added after the initial schema (ALTER TABLE ADD COLUMN is a no-op
+    # on new DBs; existing DBs gain the column without a full rebuild).
+    _migrate_snapshot_columns(conn)
+
+
+def _migrate_snapshot_columns(conn: sqlite3.Connection) -> None:
+    """Add columns to quota_snapshots that were introduced after the initial schema."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(quota_snapshots)")}
+    new_cols = [
+        ("weekly_sonnet_pct", "REAL"),
+        ("extra_pct", "REAL"),
+    ]
+    for col, typedef in new_cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE quota_snapshots ADD COLUMN {col} {typedef}")
+    conn.commit()
 
 
 def _get_current_week_start(now: datetime | None = None) -> str:

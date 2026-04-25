@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-04-25
+
+### Fixed
+
+- `ai quota statusline-part` no longer produces empty output on installations with a legacy quota DB
+  that pre-dates AI-CLI-55 (`weekly_sonnet_pct` column was not migrated via `ALTER TABLE`, causing a
+  silent `OperationalError` inside the `try`/`except` block) (`AI-CLI-56`).
+- `_init_db()` now calls `_migrate_snapshot_columns()` to add `weekly_sonnet_pct` and `extra_pct`
+  to existing `quota_snapshots` tables that lack them (`AI-CLI-56`).
+- `quota_statusline_part()` now calls `_init_db(conn)` on its direct SQLite connection so schema
+  migrations always run before any query (`AI-CLI-56`).
+- Statusline bash script quota cache now uses a `_quota_cache_valid` flag instead of checking
+  `[[ -z "$quota_part" ]]`, preventing legitimate empty results from bypassing the 30-second cache
+  and triggering repeated blocking calls that produced duplicate prompt boxes in scrollback (`AI-CLI-56`).
+
 ## [0.5.3] - 2026-04-25
 
 ### Added

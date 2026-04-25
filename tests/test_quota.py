@@ -1504,6 +1504,112 @@ class TestQuotaStatuslinePart:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
 
+class TestQuotaStatuslinePartLegacyDb:
+    """AI-CLI-56 regression: quota_statusline_part must survive legacy DBs missing weekly_sonnet_pct."""
+
+    def test_when_legacy_db_without_sonnet_col_then_produces_quota_output(self, tmp_path, capsys):
+        """quota_statusline_part must not silently fail on a DB created before weekly_sonnet_pct.
+
+        Without the fix, SELECT weekly_sonnet_pct from an old table raises OperationalError, which
+        the outer except catches silently — producing empty stdout. Empty stdout bypasses the 30s
+        bash cache and causes every statusLine render to fire the 1.4s Python call, resulting in
+        overlapping blocking calls that produce duplicate prompt boxes in the scrollback buffer.
+        """
+        import sqlite3
+        import ai_cli.quota_db as qdb
+
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE quota_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usage_percent REAL NOT NULL,
+                session_pct REAL,
+                extra_pct REAL,
+                week_start TEXT NOT NULL,
+                snapshotted_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weekly_state (
+                week_start TEXT PRIMARY KEY,
+                total_consumed INTEGER NOT NULL DEFAULT 0,
+                last_snapshot_at TEXT,
+                reset_at TEXT
+            )
+            """
+        )
+        week_start = qdb._get_current_week_start()
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        conn.execute(
+            "INSERT INTO quota_snapshots (usage_percent, session_pct, extra_pct, week_start, snapshotted_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (42.0, None, None, week_start, now_iso),
+        )
+        conn.commit()
+        conn.close()
+
+        qdb.set_db_path(db_path)
+        try:
+            with patch("ai_cli.quota._try_read_kv_snapshot", return_value=None):
+                result = quota_statusline_part()
+            out = capsys.readouterr().out
+            assert result == 0
+            assert (
+                "42%" in out
+            ), f"Expected quota output but got empty — legacy DB migration likely missing. out={out!r}"
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_legacy_db_and_empty_output_then_does_not_raise(self, tmp_path, capsys):
+        """quota_statusline_part must return 0 even when the DB has no snapshots at all."""
+        import sqlite3
+        import ai_cli.quota_db as qdb
+
+        db_path = tmp_path / "empty_legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE quota_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usage_percent REAL NOT NULL,
+                session_pct REAL,
+                extra_pct REAL,
+                week_start TEXT NOT NULL,
+                snapshotted_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weekly_state (
+                week_start TEXT PRIMARY KEY,
+                total_consumed INTEGER NOT NULL DEFAULT 0,
+                last_snapshot_at TEXT,
+                reset_at TEXT
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        qdb.set_db_path(db_path)
+        try:
+            with (
+                patch("ai_cli.quota._try_read_kv_snapshot", return_value=None),
+                patch("ai_cli.quota._launch_background_scrape"),
+            ):
+                result = quota_statusline_part()
+            assert result == 0
+            out = capsys.readouterr().out
+            assert "📊" in out
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
+
+
 class TestTryReadKvSnapshot:
     def test_returns_none_when_nats_servers_not_configured(self):
         """_try_read_kv_snapshot returns None when config has no nats_servers."""
@@ -1899,9 +2005,9 @@ class TestStatuslineScript:
         result = self._run()
         assert result.returncode == 0
         non_empty = [line for line in result.stdout.split("\n") if line]
-        assert len(non_empty) == 1, (
-            f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
-        )
+        assert (
+            len(non_empty) == 1
+        ), f"statusline-command.sh must output exactly 1 line; got {len(non_empty)}: {result.stdout!r}"
 
     def test_given_valid_input_when_run_then_output_ends_with_erase_to_eol(self):
         """ESC[K at end of output clears leftover chars when CC overwrites the status line in place."""

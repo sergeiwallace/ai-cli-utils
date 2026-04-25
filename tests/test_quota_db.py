@@ -542,3 +542,97 @@ class TestParseSinceDatetime:
     def test_when_unknown_format_then_returns_none(self):
         result = quota_db._parse_since_datetime("garbage")
         assert result is None
+
+
+# --- _migrate_snapshot_columns (AI-CLI-56 regression fix) ---
+
+
+class TestMigrateSnapshotColumns:
+    def test_when_weekly_sonnet_pct_absent_then_added_by_init_db(self, tmp_path):
+        """_init_db must add weekly_sonnet_pct to tables created before AI-CLI-55.
+
+        Root cause of AI-CLI-56 regression: quota_statusline_part() opened sqlite3.connect()
+        directly (bypassing _init_db), so existing DBs without weekly_sonnet_pct raised
+        OperationalError on SELECT — the outer except swallowed it, producing empty output
+        that then bypassed the 30-second bash cache and caused concurrent 1.4s blocking
+        calls during streaming, manifesting as duplicate prompt boxes in the scrollback.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE quota_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usage_percent REAL NOT NULL,
+                session_pct REAL,
+                extra_pct REAL,
+                week_start TEXT NOT NULL,
+                snapshotted_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+        cols_before = {row[1] for row in conn.execute("PRAGMA table_info(quota_snapshots)")}
+        assert "weekly_sonnet_pct" not in cols_before
+
+        quota_db._init_db(conn)
+
+        cols_after = {row[1] for row in conn.execute("PRAGMA table_info(quota_snapshots)")}
+        conn.close()
+        assert "weekly_sonnet_pct" in cols_after
+
+    def test_when_columns_already_exist_then_init_db_does_not_raise(self, tmp_path):
+        """Repeated _init_db calls on a fully-migrated DB must not raise OperationalError."""
+        import sqlite3
+
+        db_path = tmp_path / "quota.db"
+        conn = sqlite3.connect(str(db_path))
+        quota_db._init_db(conn)
+        quota_db._init_db(conn)  # second call must be idempotent
+        conn.close()
+
+    def test_when_legacy_db_then_insert_with_sonnet_pct_succeeds_after_migration(self, tmp_path):
+        """After migration, writing weekly_sonnet_pct to a previously-lacking table must succeed."""
+        import sqlite3
+
+        db_path = tmp_path / "legacy.db"
+        quota_db.set_db_path(db_path)
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                """
+                CREATE TABLE quota_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    usage_percent REAL NOT NULL,
+                    session_pct REAL,
+                    extra_pct REAL,
+                    week_start TEXT NOT NULL,
+                    snapshotted_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS weekly_state (
+                    week_start TEXT PRIMARY KEY,
+                    total_consumed INTEGER NOT NULL DEFAULT 0,
+                    last_snapshot_at TEXT,
+                    reset_at TEXT
+                )
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            # record_quota_snapshot calls _get_conn() → _init_db() → migration runs first
+            quota_db.record_quota_snapshot(usage_percent=30.0, weekly_sonnet_pct=20.0)
+
+            conn2 = sqlite3.connect(str(db_path))
+            rows = conn2.execute("SELECT weekly_sonnet_pct FROM quota_snapshots").fetchall()
+            conn2.close()
+            assert rows[0][0] == 20.0
+        finally:
+            quota_db.set_db_path(None)  # type: ignore[arg-type]
