@@ -41,7 +41,7 @@ repos:
 
   # ── Python: ruff (check --fix + format) ──────────────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+    rev: v0.15.11
     hooks:
       - id: ruff
         args: [--fix]
