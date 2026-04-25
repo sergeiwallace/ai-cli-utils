@@ -408,7 +408,7 @@ flowchart TD
     db --> pacing
     pacing --> slack
     pacing --> tmux
-```text
+```
 
 ### Data Capture (The Edge)
 
@@ -483,7 +483,7 @@ CREATE TABLE weekly_state (
     last_anchor_at TEXT,
     reset_at TEXT                    -- when the week resets
 );
-```text
+```
 
 ### Configuration
 
@@ -503,7 +503,7 @@ slack_webhook_url = "https://hooks.slack.com/services/..."
 
 [anchoring]
 min_anchor_interval_hours = 12     # don't accept anchors more frequently
-```text
+```
 
 ## Integration
 
@@ -537,13 +537,13 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - hw-scheduling jobs: `claude_quota_scrape` (Hetzner, 10 min), `claude_quota_sync` (Mac fallback, 10 min)
 - Renamed `quota_sync` → `gemini_cost_sync` in hw-scheduling to eliminate naming ambiguity
 
-### Phase 3: Alerting + Pacing _(pending)_
+### Phase 3: Alerting + Pacing *(pending)*
 
 - Pacing engine: burn rate vs. expected pace, threshold detection
 - Slack webhook integration for threshold alerts (`AI-CLI-25`)
 - `ai quota history` trends and weekly summaries
 
-### Phase 4: Statusline Improvements _(in progress)_
+### Phase 4: Statusline Improvements *(in progress)*
 
 - **`AI-CLI-55`** — Expose `weekly_sonnet_pct` in `quota_statusline_part()`: append Sonnet % alongside the existing all-models %, e.g. `📊 42% all | 87% son`. Color-code independently using the same thresholds (<50% green, <75% yellow, ≥75% red). Motivated by hitting the Sonnet weekly limit without prior visibility. `weekly_sonnet_pct` is already scraped and stored in the DB.
 - **`AI-CLI-56`** ✅ — Root cause: commit `8855f75` (2026-04-18) replaced inline `python3 -c "..."` (~50ms) with `ai quota statusline-part` (~1.4s). CC calls statusLine on every render cycle during streaming; the 1.4s blocking call causes render cycles to overlap, producing duplicate boxes. Fix: 30s file-based cache for quota output (`$TMPDIR/.ai-sl-quota-$UID`), 60s rate-limit for telemetry record (prevents background process accumulation during streaming), 5s cache for git branch. Also added `\033[K` (erase-to-EOL) and embedded-newline stripping. 9 tests enforce caching behavior, single-line contract, and ESC[K invariant.
@@ -563,7 +563,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 > Confirmed same thresholds as all-models %? (<50% green, <50–75% yellow, ≥75% red). Or should Sonnet use tighter thresholds given it's easier to hit? Recommendation: same thresholds for consistency, revisable after observing real usage.
 >
 > - <enter feedback here>
-
+>
 > **Feedback Round 1:** Approved — phasing updated to reflect Option D (tmux scraping) as primary. Option C (anchoring) moved to Phase 4 fallback only. Architecture approved.
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
@@ -606,7 +606,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 > 3. Track both because we'll have that data anyway, but I've never hit the 5-hour sub-limit so less worried about that.
 > 4. Incorporate Claude usage token tracking into orchestrator nodes systematically.
 > 5. Limit may be a moving target so needs dynamic calibration based on % and token tracking. Unlikely they change it mid-week but shouldn't rule it out. Ground truth is the weekly usage quota % — that's what actually matters. Rest is just mathematical tracking.
-
+>
 > **AI Response Round 1:**
 > - OQ-1: Agreed. No weighting applied. Tracking by model for visibility only. Validated empirically if math drifts from percentage over time.
 > - OQ-2: Fixed 7-day window confirmed. Next reset April 4 1 AM EST recorded as first weekly_state anchor.
@@ -730,4 +730,4 @@ Hard constraint: never invent a citation. Accuracy > completeness.
 Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
-```text
+```
