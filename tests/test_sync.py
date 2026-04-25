@@ -4359,3 +4359,476 @@ def test_repair_worktree_cc_dir_when_dry_run_then_no_writes(tmp_path, capsys):
     wt_cc = cc_projects / f"{_SERVER_PREFIX}myapp--worktrees-myapp-1"
     assert not wt_cc.exists()
     assert "dry-run" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _llm_merge_memory_conflict
+# ---------------------------------------------------------------------------
+
+
+def test_llm_merge_memory_conflict_when_no_api_key_then_returns_none(monkeypatch):
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    monkeypatch.delenv("GOOGLE_API_KEY_TIER_1", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_llm_merge_memory_conflict_when_api_exception_then_returns_none(monkeypatch):
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = RuntimeError("network error")
+
+    with patch("google.genai.Client", return_value=mock_client):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
+
+    assert result is None
+
+
+def test_llm_merge_memory_conflict_when_llm_leaves_markers_then_returns_none(monkeypatch):
+    """If the LLM output still contains conflict markers, we must reject it — applying it would corrupt the file."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    mock_response = MagicMock()
+    mock_response.text = "<<<<<<< HEAD\nstill has markers\n>>>>>>> main\n"
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("google.genai.Client", return_value=mock_client):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
+
+    assert result is None
+
+
+def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content(monkeypatch):
+    """Successful merge: both sides preserved, no conflict markers in output."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "fake-key")
+
+    merged_text = "# Memory\n- local entry\n- remote entry\n"
+    mock_response = MagicMock()
+    mock_response.text = merged_text
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    conflict_content = "<<<<<<< HEAD\n- local entry\n=======\n- remote entry\n>>>>>>> main\n"
+
+    with patch("google.genai.Client", return_value=mock_client):
+        result = _llm_merge_memory_conflict(conflict_content, "memory.md")
+
+    assert result == merged_text
+    # Verify the prompt included the conflict content and filename
+    call_args = mock_client.models.generate_content.call_args
+    prompt = call_args[1]["contents"] if "contents" in call_args[1] else call_args[0][1]
+    assert "memory.md" in prompt
+    assert conflict_content in prompt
+
+
+def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
+    """GOOGLE_API_KEY_TIER_1 should be preferred over GEMINI_API_KEY when both are set."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "tier1-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "fallback-key")
+
+    mock_response = MagicMock()
+    mock_response.text = "merged clean"
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    captured_key = []
+
+    def capture_client(api_key):
+        captured_key.append(api_key)
+        return mock_client
+
+    with patch("google.genai.Client", side_effect=capture_client):
+        _llm_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "f.md")
+
+    assert captured_key == ["tier1-key"]
+
+
+# ---------------------------------------------------------------------------
+# apply_pull_files — LLM auto-merge path for conflict markers
+# ---------------------------------------------------------------------------
+
+
+def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_then_file_written_no_conflict_file(tmp_path):
+    """When LLM successfully merges conflict markers, the merged content goes to dst and staging is updated.
+    No .conflict file should be created. applied_count should reflect the merge."""
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
+
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    conflict_content = "<<<<<<< HEAD\n- local note\n=======\n- remote note\n>>>>>>> main\n"
+    staging_mem = staging_dir / "myproject" / "memory" / "project_notes.md"
+    staging_mem.write_text(conflict_content)
+
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
+    local_project_dir.mkdir(parents=True)
+
+    merged_content = "- local note\n- remote note\n"
+    mock_response = MagicMock()
+    mock_response.text = merged_content
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("google.genai.Client", return_value=mock_client):
+            with patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}):
+                result = apply_pull_files(
+                    staging_dir=staging_dir,
+                    cc_projects_dir=cc_projects_dir,
+                    local_prefix=_MAC_PREFIX,
+                    memories_only=False,
+                    verbose=False,
+                    dry_run=False,
+                )
+
+    # No conflicts — the LLM resolved it
+    assert result["conflicts"] == []
+    # Merged content written to the local CC file
+    local_mem = local_project_dir / "memory" / "project_notes.md"
+    assert local_mem.exists()
+    assert local_mem.read_text() == merged_content
+    # Staging file also updated so future pulls don't re-detect
+    assert staging_mem.read_text() == merged_content
+    # No conflict file created
+    assert not conflict_dir.exists() or not list(conflict_dir.rglob("*.conflict"))
+
+
+def test_apply_pull_files_when_conflict_markers_and_llm_fails_then_conflict_file_written(tmp_path):
+    """When LLM fails (no key), conflict file is written and local CC file is NOT modified."""
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
+
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    conflict_content = "<<<<<<< HEAD\nlocal content\n=======\nremote content\n>>>>>>> origin/main\n"
+    (staging_dir / "myproject" / "memory" / "project_current_work.md").write_text(conflict_content)
+
+    local_project_dir = cc_projects_dir / "-Users-user-projects-myproject"
+    local_mem_dir = local_project_dir / "memory"
+    local_mem_dir.mkdir(parents=True)
+    local_mem = local_mem_dir / "project_current_work.md"
+    local_mem.write_text("original local content\n")
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch.dict("os.environ", {}, clear=True):  # No API key → LLM returns None
+            result = apply_pull_files(
+                staging_dir=staging_dir,
+                cc_projects_dir=cc_projects_dir,
+                local_prefix=_MAC_PREFIX,
+                memories_only=False,
+                verbose=False,
+                dry_run=False,
+            )
+
+    assert len(result["conflicts"]) == 1
+    # Conflict file written
+    conflict_path = conflict_dir / "myproject" / "memory" / "project_current_work.md.conflict"
+    assert conflict_path.exists()
+    # Local CC file untouched — conflict markers must not overwrite good data
+    assert local_mem.read_text() == "original local content\n"
+
+
+def test_apply_pull_files_when_conflict_markers_and_dry_run_then_llm_not_called(tmp_path):
+    """In dry-run mode, LLM is never called and nothing is written."""
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
+
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    conflict_content = "<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n"
+    (staging_dir / "myproject" / "memory" / "note.md").write_text(conflict_content)
+    cc_projects_dir.mkdir()
+
+    mock_llm = MagicMock()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._llm_merge_memory_conflict", mock_llm):
+            apply_pull_files(
+                staging_dir=staging_dir,
+                cc_projects_dir=cc_projects_dir,
+                local_prefix=_MAC_PREFIX,
+                memories_only=False,
+                verbose=False,
+                dry_run=True,
+            )
+
+    mock_llm.assert_not_called()
+    assert not conflict_dir.exists()
+
+
+def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_verbose_then_prints_auto_merged(tmp_path, capsys):
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    conflict_dir = tmp_path / "conflicts"
+
+    (staging_dir / "myproject" / "memory").mkdir(parents=True)
+    conflict_content = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n"
+    (staging_dir / "myproject" / "memory" / "info.md").write_text(conflict_content)
+    (cc_projects_dir / "-Users-user-projects-myproject").mkdir(parents=True)
+
+    merged = "a\nb\n"
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._llm_merge_memory_conflict", return_value=merged):
+            apply_pull_files(
+                staging_dir=staging_dir,
+                cc_projects_dir=cc_projects_dir,
+                local_prefix=_MAC_PREFIX,
+                memories_only=False,
+                verbose=True,
+                dry_run=False,
+            )
+
+    out = capsys.readouterr().out
+    assert "auto-merged" in out
+    assert "memory/info.md" in out
+
+
+# ---------------------------------------------------------------------------
+# sync_resolve
+# ---------------------------------------------------------------------------
+
+
+def test_sync_resolve_when_no_conflict_files_then_returns_0_and_prints_clean(tmp_path, capsys):
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                result = sync_resolve([])
+
+    assert result == 0
+    assert "No conflict files found" in capsys.readouterr().out
+
+
+def test_sync_resolve_removes_jsonl_backup_files(tmp_path, capsys):
+    """JSONL conflict backups (conflict-*.jsonl) should be deleted — local already won."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_dir = conflict_dir / "myproject"
+    project_dir.mkdir(parents=True)
+    backup = project_dir / "conflict-abc123.jsonl"
+    backup.write_text('{"type":"human"}\n')
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                result = sync_resolve([])
+
+    assert result == 0
+    assert not backup.exists()
+
+
+def test_sync_resolve_removes_cascading_conflict_artifacts(tmp_path):
+    """Files with .conflict.conflict in the name are bug artifacts — delete unconditionally."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_dir = conflict_dir / "myproject"
+    project_dir.mkdir(parents=True)
+    artifact = project_dir / "MEMORY.md.conflict.conflict"
+    artifact.write_text("cascading junk")
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                sync_resolve([])
+
+    assert not artifact.exists()
+
+
+def test_sync_resolve_when_memory_conflict_file_and_llm_succeeds_then_local_file_updated(tmp_path):
+    """LLM merge writes merged content to the local CC file and removes the .conflict file."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_conflict_dir = conflict_dir / "myproject" / "memory"
+    project_conflict_dir.mkdir(parents=True)
+    conflict_file = project_conflict_dir / "MEMORY.md.conflict"
+    conflict_content = "<<<<<<< HEAD\n- local\n=======\n- remote\n>>>>>>> main\n"
+    conflict_file.write_text(conflict_content)
+
+    cc_dir = tmp_path / "cc"
+    local_project = cc_dir / "-Users-user-projects-myproject" / "memory"
+    local_project.mkdir(parents=True)
+    local_mem = local_project / "MEMORY.md"
+    local_mem.write_text("old local content")
+
+    merged = "- local\n- remote\n"
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                with patch("ai_cli.sync._llm_merge_memory_conflict", return_value=merged):
+                    result = sync_resolve([])
+
+    assert result == 0
+    # Local CC file updated with merged content
+    assert local_mem.read_text() == merged
+    # Conflict file removed after successful merge
+    assert not conflict_file.exists()
+
+
+def test_sync_resolve_when_memory_conflict_file_and_llm_fails_then_returns_1(tmp_path, capsys):
+    """When LLM can't merge (no key), mem_failed is counted and exit code is 1."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_conflict_dir = conflict_dir / "myproject" / "memory"
+    project_conflict_dir.mkdir(parents=True)
+    conflict_file = project_conflict_dir / "notes.md.conflict"
+    conflict_file.write_text("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n")
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                with patch("ai_cli.sync._llm_merge_memory_conflict", return_value=None):
+                    result = sync_resolve([])
+
+    # Exit code 1 when unresolved memory files remain
+    assert result == 1
+    # Conflict file preserved so user can resolve manually
+    assert conflict_file.exists()
+    err = capsys.readouterr().err
+    assert "Could not auto-merge" in err
+
+
+def test_sync_resolve_when_conflict_file_has_no_markers_then_treated_as_artifact(tmp_path):
+    """.conflict files without actual conflict markers are stale artifacts — delete them."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_conflict_dir = conflict_dir / "myproject" / "memory"
+    project_conflict_dir.mkdir(parents=True)
+    stale = project_conflict_dir / "old_note.md.conflict"
+    stale.write_text("no markers here — just old content")
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                result = sync_resolve([])
+
+    assert result == 0
+    assert not stale.exists()
+
+
+def test_sync_resolve_when_dry_run_then_nothing_deleted(tmp_path, capsys):
+    """Dry run must not delete or modify any files."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_dir = conflict_dir / "myproject"
+    project_dir.mkdir(parents=True)
+    backup = project_dir / "conflict-abc.jsonl"
+    backup.write_text('{"type":"human"}\n')
+    artifact = project_dir / "MEMORY.md.conflict.conflict"
+    artifact.write_text("junk")
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                result = sync_resolve(["--dry-run"])
+
+    assert result == 0
+    assert backup.exists()
+    assert artifact.exists()
+    out = capsys.readouterr().out
+    assert "[dry-run]" in out
+
+
+def test_sync_resolve_verbose_prints_each_action(tmp_path, capsys):
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_dir = conflict_dir / "myproject"
+    project_dir.mkdir(parents=True)
+    (project_dir / "conflict-abc.jsonl").write_text('{"type":"human"}\n')
+    (project_dir / "MEMORY.md.conflict.conflict").write_text("junk")
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                sync_resolve(["--verbose"])
+
+    out = capsys.readouterr().out
+    assert "jsonl backup" in out
+    assert "cascading artifact" in out
+
+
+def test_sync_resolve_removes_empty_conflict_subdirectories_after_cleanup(tmp_path):
+    """After deleting all files in a conflict subdir, the empty dir itself should be removed."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"
+    project_dir = conflict_dir / "myproject"
+    project_dir.mkdir(parents=True)
+    backup = project_dir / "conflict-abc.jsonl"
+    backup.write_text('{"type":"human"}\n')
+
+    cc_dir = tmp_path / "cc"
+    cc_dir.mkdir()
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                sync_resolve([])
+
+    # The now-empty project subdir should be removed
+    assert not project_dir.exists()
+
+
+def test_sync_resolve_handles_legacy_conflict_files_in_cc_projects_dir(tmp_path):
+    """Legacy .conflict files inside the CC projects dir (old location) are also cleaned up."""
+    from ai_cli.sync import sync_resolve
+
+    conflict_dir = tmp_path / "conflicts"  # new location — empty
+
+    cc_dir = tmp_path / "cc"
+    legacy_project = cc_dir / "-Users-user-projects-myproject" / "memory"
+    legacy_project.mkdir(parents=True)
+    legacy_conflict = legacy_project / "MEMORY.md.conflict"
+    legacy_conflict.write_text("no markers here")
+
+    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+            with patch("ai_cli.sync.load_sync_config", return_value=MagicMock(local_prefix=_MAC_PREFIX)):
+                result = sync_resolve([])
+
+    assert result == 0
+    # Legacy conflict file removed (no markers → artifact)
+    assert not legacy_conflict.exists()
