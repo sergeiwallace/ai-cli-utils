@@ -564,10 +564,11 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 >
 > - <enter feedback here>
 
-### Phase 4: Statusline Improvements *(in progress)*
+### Phase 4: Statusline Improvements
 
-- **`AI-CLI-55`** — Expose `weekly_sonnet_pct` in `quota_statusline_part()`: append Sonnet % alongside the existing all-models %, with labels `W` (weekly all-models) and `S` (Sonnet). Final format: `📊 42% W ✅ →8% | 87% S`. When `weekly_sonnet_pct` is `None`, show dimmed `-% S` and immediately fire `_launch_background_scrape()` to populate it. Color-code Sonnet % independently using the same thresholds as all-models %: <50% green, <75% yellow, ≥75% red. `weekly_sonnet_pct` is already scraped and stored in the DB — no schema changes required.
-- **`AI-CLI-56`** ✅ — Root cause: commit `8855f75` (2026-04-18) replaced inline `python3 -c "..."` (~50ms) with `ai quota statusline-part` (~1.4s). CC calls statusLine on every render cycle during streaming; the 1.4s blocking call causes render cycles to overlap, producing duplicate boxes. Fix: 30s file-based cache for quota output (`$TMPDIR/.ai-sl-quota-$UID`), 60s rate-limit for telemetry record (prevents background process accumulation during streaming), 5s cache for git branch. Also added `\033[K` (erase-to-EOL) and embedded-newline stripping. 9 tests enforce caching behavior, single-line contract, and ESC[K invariant.
+- **`AI-CLI-55`** ✅ — Shipped v0.5.3. Format: `📊 42% W ✅ →8% | 87% S`. Labels: `W` (weekly all-models), `S` (Sonnet). Sonnet color-coded independently.
+- **`AI-CLI-56`** ✅ — Shipped v0.5.5. Duplicate-box bug fixed (DB migration + bash cache flag).
+- **`AI-CLI-64`** — Statusline format v2. See below for spec and open decisions.
 - Model-level usage breakdown in `ai quota status`
 - Refine pacing algorithm from real usage data
 - Investigate native CC usage API (`AI-CLI-23`)
@@ -589,6 +590,48 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 > - D-8: Same thresholds as all-models % — confirmed.
 >
 > **Feedback Round 1:** Approved — phasing updated to reflect Option D (tmux scraping) as primary. Option C (anchoring) moved to Phase 4 fallback only. Architecture approved.
+
+### AI-CLI-64: Statusline Format v2 Spec
+
+**Current format (v1):** `📊 42% W ✅ →8% | 87% S`
+
+- `42% W` — weekly all-models % (label on right)
+- `✅ →8%` — pace indicator + pace %
+- `87% S` — Sonnet weekly % (label on right)
+- No Sonnet pace %
+
+**Requested changes (2026-04-25):**
+
+1. **Sonnet pace %** — add pace % for Sonnet alongside Sonnet usage %, mirroring the all-models pace `→X%`
+2. **Labels on left** — move W/S labels to the LEFT of values, e.g. `W: 42%` not `42% W`
+3. **Label renaming** — options under consideration: `Week`/`Son`, `W`/`S` with distinct color, or other terse labels. TBD — see D-9 below.
+4. **Clearer section divider** — stronger visual split between all-models block and Sonnet block (spacing, color, symbol, or label redesign)
+
+**Proposed format (v2 candidate):** `📊 W 42% →8% ✅  |  S 87% →X%`
+
+- `W` label left-positioned, colored/bolded for identifiability
+- `S` label left-positioned, same treatment
+- Both sections include pace %
+- `|` divider preserved (or replaced with `·` / double-space)
+
+> **Feedback — D-9 (AI-CLI-64): Label names and styling**
+>
+> Options for the W/S labels:
+> - (A) Keep `W`/`S` but add ANSI color/bold to the label itself (e.g. bold cyan `W`, bold magenta `S`)
+> - (B) Rename to `Week`/`Son` — more readable, same character budget as existing format
+> - (C) Rename to `All`/`Son` — disambiguates "all models" more clearly
+> - (D) Use icons: `🗓`/`🤖` or similar — more distinctive but heavier
+>
+> Recommendation: (A) — minimal change, adds color for identifiability without widening the string. But `Week`/`Son` (B) is a good fallback if color isn't reliable across all terminal themes.
+>
+> - <enter feedback here>
+>
+> **D-10 (AI-CLI-64): Sonnet pace % — show always or only when populated?**
+>
+> Should Sonnet pace % show when `weekly_sonnet_pct` is absent (dimmed placeholder) or be omitted until available?
+> Recommendation: same behavior as Sonnet usage % — show dimmed `-→-%` placeholder and fire background scrape.
+>
+> - <enter feedback here>
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
