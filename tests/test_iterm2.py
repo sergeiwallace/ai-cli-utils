@@ -7,6 +7,7 @@ from conftest import make_iterm2_config
 from ai_cli.main import (
     _assign_iterm2_color_slot,
     _emit_iterm2_profile_setup,
+    _get_current_iterm_session_id,
     _is_iterm2,
     _iterm2_palette,
     _iterm2_state_dir,
@@ -691,3 +692,101 @@ class TestFleetSetupAttachmentGuard:
         assert "tmux show-environment" in fn_body
         # Must not rely on the static inherited shell variable
         assert "$ITERM_SESSION_ID" not in fn_body
+
+
+class TestGetCurrentItermSessionId:
+    """Tests for _get_current_iterm_session_id — the shared GUID resolver.
+
+    This helper is the canonical source for the live ITERM_SESSION_ID throughout
+    _do_session_launch.  When inside tmux the shell-env GUID may be stale (set at
+    session creation, never refreshed), so the tmux session environment is the
+    authoritative source.
+    """
+
+    def test_when_outside_tmux_then_returns_shell_env_guid(self):
+        """Outside tmux: os.environ ITERM_SESSION_ID is the correct current GUID."""
+        env = {"ITERM_SESSION_ID": "w0t0p0:shell-guid", "TMUX": ""}
+        with patch.dict(os.environ, env, clear=False):
+            result = _get_current_iterm_session_id()
+        assert result == "w0t0p0:shell-guid"
+
+    def test_when_inside_tmux_then_returns_tmux_env_guid(self):
+        """Inside tmux: tmux session env overrides stale shell env value."""
+        env = {
+            "ITERM_SESSION_ID": "w0t0p0:stale-guid",
+            "TMUX": "/private/tmp/tmux-1234/default,100,0",
+        }
+
+        class _TmuxResult:
+            returncode = 0
+            stdout = "ITERM_SESSION_ID=w0t0p0:live-guid\n"
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("ai_cli.iterm2.subprocess.run", return_value=_TmuxResult()):
+                result = _get_current_iterm_session_id()
+        assert result == "w0t0p0:live-guid"
+
+    def test_when_inside_tmux_but_show_env_fails_then_falls_back_to_shell_env(self):
+        """When tmux show-environment fails (non-zero rc), fall back to shell env."""
+        env = {
+            "ITERM_SESSION_ID": "w0t0p0:shell-guid",
+            "TMUX": "/private/tmp/tmux-1234/default,100,0",
+        }
+
+        class _FailResult:
+            returncode = 1
+            stdout = ""
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("ai_cli.iterm2.subprocess.run", return_value=_FailResult()):
+                result = _get_current_iterm_session_id()
+        assert result == "w0t0p0:shell-guid"
+
+    def test_when_no_iterm_session_id_in_env_then_returns_empty_string(self):
+        """When ITERM_SESSION_ID is absent, returns empty string regardless of tmux."""
+        env = {"TMUX": ""}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("ITERM_SESSION_ID", None)
+            result = _get_current_iterm_session_id()
+        assert result == ""
+
+    def test_when_inside_tmux_and_no_shell_guid_then_no_tmux_call(self):
+        """When shell ITERM_SESSION_ID is absent, tmux show-environment is not called."""
+        env = {"TMUX": "/private/tmp/tmux-1234/default,100,0"}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("ITERM_SESSION_ID", None)
+            with patch("ai_cli.iterm2.subprocess.run") as mock_run:
+                result = _get_current_iterm_session_id()
+        mock_run.assert_not_called()
+        assert result == ""
+
+
+class TestDoSessionLaunchItermGuid:
+    """_do_session_launch must use the live GUID (tmux env) not the stale shell env.
+
+    When ai c is run from inside an existing tmux session the shell's
+    ITERM_SESSION_ID may be stale — set at session creation and never refreshed.
+    Using it to set the new/target session's env propagates the wrong GUID, causing
+    the session script to later try to rename the wrong iTerm2 pane.
+
+    These tests verify that _iterm_env_flags and the re-attach set-environment call
+    both use _get_current_iterm_session_id() (which reads from the tmux session env
+    when inside tmux) instead of os.environ directly.
+    """
+
+    def test_iterm_env_flags_use_live_guid_not_shell_env(self):
+        """_do_session_launch must build ITERM_SESSION_ID from _get_current_iterm_session_id.
+
+        Verify by inspecting source code: the env-flags block must NOT read
+        ITERM_SESSION_ID directly from os.environ, and must call the live-GUID
+        helper instead.  This is a structural guard that fails if the fix is reverted.
+        """
+        import inspect
+        from ai_cli import main as _main_mod
+
+        src = inspect.getsource(_main_mod._do_session_launch)
+        # The helper must be present in the function body
+        assert "_get_current_iterm_session_id" in src
+        # os.environ.get("ITERM_SESSION_ID") must NOT appear as a direct read
+        # in _do_session_launch (the helper encapsulates that logic)
+        assert 'os.environ.get("ITERM_SESSION_ID"' not in src

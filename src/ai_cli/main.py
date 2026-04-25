@@ -57,6 +57,7 @@ from .iterm2 import (  # noqa: E402,F401
     _emit_iterm2_profile_setup,
     _is_iterm2,
     _iterm2_palette,
+    _get_current_iterm_session_id,
     _iterm2_session_type,
     _iterm2_state_dir,
     _load_iterm2_config,
@@ -1306,8 +1307,13 @@ def _do_session_launch(
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
     # so _iterm2_fleet_setup inside the bash script would silently no-op without them.
+    # ITERM_SESSION_ID is resolved via the tmux session env when inside tmux so that
+    # stale shell-inherited GUIDs (from the original session launch) don't propagate.
     _iterm_env_flags: list[str] = []
-    for _var in ("ITERM_SESSION_ID", "LC_TERMINAL", "TERM_PROGRAM"):
+    _live_iterm_session_id = _iterm2._get_current_iterm_session_id()
+    if _live_iterm_session_id:
+        _iterm_env_flags += ["-e", f"ITERM_SESSION_ID={_live_iterm_session_id}"]
+    for _var in ("LC_TERMINAL", "TERM_PROGRAM"):
         if _val := os.environ.get(_var):
             _iterm_env_flags += ["-e", f"{_var}={_val}"]
 
@@ -1377,8 +1383,10 @@ def _do_session_launch(
         # Session exists — configure for iTerm2, then attach (detach stale clients).
         # Update ITERM_SESSION_ID in the session env so _live_iterm_id() in the
         # session script picks up the new pane's GUID on the next CC restart.
+        # Use the tmux-env-aware helper so stale shell-inherited GUIDs don't
+        # overwrite the target session with a wrong pane's GUID.
         _iterm2._configure_tmux_for_iterm2(session_id)
-        _new_iterm_id = os.environ.get("ITERM_SESSION_ID", "")
+        _new_iterm_id = _iterm2._get_current_iterm_session_id()
         if _new_iterm_id:
             subprocess.run(
                 ["tmux", "set-environment", "-t", session_id, "ITERM_SESSION_ID", _new_iterm_id],

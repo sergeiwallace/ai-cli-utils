@@ -32,6 +32,7 @@ related_docs:
 - [Bug 7 — Only three icon color variants for Claude and Gemini logos](#bug-7--only-three-icon-color-variants-for-claude-and-gemini-logos)
 - [Bug 8 — Session Name reverts to "Default" after Edit Session interaction](#bug-8--session-name-reverts-to-default-after-edit-session-interaction)
 - [Bug 9 — `ai c` launch drops session into tmux copy mode](#bug-9--ai-c-launch-drops-session-into-tmux-copy-mode)
+- [Bug 10 — Session Name changes to another session's name randomly](#bug-10--session-name-changes-to-another-sessions-name-randomly)
 - [Diagnosis Approach](#diagnosis-approach)
 
 ---
@@ -249,6 +250,41 @@ When a ClaudeCode-* or GeminiCLI profile is applied to a session, the Session Ti
 ### Desired behavior
 
 Nice-to-have: the `"Shell"` option should remain available as a persistent dropdown choice so users can toggle between it and built-in options freely. Not a priority for the redesign — flagged as a known limitation.
+
+---
+
+## Bug 10 — Session Name changes to another session's name randomly
+
+### Symptom
+
+After `ai c N` launches and sets the tab title correctly, the tab/pane Session Name subsequently changes to a different session's name without any user action. This is distinct from Bug 8 (reverts to "Default") — the name changes to an actively running session name (e.g., the current pane shows "c-ai-cli-3" but the Session Name field changes to "c-ai-cli-2").
+
+The user also reported receiving an iTerm2 error popup during or shortly after session launch.
+
+### Root cause
+
+`_do_session_launch` in `main.py` used `os.environ.get("ITERM_SESSION_ID")` in two places:
+
+1. Building `_iterm_env_flags` (the `-e ITERM_SESSION_ID=...` flag passed to `tmux new-session`)
+2. Setting `_new_iterm_id` for the `tmux set-environment` call on the re-attach path
+
+The shell environment's `ITERM_SESSION_ID` is set once when the iTerm2 pane is first created and is never refreshed — it becomes stale after the session is re-attached to a different pane. When `ai c` is run from inside an existing tmux session, the stale shell-env GUID propagates into the new/target session's tmux environment. The session script then calls `ai internal set-iterm2-name` with that stale GUID, renaming a pane that no longer belongs to it.
+
+Meanwhile, `_emit_iterm2_profile_setup` already had the correct fix — it reads from the tmux session env via `tmux show-environment` when inside tmux. But this logic was not shared with the other two call sites.
+
+### Fix (2026-04-25, AI-CLI-59)
+
+Extracted the GUID resolution logic into `_get_current_iterm_session_id()` in `iterm2.py`:
+- Outside tmux: returns `os.environ.get("ITERM_SESSION_ID")` (unchanged)
+- Inside tmux: reads `tmux show-environment ITERM_SESSION_ID` from the session env (current GUID, not stale)
+
+Updated all three call sites in `_do_session_launch` and `_emit_iterm2_profile_setup` to use this helper. Added 6 tests: 5 for `_get_current_iterm_session_id` directly, 1 structural test verifying `_do_session_launch` does not read `ITERM_SESSION_ID` directly from `os.environ`.
+
+### Files changed
+
+- `src/ai_cli/iterm2.py` — added `_get_current_iterm_session_id()`; refactored `_emit_iterm2_profile_setup` to use it
+- `src/ai_cli/main.py` — updated `_iterm_env_flags` building and re-attach `_new_iterm_id` to use `_iterm2._get_current_iterm_session_id()`
+- `tests/test_iterm2.py` — `TestGetCurrentItermSessionId` (5 tests), `TestDoSessionLaunchItermGuid` (1 test)
 
 ---
 

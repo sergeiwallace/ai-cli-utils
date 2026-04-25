@@ -225,9 +225,9 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
             _do_session_launch(**kwargs)
 
     session_names = [s.name for s in server.sessions]
-    assert any(n.startswith("c-myproject-myname-") for n in session_names), (
-        f"expected a c-myproject-myname-* session in {session_names}"
-    )
+    assert any(
+        n.startswith("c-myproject-myname-") for n in session_names
+    ), f"expected a c-myproject-myname-* session in {session_names}"
 
 
 def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_uses_new_prefix(
@@ -273,9 +273,9 @@ def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_use
             _do_session_launch(**kwargs)
 
     session_names = [s.name for s in server.sessions]
-    assert any(n.startswith("c-newpfx-") for n in session_names), (
-        f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"
-    )
+    assert any(
+        n.startswith("c-newpfx-") for n in session_names
+    ), f"expected c-newpfx-* session (not 3-char fallback) in {session_names}"
 
 
 def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated(
@@ -292,15 +292,18 @@ def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated
     pane title.
     """
 
-    class _OK:
-        returncode = 0
-        stdout = b""
-        stderr = b""
-
     # Track tmux set-environment calls emitted during _do_session_launch.
     set_env_calls: list[list[str]] = []
 
     def fake_run(cmd, *args, **kwargs):
+        is_text = kwargs.get("text", False)
+        empty: str | bytes = "" if is_text else b""
+
+        class _OK:
+            returncode = 0
+            stdout = empty
+            stderr = empty
+
         if not isinstance(cmd, (list, tuple)) or not cmd:
             return _OK()
         head, sub = cmd[0], (cmd[1] if len(cmd) > 1 else "")
@@ -340,6 +343,6 @@ def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated
     iterm_env_updates = [c for c in set_env_calls if "ITERM_SESSION_ID" in c]
     assert iterm_env_updates, "expected tmux set-environment call for ITERM_SESSION_ID"
     # The last update must carry the caller's GUID, not any stale inherited value.
-    assert iterm_env_updates[-1][-1] == new_guid, (
-        f"expected ITERM_SESSION_ID to be updated to {new_guid!r}, got {iterm_env_updates[-1]!r}"
-    )
+    assert (
+        iterm_env_updates[-1][-1] == new_guid
+    ), f"expected ITERM_SESSION_ID to be updated to {new_guid!r}, got {iterm_env_updates[-1]!r}"

@@ -302,6 +302,28 @@ end tell"""
     subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
 
 
+def _get_current_iterm_session_id() -> str:
+    """Return the live ITERM_SESSION_ID for the current pane.
+
+    When inside a tmux session (TMUX env set), reads from the tmux session
+    environment via ``tmux show-environment`` so that re-attach GUIDs — updated
+    by ``_do_session_launch`` on each connect — take precedence over the shell's
+    original inherited value, which becomes stale after the first re-attach.
+
+    Falls back to the shell environment for non-tmux contexts.
+    """
+    iterm_id = os.environ.get("ITERM_SESSION_ID", "")
+    if os.environ.get("TMUX") and iterm_id:
+        r = subprocess.run(
+            ["tmux", "show-environment", "ITERM_SESSION_ID"],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode == 0 and r.stdout.startswith("ITERM_SESSION_ID="):
+            iterm_id = r.stdout.strip()[len("ITERM_SESSION_ID=") :]
+    return iterm_id
+
+
 def _configure_tmux_for_iterm2(session_id: str) -> None:
     """Enable DCS passthrough and disable auto-rename for a tmux session.
 
@@ -398,13 +420,4 @@ def _emit_iterm2_profile_setup(
     # authoritative source.  Using the stale shell-env GUID would rename the
     # *original* pane instead of the *current* one, clobbering whichever session
     # now occupies that pane.
-    _caller_iterm_id = os.environ.get("ITERM_SESSION_ID", "")
-    if os.environ.get("TMUX") and _caller_iterm_id:
-        _r = subprocess.run(
-            ["tmux", "show-environment", "ITERM_SESSION_ID"],
-            capture_output=True,
-            text=True,
-        )
-        if _r.returncode == 0 and _r.stdout.startswith("ITERM_SESSION_ID="):
-            _caller_iterm_id = _r.stdout.strip()[len("ITERM_SESSION_ID=") :]
-    _set_iterm2_name_applescript(_caller_iterm_id, session_name)
+    _set_iterm2_name_applescript(_get_current_iterm_session_id(), session_name)
