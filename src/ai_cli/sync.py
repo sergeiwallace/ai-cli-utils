@@ -1269,7 +1269,7 @@ def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> Optional
         )
         response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
         merged = response.text
-        if "<<<<<<<" in merged or ">>>>>>>" in merged:
+        if not merged or "<<<<<<<" in merged or ">>>>>>>" in merged:
             return None  # LLM failed to resolve all markers
         return merged
     except Exception:
