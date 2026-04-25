@@ -55,6 +55,14 @@ def get_xdg_cache_home() -> Path:
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
+def get_xdg_data_home() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "ai-cli-utils"
+    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "ai-cli-utils"
+
+
 # --- Configuration Management ---
 
 DEFAULT_CONFIG = """## ai-cli-utils configuration
@@ -123,6 +131,9 @@ nats_servers = ["nats://localhost:4222"]
 [cdp]
 ## Chrome/Chromium binary path for CDP debug server (auto-detected if not set)
 # binary_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+## Persistent Chrome profile directory for CDP sessions (survives restarts)
+## Defaults to ~/.local/share/ai-cli-utils/chrome-profiles/automation
+# profile_dir = "~/.local/share/ai-cli-utils/chrome-profiles/automation"
 
 [gemini_billing]
 ## GCP project that holds the BigQuery billing export dataset.

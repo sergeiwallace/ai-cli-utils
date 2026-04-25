@@ -6,14 +6,13 @@ Depends on: config.py, transport.py.
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 import psutil
 
-from .config import _pid_alive, get_xdg_state_home
+from .config import _pid_alive, get_xdg_data_home, get_xdg_state_home
 from .transport import _is_vpn_active
 
 
@@ -184,7 +183,13 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         )
         sys.exit(1)
 
-    user_data_dir = Path(tempfile.gettempdir()) / f"chrome-debug-{port}"
+    cdp_cfg = config.get("cdp", {})
+    if "profile_dir" in cdp_cfg:
+        user_data_dir = Path(cdp_cfg["profile_dir"]).expanduser()
+    else:
+        user_data_dir = get_xdg_data_home() / "chrome-profiles" / "automation"
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+
     cmd = [
         chrome,
         f"--remote-debugging-port={port}",
