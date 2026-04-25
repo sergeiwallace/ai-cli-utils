@@ -6,6 +6,8 @@ status: active
 source: project-template
 ---
 
+# Research Prompt Registry
+
 Central registry for all research prompts for this project. Tracks prompt text,
 model, submission status, and links to result docs. Pending/ready prompts listed
 first (highest priority at top), completed below.
@@ -20,16 +22,25 @@ To mitigate authoritative hallucinations, **all new research prompts MUST append
 the grounding block** at the end of the prompt. Lead with a specific role identity
 narrative grounded in the research domain.
 
+**Role identity note:** Lead the grounding block with a specific role identity narrative.
+A grounded persona reduces compliance pressure — the model reasons from a position rather
+than defaulting to sycophantic completeness. Tailor the persona to whatever the prompt
+warrants — the domain, seniority, and specific expertise that makes the model most useful
+for that research task.
+
 **Model selection guidance:**
 - **`opus researcher`** — **default for all research.** Empirically tested:
   consistently more detailed, discovers additional nuance and options vs deep-think
   on identical prompts. Use unless Claude quota is tight.
-- `deep-think` — fallback when running tight on Claude daily/weekly quota. Uses
-  Gemini OAuth (no Claude tokens).
+- `deep-think` — Gemini 3.1 Pro with extended thinking budget. Not a web-search
+  research tool — use for reasoning-heavy tasks over a fixed body of material
+  (architecture tradeoffs, synthesis, multi-path analysis). Uses Gemini OAuth
+  (no Claude tokens).
 - `gemini-3.1-pro-preview` — product/tech comparisons, competitive research,
   moderate complexity
 - `gemini-3-flash-preview` — simple factual lookups, single-source verification only
-- `deep-research` — broad multi-source research requiring web + reasoning
+- `ai gemini -m deep-research -s 3` — autonomous web research loop (Plan → Search →
+  Read → Refine). Hard gate required — present prompt and wait for approval before running.
 
 **Temporal scope (required for all prompts):**
 
@@ -77,9 +88,11 @@ in the prompt body and inside `<grounding_instructions>`.
 
 ```text
 <grounding_instructions>
-[ROLE IDENTITY — specific to the research domain. A grounded persona reduces
-compliance pressure — the model reasons from a position rather than defaulting
-to sycophantic completeness.]
+[ROLE IDENTITY — tailor to the research domain and task. Example:
+"You are a principal engineer who has deployed distributed tracing systems in
+production. You have strong opinions backed by evidence. When you cannot find a
+source, you say so explicitly."
+Adapt the domain, expertise, and seniority to whatever this prompt warrants.]
 
 Temporal scope: Weight sources by recency — 2026 (primary) → 2025 → 2024.
 Pre-2024 sources are background context only unless foundational to the topic.
