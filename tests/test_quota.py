@@ -1884,3 +1884,57 @@ class TestStatuslineScript:
             fake_ai.unlink(missing_ok=True)
             (fake_bin / "ai").unlink(missing_ok=True)
             fake_bin.rmdir()
+
+    def test_given_fresh_quota_cache_when_run_then_ai_statusline_part_not_called(self):
+        """When the quota cache file is fresh (<30s), ai quota statusline-part is not called."""
+        import tempfile
+
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / f".ai-sl-quota-{uid}"
+            cache_file.write_text("\033[32m📊 42%\033[0m")
+
+            # Fake 'ai' that exits non-zero for statusline-part — if called, the test fails.
+            sentinel = Path(tmpdir) / "ai_statusline_called"
+            fake_ai = Path(tmpdir) / "ai"
+            fake_ai.write_text(
+                f'#!/usr/bin/env bash\nif [[ "$*" == *"statusline-part"* ]]; then touch "{sentinel}"; fi\n'
+            )
+            fake_ai.chmod(0o755)
+
+            result = self._run(
+                extra_env={
+                    "PATH": f"{tmpdir}:{os.environ['PATH']}",
+                    "TMPDIR": tmpdir,
+                }
+            )
+            assert result.returncode == 0
+            assert not sentinel.exists(), "ai quota statusline-part should NOT be called when cache is fresh"
+
+    def test_given_stale_quota_cache_when_run_then_ai_statusline_part_called(self):
+        """When the quota cache is >30s old, ai quota statusline-part is called to refresh it."""
+        import tempfile
+        import time
+
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = Path(tmpdir) / f".ai-sl-quota-{uid}"
+            cache_file.write_text("stale-value")
+            old_time = time.time() - 35  # beyond the 30s TTL
+            os.utime(str(cache_file), (old_time, old_time))
+
+            sentinel = Path(tmpdir) / "ai_statusline_called"
+            fake_ai = Path(tmpdir) / "ai"
+            fake_ai.write_text(
+                f'#!/usr/bin/env bash\nif [[ "$*" == *"statusline-part"* ]]; then touch "{sentinel}"; echo ""; fi\n'
+            )
+            fake_ai.chmod(0o755)
+
+            result = self._run(
+                extra_env={
+                    "PATH": f"{tmpdir}:{os.environ['PATH']}",
+                    "TMPDIR": tmpdir,
+                }
+            )
+            assert result.returncode == 0
+            assert sentinel.exists(), "ai quota statusline-part should be called when cache is stale (>30s)"

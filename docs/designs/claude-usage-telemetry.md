@@ -546,7 +546,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 ### Phase 4: Statusline Improvements _(in progress)_
 
 - **`AI-CLI-55`** — Expose `weekly_sonnet_pct` in `quota_statusline_part()`: append Sonnet % alongside the existing all-models %, e.g. `📊 42% all | 87% son`. Color-code independently using the same thresholds (<50% green, <75% yellow, ≥75% red). Motivated by hitting the Sonnet weekly limit without prior visibility. `weekly_sonnet_pct` is already scraped and stored in the DB.
-- **`AI-CLI-56`** ✅ — Root cause: CC re-renders the full prompt UI in the primary terminal buffer on each interactive event (no alternate screen buffer). Box duplicates in scrollback are inherent to CC's rendering architecture. Mitigations shipped in `statusline-command.sh`: (1) added `\033[K` (erase-to-EOL) at end of output to clear leftover chars from a previously longer render; (2) stripped embedded newlines from `quota_part` to enforce the single-line contract. 8 new tests added.
+- **`AI-CLI-56`** ✅ — Root cause: commit `8855f75` (2026-04-18) replaced inline `python3 -c "..."` (~50ms) with `ai quota statusline-part` (~1.4s). CC calls statusLine on every render cycle during streaming; the 1.4s blocking call causes render cycles to overlap, producing duplicate boxes. Fix: 30s file-based cache for quota output (`$TMPDIR/.ai-sl-quota-$UID`), 60s rate-limit for telemetry record (prevents background process accumulation during streaming), 5s cache for git branch. Also added `\033[K` (erase-to-EOL) and embedded-newline stripping. 9 tests enforce caching behavior, single-line contract, and ESC[K invariant.
 - Model-level usage breakdown in `ai quota status`
 - Refine pacing algorithm from real usage data
 - Investigate native CC usage API (`AI-CLI-23`)
