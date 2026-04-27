@@ -161,15 +161,27 @@ def _find_chrome_binary(config: dict) -> str | None:
     return None
 
 
+def _find_chrome_pid_by_port(port: int) -> int | None:
+    """Find a Chrome/Chromium process PID by its --remote-debugging-port argument."""
+    flag = f"--remote-debugging-port={port}"
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if proc.info["cmdline"] and flag in proc.info["cmdline"]:
+                return proc.info["pid"]
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return None
+
+
 def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = False, forward: bool = False) -> None:
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"cdp-{port}.pid"
 
     if pid_file.exists():
         try:
-            pid = int(pid_file.read_text().strip())
-            if _pid_alive(pid):
-                print(f"CDP already running on port {port} (PID {pid})")
+            existing_pid = int(pid_file.read_text().strip())
+            if _pid_alive(existing_pid):
+                print(f"CDP already running on port {port} (PID {existing_pid})")
                 return
         except ValueError:
             pass
@@ -190,22 +202,35 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         user_data_dir = get_xdg_data_home() / "chrome-profiles" / "automation"
     user_data_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        chrome,
+    chrome_args = [
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-default-apps",
     ]
     if incognito:
-        cmd.append("--incognito")
+        chrome_args.append("--incognito")
 
-    proc = subprocess.Popen(
-        cmd,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
     state_dir.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(proc.pid))
+    pid: int | None = None
+
+    if sys.platform == "darwin":
+        # On macOS, launching the binary directly trampolines into the existing
+        # Chrome process (Chrome's process model reuses its running instance),
+        # so the CDP port never opens. Use `open -na` to force a new app instance.
+        _app_dir = next((p for p in Path(chrome).parts if p.endswith(".app")), None)
+        _app_name = _app_dir[:-4] if _app_dir else "Google Chrome"
+        subprocess.run(["open", "-na", _app_name, "--args"] + chrome_args, check=False)
+    else:
+        proc = subprocess.Popen(
+            [chrome] + chrome_args,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pid = proc.pid
+        pid_file.write_text(str(pid))
 
     url = f"http://localhost:{port}/json/version"
     deadline = time.monotonic() + 5.0
@@ -218,10 +243,16 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         except Exception:
             time.sleep(0.25)
 
+    if sys.platform == "darwin":
+        pid = _find_chrome_pid_by_port(port)
+        if pid is not None:
+            pid_file.write_text(str(pid))
+
     if ready:
         print(f"CDP ready at localhost:{port}")
     else:
-        print(f"CDP started (PID {proc.pid}) — endpoint not yet responding on port {port}")
+        suffix = f" (PID {pid})" if pid is not None else ""
+        print(f"CDP started{suffix} — endpoint not yet responding on port {port}")
 
     if tunnel:
         _cmd_tunnel_start(port, port, forward=forward, config=config)

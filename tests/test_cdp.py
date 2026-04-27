@@ -79,6 +79,7 @@ class TestFindChromeBinary:
 # ---------------------------------------------------------------------------
 
 
+@patch.object(sys, "platform", "linux")
 class TestCmdCdpStart:
     def test_when_not_running_then_launches_chrome_and_writes_pid(self, tmp_path):
         mock_proc = MagicMock()
@@ -123,6 +124,7 @@ class TestCmdCdpStart:
 
         out = capsys.readouterr().out
         assert "not yet responding" in out
+        assert "(PID 99)" in out
 
     def test_when_readiness_poll_retries_then_sleeps_and_succeeds(self, tmp_path, capsys):
         mock_proc = MagicMock()
@@ -263,6 +265,100 @@ class TestCmdCdpStart:
             _cmd_cdp_start(9222, True, {})
 
         mock_tunnel.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _cmd_cdp_start — macOS path
+# ---------------------------------------------------------------------------
+
+
+@patch.object(sys, "platform", "darwin")
+class TestCmdCdpStartMacOS:
+    def test_when_on_macos_then_uses_open_na_not_popen(self, tmp_path):
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch(
+                "ai_cli.tunnel._find_chrome_binary",
+                return_value="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            patch("subprocess.run") as mock_run,
+            patch("subprocess.Popen") as mock_popen,
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.tunnel._find_chrome_pid_by_port", return_value=12345),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        mock_popen.assert_not_called()
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:3] == ["open", "-na", "Google Chrome"]
+        assert "--remote-debugging-port=9222" in cmd
+        assert "--args" in cmd
+
+    def test_when_on_macos_with_chromium_then_derives_app_name_from_path(self, tmp_path):
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch(
+                "ai_cli.tunnel._find_chrome_binary", return_value="/Applications/Chromium.app/Contents/MacOS/Chromium"
+            ),
+            patch("subprocess.run") as mock_run,
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.tunnel._find_chrome_pid_by_port", return_value=99),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[2] == "Chromium"
+
+    def test_when_on_macos_and_ready_then_finds_pid_and_writes_pid_file(self, tmp_path):
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch(
+                "ai_cli.tunnel._find_chrome_binary",
+                return_value="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            patch("subprocess.run"),
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.tunnel._find_chrome_pid_by_port", return_value=55555),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        pid_file = tmp_path / "cdp-9222.pid"
+        assert pid_file.exists()
+        assert pid_file.read_text() == "55555"
+
+    def test_when_on_macos_and_no_pid_found_then_no_pid_file(self, tmp_path, capsys):
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch(
+                "ai_cli.tunnel._find_chrome_binary",
+                return_value="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            patch("subprocess.run"),
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.tunnel._find_chrome_pid_by_port", return_value=None),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        assert not (tmp_path / "cdp-9222.pid").exists()
+
+    def test_when_on_macos_passes_extra_first_run_flags(self, tmp_path):
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch(
+                "ai_cli.tunnel._find_chrome_binary",
+                return_value="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            patch("subprocess.run") as mock_run,
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.tunnel._find_chrome_pid_by_port", return_value=1),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        cmd = mock_run.call_args[0][0]
+        assert "--no-first-run" in cmd
+        assert "--no-default-browser-check" in cmd
+        assert "--disable-default-apps" in cmd
 
 
 # ---------------------------------------------------------------------------
