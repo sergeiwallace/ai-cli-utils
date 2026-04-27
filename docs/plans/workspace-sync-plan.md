@@ -55,6 +55,7 @@ Running `git pull --rebase` across all project repos and their worktrees is tedi
 | # | Decision | Options | Status |
 |---|----------|---------|--------|
 | D1 | How to enumerate repos | (a) Config list, (b) Parse `.code-workspace`, (c) Scan `~/projects/` | `APPROVED: (b)` |
+| D2 | Command name | (a) `ai ws pull`, (b) `ai sync repos`, (c) `ai ws sync`, (d) `ai sync workspace` | `APPROVED: (a)` |
 
 ### D1: How to enumerate repos — `[APPROVED: (b) Parse .code-workspace]`
 
@@ -97,6 +98,53 @@ Walk `~/projects/`, find all git repos.
 > **Decision:** `APPROVED — (b) Parse .code-workspace`
 
 Parse the workspace file — it is already maintained as the authoritative list of active projects. JSON5 handling: strip single-line `//` comments and trailing commas before parsing with `json.loads`. No external dependency needed for this simple case.
+
+---
+
+### D2: Command name — `[APPROVED: (a) ai ws pull]`
+
+#### (a) `ai ws pull`
+
+**Pros:**
+- Short and memorable
+- `ws` group leaves room for future workspace commands (`ai ws list`, `ai ws open`, `ai ws status`)
+- `pull` is the exact git verb — no ambiguity about what operation runs
+
+**Cons:**
+- Introduces a new `ws` command group not yet present in the CLI
+
+#### (b) `ai sync repos`
+
+**Pros:**
+- Consistent with any existing `ai sync` family commands
+
+**Cons:**
+- `repos` is ambiguous — could mean a registry operation, not a git pull
+- Doesn't hint at the workspace-file-driven scope
+
+#### (c) `ai ws sync`
+
+**Pros:**
+- `ws` group; `sync` is familiar terminology
+
+**Cons:**
+- `sync` is vaguer than `pull` — could imply bidirectional or push behavior
+
+#### (d) `ai sync workspace`
+
+**Pros:**
+- `workspace` noun makes the VS Code workspace file context explicit
+- Fits a `sync` family
+
+**Cons:**
+- Verbose; `ai sync vs-code-repos` variant (user-suggested) is even longer
+- `workspace` by itself is ambiguous without the VS Code context
+
+#### Recommendation
+
+> **Decision:** `APPROVED — (a) ai ws pull`
+
+`ai ws pull` is the right call. `pull` names the exact git operation; `ws` groups the command correctly and creates a home for future workspace sub-commands. All alternatives are either longer, vaguer, or both.
 
 ---
 
@@ -296,9 +344,17 @@ Update `docs/tools/ai-cli-usage.md` with `ai ws pull` usage. Same commit as T-03
 3. Should the remote workspace path also be configurable in `config.toml`?
 
 > **Feedback Round 1:** Your thoughts on the open questions:
-> 1. <!-- command name -->
-> 2. <!-- default path config -->
-> 3. <!-- remote path config -->
+> 1. Promoted to D2 — see Decisions section. `ai ws pull` approved.
+> 2. Yes — default path configurable in `config.toml` under `[workspace]`.
+> 3. Yes — remote path also configurable in `config.toml`.
+>
+> **AI Response Round 1:**
+> - OQ1 resolved as D2, approved: `ai ws pull`. See Decisions section.
+> - OQ2/OQ3 resolved: both workspace paths configurable under `[workspace]` in `config.toml`. T-03 already reflects this. All open questions closed.
+
+---
+
+> **Feedback Round 2:**
 > - <enter feedback here>
 
 ---
@@ -307,3 +363,6 @@ Update `docs/tools/ai-cli-usage.md` with `ai ws pull` usage. Same commit as T-03
 
 | Date | Decision | Notes |
 |------|----------|-------|
+| 2026-04-27 | D1: APPROVED (b) Parse `.code-workspace` | Single source of truth; JSON5 stripping via regex |
+| 2026-04-27 | D2: APPROVED (a) `ai ws pull` | Short, `ws` group, exact git verb |
+| 2026-04-27 | OQ2/OQ3: both yes | Default and remote workspace paths configurable in `config.toml [workspace]` |
