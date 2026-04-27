@@ -1419,6 +1419,9 @@ def _do_session_launch(
         # Use the tmux-env-aware helper so stale shell-inherited GUIDs don't
         # overwrite the target session with a wrong pane's GUID.
         _iterm2._configure_tmux_for_iterm2(session_id)
+        # Update the tmux session env with the current pane's GUID so that
+        # _live_iterm_id() in the session script picks up the correct pane on
+        # the next CC restart loop iteration.
         _new_iterm_id = _iterm2._get_current_iterm_session_id()
         if _new_iterm_id:
             subprocess.run(

@@ -303,25 +303,19 @@ end tell"""
 
 
 def _get_current_iterm_session_id() -> str:
-    """Return the live ITERM_SESSION_ID for the current pane.
+    """Return the ITERM_SESSION_ID for the physical pane running this process.
 
-    When inside a tmux session (TMUX env set), reads from the tmux session
-    environment via ``tmux show-environment`` so that re-attach GUIDs — updated
-    by ``_do_session_launch`` on each connect — take precedence over the shell's
-    original inherited value, which becomes stale after the first re-attach.
+    Always reads from the shell environment — the value set by iTerm2 shell
+    integration at pane creation time.  This is the correct GUID for the pane
+    the user is physically sitting in, regardless of which tmux session the shell
+    is attached to.
 
-    Falls back to the shell environment for non-tmux contexts.
+    The previous implementation read from ``tmux show-environment`` when inside
+    tmux.  That returned the GUID stored in the *parent* tmux session env, which
+    is a different session's GUID when ``ai c N`` is launched from inside an
+    existing tmux session — causing the wrong pane to be renamed (AI-CLI-59).
     """
-    iterm_id = os.environ.get("ITERM_SESSION_ID", "")
-    if os.environ.get("TMUX") and iterm_id:
-        r = subprocess.run(
-            ["tmux", "show-environment", "ITERM_SESSION_ID"],
-            capture_output=True,
-            text=True,
-        )
-        if r.returncode == 0 and r.stdout.startswith("ITERM_SESSION_ID="):
-            iterm_id = r.stdout.strip()[len("ITERM_SESSION_ID=") :]
-    return iterm_id
+    return os.environ.get("ITERM_SESSION_ID", "")
 
 
 def _configure_tmux_for_iterm2(session_id: str) -> None:
