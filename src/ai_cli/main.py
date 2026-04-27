@@ -1289,6 +1289,25 @@ def _do_session_launch(
     if config.get("worktree", {}).get("enabled", True) and not no_worktree:
         worktree_path = _session.create_worktree(ai_name)
         if worktree_path:
+            # Self-healing: detect index corruption (many staged deletions that don't reflect
+            # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
+            # --autostash saves the corrupt index, rebase runs cleanly, then pops the corrupt
+            # stash back — perpetuating the corruption across sessions.
+            # Threshold matches corrupt-index-guard.sh (50 staged deletions).
+            _deleted = subprocess.run(
+                ["git", "diff", "--cached", "--name-only", "--diff-filter=D"],
+                capture_output=True,
+                text=True,
+                cwd=worktree_path,
+            )
+            if len(_deleted.stdout.strip().splitlines()) > 50:
+                subprocess.run(["git", "read-tree", "HEAD"], capture_output=True, cwd=worktree_path)
+                subprocess.run(["git", "update-index", "--refresh"], capture_output=True, cwd=worktree_path)
+                print(
+                    f"Info: index corruption auto-healed in {worktree_path.name} "
+                    f"({len(_deleted.stdout.strip().splitlines())} staged deletions reset to HEAD).",
+                    file=sys.stderr,
+                )
             # Sync worktree with any changes that landed on main from other sessions.
             # If stash-pop conflicts (e.g. remote commit touches same files as local changes),
             # abort cleanly rather than leaving the index in a corrupted state.

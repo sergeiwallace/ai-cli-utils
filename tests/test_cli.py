@@ -883,6 +883,114 @@ class TestCliWorktreeGitPull:
 
         assert any("pull" in cmd for cmd in git_pull_calls)
 
+    def _run_c_with_fake_subprocess(self, tmp_path, subprocess_side_effect):
+        """Helper: run `ai c 1` with create_worktree returning a real path and subprocess mocked."""
+        worktree_path = tmp_path / ".worktrees" / "sw-1"
+        worktree_path.mkdir(parents=True)
+        with patch("sys.argv", ["ai", "c", "1"]):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.session.create_worktree", return_value=worktree_path):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                            with patch("subprocess.run", side_effect=subprocess_side_effect):
+                                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
+        return worktree_path
+
+    def test_when_worktree_index_corrupted_then_heals_before_pull(self, tmp_path):
+        """When the worktree has >50 staged deletions, git read-tree HEAD runs before git pull."""
+        # Simulate 55 staged deletions (corruption signature)
+        corrupt_output = "\n".join(f"file_{i}" for i in range(55))
+        call_log = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                call_log.append(cmd)
+            if isinstance(cmd, list) and "diff" in cmd and "--diff-filter=D" in cmd:
+                return MagicMock(returncode=0, stdout=corrupt_output)
+            return MagicMock(returncode=0, stdout="")
+
+        self._run_c_with_fake_subprocess(tmp_path, fake_run)
+
+        # read-tree must appear and must come before pull
+        read_tree_indices = [i for i, c in enumerate(call_log) if isinstance(c, list) and "read-tree" in c]
+        pull_indices = [i for i, c in enumerate(call_log) if isinstance(c, list) and "pull" in c]
+        assert read_tree_indices, "git read-tree HEAD must be called when index is corrupt"
+        assert pull_indices, "git pull must still be called after healing"
+        assert read_tree_indices[0] < pull_indices[0], "read-tree must run before pull"
+
+    def test_when_worktree_index_clean_then_no_heal(self, tmp_path):
+        """When staged deletions are below threshold (<= 50), no self-healing runs."""
+        # 5 staged deletions — below the 50-entry threshold
+        clean_output = "\n".join(f"file_{i}" for i in range(5))
+        call_log = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                call_log.append(cmd)
+            if isinstance(cmd, list) and "diff" in cmd and "--diff-filter=D" in cmd:
+                return MagicMock(returncode=0, stdout=clean_output)
+            return MagicMock(returncode=0, stdout="")
+
+        self._run_c_with_fake_subprocess(tmp_path, fake_run)
+
+        read_tree_calls = [c for c in call_log if isinstance(c, list) and "read-tree" in c]
+        assert not read_tree_calls, "git read-tree must NOT be called when deletion count is below threshold"
+
+    def test_when_index_exactly_at_threshold_then_no_heal(self, tmp_path):
+        """Exactly 50 staged deletions (boundary) must not trigger healing (threshold is >50)."""
+        boundary_output = "\n".join(f"file_{i}" for i in range(50))
+        call_log = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                call_log.append(cmd)
+            if isinstance(cmd, list) and "diff" in cmd and "--diff-filter=D" in cmd:
+                return MagicMock(returncode=0, stdout=boundary_output)
+            return MagicMock(returncode=0, stdout="")
+
+        self._run_c_with_fake_subprocess(tmp_path, fake_run)
+
+        read_tree_calls = [c for c in call_log if isinstance(c, list) and "read-tree" in c]
+        assert not read_tree_calls, "exactly 50 deletions must not trigger healing (threshold is >50)"
+
+    def test_when_index_healed_then_update_index_also_called(self, tmp_path):
+        """After git read-tree HEAD, git update-index --refresh must also be called."""
+        corrupt_output = "\n".join(f"file_{i}" for i in range(55))
+        call_log = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                call_log.append(cmd)
+            if isinstance(cmd, list) and "diff" in cmd and "--diff-filter=D" in cmd:
+                return MagicMock(returncode=0, stdout=corrupt_output)
+            return MagicMock(returncode=0, stdout="")
+
+        self._run_c_with_fake_subprocess(tmp_path, fake_run)
+
+        update_index_calls = [c for c in call_log if isinstance(c, list) and "update-index" in c]
+        assert update_index_calls, "git update-index --refresh must be called after read-tree"
+        assert any("--refresh" in c for c in update_index_calls)
+
+    def test_when_index_corrupted_then_warning_printed_to_stderr(self, tmp_path, capsys):
+        """Corruption detection prints an info message to stderr."""
+        corrupt_output = "\n".join(f"file_{i}" for i in range(55))
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "diff" in cmd and "--diff-filter=D" in cmd:
+                return MagicMock(returncode=0, stdout=corrupt_output)
+            return MagicMock(returncode=0, stdout="")
+
+        self._run_c_with_fake_subprocess(tmp_path, fake_run)
+
+        stderr = capsys.readouterr().err
+        assert "index corruption" in stderr.lower() or "auto-healed" in stderr.lower()
+
 
 class TestCliAttachDispatch:
     """Tests for `ai attach` subcommand."""

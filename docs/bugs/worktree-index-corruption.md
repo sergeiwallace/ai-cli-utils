@@ -9,7 +9,7 @@ task: AI-CLI-70
 
 # [AI-CLI-70] Git worktree index corruption
 
-**Status:** investigating
+**Status:** fix-deployed
 
 **Severity:** P1
 
@@ -88,84 +88,81 @@ concurrent pushes), the rebase left the index in an intermediate state that the 
 |---|------|----------------|---------|
 | 1 | 2026-04-21 | `git read-tree HEAD && git update-index --refresh` after initial corruption | Fixed that instance; stash cycle also needed `SKIP_TESTS=1` to break |
 | 2 | 2026-04-27 | `git read-tree HEAD && git update-index --refresh` before push | Fixes index but root cause (rebase in background shell + stash cycle) not addressed |
+| 3 | 2026-04-27 | Added pre-push guard hook (`.githooks/corrupt-index-guard.sh`) to detect corruption and abort | Prevents pushes, but doesn't break the autostash cycle — corruption persists across sessions |
+
+## Root Cause Analysis — Round 2 (2026-04-27)
+
+The pre-push guard from Round 1 catches corruption at push time but doesn't prevent it from
+re-appearing at the next session. The mechanism is `git pull --rebase --autostash` in session startup:
+
+1. Session ends with index in corrupt state (D entries from prior rebase conflict)
+2. New session starts → `ai c N` runs `git pull --rebase --autostash`
+3. `--autostash` runs `git stash push`, which saves the corrupt index state as a stash entry
+4. Rebase runs on a now-clean index (stash captured the corruption)
+5. `git stash pop` restores the stash → corrupt index is back
+6. Repeat every session
+
+This is the **autostash perpetuation cycle**. The corruption is preserved across session boundaries
+via the autostash mechanism, not via any manual stash or hook-triggered stash.
 
 ## Fix
 
 ### Immediate recovery (run when corruption is detected)
 
 ```bash
-# Sync index to HEAD, refresh timestamps
-git -C /path/to/worktree read-tree HEAD
-git -C /path/to/worktree update-index --refresh
-
-# Verify clean
-git -C /path/to/worktree status --short
+git read-tree HEAD && git update-index --refresh && git status --short
 ```
 
-If corruption persists through the next push (pre-commit stash restores it):
+### Round 1 — Pre-push guard to block pushes on corrupt index
 
-```bash
-# Break the stash cycle by bypassing the hook once
-SKIP_TESTS=1 git -C /path/to/worktree push origin HEAD:main
+`.githooks/corrupt-index-guard.sh` + `.pre-commit-config.yaml` (`stages: [pre-push]`).
 
-# Then re-run with hooks on next push — should be clean
-git -C /path/to/worktree push origin HEAD:main
+Counts staged deletions via `git diff --cached --diff-filter=D`. Aborts if >50 (configurable via
+`CORRUPT_INDEX_THRESHOLD`). Bypass: `SKIP_INDEX_GUARD=1`.
+
+Tests: `tests/hooks/test-corrupt-index-guard.sh` — 16/16 passing.
+
+### Round 2 — Self-healing in `ai c` session startup (breaks the autostash cycle)
+
+In `main.py`, immediately before `git pull --rebase --autostash`, detect and fix corruption:
+
+```python
+_deleted = subprocess.run(
+    ["git", "diff", "--cached", "--name-only", "--diff-filter=D"],
+    capture_output=True, text=True, cwd=worktree_path,
+)
+if len(_deleted.stdout.strip().splitlines()) > 50:
+    subprocess.run(["git", "read-tree", "HEAD"], capture_output=True, cwd=worktree_path)
+    subprocess.run(["git", "update-index", "--refresh"], capture_output=True, cwd=worktree_path)
+    print(f"Info: index corruption auto-healed ...", file=sys.stderr)
 ```
 
-### Root cause fix (to prevent recurrence)
+This ensures `--autostash` captures a clean index rather than the corrupt one, breaking the
+perpetuation cycle at the source.
 
-Two changes needed:
-
-**1. Never run conflict resolution in a background shell.**
-
-When `git pull --rebase` produces a conflict, always resolve it in the foreground worktree shell,
-not via chained `&&` commands that might run in a detached context. The rebase state is
-session-scoped and doesn't survive shell subprocess boundaries cleanly.
-
-**2. Add a pre-push guard that detects and aborts on index corruption.**
-
-Implemented in `.githooks/corrupt-index-guard.sh` and wired into `.pre-commit-config.yaml`
-as the first `stages: [pre-push]` hook (runs before `test-gate`).
-
-The guard uses `git diff --cached --diff-filter=D` (not `git status --porcelain`) to count only
-index-level staged deletions, which avoids false positives from working-tree deletions and is
-reliable under all index states.
-
-```bash
-THRESHOLD=${CORRUPT_INDEX_THRESHOLD:-50}
-deleted_count=$(git diff --cached --name-only --diff-filter=D 2>/dev/null | wc -l | tr -d ' ')
-if [ "$deleted_count" -gt "$THRESHOLD" ]; then
-    echo "[corrupt-index-guard] ERROR: index corruption detected."
-    echo "  Recovery: git read-tree HEAD && git update-index --refresh"
-    exit 1
-fi
-```
-
-Environment overrides: `SKIP_INDEX_GUARD=1` (emergency bypass), `CORRUPT_INDEX_THRESHOLD=N`
-(override default threshold of 50).
-
-Tests: `tests/hooks/test-corrupt-index-guard.sh` — 16 tests covering clean index, boundary
-conditions (50/51 deletions), bypass, custom threshold, and mixed staged state.
-
-**3. Add `git status` check to the session startup checklist.**
-
-The CLAUDE.md session startup already says "check git status — ensure clean working tree". Enforce
-that the check specifically looks for the D+?? pattern and runs the recovery command if found,
-before any other work begins.
+Tests: `tests/test_cli.py::TestCliWorktreeGitPull` — 5 new tests covering:
+- Corruption detected → `read-tree` called before `pull`
+- Below threshold → no healing
+- Exactly at threshold (50) → no healing (threshold is >50)
+- Healing triggers both `read-tree` and `update-index --refresh`
+- Warning message printed to stderr
 
 ## Verification
 
 - [x] `git status --short` shows no D or ?? lines after recovery
 - [x] Push completes with hooks enabled (no `SKIP_TESTS=1` bypass)
-- [ ] Next rebase conflict resolution (simulated) does not re-corrupt the index
-- [x] Pre-push guard hook catches corruption before it can be committed (16/16 tests pass)
+- [x] Pre-push guard hook catches corruption before it can be pushed (16/16 tests pass)
+- [x] Session startup auto-heals corrupt index before autostash captures it (5/5 new tests pass)
+- [ ] Confirm corruption does not recur across session boundaries (requires next session observation)
 
 ## Lessons Learned
 
 - The worktree index is a separate file from the main checkout index — it's more fragile because
   fewer git operations are designed with worktrees in mind
-- `git stash` in hooks is dangerous when the index is in an intermediate state — it captures and
-  preserves the corruption across pushes
+- **`git stash` perpetuates corruption** — any stash operation (including `--autostash`) on a
+  corrupt index faithfully saves and restores the corruption. Fix the index BEFORE stashing.
+- **Guards at push time are not enough** — corruption happens at session start (autostash cycle),
+  not just at push time. The fix must be at the point where `--autostash` runs.
 - Rebase conflict resolution must happen in a foreground, stateful shell context — not chained
   background commands
 - The pattern `D` (many) + `??` (same files untracked) is the diagnostic signature: run
