@@ -52,7 +52,7 @@ def tmux_server():
 
 
 @pytest.fixture
-def patched_subprocess(tmux_server):
+def patched_subprocess(tmux_server, tmp_path):
     """Intercept tmux calls made by ``_do_session_launch`` and route them
     through the isolated libtmux server.
 
@@ -62,6 +62,11 @@ def patched_subprocess(tmux_server):
     handles server lifecycle internally.  All other tmux sub-commands and git
     calls are silently swallowed.  ``os.execvp`` is replaced so the final
     ``tmux attach-session`` exec doesn't replace the test process.
+
+    Also patches ``get_xdg_state_home`` to redirect stable script writes to
+    ``tmp_path`` instead of the real XDG state directory, and patches
+    ``ai_cli.iterm2.subprocess.run`` so GUID eviction calls don't hit the
+    real tmux binary.
 
     Yields the tmux server so tests can inspect created sessions.
     """
@@ -120,7 +125,9 @@ def patched_subprocess(tmux_server):
 
     with (
         patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+        patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run),
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
     ):
         yield server
 
