@@ -864,7 +864,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
             await client.connect()
             if client.nc:
                 await client.publish("quota.snapshot", payload)
-                # Publish to platform usage subject for UsageConsumer ingest
+                # Publish to ai-core subject for UsageConsumer ingest
                 hw_payload = {
                     "id": str(_uuid.uuid4()),
                     "machine": machine,

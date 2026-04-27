@@ -151,11 +151,11 @@ nats_servers = ["nats://localhost:4222"]
 # local_path = "~/projects/myorg/local.code-workspace"
 # remote_path = "~/projects/myorg/remote.code-workspace"
 
-[cc_usage]
+[ai-core]
 ## REST API base URL and key for pushing CC usage events.
-## Obtain from your platform backend instance.
-# api_url = "https://your-api-host"
-# api_key = "your-api-key"
+## Obtain from your ai-core backend instance.
+# api_url = "https://your-ai-core-host"
+# api_key = "ac-api-..."
 """
 
 
