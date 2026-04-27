@@ -2,6 +2,8 @@
 
 ## Open
 
+- [ ] `[P1]` `[AI-CLI-70]` **Bug: git worktree index corruption after rebase conflict resolution** — Recurring issue: after resolving a rebase conflict, the worktree index shows 100+ `D` (staged deletions) + matching `??` (untracked) entries for files that exist on disk. Root cause: rebase leaves index in intermediate state; pre-commit stash captures corruption and pop restores it, creating a cycle. Immediate fix: `git read-tree HEAD && git update-index --refresh`. Root cause fix: pre-push guard hook that aborts when staged-deletion count exceeds threshold. Bug doc: `docs/bugs/worktree-index-corruption.md`.
+
 - [ ] `[P1]` `[AI-CLI-69]` **Fix `ai cdp start` on macOS — use `open -na` to force new Chrome instance** — Direct binary launch trampolines to the existing Chrome process on macOS, so the CDP port never opens. Fix: detect macOS in `_cmd_cdp_start()` and use `subprocess.run(["open", "-na", "Google Chrome", "--args", ...])` instead of `Popen(chrome_binary, ...)`. Also add `--no-first-run --no-default-browser-check --disable-default-apps` flags to suppress first-run dialogs on new profiles.
 
 - [x] `[P0]` `[AI-CLI-66]` **`ai ws pull` — workspace-wide git pull/rebase for all repos and worktrees** — Reads `humanware-local.code-workspace` (or `--remote` / `--workspace PATH` variants), enumerates all project folders and their worktrees, and runs `git pull --rebase` on each clean tree. Dirty worktrees skipped; dirty main trees stash+pull+pop with warning. Replaces the tedious "click each sync button in VS Code Source Control" workflow. Plan: `docs/plans/workspace-sync-plan.md`. Shipped 2026-04-27.
