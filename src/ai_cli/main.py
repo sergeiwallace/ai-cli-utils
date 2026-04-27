@@ -2113,10 +2113,22 @@ def cmd_ws_pull(workspace_path, use_remote, dry_run, verbose):
     if workspace_path:
         ws_path = Path(workspace_path).expanduser().resolve()
     elif use_remote:
-        remote = cfg.get("remote_path", "~/projects/sergei/humanware-remote.code-workspace")
+        remote = cfg.get("remote_path", "")
+        if not remote:
+            print(
+                "Error: [workspace] remote_path not configured in config.toml. Set it or use --workspace PATH.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         ws_path = Path(remote).expanduser().resolve()
     else:
-        local = cfg.get("local_path", "~/projects/sergei/humanware-local.code-workspace")
+        local = cfg.get("local_path", "")
+        if not local:
+            print(
+                "Error: [workspace] local_path not configured in config.toml. Set it or use --workspace PATH.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         ws_path = Path(local).expanduser().resolve()
 
     sys.exit(ws_pull(ws_path, dry_run=dry_run, verbose=verbose))

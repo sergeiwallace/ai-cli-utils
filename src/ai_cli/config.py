@@ -148,14 +148,14 @@ nats_servers = ["nats://localhost:4222"]
 [workspace]
 ## VS Code .code-workspace file paths for 'ai ws pull'
 ## local_path is the default; --remote uses remote_path; --workspace PATH overrides both
-# local_path = "~/projects/sergei/humanware-local.code-workspace"
-# remote_path = "~/projects/sergei/humanware-remote.code-workspace"
+# local_path = "~/projects/myorg/local.code-workspace"
+# remote_path = "~/projects/myorg/remote.code-workspace"
 
-[humanware]
+[cc_usage]
 ## REST API base URL and key for pushing CC usage events.
-## Obtain from your humanware backend instance.
-# api_url = "https://your-humanware-host"
-# api_key = "hw-api-..."
+## Obtain from your platform backend instance.
+# api_url = "https://your-api-host"
+# api_key = "your-api-key"
 """
 
 

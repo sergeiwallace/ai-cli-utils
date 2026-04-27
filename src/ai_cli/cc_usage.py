@@ -1,20 +1,20 @@
 """CC CLI per-call token tracking — scans ~/.claude/projects/ JSONL files and pushes events.
 
 Reads all CC session JSONL files, extracts per-call token data from assistant
-messages, and POSTs new entries to the humanware REST API. Cursor-tracked so
+messages, and POSTs new entries to a configured REST API. Cursor-tracked so
 only entries since the last push are sent.
 
 Cursor file: ~/.local/state/ai-cli-utils/cc-usage-cursor.json
   Format: {"session-uuid": "2026-04-17T10:00:00+00:00", ...}
 
-Config (config.toml [humanware] section):
-  api_url = "https://your-humanware-host"
-  api_key  = "hw-api-..."
+Config (config.toml [cc_usage] section):
+  api_url = "https://your-api-host"
+  api_key  = "your-api-key"
 
 Usage::
 
     from ai_cli.cc_usage import scan_and_push
-    result = scan_and_push(config={"humanware": {"api_url": ..., "api_key": ...}})
+    result = scan_and_push(config={"cc_usage": {"api_url": ..., "api_key": ...}})
 """
 
 from __future__ import annotations
@@ -286,10 +286,10 @@ def scan_and_push(
     machine: Optional[str] = None,
     dry_run: bool = False,
 ) -> PushResult:
-    """Scan CC session files and push new events to humanware.
+    """Scan CC session files and push new events to the configured REST API.
 
     Args:
-        config: Full ai-cli config dict (reads config["humanware"]).
+        config: Full ai-cli config dict (reads config["cc_usage"]).
         claude_dir: Override for ~/.claude/projects (for testing).
         machine: Override AI_CLI_HOST (for testing).
         dry_run: If True, scan and count but do not push or update cursor.
@@ -298,14 +298,13 @@ def scan_and_push(
         PushResult with counts and any error message.
     """
     result = PushResult()
-    hw_config = config.get("humanware", {})
+    hw_config = config.get("cc_usage", {})
     api_url = hw_config.get("api_url", "").strip()
     api_key = hw_config.get("api_key", "").strip()
 
     if not api_url or not api_key:
         result.error = (
-            "humanware.api_url and humanware.api_key must be set in config.toml "
-            "under [humanware] to push CC usage events."
+            "cc_usage.api_url and cc_usage.api_key must be set in config.toml under [cc_usage] to push CC usage events."
         )
         return result
 

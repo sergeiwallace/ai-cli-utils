@@ -917,7 +917,7 @@ class TestPublishQuotaSnapshot:
         assert "quota.claude.weekly" not in written_keys
         assert "quota.claude.current" not in written_keys  # bare key replaced by suffixed
 
-    def test_when_publish_then_also_publishes_to_humanware_subject(self, monkeypatch):
+    def test_when_publish_then_also_publishes_to_platform_usage_subject(self, monkeypatch):
         """The second publish call targets hw.events.usage.claude.snapshot with a
         UsageConsumer-compatible payload shape (id, machine, used_pct, raw, ...)."""
         monkeypatch.setenv("AI_CLI_HOST", "hetzner")
