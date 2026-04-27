@@ -75,6 +75,8 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 | 3 | Central store | (a) SQLite on primary machine, (b) Redis, (c) HTTP webhook to Python server | (a) SQLite | Simplest; no additional infrastructure; both machines accessible via SSH/Tailscale | **Approved** |
 | 4 | Cross-machine transport | (a) UDP packets, (b) HTTP POST to central server, (c) SSH-tunneled SQLite writes, (d) Shared filesystem | (b) HTTP POST | Reliable delivery, trivial Python receiver, works over Tailscale | **Approved** |
 | 5 | Alerting channel | (a) ntfy.sh, (b) Slack webhook, (c) Terminal-only | (b) Slack | ntfy push notifications are broken — appear as generic "ntfy message" with no visible content without opening the app; Slack delivers rich message previews natively | **Approved** |
+| 9 | Statusline label names and styling (AI-CLI-64) | (A) color/bold `W`/`S`, (B) `Week`/`Son`, (C) `All`/`Son`, (D) icons | — | — | `PENDING` |
+| 10 | Sonnet pace % visibility (AI-CLI-64) | (a) always show (dimmed placeholder when absent), (b) omit until populated | — | — | `PENDING` |
 
 ### Decision Details
 
@@ -339,6 +341,105 @@ Print warnings in the CC session status line or a tmux status bar.
 ##### Recommendation
 
 Option (b), Slack webhook. The ntfy notification bug makes option (a) useless as an alert mechanism — a notification that shows no information without opening the app is not actionable. Slack delivers full message content in the OS notification banner. Terminal warnings as a secondary channel (tmux status bar) for at-a-glance visibility while at the keyboard.
+
+---
+
+#### Decision 9: Statusline Label Names and Styling (AI-CLI-64) — `PENDING`
+
+The v1 statusline uses `W` (weekly all-models) and `S` (Sonnet) as right-positioned labels. AI-CLI-64 moves labels left. The question is whether the label text and presentation should also change.
+
+##### (A) Keep `W`/`S` with ANSI color/bold
+
+Add a distinct ANSI color to each label (e.g. bold cyan `W`, bold magenta `S`). Labels stay single-character.
+
+**Pros:**
+- Minimal character count — no impact on narrow tmux panes
+- Color adds identifiability without changing muscle memory for existing users
+- Consistent with terse statusline aesthetic
+
+**Cons:**
+- Color rendering varies across terminal themes (dark/light, 256-color vs. truecolor) — may look wrong or invisible in some configurations
+- Single-letter labels remain ambiguous without prior context
+
+##### (B) Rename to `Week`/`Son`
+
+Replace `W`/`S` with `Week` and `Son`.
+
+**Pros:**
+- More self-descriptive — readable without prior knowledge of the format
+- Still terse (4/3 chars) — same character budget as existing `42% W` since labels move left
+- Works in any terminal without ANSI support
+
+**Cons:**
+- Slightly wider than single-char labels; may wrap in very narrow panes
+- `Son` could be read as "son" (not "Sonnet") without context
+
+##### (C) Rename to `All`/`Son`
+
+Replace `W`/`S` with `All` and `Son`.
+
+**Pros:**
+- `All` more clearly signals "all models" (vs. `Week` which implies time window, not scope)
+- Same width advantage as (B)
+
+**Cons:**
+- `Week` better reflects what the metric actually measures (weekly budget), not which models; `All` vs `Son` implies a model filter, not a time filter — slightly misleading
+- Same potential `Son` ambiguity as (B)
+
+##### (D) Use icons (`🗓`/`🤖`)
+
+Replace text labels with emoji.
+
+**Pros:**
+- Visually distinctive, no ANSI color required
+
+**Cons:**
+- Emoji rendering in tmux is unreliable — double-width, invisible, or misaligned depending on font and terminal
+- Adds visual noise; inconsistent with the existing `📊` prefix which already carries the widget identity
+- Hard to grep/parse in scripts
+
+##### Recommendation
+
+> **Decision:** `PENDING`
+
+Option (A) — colored/bold `W`/`S` — is the lowest-risk change: minimal character count, no label churn, and the color makes the labels immediately distinguishable from the numeric values without making the string wider. If color support is a concern across all target terminals, (B) `Week`/`Son` is the right fallback — it's readable without any ANSI support and the character cost is negligible given the label moves left of the value.
+
+---
+
+#### Decision 10: Sonnet Pace % Visibility (AI-CLI-64) — `PENDING`
+
+AI-CLI-64 adds pace % for Sonnet (mirroring the all-models `→8%`). The question is what to show when `weekly_sonnet_pct` hasn't been scraped yet (so no pace baseline exists).
+
+##### (a) Always show — dimmed placeholder when absent
+
+Show `→-%` in dim ANSI when Sonnet pace data is unavailable, and fire a background scrape to populate it. Consistent with how `weekly_sonnet_pct` itself is handled (D-6/Round 2: show dimmed `-% S` + fire scrape).
+
+**Pros:**
+- Consistent behavior: Sonnet section always has the same structure regardless of data availability
+- Background scrape fires automatically — placeholder is short-lived in practice
+- User sees the field exists and knows data is incoming
+
+**Cons:**
+- Slightly more visual noise when data is absent (dimmed placeholder)
+- Requires dim ANSI for both the usage % and the pace % simultaneously
+
+##### (b) Omit until populated
+
+Don't render the Sonnet pace field at all if `weekly_sonnet_pct` is absent. Section shrinks from `S 87% →X%` to `S 87%` until a pace baseline is available.
+
+**Pros:**
+- Cleaner output — no placeholder characters
+- Simpler rendering path
+
+**Cons:**
+- Inconsistent with the established D-6 decision (show dimmed placeholder + scrape, not omit)
+- Statusline width changes as data populates — can cause layout jitter in tmux
+
+##### Recommendation
+
+> **Decision:** `PENDING`
+
+Option (a) — always show, dimmed placeholder when absent. This is consistent with the D-6/Round 2 decision for Sonnet usage %, and the background scrape means the placeholder is short-lived. Stable statusline width also prevents layout jitter in tmux status bars.
 
 ---
 
@@ -614,36 +715,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - Both sections include pace %
 - `|` divider preserved (or replaced with `·` / double-space)
 
-> **Feedback — D-9 (AI-CLI-64): Label names and styling**
->
-> Options for the W/S labels:
-> - (A) Keep `W`/`S` but add ANSI color/bold to the label itself (e.g. bold cyan `W`, bold magenta `S`)
-> - (B) Rename to `Week`/`Son` — more readable, same character budget as existing format
-> - (C) Rename to `All`/`Son` — disambiguates "all models" more clearly
-> - (D) Use icons: `🗓`/`🤖` or similar — more distinctive but heavier
->
-> Recommendation: (A) — minimal change, adds color for identifiability without widening the string. But `Week`/`Son` (B) is a good fallback if color isn't reliable across all terminal themes.
->
-> - <enter feedback here>
->
-> **D-10 (AI-CLI-64): Sonnet pace % — show always or only when populated?**
->
-> Should Sonnet pace % show when `weekly_sonnet_pct` is absent (dimmed placeholder) or be omitted until available?
-> Recommendation: same behavior as Sonnet usage % — show dimmed `-→-%` placeholder and fire background scrape.
->
-> - <enter feedback here>
-
-<!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
-
-> **AI Response Round N:**
-> - <AI response here>
-
----
-
-> **Feedback Round N+1:**
-> - <enter feedback here>
-
--->
+Open decisions: see D-9 (label names/styling) and D-10 (Sonnet pace visibility) in the [Design Decisions](#design-decisions) section.
 
 ## Risks and Mitigations
 
