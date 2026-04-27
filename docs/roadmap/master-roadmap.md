@@ -2,6 +2,8 @@
 
 ## Open
 
+- [ ] `[P1]` `[AI-CLI-69]` **Fix `ai cdp start` on macOS — use `open -na` to force new Chrome instance** — Direct binary launch trampolines to the existing Chrome process on macOS, so the CDP port never opens. Fix: detect macOS in `_cmd_cdp_start()` and use `subprocess.run(["open", "-na", "Google Chrome", "--args", ...])` instead of `Popen(chrome_binary, ...)`. Also add `--no-first-run --no-default-browser-check --disable-default-apps` flags to suppress first-run dialogs on new profiles.
+
 - [ ] `[P0]` `[AI-CLI-66]` **`ai ws pull` — workspace-wide git pull/rebase for all repos and worktrees** — Reads `humanware-local.code-workspace` (or `--remote` / `--workspace PATH` variants), enumerates all project folders and their worktrees, and runs `git pull --rebase` on each clean tree. Dirty worktrees skipped; dirty main trees stash+pull+pop with warning. Replaces the tedious "click each sync button in VS Code Source Control" workflow. Plan: `docs/plans/workspace-sync-plan.md`.
 
 - [x] `[P0]` `[AI-CLI-56]` **Bug: duplicate statusline/prompt boxes in scrollback** — Fixed (two-bug root cause). Bug A: AI-CLI-55 added `weekly_sonnet_pct` to `CREATE TABLE IF NOT EXISTS` but not as an `ALTER TABLE` migration; legacy DBs raised silent `OperationalError` on every SELECT, producing empty stdout. Bug B: bash cache checked `[[ -z "$quota_part" ]]` which re-triggered the slow command even on valid empty cache. Fix: `_migrate_snapshot_columns()` in `_init_db()`, call `_init_db(conn)` in `quota_statusline_part()`, replace empty-check with `_quota_cache_valid` flag. 5 new tests. Shipped v0.5.5.
