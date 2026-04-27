@@ -9,7 +9,6 @@ Two layers:
 from __future__ import annotations
 
 import dataclasses
-import inspect
 import tomllib
 from pathlib import Path
 from unittest.mock import patch
@@ -39,27 +38,11 @@ def test_package_version_matches_pyproject_toml():
 # ---------------------------------------------------------------------------
 
 
-def test_gemini_module_exports_declared_symbols():
-    from ai_cli.gemini import __all__ as gemini_all
-
-    assert "GeminiResult" in gemini_all
-    assert "AttemptLog" in gemini_all
-    assert "run_gemini" in gemini_all
-
-
 def test_quota_module_exports_declared_symbols():
     from ai_cli.quota import __all__ as quota_all
 
     assert "QuotaSnapshot" in quota_all
     assert "read_latest_snapshot" in quota_all
-
-
-def test_gemini_result_importable():
-    from ai_cli.gemini import GeminiResult
-
-    r = GeminiResult(model="gemini-3-flash-preview")
-    assert r.model == "gemini-3-flash-preview"
-    assert r.success is False
 
 
 def test_quota_snapshot_importable():
@@ -91,66 +74,6 @@ def test_read_latest_snapshot_when_no_data_then_returns_none():
 # ---------------------------------------------------------------------------
 # Contract enforcement — parameter and field names
 # ---------------------------------------------------------------------------
-
-
-def test_run_gemini_signature_has_all_documented_parameters():
-    """Catch parameter renames in run_gemini() before aido callers break."""
-    from ai_cli.gemini import run_gemini
-
-    params = inspect.signature(run_gemini).parameters
-
-    assert "prompt" in params
-    assert params["prompt"].default is inspect.Parameter.empty  # positional, required
-
-    expected_kwargs: dict[str, object] = {
-        "model": "deep-think",
-        "output": None,
-        "quiet": False,
-        "verbose": False,
-        "timeout_s": 600,
-        "start_tier": 1,
-        "paid_fallback_enabled": None,
-    }
-    for name, default in expected_kwargs.items():
-        assert name in params, f"documented kwarg {name!r} missing from run_gemini()"
-        assert params[name].default == default, (
-            f"run_gemini kwarg {name!r}: expected default {default!r}, got {params[name].default!r}"
-        )
-
-
-def test_gemini_result_has_all_documented_fields():
-    """Catch field renames or removals in GeminiResult."""
-    from ai_cli.gemini import GeminiResult
-
-    field_names = {f.name for f in dataclasses.fields(GeminiResult)}
-    documented = {
-        "content",
-        "model",
-        "tier",
-        "tier_name",
-        "success",
-        "error",
-        "duration_ms",
-        "input_tokens",
-        "output_tokens",
-        "total_tokens",
-        "is_deep_research",
-        "attempts",
-        "event_id",
-        "machine",
-    }
-    missing = documented - field_names
-    assert not missing, f"GeminiResult missing documented fields: {missing}"
-
-
-def test_attempt_log_has_all_documented_fields():
-    """Catch field renames or removals in AttemptLog."""
-    from ai_cli.gemini import AttemptLog
-
-    field_names = {f.name for f in dataclasses.fields(AttemptLog)}
-    documented = {"tier", "tier_name", "model", "success", "error", "duration_ms"}
-    missing = documented - field_names
-    assert not missing, f"AttemptLog missing documented fields: {missing}"
 
 
 def test_quota_snapshot_has_all_documented_fields():

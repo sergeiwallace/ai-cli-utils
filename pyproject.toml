@@ -1,6 +1,6 @@
 [project]
 name = "ai-cli-utils"
-version = "0.6.1"
+version = "0.7.0"
 description = "Unified AI session manager for Claude Code and Gemini CLI"
 readme = "README.md"
 license = "MIT"
@@ -63,7 +63,11 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.8",
     "pre-commit>=4",
+    "aido",
 ]
+
+[tool.uv.sources]
+aido = { path = "../aido", editable = true }
 
 [dependency-groups]
 dev = [

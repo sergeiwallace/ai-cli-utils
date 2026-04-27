@@ -92,14 +92,6 @@ class TestCliDispatch:
                     cli()
                 assert exc.value.code == 1
 
-    def test_cli_when_gemini_then_calls_gemini_cli(self):
-        with patch("sys.argv", ["ai", "gemini", "hello", "-m", "flash"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.gemini.gemini_cli", side_effect=SystemExit(0)) as mock_gemini:
-                    with pytest.raises(SystemExit):
-                        cli()
-                    mock_gemini.assert_called_once()
-
     def test_cli_when_sync_push_then_calls_sync_push(self):
         with patch("sys.argv", ["ai", "sync", "push"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -423,14 +415,6 @@ class TestCliDispatchBranches:
                     cli()
                 assert exc.value.code == 1
 
-    def test_cli_when_gemini_no_args_then_calls_gemini_cli(self):
-        with patch("sys.argv", ["ai", "gemini"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.gemini.gemini_cli", side_effect=SystemExit(0)):
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-
 
 class TestCliSessionSetupBranches:
     def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self):
@@ -671,16 +655,6 @@ class TestCliSessionSetupBranches:
             with pytest.raises(SystemExit):
                 cli()
         assert any("myuser@100.0.0.1" in str(a) for a in captured_ssh_args), "ssh_args must fall back to host"
-
-
-class TestCliGeminiDispatch:
-    def test_cli_when_gemini_returns_normally_then_exits_0(self):
-        with patch("sys.argv", ["ai", "gemini", "hello"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.gemini.gemini_cli", return_value=None):
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
 
 
 class TestCliReconnectContinueBranch:

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-27
+
+### Removed
+
+- `ai gemini` command and the underlying `gemini.py` / `research.py` modules deleted. `aido research`
+  is now the canonical Gemini research path across all projects (`AIDO-60`). Migration: use
+  `aido research -d quick "query"` for lightweight lookups and `aido research -d standard/thorough`
+  for deep research.
+- Contract tests for `GeminiResult`, `AttemptLog`, and `run_gemini()` in `test_public_api.py`
+  removed (symbols no longer exist).
+
+### Changed
+
+- `ai spend gemini` help text updated to clarify it reads historical local JSONL logs only.
+  Use `aido spend gemini` to query current spend via the humanware API.
+
 ## [0.6.1] - 2026-04-25
 
 ### Added

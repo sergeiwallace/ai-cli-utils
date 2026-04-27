@@ -1789,20 +1789,7 @@ def cmd_telemetry_writer():
     sys.exit(telemetry_writer())
 
 
-# --- gemini, spend, cc-usage, copier-update, layout, color ---
-
-
-@_cli_group.command(
-    "gemini",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
-    help="Run the ai-cli Gemini wrapper (pass-through to .gemini)",
-)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_gemini(args):
-    from .gemini import gemini_cli
-
-    gemini_cli(list(args))
-    sys.exit(0)
+# --- spend, cc-usage, copier-update, layout, color ---
 
 
 @_cli_group.group("spend", help="Usage-cost reports")
@@ -1810,7 +1797,9 @@ def cmd_spend_group():
     pass
 
 
-@cmd_spend_group.command("gemini", help="Report Gemini CLI spend totals")
+@cmd_spend_group.command(
+    "gemini", help="Report historical Gemini CLI spend from local logs (use `aido spend gemini` for current spend)"
+)
 def cmd_spend_gemini_cli():
     from .spend import cmd_spend_gemini
 
