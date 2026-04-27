@@ -55,9 +55,16 @@ repos:
       - id: shellcheck
         args: [--severity=warning]
 
-  # ── Local: test gate, stage=pre-push ─────────────────────────────────────
+  # ── Local: pre-push hooks ─────────────────────────────────────────────────
   - repo: local
     hooks:
+      - id: corrupt-index-guard
+        name: corrupt index guard (worktree safety)
+        entry: .githooks/corrupt-index-guard.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
       - id: test-gate
         name: test gate (mise-aware, tech-stack auto-detect)
         entry: .githooks/test-gate.sh

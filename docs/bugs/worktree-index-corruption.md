@@ -2,7 +2,7 @@
 title: "[AI-CLI-70] Git worktree index corruption — hundreds of D/untracked changes after rebase"
 category: bugs
 tags: [bug, git, worktree, recurring]
-status: investigating
+status: fix-deployed
 severity: P1
 task: AI-CLI-70
 ---
@@ -124,19 +124,28 @@ session-scoped and doesn't survive shell subprocess boundaries cleanly.
 
 **2. Add a pre-push guard that detects and aborts on index corruption.**
 
-Add a check to `.githooks/pre-push` (or as a separate pre-commit hook) that aborts if the
-staged-deletion count exceeds a threshold:
+Implemented in `.githooks/corrupt-index-guard.sh` and wired into `.pre-commit-config.yaml`
+as the first `stages: [pre-push]` hook (runs before `test-gate`).
+
+The guard uses `git diff --cached --diff-filter=D` (not `git status --porcelain`) to count only
+index-level staged deletions, which avoids false positives from working-tree deletions and is
+reliable under all index states.
 
 ```bash
-deleted_count=$(git status --porcelain | grep -c '^D')
-if [ "$deleted_count" -gt 50 ]; then
-  echo "ERROR: index corruption detected ($deleted_count staged deletions)."
-  echo "Run: git read-tree HEAD && git update-index --refresh"
-  exit 1
+THRESHOLD=${CORRUPT_INDEX_THRESHOLD:-50}
+deleted_count=$(git diff --cached --name-only --diff-filter=D 2>/dev/null | wc -l | tr -d ' ')
+if [ "$deleted_count" -gt "$THRESHOLD" ]; then
+    echo "[corrupt-index-guard] ERROR: index corruption detected."
+    echo "  Recovery: git read-tree HEAD && git update-index --refresh"
+    exit 1
 fi
 ```
 
-This prevents pushing a corrupt index as an actual commit and forces manual recovery first.
+Environment overrides: `SKIP_INDEX_GUARD=1` (emergency bypass), `CORRUPT_INDEX_THRESHOLD=N`
+(override default threshold of 50).
+
+Tests: `tests/hooks/test-corrupt-index-guard.sh` — 16 tests covering clean index, boundary
+conditions (50/51 deletions), bypass, custom threshold, and mixed staged state.
 
 **3. Add `git status` check to the session startup checklist.**
 
@@ -146,10 +155,10 @@ before any other work begins.
 
 ## Verification
 
-- [ ] `git status --short` shows no D or ?? lines after recovery
-- [ ] Push completes with hooks enabled (no `SKIP_TESTS=1` bypass)
+- [x] `git status --short` shows no D or ?? lines after recovery
+- [x] Push completes with hooks enabled (no `SKIP_TESTS=1` bypass)
 - [ ] Next rebase conflict resolution (simulated) does not re-corrupt the index
-- [ ] Pre-push guard hook catches corruption before it can be committed
+- [x] Pre-push guard hook catches corruption before it can be committed (16/16 tests pass)
 
 ## Lessons Learned
 
