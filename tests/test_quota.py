@@ -2548,14 +2548,18 @@ class TestStatuslineScript:
             assert not sentinel.exists(), "ai quota statusline-part should NOT be called when cache is fresh"
 
     def test_given_stale_quota_cache_when_run_then_ai_statusline_part_called(self):
-        """When the quota cache timestamp is >30s old, ai quota statusline-part is called to refresh it."""
+        """When the quota cache timestamp is >30s old, ai quota statusline-part is called as a background refresh.
+
+        Stale-while-revalidate: the stale value is returned immediately, and one background refresh
+        fires asynchronously. The sentinel is created by the background job, so we wait briefly.
+        """
         import tempfile
         import time
 
         uid = os.getuid() if hasattr(os, "getuid") else 0
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_file = Path(tmpdir) / f".ai-sl-quota-{uid}"
-            # Write cache with a timestamp 35s in the past — beyond the 30s TTL.
+            # Write cache with a timestamp 35s in the past — stale zone (30s–300s).
             old_ts = int(time.time()) - 35
             cache_file.write_text(f"{old_ts}\nstale-value")
 
@@ -2573,4 +2577,8 @@ class TestStatuslineScript:
                 }
             )
             assert result.returncode == 0
-            assert sentinel.exists(), "ai quota statusline-part should be called when cache is stale (>30s)"
+            # Background refresh fires asynchronously — wait for it to complete.
+            time.sleep(1.5)
+            assert sentinel.exists(), (
+                "ai quota statusline-part should be called as a background refresh when cache is stale (>30s)"
+            )
