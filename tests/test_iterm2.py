@@ -7,6 +7,7 @@ from conftest import make_iterm2_config
 from ai_cli.main import (
     _assign_iterm2_color_slot,
     _emit_iterm2_profile_setup,
+    _evict_iterm2_guid,
     _get_current_iterm_session_id,
     _is_iterm2,
     _iterm2_palette,
@@ -776,3 +777,97 @@ class TestDoSessionLaunchItermGuid:
         src = inspect.getsource(_main_mod._do_session_launch)
         assert "_get_current_iterm_session_id" in src
         assert 'os.environ.get("ITERM_SESSION_ID"' not in src
+
+
+class TestEvictIterm2Guid:
+    """_evict_iterm2_guid removes the GUID from all sessions except the owner.
+
+    Root cause of AI-CLI-59: multiple sessions accumulate the same ITERM_SESSION_ID
+    in their tmux environments and all rename the same pane on CC restart.
+    """
+
+    def _make_fake_run(self, session_guids: dict[str, str]):
+        """Return a fake subprocess.run that models tmux list-sessions + show-environment."""
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            from unittest.mock import MagicMock
+
+            calls.append(list(cmd))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            if cmd[1] == "list-sessions":
+                result.stdout = "\n".join(session_guids.keys()) + "\n"
+            elif cmd[1] == "show-environment":
+                session = cmd[cmd.index("-t") + 1]
+                guid = session_guids.get(session, "")
+                if guid:
+                    result.stdout = f"ITERM_SESSION_ID={guid}\n"
+                else:
+                    result.returncode = 1
+            return result
+
+        return fake_run, calls
+
+    def test_when_other_sessions_have_same_guid_then_they_are_cleared(self):
+        guid = "w0t0p0:AAAA-1111"
+        sessions = {"c-sw-1": guid, "c-ai-cli-1": guid, "c-aido-1": "w0t0p1:BBBB-2222"}
+        fake_run, calls = self._make_fake_run(sessions)
+
+        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
+            _evict_iterm2_guid(guid, "c-ai-cli-1")
+
+        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
+        cleared_sessions = [c[c.index("-t") + 1] for c in unset_calls]
+        assert "c-sw-1" in cleared_sessions
+        assert "c-ai-cli-1" not in cleared_sessions  # owner must not be cleared
+        assert "c-aido-1" not in cleared_sessions  # different GUID — untouched
+
+    def test_when_owner_has_guid_then_owner_is_not_cleared(self):
+        guid = "w0t0p0:AAAA-1111"
+        sessions = {"c-ai-cli-1": guid}
+        fake_run, calls = self._make_fake_run(sessions)
+
+        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
+            _evict_iterm2_guid(guid, "c-ai-cli-1")
+
+        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
+        assert unset_calls == []
+
+    def test_when_no_sessions_share_guid_then_no_unset_calls(self):
+        guid = "w0t0p0:AAAA-1111"
+        sessions = {"c-sw-1": "w0t0p5:CCCC-3333", "c-aido-1": "w0t0p1:BBBB-2222"}
+        fake_run, calls = self._make_fake_run(sessions)
+
+        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
+            _evict_iterm2_guid(guid, "c-ai-cli-1")
+
+        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
+        assert unset_calls == []
+
+    def test_when_guid_empty_then_no_subprocess_calls(self):
+        fake_run, calls = self._make_fake_run({})
+
+        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
+            _evict_iterm2_guid("", "c-ai-cli-1")
+
+        assert calls == []
+
+    def test_when_multiple_stale_sessions_then_all_cleared(self):
+        guid = "w0t0p15:C37C7927"
+        sessions = {
+            "c-ai-cli-1": guid,  # owner
+            "c-hm-1": guid,  # stale
+            "g-myproject-1": guid,  # stale
+            "g-sw-1": guid,  # stale
+        }
+        fake_run, calls = self._make_fake_run(sessions)
+
+        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
+            _evict_iterm2_guid(guid, "c-ai-cli-1")
+
+        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
+        cleared = {c[c.index("-t") + 1] for c in unset_calls}
+        assert cleared == {"c-hm-1", "g-myproject-1", "g-sw-1"}
+        assert "c-ai-cli-1" not in cleared

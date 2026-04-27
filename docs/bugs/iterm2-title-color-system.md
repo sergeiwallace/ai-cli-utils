@@ -280,30 +280,33 @@ Extracted the GUID resolution logic into `_get_current_iterm_session_id()` in `i
 
 Updated all three call sites in `_do_session_launch` and `_emit_iterm2_profile_setup` to use this helper. Added 6 tests. Bug persists — see Round 2 analysis below.
 
-### Fix Round 2 — Root cause (REOPENED 2026-04-26)
+### Fix Round 2 — Root cause (REOPENED 2026-04-26) — INCORRECT EXPLANATION
 
-The Round 1 fix introduced a new failure path. `_get_current_iterm_session_id()` prefers `tmux show-environment` when `TMUX` is set — but `tmux show-environment` (without `-t`) reads from the **calling session's** env, which is the **parent** session's stored GUID when `ai c N` is launched from inside another tmux session.
+The Round 2 root cause explanation was wrong. It described a scenario where `ai c N` is launched from inside an existing tmux session. This can't happen — the tool warns and stops when run inside tmux. The Round 1 code and Round 2 code are functionally identical for this user (since `TMUX` is never set when `ai c N` runs). The bug was not fixed.
 
-**Failing scenario:** user is in pane B (GUID `bbb`, set by iTerm2 shell integration at pane creation) attached to existing tmux session `c-aido-1` (whose tmux session env has GUID `aaa` from its original pane). Runs `ai c 1 -p ai-cli-utils`. With `TMUX` set, `_get_current_iterm_session_id()` returns `aaa` (stale parent GUID) instead of `bbb` (correct current pane). New session `c-ai-cli-1` is initialized with `aaa`; all `set-iterm2-name` calls target the wrong pane.
+**What was shipped in Round 2 (`3076d60`, `5719b45`):**
+- Part A: Simplified `_get_current_iterm_session_id()` to always return shell-env `ITERM_SESSION_ID` (removed dead `tmux show-environment` branch). Correct implementation but didn't fix the bug.
+- Part B: Session script hot-reload — stable script path, mtime-based exec reload, `AI_SESSION_STARTED` guard. Unrelated to the session name bug; ships as a separate improvement.
 
-**Correct source:** `os.environ.get("ITERM_SESSION_ID")` — the shell env value set by iTerm2 integration at pane creation. This is always current for the physical pane running `ai c N`, regardless of which tmux session the shell is attached to.
+### Fix Round 3 — Confirmed root cause (REOPENED 2026-04-27)
 
-### Fix (2026-04-27, AI-CLI-59) — DEPLOYED
+**Observed state:**
+```
+c-ai-cli-1: ITERM_SESSION_ID=w0t0p15:C37C7927...  ← correct owner
+c-hm-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
+g-myproject-1: ITERM_SESSION_ID=w0t0p15:C37C7927... ← stale
+g-sw-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
+```text
 
-**Part A: Fix GUID resolution** (`3076d60`)
-- Simplified `_get_current_iterm_session_id()` to always return shell env `ITERM_SESSION_ID`. Removed `tmux show-environment` branch entirely.
-- 9 tests updated/added in `tests/test_iterm2.py`.
-- Note: `_live_iterm_id()` in the bash session script still correctly uses `tmux show-environment` because the re-attach path explicitly calls `tmux set-environment` to write the current pane's GUID into the session env before attaching.
+**Root cause:** Multiple tmux sessions accumulate the same `ITERM_SESSION_ID` GUID in their environments. This happens because `_do_session_launch` writes the current pane's GUID into the target session's tmux env (via `_iterm_env_flags` on new-session, or `tmux set-environment` on re-attach) but never removes it from other sessions that already hold the same GUID. Over time, every session that was ever attached from the same physical pane retains that pane's GUID forever.
 
-**Part B: Session script hot-reload**
-- `src/ai_cli/main.py`: script written to stable deterministic path `~/.local/state/ai-cli-utils/sessions/<session_id>.sh` on every `ai c` call (new session and re-attach). Removed `NamedTemporaryFile` usage.
-- `src/ai_cli/session_script.py`:
-  - Removed self-delete line (stable file must persist).
-  - Added `AI_SESSION_STARTED` guard at startup: if `tmux show-environment AI_SESSION_STARTED` is `1`, set `first_run=false` to skip handoff drain, fleet wait, session-broker.
-  - Added `_script_stable_path` and `_script_start_mtime` vars at startup.
-  - Added mtime check at top of each `while true` iteration: if stable file mtime changed, `exec zsh "$_script_stable_path"`.
-  - After `first_run=false`: `tmux set-environment AI_SESSION_STARTED 1` so subsequent `exec`s skip first-run setup.
-- 6 tests added in `tests/test_cli.py` (`TestGetEngineScript` + `TestCliSessionStablePath`), 1 test updated in `tests/test_iterm2.py`.
+**Why this causes clobbering:** On each CC restart, every session's `while true` loop calls `_iterm2_fleet_setup` → `_live_iterm_id()` → `ai internal set-iterm2-name <shared-guid> <session-name>`. All sessions sharing the GUID write to the same pane. Last writer wins. The pane name oscillates between session names depending on which session restarted CC most recently.
+
+**Fix:** When `_do_session_launch` claims a GUID for a session, evict that GUID from all other tmux sessions by running `tmux set-environment -t <other> -u ITERM_SESSION_ID` for any session whose stored GUID matches.
+
+**Files to change:**
+- `src/ai_cli/main.py` — add `_evict_iterm2_guid(guid, owner_session)` helper; call it after writing GUID to new session env (`_iterm_env_flags`) and after `tmux set-environment` on re-attach
+- `tests/test_iterm2.py` — tests: eviction clears stale sessions, correct owner is unaffected, no-op when no other session has GUID
 
 ---
 

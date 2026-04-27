@@ -54,6 +54,7 @@ from .iterm2 import (  # noqa: E402,F401
     _assign_iterm2_color_slot,
     _configure_tmux_for_iterm2,
     _emit_iterm2_profile_setup,
+    _evict_iterm2_guid,
     _is_iterm2,
     _iterm2_palette,
     _get_current_iterm_session_id,
@@ -1419,6 +1420,12 @@ def _do_session_launch(
     with open(_script_path, "w") as _sf:
         _sf.write(script)
     os.chmod(_script_path, 0o700)
+
+    # Evict this GUID from any other session that still holds it.  Multiple
+    # sessions sharing the same GUID each rename the same pane on CC restart,
+    # clobbering each other's titles (AI-CLI-59 root cause).
+    if _live_iterm_session_id:
+        _iterm2._evict_iterm2_guid(_live_iterm_session_id, session_id)
 
     if existing.returncode == 0:
         # Session exists — write fresh script (hot-reload detection), configure

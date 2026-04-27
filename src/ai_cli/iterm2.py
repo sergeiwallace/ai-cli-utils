@@ -302,6 +302,41 @@ end tell"""
     subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
 
 
+def _evict_iterm2_guid(guid: str, owner_session: str) -> None:
+    """Remove ITERM_SESSION_ID from every tmux session that has ``guid`` except ``owner_session``.
+
+    Called after claiming a GUID for a session (new-session and re-attach paths)
+    to prevent multiple sessions from sharing the same GUID.  When sessions share
+    a GUID they all call ``set-iterm2-name`` with the shared GUID on each CC
+    restart, clobbering each other's pane titles (AI-CLI-59 root cause).
+    """
+    if not guid:
+        return
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return
+        for session in result.stdout.strip().splitlines():
+            if session == owner_session:
+                continue
+            env_result = subprocess.run(
+                ["tmux", "show-environment", "-t", session, "ITERM_SESSION_ID"],
+                capture_output=True,
+                text=True,
+            )
+            if env_result.returncode == 0 and env_result.stdout.strip() == f"ITERM_SESSION_ID={guid}":
+                subprocess.run(
+                    ["tmux", "set-environment", "-t", session, "-u", "ITERM_SESSION_ID"],
+                    capture_output=True,
+                )
+    except Exception:
+        pass  # Never block session launch for GUID cleanup
+
+
 def _get_current_iterm_session_id() -> str:
     """Return the ITERM_SESSION_ID for the physical pane running this process.
 
