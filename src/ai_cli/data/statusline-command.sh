@@ -123,28 +123,52 @@ if (( _do_record )); then
   ai quota record "${_telem_session}" "$(hostname)" "${model_id}" "${_telem_tokens}" >/dev/null 2>&1 &
 fi
 
-# --- Quota indicator (cached) ---
-# ai quota statusline-part has ~1.4s startup overhead (Python + ai_cli import + SQLite).
+# --- Quota indicator (cached, stale-while-revalidate) ---
+# ai quota statusline-part takes ~700ms (Python startup + SQLite + optional NATS check).
 # CC calls statusLine on every render cycle — during streaming that's many times/sec.
-# A blocking 1.4s call causes render cycles to overlap, producing duplicate boxes in
-# the scrollback buffer. Cache the output for 30s: quota data changes every 10 minutes,
-# so 30s staleness is negligible.
-# Cache format: line 1 = Unix timestamp written, line 2 = quota output (may be empty string).
-# IMPORTANT: use a separate validity flag rather than checking [[ -z "$quota_part" ]].
-# When quota_statusline_part outputs nothing (e.g. DB schema mismatch), the cached value
-# is legitimately empty — rerunning the slow command on every render would cause overlapping
-# 1.4s calls that produce duplicate prompt boxes in the scrollback buffer.
+# Stale-while-revalidate pattern: serve the cached value (even if stale) and kick off
+# a background refresh. This prevents concurrent invocations from all blocking on the
+# slow call at the same time, which caused duplicate prompt boxes in the scrollback buffer
+# (all concurrent calls completed near-simultaneously and each wrote a full status line).
+#
+# Cache format: line 1 = Unix timestamp written, line 2 = quota output (may be empty).
+# Zones: < 30s = fresh (serve directly); 30s–300s = stale (serve + background refresh);
+# > 300s = very old (synchronous fetch, only on first-ever call or after long gaps).
+# Lock file prevents concurrent background refreshes from stampeding.
 _qcache="${TMPDIR:-/tmp}/.ai-sl-quota-${UID:-0}"
+_qlock="${TMPDIR:-/tmp}/.ai-sl-quota-lock-${UID:-0}"
 quota_part=""
 _quota_cache_valid=0
+_qnow=$(date +%s)
 if [[ -f "$_qcache" ]]; then
   { IFS= read -r _qts && IFS= read -r quota_part; } < "$_qcache" 2>/dev/null
-  # Guard: if first line is not a valid Unix timestamp, treat cache as stale (old format).
-  [[ "$_qts" =~ ^[0-9]+$ ]] && (( $(date +%s) - _qts < 30 )) && _quota_cache_valid=1 || quota_part=""
+  if [[ "$_qts" =~ ^[0-9]+$ ]]; then
+    _qage=$(( _qnow - _qts ))
+    if (( _qage < 30 )); then
+      _quota_cache_valid=1  # fresh — serve directly
+    elif (( _qage < 300 )); then
+      _quota_cache_valid=1  # stale — serve this cycle, refresh in background
+      # Only launch one background refresh at a time (lock file dedup)
+      _need_refresh=1
+      if [[ -f "$_qlock" ]]; then
+        IFS= read -r _qlts < "$_qlock" 2>/dev/null
+        [[ "$_qlts" =~ ^[0-9]+$ ]] && (( _qnow - _qlts <= 120 )) && _need_refresh=0
+        (( _need_refresh )) && rm -f "$_qlock" 2>/dev/null
+      fi
+      if (( _need_refresh )); then
+        printf '%d' "$_qnow" > "$_qlock" 2>/dev/null
+        ( _qfresh=$(ai quota statusline-part 2>/dev/null)
+          _qfresh="${_qfresh//$'\n'/ }"
+          printf '%d\n%s\n' "$(date +%s)" "$_qfresh" > "$_qcache" 2>/dev/null
+          rm -f "$_qlock" 2>/dev/null
+        ) >/dev/null 2>&1 &
+      fi
+    fi
+  fi
 fi
 if (( ! _quota_cache_valid )); then
+  # No cache or very old (>300s): synchronous fetch — only on first call or after a long gap.
   quota_part=$(ai quota statusline-part 2>/dev/null)
-  # Strip embedded newlines: statusLine contract requires exactly one output line.
   quota_part="${quota_part//$'\n'/ }"
   printf '%d\n%s' "$(date +%s)" "$quota_part" > "$_qcache" 2>/dev/null
 fi
