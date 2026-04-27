@@ -272,19 +272,37 @@ The shell environment's `ITERM_SESSION_ID` is set once when the iTerm2 pane is f
 
 Meanwhile, `_emit_iterm2_profile_setup` already had the correct fix — it reads from the tmux session env via `tmux show-environment` when inside tmux. But this logic was not shared with the other two call sites.
 
-### Fix (2026-04-25, AI-CLI-59)
+### Fix Round 1 (2026-04-25, AI-CLI-59) — INCOMPLETE
 
 Extracted the GUID resolution logic into `_get_current_iterm_session_id()` in `iterm2.py`:
 - Outside tmux: returns `os.environ.get("ITERM_SESSION_ID")` (unchanged)
 - Inside tmux: reads `tmux show-environment ITERM_SESSION_ID` from the session env (current GUID, not stale)
 
-Updated all three call sites in `_do_session_launch` and `_emit_iterm2_profile_setup` to use this helper. Added 6 tests: 5 for `_get_current_iterm_session_id` directly, 1 structural test verifying `_do_session_launch` does not read `ITERM_SESSION_ID` directly from `os.environ`.
+Updated all three call sites in `_do_session_launch` and `_emit_iterm2_profile_setup` to use this helper. Added 6 tests. Bug persists — see Round 2 analysis below.
 
-### Files changed
+### Fix Round 2 — Root cause (REOPENED 2026-04-26)
 
-- `src/ai_cli/iterm2.py` — added `_get_current_iterm_session_id()`; refactored `_emit_iterm2_profile_setup` to use it
-- `src/ai_cli/main.py` — updated `_iterm_env_flags` building and re-attach `_new_iterm_id` to use `_iterm2._get_current_iterm_session_id()`
-- `tests/test_iterm2.py` — `TestGetCurrentItermSessionId` (5 tests), `TestDoSessionLaunchItermGuid` (1 test)
+The Round 1 fix introduced a new failure path. `_get_current_iterm_session_id()` prefers `tmux show-environment` when `TMUX` is set — but `tmux show-environment` (without `-t`) reads from the **calling session's** env, which is the **parent** session's stored GUID when `ai c N` is launched from inside another tmux session.
+
+**Failing scenario:** user is in pane B (GUID `bbb`, set by iTerm2 shell integration at pane creation) attached to existing tmux session `c-aido-1` (whose tmux session env has GUID `aaa` from its original pane). Runs `ai c 1 -p ai-cli-utils`. With `TMUX` set, `_get_current_iterm_session_id()` returns `aaa` (stale parent GUID) instead of `bbb` (correct current pane). New session `c-ai-cli-1` is initialized with `aaa`; all `set-iterm2-name` calls target the wrong pane.
+
+**Correct source:** `os.environ.get("ITERM_SESSION_ID")` — the shell env value set by iTerm2 integration at pane creation. This is always current for the physical pane running `ai c N`, regardless of which tmux session the shell is attached to.
+
+**Fix plan — two parts:**
+
+**Part A: Fix GUID resolution** — revert `_get_current_iterm_session_id()` to always return shell env `ITERM_SESSION_ID`. Remove the `tmux show-environment` branch entirely (it was solving a problem that doesn't exist in practice — iTerm2 integration keeps the shell env current). Update call sites. Write minimal repro test (TMUX set, tmux session env has stale GUID, shell env has fresh GUID) that fails before fix and passes after.
+
+**Part B: Session script hot-reload** — change script lifecycle so `ai update -f + ai c N` picks up new code on next CC restart without requiring `tmux kill-session`:
+1. Write session script to stable deterministic path `~/.local/state/ai-cli/sessions/<session_id>.sh` instead of random tempfile. Re-attach path must also write fresh script to stable path before calling `tmux attach-session`.
+2. Bash loop: at top of each `while true` iteration, compare script mtime to startup value. If changed: `exec zsh <stable_path>` to replace running shell with fresh script.
+3. Guard `first_run` logic against re-fire on hot-reload: after first iteration, set `tmux set-environment AI_SESSION_STARTED 1`; exec'd script checks this and skips `first_run` block.
+
+**Files to change:**
+- `src/ai_cli/iterm2.py` — simplify `_get_current_iterm_session_id()`
+- `src/ai_cli/main.py` — stable script path; re-attach path writes script
+- `src/ai_cli/session_script.py` — mtime check + exec reload; `first_run` guard
+- `tests/test_iterm2.py` — repro test + updated existing tests
+- `tests/test_session_script.py` (or similar) — hot-reload tests
 
 ---
 
