@@ -2074,6 +2074,35 @@ def cmd_sync(action, args):
         sys.exit(1)
 
 
+@_cli_group.group("ws", help="Workspace-wide operations across all repos")
+def cmd_ws_group():
+    pass
+
+
+@cmd_ws_group.command("pull", help="Pull/rebase all repos and worktrees in a VS Code workspace file")
+@click.option("--workspace", "-w", "workspace_path", default=None, help="Path to .code-workspace file")
+@click.option("--remote", "-r", "use_remote", is_flag=True, default=False, help="Use remote workspace file")
+@click.option("--dry-run", "-d", is_flag=True, default=False, help="Print plan without touching git")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Show full git output per repo/worktree")
+def cmd_ws_pull(workspace_path, use_remote, dry_run, verbose):
+    from pathlib import Path
+
+    from .workspace import ws_pull
+
+    cfg = _config.load_config().get("workspace", {})
+
+    if workspace_path:
+        ws_path = Path(workspace_path).expanduser().resolve()
+    elif use_remote:
+        remote = cfg.get("remote_path", "~/projects/sergei/humanware-remote.code-workspace")
+        ws_path = Path(remote).expanduser().resolve()
+    else:
+        local = cfg.get("local_path", "~/projects/sergei/humanware-local.code-workspace")
+        ws_path = Path(local).expanduser().resolve()
+
+    sys.exit(ws_pull(ws_path, dry_run=dry_run, verbose=verbose))
+
+
 @_cli_group.command("reconnect", help="Print reconnect commands for remote tmux sessions")
 @click.argument("sessions", nargs=-1)
 def cmd_reconnect(sessions):

@@ -2,7 +2,7 @@
 title: "ai ws — Workspace-wide git pull/rebase for all repos and worktrees"
 category: plan
 tags: [git, worktrees, workspace, sync]
-status: draft
+status: in_progress
 source: internal
 date: 2026-04-25
 linked_task: AI-CLI-64
@@ -10,7 +10,7 @@ linked_task: AI-CLI-64
 
 # ai ws — Workspace-wide git pull/rebase
 
-**Status:** DRAFT
+**Status:** IN PROGRESS
 
 **Created:** 2026-04-25
 

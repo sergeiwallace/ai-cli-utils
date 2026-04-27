@@ -145,6 +145,12 @@ nats_servers = ["nats://localhost:4222"]
 ## Default port for the Chrome DevTools Protocol endpoint
 # port = 9222
 
+[workspace]
+## VS Code .code-workspace file paths for 'ai ws pull'
+## local_path is the default; --remote uses remote_path; --workspace PATH overrides both
+# local_path = "~/projects/sergei/humanware-local.code-workspace"
+# remote_path = "~/projects/sergei/humanware-remote.code-workspace"
+
 [humanware]
 ## REST API base URL and key for pushing CC usage events.
 ## Obtain from your humanware backend instance.

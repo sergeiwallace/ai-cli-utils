@@ -225,6 +225,63 @@ Reads remote host from `[remote] host` in config, overridable via `--remote-host
 
 ---
 
+## ai ws
+
+```bash
+ai ws pull [--workspace PATH] [--remote] [--dry-run] [--verbose]
+ai ws pull -w PATH
+ai ws pull -r
+ai ws pull -d
+ai ws pull -v
+```
+
+Pull/rebase all repos and their worktrees listed in a VS Code `.code-workspace` file in one command.
+
+**Primary use case:** after arriving at the Mac from Hetzner work, sync all repos without clicking each Source Control sync button.
+
+**Behaviour:**
+
+- Clean main tree → `git pull --rebase`
+- Dirty main tree → `git stash push`, pull, `git stash pop` (logged with `⚠`)
+- Clean worktrees → pulled
+- Dirty worktrees → skipped (`↷`), never stashed — active sessions may have uncommitted work
+- Non-existent or non-git folders → silently skipped or warned
+
+**Flags:**
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--workspace PATH` | `-w` | Explicit path to `.code-workspace` file |
+| `--remote` | `-r` | Use `[workspace] remote_path` from config |
+| `--dry-run` | `-d` | Print what would be pulled, no git operations |
+| `--verbose` | `-v` | Show full git output per repo/worktree |
+
+**Config** (`~/.config/ai-cli-utils/config.toml`):
+
+```toml
+[workspace]
+local_path = "~/projects/sergei/humanware-local.code-workspace"
+remote_path = "~/projects/sergei/humanware-remote.code-workspace"
+```
+
+Default falls back to `humanware-local.code-workspace` if not configured.
+
+**Example output:**
+
+```text
+Workspace: ~/projects/sergei/humanware-local.code-workspace (13 repos)
+
+  ✓  sergei          main
+  ✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
+  ⚠  humanware       main  (stashed+pulled)
+  ✓  ai-cli-utils    main
+  ↷  ai-cli-utils/ai-cli-1  (dirty, skipped)
+
+Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
+```
+
+---
+
 ## Utility Commands
 
 ### ai gemini
