@@ -66,19 +66,27 @@ def get_engine_script(
     )
 
     script = f"""
-    # Remove the launch script file now that it's loaded into memory.
-    [[ -f "$0" && "$0" == */ai-session-*.sh ]] && rm -f "$0"
     {cd_cmd}
     first_run=true
     ai_name="{ai_name}"
     engine="{engine}"
     tmux_session="{session}"
+    # If this script was exec'd by hot-reload, AI_SESSION_STARTED is set in the tmux
+    # env — skip first-run-only setup so CC relaunches cleanly without re-running
+    # handoff drain, iTerm2 fleet wait, or session-broker on each auto-restart.
+    if [[ "$(tmux show-environment -t "$tmux_session" AI_SESSION_STARTED 2>/dev/null)" == "AI_SESSION_STARTED=1" ]]; then
+      first_run=false
+    fi
     _template_version="{_template_version}"
     uuid="{session_id_uuid or ""}"
     project_prefix="{project_prefix}"
     project_name="{project_name}"
     _ai_state_dir="$HOME/.local/state/ai-cli-utils"
-    mkdir -p "$_ai_state_dir/iterm2"
+    mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
+    # Stable script path — written by `ai c` on every launch/re-attach.
+    # Mtime changes when a new version is installed and `ai c` re-attaches.
+    _script_stable_path="$_ai_state_dir/sessions/$tmux_session.sh"
+    _script_start_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
     printf '%s' {json.dumps(_meta)} > "$_ai_state_dir/session-meta-$tmux_session.json"
 
     # iTerm2 slot assigned by Python at launch time (collision-free lease system).
@@ -336,6 +344,18 @@ def get_engine_script(
     trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session" "$config_hash_file" "$config_changed_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null; ai internal cleanup-session-files "$ai_name" 2>/dev/null' EXIT
 
     while true; do
+      # Hot-reload: if `ai c` wrote a fresh script to the stable path (e.g. after
+      # `ai update`), exec it now so new template takes effect on this CC restart.
+      # Runs at loop top so the running CC process is undisturbed; takes effect on
+      # the restart after CC exits.  AI_SESSION_STARTED guard in the new script
+      # ensures first_run=false so no duplicate setup runs.
+      if [[ -f "$_script_stable_path" ]]; then
+        _cur_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
+        if [[ "$_cur_mtime" != "$_script_start_mtime" && "$_cur_mtime" != "0" ]]; then
+          echo "ai-cli session script updated — reloading..."
+          exec zsh "$_script_stable_path"
+        fi
+      fi
       start_watcher
       start_ts=$(date +%s)
       # Re-emit iTerm2 setup + set status to running.
@@ -436,6 +456,8 @@ if found: sys.stdout.write(found)
       fi
 
       first_run=false
+      # Mark session as started so hot-reload exec skips first-run-only setup blocks.
+      tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."

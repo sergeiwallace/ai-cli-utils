@@ -1425,6 +1425,74 @@ class TestGetEngineScript:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=False)
         assert "exit 0" in script
 
+    def test_get_engine_script_includes_ai_session_started_guard(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "AI_SESSION_STARTED" in script
+        assert "first_run=false" in script
+
+    def test_get_engine_script_includes_stable_path_mtime_check(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "_script_stable_path" in script
+        assert "_script_start_mtime" in script
+        assert "exec zsh" in script
+
+    def test_get_engine_script_includes_set_environment_after_first_run(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert "tmux set-environment" in script
+        assert "AI_SESSION_STARTED 1" in script
+
+
+class TestCliSessionStablePath:
+    """Session script is written to a stable, deterministic path on every launch/re-attach."""
+
+    def _run_cli(self, tmp_path, run_returncode_map):
+        """Run `ai c 1` with subprocess.run returning codes per command keyword."""
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                for key, code in run_returncode_map.items():
+                    if key in cmd:
+                        return MagicMock(returncode=code)
+            return MagicMock(returncode=1)
+
+        with patch("sys.argv", ["ai", "c", "1"]):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="# script"):
+                                            with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
+                                                with patch("subprocess.run", side_effect=fake_run):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+
+    def test_when_new_session_then_script_written_to_stable_path(self, tmp_path):
+        # has-session → 1 (no session), new-session → 0 (success)
+        self._run_cli(tmp_path, {"has-session": 1, "new-session": 0})
+        script_path = tmp_path / "sessions" / "c-sw-1.sh"
+        assert script_path.exists()
+        assert "# script" in script_path.read_text()
+
+    def test_when_existing_session_then_script_written_to_stable_path(self, tmp_path):
+        # has-session → 0 (session exists)
+        self._run_cli(tmp_path, {"has-session": 0})
+        script_path = tmp_path / "sessions" / "c-sw-1.sh"
+        assert script_path.exists()
+        assert "# script" in script_path.read_text()
+
+    def test_stable_path_uses_session_id_as_filename(self, tmp_path):
+        self._run_cli(tmp_path, {"has-session": 0})
+        # File must be named after the tmux session id, not a random tempfile name
+        sessions_dir = tmp_path / "sessions"
+        assert sessions_dir.is_dir()
+        files = list(sessions_dir.iterdir())
+        assert len(files) == 1
+        assert files[0].name == "c-sw-1.sh"
+
 
 class TestGetEngineScriptSelfUpdate:
     def test_engine_script_embeds_template_version(self):

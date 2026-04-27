@@ -457,10 +457,12 @@ class TestGetEngineScriptIterm2Slot:
         assert "tmux list-clients -t" in script
         assert "$first_run" in script
 
-    def test_script_self_delete_uses_portable_glob_not_tmp_prefix(self):
+    def test_script_uses_stable_path_not_self_delete(self):
+        # Script no longer self-deletes (stable path persists for mtime-based hot-reload).
+        # The stable path lives under the XDG state dir, not /tmp.
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert "*/ai-session-*.sh" in script
         assert "/tmp/ai-session-" not in script
+        assert "_script_stable_path" in script
 
     def test_script_set_iterm2_name_uses_live_iterm_id_not_static_env(self):
         # set-iterm2-name must always use _live_iterm_id() (reads from tmux session env,

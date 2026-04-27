@@ -288,21 +288,22 @@ The Round 1 fix introduced a new failure path. `_get_current_iterm_session_id()`
 
 **Correct source:** `os.environ.get("ITERM_SESSION_ID")` — the shell env value set by iTerm2 integration at pane creation. This is always current for the physical pane running `ai c N`, regardless of which tmux session the shell is attached to.
 
-**Fix plan — two parts:**
+### Fix (2026-04-27, AI-CLI-59) — DEPLOYED
 
-**Part A: Fix GUID resolution** — revert `_get_current_iterm_session_id()` to always return shell env `ITERM_SESSION_ID`. Remove the `tmux show-environment` branch entirely (it was solving a problem that doesn't exist in practice — iTerm2 integration keeps the shell env current). Update call sites. Write minimal repro test (TMUX set, tmux session env has stale GUID, shell env has fresh GUID) that fails before fix and passes after.
+**Part A: Fix GUID resolution** (`3076d60`)
+- Simplified `_get_current_iterm_session_id()` to always return shell env `ITERM_SESSION_ID`. Removed `tmux show-environment` branch entirely.
+- 9 tests updated/added in `tests/test_iterm2.py`.
+- Note: `_live_iterm_id()` in the bash session script still correctly uses `tmux show-environment` because the re-attach path explicitly calls `tmux set-environment` to write the current pane's GUID into the session env before attaching.
 
-**Part B: Session script hot-reload** — change script lifecycle so `ai update -f + ai c N` picks up new code on next CC restart without requiring `tmux kill-session`:
-1. Write session script to stable deterministic path `~/.local/state/ai-cli/sessions/<session_id>.sh` instead of random tempfile. Re-attach path must also write fresh script to stable path before calling `tmux attach-session`.
-2. Bash loop: at top of each `while true` iteration, compare script mtime to startup value. If changed: `exec zsh <stable_path>` to replace running shell with fresh script.
-3. Guard `first_run` logic against re-fire on hot-reload: after first iteration, set `tmux set-environment AI_SESSION_STARTED 1`; exec'd script checks this and skips `first_run` block.
-
-**Files to change:**
-- `src/ai_cli/iterm2.py` — simplify `_get_current_iterm_session_id()`
-- `src/ai_cli/main.py` — stable script path; re-attach path writes script
-- `src/ai_cli/session_script.py` — mtime check + exec reload; `first_run` guard
-- `tests/test_iterm2.py` — repro test + updated existing tests
-- `tests/test_session_script.py` (or similar) — hot-reload tests
+**Part B: Session script hot-reload**
+- `src/ai_cli/main.py`: script written to stable deterministic path `~/.local/state/ai-cli-utils/sessions/<session_id>.sh` on every `ai c` call (new session and re-attach). Removed `NamedTemporaryFile` usage.
+- `src/ai_cli/session_script.py`:
+  - Removed self-delete line (stable file must persist).
+  - Added `AI_SESSION_STARTED` guard at startup: if `tmux show-environment AI_SESSION_STARTED` is `1`, set `first_run=false` to skip handoff drain, fleet wait, session-broker.
+  - Added `_script_stable_path` and `_script_start_mtime` vars at startup.
+  - Added mtime check at top of each `while true` iteration: if stable file mtime changed, `exec zsh "$_script_stable_path"`.
+  - After `first_run=false`: `tmux set-environment AI_SESSION_STARTED 1` so subsequent `exec`s skip first-run setup.
+- 6 tests added in `tests/test_cli.py` (`TestGetEngineScript` + `TestCliSessionStablePath`), 1 test updated in `tests/test_iterm2.py`.
 
 ---
 

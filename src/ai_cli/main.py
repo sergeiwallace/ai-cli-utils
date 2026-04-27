@@ -2,7 +2,6 @@ import sys
 import os
 import json
 import shutil
-import tempfile
 import time
 import subprocess
 import re
@@ -1412,16 +1411,19 @@ def _do_session_launch(
         # Explicit sandbox flag — kill old session so it recreates with new settings
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
+    # Stable script path: written on every launch/re-attach so the session script's
+    # mtime check detects updates (e.g. after `ai update`) and hot-reloads.
+    _sessions_dir = _config.get_xdg_state_home() / "sessions"
+    _sessions_dir.mkdir(parents=True, exist_ok=True)
+    _script_path = str(_sessions_dir / f"{session_id}.sh")
+    with open(_script_path, "w") as _sf:
+        _sf.write(script)
+    os.chmod(_script_path, 0o700)
+
     if existing.returncode == 0:
-        # Session exists — configure for iTerm2, then attach (detach stale clients).
-        # Update ITERM_SESSION_ID in the session env so _live_iterm_id() in the
-        # session script picks up the new pane's GUID on the next CC restart.
-        # Use the tmux-env-aware helper so stale shell-inherited GUIDs don't
-        # overwrite the target session with a wrong pane's GUID.
+        # Session exists — write fresh script (hot-reload detection), configure
+        # for iTerm2, update ITERM_SESSION_ID, then attach (detach stale clients).
         _iterm2._configure_tmux_for_iterm2(session_id)
-        # Update the tmux session env with the current pane's GUID so that
-        # _live_iterm_id() in the session script picks up the correct pane on
-        # the next CC restart loop iteration.
         _new_iterm_id = _iterm2._get_current_iterm_session_id()
         if _new_iterm_id:
             subprocess.run(
@@ -1433,14 +1435,6 @@ def _do_session_launch(
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
-        #
-        # Write the script to a temp file to avoid tmux's inline command-length limit
-        # (~2 KB on macOS). The file is cleaned up by the session script itself via
-        # a trap, so we don't need to unlink it here.
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", prefix="ai-session-", delete=False) as _tf:
-            _tf.write(script)
-            _script_path = _tf.name
-        os.chmod(_script_path, 0o700)
         result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["--", "zsh", _script_path],
             capture_output=True,
