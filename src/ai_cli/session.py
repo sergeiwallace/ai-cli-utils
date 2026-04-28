@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -291,6 +292,8 @@ def cleanup_stale_sessions(config: dict) -> None:
     - Dead shell: AI exited, pane shows bash/zsh (auto-resume loop stopped).
     - Abandoned: AI still running but session unattached for > stale_session_timeout minutes.
     """
+    if sys.platform == "win32":
+        return
     session_cfg = config.get("session", {})
     timeout_seconds = session_cfg.get("stale_session_timeout", 15) * 60
     now = int(time.time())
