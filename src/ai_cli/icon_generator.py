@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import colorsys
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -232,7 +234,19 @@ def generate_dynamic_profile(
 
     data = {"Profiles": [profile]}
     out_path = _dynamic_profile_dir() / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json"
-    out_path.write_text(json.dumps(data, indent=2))
+    # Atomic write: iTerm2's FSEvents watcher can read the file mid-write if we use
+    # write_text() directly (open→write→close is not atomic). Write to a temp file in
+    # the same directory then os.replace() for a POSIX-atomic rename (AI-CLI-84).
+    dir_fd = out_path.parent
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=dir_fd,
+        suffix=".json.tmp",
+        delete=False,
+    ) as tmp:
+        tmp.write(json.dumps(data, indent=2))
+        tmp_path = tmp.name
+    os.replace(tmp_path, out_path)
     return out_path
 
 

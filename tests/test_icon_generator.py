@@ -211,6 +211,22 @@ class TestGenerateDynamicProfile:
         assert binding["Action"] == 10
         assert binding["Text"] == "[13;2u"
 
+    def test_write_is_atomic_no_tmp_files_left(self, tmp_path):
+        # Atomic write must not leave .json.tmp files behind (AI-CLI-84).
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        leftovers = list(tmp_path.glob("*.tmp"))
+        assert leftovers == [], f"Unexpected temp files left behind: {leftovers}"
+        assert (tmp_path / "ai-cli-session-test-session.json").exists()
+
+    def test_write_produces_valid_json(self, tmp_path):
+        # File must be fully valid JSON when it arrives on disk (AI-CLI-84).
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        content = out.read_text()
+        parsed = json.loads(content)  # raises if invalid
+        assert "Profiles" in parsed
+
     def test_rerun_is_idempotent(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out1 = generate_dynamic_profile("test-session", "#5e35b1", "cc")

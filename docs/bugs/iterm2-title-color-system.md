@@ -33,6 +33,7 @@ related_docs:
 - [Bug 8 — Session Name reverts to "Default" after Edit Session interaction](#bug-8--session-name-reverts-to-default-after-edit-session-interaction)
 - [Bug 9 — `ai c` launch drops session into tmux copy mode](#bug-9--ai-c-launch-drops-session-into-tmux-copy-mode)
 - [Bug 10 — Session Name changes to another session's name randomly](#bug-10--session-name-changes-to-another-sessions-name-randomly)
+- [Bug 11 — Dynamic Profiles "invalid JSON" popup on session start](#bug-11--dynamic-profiles-invalid-json-popup-on-session-start)
 - [Diagnosis Approach](#diagnosis-approach)
 
 ---
@@ -331,6 +332,48 @@ c-hm-1:     tmux env ITERM_SESSION_ID=w0t0p15:C37C7927... (stale, holds the GUID
 
 ---
 
+## Bug 11 — Dynamic Profiles "invalid JSON" popup on session start
+
+### Symptom
+
+iTerm2 shows a popup: **"Dynamic Profiles file contains invalid JSON"** for `ai-cli-session-<name>.json` immediately after or during `ai c N` session launch. The file on disk is valid JSON when inspected after the fact. Reported 2026-04-29 with the following logs:
+
+```
+[2026-04-29 14:21:19] Error in /Users/sergeiwallace/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-session-sw-1.json: Dynamic Profiles file contains invalid JSON
+[2026-04-29 14:21:19] Error loading dynamic profiles: (null)
+```
+
+### Root cause
+
+`generate_dynamic_profile()` in `icon_generator.py` used `Path.write_text()` (non-atomic: open → write → close). iTerm2 monitors the `DynamicProfiles/` directory via FSEvents and reads any changed file immediately. If iTerm2's FSEvents callback fires while the write is still in progress — the file descriptor is open but `write()` has not yet returned and `close()` has not been called — iTerm2 reads a partial or empty file and fails to parse it as JSON.
+
+This is a race condition inherent to non-atomic file writes on macOS FSEvents-monitored directories. The file is valid JSON once the write completes, but that's after iTerm2 has already seen the intermediate state.
+
+A secondary issue appears in the logs: hundreds of `[DynamicProfiles] Couldn't load /Users/sergeiwallace/Library/Application Support/iTerm2/DynamicProfiles/humanware-profiles.json — no such file or directory` entries. This is a stale reference in iTerm2's preferences from before the humanware→ai-core rename. It is a separate iTerm2 configuration issue (not a code bug) — remove the stale entry by deleting the `humanware-profiles.json` path from iTerm2 preferences or by creating a redirect file.
+
+### Fix (2026-04-29, AI-CLI-84)
+
+Replaced the direct `write_text()` call in `generate_dynamic_profile()` with an atomic write:
+
+```python
+# Before (non-atomic):
+out_path.write_text(json.dumps(data, indent=2))
+
+# After (atomic):
+with tempfile.NamedTemporaryFile(mode="w", dir=out_path.parent, suffix=".json.tmp", delete=False) as tmp:
+    tmp.write(json.dumps(data, indent=2))
+    tmp_path = tmp.name
+os.replace(tmp_path, out_path)
+```
+
+`os.replace()` is a POSIX-atomic rename: iTerm2's FSEvents watcher either sees the old complete file or the new complete file — never a partial write. The temp file is written in the same directory as the target to guarantee both are on the same filesystem (required for rename atomicity).
+
+**File changed:** `src/ai_cli/icon_generator.py` — `generate_dynamic_profile()`
+
+**Shipped:** 2026-04-29 (AI-CLI-84)
+
+---
+
 ## Diagnosis Approach
 
 > Note: This section documents the proposed diagnostic direction. It will be replaced with root cause findings and confirmed fixes once the design doc is reviewed and approved.
@@ -341,7 +384,7 @@ The core issue is that `idx = (num - 1) % 12` uses only the session number suffi
 
 ### Remote OSC sequence filtering (Bug 2)
 
-Mosh intercepts and filters `\033]1337;` (iTerm2-proprietary) sequences — so `SetProfile` and `SetColors=tab=` never reach iTerm2 from remote sessions. Mosh also prepends `[mosh] ` to all OSC 0 window titles it receives. The fix for remote sessions likely requires running the profile/color setup on the local side before the mosh connection is established, or an iTerm2 Automatic Profile Switching rule keyed on the remote hostname.
+Mosh intercepts and filters `\033]1337;` (iTerm2-proprietary) sequences — so `SetProfile` and `SetColors=tab=` never reach iTerm2 from remote sessions. Mosh also prepends `[mosh]` to all OSC 0 window titles it receives. The fix for remote sessions likely requires running the profile/color setup on the local side before the mosh connection is established, or an iTerm2 Automatic Profile Switching rule keyed on the remote hostname.
 
 ### Gemini title not applied (Bug 3)
 

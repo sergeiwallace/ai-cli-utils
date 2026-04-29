@@ -4,6 +4,8 @@
 
 - [ ] `[P1]` `[AI-CLI-83]` **Bug: Sonnet % flickers to null/dashes then recovers** — `quota_statusline_part()` reads `rows[0]["weekly_sonnet_pct"]` (latest snapshot). If one scrape fails to parse the Sonnet breakdown, the latest row has `None`, overriding valid data from earlier rows. Fix: fall back to the most recent non-`None` `weekly_sonnet_pct` value across the last N snapshots instead of hard-coding row index 0.
 
+- [x] `[P1]` `[AI-CLI-84]` **Bug: iTerm2 Dynamic Profiles "invalid JSON" popup on session start** — `generate_dynamic_profile()` used non-atomic `write_text()`. iTerm2 FSEvents watcher can read the file mid-write, seeing partial JSON. Fix: atomic write via `tempfile.NamedTemporaryFile` + `os.replace()` in `icon_generator.py`. Bug doc: `docs/bugs/iterm2-title-color-system.md` (Bug 11). Shipped 2026-04-29.
+
 - [ ] `[P1]` `[AI-CLI-59]` **Bug: iTerm session name not matching tmux CC session name (regression)** — Previously fixed 2026-04-27 (`_evict_iterm2_guid`). Regressed. Investigate current root cause and fix. Update `docs/bugs/iterm2-title-color-system.md`.
 
 - [ ] `[P2]` `[AI-CLI-82]` **Auto-show task panel on CC session start and auto-restart** — After a CC auto-restart (or fresh session launch), the TUI task panel is empty. Goal: restore open tasks automatically without requiring a manual `/task-panel` call. Design required before implementation — options include: (1) UserPromptSubmit sentinel file (first-prompt-only, but hook overhead on every submit is a concern); (2) injection via `session_script.py` at session launch; (3) CLAUDE.md startup checklist enforcement; (4) any CC-native session-start hook. Research and brainstorm options; pick the lightest-weight once-per-session trigger.
