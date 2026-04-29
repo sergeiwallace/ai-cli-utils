@@ -9,6 +9,7 @@ at ~/.local/state/ai-cli/quota.db (no external server dependency).
 
 import asyncio
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1137,10 +1138,17 @@ def quota_statusline_part() -> int:
         else:
             pct_color = RED
 
-        # Sonnet % — fire a scrape if absent so the field populates on next refresh
+        # Terminal width — passed by statusline-command.sh via AI_CLI_STATUSLINE_COLS
+        _cols = int(os.environ.get("AI_CLI_STATUSLINE_COLS", "0"))
+        BOLD_CYAN = "\033[1;36m"
+        BOLD_MAG = "\033[1;35m"
+        week_label = "Week" if _cols >= 80 else "W"
+        son_label = "Son" if _cols >= 80 else "S"
+
+        # Sonnet part — fire scrape if absent so field populates on next refresh
         if sonnet_pct is None:
             _launch_background_scrape()
-            sonnet_part = f"{DIM}-% S{RESET}"
+            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}-% →-%{RESET}"
         else:
             if sonnet_pct < 50:
                 s_color = GREEN
@@ -1148,7 +1156,18 @@ def quota_statusline_part() -> int:
                 s_color = YELLOW
             else:
                 s_color = RED
-            sonnet_part = f"{s_color}{sonnet_pct:.0f}% S{RESET}"
+            sonnet_delta = sonnet_pct - week_elapsed_pct
+            if sonnet_delta > 25:
+                s_delta_color = RED
+            elif sonnet_delta > 10:
+                s_delta_color = YELLOW
+            else:
+                s_delta_color = GREEN
+            s_sign = "+" if sonnet_delta > 0 else ""
+            sonnet_part = (
+                f"{BOLD_MAG}{son_label}{RESET} {s_color}{sonnet_pct:.0f}%{RESET}"
+                f" {s_delta_color}→{s_sign}{sonnet_delta:.0f}%{RESET}"
+            )
 
         # Arrow: acceleration direction (requires \u22653 snapshots)
         arrow_char = "\u2192"  # → steady (default / insufficient data)
@@ -1166,16 +1185,17 @@ def quota_statusline_part() -> int:
             elif accel < -1.0:
                 arrow_char = "\u2193"  # ↓ decelerating
 
+        stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
+        sign = "+" if delta > 0 else ""
+
         if elapsed_secs < 24 * 3600:
             # Seedling phase (first 24h): 🌱 always shown; informational only, no alarms.
-            alert = ""
             delta_color = BLUE
-            stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
             print(
-                f"\U0001f4ca {pct_color}{usage_pct:.0f}% W{RESET}"
-                f" \U0001f331{alert} {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
+                f"\U0001f4ca {BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
+                f" {delta_color}{arrow_char}{sign}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
                 f" | {sonnet_part}"
-            )  # 📊 N% W 🌱 →X% [⏱] | M% S
+            )  # 📊 Week N% →X% 🌱 [⏱] | Son M% →Y%
         else:
             # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
             if delta <= 10:
@@ -1187,12 +1207,11 @@ def quota_statusline_part() -> int:
             else:
                 icon = "\U0001f6a8"  # 🚨
                 delta_color = RED
-            stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
             print(
-                f"\U0001f4ca {pct_color}{usage_pct:.0f}% W{RESET} {icon}"
-                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
+                f"\U0001f4ca {BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
+                f" {delta_color}{arrow_char}{sign}{abs(delta):.0f}%{RESET} {icon}{stale_suffix}"
                 f" | {sonnet_part}"
-            )  # 📊 N% W ✅/⚠️/🚨 →X% [⏱] | M% S
+            )  # 📊 Week N% →X% ✅/⚠️/🚨 [⏱] | Son M% →Y%
     except Exception:
         pass
     return 0
