@@ -191,12 +191,13 @@ def _parse_reset_datetime(text: str) -> str | None:
 
     # Reconstruct the full UTC datetime using the system's local timezone.
     # CC shows the next reset time, so we find the next future occurrence of
-    # that time (weekly period).
+    # that time (weekly period). If the time has already passed today, advance
+    # by one week (this only affects CC versions pre-dating the IANA format).
+    now_utc = _dt.now(_tz.utc)
     local_now = _dt.now().astimezone()
     candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if candidate <= local_now:
-        # Time already passed today — next occurrence is in 7 days
-        candidate += _td(days=7)
+    if candidate.astimezone(_tz.utc) <= now_utc:
+        candidate += _td(weeks=1)
     return candidate.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -369,7 +370,10 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             if cap.returncode == 0 and "% used" in cap.stdout:
                 snapshot = _parse_usage_output(cap.stdout)
                 if snapshot:
+                    _clear_scrape_format_mismatch()
                     break
+                else:
+                    _record_scrape_format_mismatch(cap.stdout)
 
         # Dismiss the dialog
         subprocess.run(
@@ -585,6 +589,24 @@ def _notify_threshold(notifier: Any, threshold: int, snapshot: QuotaSnapshot) ->
         print(f"[quota-watch] notification failed: {exc}", file=sys.stderr)
 
 
+def _print_mismatch_warning() -> None:
+    """Print a warning if the scrape format mismatch flag is set. Silent on error."""
+    try:
+        from .quota_db import _get_quota_meta
+
+        count = _get_quota_meta("scrape_format_mismatch_count")
+        at = _get_quota_meta("scrape_format_mismatch_at")
+        if count and int(count) > 0:
+            print(
+                f"\n⚠  Scrape parse failure — CC /usage format may have changed.\n"
+                f"   Raw output saved to: {_SCRAPE_DEBUG_PATH}\n"
+                f"   Last failure: {at or 'unknown'}",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+
+
 def quota_status() -> int:
     """Print current quota status from local SQLite."""
     from .quota_db import get_current_status
@@ -613,6 +635,7 @@ def quota_status() -> int:
     for alert in alerts:
         print(f"  {alert}")
 
+    _print_mismatch_warning()
     return 0
 
 
@@ -638,6 +661,37 @@ def quota_history() -> int:
 _SCRAPE_LOCK_PATH = Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape.lock"
 _SCRAPE_TTL_MINUTES = 30
 _SCRAPE_LOCK_STALE_MINUTES = 15
+_SCRAPER_BROKEN_PREFIX = "🚨 BROKEN 🚨 "
+_SCRAPE_DEBUG_PATH = Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape-debug.txt"
+
+
+def _record_scrape_format_mismatch(raw: str) -> None:
+    """Write raw scrape output to debug file and increment the mismatch counter."""
+    from datetime import datetime, timezone
+    from .quota_db import _get_quota_meta, _set_quota_meta
+
+    try:
+        _SCRAPE_DEBUG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _SCRAPE_DEBUG_PATH.write_text(raw, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        _set_quota_meta("scrape_format_mismatch_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        current = _get_quota_meta("scrape_format_mismatch_count")
+        count = int(current) + 1 if current and current.isdigit() else 1
+        _set_quota_meta("scrape_format_mismatch_count", str(count))
+    except Exception:
+        pass
+
+
+def _clear_scrape_format_mismatch() -> None:
+    """Reset the mismatch counter to 0 after a successful parse."""
+    from .quota_db import _set_quota_meta
+
+    try:
+        _set_quota_meta("scrape_format_mismatch_count", "0")
+    except Exception:
+        pass
 
 
 def _launch_background_scrape() -> None:
@@ -712,6 +766,7 @@ def quota_scrape() -> int:
         )
         print("Stored snapshot in local quota DB.")
         _publish_quota_snapshot(snapshot)
+        _print_mismatch_warning()
         return 0
     finally:
         _SCRAPE_LOCK_PATH.unlink(missing_ok=True)
@@ -959,6 +1014,18 @@ def _try_read_kv_snapshot() -> dict | None:
     return result[0]
 
 
+def _check_scrape_mismatch_prefix() -> None:
+    """Write the broken-scraper prefix to stdout if mismatch count > 0. Silent on error."""
+    try:
+        from .quota_db import _get_quota_meta
+
+        count = _get_quota_meta("scrape_format_mismatch_count")
+        if count and int(count) > 0:
+            sys.stdout.write(_SCRAPER_BROKEN_PREFIX)
+    except Exception:
+        pass
+
+
 def quota_statusline_part() -> int:
     """Print a compact quota indicator for use in the statusline.
 
@@ -975,6 +1042,8 @@ def quota_statusline_part() -> int:
         _init_db,
         record_quota_snapshot,
     )
+
+    _check_scrape_mismatch_prefix()
 
     try:
         from datetime import datetime, timezone

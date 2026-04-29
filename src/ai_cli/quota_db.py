@@ -137,6 +137,12 @@ def _init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS notification_log_fired_at ON notification_log (fired_at);
         CREATE INDEX IF NOT EXISTS notification_log_source   ON notification_log (source);
+
+        CREATE TABLE IF NOT EXISTS quota_meta (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
     """)
     conn.commit()
     # Migrate columns added after the initial schema (ALTER TABLE ADD COLUMN is a no-op
@@ -155,6 +161,29 @@ def _migrate_snapshot_columns(conn: sqlite3.Connection) -> None:
         if col not in existing:
             conn.execute(f"ALTER TABLE quota_snapshots ADD COLUMN {col} {typedef}")
     conn.commit()
+
+
+def _set_quota_meta(key: str, value: str) -> None:
+    """Upsert a key/value pair in quota_meta."""
+    from datetime import datetime, timezone
+
+    conn = _get_conn()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        """INSERT INTO quota_meta (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+        (key, value, now_iso),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _get_quota_meta(key: str) -> str | None:
+    """Return the value for a quota_meta key, or None if not set."""
+    conn = _get_conn()
+    row = conn.execute("SELECT value FROM quota_meta WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else None
 
 
 def _get_current_week_start(now: datetime | None = None) -> str:
@@ -247,6 +276,8 @@ def record_quota_snapshot(
     # immediately uses the freshly scraped reset time for this and all future calls.
     if reset_at:
         _save_reset_anchor(reset_at)
+
+    from datetime import datetime, timezone
 
     conn = _get_conn()
     now = datetime.now(timezone.utc)
