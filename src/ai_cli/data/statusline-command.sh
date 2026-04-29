@@ -157,7 +157,7 @@ if [[ -f "$_qcache" ]]; then
       fi
       if (( _need_refresh )); then
         printf '%d' "$_qnow" > "$_qlock" 2>/dev/null
-        ( _qfresh=$(ai quota statusline-part 2>/dev/null)
+        ( _qfresh=$(AI_CLI_STATUSLINE_COLS="${COLUMNS:-0}" ai quota statusline-part 2>/dev/null)
           _qfresh="${_qfresh//$'\n'/ }"
           printf '%d\n%s\n' "$(date +%s)" "$_qfresh" > "$_qcache" 2>/dev/null
           rm -f "$_qlock" 2>/dev/null
@@ -168,7 +168,7 @@ if [[ -f "$_qcache" ]]; then
 fi
 if (( ! _quota_cache_valid )); then
   # No cache or very old (>300s): synchronous fetch — only on first call or after a long gap.
-  quota_part=$(ai quota statusline-part 2>/dev/null)
+  quota_part=$(AI_CLI_STATUSLINE_COLS="${COLUMNS:-0}" ai quota statusline-part 2>/dev/null)
   quota_part="${quota_part//$'\n'/ }"
   printf '%d\n%s' "$(date +%s)" "$quota_part" > "$_qcache" 2>/dev/null
 fi
