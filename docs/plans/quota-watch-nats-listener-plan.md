@@ -16,6 +16,11 @@ source: claude-sonnet-4-6
 
 **Design:** `docs/designs/claude-usage-telemetry.md`
 
+**Related (aido):**
+- `aido/docs/designs/research-graph-v2.md` — E6 mid-run quota visibility; specifies `quota.scrape.request.{machine}` trigger protocol
+- `aido/docs/plans/mid-run-quota-monitor-plan.md` — T-04 NATS scrape trigger + KV reader (consumer of this listener)
+- `aido/docs/plans/research-platform-implementation-plan.md` — cross-dependency tracking for AIDO-48 T-04
+
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
   2. When the user writes feedback: commit the doc immediately BEFORE responding or revising.
