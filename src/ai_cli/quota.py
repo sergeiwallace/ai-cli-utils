@@ -1159,10 +1159,13 @@ def quota_statusline_part() -> int:
             sonnet_delta = sonnet_pct - week_elapsed_pct
             if sonnet_delta > 25:
                 s_delta_color = RED
+                s_icon = "\U0001f6a8"  # 🚨
             elif sonnet_delta > 10:
                 s_delta_color = YELLOW
+                s_icon = "⚠️"
             else:
                 s_delta_color = GREEN
+                s_icon = "✅"
             s_sign = "+" if sonnet_delta > 0 else ""
             sonnet_part = (
                 f"{BOLD_MAG}{son_label}{RESET} 🤖 {s_color}{sonnet_pct:.0f}%{RESET}"
@@ -1207,11 +1210,12 @@ def quota_statusline_part() -> int:
             else:
                 icon = "\U0001f6a8"  # 🚨
                 delta_color = RED
+            s_pace = f" {s_icon}" if sonnet_pct is not None else ""
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{sign}{abs(delta):.0f}%{RESET} {icon}{stale_suffix}"
-                f" | {sonnet_part}"
-            )  # W 📊 N% →X% ✅/⚠️/🚨 [⏱] | Son M% →Y%
+                f" | {sonnet_part}{s_pace}"
+            )  # W 📊 N% →X% ✅/⚠️/🚨 [⏱] | Son 🤖 M% →Y% ✅/⚠️/🚨
     except Exception:
         pass
     return 0
