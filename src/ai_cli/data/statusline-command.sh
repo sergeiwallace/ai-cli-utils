@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude Code status line — compact layout
-# Shows: clock | model | project:branch | tmux session | ctx% | cost | quota | tip
+# Shows: clock | model | project:branch | tmux session | ctx% | quota | tip
 
 input=$(cat)
 
@@ -12,8 +12,6 @@ mapfile -t _f < <(echo "$input" | jq -r '
   (.context_window.used_percentage // ""),
   (.context_window.total_input_tokens // 0),
   (.context_window.total_output_tokens // 0),
-  (.context_window.current_usage.cache_creation_input_tokens // 0),
-  (.context_window.current_usage.cache_read_input_tokens // 0),
   (.workspace.project_dir // "")
 ' 2>/dev/null)
 model_display="${_f[0]}"
@@ -21,9 +19,7 @@ model_id="${_f[1]}"
 used_pct="${_f[2]}"
 total_in="${_f[3]}"
 total_out="${_f[4]}"
-cache_write="${_f[5]}"
-cache_read="${_f[6]}"
-_project_dir_from_json="${_f[7]}"
+_project_dir_from_json="${_f[5]}"
 
 # --- Model display name (short) ---
 model_lower="${model_display,,}"
@@ -41,18 +37,6 @@ if [ -n "$used_pct" ]; then
 else
   ctx_part="\033[2m--%\033[0m"
 fi
-
-# --- Session cost ---
-if [[ "$model_lower" == *"opus"* ]]; then
-  in_rate=15.00; out_rate=75.00; cw_rate=18.75; cr_rate=1.50
-elif [[ "$model_lower" == *"haiku"* ]]; then
-  in_rate=0.80; out_rate=4.00; cw_rate=1.00; cr_rate=0.08
-else
-  in_rate=3.00; out_rate=15.00; cw_rate=3.75; cr_rate=0.30
-fi
-session_cost=$(awk -v ti="$total_in" -v to="$total_out" -v cw="$cache_write" -v cr="$cache_read" \
-  -v ir="$in_rate" -v outr="$out_rate" -v wr="$cw_rate" -v rr="$cr_rate" \
-  'BEGIN { printf "$%.2f", (ti/1000000)*ir + (to/1000000)*outr + (cw/1000000)*wr + (cr/1000000)*rr }')
 
 # --- Project name ---
 _project_dir="${CLAUDE_PROJECT_DIR:-${_project_dir_from_json:-$(pwd)}}"
@@ -177,7 +161,7 @@ fi
 sep="\033[2m│\033[0m"
 line="\033[2m${clock}\033[0m ${sep} ${model_short} ${sep} \033[1m${project}\033[0m:\033[36m${branch_display}\033[0m"
 [ -n "$tmux_part" ] && line="${line} ${sep} ${tmux_part}"
-line="${line} ${sep} ${ctx_part} ${sep} ${session_cost}"
+line="${line} ${sep} ${ctx_part}"
 [ -n "$quota_part" ] && line="${line} ${sep} ${quota_part}"
 line="${line} ${sep} ${tip}"
 # \033[0m resets colors; \033[K erases from cursor to end of line.

@@ -22,9 +22,11 @@
 
 - [x] `[P1]` `[AI-CLI-68]` **Quota scrape format-change detection** — Shipped 2026-04-29. Commit `0503f7f`. Plan: `docs/plans/quota-scrape-format-detection-plan.md`.
 
-- [ ] `[P1]` `[AI-CLI-64]` **Improve quota statusline format — Sonnet pace %, label repositioning, clearer dividers** — Current format: `📊 42% W ✅ →8% | 87% S`. Requested: (1) Add Sonnet pace % (currently only all-models pace `→8%` shown). (2) Move W/S labels to LEFT of values — e.g. `W 42% →8% | S 87% →X%`. (3) Rename labels for clarity — options: `Week`/`Son`, `W`/`S` with color, or similar — decision TBD. (4) Clearer visual divider between all-models section and Sonnet section. Spec updates in `docs/designs/claude-usage-telemetry.md`.
+- [x] `[P1]` `[AI-CLI-64]` **Improve quota statusline format — Sonnet pace %, label repositioning, clearer dividers** — Shipped 2026-04-29. Adaptive-width labels (Week/Son ≥80 cols, W/S <80 cols), labels moved left of values, Sonnet pace % (`→+X%`/`→-X%`) added with color coding. `AI_CLI_STATUSLINE_COLS` env var passes terminal width. 7 new tests. Commits: `be31943`, `959f872`.
 
 - [ ] `[P2]` `[AI-CLI-65]` **Create CC statusline design doc — document statusline-command.sh** — The CC statusline script (`src/ai_cli/data/statusline-command.sh`) and its Python backing (`quota_statusline_part()`) lack a dedicated design doc. Document: all segments, format spec, ANSI codes, caching strategy, quota scrape integration, configuration options. Decision needed: should this live in ai-cli-utils `docs/designs/` or in a future `ai-harness` repo (if/when that project is created)?
+
+- [ ] `[P2]` `[AI-CLI-80]` **Remove session $ cost tracker from CC statusline** — Remove `session_cost` segment from `statusline-command.sh`: the API cost calculation (rate vars + awk) is useless since we use CC via subscription, not API. Remove rate variable block and `${session_cost}` from the assembly line. Update both ai-cli-utils and ai-harness copies.
 
 - [x] `[P0]` `[AI-CLI-60]` **Rename old platform name to ai-core throughout codebase** — Renamed all references to the old internal platform name to ai-core across docs, config, skills, hooks, tests, README, and CHANGELOG. Zero residual hits in src/, tests/, docs/, .claude/. See also: `[AI-CLI-30]`.
 
