@@ -771,7 +771,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 
 1. **Sonnet pace %** — add pace % for Sonnet alongside Sonnet usage %, mirroring the all-models pace `→X%`
 2. **Labels on left** — move W/S labels to the LEFT of values, e.g. `W: 42%` not `42% W`
-3. **Label renaming** — options under consideration: `Week`/`Son`, `W`/`S` with distinct color, or other terse labels. TBD — see D-9 below.
+3. **Label renaming** — **Resolved (D-9):** adaptive-width with bold + color. `Week`/`Son` when terminal ≥80 cols, `W`/`S` when narrow. See D-9 for approved format.
 4. **Clearer section divider** — stronger visual split between all-models block and Sonnet block (spacing, color, symbol, or label redesign)
 
 **Approved format (v2):**

@@ -70,82 +70,47 @@ Option (A). The statusline indicator is the reason for this feature — silent l
 
 ---
 
-### D2: Broken Statusline Indicator Style — `PENDING`
+### D2: Broken Statusline Indicator Style — `APPROVED`
 
-The indicator replaces the quota widget entirely when `scrape_format_mismatch_count > 0`. It must be immediately obvious that something is broken, not just absent.
+The indicator prepends to the left of the existing quota output when `scrape_format_mismatch_count > 0`. It must be immediately obvious that something is broken. Quota data remains visible to the right in case the scrape is only partially broken.
 
-#### (A) Red background banner
+**Format:** `🚨 BROKEN 🚨` + space, prepended to the normal quota statusline output.
 
-Bold white text on red background. Replaces the quota widget with a red banner.
+Example statusline when mismatch is active:
 
-ANSI: `\033[1;37;41m 🚨 SCRAPER BROKEN 🚨 \033[0m`
+```text
+🚨 BROKEN 🚨 📊 Week 42% →8% ✅  |  Son 87% →X%
+```
 
-**Pros:**
+**Constraints:**
 
-- Maximum visibility — color coding is unambiguous (red background = error state)
-- Impossible to miss even when glancing at a busy statusline
-- Consistent with how critical alerts appear in other tools (red background = stop)
+- No ANSI escape codes — emoji-only, no `\033[...]m` sequences
+- Siren emojis on both sides of `BROKEN`
+- Shorter label — just `BROKEN`, not `SCRAPER BROKEN`
+- Prepended, not replacing — quota items stay to the right so they remain visible if the scrape is partially working
+- In narrow terminal windows the quota items get pushed to the right (or off-screen), which is acceptable — the warning takes priority
 
-**Cons:**
+#### Recommendation
 
-- Widest of all options — may crowd other statusline segments in narrow tmux panes
+> **Decision:** `APPROVED`
 
-#### (B) Bold red text with double siren
-
-Bold bright red foreground, no background fill.
-
-ANSI: `\033[1;31m🚨🚨 SCRAPER BROKEN 🚨🚨\033[0m`
-
-**Pros:**
-
-- Very visible; narrower than (A)
-- No background color — less visually jarring if other segments don't use background colors
-
-**Cons:**
-
-- Less distinct from other red elements in the statusline (e.g., high quota % shown in red) — could be confused for a quota threshold warning
-
-#### (C) Red background banner + context hint
-
-Red background banner followed by a dimmed hint showing the fix command.
-
-ANSI: `\033[1;37;41m 💀 SCRAPE DEAD \033[0m \033[2m(ai quota status)\033[0m`
-
-**Pros:**
-
-- Self-documenting — tells you what to run without having to remember
-- Combines maximum visibility with actionability
-
-**Cons:**
-
-- Longest option — most likely to overlap other statusline segments
-
-#### (D) Emoji-only (no ANSI)
-
-No ANSI escape codes: `💥🔴 SCRAPER BROKEN 🔴💥`
-
-**Pros:**
-
-- Universal — works regardless of terminal ANSI support or tmux color configuration
-- No risk of escape code rendering issues
-
-**Cons:**
-
-- Less visually impactful than colored options
-- Relies on emoji rendering (varies by font/terminal)
-
-##### Recommendation
-
-> **Decision:** `PENDING`
-
-Option (A) — red background banner. When the scraper is broken, it demands immediate attention; the red background is the strongest unambiguous signal available in a statusline. The width trade-off is acceptable because this indicator only appears during an error state, not normal operation. If width in narrow panes is a concern, (B) is the right fallback.
+No ANSI codes. Siren prefix `🚨 BROKEN 🚨` prepended to the left of normal quota output. Quota data preserved to the right. Consistent with how other statusline prefixes work in this codebase.
 
 ---
 
 > **Feedback Round 1:**
 > - D1: approved — Option A
 > - D2: user wants a large, highly visible indicator (red text / "SCRAPER BROKEN" / broken emojis). Options (A)–(D) presented above for selection.
-> - <enter D2 selection here>
+
+---
+
+> **Feedback Round 2:**
+> - D2: no ANSI escape codes (`\033[...]m`); siren emoji on both sides; shorter — just `BROKEN`; prepend to the left of existing quota output (don't replace it); quota items remain visible to the right.
+
+---
+
+> **AI Response Round 2:**
+> - D2 approved: `🚨 BROKEN 🚨` prefix, emoji-only, prepended before normal quota output. T-03 updated to prepend rather than replace. ACs updated accordingly. Both D1 and D2 now approved — ready to implement.
 
 <!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
 
@@ -221,16 +186,18 @@ if cap.returncode == 0 and "% used" in cap.stdout:
 
 File: `src/ai_cli/quota.py` — `quota_statusline_part()`
 
-Before reading the latest snapshot, check mismatch flag. If set, output the D2-approved indicator and return immediately:
+Before writing the normal quota output, check the mismatch flag. If set, prepend the indicator prefix so it appears to the left of the quota items:
 
 ```python
+_SCRAPER_BROKEN_PREFIX = "🚨 BROKEN 🚨 "
+
 mismatch_count = _get_quota_meta("scrape_format_mismatch_count")
 if mismatch_count and int(mismatch_count) > 0:
-    sys.stdout.write(_SCRAPER_BROKEN_INDICATOR)  # D2-approved string
-    return 0
+    sys.stdout.write(_SCRAPER_BROKEN_PREFIX)
+# continue to write normal quota output
 ```
 
-`_SCRAPER_BROKEN_INDICATOR` is a module-level constant set to the D2-approved escape sequence. Only show when `mismatch_count > 0`; check is a fast DB read with no scraping.
+The prefix is prepended; quota data writes after it on the same line. In narrow windows the quota items shift right or off-screen — the warning still appears. Only show when `mismatch_count > 0`; check is a fast DB read with no scraping.
 
 ### T-04 — Print debug path in CLI commands
 
@@ -280,7 +247,7 @@ ACs to cover:
 ## Acceptance Criteria
 
 - [ ] When `"% used"` is in scrape output but parse fails: raw text written to `quota-scrape-debug.txt`, `scrape_format_mismatch_count` incremented, `scrape_format_mismatch_at` updated
-- [ ] `quota_statusline_part()` outputs the D2-approved broken-scraper indicator when `scrape_format_mismatch_count > 0`
+- [ ] `quota_statusline_part()` prepends `🚨 BROKEN 🚨` to the left of normal quota output when `scrape_format_mismatch_count > 0`
 - [ ] `ai quota status` and `ai quota scrape` print the debug file path and timestamp when mismatch flag is active
 - [ ] Mismatch flag auto-clears (`count = 0`) on the next successful parse
 - [ ] `_parse_reset_datetime()` correctly handles past-time old CC format without week drift
@@ -295,3 +262,4 @@ ACs to cover:
 | --- | --- | --- |
 | 2026-04-27 | 1 | Design proposed by Claude (Option A); plan doc created |
 | 2026-04-29 | 2 | D1 approved (Option A); D2 options presented for user selection; plan restructured with D1/D2 format |
+| 2026-04-29 | 3 | D2 approved: emoji-only `🚨 BROKEN 🚨` prefix, no ANSI codes, prepended (not replacing) quota output |
