@@ -75,8 +75,11 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 | 3 | Central store | (a) SQLite on primary machine, (b) Redis, (c) HTTP webhook to Python server | (a) SQLite | Simplest; no additional infrastructure; both machines accessible via SSH/Tailscale | **Approved** |
 | 4 | Cross-machine transport | (a) UDP packets, (b) HTTP POST to central server, (c) SSH-tunneled SQLite writes, (d) Shared filesystem | (b) HTTP POST | Reliable delivery, trivial Python receiver, works over Tailscale | **Approved** |
 | 5 | Alerting channel | (a) ntfy.sh, (b) Slack webhook, (c) Terminal-only | (b) Slack | ntfy push notifications are broken — appear as generic "ntfy message" with no visible content without opening the app; Slack delivers rich message previews natively | **Approved** |
-| 9 | Statusline label names and styling (AI-CLI-64) | (A) color/bold `W`/`S`, (B) `Week`/`Son`, (C) `All`/`Son`, (D) icons | — | — | `PENDING` |
-| 10 | Sonnet pace % visibility (AI-CLI-64) | (a) always show (dimmed placeholder when absent), (b) omit until populated | — | — | `PENDING` |
+| 6 | Statusline format when Sonnet % is absent (AI-CLI-55) | (A) omit Sonnet field, (B) show dimmed placeholder + fire background scrape | (B) dimmed placeholder + scrape | Consistent with session % handling; background scrape means placeholder is short-lived | **Approved** |
+| 7 | Sonnet quota label (AI-CLI-55) | `son`, `sonnet`, `S` | `S` (with `W` for all-models weekly) | Terse; consistent with statusline style | **Approved** |
+| 8 | Sonnet % alert thresholds (AI-CLI-55) | Same as all-models, or tighter | Same as all-models | Consistent; revisable after observing real usage | **Approved** |
+| 9 | Statusline label names and styling (AI-CLI-64) | (A) color/bold `W`/`S`, (B) `Week`/`Son`, (C) `All`/`Son`, (D) icons, (E) adaptive-width with color/bold | (E) adaptive-width | `Week`/`Son` when terminal wide enough; `W`/`S` when narrow; both styled with bold + distinct color as field headers | **Approved** |
+| 10 | Sonnet pace % visibility (AI-CLI-64) | (a) always show dimmed placeholder + background scrape, (b) omit until populated | (a) dimmed placeholder + scrape | Consistent with D6 and weekly pace behavior; prevents layout jitter | **Approved** |
 
 ### Decision Details
 
@@ -344,7 +347,55 @@ Option (b), Slack webhook. The ntfy notification bug makes option (a) useless as
 
 ---
 
-#### Decision 9: Statusline Label Names and Styling (AI-CLI-64) — `PENDING`
+#### Decision 6: Statusline Format When Sonnet % Is Absent (AI-CLI-55) — `APPROVED: (B)`
+
+##### (A) Omit Sonnet field entirely
+
+Show only the all-models block when `weekly_sonnet_pct` is `None`.
+
+**Pros:** Cleaner output — no placeholder.
+**Cons:** Inconsistent with how `session_pct` is handled; statusline width changes when data populates, causing layout jitter.
+
+##### (B) Show dimmed placeholder + fire background scrape
+
+Render `\033[2m-% S\033[0m` (dim) in place of Sonnet %, and trigger `_launch_background_scrape()` immediately.
+
+**Pros:** Consistent with session % handling; placeholder is short-lived because scrape fires automatically; stable statusline width prevents layout jitter.
+**Cons:** Slightly more visual noise when data is absent.
+
+##### Recommendation
+
+> **Decision:** `APPROVED — (B) dimmed placeholder + background scrape`
+
+Option (B). Consistency with the rest of the widget and stable width both favor this approach.
+
+---
+
+#### Decision 7: Sonnet Quota Label (AI-CLI-55) — `APPROVED: S / W`
+
+Options: `son`, `sonnet`, or `S` for the Sonnet label; implicit all-models label.
+
+##### Recommendation
+
+> **Decision:** `APPROVED — S for Sonnet %, W for all-models weekly %`
+
+Both values now labeled. Terse, consistent with statusline aesthetic. Format: `📊 42% W ✅ →8% | 87% S`. When Sonnet absent: `📊 42% W ✅ →8% | \033[2m-% S\033[0m`.
+
+---
+
+#### Decision 8: Sonnet % Alert Thresholds (AI-CLI-55) — `APPROVED: same as all-models`
+
+Options: same thresholds as all-models (<50% green, 50–75% yellow, ≥75% red), or tighter thresholds given Sonnet is easier to hit.
+
+##### Recommendation
+
+> **Decision:** `APPROVED — same thresholds as all-models`
+
+Consistent and revisable after observing real usage. If Sonnet is consistently hit harder, tighten thresholds empirically.
+
+---
+
+#### Decision 9: Statusline Label Names and Styling (AI-CLI-64) — `APPROVED: (E)`
 
 The v1 statusline uses `W` (weekly all-models) and `S` (Sonnet) as right-positioned labels. AI-CLI-64 moves labels left. The question is whether the label text and presentation should also change.
 
@@ -398,15 +449,30 @@ Replace text labels with emoji.
 - Adds visual noise; inconsistent with the existing `📊` prefix which already carries the widget identity
 - Hard to grep/parse in scripts
 
+##### (E) Adaptive-width with color/bold — `APPROVED`
+
+Use `Week`/`Son` labels (readable) when the terminal is wide enough; fall back to `W`/`S` (compact) when narrow. Both modes styled with bold + distinct ANSI color to make them visually stand out as field headers rather than ordinary text.
+
+Implementation: `statusline-command.sh` passes `$COLUMNS` as `AI_CLI_STATUSLINE_COLS` env var; `quota_statusline_part()` reads it and chooses label style. Threshold: ≥80 cols → `Week`/`Son`; <80 cols → `W`/`S`. Color: bold cyan for the all-models label, bold magenta for the Sonnet label (or similar high-contrast pair).
+
+**Pros:**
+- Best of both worlds: readable when space permits, terse when not
+- Bold + color makes labels visually distinct from numeric values — immediately readable as field headers
+- Adaptive — no user configuration required; degrades gracefully in narrow panes
+
+**Cons:**
+- Requires terminal width passed from shell script to Python (one env var)
+- Slightly more rendering logic
+
 ##### Recommendation
 
-> **Decision:** `PENDING`
+> **Decision:** `APPROVED — (E) adaptive-width with bold + color`
 
-Option (A) — colored/bold `W`/`S` — is the lowest-risk change: minimal character count, no label churn, and the color makes the labels immediately distinguishable from the numeric values without making the string wider. If color support is a concern across all target terminals, (B) `Week`/`Son` is the right fallback — it's readable without any ANSI support and the character cost is negligible given the label moves left of the value.
+Option (E). Adaptive behavior gives `Week`/`Son` readability in normal-width terminals while degrading cleanly to `W`/`S` in narrow panes. The bold + distinct color styling for the labels answers the request to make them visually distinct field headers regardless of which label text is chosen.
 
 ---
 
-#### Decision 10: Sonnet Pace % Visibility (AI-CLI-64) — `PENDING`
+#### Decision 10: Sonnet Pace % Visibility (AI-CLI-64) — `APPROVED: (a)`
 
 AI-CLI-64 adds pace % for Sonnet (mirroring the all-models `→8%`). The question is what to show when `weekly_sonnet_pct` hasn't been scraped yet (so no pace baseline exists).
 
@@ -437,9 +503,9 @@ Don't render the Sonnet pace field at all if `weekly_sonnet_pct` is absent. Sect
 
 ##### Recommendation
 
-> **Decision:** `PENDING`
+> **Decision:** `APPROVED — (a) dimmed placeholder + background scrape`
 
-Option (a) — always show, dimmed placeholder when absent. This is consistent with the D-6/Round 2 decision for Sonnet usage %, and the background scrape means the placeholder is short-lived. Stable statusline width also prevents layout jitter in tmux status bars.
+Option (a). Consistent with D6 (Sonnet usage %) and with the existing weekly pace behavior — when the weekly pace is absent, the same dimmed placeholder + background scrape pattern is used. Stable statusline width prevents layout jitter.
 
 ---
 
@@ -708,14 +774,13 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 3. **Label renaming** — options under consideration: `Week`/`Son`, `W`/`S` with distinct color, or other terse labels. TBD — see D-9 below.
 4. **Clearer section divider** — stronger visual split between all-models block and Sonnet block (spacing, color, symbol, or label redesign)
 
-**Proposed format (v2 candidate):** `📊 W 42% →8% ✅  |  S 87% →X%`
+**Approved format (v2):**
 
-- `W` label left-positioned, colored/bolded for identifiability
-- `S` label left-positioned, same treatment
-- Both sections include pace %
-- `|` divider preserved (or replaced with `·` / double-space)
+- Wide terminal (≥80 cols): `📊 **Week** 42% →8% ✅  |  **Son** 87% →X%` (bold cyan `Week`, bold magenta `Son`)
+- Narrow terminal (<80 cols): `📊 **W** 42% →8% ✅  |  **S** 87% →X%` (bold cyan `W`, bold magenta `S`)
+- When Sonnet data absent: `📊 **W** 42% →8% ✅  |  **S** \033[2m-% →-%\033[0m` (dimmed placeholder, background scrape fires)
 
-Open decisions: see D-9 (label names/styling) and D-10 (Sonnet pace visibility) in the [Design Decisions](#design-decisions) section.
+Terminal width passed from `statusline-command.sh` as `AI_CLI_STATUSLINE_COLS=$COLUMNS`. Decisions D9 and D10 are both approved — see [Design Decisions](#design-decisions).
 
 ## Risks and Mitigations
 
@@ -776,6 +841,7 @@ Open decisions: see D-9 (label names/styling) and D-10 (Sonnet pace visibility) 
 |------|----------|-------|
 | 2026-04-01 | Round 1 | D-1 through D-4 approved as-is. D-5 switched to Slack (ntfy notifications broken — no visible content in OS banner). D-1 choice updated to option (d) tmux scraping as primary (option (c) hybrid as fallback). All OQs resolved. Architecture and phasing approved. Status: DRAFT → APPROVED. |
 | 2026-04-25 | Round 2 (Phase 4) | D-6: show dimmed `-% S` when Sonnet absent + fire immediate background scrape. D-7: labels are `W` (all-models weekly) and `S` (Sonnet); format `📊 42% W ✅ →8% \| 87% S`. D-8: same thresholds as all-models %. AI-CLI-55 unblocked. |
+| 2026-04-29 | Round 3 (AI-CLI-64) | D-9: approved option (E) — adaptive-width labels (`Week`/`Son` ≥80 cols, `W`/`S` <80 cols) with bold + distinct ANSI color to style labels as field headers. D-10: approved option (a) — dimmed placeholder + background scrape when Sonnet pace absent (same as weekly pace + D-6 behavior). D6–D8 added to Decision Summary and Details from existing Phase 4 feedback history. AI-CLI-64 now unblocked. |
 
 ---
 
