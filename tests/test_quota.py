@@ -584,6 +584,74 @@ class TestScrapeUsageHiddenPane:
         assert restore_idx is not None, "set-option window-size latest must be called"
         assert restore_idx == resize_idx + 1, "set-option window-size latest must follow resize-window immediately"
 
+    def test_when_sonnet_line_renders_after_all_models_then_waits_for_it(self):
+        """Scraper must not exit immediately if Sonnet % is absent on first valid parse.
+
+        CC renders 'Current week (all models)' before 'Current week (Sonnet only)'.
+        Without the grace-period, the scraper exits early and weekly_sonnet_pct is
+        silently dropped — the root cause of the intermittent Sonnet % bug (AI-CLI-82).
+        """
+        new_sess = self._make_new_session_result()
+        ok = MagicMock()
+        ok.returncode = 0
+
+        prompt_only = self._make_cap_result("❯\n")
+        all_models_only = self._make_cap_result("Current week (all models)\nResets May 5 at 3pm   26% used\n")
+        full_output = self._make_cap_result(
+            "Current week (all models)\nResets May 5 at 3pm   26% used\nCurrent week (Sonnet only)\n  24% used\n"
+        )
+
+        call_count = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal call_count
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
+            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
+                call_count += 1
+                if call_count == 1:
+                    return prompt_only
+                if call_count == 2:
+                    return all_models_only  # first valid parse — no Sonnet yet
+                return full_output  # grace-period poll — Sonnet now rendered
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            result = _scrape_usage_hidden_pane()
+
+        assert isinstance(result, QuotaSnapshot)
+        assert result.weekly_all_models_pct == 26.0
+        assert result.weekly_sonnet_pct == 24.0, "must wait for Sonnet line to render"
+
+    def test_when_sonnet_line_never_renders_then_returns_snapshot_without_it(self):
+        """Scraper must not block forever if account has no Sonnet quota line."""
+        new_sess = self._make_new_session_result()
+        ok = MagicMock()
+        ok.returncode = 0
+
+        prompt_only = self._make_cap_result("❯\n")
+        all_models_only = self._make_cap_result("Current week (all models)\nResets May 5 at 3pm   26% used\n")
+
+        call_count = 0
+
+        def fake_run(cmd, **kwargs):
+            nonlocal call_count
+            if cmd[0] == "tmux" and cmd[1] == "new-session":
+                return new_sess
+            if cmd[0] == "tmux" and cmd[1] == "capture-pane":
+                call_count += 1
+                if call_count == 1:
+                    return prompt_only
+                return all_models_only  # Sonnet line never appears
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            result = _scrape_usage_hidden_pane()
+
+        assert isinstance(result, QuotaSnapshot)
+        assert result.weekly_all_models_pct == 26.0
+        assert result.weekly_sonnet_pct is None, "no Sonnet line means weekly_sonnet_pct is None"
+
 
 # --- _get_claude_usage_snapshot ---
 

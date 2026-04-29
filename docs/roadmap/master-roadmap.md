@@ -4,7 +4,11 @@
 
 - [ ] `[P1]` `[AI-CLI-83]` **Bug: Sonnet % flickers to null/dashes then recovers** — `quota_statusline_part()` reads `rows[0]["weekly_sonnet_pct"]` (latest snapshot). If one scrape fails to parse the Sonnet breakdown, the latest row has `None`, overriding valid data from earlier rows. Fix: fall back to the most recent non-`None` `weekly_sonnet_pct` value across the last N snapshots instead of hard-coding row index 0.
 
+- [x] `[P1]` `[AI-CLI-85]` **Bug: Sonnet quota % silently dropped when scrape exits before Sonnet line renders** — CC renders "Current week (all models)" before "Current week (Sonnet only)". The scraper exited immediately on the first valid parse, before the Sonnet line finished rendering — silently dropping `weekly_sonnet_pct`. Fix: after first valid parse with `weekly_sonnet_pct=None`, poll up to 10 more times (2s grace) waiting for the Sonnet line. Shipped 2026-04-29. Root cause of intermittent Sonnet % disappearance in statusline.
+
 - [x] `[P1]` `[AI-CLI-84]` **Bug: iTerm2 Dynamic Profiles "invalid JSON" popup on session start** — `generate_dynamic_profile()` used non-atomic `write_text()`. iTerm2 FSEvents watcher can read the file mid-write, seeing partial JSON. Fix: atomic write via `tempfile.NamedTemporaryFile` + `os.replace()` in `icon_generator.py`. Bug doc: `docs/bugs/iterm2-title-color-system.md` (Bug 11). Shipped 2026-04-29.
+
+- [x] `[P2]` `[AI-CLI-81]` **Fix gemini-cli MCP server connection failure** — MCP server failed with `spawnSync sysctl ELOOP` because `/Users/sergeiwallace/projects/ai-cli-utils/.direnv` was a self-referential circular symlink (pointing to itself), causing node's PATH search to hit the loop. Fix: removed the broken `.direnv` symlink. direnv will recreate it correctly on next `direnv allow`. Also downgraded `@google/gemini-cli` from 0.40.0 → 0.39.1 during diagnosis (0.39.1 left installed). Shipped 2026-04-29.
 
 - [ ] `[P1]` `[AI-CLI-59]` **Bug: iTerm session name not matching tmux CC session name (regression)** — Previously fixed 2026-04-27 (`_evict_iterm2_guid`). Regressed. Investigate current root cause and fix. Update `docs/bugs/iterm2-title-color-system.md`.
 
