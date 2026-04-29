@@ -1148,7 +1148,7 @@ def quota_statusline_part() -> int:
         # Sonnet part — fire scrape if absent so field populates on next refresh
         if sonnet_pct is None:
             _launch_background_scrape()
-            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}-% →-%{RESET}"
+            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} 🤖 {DIM}-% →-%{RESET}"
         else:
             if sonnet_pct < 50:
                 s_color = GREEN
@@ -1165,7 +1165,7 @@ def quota_statusline_part() -> int:
                 s_delta_color = GREEN
             s_sign = "+" if sonnet_delta > 0 else ""
             sonnet_part = (
-                f"{BOLD_MAG}{son_label}{RESET} {s_color}{sonnet_pct:.0f}%{RESET}"
+                f"{BOLD_MAG}{son_label}{RESET} 🤖 {s_color}{sonnet_pct:.0f}%{RESET}"
                 f" {s_delta_color}→{s_sign}{sonnet_delta:.0f}%{RESET}"
             )
 
@@ -1192,10 +1192,10 @@ def quota_statusline_part() -> int:
             # Seedling phase (first 24h): 🌱 always shown; informational only, no alarms.
             delta_color = BLUE
             print(
-                f"\U0001f4ca {BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
+                f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{sign}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
                 f" | {sonnet_part}"
-            )  # 📊 Week N% →X% 🌱 [⏱] | Son M% →Y%
+            )  # W 📊 N% →X% 🌱 [⏱] | Son M% →Y%
         else:
             # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
             if delta <= 10:
@@ -1208,10 +1208,10 @@ def quota_statusline_part() -> int:
                 icon = "\U0001f6a8"  # 🚨
                 delta_color = RED
             print(
-                f"\U0001f4ca {BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
+                f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{sign}{abs(delta):.0f}%{RESET} {icon}{stale_suffix}"
                 f" | {sonnet_part}"
-            )  # 📊 Week N% →X% ✅/⚠️/🚨 [⏱] | Son M% →Y%
+            )  # W 📊 N% →X% ✅/⚠️/🚨 [⏱] | Son M% →Y%
     except Exception:
         pass
     return 0
