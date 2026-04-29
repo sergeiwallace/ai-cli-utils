@@ -2,7 +2,8 @@
 title: "Skill Audit, Copier Automation, and Session Config Drift Prevention"
 category: plan
 tags: [session-config, skills, copier, project-template, automation, auto-restart]
-status: in_progress
+status: complete
+task: AI-CLI-74
 source: ai-cli-utils
 ---
 

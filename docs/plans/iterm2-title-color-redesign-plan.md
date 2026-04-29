@@ -2,7 +2,8 @@
 title: "iTerm2 Title & Color System Redesign — Plan"
 category: plan
 tags: [iterm2, tab-title, tab-color, session-title, fleet, gemini, remote, mosh, research]
-status: active
+status: implemented
+task: AI-CLI-27
 source: ai-cli-utils
 related_docs:
   - docs/bugs/iterm2-title-color-system.md

@@ -4,7 +4,7 @@
 
 **Created:** 2026-03-29
 
-**Task:** SW-672
+**Task:** AI-CLI-5 (SW-672)
 **Research:** [`docs/research/open-source-package-best-practices.md`](../research/open-source-package-best-practices.md)
 
 ## Table of Contents

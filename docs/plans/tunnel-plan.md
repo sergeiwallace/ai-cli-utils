@@ -2,7 +2,8 @@
 title: "Resilient SSH Tunnels via autossh"
 category: plan
 tags: [tunnel, autossh, ssh, remote]
-status: approved
+status: implemented
+task: AI-CLI-73
 source: session-2026-04-01
 ---
 

@@ -2,7 +2,8 @@
 title: "Circus-Managed signal-watch"
 category: plan
 tags: [signal-watch, circus, handoff, process-management]
-status: approved
+status: implemented
+task: AI-CLI-72
 source: session-2026-04-01
 ---
 

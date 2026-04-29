@@ -4,7 +4,8 @@ category: plan
 tags: [iterm2, terminal, fleet-management, ai-cli, configuration]
 status: active
 source: internal
-task: SW-730
+task: AI-CLI-75
+related_task: SW-730
 ---
 
 # iTerm2 Fleet Management Configuration — Implementation Plan

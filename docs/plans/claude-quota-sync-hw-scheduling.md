@@ -4,6 +4,7 @@
 
 **Created:** 2026-04-07
 
+**Tasks:** AI-CLI-22 (quota scraping), AI-CLI-56 (stale-while-revalidate cache)
 **Design:** `docs/designs/claude-usage-telemetry.md`
 **Related:** `src/ai_cli/quota.py` — `quota_sync_from_remote()` (shipped 2026-04-07)
 

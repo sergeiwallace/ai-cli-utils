@@ -2,7 +2,8 @@
 title: "iTerm2 Smart Tab/Window Titles"
 category: plan
 tags: [iterm2, fleet, tab-title, window-title, session-title]
-status: APPROVED
+status: approved
+task: AI-CLI-78
 source: ai-cli-utils
 ---
 

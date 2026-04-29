@@ -4,7 +4,8 @@ category: plan
 tags: [iterm2, ntfy, notifications, session-status, ai-cli, nats]
 status: active
 source: internal
-task: SW-732
+task: AI-CLI-76
+related_task: SW-732
 ---
 
 # iTerm2 + ntfy Session Status Integration — Implementation Plan

@@ -3,6 +3,7 @@ title: "Terminal Demo Video — Implementation Plan"
 category: plan
 tags: [demo, gif, screencapture, ffmpeg, readme]
 status: in_progress
+task: AI-CLI-52
 ---
 
 # Terminal Demo Video — Implementation Plan

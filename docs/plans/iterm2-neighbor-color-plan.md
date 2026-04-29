@@ -3,6 +3,7 @@ title: "iTerm2 Neighbor-Aware Pane Color — Plan"
 category: plan
 tags: [iterm2, tab-color, pane-color, layout, color-collision, spatial-awareness]
 status: draft
+task: AI-CLI-77
 source: ai-cli-utils
 ---
 
