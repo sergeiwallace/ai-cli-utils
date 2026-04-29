@@ -190,11 +190,13 @@ def _deploy_cc_config_files(project_path: Path) -> None:
             continue
         dst = cc_dir / dst_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        # Unlink first so we replace any symlink with a plain file
-        if dst.is_symlink() or dst.exists():
-            dst.unlink()
+        # Skip if already managed as a symlink (ai-harness install.sh owns it)
+        if dst.is_symlink():
+            continue
         import shutil as _shutil
 
+        if dst.exists():
+            dst.unlink()
         _shutil.copy2(src, dst)
         if src.suffix == ".sh":
             dst.chmod(dst.stat().st_mode | 0o755)

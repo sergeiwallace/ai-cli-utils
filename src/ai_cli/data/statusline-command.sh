@@ -31,11 +31,11 @@ else model_short="${model_display%% [0-9]*}"; fi
 # --- Context window % with color ---
 if [ -n "$used_pct" ]; then
   used_int=$(printf "%.0f" "$used_pct")
-  if   [ "$used_int" -lt 50 ]; then ctx_part="\033[32m${used_int}%\033[0m"
-  elif [ "$used_int" -lt 80 ]; then ctx_part="\033[33m${used_int}%\033[0m"
-  else                               ctx_part="\033[31m${used_int}%\033[0m"; fi
+  if   [ "$used_int" -lt 50 ]; then ctx_part="🪟 \033[32m${used_int}%\033[0m"
+  elif [ "$used_int" -lt 80 ]; then ctx_part="🪟 \033[33m${used_int}%\033[0m"
+  else                               ctx_part="🪟 \033[31m${used_int}%\033[0m"; fi
 else
-  ctx_part="\033[2m--%\033[0m"
+  ctx_part="🪟 \033[2m--%\033[0m"
 fi
 
 # --- Project name ---
