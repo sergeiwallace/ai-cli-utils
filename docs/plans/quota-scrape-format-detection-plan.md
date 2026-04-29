@@ -18,30 +18,146 @@ created: 2026-04-27
 
 The format-change condition is precise: `"% used"` appears in the captured output (so CC rendered the dialog) **and** `_parse_usage_output()` returns `None` (so the regex failed). This is distinct from startup timeouts (no output at all) and from quota being genuinely unreported by CC.
 
-## Design
+---
 
-### Option A — In-band DB flag + debug dump (recommended)
+## Decision Summary
+
+| # | Decision | Options Considered | Status |
+| --- | --- | --- | --- |
+| D1 | Scraper detection approach | (A) DB flag + debug dump + statusline indicator, (B) log-only | `APPROVED: (A)` |
+| D2 | Broken statusline indicator style | (A) red bg banner, (B) bold red text, (C) red banner + hint, (D) emoji-only | `PENDING` |
+
+---
+
+## Decision Details
+
+### D1: Scraper Detection Approach — `APPROVED: (A)`
+
+#### (A) In-band DB flag + debug dump + statusline indicator
 
 **How it works:**
+
 1. In `_scrape_usage_hidden_pane()`, after each poll iteration where `"% used"` is in output but parse returns `None`, dump raw capture to a debug file and increment a DB counter.
-2. `quota_statusline_part()` reads the counter; shows `📊 ⚠` instead of quota data when the flag is active.
+2. `quota_statusline_part()` reads the counter; shows a highly visible broken-scraper indicator (see D2) instead of quota data when the flag is active.
 3. `ai quota status` / `ai quota scrape` print the debug file path when the flag is set.
 4. Counter and timestamp clear automatically on the next successful parse.
 
-**Pros:** No external dependencies. Debug file immediately actionable — developer opens it, sees the new CC format, fixes the regex. Statusline ⚠ is hard to miss. Auto-clears.
+**Pros:**
 
-**Cons:** Adds a DB table and two new DB functions. Slightly increases scrape path complexity.
+- No external dependencies
+- Debug file immediately actionable — developer opens it, sees the new CC format, fixes the regex
+- Statusline indicator is impossible to miss (see D2)
+- Auto-clears on next successful parse
 
-### Option B — Log-only (no statusline signal)
+**Cons:**
+
+- Adds a DB table and two new DB functions
+- Slightly increases scrape path complexity
+
+#### (B) Log-only (no statusline signal)
 
 Write debug file only; no DB state; no statusline indicator.
 
 **Pros:** Simpler.
+
 **Cons:** Silent — developer won't notice until they manually check the debug file. Defeats the purpose.
 
-**Recommendation: Option A.** The statusline ⚠ is the reason for this feature — silent logging misses the goal.
+##### Recommendation
 
-> **Feedback:**
+> **Decision:** `APPROVED — (A) In-band DB flag + debug dump + statusline indicator`
+
+Option (A). The statusline indicator is the reason for this feature — silent logging misses the goal entirely.
+
+---
+
+### D2: Broken Statusline Indicator Style — `PENDING`
+
+The indicator replaces the quota widget entirely when `scrape_format_mismatch_count > 0`. It must be immediately obvious that something is broken, not just absent.
+
+#### (A) Red background banner
+
+Bold white text on red background. Replaces the quota widget with a red banner.
+
+ANSI: `\033[1;37;41m 🚨 SCRAPER BROKEN 🚨 \033[0m`
+
+**Pros:**
+
+- Maximum visibility — color coding is unambiguous (red background = error state)
+- Impossible to miss even when glancing at a busy statusline
+- Consistent with how critical alerts appear in other tools (red background = stop)
+
+**Cons:**
+
+- Widest of all options — may crowd other statusline segments in narrow tmux panes
+
+#### (B) Bold red text with double siren
+
+Bold bright red foreground, no background fill.
+
+ANSI: `\033[1;31m🚨🚨 SCRAPER BROKEN 🚨🚨\033[0m`
+
+**Pros:**
+
+- Very visible; narrower than (A)
+- No background color — less visually jarring if other segments don't use background colors
+
+**Cons:**
+
+- Less distinct from other red elements in the statusline (e.g., high quota % shown in red) — could be confused for a quota threshold warning
+
+#### (C) Red background banner + context hint
+
+Red background banner followed by a dimmed hint showing the fix command.
+
+ANSI: `\033[1;37;41m 💀 SCRAPE DEAD \033[0m \033[2m(ai quota status)\033[0m`
+
+**Pros:**
+
+- Self-documenting — tells you what to run without having to remember
+- Combines maximum visibility with actionability
+
+**Cons:**
+
+- Longest option — most likely to overlap other statusline segments
+
+#### (D) Emoji-only (no ANSI)
+
+No ANSI escape codes: `💥🔴 SCRAPER BROKEN 🔴💥`
+
+**Pros:**
+
+- Universal — works regardless of terminal ANSI support or tmux color configuration
+- No risk of escape code rendering issues
+
+**Cons:**
+
+- Less visually impactful than colored options
+- Relies on emoji rendering (varies by font/terminal)
+
+##### Recommendation
+
+> **Decision:** `PENDING`
+
+Option (A) — red background banner. When the scraper is broken, it demands immediate attention; the red background is the strongest unambiguous signal available in a statusline. The width trade-off is acceptable because this indicator only appears during an error state, not normal operation. If width in narrow panes is a concern, (B) is the right fallback.
+
+---
+
+> **Feedback Round 1:**
+> - D1: approved — Option A
+> - D2: user wants a large, highly visible indicator (red text / "SCRAPER BROKEN" / broken emojis). Options (A)–(D) presented above for selection.
+> - <enter D2 selection here>
+
+<!-- When user writes feedback above, AI appends the following pattern (do not remove this comment):
+
+> **AI Response Round N:**
+> - <AI response here>
+
+---
+
+> **Feedback Round N+1:**
+> - <enter feedback here>
+
+-->
 
 ---
 
@@ -52,6 +168,7 @@ Write debug file only; no DB state; no statusline indicator.
 File: `src/ai_cli/quota_db.py`
 
 Add to `_init_db()` executescript:
+
 ```sql
 CREATE TABLE IF NOT EXISTS quota_meta (
     key   TEXT PRIMARY KEY,
@@ -63,12 +180,14 @@ CREATE TABLE IF NOT EXISTS quota_meta (
 Add migration in `_migrate_snapshot_columns()` or a new `_migrate_quota_meta()` function (existing DBs use `CREATE TABLE IF NOT EXISTS` so no ALTER needed — this is a new table).
 
 Add two helpers:
+
 ```python
 def _set_quota_meta(key: str, value: str) -> None: ...
 def _get_quota_meta(key: str) -> str | None: ...
 ```
 
 Keys used:
+
 - `scrape_format_mismatch_count` — integer string, incremented on each mismatch, reset to `"0"` on success
 - `scrape_format_mismatch_at` — ISO UTC timestamp of most recent mismatch
 
@@ -89,32 +208,36 @@ if cap.returncode == 0 and "% used" in cap.stdout:
 ```
 
 `_record_scrape_format_mismatch(raw: str)`:
+
 1. Write `raw` to `~/.local/state/ai-cli-utils/quota-scrape-debug.txt` (overwrite — always the most recent failure)
 2. Call `_set_quota_meta("scrape_format_mismatch_at", utcnow_iso())`
 3. Read current count, increment, write back
 
 `_clear_scrape_format_mismatch()`:
+
 1. `_set_quota_meta("scrape_format_mismatch_count", "0")`
 
-### T-03 — Surface ⚠ in statusline
+### T-03 — Surface broken-scraper indicator in statusline
 
 File: `src/ai_cli/quota.py` — `quota_statusline_part()`
 
-Before reading the latest snapshot, check:
+Before reading the latest snapshot, check mismatch flag. If set, output the D2-approved indicator and return immediately:
+
 ```python
 mismatch_count = _get_quota_meta("scrape_format_mismatch_count")
 if mismatch_count and int(mismatch_count) > 0:
-    sys.stdout.write("📊 ⚠")
+    sys.stdout.write(_SCRAPER_BROKEN_INDICATOR)  # D2-approved string
     return 0
 ```
 
-Only show ⚠ if `mismatch_count > 0`; the check is a fast DB read, no scraping.
+`_SCRAPER_BROKEN_INDICATOR` is a module-level constant set to the D2-approved escape sequence. Only show when `mismatch_count > 0`; check is a fast DB read with no scraping.
 
 ### T-04 — Print debug path in CLI commands
 
 File: `src/ai_cli/quota.py` — `cmd_quota_status()` and `cmd_quota_scrape()`
 
-After displaying normal output, check mismatch flag. If set:
+After displaying normal output, check mismatch flag. If set, print:
+
 ```text
 ⚠  Scrape parse failure — CC /usage format may have changed.
    Raw output saved to: ~/.local/state/ai-cli-utils/quota-scrape-debug.txt
@@ -135,9 +258,10 @@ Old CC format (`"Resets 6:59am"`) has no date, only a time. Current code assumes
 New test file: `tests/test_quota_format_detection.py` (or extend `tests/test_quota.py`)
 
 ACs to cover:
+
 1. `_record_scrape_format_mismatch()` writes to debug file and increments DB counter
 2. `_clear_scrape_format_mismatch()` resets counter to 0
-3. `quota_statusline_part()` returns `"📊 ⚠"` when mismatch count > 0
+3. `quota_statusline_part()` outputs `_SCRAPER_BROKEN_INDICATOR` when mismatch count > 0
 4. `quota_statusline_part()` returns normal output when mismatch count is 0
 5. `_parse_reset_datetime()` returns correct week start when time is past (old CC format)
 
@@ -148,7 +272,7 @@ ACs to cover:
 | File | Change |
 | --- | --- |
 | `src/ai_cli/quota_db.py` | Add `quota_meta` table + `_set_quota_meta` / `_get_quota_meta` |
-| `src/ai_cli/quota.py` | `_scrape_usage_hidden_pane()` mismatch detection; `quota_statusline_part()` ⚠; CLI output; `_parse_reset_datetime` fix |
+| `src/ai_cli/quota.py` | `_scrape_usage_hidden_pane()` mismatch detection; `quota_statusline_part()` D2 indicator; CLI output; `_parse_reset_datetime` fix |
 | `tests/test_quota_format_detection.py` | New test file covering T-01 through T-05 ACs |
 
 ---
@@ -156,7 +280,7 @@ ACs to cover:
 ## Acceptance Criteria
 
 - [ ] When `"% used"` is in scrape output but parse fails: raw text written to `quota-scrape-debug.txt`, `scrape_format_mismatch_count` incremented, `scrape_format_mismatch_at` updated
-- [ ] `quota_statusline_part()` outputs `📊 ⚠` when `scrape_format_mismatch_count > 0`
+- [ ] `quota_statusline_part()` outputs the D2-approved broken-scraper indicator when `scrape_format_mismatch_count > 0`
 - [ ] `ai quota status` and `ai quota scrape` print the debug file path and timestamp when mismatch flag is active
 - [ ] Mismatch flag auto-clears (`count = 0`) on the next successful parse
 - [ ] `_parse_reset_datetime()` correctly handles past-time old CC format without week drift
@@ -170,3 +294,4 @@ ACs to cover:
 | Date | Round | Decision |
 | --- | --- | --- |
 | 2026-04-27 | 1 | Design proposed by Claude (Option A); plan doc created |
+| 2026-04-29 | 2 | D1 approved (Option A); D2 options presented for user selection; plan restructured with D1/D2 format |
