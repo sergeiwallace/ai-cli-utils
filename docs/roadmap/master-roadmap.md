@@ -20,6 +20,8 @@
 
 - [x] `[AI-CLI-59]` **Bug: iTerm2 session name changes to random names** — Fixed 2026-04-27. Root cause: multiple tmux sessions accumulate the same ITERM_SESSION_ID GUID — all fight to rename the same pane on each CC restart. Fix: `_evict_iterm2_guid` evicts stale sessions when claiming a GUID. Bug doc: `docs/bugs/iterm2-title-color-system.md` (Bug 10).
 
+- [x] `[P2]` `[AI-CLI-81]` **Bug: stale ai-cli-utils binary in mise Python env shadows uv tool install** — Stale v0.6.1 installed in mise Python 3.11.2 bin dir was winning PATH lookup over `~/.local/bin/ai` (v0.7.0 uv tool install) because `mise activate zsh` prepends its paths via a precmd hook, overriding any earlier PATH export. Fix: uninstall ai-cli-utils from mise Python env (`pip uninstall ai-cli-utils`). Also reordered `.zshrc` so `eval "$(mise activate zsh)"` runs before `export PATH="$HOME/.local/bin:$PATH"` as defence-in-depth. Shipped 2026-04-29.
+
 - [x] `[P1]` `[AI-CLI-68]` **Quota scrape format-change detection** — Shipped 2026-04-29. Commit `0503f7f`. Plan: `docs/plans/quota-scrape-format-detection-plan.md`.
 
 - [x] `[P1]` `[AI-CLI-64]` **Improve quota statusline format — Sonnet pace %, label repositioning, clearer dividers** — Shipped 2026-04-29. Adaptive-width labels (Week/Son ≥80 cols, W/S <80 cols), labels moved left of values, Sonnet pace % (`→+X%`/`→-X%`) added with color coding. `AI_CLI_STATUSLINE_COLS` env var passes terminal width. 7 new tests. Commits: `be31943`, `959f872`.
