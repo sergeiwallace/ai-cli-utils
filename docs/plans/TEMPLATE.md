@@ -132,6 +132,23 @@
 
 -->
 
+## Implementation Audit
+
+> **Step 14 gate** — complete before updating docs or presenting UAT.
+> Verify every T-XX task's acceptance criteria against the actual codebase. Check each item off;
+> any unmet AC restarts from implementation (step 5), not from planning.
+
+### T-01: [Task Name]
+
+- [ ] <!-- AC 1 -->
+- [ ] <!-- AC 2 -->
+
+### T-02: [Task Name]
+
+- [ ] <!-- AC 1 -->
+
+**Audit completed:** <!-- YYYY-MM-DD — update when all items above are checked -->
+
 ## Human Gates
 
 | Gate | After | Decision needed |

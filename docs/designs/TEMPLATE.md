@@ -146,6 +146,19 @@
 
 -->
 
+## Implementation Audit
+
+> **Step 14 gate** — complete before updating docs or presenting UAT.
+> Verify every design section and decision against the actual implementation. Check each item off;
+> any gap restarts from implementation (step 5), not from planning.
+
+| # | Section / Decision | Verified | Notes |
+|---|--------------------|---------|-------|
+| 1 | <!-- component or decision --> | - [ ] | |
+| 2 | <!-- component or decision --> | - [ ] | |
+
+**Audit completed:** <!-- YYYY-MM-DD — update when all items above are checked -->
+
 ## Risks and Mitigations
 
 | # | Risk | Impact | Mitigation |
