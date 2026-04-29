@@ -2,7 +2,7 @@
 title: "Going Public — Repository Automation & Hardening Plan"
 category: plans
 tags: [open-source, github, automation, ci-cd]
-status: archived
+status: APPROVED
 source: "R-2 research"
 ---
 

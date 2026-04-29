@@ -9,7 +9,7 @@ Sub-system architecture blueprints and design documents.
 - Must link to `designs/architecture.md` for platform-level context
 
 ## Archive
-Superseded or replaced docs live in `archive/`. Use `git mv` to move them; set `status: archived` in frontmatter.
+Only move to `archive/` if the doc is **superseded by a newer doc**, the **feature was removed from the codebase**, or the work was **explicitly abandoned**. Docs for completed features that are still in the codebase stay in this directory. Use `git mv`; set `status: archived` in frontmatter.
 
 ## What does NOT belong here
 - Task breakdowns and implementation steps -> use `plans/` instead

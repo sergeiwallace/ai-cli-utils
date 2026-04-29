@@ -1,4 +1,3 @@
-<!-- status: archived -->
 # Process Hygiene (`ai ps`) — Implementation Plan
 
 **Status:** DRAFT

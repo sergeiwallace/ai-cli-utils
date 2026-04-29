@@ -2,7 +2,7 @@
 title: "AI-CLI-46: Stabilize Programmatic API for aido Integration"
 category: plan
 tags: [api, programmatic, aido, versioning]
-status: archived
+status: complete
 ---
 
 ## Table of Contents

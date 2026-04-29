@@ -9,7 +9,7 @@ Implementation plans with tasks, batches, and gates.
 - Must follow template: options, pros/cons, recommendations
 
 ## Archive
-Completed or superseded plans live in `archive/`. Use `git mv` to move them; set `status: archived` in frontmatter.
+Only move to `archive/` if the plan is **superseded by a newer plan**, the **feature was removed from the codebase**, or the work was **explicitly abandoned**. Plans for completed features that are still in the codebase stay in this directory. Use `git mv`; set `status: archived` in frontmatter.
 
 ## What does NOT belong here
 - High-level architecture or design rationale -> use `designs/` instead
