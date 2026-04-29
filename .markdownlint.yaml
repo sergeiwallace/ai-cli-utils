@@ -43,3 +43,38 @@ MD047: false
 
 # Don't enforce unordered list indentation style (AI-generated docs use varied indentation)
 MD007: false
+
+# Don't enforce ordered list prefix style — some lists deliberately start at non-1
+# (e.g. CLAUDE.md/GEMINI.md session startup steps continue numbering from the global config)
+MD029: false
+
+# Don't require language on fenced code blocks — many design/plan docs use plain blocks
+# for shell sessions, config snippets, and ASCII diagrams where no language tag applies
+MD040: false
+
+# Don't reject blank lines inside blockquotes — feedback sections in design/plan docs
+# deliberately use blank lines for readability (project convention)
+MD028: false
+
+# Don't enforce atx-only heading style — feedback sections use `> ---` separator which
+# markdownlint misreads as a setext heading underline (project convention: > --- as divider)
+MD003: false
+
+# Don't enforce list marker spacing — docs use 2-space indented lists for visual clarity
+MD030: false
+
+# Don't reject trailing punctuation in headings — "Key:", "Format:", "Note:" headings are common
+MD026: false
+
+# Don't validate table column counts — docs use multi-line cells and empty cells legitimately
+MD056: false
+
+# Don't require angle brackets around bare URLs — reference docs use bare URLs for readability
+MD034: false
+
+# Don't enforce unordered list bullet style — docs mix * and - bullets
+MD004: false
+
+# Don't enforce strict heading level increments — design doc appendices skip from h2 to h4
+# for visual structure in decision sections (## Appendix → #### Decision N → ##### Options)
+MD001: false
