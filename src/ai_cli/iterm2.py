@@ -329,6 +329,15 @@ def _evict_iterm2_guid(guid: str, owner_session: str) -> None:
                 text=True,
             )
             if env_result.returncode == 0 and env_result.stdout.strip() == f"ITERM_SESSION_ID={guid}":
+                # Don't evict a session that has active clients — it's currently attached
+                # to a visible pane and legitimately owns the GUID (AI-CLI-59 regression).
+                clients_result = subprocess.run(
+                    ["tmux", "list-clients", "-t", session],
+                    capture_output=True,
+                    text=True,
+                )
+                if clients_result.returncode == 0 and clients_result.stdout.strip():
+                    continue
                 subprocess.run(
                     ["tmux", "set-environment", "-t", session, "-u", "ITERM_SESSION_ID"],
                     capture_output=True,

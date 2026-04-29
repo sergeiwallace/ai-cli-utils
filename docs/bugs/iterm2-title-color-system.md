@@ -308,6 +308,27 @@ g-sw-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
 - `src/ai_cli/main.py` — add `_evict_iterm2_guid(guid, owner_session)` helper; call it after writing GUID to new session env (`_iterm_env_flags`) and after `tmux set-environment` on re-attach
 - `tests/test_iterm2.py` — tests: eviction clears stale sessions, correct owner is unaffected, no-op when no other session has GUID
 
+**Round 3 shipped:** `_evict_iterm2_guid` implemented and tested. Evicts GUID from all other sessions on GUID claim. 6 tests pass.
+
+### Fix Round 4 — Regression (REOPENED 2026-04-29)
+
+**Observed state after Round 3 ship:**
+```
+c-ai-cli-1: shell env ITERM_SESSION_ID=w0t0p15:C37C7927... (correct physical pane)
+c-ai-cli-1: tmux env — ITERM_SESSION_ID unset (evicted!)
+c-hm-1:     tmux env ITERM_SESSION_ID=w0t0p15:C37C7927... (stale, holds the GUID)
+```
+
+**Root cause:** `_evict_iterm2_guid` is over-aggressive. When a new CC session starts in the same physical pane (same GUID), it evicts the GUID from sessions that still have active tmux clients attached. A session with active clients is currently visible and legitimately owns the GUID — evicting it causes it to lose its pane title on the next CC restart loop.
+
+**Fix:** Before evicting a session, check `tmux list-clients -t <session>`. If the session has any active clients (non-empty output), skip the eviction — it owns the pane.
+
+**Files changed:**
+- `src/ai_cli/iterm2.py` — `_evict_iterm2_guid`: added `tmux list-clients -t session` check; skip eviction if clients present
+- `tests/test_iterm2.py` — updated `_make_fake_run` to support `sessions_with_clients` parameter; new test `test_when_stale_session_has_active_clients_then_not_evicted`
+
+**Shipped:** 2026-04-29 (AI-CLI-59)
+
 ---
 
 ## Diagnosis Approach

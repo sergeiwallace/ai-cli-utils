@@ -786,9 +786,14 @@ class TestEvictIterm2Guid:
     in their tmux environments and all rename the same pane on CC restart.
     """
 
-    def _make_fake_run(self, session_guids: dict[str, str]):
-        """Return a fake subprocess.run that models tmux list-sessions + show-environment."""
+    def _make_fake_run(
+        self,
+        session_guids: dict[str, str],
+        sessions_with_clients: set[str] | None = None,
+    ):
+        """Return a fake subprocess.run that models tmux list-sessions + show-environment + list-clients."""
         calls: list[list[str]] = []
+        _sessions_with_clients = sessions_with_clients or set()
 
         def fake_run(cmd, *args, **kwargs):
             from unittest.mock import MagicMock
@@ -806,6 +811,9 @@ class TestEvictIterm2Guid:
                     result.stdout = f"ITERM_SESSION_ID={guid}\n"
                 else:
                     result.returncode = 1
+            elif cmd[1] == "list-clients":
+                session = cmd[cmd.index("-t") + 1]
+                result.stdout = "client0\n" if session in _sessions_with_clients else ""
             return result
 
         return fake_run, calls
@@ -871,3 +879,23 @@ class TestEvictIterm2Guid:
         cleared = {c[c.index("-t") + 1] for c in unset_calls}
         assert cleared == {"c-hm-1", "g-myproject-1", "g-sw-1"}
         assert "c-ai-cli-1" not in cleared
+
+    def test_when_stale_session_has_active_clients_then_not_evicted(self):
+        """AI-CLI-59 regression: a session with active clients still owns its GUID — skip it."""
+        guid = "w0t0p15:C37C7927"
+        sessions = {
+            "c-ai-cli-1": guid,  # new owner
+            "c-hm-1": guid,  # has active clients → must NOT be evicted
+            "c-sw-1": guid,  # detached → must be evicted
+        }
+        # c-hm-1 is currently attached to a physical pane
+        fake_run, calls = self._make_fake_run(sessions, sessions_with_clients={"c-hm-1"})
+
+        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
+            _evict_iterm2_guid(guid, "c-ai-cli-1")
+
+        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
+        cleared = {c[c.index("-t") + 1] for c in unset_calls}
+        assert "c-hm-1" not in cleared  # active client — preserved
+        assert "c-sw-1" in cleared  # detached — evicted
+        assert "c-ai-cli-1" not in cleared  # owner — never touched

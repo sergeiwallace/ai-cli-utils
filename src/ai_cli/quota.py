@@ -1111,7 +1111,12 @@ def quota_statusline_part() -> int:
 
         _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         usage_pct = rows[0]["usage_percent"]
-        sonnet_pct = rows[0]["weekly_sonnet_pct"]
+        # Use the most recent non-None Sonnet value — a single scrape that fails to parse
+        # the Sonnet breakdown produces None, which would otherwise mask valid older data.
+        sonnet_pct = next(
+            (r["weekly_sonnet_pct"] for r in rows if r["weekly_sonnet_pct"] is not None),
+            None,
+        )
         snapshot_age_hours = (
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600

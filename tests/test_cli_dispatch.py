@@ -460,7 +460,8 @@ class TestDeployCcConfigFiles:
         assert mode & stat.S_IXGRP
         assert mode & stat.S_IXOTH
 
-    def test_given_existing_symlink_at_dst_when_deploy_then_replaced_with_plain_file(self, tmp_path):
+    def test_given_existing_symlink_at_dst_when_deploy_then_symlink_preserved(self, tmp_path):
+        # ai-harness install.sh owns symlinked files — ai update must not overwrite them.
         project = tmp_path / "project"
         (project / "src" / "ai_cli" / "data").mkdir(parents=True)
         src = project / "src" / "ai_cli" / "data" / "statusline-command.sh"
@@ -469,15 +470,16 @@ class TestDeployCcConfigFiles:
         fake_home = tmp_path / "home"
         (fake_home / ".claude").mkdir(parents=True)
         other = tmp_path / "other.sh"
-        other.write_text("old content")
+        other.write_text("harness content")
         dst = fake_home / ".claude" / "statusline-command.sh"
         dst.symlink_to(other)
 
         with patch("ai_cli.main.Path.home", return_value=fake_home):
             _deploy_cc_config_files(project)
 
-        assert not dst.is_symlink()
-        assert dst.read_text() == "#!/bin/bash\necho new\n"
+        # Symlink must survive — its target content is unchanged
+        assert dst.is_symlink()
+        assert dst.read_text() == "harness content"
 
     def test_given_src_missing_when_deploy_then_no_op(self, tmp_path):
         project = tmp_path / "project"

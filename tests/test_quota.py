@@ -2698,3 +2698,43 @@ class TestQuotaStatuslinePartAdaptiveLabels:
             assert "Son" in clean
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    def test_when_latest_snapshot_has_null_sonnet_but_earlier_has_value_then_fallback_used(self, tmp_path, capsys):
+        """AI-CLI-83: a scrape with no Sonnet parse (None) must not mask valid data from earlier rows."""
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start()
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fixed_now = week_start_dt + timedelta(hours=30)
+        qdb.set_db_path(tmp_path / "quota.db")
+        try:
+            conn = qdb._get_conn()
+            # Older snapshot has Sonnet data; newer one has None (scrape parse failure)
+            older_ts = (fixed_now - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            newer_ts = (fixed_now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
+                (week_start_str, 30.0, 25.0, older_ts),
+            )
+            conn.execute(
+                "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
+                (week_start_str, 31.0, None, newer_ts),
+            )
+            conn.commit()
+            conn.close()
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                with patch("ai_cli.quota._try_read_kv_snapshot", return_value=None):
+                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "80"}):
+                        quota_statusline_part()
+            out = capsys.readouterr().out
+            import re
+
+            clean = re.sub(r"\033\[[0-9;]*m", "", out)
+            # Sonnet value from older row should be used, not the None from newer
+            assert "25%" in clean
+            assert "-%" not in clean
+        finally:
+            qdb.set_db_path(None)  # type: ignore[arg-type]
