@@ -1,3 +1,4 @@
+<!-- status: archived -->
 # Process Hygiene (`ai ps`) — Implementation Plan
 
 **Status:** DRAFT
@@ -28,7 +29,7 @@ Goal: `ai ps` shows a live inventory of all ai-managed processes with age and st
 > - Auto-hygiene: find a middle ground — explicit-only won't get used enough. Use the scoring system to gate auto-kill to high-confidence orphans only, flag low-confidence ones.
 > - Remote: cache Hetzner process state locally and poll periodically to avoid latency.
 > - New module: yes.
-
+>
 > **AI Response Round 1:**
 > - Scope confirmed: ai-managed processes (mosh-server, signal-watch, autossh, circus, memory/sync watch). Termius connections create mosh-server processes already tracked.
 > - Auto-hygiene: score-gated approach — score ≥ 80 → auto-kill on session start + daily cron; score 40–79 → flag in `ai ps` output, require `ai ps clean` to kill; score < 40 → active, no action.
@@ -292,7 +293,7 @@ Single batch — all tasks are tightly coupled; no value in shipping detection w
 > 2. Unsure.
 > 3. Termius sessions are fleeting — user closes Termius when done. `ai c` sessions from iOS are rare; user resumes from MacBook. Orphaned Termius mosh-servers with persisting tmux sessions are fine to leave as suspect (manual clean).
 > 4. (no feedback)
-
+>
 > **AI Response Round 2:**
 >
 > **1 — Suspect flagging:** Two touchpoints only — no intrusive alerts. At session start (`ai c`), orphaned processes (≥ 80) are auto-killed silently and logged. For suspects (40–79), one line is printed: `[ai ps] 1 suspect process(es). Run 'ai ps clean' to review.` The explicit `ai ps` command always shows the full picture with scores. That's it.
@@ -302,10 +303,10 @@ Single batch — all tasks are tightly coupled; no value in shipping detection w
 > **3 — Termius scoring confirmed correct:** Disconnected Termius mosh-server scores +50 (no client) +10 (>6h) = 60 suspect, then +20 (>24h) = 70 suspect. Never reaches 80 (orphaned/auto-kill) because the tmux session persists on Hetzner, so "no matching tmux session" (+10) doesn't fire. Correctly becomes a suspect flagged at session start, never auto-killed. No scoring changes needed.
 >
 > **4 — Cache location:** `~/.local/state/ai-cli/remote-ps-cache.json` consistent with existing XDG usage. Proceeding as specified.
-
+>
 > **Feedback Round 3:**
 > 3. Termius sessions are fleeting — user closes Termius when done. Don't want to manually kill stale Termius mosh-server orphans. Is there any harm in eventually auto-killing them if we're confident they're stale?
-
+>
 > **AI Response Round 3:**
 >
 > **3 — Termius auto-kill:** No harm — killing a mosh-server only drops the mosh tunnel; the tmux session on Hetzner persists untouched. All work is safe. Updated scoring: added `+5` for "matching tmux session unattached > 2h" and `-10` for "matching tmux session currently attached". Result: Termius orphan with no client, tmux unattached 8h, age 26h = 50+20+10+5 = **85 → auto-kill** (reaches threshold without needing "no tmux session at all"). Active session with tmux attached still scores -10, safely stays **active**.

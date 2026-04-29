@@ -1,3 +1,4 @@
+<!-- status: archived -->
 # Claude Usage Quota Sync — hw-scheduling Integration Plan
 
 **Status:** DEPLOYED — Batches 1–3 shipped; live UAT in progress

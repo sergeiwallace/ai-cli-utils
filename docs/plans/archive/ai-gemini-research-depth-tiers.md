@@ -2,7 +2,7 @@
 title: "Implementation Plan — ai gemini Research Depth Tiers (--depth flag)"
 category: plan
 tags: [ai-cli, ai-gemini, research-pipeline, depth-tiers, track-a]
-status: approved
+status: archived
 source: session-2026-04-04
 related_docs:
   - ~/projects/aido/docs/research/gemini-research-pipeline-synthesis.md

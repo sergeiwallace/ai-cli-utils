@@ -2,7 +2,7 @@
 title: "Windows Out-of-Box Support — Implementation Plan"
 category: plan
 tags: [windows, portability, cross-platform, AI-CLI-29]
-status: complete
+status: archived
 ---
 
 # Windows Out-of-Box Support — Implementation Plan

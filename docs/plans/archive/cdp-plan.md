@@ -2,7 +2,7 @@
 title: "CDP Browser Debug Server — Implementation Plan"
 category: plan
 tags: [cdp, chrome, devtools, browser, debugging]
-status: draft
+status: archived
 ---
 
 # CDP Browser Debug Server — Implementation Plan

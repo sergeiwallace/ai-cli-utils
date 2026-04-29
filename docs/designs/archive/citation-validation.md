@@ -2,7 +2,7 @@
 title: "Citation Validation for ai gemini Research Output"
 category: design
 tags: [citation-validation, gemini, research, lychee, semantic-scholar, AI-CLI-50]
-status: draft
+status: archived
 source: claude-sonnet-4-6 2026-04-21
 ---
 

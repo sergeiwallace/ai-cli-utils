@@ -1,3 +1,4 @@
+<!-- status: archived -->
 # AI-CLI-14: Cross-Session Signaling — Implementation Plan
 
 **Status:** COMPLETE

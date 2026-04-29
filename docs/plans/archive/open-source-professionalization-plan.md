@@ -1,3 +1,4 @@
+<!-- status: archived -->
 # ai-cli Open-Source Professionalization — Implementation Plan
 
 **Status:** DRAFT

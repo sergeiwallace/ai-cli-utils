@@ -1,4 +1,3 @@
-
 ---
 name: tasks
 description: Display all open internal CC tasks for this session.

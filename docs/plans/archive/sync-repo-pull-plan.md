@@ -2,7 +2,7 @@
 title: "sync repo pull — Auto-pull affected project repos after ai sync pull"
 category: plan
 tags: [sync, git, worktrees, repos, safety]
-status: approved
+status: archived
 source: sw-2
 date: 2026-04-25
 linked_task: AI-CLI-63

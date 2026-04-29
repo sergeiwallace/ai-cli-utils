@@ -8,6 +8,9 @@ Sub-system architecture blueprints and design documents.
 - System interaction diagrams and data flow descriptions
 - Must link to `designs/architecture.md` for platform-level context
 
+## Archive
+Superseded or replaced docs live in `archive/`. Use `git mv` to move them; set `status: archived` in frontmatter.
+
 ## What does NOT belong here
 - Task breakdowns and implementation steps -> use `plans/` instead
 - External research with citations -> use `research/` instead

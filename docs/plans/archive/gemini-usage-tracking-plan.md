@@ -2,7 +2,7 @@
 title: "Gemini API Cost and Usage Tracking Overhaul"
 category: plans
 tags: [ai-gemini, usage-tracking, billing, deep-research, quota, ai-cli-41]
-status: DRAFT
+status: archived
 source: internal
 ---
 

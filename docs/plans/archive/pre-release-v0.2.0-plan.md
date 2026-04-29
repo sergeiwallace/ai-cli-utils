@@ -1,3 +1,4 @@
+<!-- status: archived -->
 # Pre-Release v0.2.0 — Implementation Plan
 
 **Status:** IN PROGRESS

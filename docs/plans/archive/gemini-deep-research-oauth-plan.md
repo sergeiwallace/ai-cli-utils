@@ -2,7 +2,7 @@
 title: Gemini Deep Research — OAuth Fix & GCP Client Setup
 category: plan
 tags: [gemini, oauth, deep-research, gcp, ai-cli-45]
-status: in_progress
+status: archived
 ---
 
 ## Table of Contents

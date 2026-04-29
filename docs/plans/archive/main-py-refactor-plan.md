@@ -2,7 +2,7 @@
 title: main.py Refactor — Module Extraction + CLI Dispatch Redesign
 category: plans
 tags: [refactor, architecture, cli, modules]
-status: implemented
+status: archived
 source: internal
 task: AI-CLI-39
 ---

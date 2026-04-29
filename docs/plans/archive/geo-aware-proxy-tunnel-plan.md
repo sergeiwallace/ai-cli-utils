@@ -2,7 +2,7 @@
 title: "Implementation Plan — Geo-Aware SSH Reverse Proxy for `ai gemini`"
 category: plan
 tags: [ai-cli, ai-gemini, geo-restriction, ssh, socks-proxy, deep-research]
-status: active
+status: archived
 source: claude-sonnet-4-6
 related_tasks: [AI-CLI-40]
 ---

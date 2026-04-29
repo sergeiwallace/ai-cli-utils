@@ -2,7 +2,7 @@
 title: "Implementation Plan — Gemini Checkpoint-to-Chat Conversion"
 category: plan
 tags: [ai-cli, gemini, session-resume, checkpoint, chat-files]
-status: approved
+status: archived
 source: session-2026-04-08
 ---
 
