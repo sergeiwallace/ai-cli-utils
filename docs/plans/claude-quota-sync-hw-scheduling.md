@@ -12,7 +12,7 @@
 > snapshot from a single canonical key. `_publish_quota_snapshot()` also now
 > publishes to the `hw.events.usage.claude.snapshot` NATS core subject
 > alongside the existing `quota.snapshot` JetStream subject, feeding the
-> humanware `UsageConsumer` for cross-provider usage ingest.
+> ai-core `UsageConsumer` for cross-provider usage ingest.
 > References below to `quota.claude.weekly` are historical.
 
 <!-- FEEDBACK RULES (for AI agents):
@@ -55,7 +55,7 @@ Claude-specific job.
 
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing?
 > - Scope is right. Proceed.
-
+>
 > **AI Response Round 1:**
 > - Scope confirmed. Architecture revised to Option A+C: Hetzner scrapes on schedule (T-00b),
 >   publishes `quota.snapshot` NATS core message AND writes `quota.claude.weekly` KV directly
@@ -175,7 +175,7 @@ to KV — Hetzner owns the data and Hetzner writes it.
 > **Feedback Round 1:** Does Option A feel right? Any concern about SSH per cycle vs
 > the NATS-native Option B/C?
 > - Option A + C. Want real-time (Option C is primary). Option A as fallback/catch-up.
-
+>
 > **AI Response Round 1:**
 > - Revised to Option C primary + Option A fallback. Three prerequisites added:
 >   - **T-00a**: Extract `_on_quota_snapshot` (already in signal-watch) into a persistent
@@ -422,7 +422,7 @@ and restart hw-clock and hw-worker-hetzner/mac to pick up new job definitions.
 
 > **Feedback Round 1:** Does the batching make sense? T-01–T-04 can be a single autonomous run.
 > - Batching is fine. Will revisit after open questions are resolved and plan is updated.
-
+>
 > **AI Response Round 1:**
 > - Revised to 3 batches. Batch 1 (T-00a, T-00b, T-00c) covers prerequisites that span
 >   both ai-cli-utils and hw-scheduling. Batch 2 (T-01–T-04) is the original rename +
@@ -488,7 +488,7 @@ and restart hw-clock and hw-worker-hetzner/mac to pick up new job definitions.
 > 2. Weekly all-models % only in statusline. No secondary metrics.
 > 3. NATS KV should be updated by Hetzner directly after each scrape — not by Mac after pulling. Having Mac pull then re-publish to Hetzner's KV is a round trip that makes no sense. Hetzner owns the data; Hetzner should write it to KV.
 > 4. Want real-time. Option C is primary path.
-
+>
 > **AI Response Round 1:**
 > 1. Confirmed. `quota_scrape()` continues to capture `session_pct` and store it in
 >    `quota_snapshots.session_pct`. `quota_statusline_part()` is unchanged — weekly % only.

@@ -9,7 +9,7 @@ citation_review: pending — review claims against citation validation reports a
 
 # Claude Usage Telemetry — Token Tracking and Quota Pacing
 
-**Status:** APPROVED — *Note: System Architecture and Data Model sections below reflect the original design (standalone SQLite + HTTP receiver). The actual implementation uses NATS JetStream → Postgres via humanware. See `humanware/docs/designs/ai-usage-tracking.md` for the authoritative architecture.*
+**Status:** APPROVED — *Note: System Architecture and Data Model sections below reflect the original design (standalone SQLite + HTTP receiver). The actual implementation uses NATS JetStream → Postgres via ai-core. See `ai-core/docs/designs/ai-usage-tracking.md` for the authoritative architecture.*
 
 **Created:** 2026-04-01
 
@@ -614,7 +614,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - **Tailscale**: cross-machine networking (Mac to Hetzner)
 - **tmux**: hidden pane scraping (`_scrape_usage_hidden_pane`); status bar integration via `quota_statusline_part`
 - **NATS JetStream**: `quota.snapshot` subject (stream: `quota`) — Hetzner publishes after each scrape; Mac durable consumer `quota-subscriber-mac` replays missed messages on reconnect
-- **NATS core**: `hw.events.usage.claude.snapshot` subject — Hetzner publishes alongside `quota.snapshot` so the humanware `UsageConsumer` can ingest snapshots into Postgres for cross-provider usage reporting
+- **NATS core**: `hw.events.usage.claude.snapshot` subject — Hetzner publishes alongside `quota.snapshot` so the ai-core `UsageConsumer` can ingest snapshots into Postgres for cross-provider usage reporting
 - **NATS KV (`hw_state`)**: `quota.claude.current` key — Hetzner writes after each scrape; other services (workers, dashboards) read without SSHing to Mac. (Renamed from the older `quota.claude.weekly` key — consumers now read the single canonical "latest snapshot" key.)
 - **hw-scheduling (sergei)**: `claude_quota_scrape` job (Hetzner, 10 min) triggers scrape; `claude_quota_sync` job (Mac, 10 min) SSH-pulls as fallback catch-up; `gemini_cost_sync` job (Hetzner, 4h) tracks Gemini API cost separately
 - **`ai internal quota-subscriber`**: persistent Circus-managed daemon on Mac; JetStream durable consumer for `quota.snapshot`; survives CC session exits

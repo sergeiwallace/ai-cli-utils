@@ -1,7 +1,7 @@
 ---
 title: Airflow Watcher — AI Session Pattern for Monitoring Airflow Pipelines
 category: procedures
-tags: [airflow, watcher, ai-sessions, background-process, humanware]
+tags: [airflow, watcher, ai-sessions, background-process, ai-core]
 status: active
 source: session-config
 ---

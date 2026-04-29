@@ -47,7 +47,7 @@ You are working on ~/projects/{project}. Your task:
 2. {step 2}
 
 ### Constraints
-- Follow humanware conventions (frontmatter on all docs, priority tags, ecosystem alignment)
+- Follow ai-core conventions (frontmatter on all docs, priority tags, ecosystem alignment)
 - Commit and push when done
 
 ### When Done
@@ -93,4 +93,4 @@ The auto-resume loops (both `ai c` and `ai g`) automatically check `~/projects/s
 - The handoff message must be SELF-CONTAINED — the target session has no context
 - Include file paths, not just descriptions
 - If the task requires human input, set `requires_human: true` in frontmatter
-- Always include "Follow humanware conventions" in constraints
+- Always include "Follow ai-core conventions" in constraints

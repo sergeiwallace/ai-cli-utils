@@ -146,14 +146,14 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 | `tests/test_session.py:419,425` | `"sergei"` in `.gemini/tmp/` path | `"user"` |
 | `docs/bugs/` | Session names like `c-aido-2`, `c-art-2` in bug reports | Leave as-is (historical bug docs, not public API) |
 
-**Note on `setup.py` and `test_setup.py`:** `humanware` appears as the feature name throughout (e.g. `_is_humanware_platform()`, "humanware platform detected"). **Decision (2026-04-04):** rename to generic — `_is_managed_platform()` / "managed platform detected". All references in `setup.py`, `test_setup.py`, and any docs updated accordingly.
+**Note on `setup.py` and `test_setup.py`:** `ai-core` appears as the feature name throughout (e.g. `_is_managed_platform()`, "managed platform detected"). **Decision (2026-04-04):** rename to generic — `_is_managed_platform()` / "managed platform detected". All references in `setup.py`, `test_setup.py`, and any docs updated accordingly.
 
 **Audit command to verify clean:**
 ```bash
-git grep -rn "humanware\|aido\|\bsergei\b\|sergeiwallace\|178\.104" -- src/ tests/
+git grep -rn "ai-core\|aido\|\bsergei\b\|sergeiwallace\|178\.104" -- src/ tests/
 ```text
 
-Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (where these names appear in their correct context as rule definitions), and `setup.py`/`test_setup.py` pending the humanware rename decision.
+Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (where these names appear in their correct context as rule definitions), and `setup.py`/`test_setup.py` pending the ai-core rename decision.
 
 **Gate:** `git grep` returns zero hits in `src/` and `tests/`. CI green.
 
@@ -251,7 +251,7 @@ After Phase 4b (squash), do a full final review before version bump. Split into 
 
 #### Step 1 — Privacy & Public Safety (Claude)
 
-- `git grep -rn "humanware\|aido\|\bsergei\b\|sergeiwallace\|178\.104"` across entire repo (not just src/tests — also docs, configs, comments, scripts)
+- `git grep -rn "ai-core\|aido\|\bsergei\b\|sergeiwallace\|178\.104"` across entire repo (not just src/tests — also docs, configs, comments, scripts)
 - Grep for private email patterns and internal hostnames
 - Verify `git log --oneline` shows single "Initial release" commit — no history leakage
 
@@ -383,7 +383,7 @@ These tasks are intentionally deferred until after the release:
 
 ## Open Questions
 
-1. ~~**`humanware` rename in setup.py**~~ — **Resolved 2026-04-04:** rename to `_is_managed_platform()` / "managed platform detected".
+1. ~~**`ai-core` rename in setup.py**~~ — **Resolved 2026-04-04:** rename to `_is_managed_platform()` / "managed platform detected".
 
 > **Feedback Round 1:**
 > - <enter feedback here>

@@ -52,7 +52,7 @@ from GCP BigQuery billing export for paid runs, with OAuth run counts from local
 > **Feedback Round 1:** Is the scope right? Anything to add or cut?
 >
 > - Scope seems fine. Revise to account for the feedback on open questions below, especially the billing uncertainty — that's the most important thing to get right before we implement.
-
+>
 > **AI Response Round 1:**
 > - Scope confirmed. Revised to make the `ai_studio_paid` gate the primary safety mechanism — it's now the first thing implemented in T-02, not an afterthought. Billing uncertainty documented as a P0 open question with a prerequisite investigation step before T-02 implementation.
 
@@ -157,7 +157,7 @@ confirmed empirically on first query.
 
 The ai-cli-utils code changes from AI-CLI-25 are complete: `quota_sync_from_remote()`
 and Slack webhook sending are implemented. Remaining items are human actions (webhook URL
-creation, Doppler config) and a separate humanware-project task — they do not block
+creation, Doppler config) and a separate ai-core-project task — they do not block
 AI-CLI-41.
 
 ## Auth Tier Naming
@@ -454,10 +454,10 @@ Paid API spend: not available — BigQuery billing export not configured.
 
 **Size:** S
 **Batch:** 3 (after T-01–T-03 are done)
-**Repo:** humanware — `src/humanware/scheduling/handlers/gemini_cost_sync.py`
-**Tracking:** `HW-3` in humanware roadmap
+**Repo:** ai-core — `src/ai_core/scheduling/handlers/gemini_cost_sync.py`
+**Tracking:** `HW-3` in ai-core roadmap
 
-Confirmed: the handler exists in humanware. It reads a MEMORY.md cost ledger
+Confirmed: the handler exists in ai-core. It reads a MEMORY.md cost ledger
 (`project_claude_quota.md`) via regex and writes `quota.gemini.monthly` to NATS KV.
 
 Replace the regex ledger read with JSONL log parsing from
@@ -473,14 +473,14 @@ billing export query (T-03) if token-count-based cost is unavailable.
 |-------|-------|-------|------|
 | 1 | T-01, T-02 | Foundation — token extraction fix, tier naming, DR counter + paid gate | Plan approval |
 | 2 | T-03 | Surface — `ai spend gemini` command | Human review of BigQuery setup + output format |
-| 3 | T-04 | Humanware — replace MEMORY.md ledger in `gemini_cost_sync` | T-01 + T-03 done; work in humanware repo (HW-3) |
+| 3 | T-04 | ai-core — replace MEMORY.md ledger in `gemini_cost_sync` | T-01 + T-03 done; work in ai-core repo (HW-3) |
 
 ---
 
 > **Feedback Round 1:** Does the batching make sense? Should any tasks be reordered, split, or merged?
 >
 > - \<enter feedback here>
-
+>
 > **AI Response Round 1:**
 > - No feedback received on batching — proceeding with two-batch plan as designed.
 
@@ -534,7 +534,7 @@ billing export query (T-03) if token-count-based cost is unavailable.
 > 2. SKU mapping: understood, empirical on first query.
 > 3. Token counts: fine, mark null if unavailable.
 > 4. Daily limit: empirically unknown — we haven't been tracking effectively. More importantly: there's a critical open question about whether the AI Studio paid key (`GOOGLE_API_KEY_TIER_1`) has the Google AI Ultra subscription credits ($100/mo) applied. Situation: (a) the Ultra subscription wasn't connected to the billing account previously — that's now fixed. (b) there is mixed information online about whether Ultra credits apply to AI Studio API keys or only Vertex API keys. (c) the Interactions API (used for deep-research) may not work with Vertex API keys at all, so we can't just switch to Vertex. Result: we don't know if `ai_studio_paid` deep-research runs are ~free (subsidized by Ultra credit) or ~$2–5 out of pocket. The tool must NOT silently fall back to `ai_studio_paid` for deep-research. Need hard gates, explicit opt-in, and clear warnings before any paid deep-research run fires. This is the most important safety requirement for this feature.
-
+>
 > **AI Response Round 1:**
 > - Q1, Q2, Q3 resolved as noted above.
 > - Q4 (daily limit): keeping `DEEP_RESEARCH_DAILY_LIMIT = 20` as placeholder; easy to adjust empirically.
@@ -560,6 +560,6 @@ billing export query (T-03) if token-count-based cost is unavailable.
 | 2026-04-11 | Plan revised (round 2) | T-02 redesigned with unconditional paid-run gate (`--confirm-paid` / `-P`); billing uncertainty documented; T-03 updated to show credit status hint from BigQuery data; Q5 added as P0 open question |
 | 2026-04-11 | User feedback round 2 committed | Disable `ai_studio_paid` fallback by default via `paid_fallback_enabled` config toggle; OAuth-only for now; "Vertex-only" claim confirmed baseless; email sent to GDP premium support |
 | 2026-04-11 | Plan revised (round 3) | T-02 redesigned around `paid_fallback_enabled` config toggle (default false); `-P`/`--confirm-paid` retained for when paid is re-enabled; human gate for billing credit investigation removed (not blocking); Q5 demoted to deferred |
-| 2026-04-11 | T-04 confirmed and unlocked | `gemini_cost_sync` handler confirmed in humanware repo; T-04 added as Batch 3 (blocked on T-01+T-03); HW-3 added to humanware roadmap |
+| 2026-04-11 | T-04 confirmed and unlocked | `gemini_cost_sync` handler confirmed in ai-core repo; T-04 added as Batch 3 (blocked on T-01+T-03); HW-3 added to ai-core roadmap |
 | 2026-04-11 | T-01 + T-02 shipped | commit 9203133 — tier naming overhaul, token fix, paid gate, DR counter; 24 new tests (102 total in test_gemini.py) |
 | 2026-04-11 | T-03 shipped | `ai spend gemini` command: src/ai_cli/spend.py + dispatch in main.py; 35 tests; docs and CHANGELOG updated |

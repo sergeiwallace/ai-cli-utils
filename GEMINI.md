@@ -23,7 +23,7 @@ You are invoked as a research and review partner. Your primary tasks are paralle
 
 This is a **public open-source package**. All code, docs, comments, tests, and commit messages must be written for a general audience.
 
-- **No proprietary names** — never reference humanware, aido, or any private platform/tool names in code, docs, comments, or tests
+- **No proprietary names** — never reference ai-core, aido, or any private platform/tool names in code, docs, comments, or tests
 - **No personal identifiers** — no personal names (first or last), usernames, private server IPs/hostnames, or account-specific paths. Use generic placeholders: `user`, `myproject`, `example.com`, `192.0.2.x`
 - **No private project names or prefixes** — don't hardcode any project names or session prefixes from personal workflow in source, docs, or tests. Use only fully generic names: `myproject`, `myapp`, `session-1`, `test-session`
 - **Generic examples throughout** — all session names, project names, and config values in tests/docs must be obviously placeholder. Nothing that could be mistaken for a real personal workflow artifact.

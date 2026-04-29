@@ -3,7 +3,7 @@
 # Covers: (no enforcement — permissive)
 # Exit 0 = allow, exit 2 = block
 #
-# Branch-name convention is intentionally NOT enforced here — humanware workflows
+# Branch-name convention is intentionally NOT enforced here — ai-core workflows
 # use git worktrees (wt-<tag>-N branches) by default, and enforcing a feature/
 # pattern blocks that flow. If you want feature-branch discipline, enforce it
 # via PR review or a named hook on specific repos, not via the ecosystem default.

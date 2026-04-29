@@ -33,7 +33,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
 | **Stale session cleanup** | Automatic detection and cleanup of orphaned sessions |
 | **Gemini with fallback** | `ai gemini "prompt"` — 3-tier auth fallback (OAuth → free API → paid API), auto-retry on capacity errors |
-| **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to humanware backend |
+| **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to ai-core backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Signal-watch** | Handoff delivery via Circus-managed background process — isolated from CC session lifecycle |
 | **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |

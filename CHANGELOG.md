@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `ai spend gemini` help text updated to clarify it reads historical local JSONL logs only.
-  Use `aido spend gemini` to query current spend via the humanware API.
+  Use `aido spend gemini` to query current spend via the ai-core API.
 
 ## [0.6.1] - 2026-04-25
 
@@ -157,7 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ai cc-usage push [-d/--dry-run]`: scan `~/.claude/projects/` JSONL files and push per-call token usage events (input, cache-creation, cache-read, output tokens) to a configured REST API backend. Cursor-tracked — only events since the last successful push are sent, in batches of 500. Config: `[humanware] api_url` and `api_key` in `config.toml`. (AI-CLI-23)
+- `ai cc-usage push [-d/--dry-run]`: scan `~/.claude/projects/` JSONL files and push per-call token usage events (input, cache-creation, cache-read, output tokens) to a configured REST API backend. Cursor-tracked — only events since the last successful push are sent, in batches of 500. Config: `[ai-core] api_url` and `api_key` in `config.toml`. (AI-CLI-23)
 - `ai cc-usage status`: print the number of CC sessions tracked by the push cursor and the timestamp of the last successful push.
 
 ### Fixed
@@ -195,7 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `AI_CLI_HOST` replaces `HUMANWARE_HOST` as the canonical env var for host machine identification (`mac`, `hetzner`, etc.). `AI_CLI_HOST` is the public/open-source name; `HUMANWARE_HOST` is no longer referenced in the codebase. Set `AI_CLI_HOST` in `~/.zshenv` (sourced by all zsh sessions including non-interactive). (AI-CLI-37)
+- `AI_CLI_HOST` is the canonical env var for host machine identification (`mac`, `hetzner`, etc.). Set `AI_CLI_HOST` in `~/.zshenv` (sourced by all zsh sessions including non-interactive). (AI-CLI-37)
 
 ## [0.2.0] - 2026-04-06
 

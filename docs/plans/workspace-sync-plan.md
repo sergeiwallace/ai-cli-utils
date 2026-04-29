@@ -40,8 +40,8 @@ Running `git pull --rebase` across all project repos and their worktrees is tedi
 
 **Workspace files:**
 
-- `~/projects/sergei/humanware-local.code-workspace` — default, local repos (13 folders)
-- `~/projects/sergei/humanware-remote.code-workspace` — optional, remote/server repos
+- `~/projects/sergei/ai-core-local.code-workspace` — default, local repos (13 folders)
+- `~/projects/sergei/ai-core-remote.code-workspace` — optional, remote/server repos
 
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing from the goal?
 > - <enter feedback here>
@@ -156,8 +156,8 @@ Parse the workspace file — it is already maintained as the authoritative list 
 ai ws pull [--workspace PATH] [--remote] [--dry-run / -d] [--verbose / -v]
 ```
 
-- `--workspace PATH` — explicit workspace file path (default: `~/projects/sergei/humanware-local.code-workspace`)
-- `--remote` — use `humanware-remote.code-workspace` instead of the default local one (mutually exclusive with `--workspace`)
+- `--workspace PATH` — explicit workspace file path (default: `~/projects/sergei/ai-core-local.code-workspace`)
+- `--remote` — use `ai-core-remote.code-workspace` instead of the default local one (mutually exclusive with `--workspace`)
 - `--dry-run` / `-d` — print what would be pulled, no git operations
 - `--verbose` / `-v` — show full git output per repo/worktree
 
@@ -200,12 +200,12 @@ For each workspace folder path:
 ### Output format
 
 ```text
-Workspace: ~/projects/sergei/humanware-local.code-workspace (13 repos)
+Workspace: ~/projects/sergei/ai-core-local.code-workspace (13 repos)
 
 ✓  sergei          main
 ✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
 ↷  ai-cli-utils    .worktrees/ai-cli-1  (dirty, skipped)
-✓  humanware       main
+✓  ai-core         main
 …
 
 Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
@@ -225,7 +225,7 @@ Implement `_parse_workspace_folders(workspace_path)` in a new `src/ai_cli/worksp
 - `src/ai_cli/workspace.py` (new)
 
 **Acceptance criteria:**
-- [ ] Parses `humanware-local.code-workspace` correctly — returns 13 absolute paths
+- [ ] Parses `ai-core-local.code-workspace` correctly — returns 13 absolute paths
 - [ ] Handles `//` comments and trailing commas without error
 - [ ] Missing workspace file raises `FileNotFoundError` with a clear message
 
@@ -260,7 +260,7 @@ Implement `ws_pull(workspace_path, dry_run, verbose)` in `workspace.py`. Handles
 
 Wire `ws_pull` into `main.py` dispatch under `ai ws pull`. Add `--workspace`, `--remote`, `--dry-run`, `--verbose` options with both short and long forms.
 
-Default workspace path: configurable in `config.toml` under `[workspace]`, falling back to `~/projects/sergei/humanware-local.code-workspace`. `--remote` resolves to the `[workspace] remote_path` config key. `--workspace PATH` overrides both.
+Default workspace path: configurable in `config.toml` under `[workspace]`, falling back to `~/projects/sergei/ai-core-local.code-workspace`. `--remote` resolves to the `[workspace] remote_path` config key. `--workspace PATH` overrides both.
 
 **Deliverables:**
 - `src/ai_cli/main.py` (updated)

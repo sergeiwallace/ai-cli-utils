@@ -17,7 +17,7 @@ Session config = CLAUDE.md + GEMINI.md + MEMORY.md + memory files + procedure do
 |----------------|---------------|---------|
 | Behavioral rule or workflow change | CLAUDE.md / GEMINI.md (if short) or procedure doc (if detailed) | "Always use TDD", "Never delete DB without migrating" |
 | User feedback or correction | Memory file (feedback type) + MEMORY.md index | "Don't summarize at end of responses" |
-| Project decision or context | Memory file (project type) + MEMORY.md index | "humanware is the platform, sergei is an instance" |
+| Project decision or context | Memory file (project type) + MEMORY.md index | "ai-core is the platform, sergei is an instance" |
 | Repeatable process | Procedure doc in `docs/procedures/` + link from CLAUDE.md/GEMINI.md | Template propagation workflow |
 
 ## Steps

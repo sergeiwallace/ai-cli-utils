@@ -85,7 +85,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 **Pros:**
 
-- Ensures registry is always complete for humanware users who rely on it
+- Ensures registry is always complete for ai-core users who rely on it
 
 **Cons:**
 
@@ -97,17 +97,17 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 **Pros:**
 
-- Graceful for new users — `main_project` is an opt-in humanware feature
-- No behavior change for existing humanware users (they have `main_project` configured)
+- Graceful for new users — `main_project` is an opt-in ai-core feature
+- No behavior change for existing ai-core users (they have `main_project` configured)
 - Safe in non-interactive environments
 
 **Cons:**
 
-- Existing humanware users who haven't set `main_project` lose the validation (minor — they should have it set)
+- Existing ai-core users who haven't set `main_project` lose the validation (minor — they should have it set)
 
 #### Recommendation
 
-> **Decision:** `PENDING` — Recommend **(b)**. The registry is a humanware-specific feature; basic session management (`ai c N`, `ai ls`, etc.) should work out of the box for any pip user. The guard condition is simple: `if not config.get("project", {}).get("main_project"): return`. Zero behavior change for humanware users.
+> **Decision:** `PENDING` — Recommend **(b)**. The registry is a ai-core-specific feature; basic session management (`ai c N`, `ai ls`, etc.) should work out of the box for any pip user. The guard condition is simple: `if not config.get("project", {}).get("main_project"): return`. Zero behavior change for ai-core users.
 
 ---
 
@@ -203,7 +203,7 @@ project_type = "tool"
 
 #### Recommendation
 
-> **Decision:** `PENDING` — Recommend **(b)** for private Python repos (the dominant case in humanware). Defer `.ai-project.toml` (option c) until a non-Python repo actually needs it. Defer from this scope if D5 (copier hook) is sufficient — the project-local read path is a nice-to-have, not critical path.
+> **Decision:** `PENDING` — Recommend **(b)** for private Python repos (the dominant case in ai-core). Defer `.ai-project.toml` (option c) until a non-Python repo actually needs it. Defer from this scope if D5 (copier hook) is sufficient — the project-local read path is a nice-to-have, not critical path.
 
 ---
 
@@ -314,7 +314,7 @@ Guard `validate_registry_completeness()` in `config.py` with a check for `main_p
 **Acceptance criteria:**
 
 - [ ] `validate_registry_completeness()` returns immediately if `main_project` not in config
-- [ ] Existing humanware users with `main_project` configured: no behavior change
+- [ ] Existing ai-core users with `main_project` configured: no behavior change
 - [ ] Test: `validate_registry_completeness(interactive=True)` with no `main_project` → returns, no side effects
 
 **Dependencies:** None
@@ -476,7 +476,7 @@ Update README first-time setup section. Add `ai register` to CLI reference. Docu
 
 ## Open Questions
 
-1. **Hard-block removal scope**: Should `validate_registry_completeness()` also be removed as a hard-block for _humanware_ users who have `main_project` configured but have new unregistered directories? Or should the interactive prompt survive for humanware users (only disabled for non-humanware users per D1b)? The current UX is useful for ensuring completeness — the gap window is the real problem, not the prompt itself.
+1. **Hard-block removal scope**: Should `validate_registry_completeness()` also be removed as a hard-block for _ai-core_ users who have `main_project` configured but have new unregistered directories? Or should the interactive prompt survive for ai-core users (only disabled for non-ai-core users per D1b)? The current UX is useful for ensuring completeness — the gap window is the real problem, not the prompt itself.
 
 2. **`ai register` write target**: Should `ai register` also update `[tool.ai-cli]` in the project's `pyproject.toml` (if it exists), or only write to `sergei.toml`? Bidirectional sync vs. one-way.
 

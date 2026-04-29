@@ -42,7 +42,7 @@ def _make_home_without_managed_platform(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-class TestIsHumanwarePlatform:
+class TestIsManagedPlatform:
     def test_when_projects_claude_md_exists_then_returns_true(self, tmp_path):
         home = _make_home_with_managed_platform(tmp_path)
         with patch("ai_cli.setup.Path.home", return_value=home):
@@ -93,7 +93,7 @@ class TestRepoRootFrom:
 # ---------------------------------------------------------------------------
 
 
-class TestRunSetupHumanwarePlatform:
+class TestRunSetupManagedPlatform:
     def test_returns_zero(self, tmp_path):
         repo = _make_repo(tmp_path / "repo")
         home = _make_home_with_managed_platform(tmp_path)

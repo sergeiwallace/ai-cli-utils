@@ -3,11 +3,11 @@
 <!--
   CLAUDE-full.md — standalone Claude Code session config for external contributors.
 
-  If you are NOT using the humanware platform (~/projects/CLAUDE.md), use this file:
+  If you are NOT using the ai-core platform (~/projects/CLAUDE.md), use this file:
     1. Delete or rename CLAUDE.md
     2. Rename this file to CLAUDE.md
 
-  If you ARE on the humanware platform, use CLAUDE.md (the lean version) instead —
+  If you ARE on the ai-core platform, use CLAUDE.md (the lean version) instead —
   ~/projects/CLAUDE.md provides all the shared rules below.
 -->
 
