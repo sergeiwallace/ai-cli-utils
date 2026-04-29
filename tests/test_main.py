@@ -327,6 +327,42 @@ class TestGetEngineScript:
         assert exit_pos != -1, "/exit injection not found"
         assert rm_pos != -1, "rm signal_file not found after /exit"
 
+    def test_signal_file_injection_skips_when_exit_already_in_pane(self):
+        """The watcher must not inject /exit if /exit is already visible in the
+        pane. A concurrent watcher subshell SIGTERMed mid-sequence may have
+        already injected /exit before it could clean up signal_file. Without
+        this guard, the new watcher re-injects, causing 2+ /exit submissions."""
+        script = self._make_script()
+        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
+        injection_pos = script.find("'/exit' C-m", sig_block_start)
+        assert sig_block_start != -1
+        assert injection_pos != -1
+        # The section BEFORE the /exit injection must contain a grep or check
+        # using the literal '/exit' string (not just a comment mentioning it).
+        # Discriminator: comments have /exit without quotes; the guard has '/exit'.
+        pre_injection = script[sig_block_start:injection_pos]
+        assert "'/exit'" in pre_injection, (
+            "No pane content guard for '/exit' found before injection — "
+            "watcher can inject duplicate /exit when pane already has one"
+        )
+
+    def test_signal_file_cleanup_fires_even_when_injection_skipped(self):
+        """signal_file must be removed and the watcher must break even when the
+        /exit pane guard fires (injection skipped). If signal_file persisted after
+        a skip, the next watcher cycle would inject anyway — defeating the guard.
+        Structural check: a `fi` must appear between the injection line and the
+        rm, proving rm is OUTSIDE the guard's if-block."""
+        script = self._make_script()
+        injection_pos = script.find("'/exit' C-m")
+        rm_pos = script.find('rm -f "$signal_file"', injection_pos)
+        assert injection_pos != -1, "/exit injection not found"
+        assert rm_pos != -1, "rm signal_file not found after injection"
+        between = script[injection_pos:rm_pos]
+        assert "fi" in between, (
+            "rm signal_file is inside the /exit guard's if-block — "
+            "cleanup won't fire when injection is skipped due to pane guard"
+        )
+
     def test_config_change_detection_has_startup_grace_period(self):
         """Config change auto-restart must also skip the first 10s.
         Same stale-pane problem: config_changed_file from a prior run can

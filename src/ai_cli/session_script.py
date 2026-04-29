@@ -150,7 +150,7 @@ def get_engine_script(
 
         if [[ -f "$signal_file" ]]; then
           # Only inject /exit when CC is at the idle empty prompt (❯ alone on the
-          # last visible line). Three layers of protection against false positives:
+          # last visible line). Four layers of protection against false positives:
           #
           # 1. Grace period (counter < 10): skip the first 10s after watcher start.
           #    When CC restarts with --continue, the pane still shows the previous
@@ -163,22 +163,30 @@ def get_engine_script(
           #    samples before acting. A transient ❯ during startup or state
           #    transition will fail the second check and be skipped.
           #
-          # 3. signal_file deleted AFTER injection (not before): preserves retry
-          #    semantics if the watcher is killed mid-sequence.
+          # 3. /exit pane guard: before injecting, scan the full visible pane for
+          #    '/exit' text. If present, a prior watcher subshell (SIGTERMed between
+          #    send-keys and rm -f) already queued /exit — skip re-injection. CC will
+          #    exit from the already-queued /exit. signal_file is still cleaned up.
+          #
+          # 4. signal_file deleted after double-verify (regardless of whether /exit
+          #    was sent): rm and break are outside the /exit guard so they fire on
+          #    both inject and skip paths. Prevents signal_file from persisting when
+          #    the guard fires.
           #
           # C-u removed: the guard already confirms an empty prompt; C-u is
           # redundant and has unknown behavior in CC's React/Ink TUI.
-          # sleep 0.5 removed: eliminated the race window between check and action.
           if (( counter >= 10 )); then
             _sig_last=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
             if echo "$_sig_last" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
               _sig_verify=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
               if echo "$_sig_verify" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-                if [[ "$engine" == "g" ]]; then
-                  tmux send-keys -t "$tmux_session" "/resume save $ai_name" C-m
-                  sleep 2
+                if ! tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -qF '/exit'; then
+                  if [[ "$engine" == "g" ]]; then
+                    tmux send-keys -t "$tmux_session" "/resume save $ai_name" C-m
+                    sleep 2
+                  fi
+                  tmux send-keys -t "$tmux_session" '/exit' C-m
                 fi
-                tmux send-keys -t "$tmux_session" '/exit' C-m
                 rm -f "$signal_file"
                 break
               fi
