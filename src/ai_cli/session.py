@@ -403,13 +403,13 @@ def _resolve_is_remote(is_remote_flag: bool) -> bool:
 
     The --is-remote flag is injected by the local machine when SSHing to a remote
     host to launch a session.  When ``ai c`` / ``ai g`` is run *directly* on a
-    remote host (e.g. AI_CLI_HOST=hetzner), the flag is absent but the session
+    remote host (e.g. AI_HOST=hetzner), the flag is absent but the session
     should still receive the ``c-r-`` / ``g-r-`` prefix so quota pane discovery
     and other host-aware logic work correctly.
     """
     if is_remote_flag:
         return True
-    host = os.environ.get("AI_CLI_HOST", "")
+    host = os.environ.get("AI_HOST", "")
     return bool(host) and host not in ("mac",)
 
 

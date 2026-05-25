@@ -110,7 +110,7 @@ thread keeps the deployment surface minimal.
 
 #### (a) Hard rename — always `quota.claude.current.{machine}`
 
-Require `AI_CLI_HOST` to be set; fail loudly if absent. Drop the bare
+Require `AI_HOST` to be set; fail loudly if absent. Drop the bare
 `quota.claude.current` key entirely.
 
 **Pros:**
@@ -118,12 +118,12 @@ Require `AI_CLI_HOST` to be set; fail loudly if absent. Drop the bare
 - Forces correct configuration
 
 **Cons:**
-- Breaks external pip users who haven't set `AI_CLI_HOST`
+- Breaks external pip users who haven't set `AI_HOST`
 - No graceful degradation
 
 #### (b) Machine-conditional with fallback
 
-Write/read `quota.claude.current.{machine}` when `AI_CLI_HOST` is set;
+Write/read `quota.claude.current.{machine}` when `AI_HOST` is set;
 fall back to legacy `quota.claude.current` when unset.
 
 **Pros:**
@@ -137,7 +137,7 @@ fall back to legacy `quota.claude.current` when unset.
 
 > **Decision:** `APPROVED — (b) machine-conditional with fallback`
 
-Pre-v1 public package — external pip users may not have `AI_CLI_HOST`. The
+Pre-v1 public package — external pip users may not have `AI_HOST`. The
 fallback costs one conditional per read/write and avoids a breaking change.
 Can hard-rename at v1.0.
 
@@ -156,12 +156,12 @@ checks `_SCRAPE_LOCK_PATH` for in-flight dedup; if clear, calls
 **Deliverables:**
 
 - `src/ai_cli/quota.py` — `_run_nats_quota_listener()` function
-- `src/ai_cli/quota.py` — `quota_watch()` starts listener thread when `AI_CLI_HOST` set
+- `src/ai_cli/quota.py` — `quota_watch()` starts listener thread when `AI_HOST` set
 
 **Acceptance criteria:**
 
-- [x] `quota_watch` starts a daemon thread named `nats-quota-listener` when `AI_CLI_HOST` is set
-- [x] Thread is NOT started when `AI_CLI_HOST` is unset
+- [x] `quota_watch` starts a daemon thread named `nats-quota-listener` when `AI_HOST` is set
+- [x] Thread is NOT started when `AI_HOST` is unset
 - [x] Subscription on `quota.scrape.request.{machine}` — message fires `_launch_background_scrape()`
 - [x] No scrape launched when `_SCRAPE_LOCK_PATH` exists (dedup)
 - [x] Thread exits cleanly when `stop_event` is set
@@ -177,7 +177,7 @@ checks `_SCRAPE_LOCK_PATH` for in-flight dedup; if clear, calls
 
 Update all KV reads and writes in `_publish_quota_snapshot()` and
 `_try_read_kv_snapshot()` to use `quota.claude.current.{machine}` when
-`AI_CLI_HOST` is set, falling back to bare key when unset.
+`AI_HOST` is set, falling back to bare key when unset.
 
 **Deliverables:**
 
@@ -186,10 +186,10 @@ Update all KV reads and writes in `_publish_quota_snapshot()` and
 
 **Acceptance criteria:**
 
-- [x] Write path uses `quota.claude.current.{machine}` when `AI_CLI_HOST` set
-- [x] Write path uses `quota.claude.current` (bare) when `AI_CLI_HOST` unset
-- [x] Read path uses `quota.claude.current.{machine}` when `AI_CLI_HOST` set
-- [x] Read path uses `quota.claude.current` (bare) when `AI_CLI_HOST` unset
+- [x] Write path uses `quota.claude.current.{machine}` when `AI_HOST` set
+- [x] Write path uses `quota.claude.current` (bare) when `AI_HOST` unset
+- [x] Read path uses `quota.claude.current.{machine}` when `AI_HOST` set
+- [x] Read path uses `quota.claude.current` (bare) when `AI_HOST` unset
 - [x] When machine is set, bare key is NOT written (no double-write)
 
 **Dependencies:** None
@@ -255,8 +255,8 @@ Unit tests for all four items above, covering happy path and failure modes.
 
 **Acceptance criteria:**
 
-- [x] `quota_watch` starts listener thread when `AI_CLI_HOST` set
-- [x] `quota_watch` does NOT start listener when `AI_CLI_HOST` unset
+- [x] `quota_watch` starts listener thread when `AI_HOST` set
+- [x] `quota_watch` does NOT start listener when `AI_HOST` unset
 - [x] Scrape triggered on subscription message
 - [x] Scrape NOT triggered when lock file exists
 - [x] Heartbeat key written correctly
@@ -287,8 +287,8 @@ single batch.
 ### T-01: NATS subscription + scrape trigger
 
 - [x] `_run_nats_quota_listener()` exists in `quota.py`
-- [x] `quota_watch()` starts daemon thread when `AI_CLI_HOST` set
-- [x] Thread NOT started when `AI_CLI_HOST` unset
+- [x] `quota_watch()` starts daemon thread when `AI_HOST` set
+- [x] Thread NOT started when `AI_HOST` unset
 - [x] Subscription on `quota.scrape.request.{machine}`
 - [x] Dedup via `_SCRAPE_LOCK_PATH.exists()`
 
@@ -326,7 +326,7 @@ single batch.
 
 ## Open Questions
 
-1. Should `AI_CLI_HOST` being unset be a hard error in a future v1.0 (enabling the hard rename)? Currently silently falls back to bare key.
+1. Should `AI_HOST` being unset be a hard error in a future v1.0 (enabling the hard rename)? Currently silently falls back to bare key.
 2. The listener thread has no reconnect logic — if NATS goes down mid-session, the thread exits silently. Should it retry?
 
 > **Feedback Round 1:** Your thoughts on the open questions:

@@ -119,7 +119,7 @@ nats_servers = ["nats://localhost:4222"]
 
 [machine]
 ## Identifier for this machine. Used to target handoffs to a specific host.
-## Set AI_CLI_HOST in your shell environment (~/.zshenv or ~/.bashrc) so it is available to all processes.
+## Set AI_HOST in your shell environment (~/.zshenv or ~/.bashrc) so it is available to all processes.
 ## Example values: "mac", "hetzner", "work-laptop"
 # host_id = ""
 

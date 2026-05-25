@@ -95,7 +95,7 @@ except Exception:
 # Inner branches require live handoff delivery or specific filesystem failures.
 def _write_pending_if_claimed(data):
     ...
-    if not for_machine or for_machine != os.environ.get("AI_CLI_HOST", ""):
+    if not for_machine or for_machine != os.environ.get("AI_HOST", ""):
         return False             # ← not covered via NATS path
     if hd_handoff_dir is None or not handoff_id:
         return False             # ← not covered via NATS path

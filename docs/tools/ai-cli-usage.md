@@ -340,7 +340,7 @@ Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `nu
 
 **Logs:** `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — one entry per run. Daily Deep Research counter: `~/.local/state/ai-cli/dr-daily.json`.
 
-**JSONL fields:** in addition to tier/model/token fields, every log entry includes `id` (UUID), `occurred_at` (UTC ISO8601 with trailing `Z`), `machine` (value of `AI_CLI_HOST`), `provider` (`gemini`), and `source_quality` (`ok` when the prompt is 20+ characters, `suspected_test` otherwise).
+**JSONL fields:** in addition to tier/model/token fields, every log entry includes `id` (UUID), `occurred_at` (UTC ISO8601 with trailing `Z`), `machine` (value of `AI_HOST`), `provider` (`gemini`), and `source_quality` (`ok` when the prompt is 20+ characters, `suspected_test` otherwise).
 
 **NATS usage events:** when `[messaging] nats_servers` is configured, each call fires a fire-and-forget publish on the subject `hw.events.usage.gemini.event` with the same payload as the JSONL entry. Publishing runs in a daemon thread and never blocks the caller — if NATS is unavailable or not configured the publish silently no-ops. Downstream consumers (the ai-core `UsageConsumer`) ingest these events into Postgres for cross-provider usage reporting.
 
@@ -569,7 +569,7 @@ Reinstalls `ai-cli-utils` from source. Bumps the version to `{base}.post{timesta
 
 - `--force` — additionally passes `--reinstall` to reinstall all dependencies (not just ai-cli-utils). Use for corrupt-environment recovery.
 - `deploy` is kept as an alias for backward compatibility.
-- On Mac (`AI_CLI_HOST=mac`): runs `git pull --rebase` first.
+- On Mac (`AI_HOST=mac`): runs `git pull --rebase` first.
 
 ### ai setup
 

@@ -312,7 +312,7 @@ class TestScanNewEvents:
         proj_dir = projects_dir / "-Users-user-myapp"
         _write_jsonl(proj_dir / "sess.jsonl", [_make_assistant_entry(uuid="e1")])
 
-        with patch.dict("os.environ", {"AI_CLI_HOST": "mymachine"}):
+        with patch.dict("os.environ", {"AI_HOST": "mymachine"}):
             events, _ = scan_new_events(claude_dir=projects_dir, cursor={})
         assert events[0].machine == "mymachine"
 

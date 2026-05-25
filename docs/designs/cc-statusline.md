@@ -185,7 +185,7 @@ Lock file `$TMPDIR/.ai-sl-quota-lock-$UID` prevents concurrent background refres
 
 `ai quota record` has ~680ms startup overhead. Telemetry calls are rate-limited to once per 60s via `$TMPDIR/.ai-sl-telem-$UID`. Tokens = `total_input_tokens + total_output_tokens` from the JSON context window fields.
 
-Skipped when `AI_CLI_HOST=acn-windows` (Windows host, no tmux/Python env available).
+Skipped when `AI_HOST=acn-windows` (Windows host, no tmux/Python env available).
 
 ## Telemetry
 
@@ -205,7 +205,7 @@ No user-facing configuration for the statusline itself. Related config:
 |-----|------|---------|
 | `AI_CLI_STATUSLINE_COLS` | Set from shell `${COLUMNS:-0}` | Terminal width for adaptive label width |
 | `GIT_BRANCH_CACHE` | Shell env | Bypass branch cache (used in tests) |
-| `AI_CLI_HOST` | `~/.zshenv` | Skip telemetry/quota on Windows |
+| `AI_HOST` | `~/.zshenv` | Skip telemetry/quota on Windows |
 
 ## Files
 

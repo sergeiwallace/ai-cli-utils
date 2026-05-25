@@ -940,7 +940,7 @@ class TestPublishQuotaSnapshot:
             _publish_quota_snapshot(snap)  # must not raise
 
     def test_when_js_available_then_writes_snapshot_to_kv(self, monkeypatch):
-        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+        monkeypatch.delenv("AI_HOST", raising=False)
         snap = QuotaSnapshot(weekly_all_models_pct=42.0, session_pct=5.0, weekly_sonnet_pct=20.0, extra_pct=1.0)
         mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
@@ -971,10 +971,10 @@ class TestPublishQuotaSnapshot:
         assert mock_client.publish.call_count == 2
 
     def test_when_js_available_then_kv_key_is_machine_suffixed(self, monkeypatch):
-        """KV key must be quota.claude.current.{machine} when AI_CLI_HOST is set.
-        Falls back to quota.claude.current (no suffix) when AI_CLI_HOST is unset.
+        """KV key must be quota.claude.current.{machine} when AI_HOST is set.
+        Falls back to quota.claude.current (no suffix) when AI_HOST is unset.
         The old quota.claude.weekly key must never be written."""
-        monkeypatch.setenv("AI_CLI_HOST", "test-host")
+        monkeypatch.setenv("AI_HOST", "test-host")
         snap = QuotaSnapshot(weekly_all_models_pct=33.0)
         mock_client, mock_kv = self._make_mock_client_with_js(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
@@ -988,7 +988,7 @@ class TestPublishQuotaSnapshot:
     def test_when_publish_then_also_publishes_to_platform_usage_subject(self, monkeypatch):
         """The second publish call targets hw.events.usage.claude.snapshot with a
         UsageConsumer-compatible payload shape (id, machine, used_pct, raw, ...)."""
-        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+        monkeypatch.setenv("AI_HOST", "hetzner")
         snap = QuotaSnapshot(weekly_all_models_pct=77.5, reset_at="2026-04-18T09:59:00Z")
         mock_client = self._make_mock_client(connected=True)
         with patch("ai_cli.messaging.NATSClient", return_value=mock_client):
@@ -1232,8 +1232,8 @@ class TestQuotaWatch:
         assert "failed to publish" in capsys.readouterr().err
 
     def test_starts_nats_listener_thread_when_machine_is_set(self, monkeypatch):
-        """quota_watch starts the NATS listener daemon thread when AI_CLI_HOST is set."""
-        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+        """quota_watch starts the NATS listener daemon thread when AI_HOST is set."""
+        monkeypatch.setenv("AI_HOST", "hetzner")
 
         mock_client = MagicMock()
         mock_client.nc = None
@@ -1269,8 +1269,8 @@ class TestQuotaWatch:
         assert "nats-quota-listener" in started_names
 
     def test_no_listener_thread_when_machine_is_empty(self, monkeypatch):
-        """quota_watch does NOT start the listener thread when AI_CLI_HOST is unset."""
-        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+        """quota_watch does NOT start the listener thread when AI_HOST is unset."""
+        monkeypatch.delenv("AI_HOST", raising=False)
 
         mock_client = MagicMock()
         mock_client.nc = None
@@ -1528,8 +1528,8 @@ class TestPublishQuotaSnapshotKV:
         return mock_client
 
     def test_kv_write_uses_machine_suffix_when_ai_cli_host_set(self, monkeypatch):
-        """KV key is quota.claude.current.{machine} when AI_CLI_HOST is set."""
-        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+        """KV key is quota.claude.current.{machine} when AI_HOST is set."""
+        monkeypatch.setenv("AI_HOST", "hetzner")
 
         mock_client = self._make_mock_client()
         kv_written = {}
@@ -1551,8 +1551,8 @@ class TestPublishQuotaSnapshotKV:
         assert "quota.claude.current.hetzner" in kv_written
 
     def test_kv_write_uses_legacy_key_when_machine_empty(self, monkeypatch):
-        """KV key is quota.claude.current (no suffix) when AI_CLI_HOST is unset."""
-        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+        """KV key is quota.claude.current (no suffix) when AI_HOST is unset."""
+        monkeypatch.delenv("AI_HOST", raising=False)
 
         mock_client = self._make_mock_client()
         kv_written = {}
@@ -1576,7 +1576,7 @@ class TestPublishQuotaSnapshotKV:
 
     def test_writes_ack_key_when_machine_set(self, monkeypatch):
         """Ack is written to quota.scrape.ack.{machine} after snapshot."""
-        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+        monkeypatch.setenv("AI_HOST", "hetzner")
 
         mock_client = self._make_mock_client()
         kv_written = {}
@@ -1603,8 +1603,8 @@ class TestPublishQuotaSnapshotKV:
         assert isinstance(ack["scraped_at"], float)
 
     def test_no_ack_key_when_machine_empty(self, monkeypatch):
-        """No ack key written when AI_CLI_HOST is unset."""
-        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+        """No ack key written when AI_HOST is unset."""
+        monkeypatch.delenv("AI_HOST", raising=False)
 
         mock_client = self._make_mock_client()
         kv_written = {}
@@ -1662,8 +1662,8 @@ class TestTryReadKvSnapshotMachineKey:
         return mock_client
 
     def test_reads_machine_suffixed_key_when_ai_cli_host_set(self, monkeypatch):
-        """_try_read_kv_snapshot reads quota.claude.current.{machine} when AI_CLI_HOST set."""
-        monkeypatch.setenv("AI_CLI_HOST", "hetzner")
+        """_try_read_kv_snapshot reads quota.claude.current.{machine} when AI_HOST set."""
+        monkeypatch.setenv("AI_HOST", "hetzner")
 
         read_keys: list = []
         mock_client = self._make_mock_client_with_kv(read_keys)
@@ -1680,8 +1680,8 @@ class TestTryReadKvSnapshotMachineKey:
         assert any(k == "quota.claude.current.hetzner" for k in read_keys)
 
     def test_reads_legacy_key_when_ai_cli_host_unset(self, monkeypatch):
-        """_try_read_kv_snapshot reads quota.claude.current (no suffix) when AI_CLI_HOST unset."""
-        monkeypatch.delenv("AI_CLI_HOST", raising=False)
+        """_try_read_kv_snapshot reads quota.claude.current (no suffix) when AI_HOST unset."""
+        monkeypatch.delenv("AI_HOST", raising=False)
 
         read_keys: list = []
         mock_client = self._make_mock_client_with_kv(read_keys)

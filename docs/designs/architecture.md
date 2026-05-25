@@ -189,7 +189,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 **Click command group dispatch** — command routing uses a `@click.group()` tree. `ai internal` is kept as a pre-Click fast path for bash hook performance (avoids Click startup overhead). Migrated from `if sys.argv[1] == ...` argparse hybrid in AI-CLI-39/47.
 
-**Machine self-awareness via `AI_CLI_HOST`** — NATS tunnel auto-open, SSH command routing, and sync source labeling all branch on the `AI_CLI_HOST` env var (`mac`, `hetzner`).
+**Machine self-awareness via `AI_HOST`** — NATS tunnel auto-open, SSH command routing, and sync source labeling all branch on the `AI_HOST` env var (`mac`, `hetzner`).
 
 **XDG-compliant paths with migration** — config at `$XDG_CONFIG_HOME/ai-cli-utils/`, state at `$XDG_STATE_HOME/ai-cli-utils/`. `_migrate_xdg_dir()` auto-renames old `ai-cli` dirs on first access.
 

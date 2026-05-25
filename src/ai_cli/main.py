@@ -607,7 +607,7 @@ def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) ->
             handoff_dir=sw_handoff_dir,
             pending_file=sw_pending_file,
             session_id=sw_session_id,
-            machine_id=os.environ.get("AI_CLI_HOST", ""),
+            machine_id=os.environ.get("AI_HOST", ""),
         )
 
     # Startup scan: pick up any unclaimed files already in the pending queue
@@ -698,7 +698,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
             handoff_dir=hd_handoff_dir,
             prompt_file=hd_prompt_file,
             session=hd_session,
-            machine_id=os.environ.get("AI_CLI_HOST", ""),
+            machine_id=os.environ.get("AI_HOST", ""),
         )
 
     # 1. Local file scan first (fast, no network)

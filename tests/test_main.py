@@ -621,7 +621,7 @@ class TestCliDispatchExtended:
             patch("sys.argv", ["ai", "copier-update"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch.dict(os.environ, {"AI_CLI_HOST": "hetzner"}),
+            patch.dict(os.environ, {"AI_HOST": "hetzner"}),
             patch("ai_cli.copier_update.run_copier_update", return_value=0),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -806,28 +806,28 @@ class TestCliDispatchExtended:
 
 class TestResolveIsRemote:
     def test_when_flag_true_then_returns_true_regardless_of_host(self):
-        with patch.dict(os.environ, {"AI_CLI_HOST": "mac"}):
+        with patch.dict(os.environ, {"AI_HOST": "mac"}):
             assert _resolve_is_remote(True) is True
 
     def test_when_flag_false_and_mac_host_then_returns_false(self):
-        with patch.dict(os.environ, {"AI_CLI_HOST": "mac"}):
+        with patch.dict(os.environ, {"AI_HOST": "mac"}):
             assert _resolve_is_remote(False) is False
 
     def test_when_flag_false_and_hetzner_host_then_returns_true(self):
-        with patch.dict(os.environ, {"AI_CLI_HOST": "hetzner"}):
+        with patch.dict(os.environ, {"AI_HOST": "hetzner"}):
             assert _resolve_is_remote(False) is True
 
     def test_when_flag_false_and_arbitrary_remote_host_then_returns_true(self):
-        with patch.dict(os.environ, {"AI_CLI_HOST": "devserver"}):
+        with patch.dict(os.environ, {"AI_HOST": "devserver"}):
             assert _resolve_is_remote(False) is True
 
     def test_when_flag_false_and_no_host_env_then_returns_false(self):
-        env = {k: v for k, v in os.environ.items() if k != "AI_CLI_HOST"}
+        env = {k: v for k, v in os.environ.items() if k != "AI_HOST"}
         with patch.dict(os.environ, env, clear=True):
             assert _resolve_is_remote(False) is False
 
     def test_when_flag_false_and_empty_host_then_returns_false(self):
-        with patch.dict(os.environ, {"AI_CLI_HOST": ""}):
+        with patch.dict(os.environ, {"AI_HOST": ""}):
             assert _resolve_is_remote(False) is False
 
 

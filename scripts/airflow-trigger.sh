@@ -39,7 +39,7 @@ done
 HETZNER_HOST="${HETZNER_HOST:-sergei@178.104.70.139}"
 AIRFLOW_BIN="${AIRFLOW_BIN:-/home/sergei/airflow-venv/bin/airflow}"
 
-if [[ "${AI_CLI_HOST:-mac}" == "hetzner" ]]; then
+if [[ "${AI_HOST:-mac}" == "hetzner" ]]; then
     af() { "$AIRFLOW_BIN" "$@"; }
 else
     af() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$HETZNER_HOST" \

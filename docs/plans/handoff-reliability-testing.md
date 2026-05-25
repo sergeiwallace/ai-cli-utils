@@ -52,7 +52,7 @@ The handoff system delivers work between CC sessions automatically via 5 pickup 
 
 ### Key invariants
 
-- `for_machine` field in handoff file must match `AI_CLI_HOST` env var on receiving machine, or signal-watch silently drops it
+- `for_machine` field in handoff file must match `AI_HOST` env var on receiving machine, or signal-watch silently drops it
 - `post_handoff` requires `--for-machine` — no implicit default
 - Signal-watch subscribes to `handoff.{project_name}` (directory name, e.g. `handoff.ai-cli-utils`)
 - `post_handoff` publishes to same subject — B-02 confirmed fixed
@@ -140,9 +140,9 @@ Note: `ai handoff post` takes positional args (`<title> <priority> <project> <me
 
 **Setup:** Mac session posts `--for-machine hetzner`. Hetzner session is running.
 
-**Expected path:** Mac `ai handoff post` → writes file to Mac's handoff queue → publishes to NATS via auto SSH tunnel → Hetzner signal-watch receives, checks `for_machine == "hetzner"` (matches `AI_CLI_HOST=hetzner`) → claims file, writes `handoff-pending-{session}` → L4 picks up on next CC exit.
+**Expected path:** Mac `ai handoff post` → writes file to Mac's handoff queue → publishes to NATS via auto SSH tunnel → Hetzner signal-watch receives, checks `for_machine == "hetzner"` (matches `AI_HOST=hetzner`) → claims file, writes `handoff-pending-{session}` → L4 picks up on next CC exit.
 
-**Risk:** The handoff file is also written locally on Mac (to Mac's queue) — Hetzner's startup drain won't find it there. Reliability depends entirely on NATS delivery succeeding, AND Hetzner's `AI_CLI_HOST` being exactly `hetzner`.
+**Risk:** The handoff file is also written locally on Mac (to Mac's queue) — Hetzner's startup drain won't find it there. Reliability depends entirely on NATS delivery succeeding, AND Hetzner's `AI_HOST` being exactly `hetzner`.
 
 | Run | Date | Result | Layer | Notes |
 |:----|:-----|:-------|:------|:------|
@@ -154,7 +154,7 @@ Note: `ai handoff post` takes positional args (`<title> <priority> <project> <me
 
 **Setup:** Hetzner session posts `--for-machine mac`. Mac session is running.
 
-**Expected path:** Same as Scenario 4 but reversed. Mac's signal-watch must be connected to NATS via its SSH tunnel. Mac must have `AI_CLI_HOST=mac`.
+**Expected path:** Same as Scenario 4 but reversed. Mac's signal-watch must be connected to NATS via its SSH tunnel. Mac must have `AI_HOST=mac`.
 
 **Risk:** Mac SSH tunnel must be up. Mac's signal-watch must already be running (started when `ai c` launched). If Mac session is in a different project than the handoff's project name, NATS subject won't match.
 

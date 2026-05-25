@@ -1616,7 +1616,7 @@ class TestDeploy:
             patch("sys.argv", ["ai", "update"]),
             patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
             patch("subprocess.run", side_effect=fake_run),
-            patch.dict("os.environ", {"AI_CLI_HOST": "hetzner"}),
+            patch.dict("os.environ", {"AI_HOST": "hetzner"}),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()

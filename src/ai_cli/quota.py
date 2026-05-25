@@ -447,7 +447,7 @@ def quota_watch(poll_interval: int = 300) -> int:
     from .messaging import NATSClient
     from .notifications import Notifier
 
-    machine = os.environ.get("AI_CLI_HOST", "")
+    machine = os.environ.get("AI_HOST", "")
 
     client = NATSClient()
     loop = asyncio.new_event_loop()
@@ -929,7 +929,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
         "ts": time.time(),
     }
 
-    machine = os.environ.get("AI_CLI_HOST", "")
+    machine = os.environ.get("AI_HOST", "")
 
     async def _do_publish() -> None:
         client = NATSClient(servers=nats_servers)
@@ -951,7 +951,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
                 await client.publish("hw.events.usage.claude.snapshot", hw_payload)
                 # Write latest snapshot to NATS KV so aido and other services can read
                 # current quota without SSHing to the local DB. Key is
-                # machine-suffixed (AI_CLI_HOST) for multi-machine disambiguation.
+                # machine-suffixed (AI_HOST) for multi-machine disambiguation.
                 if client.js:
                     try:
                         kv = await client.js.key_value("hw_state")
@@ -981,13 +981,13 @@ def _try_read_kv_snapshot() -> dict | None:
     doesn't exist. Capped at 300ms total via a daemon thread join — never
     blocks the statusline for longer than that.
 
-    Reads from ``quota.claude.current.{AI_CLI_HOST}`` when ``AI_CLI_HOST`` is
+    Reads from ``quota.claude.current.{AI_HOST}`` when ``AI_HOST`` is
     set, falling back to the legacy ``quota.claude.current`` key otherwise.
     """
     import os
     import threading
 
-    machine = os.environ.get("AI_CLI_HOST", "")
+    machine = os.environ.get("AI_HOST", "")
     kv_key = f"quota.claude.current.{machine}" if machine else "quota.claude.current"
     result: list[dict | None] = [None]
 

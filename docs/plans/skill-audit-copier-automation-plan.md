@@ -99,7 +99,7 @@ ai copier-update [--dry-run] [--project PROJECT]
 - `--dry-run` — print discovered projects and what would run, no copier invocation
 - `--project PROJECT` — single project by name instead of all
 
-**Guard:** `if os.environ.get("AI_CLI_HOST") != "mac": sys.exit("copier-update: runs on Mac only")`.
+**Guard:** `if os.environ.get("AI_HOST") != "mac": sys.exit("copier-update: runs on Mac only")`.
 
 **Tests:** mock subprocess, verify discovery, verify conflict detection, verify dry-run, verify single-project filter, verify Mac guard.
 

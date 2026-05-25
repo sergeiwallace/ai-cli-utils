@@ -86,7 +86,7 @@ Project root resolves via `$CLAUDE_PROJECT_DIR` (set by CC in hook env) → `git
 - `AIRFLOW_WATCH_INTERVAL` (default `60`) — poll interval in seconds
 - `HETZNER_HOST` (default `sergei@178.104.70.139`) — SSH target
 - `AIRFLOW_BIN` (default `/home/sergei/airflow-venv/bin/airflow`) — remote airflow binary
-- `AI_CLI_HOST` — if `hetzner`, runs airflow locally; otherwise SSHes
+- `AI_HOST` — if `hetzner`, runs airflow locally; otherwise SSHes
 
 ### `scripts/airflow-trigger.sh`
 

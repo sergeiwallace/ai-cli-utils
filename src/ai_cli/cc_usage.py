@@ -174,7 +174,7 @@ def scan_new_events(
 
     Args:
         claude_dir: Override for ~/.claude/projects (for testing).
-        machine: Machine identifier (defaults to AI_CLI_HOST env var or 'unknown').
+        machine: Machine identifier (defaults to AI_HOST env var or 'unknown').
         cursor: Existing cursor dict. If None, loaded from disk.
 
     Returns:
@@ -185,7 +185,7 @@ def scan_new_events(
     if not projects_dir.exists():
         return [], cursor or {}
 
-    _machine = machine or os.environ.get("AI_CLI_HOST", "unknown")
+    _machine = machine or os.environ.get("AI_HOST", "unknown")
     _cursor = cursor if cursor is not None else _load_cursor()
     new_cursor = dict(_cursor)
     events: list[CCTokenEvent] = []
@@ -291,7 +291,7 @@ def scan_and_push(
     Args:
         config: Full ai-cli config dict (reads config["ai-core"]).
         claude_dir: Override for ~/.claude/projects (for testing).
-        machine: Override AI_CLI_HOST (for testing).
+        machine: Override AI_HOST (for testing).
         dry_run: If True, scan and count but do not push or update cursor.
 
     Returns:
