@@ -4,6 +4,7 @@ category: research
 tags: [open-source, python, cli, github, pypi, best-practices]
 status: complete
 source: "opus-researcher-2026-03-29"
+registry_id: R-4
 ---
 
 # Open-Source Python CLI Package Best Practices

@@ -4,6 +4,7 @@ category: research
 tags: [iterm2, terminal, tab-title, tab-color, session-title, fleet, gemini, remote, mosh, tmux, wezterm, kitty, ghostty]
 status: complete
 source: gemini-deep-think-2026-04-02
+registry_id: R-3
 related_docs:
   - docs/plans/iterm2-fleet-config-plan.md
   - docs/plans/iterm2-smart-titles-plan.md

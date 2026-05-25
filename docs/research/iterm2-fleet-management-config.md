@@ -4,6 +4,7 @@ category: research
 tags: [research, iterm2, terminal, fleet-management, ssh, tmux, developer-tools]
 status: complete
 source: "claude-opus-2026-03-29"
+registry_id: R-2
 ---
 
 # iTerm2 Power User Configuration for AI Agent Fleet Management

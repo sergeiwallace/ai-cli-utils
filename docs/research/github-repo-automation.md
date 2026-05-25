@@ -4,6 +4,7 @@ category: research
 tags: [github, automation, ci-cd, bots, open-source, python, cli]
 status: complete
 source: "opus-researcher-2026-03-29"
+registry_id: R-1
 ---
 
 # GitHub Repository Automation & Ecosystem Tooling for Python CLI Projects
