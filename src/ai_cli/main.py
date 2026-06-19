@@ -776,8 +776,14 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
             finally:
                 await hd_client.close()
 
+        async def _drain_with_timeout():
+            try:
+                await asyncio.wait_for(_drain(), timeout=6.0)
+            except asyncio.TimeoutError:
+                _handoff._log_handoff_event("handoff.drain.nats_timeout", session=hd_session)
+
         try:
-            asyncio.run(_drain())
+            asyncio.run(_drain_with_timeout())
         except Exception as e:
             # Not covered: requires asyncio.run() itself to raise, which needs a
             # broken event loop or NATS server in a specific failure state.

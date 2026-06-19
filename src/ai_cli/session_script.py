@@ -392,7 +392,7 @@ def get_engine_script(
       # Writes prompt_file if a pending handoff exists (local or cross-machine via NATS).
       # CC then launches with --continue on the task — zero user input required.
       if $first_run && [[ "$engine" == "c" && -n "$project_name" && ! -f "$prompt_file" ]]; then
-        ai internal handoff-drain "$project_name" "$tmux_session" 2>/dev/null || true
+        timeout 8 ai internal handoff-drain "$project_name" "$tmux_session" 2>/dev/null || true
       fi
 
       if [[ -f "$prompt_file" ]]; then
