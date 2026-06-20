@@ -20,14 +20,12 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
     Returns markdown content for session-context.md.
     """
     try:
-        # Optional platform integration — requires a compatible platform package.
-        # Falls back gracefully if not available.
-        from platform_pkg.config import load_config  # type: ignore[import]
-        from platform_pkg.db import init_db, set_db_path, sync_all_project_roadmaps  # type: ignore[import]
-        from platform_pkg.services.curation import get_curated_queue, run_curation  # type: ignore[import]
-        from platform_pkg.services.intelligence import get_daily_digest  # type: ignore[import]
-        from platform_pkg.services.memory import index_project_memories  # type: ignore[import]
-        from platform_pkg.services.tasks import get_cross_project_priorities  # type: ignore[import]
+        from ai_core.config import load_config
+        from ai_core.db import init_db, set_db_path, sync_all_project_roadmaps
+        from ai_core.services.curation import get_curated_queue, run_curation
+        from ai_core.services.intelligence import get_daily_digest
+        from ai_core.services.memory import index_project_memories
+        from ai_core.services.tasks import get_cross_project_priorities
 
         cfg = load_config(config_path)
         set_db_path(cfg.db_path)
@@ -63,9 +61,11 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
         if digest:
             sections.append("## Top Signals\n")
             for item in digest:
-                sections.append(
-                    f"- **{item['signal_type']}** ({item['source_project']}): {item['content']} [score: {item['score']:.2f}]"
+                line = (
+                    f"- **{item['signal_type']}** ({item['source_project']}): "
+                    f"{item['content']} [score: {item['score']:.2f}]"
                 )
+                sections.append(line)
             sections.append("")
     except Exception:
         pass
@@ -100,7 +100,10 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
 
     # Priority Guidance
     try:
-        from platform_pkg.services.guidance import compute_priority_guidance, format_daily_focus  # type: ignore[import]
+        from ai_core.services.guidance import (
+            compute_priority_guidance,
+            format_daily_focus,
+        )
 
         guidance = compute_priority_guidance(project=project)
         focus_text = format_daily_focus(guidance)

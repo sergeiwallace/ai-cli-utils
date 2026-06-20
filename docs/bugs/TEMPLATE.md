@@ -1,15 +1,12 @@
 ---
-title: "[BUG-NNN] Short description"
-category: bugs
+title: "Bug Document Template"
+category: bug
 tags: [bug]
-status: open
-severity: P0 | P1 | P2 | P3
-# Optional fields:
-# task: SW-XXX
-# related_docs:
-#   - docs/bugs/related-bug.md
-# fixed_by: "<commit hash or PR>"
+status: template
+template_version: "bug-1.0.0"
 ---
+
+<!-- aido:region name="summary" kind="replaceable" -->
 
 # [BUG-NNN] Short Description
 
@@ -67,3 +64,21 @@ severity: P0 | P1 | P2 | P3
 ## Lessons Learned
 
 <!-- What should change to prevent recurrence — monitoring, tests, config defaults, etc. -->
+
+<!-- /aido:region name="summary" -->
+
+<!-- aido:region name="reproduction" kind="replaceable" -->
+
+<!-- /aido:region name="reproduction" -->
+
+<!-- aido:region name="root_cause" kind="replaceable" -->
+
+<!-- /aido:region name="root_cause" -->
+
+<!-- aido:region name="fix_log" kind="append_only" -->
+
+<!-- /aido:region name="fix_log" -->
+
+<!-- aido:region name="appendix_evidence" kind="immutable" -->
+
+<!-- /aido:region name="appendix_evidence" -->

@@ -68,9 +68,13 @@ in the prompt body and inside `<grounding_instructions>`.
 
 **Other prompt patterns:**
 
-- **References as starting points** — named projects, papers, and systems in a
-  prompt are illustrative anchors only. Always instruct the model to explore beyond
-  them and surface relevant work not listed. Anchor bias is a real failure mode.
+- **Independent exploration — the prompt is a FLOOR, not a ceiling** — the
+  questions, topics, named examples, vendors, packages, and tickets in a prompt are
+  illustrative anchors and a floor for the research, never an exhaustive checklist to
+  answer only and then stop. Anchor bias (over-fitting to the listed items) is a known
+  failure mode; counter it deliberately. Paste the standardized `## Scope note` +
+  `## Independent exploration (gaps, blindspots, emergent threads)` blocks from the
+  research-prompt TEMPLATE into every prompt body (the canonical wording lives there).
 - **Follow-up / sequential runs** — add a `## Background` section at the top of the
   prompt body (before questions, outside `<grounding_instructions>`) summarizing
   what prior runs found: "Assume all Background points are established and do not

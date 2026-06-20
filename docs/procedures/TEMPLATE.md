@@ -1,3 +1,13 @@
+---
+title: "Procedure Document Template"
+category: procedure
+tags: [procedure]
+status: template
+template_version: "procedure-1.0.0"
+---
+
+<!-- aido:region name="overview" kind="replaceable" -->
+
 # [Procedure Name]
 
 > [One-line summary of what this procedure covers]
@@ -36,3 +46,17 @@
 | Activity | Frequency | Trigger |
 |----------|-----------|---------|
 | | | |
+
+<!-- /aido:region name="overview" -->
+
+<!-- aido:region name="steps" kind="replaceable" -->
+
+<!-- /aido:region name="steps" -->
+
+<!-- aido:region name="rationale" kind="replaceable" -->
+
+<!-- /aido:region name="rationale" -->
+
+<!-- aido:region name="revision_log" kind="append_only" -->
+
+<!-- /aido:region name="revision_log" -->

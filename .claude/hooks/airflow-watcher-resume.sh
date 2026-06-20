@@ -10,6 +10,12 @@
 # recreates the sentinel, which triggers the PostToolUse hook to block on the
 # next tool call until the watcher is relaunched.
 
+# AIH-55: Airflow is personal-machines-only (Hetzner/Mac). Hard no-op on BMS
+# machines — they never run Airflow.
+case "${AI_HOST:-}" in
+  cld-platform | bms-windows) exit 0 ;;
+esac
+
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 STATE_DIR="${PROJECT_ROOT}/.claude/state"
 PID_FILE="${STATE_DIR}/airflow-watch.pid"

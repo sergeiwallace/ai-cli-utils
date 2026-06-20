@@ -114,13 +114,13 @@ fi
 
 
 
-# Verify envchain is available
-if command -v envchain &>/dev/null; then
-    ok "envchain found — secrets load from macOS Keychain."
-    info "To add secrets: envchain --set dev JIRA_API_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN"
+# Verify Doppler is available (canonical secrets store — replaces envchain/Keychain)
+if command -v doppler &>/dev/null; then
+    ok "Doppler found — secrets load from Doppler (project: sergei, config: dev)."
+    info "To add secrets: doppler secrets set KEY_NAME --project sergei --config dev"
 else
-    warn "envchain not found. Install: brew install envchain"
-    warn "Then run: envchain --set dev JIRA_API_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN"
+    warn "Doppler not found. Install: brew install dopplerhq/cli/doppler"
+    warn "Then run: doppler login && doppler secrets set KEY_NAME --project sergei --config dev"
 fi
 
 
