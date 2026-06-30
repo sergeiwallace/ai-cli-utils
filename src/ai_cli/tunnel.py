@@ -173,6 +173,28 @@ def _find_chrome_pid_by_port(port: int) -> int | None:
     return None
 
 
+def _clear_stale_singleton_lock(user_data_dir: Path) -> bool:
+    """Remove Chrome Singleton* lock artifacts if their owning PID is dead.
+
+    Chrome's SingletonLock is a symlink named ``<host>-<pid>``. A lock left
+    behind by a crashed or killed instance makes every new Chrome exit on
+    startup, so the CDP port never opens. Only clears the lock when the PID is
+    dead — a live instance keeps its lock untouched. Returns True if cleared.
+    """
+    lock = user_data_dir / "SingletonLock"
+    if not lock.is_symlink():
+        return False
+    try:
+        pid = int(str(lock.readlink()).rsplit("-", 1)[-1])
+    except (OSError, ValueError):
+        return False
+    if _pid_alive(pid):
+        return False
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        (user_data_dir / name).unlink(missing_ok=True)
+    return True
+
+
 def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = False, forward: bool = False) -> None:
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"cdp-{port}.pid"
@@ -201,6 +223,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     else:
         user_data_dir = get_xdg_data_home() / "chrome-profiles" / "automation"
     user_data_dir.mkdir(parents=True, exist_ok=True)
+    _clear_stale_singleton_lock(user_data_dir)
 
     chrome_args = [
         f"--remote-debugging-port={port}",

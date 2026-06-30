@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ai_cli import tunnel
 from ai_cli.main import (
     _cmd_cdp_start,
     _cmd_cdp_stop,
@@ -719,3 +720,52 @@ class TestCdpDispatch:
 
         assert exc.value.code == 1
         assert "Usage" in capsys.readouterr().err
+
+
+class TestClearStaleSingletonLock:
+    """Self-heal: a stale SingletonLock from a dead PID blocks Chrome launch."""
+
+    def _make_locks(self, d, pid):
+        (d / "SingletonLock").symlink_to(f"myhost-{pid}")
+        (d / "SingletonCookie").symlink_to("12345")
+        (d / "SingletonSocket").symlink_to("/tmp/sock")
+
+    def test_when_lock_pid_dead_then_removes_all_singleton_artifacts(self, tmp_path):
+        self._make_locks(tmp_path, 999111)
+        with patch("ai_cli.tunnel._pid_alive", return_value=False):
+            cleared = tunnel._clear_stale_singleton_lock(tmp_path)
+        assert cleared is True
+        assert not (tmp_path / "SingletonLock").is_symlink()
+        assert not (tmp_path / "SingletonCookie").is_symlink()
+        assert not (tmp_path / "SingletonSocket").is_symlink()
+
+    def test_when_lock_pid_alive_then_keeps_lock(self, tmp_path):
+        self._make_locks(tmp_path, 4242)
+        with patch("ai_cli.tunnel._pid_alive", return_value=True):
+            cleared = tunnel._clear_stale_singleton_lock(tmp_path)
+        assert cleared is False
+        assert (tmp_path / "SingletonLock").is_symlink()
+
+    def test_when_no_lock_then_noop_returns_false(self, tmp_path):
+        assert tunnel._clear_stale_singleton_lock(tmp_path) is False
+
+    def test_when_lock_target_unparseable_then_returns_false(self, tmp_path):
+        (tmp_path / "SingletonLock").symlink_to("no-pid-here-xyz")
+        with patch("ai_cli.tunnel._pid_alive", return_value=False) as mock_alive:
+            cleared = tunnel._clear_stale_singleton_lock(tmp_path)
+        assert cleared is False
+        assert not mock_alive.called  # never reached the liveness check
+        assert (tmp_path / "SingletonLock").is_symlink()
+
+    @patch.object(sys, "platform", "linux")
+    def test_cmd_cdp_start_clears_stale_lock_before_launch(self, tmp_path):
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel.get_xdg_data_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel._clear_stale_singleton_lock") as mock_clear,
+            patch("subprocess.Popen", return_value=MagicMock(pid=1)),
+            patch("urllib.request.urlopen"),
+        ):
+            _cmd_cdp_start(9222, False, {})
+        mock_clear.assert_called_once()
