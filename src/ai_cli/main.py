@@ -53,17 +53,17 @@ from .iterm2 import (  # noqa: E402,F401
     _DEFAULT_ITERM2_CONFIG,
     _assign_iterm2_color_slot,
     _configure_tmux_for_iterm2,
+    _current_pane_tty,
     _emit_iterm2_profile_setup,
-    _evict_iterm2_guid,
     _is_iterm2,
     _iterm2_palette,
-    _get_current_iterm_session_id,
     _iterm2_session_type,
     _iterm2_state_dir,
+    _iterm_pane_tty_for_tmux_session,
     _load_iterm2_config,
     _release_iterm2_color_slot,
     _resolve_iterm2_config,
-    _set_iterm2_name_applescript,
+    _set_iterm2_name_by_tty,
 )
 from .handoff import (  # noqa: E402,F401
     _claim_handoff_for_signal,
@@ -455,9 +455,14 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "set-iterm2-name":
         if len(argv) < 3:
-            print("Usage: ai internal set-iterm2-name <iterm_session_id> <name>", file=sys.stderr)
+            print("Usage: ai internal set-iterm2-name <tmux_session|tty> <name>", file=sys.stderr)
             sys.exit(1)
-        _iterm2._set_iterm2_name_applescript(argv[1], argv[2])
+        # Resolve the physical pane by tty: accept a tty directly, or a tmux
+        # session name whose live client tty we look up. tty matching renames
+        # exactly the visible pane and can't collide across sessions.
+        target = argv[1]
+        tty = target if target.startswith("/dev/") else _iterm2._iterm_pane_tty_for_tmux_session(target)
+        _iterm2._set_iterm2_name_by_tty(tty, argv[2])
         sys.exit(0)
     else:
         print(f"Usage: ai internal <action> [args...] (unknown action: {action})", file=sys.stderr)
@@ -1348,12 +1353,9 @@ def _do_session_launch(
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
     # so _iterm2_fleet_setup inside the bash script would silently no-op without them.
-    # ITERM_SESSION_ID is resolved via the tmux session env when inside tmux so that
-    # stale shell-inherited GUIDs (from the original session launch) don't propagate.
+    # The pane is renamed by live client tty (not a stored GUID), so ITERM_SESSION_ID
+    # no longer needs to be propagated or reconciled — only the terminal-type flags.
     _iterm_env_flags: list[str] = []
-    _live_iterm_session_id = _iterm2._get_current_iterm_session_id()
-    if _live_iterm_session_id:
-        _iterm_env_flags += ["-e", f"ITERM_SESSION_ID={_live_iterm_session_id}"]
     for _var in ("LC_TERMINAL", "TERM_PROGRAM"):
         if _val := os.environ.get(_var):
             _iterm_env_flags += ["-e", f"{_var}={_val}"]
@@ -1429,22 +1431,12 @@ def _do_session_launch(
         _sf.write(script)
     os.chmod(_script_path, 0o700)
 
-    # Evict this GUID from any other session that still holds it.  Multiple
-    # sessions sharing the same GUID each rename the same pane on CC restart,
-    # clobbering each other's titles (AI-CLI-59 root cause).
-    if _live_iterm_session_id:
-        _iterm2._evict_iterm2_guid(_live_iterm_session_id, session_id)
-
     if existing.returncode == 0:
         # Session exists — write fresh script (hot-reload detection), configure
-        # for iTerm2, update ITERM_SESSION_ID, then attach (detach stale clients).
+        # for iTerm2, then attach (detach stale clients). The pane is renamed by
+        # live client tty inside the session script, so there is no GUID to
+        # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
-        _new_iterm_id = _iterm2._get_current_iterm_session_id()
-        if _new_iterm_id:
-            subprocess.run(
-                ["tmux", "set-environment", "-t", session_id, "ITERM_SESSION_ID", _new_iterm_id],
-                capture_output=True,
-            )
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.

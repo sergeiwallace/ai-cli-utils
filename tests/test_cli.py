@@ -479,8 +479,10 @@ class TestCliSessionSetupBranches:
                                         cli()
         assert len(killed) == 0
 
-    def test_cli_when_iterm2_env_set_then_passes_to_tmux_new_session(self):
+    def test_cli_when_iterm2_env_set_then_passes_terminal_flags_to_tmux_new_session(self):
         # Env vars are passed to `new-session` (subprocess.run), not `attach-session` (execvp).
+        # Only the terminal-type flags are propagated — ITERM_SESSION_ID is NOT, since the
+        # pane is renamed by live client tty, not a stored GUID (AI-CLI-59 final).
         run_calls = []
 
         def fake_run(cmd, *args, **kwargs):
@@ -509,9 +511,10 @@ class TestCliSessionSetupBranches:
         new_session_cmd = next((c for c in run_calls if "new-session" in c), None)
         assert new_session_cmd is not None, "tmux new-session was not called"
         assert "-e" in new_session_cmd
-        assert any("ITERM_SESSION_ID=w0t1p0:abc" in a for a in new_session_cmd)
         assert any("LC_TERMINAL=iTerm2" in a for a in new_session_cmd)
         assert any("TERM_PROGRAM=iTerm.app" in a for a in new_session_cmd)
+        # ITERM_SESSION_ID must NOT be propagated (tty-based rename, no stored GUID).
+        assert not any("ITERM_SESSION_ID" in a for a in new_session_cmd)
 
     def test_cli_when_remote_with_project_flag_then_uses_project_prefix(self):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}

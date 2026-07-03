@@ -278,11 +278,19 @@ def get_engine_script(
       fi
     }}
 
-    # Return the live ITERM_SESSION_ID from the tmux session environment.
-    # Reading from tmux (not the static shell env) picks up updates made by
-    # `ai c` when re-attaching the session to a different iTerm pane.
-    _live_iterm_id() {{
-      tmux show-environment ITERM_SESSION_ID 2>/dev/null | sed 's/^ITERM_SESSION_ID=//'
+    # Rename the pane iTerm2 shows this tmux session in.  `set-iterm2-name`
+    # resolves the target pane from the session's live client tty, so it always
+    # hits the pane the user is currently viewing and can never collide with
+    # another session (unlike the old shared-GUID scheme, AI-CLI-59).  Only fires
+    # when the session is attached — a detached session has no client tty and
+    # must not touch any pane.  Falls back to OSC 1 when not attached.
+    _iterm2_rename() {{
+      local dname="$1"
+      if [[ $(tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l) -gt 0 ]]; then
+        ( ai internal set-iterm2-name "$tmux_session" "$dname" 2>/dev/null ) &
+      else
+        _it2 "\\033]1;$dname\\007"
+      fi
     }}
 
     _iterm2_fleet_setup() {{
@@ -292,22 +300,7 @@ def get_engine_script(
       local _profile="ai-cli:$ai_name"
       _it2 "\\033]1337;SetProfile=$_profile\\007"
       _it2 "\\033]1337;SetColors=tab=$_iterm2_color\\007"
-      # Rename via AppleScript using the live GUID (targeted to the specific iTerm pane).
-      # This avoids the DCS-broadcast race where multiple sessions share one outer pane
-      # and each session's OSC 1 overwrites the others' labels.
-      local _lid
-      _lid=$(_live_iterm_id)
-      if [[ -n "$_lid" ]]; then
-        # Only rename when this session is actually attached to a terminal.
-        # A detached session must not clobber a pane that belongs to a different
-        # currently-visible session — both may share the same GUID when one was
-        # spawned from inside the other's shell.
-        if [[ $(tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l) -gt 0 ]]; then
-          ( ai internal set-iterm2-name "$_lid" "$sname" 2>/dev/null ) &
-        fi
-      else
-        _it2 "\\033]1;$sname\\007"
-      fi
+      _iterm2_rename "$sname"
     }}
 
     # iTerm2 status updates: re-emit pane title with optional status symbol.
@@ -329,15 +322,7 @@ def get_engine_script(
         esac
         sym="$sym "
       fi
-      local _lid
-      _lid=$(_live_iterm_id)
-      if [[ -n "$_lid" ]]; then
-        if [[ $(tmux list-clients -t "$tmux_session" 2>/dev/null | wc -l) -gt 0 ]]; then
-          ( ai internal set-iterm2-name "$_lid" "${{type_sym}}${{sym}}$sname" 2>/dev/null ) &
-        fi
-      else
-        _it2 "\\033]1;${{type_sym}}${{sym}}$sname\\007"
-      fi
+      _iterm2_rename "${{type_sym}}${{sym}}$sname"
     }}
 
     # Extract session number from ai_name (e.g., "sw-3" → "3") for downstream hooks.
@@ -376,8 +361,8 @@ def get_engine_script(
           (( _cli_wait++ ))
         done
       fi
-      _iterm2_fleet_setup "$tmux_session"
-      _iterm2_status "running" "$_session_type" "$tmux_session"
+      _iterm2_fleet_setup "$ai_name"
+      _iterm2_status "running" "$_session_type" "$ai_name"
 
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
@@ -448,10 +433,10 @@ if found: sys.stdout.write(found)
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
       _exit_elapsed=$(( $(date +%s) - start_ts ))
       if (( _exit_elapsed < 3 )); then
-        _iterm2_status "error" "$_session_type" "$tmux_session"
+        _iterm2_status "error" "$_session_type" "$ai_name"
         (ai internal publish-session-event "$tmux_session" "error" 2>/dev/null || true) &
       else
-        _iterm2_status "done" "$_session_type" "$tmux_session"
+        _iterm2_status "done" "$_session_type" "$ai_name"
         (ai internal publish-session-event "$tmux_session" "completed" 2>/dev/null || true) &
       fi
 
@@ -471,7 +456,7 @@ if found: sys.stdout.write(found)
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
-      _iterm2_status "resuming" "$_session_type" "$tmux_session"
+      _iterm2_status "resuming" "$_session_type" "$ai_name"
       if [[ -f "$handoff_pending_file" ]]; then
         pending_msg=$(cat "$handoff_pending_file")
         rm -f "$handoff_pending_file"

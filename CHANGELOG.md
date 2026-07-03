@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- iTerm2 pane-header drift on session re-attach (`AI-CLI-59`, final). The pane is
+  now renamed by resolving the tmux session's live **client tty** at set-name time
+  (`tmux list-clients` → tty → iTerm2 session with that `tty`), instead of a stored
+  `ITERM_SESSION_ID` GUID. tty is 1:1 with a physical pane, so cross-session
+  clobbering (two tmux sessions sharing one pane GUID) is now impossible. Removed
+  the racy dual-GUID tracking: deleted `_evict_iterm2_guid` and
+  `_get_current_iterm_session_id`, and the ITERM_SESSION_ID env-propagation from
+  the launch/re-attach path. Panes now display the clean short name (`sw-3`) rather
+  than the tmux session id (`c-sw-3`).
+
 ## [0.7.0] - 2026-04-27
 
 ### Removed

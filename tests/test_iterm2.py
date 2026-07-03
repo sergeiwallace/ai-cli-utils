@@ -6,16 +6,16 @@ from conftest import make_iterm2_config
 
 from ai_cli.main import (
     _assign_iterm2_color_slot,
+    _current_pane_tty,
     _emit_iterm2_profile_setup,
-    _evict_iterm2_guid,
-    _get_current_iterm_session_id,
     _is_iterm2,
     _iterm2_palette,
     _iterm2_state_dir,
+    _iterm_pane_tty_for_tmux_session,
     _load_iterm2_config,
     _release_iterm2_color_slot,
     _resolve_iterm2_config,
-    _set_iterm2_name_applescript,
+    _set_iterm2_name_by_tty,
     cli,
     get_engine_script,
 )
@@ -427,9 +427,10 @@ class TestGetEngineScriptIterm2Slot:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "local status=" not in script
 
-    def test_script_calls_fleet_setup_with_session_name(self):
+    def test_script_calls_fleet_setup_with_clean_ai_name(self):
+        # Display the clean short name (sw-1), not the tmux session id (c-sw-1).
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert '_iterm2_fleet_setup "$tmux_session"' in script
+        assert '_iterm2_fleet_setup "$ai_name"' in script
 
     def test_script_release_color_slot_in_exit_trap(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -465,74 +466,140 @@ class TestGetEngineScriptIterm2Slot:
         assert "/tmp/ai-session-" not in script
         assert "_script_stable_path" in script
 
-    def test_script_set_iterm2_name_uses_live_iterm_id_not_static_env(self):
-        # set-iterm2-name must always use _live_iterm_id() (reads from tmux session env,
-        # picks up GUID updates on re-attach) — never the static $ITERM_SESSION_ID shell
-        # variable (inherited at session creation, never updated in the running process).
-        # Using the static var caused cross-session pane-title clobbering after template
-        # refresh (ai update → exec bash new-template → first_run=true → stale GUID fired).
+    def test_script_set_iterm2_name_targets_tmux_session_not_guid_env(self):
+        # set-iterm2-name must resolve the pane by the tmux session's live client
+        # tty — never a stored/inherited $ITERM_SESSION_ID GUID (AI-CLI-59 root
+        # cause).  The script passes "$tmux_session" so the pane is resolved live.
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert "ai internal set-iterm2-name" in script
+        assert 'ai internal set-iterm2-name "$tmux_session"' in script
+        # No GUID plumbing left in the script.
         assert "$ITERM_SESSION_ID" not in script
+        assert "_live_iterm_id" not in script
+        assert "show-environment ITERM_SESSION_ID" not in script
+
+    def test_script_displays_clean_ai_name_not_session_id(self):
+        # The pane label must be the clean short name (sw-1), not the tmux
+        # session id (c-sw-1).  Callers pass "$ai_name" as the display name.
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        assert '_iterm2_fleet_setup "$ai_name"' in script
+        assert '_iterm2_status "running" "$_session_type" "$ai_name"' in script
+        # The old ugly form must be gone.
+        assert '_iterm2_fleet_setup "$tmux_session"' not in script
 
 
-class TestSetIterm2NameApplescript:
-    """Tests for _set_iterm2_name_applescript."""
+class TestSetIterm2NameByTty:
+    """Tests for _set_iterm2_name_by_tty — renames the iTerm pane on a given tty."""
 
     def test_given_non_darwin_when_called_then_no_subprocess(self):
         with patch("ai_cli.iterm2.subprocess") as mock_sp:
             with patch("ai_cli.iterm2.sys") as mock_sys:
                 mock_sys.platform = "linux"
-                _set_iterm2_name_applescript("w0t0p0:abc123", "c-sw-1")
+                _set_iterm2_name_by_tty("/dev/ttys000", "sw-1")
         mock_sp.run.assert_not_called()
 
-    def test_given_empty_iterm_session_id_when_called_then_no_subprocess(self):
+    def test_given_empty_tty_when_called_then_no_subprocess(self):
         with patch("ai_cli.iterm2.sys") as mock_sys:
             mock_sys.platform = "darwin"
             with patch("ai_cli.iterm2.subprocess") as mock_sp:
-                _set_iterm2_name_applescript("", "c-sw-1")
+                _set_iterm2_name_by_tty("", "sw-1")
         mock_sp.run.assert_not_called()
 
-    def test_given_iterm_session_id_without_colon_then_no_subprocess(self):
+    def test_given_darwin_with_tty_then_runs_osascript_matching_tty(self):
+        from unittest.mock import MagicMock
+
         with patch("ai_cli.iterm2.sys") as mock_sys:
             mock_sys.platform = "darwin"
             with patch("ai_cli.iterm2.subprocess") as mock_sp:
-                _set_iterm2_name_applescript("no-colon-here", "c-sw-1")
-        mock_sp.run.assert_not_called()
-
-    def test_given_darwin_with_valid_session_id_when_called_then_runs_osascript(self):
-        with patch("ai_cli.iterm2.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            with patch("ai_cli.iterm2.subprocess") as mock_sp:
-                _set_iterm2_name_applescript("w0t0p0:abc-guid-123", "c-sw-1")
+                mock_sp.run.return_value = MagicMock(stdout="ok")
+                result = _set_iterm2_name_by_tty("/dev/ttys007", "sw-1")
         mock_sp.run.assert_called_once()
-        call_args = mock_sp.run.call_args[0][0]
-        assert call_args[0] == "osascript"
-        assert "abc-guid-123" in mock_sp.run.call_args[0][0][2]
-        assert "c-sw-1" in mock_sp.run.call_args[0][0][2]
+        cmd = mock_sp.run.call_args[0][0]
+        assert cmd[0] == "osascript"
+        assert "/dev/ttys007" in cmd[2]
+        assert "tty of s" in cmd[2]  # matches on tty, not unique id
+        assert "sw-1" in cmd[2]
+        assert result is True
 
-    def test_guid_extracted_correctly_from_iterm_session_id(self):
-        captured_script = []
+    def test_returns_false_when_no_pane_matches_tty(self):
+        from unittest.mock import MagicMock
+
         with patch("ai_cli.iterm2.sys") as mock_sys:
             mock_sys.platform = "darwin"
             with patch("ai_cli.iterm2.subprocess") as mock_sp:
-                mock_sp.run = lambda cmd, **kw: captured_script.append(cmd[2])
-                _set_iterm2_name_applescript("w0t0p0:my-actual-guid", "test-session")
-        assert len(captured_script) == 1
-        assert "my-actual-guid" in captured_script[0]
-        assert "test-session" in captured_script[0]
+                mock_sp.run.return_value = MagicMock(stdout="miss")
+                result = _set_iterm2_name_by_tty("/dev/ttys099", "sw-1")
+        assert result is False
+
+
+class TestItermPaneTtyForTmuxSession:
+    """Tests for _iterm_pane_tty_for_tmux_session — resolves a session's client tty."""
+
+    def test_returns_first_client_tty(self):
+        from unittest.mock import MagicMock
+
+        with patch("ai_cli.iterm2.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="/dev/ttys000\n")
+            tty = _iterm_pane_tty_for_tmux_session("c-sw-3")
+        assert tty == "/dev/ttys000"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:4] == ["tmux", "list-clients", "-t", "c-sw-3"]
+
+    def test_returns_empty_when_detached(self):
+        from unittest.mock import MagicMock
+
+        with patch("ai_cli.iterm2.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="\n")
+            assert _iterm_pane_tty_for_tmux_session("c-sw-3") == ""
+
+    def test_returns_empty_when_tmux_fails(self):
+        from unittest.mock import MagicMock
+
+        with patch("ai_cli.iterm2.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="")
+            assert _iterm_pane_tty_for_tmux_session("nope") == ""
+
+    def test_returns_empty_for_empty_session(self):
+        with patch("ai_cli.iterm2.subprocess.run") as mock_run:
+            assert _iterm_pane_tty_for_tmux_session("") == ""
+        mock_run.assert_not_called()
+
+
+class TestCurrentPaneTty:
+    """Tests for _current_pane_tty — the process's own controlling tty."""
+
+    def test_returns_ttyname_of_stdout(self):
+        with patch("ai_cli.iterm2.os.ttyname", return_value="/dev/ttys005") as mock_tty:
+            assert _current_pane_tty() == "/dev/ttys005"
+        # Tries stdout (fd 1) first.
+        assert mock_tty.call_args_list[0][0][0] == 1
+
+    def test_falls_through_fds_and_returns_empty_when_no_tty(self):
+        with patch("ai_cli.iterm2.os.ttyname", side_effect=OSError):
+            assert _current_pane_tty() == ""
 
 
 class TestSetIterm2NameInternalCommand:
-    """Tests for ai internal set-iterm2-name."""
+    """Tests for ai internal set-iterm2-name — resolves pane by tty."""
 
-    def test_set_iterm2_name_command_calls_applescript(self):
-        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "w0t0p0:myguid", "c-sw-5"]):
-            with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
-                with pytest.raises(SystemExit) as exc:
-                    cli()
+    def test_tmux_session_arg_resolves_tty_then_renames(self):
+        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "c-sw-5", "sw-5"]):
+            with patch("ai_cli.iterm2._iterm_pane_tty_for_tmux_session", return_value="/dev/ttys009") as mock_tty:
+                with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_set:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
         assert exc.value.code == 0
-        mock_fn.assert_called_once_with("w0t0p0:myguid", "c-sw-5")
+        mock_tty.assert_called_once_with("c-sw-5")
+        mock_set.assert_called_once_with("/dev/ttys009", "sw-5")
+
+    def test_tty_arg_passed_through_directly(self):
+        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "/dev/ttys003", "sw-5"]):
+            with patch("ai_cli.iterm2._iterm_pane_tty_for_tmux_session") as mock_tty:
+                with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_set:
+                    with pytest.raises(SystemExit) as exc:
+                        cli()
+        assert exc.value.code == 0
+        mock_tty.assert_not_called()  # already a tty — no lookup
+        mock_set.assert_called_once_with("/dev/ttys003", "sw-5")
 
     def test_set_iterm2_name_missing_args_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "set-iterm2-name"]):
@@ -541,361 +608,69 @@ class TestSetIterm2NameInternalCommand:
         assert exc.value.code == 1
 
 
-class TestEmitIterm2ProfileSetupCallsApplescript:
-    """Verify _emit_iterm2_profile_setup calls _set_iterm2_name_applescript.
+class TestEmitIterm2ProfileSetupRenamesByTty:
+    """_emit_iterm2_profile_setup renames the launching pane by its own tty."""
 
-    Always uses the shell-env ITERM_SESSION_ID (set by iTerm2 at pane creation).
-    This is the physical pane's GUID, correct in all contexts including when
-    ai c is launched from inside an existing tmux session.
-    """
-
-    def test_given_iterm2_env_outside_tmux_when_emit_called_then_applescript_uses_env_guid(self):
-        env = {"LC_TERMINAL": "iTerm2", "ITERM_SESSION_ID": "w0t0p0:myguid", "TMUX": ""}
-        with patch.dict(os.environ, env, clear=False):
-            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
-                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
-                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
-                            _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        mock_fn.assert_called_once_with("w0t0p0:myguid", "c-sw-1")
-
-    def test_given_iterm2_env_inside_tmux_when_emit_called_then_applescript_uses_shell_env_guid(self):
-        # Inside tmux: shell env GUID is the correct current-pane GUID (AI-CLI-59 fix).
-        # The previous tmux show-environment approach returned the parent session's stale GUID.
-        env = {
-            "LC_TERMINAL": "iTerm2",
-            "ITERM_SESSION_ID": "w0t0p0:current-pane-guid",
-            "TMUX": "/private/tmp/tmux-502/default,3142,0",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
-                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
-                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
-                            _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        mock_fn.assert_called_once_with("w0t0p0:current-pane-guid", "c-sw-1")
-
-    def test_given_no_iterm_session_id_when_emit_called_then_applescript_with_empty_id(self):
+    def test_emit_calls_set_name_by_current_pane_tty(self):
         env = {"LC_TERMINAL": "iTerm2", "TMUX": ""}
         with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("ITERM_SESSION_ID", None)
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        with patch("ai_cli.iterm2._set_iterm2_name_applescript") as mock_fn:
-                            _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        mock_fn.assert_called_once_with("", "c-sw-1")
+                        with patch("ai_cli.iterm2._current_pane_tty", return_value="/dev/ttys002"):
+                            with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
+                                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+        mock_fn.assert_called_once_with("/dev/ttys002", "sw-1")
+
+    def test_emit_passes_empty_tty_when_not_a_terminal(self):
+        env = {"LC_TERMINAL": "iTerm2", "TMUX": ""}
+        with patch.dict(os.environ, env, clear=False):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile"):
+                        with patch("ai_cli.iterm2._current_pane_tty", return_value=""):
+                            with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
+                                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+        mock_fn.assert_called_once_with("", "sw-1")
 
 
-class TestFleetSetupAttachmentGuard:
-    """The session script must not rename a pane when the session is detached.
+class TestRenameAttachmentGuard:
+    """The session script must only rename a pane when the session is attached.
 
-    Two sessions share the same ITERM_SESSION_ID when one is spawned from inside
-    the other's shell (the child inherits the env var).  Without an attachment
-    check, a detached session's CC restart calls ``set-iterm2-name`` with the
-    shared GUID, clobbering the visible session's pane title.  The guard ensures
-    ``set-iterm2-name`` only fires when ``tmux list-clients`` shows at least one
-    active client for *this* session.
+    A detached session has no client tty and must not touch any pane.  The shared
+    _iterm2_rename helper checks ``tmux list-clients`` before calling
+    set-iterm2-name, and falls back to OSC 1 when detached.
     """
 
-    def test_fleet_setup_guards_rename_with_client_count_check(self):
-        """_iterm2_fleet_setup must check attachment before calling set-iterm2-name."""
+    def _rename_body(self, script: str) -> str:
+        start = script.index("_iterm2_rename() ")
+        end = script.index("_iterm2_fleet_setup() ", start)
+        return script[start:end]
+
+    def test_rename_guards_with_client_count_check_before_set_name(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        fn_def_pos = script.index("_iterm2_fleet_setup() ")
-        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
-        fleet_body = script[fn_def_pos:status_def_pos]
-        # Guard and rename must both be present in the function body
-        assert 'tmux list-clients -t "$tmux_session"' in fleet_body
-        assert "ai internal set-iterm2-name" in fleet_body
+        body = self._rename_body(script)
+        assert 'tmux list-clients -t "$tmux_session"' in body
+        assert "ai internal set-iterm2-name" in body
+        guard_offset = body.index('tmux list-clients -t "$tmux_session"')
+        rename_offset = body.index("ai internal set-iterm2-name")
+        assert guard_offset < rename_offset, "attachment guard must precede set-iterm2-name"
 
-    def test_fleet_setup_attachment_guard_comes_before_rename(self):
-        """The attachment guard must appear before set-iterm2-name in fleet_setup."""
+    def test_rename_guard_requires_at_least_one_client(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        fn_def_pos = script.index("_iterm2_fleet_setup() ")
-        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
-        fleet_body = script[fn_def_pos:status_def_pos]
-        guard_offset = fleet_body.index('tmux list-clients -t "$tmux_session"')
-        rename_offset = fleet_body.index("ai internal set-iterm2-name")
-        assert guard_offset < rename_offset, "attachment guard must precede set-iterm2-name in _iterm2_fleet_setup"
+        assert "-gt 0" in self._rename_body(script)
 
-    def test_fleet_setup_guard_requires_at_least_one_client(self):
-        """Guard condition must be -gt 0 (not -ge 0 or absent)."""
+    def test_rename_falls_back_to_osc1_when_detached(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        fn_def_pos = script.index("_iterm2_fleet_setup() ")
-        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
-        fleet_body = script[fn_def_pos:status_def_pos]
-        assert "-gt 0" in fleet_body
+        body = self._rename_body(script)
+        assert "\\033]1;" in body  # OSC 1 = title only
+        assert "\\033]0;" not in body  # OSC 0 = title+icon, must not appear
 
-    def test_iterm2_status_guards_rename_with_client_count_check(self):
-        """_iterm2_status must check attachment before calling set-iterm2-name."""
+    def test_both_fleet_and_status_delegate_to_rename(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        status_def_pos = script.index("_iterm2_status() ")
-        # Grab a generous slice of _iterm2_status body
-        status_body = script[status_def_pos : status_def_pos + 1000]
-        assert 'tmux list-clients -t "$tmux_session"' in status_body
-        assert "ai internal set-iterm2-name" in status_body
-
-    def test_iterm2_status_attachment_guard_comes_before_rename(self):
-        """The attachment guard must appear before set-iterm2-name in _iterm2_status."""
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        status_def_pos = script.index("_iterm2_status() ")
-        status_body = script[status_def_pos : status_def_pos + 1000]
-        guard_offset = status_body.index('tmux list-clients -t "$tmux_session"')
-        rename_offset = status_body.index("ai internal set-iterm2-name")
-        assert guard_offset < rename_offset, "attachment guard must precede set-iterm2-name in _iterm2_status"
-
-    def test_iterm2_status_guard_requires_at_least_one_client(self):
-        """_iterm2_status guard condition must be -gt 0."""
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        status_def_pos = script.index("_iterm2_status() ")
-        status_body = script[status_def_pos : status_def_pos + 1000]
-        assert "-gt 0" in status_body
-
-    def test_fleet_setup_falls_back_to_osc1_when_no_live_guid(self):
-        """When _live_iterm_id returns empty, fleet_setup falls back to OSC 1 (not OSC 0)."""
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        fn_def_pos = script.index("_iterm2_fleet_setup() ")
-        status_def_pos = script.index("_iterm2_status() ", fn_def_pos)
-        fleet_body = script[fn_def_pos:status_def_pos]
-        assert "\\033]1;" in fleet_body  # OSC 1 = title only
-        assert "\\033]0;" not in fleet_body  # OSC 0 = title+icon, must not appear
-
-    def test_iterm2_status_falls_back_to_osc1_when_no_live_guid(self):
-        """When _live_iterm_id returns empty, _iterm2_status falls back to OSC 1."""
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        status_def_pos = script.index("_iterm2_status() ")
-        status_body = script[status_def_pos : status_def_pos + 1000]
-        assert "\\033]1;" in status_body
-        assert "\\033]0;" not in status_body
-
-    def test_live_iterm_id_reads_from_tmux_not_shell_env(self):
-        """_live_iterm_id must use tmux show-environment, not the static shell $ITERM_SESSION_ID.
-
-        Reading from the tmux session environment (not the initial shell env)
-        ensures the function picks up GUID updates made by ``ai c`` when
-        re-attaching the session to a different iTerm pane.
-        """
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        fn_pos = script.index("_live_iterm_id()")
-        fn_body = script[fn_pos : fn_pos + 200]
-        assert "tmux show-environment" in fn_body
-        # Must not rely on the static inherited shell variable
-        assert "$ITERM_SESSION_ID" not in fn_body
-
-
-class TestGetCurrentItermSessionId:
-    """Tests for _get_current_iterm_session_id — the shared GUID resolver.
-
-    Always returns the shell-env ITERM_SESSION_ID (set by iTerm2 integration at
-    pane creation).  This is the physical pane's GUID regardless of which tmux
-    session the shell is attached to.
-
-    The previous implementation read from tmux show-environment when TMUX was set,
-    which returned the parent session's stored GUID — causing the wrong pane to be
-    renamed when ai c was launched from inside an existing tmux session (AI-CLI-59).
-    """
-
-    def test_when_outside_tmux_then_returns_shell_env_guid(self):
-        """Outside tmux: returns os.environ ITERM_SESSION_ID."""
-        env = {"ITERM_SESSION_ID": "w0t0p0:shell-guid", "TMUX": ""}
-        with patch.dict(os.environ, env, clear=False):
-            result = _get_current_iterm_session_id()
-        assert result == "w0t0p0:shell-guid"
-
-    def test_when_inside_tmux_then_still_returns_shell_env_guid(self):
-        """Inside tmux: shell env GUID is still the correct current-pane GUID.
-
-        The tmux session env may hold a stale GUID from a different (parent) session
-        when ai c is launched from inside an existing tmux context.  The shell env
-        ITERM_SESSION_ID is always set by iTerm2 for the physical pane, so it is
-        authoritative regardless of tmux nesting.
-        """
-        env = {
-            "ITERM_SESSION_ID": "w0t0p0:current-pane-guid",
-            "TMUX": "/private/tmp/tmux-1234/default,100,0",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            with patch("ai_cli.iterm2.subprocess.run") as mock_run:
-                result = _get_current_iterm_session_id()
-        assert result == "w0t0p0:current-pane-guid"
-        mock_run.assert_not_called()
-
-    def test_when_inside_tmux_shell_env_wins_over_tmux_env(self):
-        """Shell env must win even if tmux session env has a different value.
-
-        This is the core AI-CLI-59 regression test: launching ai c from inside
-        tmux session A (GUID aaa) while physically sitting in pane B (GUID bbb)
-        must return bbb (shell env), not aaa (tmux session env).
-        """
-        env = {
-            "ITERM_SESSION_ID": "w0t0p0:pane-b-guid",  # correct: physical pane
-            "TMUX": "/private/tmp/tmux-1234/default,100,0",
-        }
-        # Even if tmux would return a different value, it must not be called
-        with patch.dict(os.environ, env, clear=False):
-            with patch("ai_cli.iterm2.subprocess.run") as mock_run:
-                result = _get_current_iterm_session_id()
-        assert result == "w0t0p0:pane-b-guid"
-        mock_run.assert_not_called()
-
-    def test_when_no_iterm_session_id_in_env_then_returns_empty_string(self):
-        """When ITERM_SESSION_ID is absent, returns empty string."""
-        env = {"TMUX": ""}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("ITERM_SESSION_ID", None)
-            result = _get_current_iterm_session_id()
-        assert result == ""
-
-    def test_when_inside_tmux_and_no_shell_guid_then_returns_empty_string(self):
-        """When ITERM_SESSION_ID absent, returns empty regardless of tmux state."""
-        env = {"TMUX": "/private/tmp/tmux-1234/default,100,0"}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("ITERM_SESSION_ID", None)
-            with patch("ai_cli.iterm2.subprocess.run") as mock_run:
-                result = _get_current_iterm_session_id()
-        mock_run.assert_not_called()
-        assert result == ""
-
-
-class TestDoSessionLaunchItermGuid:
-    """_do_session_launch must use the shell-env GUID via _get_current_iterm_session_id.
-
-    The shell-env ITERM_SESSION_ID is always the correct current-pane GUID set by
-    iTerm2 shell integration.  _do_session_launch must go through the helper rather
-    than reading os.environ directly, so the logic stays centralized.
-    """
-
-    def test_iterm_env_flags_use_guid_helper(self):
-        """_do_session_launch must use _get_current_iterm_session_id, not os.environ directly.
-
-        Structural guard: inspects source to ensure the function uses the helper.
-        Fails if the fix is reverted to a direct os.environ read.
-        """
-        import inspect
-        from ai_cli import main as _main_mod
-
-        src = inspect.getsource(_main_mod._do_session_launch)
-        assert "_get_current_iterm_session_id" in src
-        assert 'os.environ.get("ITERM_SESSION_ID"' not in src
-
-
-class TestEvictIterm2Guid:
-    """_evict_iterm2_guid removes the GUID from all sessions except the owner.
-
-    Root cause of AI-CLI-59: multiple sessions accumulate the same ITERM_SESSION_ID
-    in their tmux environments and all rename the same pane on CC restart.
-    """
-
-    def _make_fake_run(
-        self,
-        session_guids: dict[str, str],
-        sessions_with_clients: set[str] | None = None,
-    ):
-        """Return a fake subprocess.run that models tmux list-sessions + show-environment + list-clients."""
-        calls: list[list[str]] = []
-        _sessions_with_clients = sessions_with_clients or set()
-
-        def fake_run(cmd, *args, **kwargs):
-            from unittest.mock import MagicMock
-
-            calls.append(list(cmd))
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            if cmd[1] == "list-sessions":
-                result.stdout = "\n".join(session_guids.keys()) + "\n"
-            elif cmd[1] == "show-environment":
-                session = cmd[cmd.index("-t") + 1]
-                guid = session_guids.get(session, "")
-                if guid:
-                    result.stdout = f"ITERM_SESSION_ID={guid}\n"
-                else:
-                    result.returncode = 1
-            elif cmd[1] == "list-clients":
-                session = cmd[cmd.index("-t") + 1]
-                result.stdout = "client0\n" if session in _sessions_with_clients else ""
-            return result
-
-        return fake_run, calls
-
-    def test_when_other_sessions_have_same_guid_then_they_are_cleared(self):
-        guid = "w0t0p0:AAAA-1111"
-        sessions = {"c-sw-1": guid, "c-ai-cli-1": guid, "c-aido-1": "w0t0p1:BBBB-2222"}
-        fake_run, calls = self._make_fake_run(sessions)
-
-        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
-            _evict_iterm2_guid(guid, "c-ai-cli-1")
-
-        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
-        cleared_sessions = [c[c.index("-t") + 1] for c in unset_calls]
-        assert "c-sw-1" in cleared_sessions
-        assert "c-ai-cli-1" not in cleared_sessions  # owner must not be cleared
-        assert "c-aido-1" not in cleared_sessions  # different GUID — untouched
-
-    def test_when_owner_has_guid_then_owner_is_not_cleared(self):
-        guid = "w0t0p0:AAAA-1111"
-        sessions = {"c-ai-cli-1": guid}
-        fake_run, calls = self._make_fake_run(sessions)
-
-        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
-            _evict_iterm2_guid(guid, "c-ai-cli-1")
-
-        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
-        assert unset_calls == []
-
-    def test_when_no_sessions_share_guid_then_no_unset_calls(self):
-        guid = "w0t0p0:AAAA-1111"
-        sessions = {"c-sw-1": "w0t0p5:CCCC-3333", "c-aido-1": "w0t0p1:BBBB-2222"}
-        fake_run, calls = self._make_fake_run(sessions)
-
-        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
-            _evict_iterm2_guid(guid, "c-ai-cli-1")
-
-        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
-        assert unset_calls == []
-
-    def test_when_guid_empty_then_no_subprocess_calls(self):
-        fake_run, calls = self._make_fake_run({})
-
-        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
-            _evict_iterm2_guid("", "c-ai-cli-1")
-
-        assert calls == []
-
-    def test_when_multiple_stale_sessions_then_all_cleared(self):
-        guid = "w0t0p15:C37C7927"
-        sessions = {
-            "c-ai-cli-1": guid,  # owner
-            "c-hm-1": guid,  # stale
-            "g-myproject-1": guid,  # stale
-            "g-sw-1": guid,  # stale
-        }
-        fake_run, calls = self._make_fake_run(sessions)
-
-        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
-            _evict_iterm2_guid(guid, "c-ai-cli-1")
-
-        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
-        cleared = {c[c.index("-t") + 1] for c in unset_calls}
-        assert cleared == {"c-hm-1", "g-myproject-1", "g-sw-1"}
-        assert "c-ai-cli-1" not in cleared
-
-    def test_when_stale_session_has_active_clients_then_not_evicted(self):
-        """AI-CLI-59 regression: a session with active clients still owns its GUID — skip it."""
-        guid = "w0t0p15:C37C7927"
-        sessions = {
-            "c-ai-cli-1": guid,  # new owner
-            "c-hm-1": guid,  # has active clients → must NOT be evicted
-            "c-sw-1": guid,  # detached → must be evicted
-        }
-        # c-hm-1 is currently attached to a physical pane
-        fake_run, calls = self._make_fake_run(sessions, sessions_with_clients={"c-hm-1"})
-
-        with patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run):
-            _evict_iterm2_guid(guid, "c-ai-cli-1")
-
-        unset_calls = [c for c in calls if "set-environment" in c and "-u" in c]
-        cleared = {c[c.index("-t") + 1] for c in unset_calls}
-        assert "c-hm-1" not in cleared  # active client — preserved
-        assert "c-sw-1" in cleared  # detached — evicted
-        assert "c-ai-cli-1" not in cleared  # owner — never touched
+        fleet_pos = script.index("_iterm2_fleet_setup() ")
+        status_pos = script.index("_iterm2_status() ", fleet_pos)
+        fleet_body = script[fleet_pos:status_pos]
+        status_body = script[status_pos : status_pos + 1000]
+        assert "_iterm2_rename " in fleet_body
+        assert "_iterm2_rename " in status_body

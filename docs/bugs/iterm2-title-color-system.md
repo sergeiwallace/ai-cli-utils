@@ -330,6 +330,50 @@ c-hm-1:     tmux env ITERM_SESSION_ID=w0t0p15:C37C7927... (stale, holds the GUID
 
 **Shipped:** 2026-04-29 (AI-CLI-59)
 
+### Fix Round 5 — tty-based resolution (FINAL, 2026-07-02)
+
+**Why reopened:** Rounds 1–4 all patched a fundamentally racy design — the pane
+GUID was tracked in two places (shell env + tmux session env) and reconciled at
+*launch time* by one-directional eviction. Collisions that form *between*
+launches were never healed. Observed live: `c-sw-3` (attached, pane `w0t0p0`) and
+`c-hm-1` (detached) both holding `w0t0p0:6A6AC15E…` — because `c-hm-1` occupied
+that physical pane after `c-sw-3`'s last launch, so no eviction ever ran. On the
+next CC restart either session's `set-iterm2-name` would relabel the other's
+pane. This is the same failure class as Rounds 2–4, and eviction cannot close it
+(it only runs on launch).
+
+**Root-cause reframing:** The GUID is the wrong key. A stored GUID drifts, is
+inherited across nested launches, and is shared when a session moves panes. The
+physically-correct key is the **client tty** — the OS assigns each live pane
+exactly one controlling terminal, so it can never collide.
+
+**Fix (retires the GUID approach entirely):** Resolve the target pane *live, at
+set-name time*, by the tmux session's client tty:
+`tmux list-clients -t <session>` → tty → the iTerm2 session whose `tty` matches →
+`set name`. No stored GUID, no env propagation, no eviction, no reconciliation.
+Also fixed the display name to the clean short form (`sw-3`, not `c-sw-3`).
+
+**Files changed:**
+- `src/ai_cli/iterm2.py` — replaced `_set_iterm2_name_applescript` (matched
+  `unique id`) with `_set_iterm2_name_by_tty` (matches `tty of s`); added
+  `_iterm_pane_tty_for_tmux_session` (session → client tty) and
+  `_current_pane_tty` (launcher's own tty). **Deleted** `_evict_iterm2_guid` and
+  `_get_current_iterm_session_id`.
+- `src/ai_cli/main.py` — `set-iterm2-name` handler now takes `<tmux_session|tty>`
+  and resolves tty; removed ITERM_SESSION_ID env-propagation + eviction from the
+  launch/re-attach path (LC_TERMINAL/TERM_PROGRAM still propagated).
+- `src/ai_cli/session_script.py` — new shared `_iterm2_rename` helper renames via
+  `set-iterm2-name "$tmux_session"`; removed `_live_iterm_id`; callers now display
+  `$ai_name` (clean) instead of `$tmux_session`.
+- `tests/test_iterm2.py`, `tests/test_session_launch_integration.py` — reworked
+  the GUID-contract tests to the tty contract.
+
+**Verified live:** every attached session's `client_tty` maps 1:1 to one iTerm2
+session tty; renaming `c-sw-3`'s pane by resolved tty (`/dev/ttys000`) set and
+read back `sw-3` via the real `ai internal set-iterm2-name` path.
+
+**Shipped:** 2026-07-02 (AI-CLI-59, final)
+
 ---
 
 ## Bug 11 — Dynamic Profiles "invalid JSON" popup on session start

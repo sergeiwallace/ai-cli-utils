@@ -268,98 +268,76 @@ def _iterm2_session_type(engine: str) -> str:
     return "cc" if engine == "c" else "gemini" if engine == "g" else "shell"
 
 
-def _set_iterm2_name_applescript(iterm_session_id: str, name: str) -> None:
-    """Set iTerm2 session Name directly via AppleScript (macOS only).
+def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
+    """Set the Name of the iTerm2 session on physical terminal ``tty`` (macOS only).
 
-    This is the most reliable way to set the session Name — it bypasses DCS
-    passthrough layers, nested tmux, and process-tracking title overrides.
+    The controlling ``tty`` (e.g. ``/dev/ttys000``) is assigned by the OS to
+    exactly one live iTerm2 pane, so matching on it renames precisely the pane
+    the user is looking at — with no possibility of collision.  This is the
+    authoritative replacement for GUID-based matching, which drifted whenever a
+    stored ``ITERM_SESSION_ID`` was inherited or shared across re-attaches
+    (AI-CLI-59 root cause).
 
-    ``iterm_session_id`` must contain a GUID (the part after the colon in the
-    ITERM_SESSION_ID env var, e.g. ``w0t0p0:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx``).
-    If the GUID is absent the call is a no-op.
+    Returns True when a matching pane was found and renamed, else False.
     """
-    if sys.platform != "darwin":
-        return
-    if not iterm_session_id or ":" not in iterm_session_id:
-        return
-    guid = iterm_session_id.split(":")[-1]
-    safe_guid = guid.replace("\\", "\\\\").replace('"', '\\"')
+    if sys.platform != "darwin" or not tty:
+        return False
+    safe_tty = tty.replace("\\", "\\\\").replace('"', '\\"')
     safe_name = name.replace("\\", "\\\\").replace('"', '\\"')
     script = f"""tell application "iTerm2"
     repeat with w in windows
         repeat with t in tabs of w
             repeat with s in sessions of t
                 try
-                    if unique id of s is "{safe_guid}" then
+                    if tty of s is "{safe_tty}" then
                         set name of s to "{safe_name}"
-                        return
+                        return "ok"
                     end if
                 end try
             end repeat
         end repeat
     end repeat
+    return "miss"
 end tell"""
-    subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5, text=True)
+    return "ok" in (result.stdout or "")
 
 
-def _evict_iterm2_guid(guid: str, owner_session: str) -> None:
-    """Remove ITERM_SESSION_ID from every tmux session that has ``guid`` except ``owner_session``.
+def _iterm_pane_tty_for_tmux_session(tmux_session: str) -> str:
+    """Return the client tty a tmux session is currently displayed on, or "".
 
-    Called after claiming a GUID for a session (new-session and re-attach paths)
-    to prevent multiple sessions from sharing the same GUID.  When sessions share
-    a GUID they all call ``set-iterm2-name`` with the shared GUID on each CC
-    restart, clobbering each other's pane titles (AI-CLI-59 root cause).
+    ``tmux list-clients -t <session>`` reports the physical terminal(s) the
+    session is attached to.  This is the pane the user is actually viewing the
+    session in *right now* — it updates automatically on every re-attach, so it
+    never goes stale (unlike a GUID inherited at launch time).  Returns "" when
+    the session is detached (no client) or tmux is unavailable.
     """
-    if not guid:
-        return
-    try:
-        result = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return
-        for session in result.stdout.strip().splitlines():
-            if session == owner_session:
-                continue
-            env_result = subprocess.run(
-                ["tmux", "show-environment", "-t", session, "ITERM_SESSION_ID"],
-                capture_output=True,
-                text=True,
-            )
-            if env_result.returncode == 0 and env_result.stdout.strip() == f"ITERM_SESSION_ID={guid}":
-                # Don't evict a session that has active clients — it's currently attached
-                # to a visible pane and legitimately owns the GUID (AI-CLI-59 regression).
-                clients_result = subprocess.run(
-                    ["tmux", "list-clients", "-t", session],
-                    capture_output=True,
-                    text=True,
-                )
-                if clients_result.returncode == 0 and clients_result.stdout.strip():
-                    continue
-                subprocess.run(
-                    ["tmux", "set-environment", "-t", session, "-u", "ITERM_SESSION_ID"],
-                    capture_output=True,
-                )
-    except Exception:
-        pass  # Never block session launch for GUID cleanup
+    if not tmux_session:
+        return ""
+    result = subprocess.run(
+        ["tmux", "list-clients", "-t", tmux_session, "-F", "#{client_tty}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    lines = [line for line in result.stdout.strip().splitlines() if line]
+    return lines[0] if lines else ""
 
 
-def _get_current_iterm_session_id() -> str:
-    """Return the ITERM_SESSION_ID for the physical pane running this process.
+def _current_pane_tty() -> str:
+    """Return the controlling tty of this process (the physical pane it runs in), or "".
 
-    Always reads from the shell environment — the value set by iTerm2 shell
-    integration at pane creation time.  This is the correct GUID for the pane
-    the user is physically sitting in, regardless of which tmux session the shell
-    is attached to.
-
-    The previous implementation read from ``tmux show-environment`` when inside
-    tmux.  That returned the GUID stored in the *parent* tmux session env, which
-    is a different session's GUID when ``ai c N`` is launched from inside an
-    existing tmux session — causing the wrong pane to be renamed (AI-CLI-59).
+    Used at pre-launch time (before tmux takes over) to rename the launching
+    pane by its own tty.  Tries stdout, stderr, then stdin so a redirected
+    stream doesn't defeat resolution.
     """
-    return os.environ.get("ITERM_SESSION_ID", "")
+    for fd in (1, 2, 0):
+        try:
+            return os.ttyname(fd)
+        except OSError:
+            continue
+    return ""
 
 
 def _configure_tmux_for_iterm2(session_id: str) -> None:
@@ -408,7 +386,10 @@ def _emit_iterm2_profile_setup(
         return
 
     cfg = _load_iterm2_config()
-    session_name = session or ai_name
+    # Display the clean short name (e.g. "sw-1"), matching the in-session
+    # rename — not the tmux session id ("c-sw-1"). Avoids a brief ugly-name
+    # flash at launch before the session script's first rename fires.
+    session_name = ai_name
     session_type = _iterm2_session_type(engine)
 
     # Resolve color
@@ -451,11 +432,8 @@ def _emit_iterm2_profile_setup(
     # failures. Runs synchronously here (before os.execvp) so the Name is set
     # before the process is replaced by tmux/mosh/ssh.
     #
-    # When running inside a tmux session the shell-env ITERM_SESSION_ID is the
-    # original value inherited at session creation and is never updated when the
-    # session is re-attached to a different iTerm2 pane.  The tmux session
-    # environment (kept current by _do_session_launch on each re-attach) is the
-    # authoritative source.  Using the stale shell-env GUID would rename the
-    # *original* pane instead of the *current* one, clobbering whichever session
-    # now occupies that pane.
-    _set_iterm2_name_applescript(_get_current_iterm_session_id(), session_name)
+    # Resolve the pane by this process's controlling tty — the physical pane the
+    # launcher runs in, which is exactly the pane tmux is about to take over.
+    # tty matching can't collide across sessions the way an inherited/shared
+    # ITERM_SESSION_ID GUID could (AI-CLI-59 root cause).
+    _set_iterm2_name_by_tty(_current_pane_tty(), session_name)

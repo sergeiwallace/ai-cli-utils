@@ -285,18 +285,15 @@ def test_given_registry_prompt_on_first_run_when_prefix_entered_then_session_use
     )
 
 
-def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated(
+def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propagated(
     monkeypatch,
 ):
-    """Re-attaching to an existing session must write the current pane's
-    ITERM_SESSION_ID into the session's tmux environment.
+    """Re-attaching must NOT write ITERM_SESSION_ID into the tmux environment.
 
-    When session B is spawned from inside session A, it inherits A's
-    ITERM_SESSION_ID.  Later, when the user runs ``ai c B`` from a *different*
-    pane (with its own GUID), the re-attach path must overwrite the stale GUID
-    with the current pane's GUID.  Without this update, B would call
-    ``set-iterm2-name`` with A's GUID on its next CC restart, clobbering A's
-    pane title.
+    The pane is renamed by its live client tty (resolved at set-name time), so
+    there is no stored GUID to reconcile on re-attach.  Propagating a GUID was
+    the racy dual-tracking that caused cross-session pane-title clobbering
+    (AI-CLI-59) — this test guards that the propagation stays removed.
     """
 
     # Track tmux set-environment calls emitted during _do_session_launch.
@@ -348,8 +345,6 @@ def test_given_existing_session_when_relaunched_then_iterm_session_id_propagated
             _do_session_launch(**_base_launch_kwargs(name="1"))
 
     iterm_env_updates = [c for c in set_env_calls if "ITERM_SESSION_ID" in c]
-    assert iterm_env_updates, "expected tmux set-environment call for ITERM_SESSION_ID"
-    # The last update must carry the caller's GUID, not any stale inherited value.
-    assert iterm_env_updates[-1][-1] == new_guid, (
-        f"expected ITERM_SESSION_ID to be updated to {new_guid!r}, got {iterm_env_updates[-1]!r}"
+    assert iterm_env_updates == [], (
+        f"re-attach must not propagate ITERM_SESSION_ID (tty-based rename), got {iterm_env_updates!r}"
     )
