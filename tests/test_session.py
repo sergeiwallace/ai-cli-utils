@@ -24,7 +24,7 @@ from ai_cli.main import (
     resolve_session,
     save_session_map,
 )
-from ai_cli.session import _prefix_from_session_name, get_project_prefix
+from ai_cli.session import _prefix_from_session_name, get_project_prefix, is_current_project_resolved
 
 from conftest import _make_list_panes_output
 
@@ -1141,3 +1141,45 @@ class TestGetProjectPrefix:
                 with patch.dict(os.environ, env_without_session, clear=True):
                     result = get_project_prefix()
                     assert not result.endswith("-"), f"prefix has trailing hyphen: {result!r}"
+
+
+class TestIsCurrentProjectResolved:
+    """Guard for the silent 'myproject'/cwd-derived session fallback (#10)."""
+
+    def test_true_when_inside_ai_session(self, monkeypatch):
+        monkeypatch.setenv("AI_TMUX_SESSION", "c-sergei-1")
+        assert is_current_project_resolved() is True
+
+    def test_true_when_registered_project(self, monkeypatch):
+        monkeypatch.delenv("AI_TMUX_SESSION", raising=False)
+        with (
+            patch("ai_cli.session.get_current_project_name", return_value="sergei"),
+            patch("ai_cli.session.load_project_registry", return_value=[{"name": "sergei"}]),
+        ):
+            assert is_current_project_resolved() is True
+
+    def test_true_when_cwd_under_projects_dir(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AI_TMUX_SESSION", raising=False)
+        proj = tmp_path / "projects"
+        (proj / "foo").mkdir(parents=True)
+        with (
+            patch("ai_cli.session.get_current_project_name", return_value="foo"),
+            patch("ai_cli.session.load_project_registry", return_value=[]),
+            patch("ai_cli.session._get_projects_dir", return_value=proj),
+            patch("ai_cli.session.Path.cwd", return_value=proj / "foo"),
+        ):
+            assert is_current_project_resolved() is True
+
+    def test_false_when_unrelated_dir(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AI_TMUX_SESSION", raising=False)
+        proj = tmp_path / "projects"
+        proj.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        with (
+            patch("ai_cli.session.get_current_project_name", return_value="elsewhere"),
+            patch("ai_cli.session.load_project_registry", return_value=[]),
+            patch("ai_cli.session._get_projects_dir", return_value=proj),
+            patch("ai_cli.session.Path.cwd", return_value=outside),
+        ):
+            assert is_current_project_resolved() is False

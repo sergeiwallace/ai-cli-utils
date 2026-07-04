@@ -1165,6 +1165,23 @@ def _do_session_launch(
         _lp_name = _lp_aliases.get(project, project)
         project_prefix = _config._get_project_prefix_by_name(_lp_name)
     else:
+        # No explicit project and no prefix override: the prefix would be derived
+        # from cwd. If cwd isn't a resolvable project (not under ~/projects, not
+        # registered, not inside an existing ai session), fail loudly instead of
+        # fabricating a session from an unrelated directory (the old silent
+        # "myproject"/cwd-derived fallback). Escape hatch: pass -p <project>.
+        if not is_remote and not _session.is_current_project_resolved():
+            print(
+                "Error: no project resolved for this session.\n"
+                f"  cwd: {Path.cwd()}\n"
+                "  You're not inside a project under the projects directory, gave no "
+                "-p/--project,\n  and aren't in an existing ai session — ai-cli won't "
+                "fabricate a session name\n  from an unrelated directory.\n"
+                "  Fix: cd into a project, or name one explicitly:\n"
+                f"    ai {engine} -p <project> [name]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         project_prefix = _session.get_project_prefix()
     engine_short = "c" if engine == "c" else "g"
     remote_seg = "-r" if is_remote else ""

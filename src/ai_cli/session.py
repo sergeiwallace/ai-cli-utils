@@ -16,6 +16,7 @@ from pathlib import Path
 from .config import (
     WORKTREE_DIR,
     _get_main_project_name,
+    _get_projects_dir,
     get_current_project_name,
     load_project_registry,
 )
@@ -248,6 +249,26 @@ def get_project_prefix() -> str:
     # Fallback 2: derive from cwd name — strip trailing hyphens so e.g.
     # "ai-cli-utils"[:3] → "ai-" doesn't produce a double-dash in session names.
     return project_name[:3].lower().strip("-")
+
+
+def is_current_project_resolved() -> bool:
+    """True when the session can be tied to a real project.
+
+    Confident sources: running inside an existing ai session (``AI_TMUX_SESSION``
+    set), cwd is a registered project, or cwd is physically under the projects
+    directory (a real, possibly-unregistered project). ``False`` means the
+    launcher would otherwise fabricate a session prefix from an unrelated cwd —
+    the old silent "myproject"-style fallback — and should fail loudly instead.
+    """
+    if os.environ.get("AI_TMUX_SESSION"):
+        return True
+    name = get_current_project_name()
+    if any(p.get("name") == name for p in load_project_registry()):
+        return True
+    try:
+        return Path.cwd().resolve().is_relative_to(_get_projects_dir().resolve())
+    except Exception:
+        return False
 
 
 def find_next_index(prefix: str) -> int:
