@@ -427,10 +427,11 @@ class TestGetEngineScriptIterm2Slot:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "local status=" not in script
 
-    def test_script_calls_fleet_setup_with_clean_ai_name(self):
-        # Display the clean short name (sw-1), not the tmux session id (c-sw-1).
+    def test_script_calls_fleet_setup_with_prefixed_session_name(self):
+        # Display the full engine-prefixed session id (c-sw-1 for Claude, g-… for
+        # Gemini) so panes are distinguishable by engine — NOT the stripped ai_name.
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert '_iterm2_fleet_setup "$ai_name"' in script
+        assert '_iterm2_fleet_setup "$tmux_session"' in script
 
     def test_script_release_color_slot_in_exit_trap(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -477,14 +478,15 @@ class TestGetEngineScriptIterm2Slot:
         assert "_live_iterm_id" not in script
         assert "show-environment ITERM_SESSION_ID" not in script
 
-    def test_script_displays_clean_ai_name_not_session_id(self):
-        # The pane label must be the clean short name (sw-1), not the tmux
-        # session id (c-sw-1).  Callers pass "$ai_name" as the display name.
+    def test_script_displays_engine_prefixed_session_id(self):
+        # The pane label must be the engine-prefixed session id (c-sw-1 / g-…),
+        # not the stripped short name — so Claude vs Gemini sessions are
+        # visually distinguishable. Callers pass "$tmux_session".
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
-        assert '_iterm2_fleet_setup "$ai_name"' in script
-        assert '_iterm2_status "running" "$_session_type" "$ai_name"' in script
-        # The old ugly form must be gone.
-        assert '_iterm2_fleet_setup "$tmux_session"' not in script
+        assert '_iterm2_fleet_setup "$tmux_session"' in script
+        assert '_iterm2_status "running" "$_session_type" "$tmux_session"' in script
+        # The stripped short-name form must be gone.
+        assert '_iterm2_fleet_setup "$ai_name"' not in script
 
 
 class TestSetIterm2NameByTty:
@@ -620,7 +622,7 @@ class TestEmitIterm2ProfileSetupRenamesByTty:
                         with patch("ai_cli.iterm2._current_pane_tty", return_value="/dev/ttys002"):
                             with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
                                 _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        mock_fn.assert_called_once_with("/dev/ttys002", "sw-1")
+        mock_fn.assert_called_once_with("/dev/ttys002", "c-sw-1")
 
     def test_emit_passes_empty_tty_when_not_a_terminal(self):
         env = {"LC_TERMINAL": "iTerm2", "TMUX": ""}
@@ -631,7 +633,7 @@ class TestEmitIterm2ProfileSetupRenamesByTty:
                         with patch("ai_cli.iterm2._current_pane_tty", return_value=""):
                             with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
                                 _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        mock_fn.assert_called_once_with("", "sw-1")
+        mock_fn.assert_called_once_with("", "c-sw-1")
 
 
 class TestRenameAttachmentGuard:

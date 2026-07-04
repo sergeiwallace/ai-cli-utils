@@ -361,8 +361,8 @@ def get_engine_script(
           (( _cli_wait++ ))
         done
       fi
-      _iterm2_fleet_setup "$ai_name"
-      _iterm2_status "running" "$_session_type" "$ai_name"
+      _iterm2_fleet_setup "$tmux_session"
+      _iterm2_status "running" "$_session_type" "$tmux_session"
 
       (ai internal publish-event "$tmux_session" "START" 2>/dev/null || true) &
       (ai internal publish-session-event "$tmux_session" "started" 2>/dev/null || true) &
@@ -433,10 +433,10 @@ if found: sys.stdout.write(found)
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
       _exit_elapsed=$(( $(date +%s) - start_ts ))
       if (( _exit_elapsed < 3 )); then
-        _iterm2_status "error" "$_session_type" "$ai_name"
+        _iterm2_status "error" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "error" 2>/dev/null || true) &
       else
-        _iterm2_status "done" "$_session_type" "$ai_name"
+        _iterm2_status "done" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "completed" 2>/dev/null || true) &
       fi
 
@@ -456,7 +456,7 @@ if found: sys.stdout.write(found)
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
-      _iterm2_status "resuming" "$_session_type" "$ai_name"
+      _iterm2_status "resuming" "$_session_type" "$tmux_session"
       if [[ -f "$handoff_pending_file" ]]; then
         pending_msg=$(cat "$handoff_pending_file")
         rm -f "$handoff_pending_file"

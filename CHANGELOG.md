@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clobbering (two tmux sessions sharing one pane GUID) is now impossible. Removed
   the racy dual-GUID tracking: deleted `_evict_iterm2_guid` and
   `_get_current_iterm_session_id`, and the ITERM_SESSION_ID env-propagation from
-  the launch/re-attach path. Panes now display the clean short name (`sw-3`) rather
-  than the tmux session id (`c-sw-3`).
+  the launch/re-attach path. Panes display the engine-prefixed session id
+  (`c-sw-3` for Claude, `g-…` for Gemini/agy) so sessions stay visually
+  distinguishable by engine.
 
 ## [0.7.0] - 2026-04-27
 

@@ -351,7 +351,9 @@ exactly one controlling terminal, so it can never collide.
 set-name time*, by the tmux session's client tty:
 `tmux list-clients -t <session>` → tty → the iTerm2 session whose `tty` matches →
 `set name`. No stored GUID, no env propagation, no eviction, no reconciliation.
-Also fixed the display name to the clean short form (`sw-3`, not `c-sw-3`).
+Display name keeps the engine prefix (`c-sw-3` / `g-…`) so Claude vs Gemini
+sessions stay distinguishable at a glance. (Corrected 2026-07-03 — an interim
+"strip to `sw-3`" change was reverted per user preference; the prefix is load-bearing.)
 
 **Files changed:**
 - `src/ai_cli/iterm2.py` — replaced `_set_iterm2_name_applescript` (matched

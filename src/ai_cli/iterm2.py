@@ -386,10 +386,10 @@ def _emit_iterm2_profile_setup(
         return
 
     cfg = _load_iterm2_config()
-    # Display the clean short name (e.g. "sw-1"), matching the in-session
-    # rename — not the tmux session id ("c-sw-1"). Avoids a brief ugly-name
-    # flash at launch before the session script's first rename fires.
-    session_name = ai_name
+    # Display the full session id WITH its engine prefix (e.g. "c-sw-1" for Claude,
+    # "g-sw-1" for Gemini/agy) so panes are visually distinguishable by engine.
+    # Matches the in-session rename, which uses "$tmux_session".
+    session_name = session or ai_name
     session_type = _iterm2_session_type(engine)
 
     # Resolve color
