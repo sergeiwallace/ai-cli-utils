@@ -301,6 +301,52 @@ class TestSshTunnel:
                             asyncio.run(client._open_ssh_tunnel())
         assert client._tunnel_proc is mock_proc  # proc stored even if port never came up
 
+    def test_when_tunnel_up_then_ssh_f_parent_is_reaped(self, monkeypatch):
+        """AI-CLI-86: the `ssh -f` foreground parent exits after auth and must be
+        reaped, or it lingers as a zombie for the watcher's whole lifetime."""
+        monkeypatch.setenv("AI_HOST", "mac")
+        client = NATSClient()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0  # already exited → reaped by poll()
+        call_count = 0
+
+        def mock_create_connection(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("refused")
+            conn = MagicMock()
+            conn.__enter__ = MagicMock(return_value=conn)
+            conn.__exit__ = MagicMock(return_value=False)
+            return conn
+
+        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
+        with patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection):
+            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
+                with patch("asyncio.sleep", new=AsyncMock()):
+                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
+                        with patch("ai_cli.transport._is_vpn_active", return_value=False):
+                            asyncio.run(client._open_ssh_tunnel())
+
+        mock_proc.poll.assert_called()  # reap ran
+
+    def test_when_parent_still_running_at_reap_then_waited(self, monkeypatch):
+        """If poll() shows the parent hasn't exited yet, reap must wait() on it."""
+        monkeypatch.setenv("AI_HOST", "mac")
+        client = NATSClient()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # not exited yet → must wait()
+
+        fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
+        with patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")):
+            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
+                with patch("asyncio.sleep", new=AsyncMock()):
+                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
+                        with patch("ai_cli.transport._is_vpn_active", return_value=False):
+                            asyncio.run(client._open_ssh_tunnel())
+
+        mock_proc.wait.assert_called_once()  # reaped via wait when still running
+
 
 class TestNATSClientCloseTunnel:
     def test_close_terminates_tunnel_proc_if_present(self):

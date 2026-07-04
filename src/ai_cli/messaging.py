@@ -73,13 +73,38 @@ class NATSClient:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        for _ in range(6):
-            await asyncio.sleep(0.5)
-            try:
-                with socket.create_connection(("localhost", 4222), timeout=1):
-                    return
-            except OSError:
-                pass
+        try:
+            for _ in range(6):
+                await asyncio.sleep(0.5)
+                try:
+                    with socket.create_connection(("localhost", 4222), timeout=1):
+                        return
+                except OSError:
+                    pass
+        finally:
+            await self._reap_tunnel_parent()
+
+    async def _reap_tunnel_parent(self) -> None:
+        """Reap the ``ssh -f`` foreground process so it doesn't linger as a zombie.
+
+        ``ssh -fNL`` forks the tunnel to the background after authentication; the
+        foreground process we Popen'd then exits. Nothing else in ai-cli reaps
+        children — there is no SIGCHLD handler, and we deliberately do NOT set
+        ``SIGCHLD=SIG_IGN`` because these watcher processes (signal/sync/memory
+        watch) also run ``subprocess.run`` for git, which would then fail with
+        ECHILD. Without this reap, every long-running watcher accumulates one
+        ``<defunct>`` ssh for its whole lifetime (AI-CLI-86). ``poll()`` reaps if
+        the parent already exited; otherwise wait briefly off the event loop so
+        asyncio is never blocked.
+        """
+        proc = self._tunnel_proc
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                await asyncio.to_thread(proc.wait, 6)
+        except Exception:
+            pass
 
     async def connect(self):
         """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts.
@@ -246,5 +271,10 @@ class NATSClient:
         if self.nc:
             await self.nc.close()
         if self._tunnel_proc:
-            self._tunnel_proc.terminate()
+            # The ssh -f foreground parent may already be reaped (see
+            # _reap_tunnel_parent); terminating a dead process must not raise.
+            try:
+                self._tunnel_proc.terminate()
+            except (ProcessLookupError, OSError):
+                pass
             self._tunnel_proc = None
