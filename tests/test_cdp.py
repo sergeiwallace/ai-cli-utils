@@ -1,5 +1,6 @@
 """Tests for ai cdp start/stop/status subcommand."""
 
+import socket
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -82,6 +83,13 @@ class TestFindChromeBinary:
 
 @patch.object(sys, "platform", "linux")
 class TestCmdCdpStart:
+    @pytest.fixture(autouse=True)
+    def _requested_port_free(self):
+        # Keep these tests deterministic: the requested port is free, so the
+        # auto-increment path is not taken (that path has its own test class).
+        with patch("ai_cli.tunnel._port_in_use", return_value=False):
+            yield
+
     def test_when_not_running_then_launches_chrome_and_writes_pid(self, tmp_path):
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -769,3 +777,79 @@ class TestClearStaleSingletonLock:
         ):
             _cmd_cdp_start(9222, False, {})
         mock_clear.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Occupied-port robustness (AI-CLI: detect foreign holder + auto-increment)
+# ---------------------------------------------------------------------------
+
+
+class TestPortInUse:
+    def test_free_port_returns_false(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()  # nothing listening now
+        assert tunnel._port_in_use(port) is False
+
+    def test_listening_port_returns_true(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        port = s.getsockname()[1]
+        try:
+            assert tunnel._port_in_use(port) is True
+        finally:
+            s.close()
+
+
+class TestNextFreePort:
+    def test_returns_start_when_free(self):
+        with patch("ai_cli.tunnel._port_in_use", return_value=False):
+            assert tunnel._next_free_port(9222) == 9222
+
+    def test_skips_occupied_ports(self):
+        def occupied(p, host="127.0.0.1"):
+            return p in (9222, 9223)
+
+        with patch("ai_cli.tunnel._port_in_use", side_effect=occupied):
+            assert tunnel._next_free_port(9222) == 9224
+
+    def test_returns_none_when_all_taken(self):
+        with patch("ai_cli.tunnel._port_in_use", return_value=True):
+            assert tunnel._next_free_port(9222, limit=5) is None
+
+
+@patch.object(sys, "platform", "linux")
+class TestCmdCdpStartPortConflict:
+    def test_when_port_in_use_then_increments_and_launches_on_next_free(self, tmp_path, capsys):
+        mock_proc = MagicMock()
+        mock_proc.pid = 777
+
+        def occupied(p, host="127.0.0.1"):
+            return p == 9222  # requested port taken; 9223 free
+
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("ai_cli.tunnel._port_in_use", side_effect=occupied),
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("urllib.request.urlopen"),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        out = capsys.readouterr().out
+        assert "9222 is in use" in out
+        assert "starting CDP on 9223" in out
+        assert (tmp_path / "cdp-9223.pid").exists()
+        assert (tmp_path / "cdp-9223.pid").read_text() == "777"
+        assert not (tmp_path / "cdp-9222.pid").exists()
+
+    def test_when_no_free_port_then_exits_nonzero(self, tmp_path):
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._port_in_use", return_value=True),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _cmd_cdp_start(9222, True, {})
+        assert exc.value.code == 1

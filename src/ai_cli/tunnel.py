@@ -4,6 +4,7 @@ Depends on: config.py, transport.py.
 """
 
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -195,6 +196,21 @@ def _clear_stale_singleton_lock(user_data_dir: Path) -> bool:
     return True
 
 
+def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """True if something is already listening on ``host:port``."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex((host, port)) == 0
+
+
+def _next_free_port(start: int, limit: int = 20) -> int | None:
+    """First free port in ``[start, start+limit)``, or ``None`` if all are taken."""
+    for candidate in range(start, start + limit):
+        if not _port_in_use(candidate):
+            return candidate
+    return None
+
+
 def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = False, forward: bool = False) -> None:
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"cdp-{port}.pid"
@@ -208,6 +224,23 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         except ValueError:
             pass
         pid_file.unlink(missing_ok=True)
+
+    # If the requested port is held by a process we don't track (a foreign Chrome or
+    # any other app, or an untracked instance), don't fight it — auto-increment to
+    # the next free port so a clean automation Chrome can still come up. Our own
+    # tracked instance was already handled (and reused) by the pid_file check above.
+    if _port_in_use(port):
+        free_port = _next_free_port(port + 1)
+        if free_port is None:
+            print(
+                f"Port {port} is in use and no free port was found in "
+                f"{port + 1}-{port + 20}. Stop the holder or pass a different --port.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Port {port} is in use by another process — starting CDP on {free_port} instead.")
+        port = free_port
+        pid_file = state_dir / f"cdp-{port}.pid"
 
     chrome = _find_chrome_binary(config)
     if not chrome:
