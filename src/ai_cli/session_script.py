@@ -4,7 +4,26 @@ Depends on: nothing (self-contained).
 """
 
 import json
+import os
 import re
+
+
+def _current_update_commit() -> str:
+    """Return the source HEAD recorded by the last ``ai update`` (or "").
+
+    ``ai update`` writes the just-installed git HEAD to
+    ``~/.local/state/ai-cli-utils/last_update_commit.txt``. Baking this into the
+    generated template lets the running wrapper detect an update by comparing the
+    baked commit against the live stamp — a monotonic signal (git HEAD always
+    advances), unlike the package version which ``ai update`` restores to its base
+    value after install and can therefore read identical across updates.
+    """
+    try:
+        stamp = os.path.join(os.path.expanduser("~"), ".local", "state", "ai-cli-utils", "last_update_commit.txt")
+        with open(stamp) as fh:
+            return fh.read().strip()
+    except Exception:
+        return ""
 
 
 def get_engine_script(
@@ -37,6 +56,7 @@ def get_engine_script(
         _template_version = _pkg_version("ai-cli-utils")
     except Exception:
         _template_version = "unknown"
+    _template_commit = _current_update_commit()
 
     # Resolve iTerm2 slot values for embedding in bash template
     _cfg = iterm2_cfg or {}
@@ -78,6 +98,7 @@ def get_engine_script(
       first_run=false
     fi
     _template_version="{_template_version}"
+    _template_commit="{_template_commit}"
     uuid="{session_id_uuid or ""}"
     project_prefix="{project_prefix}"
     project_name="{project_name}"
@@ -470,18 +491,35 @@ if found: sys.stdout.write(found)
         printf '{{"event":"handoff.while_loop_pickup","session":"%s","ts":%s}}\n' \
           "$tmux_session" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
       fi
-      # Self-update: if ai-cli was reinstalled, exec a fresh template so new changes take effect.
-      # exec bash <new-script> replaces only this bash process inside the tmux window;
-      # mosh connects to the tmux session (not this PID) so it is unaffected.
+      # Self-update: if ai-cli was reinstalled/updated, exec a fresh template so new
+      # changes take effect on this restart. exec replaces only this bash process
+      # inside the tmux window; mosh connects to the tmux session (not this PID).
+      #
+      # Trigger primarily on the update-commit stamp (monotonic — `ai update` writes a
+      # fresh git HEAD every time), with the package version as a secondary signal. The
+      # old version-only trigger was unreliable: `ai update` restores pyproject to the
+      # base version after install, so importlib metadata can read identical across
+      # updates and the self-update would silently never fire.
       _current_ver=$(ai internal get-version 2>/dev/null || echo "unknown")
-      if [[ "$_current_ver" != "unknown" && "$_current_ver" != "$_template_version" ]]; then
-        echo "ai-cli updated ($_template_version → $_current_ver) — reloading session template..."
+      _current_commit=$(cat "$_ai_state_dir/last_update_commit.txt" 2>/dev/null || echo "")
+      _need_reload=false
+      if [[ -n "$_current_commit" && "$_current_commit" != "$_template_commit" ]]; then
+        _need_reload=true
+      elif [[ "$_current_ver" != "unknown" && "$_current_ver" != "$_template_version" ]]; then
+        _need_reload=true
+      fi
+      if $_need_reload; then
+        echo "ai-cli updated — reloading session template..."
         _refresh_script=$(ai internal refresh-template "$tmux_session" 2>/dev/null)
         if [[ -n "$_refresh_script" && -f "$_refresh_script" ]]; then
           exec bash "$_refresh_script"
+        elif [[ -f "$_script_stable_path" ]]; then
+          # Fall back to the stable script `ai update` rewrote for this session.
+          exec zsh "$_script_stable_path"
         else
-          echo "Template refresh failed — run 'ai c $ai_name' to get new template"
-          _template_version="$_current_ver"
+          # Do NOT advance _template_version/_template_commit on failure — a transient
+          # refresh error must not permanently disable self-update. Retry next restart.
+          echo "Template refresh failed — will retry on next restart (or run 'ai c $ai_name')."
         fi
       fi
       echo "Resuming... (Ctrl-C to exit)"

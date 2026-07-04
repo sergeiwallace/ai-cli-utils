@@ -267,6 +267,81 @@ def _pkg_version_string() -> str:
         return "unknown"
 
 
+def _engine_script_from_meta(meta: dict) -> str:
+    """Regenerate a session's launch script from its persisted metadata.
+
+    ``session-meta-<tmux_session>.json`` (written by the wrapper at start) carries
+    every parameter ``get_engine_script`` needs, so regeneration is faithful — no
+    fragile reconstruction. Shared by ``refresh-template`` and ``write-stable-script``.
+    """
+    # Resolve through the session_script module (not the name imported into main) so
+    # tests patching ``ai_cli.session_script.get_engine_script`` take effect.
+    return _session_script.get_engine_script(
+        engine=meta["engine"],
+        ai_name=meta["ai_name"],
+        session=meta["session"],
+        prefix=meta["prefix"],
+        project_prefix=meta["project_prefix"],
+        session_id_uuid=meta.get("session_id_uuid") or None,
+        sandbox=meta.get("sandbox", False),
+        worktree_dir=meta.get("worktree_dir") or None,
+        notify=meta.get("notify", False),
+        is_remote=meta.get("is_remote", False),
+        project_name=meta.get("project_name", ""),
+        iterm2_slot=meta.get("iterm2_slot") or None,
+        iterm2_cfg=meta.get("iterm2_cfg") or None,
+        config_reload_idle_secs=meta.get("config_reload_idle_secs", 90),
+        gemini_cmd=meta.get("gemini_cmd", "gemini"),
+    )
+
+
+def _write_stable_session_script(tmux_session: str) -> bool:
+    """Rewrite ``sessions/<tmux_session>.sh`` from persisted metadata.
+
+    Bumps the stable script's mtime, which the running wrapper's hot-reload watches —
+    so a live session picks up a new template on its next restart without a full
+    ``ai c`` relaunch. Returns False if no metadata exists for the session.
+    """
+    state_dir = _config.get_xdg_state_home()
+    meta_path = state_dir / f"session-meta-{tmux_session}.json"
+    if not meta_path.exists():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text())
+        script = _engine_script_from_meta(meta)
+    except Exception as exc:
+        print(f"  (warning: could not regenerate {tmux_session}: {exc})", file=sys.stderr)
+        return False
+    sessions_dir = state_dir / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    script_path = sessions_dir / f"{tmux_session}.sh"
+    script_path.write_text(script)
+    os.chmod(script_path, 0o700)
+    return True
+
+
+def _refresh_live_session_scripts() -> int:
+    """Regenerate stable scripts for every live ai-cli tmux session.
+
+    Called after ``ai update`` installs a new template so the wrapper's mtime
+    hot-reload fires on each session's next restart. A session is "ai-cli-managed"
+    iff it has a ``session-meta-*.json``. Best-effort; returns the count refreshed.
+    """
+    try:
+        ls = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
+    except Exception:
+        return 0
+    if ls.returncode != 0:
+        return 0
+    refreshed = 0
+    for sname in ls.stdout.split():
+        if (_config.get_xdg_state_home() / f"session-meta-{sname}.json").exists():
+            if _write_stable_session_script(sname):
+                print(f"  refreshed session template: {sname}")
+                refreshed += 1
+    return refreshed
+
+
 # --- `ai internal` fast-path — machine-to-machine commands ---
 
 
@@ -331,28 +406,10 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         try:
             meta = json.loads(meta_path.read_text())
+            script = _engine_script_from_meta(meta)
         except Exception as exc:
             print(f"Failed to read session metadata: {exc}", file=sys.stderr)
             sys.exit(1)
-        from .session_script import get_engine_script
-
-        script = get_engine_script(
-            engine=meta["engine"],
-            ai_name=meta["ai_name"],
-            session=meta["session"],
-            prefix=meta["prefix"],
-            project_prefix=meta["project_prefix"],
-            session_id_uuid=meta.get("session_id_uuid") or None,
-            sandbox=meta.get("sandbox", False),
-            worktree_dir=meta.get("worktree_dir") or None,
-            notify=meta.get("notify", False),
-            is_remote=meta.get("is_remote", False),
-            project_name=meta.get("project_name", ""),
-            iterm2_slot=meta.get("iterm2_slot") or None,
-            iterm2_cfg=meta.get("iterm2_cfg") or None,
-            config_reload_idle_secs=meta.get("config_reload_idle_secs", 90),
-            gemini_cmd=meta.get("gemini_cmd", "gemini"),
-        )
         import tempfile
 
         fd, tmp_path = tempfile.mkstemp(prefix=f"ai-refresh-{tmux_session}-", suffix=".sh")
@@ -362,6 +419,11 @@ def _handle_internal(argv: list[str]) -> None:
             fh.write(script)
         print(tmp_path)
         sys.exit(0)
+    elif action == "write-stable-script":
+        if len(argv) < 2:
+            print("Usage: ai internal write-stable-script <tmux_session>", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0 if _write_stable_session_script(argv[1]) else 1)
     elif action == "notify":
         if len(argv) < 3:
             print("Usage: ai internal notify <session_id> <message>", file=sys.stderr)
@@ -875,12 +937,21 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
             ["find", str(project_path), "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
             check=False,
         )
-        # Record HEAD hash so session start can detect staleness
+        # Record HEAD hash so session start (and each running wrapper's self-update)
+        # can detect staleness. This is the monotonic update signal — it changes on
+        # every update, unlike the package version which is restored to base above.
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
         if head.returncode == 0:
             stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
             stamp_file.parent.mkdir(parents=True, exist_ok=True)
             stamp_file.write_text(head.stdout.strip())
+        # Regenerate the stable launch script for every live ai-cli session so the
+        # wrapper's mtime hot-reload picks up this new template on its next restart —
+        # no full `ai c` relaunch needed. Belt-and-suspenders alongside the commit-stamp
+        # self-update baked into newly generated templates.
+        _n = _refresh_live_session_scripts()
+        if _n:
+            print(f"Refreshed {_n} live session template(s) — they reload on next restart.")
         # Deploy bundled CC config files to ~/.claude/ — write as plain files so any
         # pre-existing symlinks are replaced. These files are owned by ai-cli-utils and
         # should not be managed by ai sync or tracked in any project git repo.
