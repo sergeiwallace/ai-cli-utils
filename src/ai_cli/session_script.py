@@ -334,6 +334,12 @@ def get_engine_script(
     export ITERM2_SESSION_NUM="$_session_num"
     export ITERM2_SESSION_TYPE="$_session_type"
 
+    # Stable task namespace: pin the CC task list to the session name so it survives
+    # process restarts and context-file reloads without orphaning open tasks.
+    # CC creates ~/.claude/tasks/$ai_name/ as a permanent, human-readable namespace.
+    # (anthropics/claude-code#20664 — CLAUDE_CODE_TASK_LIST_ID env var override)
+    [[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"
+
     trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session" "$config_hash_file" "$config_changed_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null; ai internal cleanup-session-files "$ai_name" 2>/dev/null' EXIT
 
     while true; do
