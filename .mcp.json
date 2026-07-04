@@ -1,12 +1,3 @@
 {
-  "mcpServers": {
-    "gemini-cli": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "gemini-mcp-tool"],
-      "env": {
-        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-      }
-    }
-  }
+  "mcpServers": {}
 }
