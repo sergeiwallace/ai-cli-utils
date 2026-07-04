@@ -491,7 +491,15 @@ def detect_repo_root():
     git_common = Path(res.stdout.strip())
     if not git_common.is_absolute():
         git_common = Path(os.path.normpath(Path.cwd() / git_common))
-    return git_common.parent
+    root = git_common.parent
+    # Sanity guard: if WORKTREE_DIR appears in the resolved root, --git-common-dir
+    # returned something unexpected and we'd nest worktrees inside a worktree.
+    if WORKTREE_DIR in root.parts:
+        raise RuntimeError(
+            f"detect_repo_root() resolved to {root!r}, which contains '{WORKTREE_DIR}'. "
+            "This would nest worktrees — aborting. Check git rev-parse --git-common-dir output."
+        )
+    return root
 
 
 def create_worktree(ai_name: str) -> Path | None:
