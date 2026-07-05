@@ -32,15 +32,6 @@
             "command": "bash .claude/hooks/lint-md.sh"
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/airflow-watcher-required.sh"
-          }
-        ]
       }
     ],
     "PreCompact": [
@@ -50,17 +41,6 @@
           {
             "type": "command",
             "command": "echo 'SAVE_STATE_REQUIRED: Context is about to be compacted. Run /save-state NOW before responding to any other requests. This is critical \u2014 unsaved session state will be lost after compaction.'"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/airflow-watcher-resume.sh"
           }
         ]
       }
