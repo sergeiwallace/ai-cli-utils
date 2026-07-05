@@ -140,6 +140,22 @@ class TestGenerateDynamicProfile:
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "Default"
 
+    def test_semantic_history_opens_vscode_at_line(self, tmp_path):
+        # Generated session profiles parent to "Default", which ships with
+        # Semantic History unset — so the command must be injected explicitly
+        # or Cmd-click on a file path falls back to the OS default app.
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        sh = json.loads(out.read_text())["Profiles"][0]["Semantic History"]
+        assert sh == {"action": "command", "text": r"code -gr \1:\2"}
+
+    def test_semantic_history_present_for_all_session_types(self, tmp_path):
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            for stype in ("cc", "gemini", "shell", "chrome", "caffeinate", "ssh"):
+                out = generate_dynamic_profile(f"{stype}-session", "#5e35b1", stype)
+                sh = json.loads(out.read_text())["Profiles"][0].get("Semantic History")
+                assert sh and sh["text"] == r"code -gr \1:\2", stype
+
     def test_tab_color_set_in_profile(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("test-session", "#ff0000", "cc")

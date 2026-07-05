@@ -42,6 +42,17 @@ _BASE_PROFILES: dict[str, str] = {
     "ssh": "Default",
 }
 
+# Semantic History: Cmd-click a file path in session output → open it in the
+# existing VS Code window at the clicked line (`-g` = goto line, `-r` = reuse
+# window). Injected into every generated session profile so it does not depend
+# on the parent "Default" profile being hand-configured on each machine —
+# generated profiles parent to "Default", which ships with Semantic History
+# unset, so without this every Cmd-click falls back to the OS default app.
+_SEMANTIC_HISTORY: dict[str, str] = {
+    "action": "command",
+    "text": r"code -gr \1:\2",
+}
+
 # Default icon tint when no tab color is assigned (session has no color set).
 _CLAUDE_BRAND_ORANGE = "#da7756"
 
@@ -215,6 +226,7 @@ def generate_dynamic_profile(
         "Use Separate Colors for Light and Dark Mode": True,
         "Icon": 2,  # 2 = custom icon; must be explicit — not reliably inherited
         "Title Components": 1,  # 1 = session name only ("Name" dropdown option)
+        "Semantic History": dict(_SEMANTIC_HISTORY),
     }
     # Inject Shift+Enter → CSI u escape sequence automatically so CC sessions
     # handle newline-without-submit without any manual iTerm2 configuration.
