@@ -6,6 +6,15 @@ status: template
 template_version: "design-1.0.0"
 ---
 
+<!-- DOC-LINK CONVENTION (so references open in the VS Code Markdown preview):
+     link other docs as PLAIN RELATIVE Markdown links  [📄 <repo>/<relpath>](<relative-path>)
+     — plain link text, NO backticks (a code-span hides the hyperlink styling, reads as un-clickable code).
+     The target is an ordinary relative path from THIS doc's directory, e.g. ../research/x.md ;
+     cross-repo (siblings under ~/projects): ../../../aido/docs/research/x.md from a sergei/docs/plans/ doc.
+     🚫 NEVER use the vscode://file scheme — the built-in preview reads it as a relative path,
+     creates phantom vscode:/file/Users/... folders, and opens a blank stub. Relative links just work.
+     Full rule: ai-harness projects-wide-session-config/rules/doc-authoring.md. -->
+
 <!-- aido:region name="overview" kind="replaceable" -->
 
 # [System Name] — Design Document

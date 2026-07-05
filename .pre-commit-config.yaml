@@ -55,7 +55,7 @@ repos:
       - id: shellcheck
         args: [--severity=warning]
 
-  # ── Local: pre-push hooks ─────────────────────────────────────────────────
+  # ── Local: worktree safety + hook-reference + test gates ─────────────────
   - repo: local
     hooks:
       - id: corrupt-index-guard
@@ -63,6 +63,14 @@ repos:
         entry: .githooks/corrupt-index-guard.sh
         language: script
         stages: [pre-push]
+      # Fail if any .claude/settings.json hook command points at a script that
+      # no longer exists (e.g. a copier _exclude removed it but the
+      # _skip_if_exists settings.json still references it). Cheap; runs every
+      # commit so it also catches script deletions that don't touch settings.json.
+      - id: validate-claude-settings
+        name: validate .claude/settings.json hook script refs exist
+        entry: .githooks/validate-claude-settings.py
+        language: script
         pass_filenames: false
         always_run: true
       - id: test-gate
