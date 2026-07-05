@@ -537,6 +537,13 @@ def create_worktree(ai_name: str) -> Path | None:
             dst = wt_dir / item
             if src.exists() and not dst.exists():
                 os.symlink(src, dst)
+        # Register workspace trust so Claude Code loads the symlinked
+        # .claude/settings.json permissions instead of dropping them with a
+        # "workspace has not been trusted" warning (GH #72896). Worktrees
+        # resolve to the main gitRoot, but register both for safety.
+        from .trust import ensure_workspace_trusted
+
+        ensure_workspace_trusted([repo_root, wt_dir])
         return wt_dir
     return None
 

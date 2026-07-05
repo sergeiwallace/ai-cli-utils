@@ -1366,6 +1366,17 @@ def _do_session_launch(
         if _local_project_dir.exists():
             os.chdir(_local_project_dir)
 
+    # Register workspace trust for the launch directory before starting Claude
+    # Code. With ~/projects trusted as an ancestor, CC suppresses the trust
+    # dialog for subfolders but still exact-matches gitRoot(cwd) when loading
+    # permissions.allow — so an unregistered workspace silently drops its
+    # .claude/settings.json permissions (GH #72896). This covers the bare and
+    # --no-worktree paths; create_worktree() covers the worktree path.
+    if engine == "c":
+        from .trust import ensure_workspace_trusted
+
+        ensure_workspace_trusted([Path.cwd()])
+
     if bare:
         if engine == "c":
             perms = [] if os.getuid() == 0 else ["--dangerously-skip-permissions"]
@@ -2246,6 +2257,24 @@ def cmd_update(force):
 def cmd_deploy(force):
     config = _config.load_config()
     _do_update_or_deploy(force_reinstall=force, config=config)
+
+
+@_cli_group.command(
+    "trust-backfill",
+    help="Register Claude Code workspace trust for every repo under a root "
+    "(fixes 'workspace has not been trusted' permission drops, GH #72896)",
+)
+@click.option("--root", "-r", default="~/projects", help="Root to scan for git repos (default: ~/projects)")
+def cmd_trust_backfill(root):
+    from .trust import backfill_projects_trust
+
+    added = backfill_projects_trust(root)
+    if added:
+        print(f"Registered workspace trust for {len(added)} workspace(s) in ~/.claude.json:")
+        for key in added:
+            print(f"  + {key}")
+    else:
+        print("All workspaces under the root are already trusted — nothing to change.")
 
 
 @_cli_group.command("attach", help="Attach to a tmux session by name")
