@@ -80,3 +80,13 @@ repos:
         stages: [pre-push]
         pass_filenames: false
         always_run: true
+      # Reject a push that introduces a duplicate PREFIX-N roadmap entry id
+      # (pre-existing dups on origin/main are grandfathered). AIH-89 T-02.
+      # Bypass: SKIP=roadmap-guard git push
+      - id: roadmap-guard
+        name: roadmap-guard (no new duplicate PREFIX-N ids)
+        entry: .githooks/roadmap-guard.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

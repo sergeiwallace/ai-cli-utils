@@ -95,8 +95,12 @@ Use when a task touches 3+ files or involves shared state across modules:
 
 ### 6. Agent Spawn
 
+Spawning an agent — especially an Opus or otherwise metered/long-running one — is expensive; verify the work is actually needed before paying for it.
+
 ```xml
 <agent_spawn_checkpoint>
+- Validate before implementing: for an IMPLEMENTATION agent, confirm the work isn't ALREADY done — `git log`/`git show` the target files + grep the code. A plan/design doc's `status:` / "not yet built" line is NOT ground truth (docs go stale); the code + git history are. (Real incident: an Opus agent burned ~118k tokens re-confirming work committed days earlier because the plan doc still said "not built" — a 2-second `git log` would have caught it.)
+- Verify what an agent REPORTS before asserting/acting on it — especially **absence/negative claims** ("not found", "no such file", "doesn't exist") and "is this already handled elsewhere?". A search/discovery sub-agent produces false negatives easily (wrong glob, checked one repo not all, tool truncation); **failure-to-find ≠ absence**. Before repeating a sub-agent's load-bearing claim to the user, acting on it, or filing a task from it, spot-check against ground truth (one `ls`/`grep`/`git log`, or a look at the live task list). (Real incident 2026-07-06: a discovery sub-agent reported `orchestration.md` "not found" → it was repeated as fact in a recommendation → the file actually existed in two repos; a 1-line `ls` would have caught it. Same session: nearly filed a duplicate DB-allocator task before checking that an in-flight task already covered it.)
 - Summarize only the context the agent needs — no more, no less
 - State explicitly what the agent should NOT do (scope boundaries)
 - Confirm there are no file conflicts with other running agents or the parent session
@@ -115,4 +119,20 @@ Trigger: completing work that adds or changes a service, MCP tool, data model, s
 - If no change needed: state explicitly why (e.g., "internal refactor, no interface or component changes")
 - Ship the update in the same commit as implementation, or immediately after — never batch it for later
 </architecture_update_checkpoint>
+```text
+
+### 8. Roadmap Coherence Audit
+
+Trigger: any session that runs a coherence audit or claims open roadmap tasks.
+
+```xml
+<coherence_audit_checkpoint>
+- For every open roadmap task with a linked plan doc: read the plan doc's Approval Log in full
+  (it is always at the bottom). "Approval Log has completion date" → task is stale open → mark [x].
+- For every open roadmap task with a linked design doc: check the frontmatter status field AND
+  the **Status:** line near the top. "status: active" on a shipped feature = stale.
+- Do NOT rely on frontmatter status: alone — authors forget to update it. Always read the Approval Log.
+- Verify implementation exists in code before marking any task [x], even if plan doc says done.
+- Full procedure: docs/procedures/roadmap-coherence-audit.md
+</coherence_audit_checkpoint>
 ```text
