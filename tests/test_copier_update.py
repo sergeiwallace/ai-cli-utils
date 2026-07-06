@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from ai_cli.copier_update import (
+    _changed_paths,
     _conflict_files,
     _do_update_in_worktree,
     _find_copier_projects,
@@ -161,7 +162,7 @@ def test_run_copier_update_project_filter_found(tmp_path, capsys):
 
     assert result == 0
     # copier should be called exactly once, for alpha, with --vcs-ref HEAD
-    copier_calls = [c for c in mock_run.call_args_list if "copier" in str(c)]
+    copier_calls = [c for c in mock_run.call_args_list if "copier" in str(c.args[0][0])]
     assert len(copier_calls) == 1
     call_args = copier_calls[0][0][0]  # positional args list
     assert str(tmp_path / "alpha") in str(copier_calls[0])
@@ -200,7 +201,7 @@ def test_run_copier_update_success(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "✓" in out
     # Verify --vcs-ref HEAD is passed so untagged template commits are picked up
-    cmd = mock_run.call_args[0][0]
+    cmd = next(c.args[0] for c in mock_run.call_args_list if "copier" in str(c.args[0][0]))
     assert "--vcs-ref" in cmd
     assert "HEAD" in cmd
 
@@ -220,7 +221,7 @@ def test_run_copier_update_uses_vcs_ref_head(tmp_path):
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 run_copier_update(projects_dir=tmp_path, isolate=False)
 
-    cmd = mock_run.call_args[0][0]
+    cmd = next(c.args[0] for c in mock_run.call_args_list if "copier" in str(c.args[0][0]))
     assert "--vcs-ref" in cmd
     idx = cmd.index("--vcs-ref")
     assert cmd[idx + 1] == "HEAD"
@@ -521,3 +522,75 @@ def test_run_copier_update_dry_run_shows_isolated_mode(tmp_path, capsys):
         rc = run_copier_update(projects_dir=tmp_path, dry_run=True)
     assert rc == 0
     assert "isolated worktree" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Scoped conflict detection (false-positive regression, AI-CLI-91)
+# ---------------------------------------------------------------------------
+
+
+def test_changed_paths_parses_porcelain(tmp_path):
+    """_changed_paths turns porcelain lines into absolute paths, handling renames."""
+    porcelain = ' M src/a.py\n?? new.txt\nR  old.py -> src/b.py\n M "quoted name.py"\n'
+    result = _changed_paths(porcelain, tmp_path)
+    assert str(tmp_path / "src/a.py") in result
+    assert str(tmp_path / "new.txt") in result
+    assert str(tmp_path / "src/b.py") in result  # rename → new path
+    assert str(tmp_path / "old.py") not in result
+    assert str(tmp_path / "quoted name.py") in result
+
+
+def test_conflict_files_scoped_ignores_unchanged_marker_file(tmp_path):
+    """A file that merely CONTAINS <<<<<<< but wasn't changed is NOT a conflict."""
+    fixture = tmp_path / "test_fixture.py"
+    fixture.write_text('marker = "<<<<<<< HEAD\\nfoo\\n=======\\nbar\\n>>>>>>>"\n')
+    changed = tmp_path / "changed.txt"
+    changed.write_text("clean content\n")
+    # scope = only the changed file (no markers) → fixture must be ignored
+    result = _conflict_files(tmp_path, [str(changed)])
+    assert result == []
+
+
+def test_conflict_files_scoped_flags_real_conflict(tmp_path):
+    """A changed file that DOES contain markers is reported."""
+    conflicted = tmp_path / "doc.md"
+    conflicted.write_text("<<<<<<< before\nx\n=======\ny\n>>>>>>> after\n")
+    result = _conflict_files(tmp_path, [str(conflicted)])
+    assert str(conflicted) in result
+
+
+def test_conflict_files_scoped_empty_paths(tmp_path):
+    """Empty changed set → no conflicts (nothing to scan)."""
+    (tmp_path / "marker.py").write_text("<<<<<<<\n")
+    assert _conflict_files(tmp_path, []) == []
+
+
+def test_conflict_files_whole_tree_still_works(tmp_path):
+    """paths=None preserves the original whole-tree scan (legacy direct mode)."""
+    (tmp_path / "c.py").write_text("<<<<<<< HEAD\n")
+    result = _conflict_files(tmp_path)
+    assert str(tmp_path / "c.py") in result
+
+
+def test_do_update_ignores_unchanged_marker_files(tmp_path):
+    """Regression: copier changes only clean files; an unchanged fixture with markers
+    elsewhere in the tree must NOT trigger a false conflict."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    # copier changed only this clean file
+    (wt / "reasoning.md").write_text("clean rule text\n")
+    # an unrelated, UNCHANGED file that references a conflict marker as content
+    (wt / "test_fixture.py").write_text('m = "<<<<<<< HEAD"\n')
+
+    def run(cmd, **kwargs):
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = ""
+        r.stderr = ""
+        if "--porcelain" in cmd:
+            r.stdout = " M reasoning.md\n"  # only the clean file changed
+        return r
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        status, _ = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", False)
+    assert status == "ok"  # NOT "conflict"

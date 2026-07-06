@@ -42,8 +42,43 @@ def _find_copier_projects(projects_dir: Path) -> list[Path]:
 _EXCLUDE_DIRS = (".venv", "node_modules", "target", ".worktrees", ".git", "__pycache__")
 
 
-def _conflict_files(project_dir: Path) -> list[str]:
-    """Return list of text files containing git conflict markers in project_dir."""
+def _changed_paths(porcelain: str, base: Path) -> list[str]:
+    """Absolute paths of files reported changed by `git status --porcelain`.
+
+    Handles rename entries (`R  old -> new` keeps the new path) and quoted paths.
+    """
+    paths = []
+    for line in porcelain.splitlines():
+        if not line.strip():
+            continue
+        rest = line[3:]  # strip the 2-char status field + separating space
+        if " -> " in rest:
+            rest = rest.split(" -> ", 1)[1]
+        rest = rest.strip().strip('"')
+        if rest:
+            paths.append(str(base / rest))
+    return paths
+
+
+def _conflict_files(project_dir: Path, paths: list[str] | None = None) -> list[str]:
+    """Return files containing git conflict markers.
+
+    When `paths` is given, only those files are scanned — this is the correct scope
+    after a copier run, because a *real* conflict marker only ever appears in a file
+    copier itself modified. Scanning the whole tree (paths=None) also matches files
+    that merely reference `<<<<<<<` as content (test fixtures, conflict-handling code,
+    docs about merges) and reports them as false-positive conflicts.
+    """
+    if paths is not None:
+        existing = [p for p in paths if Path(p).exists()]
+        if not existing:
+            return []
+        cmd = ["grep", "-l", "--binary-files=without-match", "<<<<<<<", *existing]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().splitlines()
+        return []
+
     cmd = [
         "grep",
         "-rl",
@@ -119,7 +154,9 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
     if not status.stdout.strip():
         return "nochange", ""
 
-    conflicts = _conflict_files(wt_dir)
+    # Only files copier actually touched can hold a real conflict marker — scoping the
+    # scan to them avoids false positives from files that merely reference `<<<<<<<`.
+    conflicts = _conflict_files(wt_dir, _changed_paths(status.stdout, wt_dir))
     if conflicts:
         rels = [str(Path(c).relative_to(wt_dir)) for c in conflicts]
         return "conflict", rels
@@ -309,7 +346,12 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
             failed += 1
             continue
 
-        conflicts = _conflict_files(project_dir)
+        porcelain = subprocess.run(
+            ["git", "-C", str(project_dir), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+        )
+        conflicts = _conflict_files(project_dir, _changed_paths(porcelain.stdout, project_dir))
         if conflicts:
             print(f"✗ CONFLICTS ({len(conflicts)} file(s))")
             for c in conflicts:
