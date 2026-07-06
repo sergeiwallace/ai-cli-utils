@@ -1,4 +1,19 @@
-"""ai copier-update — run copier update across all project-template-based projects."""
+"""ai copier-update — propagate project-template changes to downstream projects.
+
+Two modes:
+
+* **isolated** (default, AI-CLI-91) — for each target repo, create a temporary git
+  worktree off fresh ``origin/main``, run ``copier update`` there, commit, push
+  ``HEAD:main``, sync the main tree, and remove the worktree. All churn is isolated
+  from the repo's main working tree, so this is safe to run while other CC sessions
+  are actively working in a repo. The temp worktree is left in place only when there
+  are merge conflicts or the push fails (never clobbering a session's main tree).
+
+* **direct** (``--no-isolate``) — legacy behaviour: run ``copier update`` straight in
+  each repo's main working tree and leave the changes uncommitted for a manual
+  commit+push. Fast, but races any active session in that repo. Use only when you
+  know no session is working in the target(s).
+"""
 
 from __future__ import annotations
 
@@ -44,12 +59,156 @@ def _conflict_files(project_dir: Path) -> list[str]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# Isolated worktree flow (AI-CLI-91)
+# ---------------------------------------------------------------------------
+
+# Temp worktree lives under the repo's own (globally-gitignored) .worktrees/ dir so
+# it can never collide with a session worktree (`sw-N`) or leak into git status.
+_WT_NAME = "copier-update"
+_WT_BRANCH = "copier-update-tmp"
+_COMMIT_MSG = "chore: copier update from project-template"
+
+
+def _repo_root(path: Path) -> Path | None:
+    """Return the git top-level dir for path, or None if path is not in a git repo."""
+    r = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return Path(r.stdout.strip())
+
+
+def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
+    """Remove the temp worktree and its branch (best-effort, idempotent)."""
+    subprocess.run(
+        ["git", "-C", str(root), "worktree", "remove", "--force", str(wt_dir)],
+        capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(root), "worktree", "prune"], capture_output=True)
+    subprocess.run(["git", "-C", str(root), "branch", "-D", branch], capture_output=True)
+
+
+def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool) -> tuple[str, object]:
+    """Run copier + commit/push inside an already-created worktree.
+
+    Returns (status, detail) where status is one of:
+      ok        — updated, committed, (pushed) — detail unused
+      nochange  — copier produced no changes — detail unused
+      conflict  — merge conflicts — detail = list[str] of relative paths
+      pushfail  — committed but push rejected — detail = str (git stderr)
+      failed    — copier or commit failed — detail = str (message)
+    """
+    cu = subprocess.run(
+        [copier_bin, "update", "--defaults", "--trust", "--vcs-ref", "HEAD"],
+        cwd=wt_dir,
+        capture_output=True,
+        text=True,
+    )
+    if cu.returncode != 0:
+        return "failed", (cu.stderr.strip() or "copier update failed")
+
+    status = subprocess.run(
+        ["git", "-C", str(wt_dir), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    if not status.stdout.strip():
+        return "nochange", ""
+
+    conflicts = _conflict_files(wt_dir)
+    if conflicts:
+        rels = [str(Path(c).relative_to(wt_dir)) for c in conflicts]
+        return "conflict", rels
+
+    subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True)
+    commit = subprocess.run(
+        ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
+        capture_output=True,
+        text=True,
+    )
+    if commit.returncode != 0:
+        return "failed", (commit.stderr.strip() or "commit failed")
+
+    if push:
+        pr = subprocess.run(
+            ["git", "-C", str(wt_dir), "push", "origin", "HEAD:main"],
+            capture_output=True,
+            text=True,
+        )
+        if pr.returncode != 0:
+            return "pushfail", (pr.stderr.strip() or "push failed")
+        # Keep the repo's main working tree in sync with what we just shipped.
+        subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True)
+
+    return "ok", ""
+
+
+def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) -> tuple[str, object]:
+    """Update one repo in an isolated temp worktree. Returns (status, detail).
+
+    On ok/nochange/failed the temp worktree is removed. On conflict/pushfail it is
+    left in place (detail carries the info needed to resolve it manually).
+    """
+    root = _repo_root(project_dir)
+    if root is None:
+        return "failed", "not a git repository"
+
+    wt_dir = root / ".worktrees" / _WT_NAME
+    branch = _WT_BRANCH
+
+    # Clear any leftover temp worktree/branch from a prior interrupted run.
+    _cleanup_worktree(root, wt_dir, branch)
+
+    # Base the worktree on fresh origin/main so we propagate onto the shipped tip,
+    # not whatever the local main tree happens to be at. Fall back to HEAD offline.
+    subprocess.run(["git", "-C", str(root), "fetch", "origin", "main"], capture_output=True)
+    probe = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "origin/main"],
+        capture_output=True,
+    )
+    base = "origin/main" if probe.returncode == 0 else "HEAD"
+
+    wt_dir.parent.mkdir(parents=True, exist_ok=True)
+    add = subprocess.run(
+        ["git", "-C", str(root), "worktree", "add", str(wt_dir), "-b", branch, base],
+        capture_output=True,
+        text=True,
+    )
+    if add.returncode != 0:
+        _cleanup_worktree(root, wt_dir, branch)
+        return "failed", f"worktree add failed: {add.stderr.strip()}"
+
+    status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push)
+
+    # Only tear down the temp worktree when there is nothing left to hand off.
+    if status in ("ok", "nochange", "failed"):
+        _cleanup_worktree(root, wt_dir, branch)
+
+    return status, detail
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
 def run_copier_update(
     projects_dir: Path | None = None,
     project_filter: str | None = None,
     dry_run: bool = False,
+    isolate: bool = True,
+    push: bool = True,
 ) -> int:
-    """Run copier update across all matching projects. Returns exit code (0 = success)."""
+    """Run copier update across all matching projects. Returns exit code (0 = success).
+
+    isolate=True (default) runs each repo in a throwaway worktree and ships to main;
+    isolate=False runs copier directly in each repo's main tree (legacy, unsafe while
+    sessions are active).
+    """
     if projects_dir is None:
         projects_dir = Path.home() / "projects"
 
@@ -80,13 +239,56 @@ def run_copier_update(
             return 1
 
     if dry_run:
-        print(f"Would update {len(projects)} project(s):")
+        mode = "isolated worktree → main" if isolate else "direct (main tree)"
+        print(f"Would update {len(projects)} project(s) [{mode}]:")
         for p in projects:
             print(f"  {p.name}")
         print("\n(dry-run: no changes made)")
         return 0
 
-    print(f"Updating {len(projects)} project(s):\n")
+    if isolate:
+        return _run_isolated(projects, copier_bin, push)
+    return _run_direct(projects, copier_bin)
+
+
+def _run_isolated(projects: list[Path], copier_bin: str, push: bool) -> int:
+    """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
+    print(f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
+    failed = 0
+    changed = 0
+    for project_dir in projects:
+        print(f"  {project_dir.name}... ", end="", flush=True)
+        status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
+        if status == "ok":
+            print("✓ updated + pushed" if push else "✓ updated (committed, not pushed)")
+            changed += 1
+        elif status == "nochange":
+            print("· no changes")
+        elif status == "conflict":
+            print(f"✗ CONFLICTS ({len(detail)} file(s)) — resolve in temp worktree, then merge:")
+            for rel in detail:
+                print(f"    conflict: {rel}")
+            failed += 1
+        elif status == "pushfail":
+            print("✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
+            print(f"    {detail}")
+            failed += 1
+        else:  # failed
+            print("✗ FAILED")
+            print(f"    {detail}")
+            failed += 1
+
+    print()
+    if failed:
+        print(f"{failed} project(s) had errors or conflicts — resolve before continuing.")
+    else:
+        print(f"All projects up to date ({changed} updated).")
+    return 1 if failed else 0
+
+
+def _run_direct(projects: list[Path], copier_bin: str) -> int:
+    """Legacy direct-to-main-tree flow (--no-isolate). Returns exit code."""
+    print(f"Updating {len(projects)} project(s) [direct — main tree]:\n")
     failed = 0
     for project_dir in projects:
         print(f"  {project_dir.name}... ", end="", flush=True)

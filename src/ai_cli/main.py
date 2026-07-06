@@ -1966,10 +1966,27 @@ def cmd_cc_usage_status():
 @_cli_group.command("copier-update", help="Propagate project-template changes to downstream projects")
 @click.option("-d", "--dry-run", is_flag=True, help="Show diffs without applying")
 @click.option("-p", "--project", default=None, help="Only update the given project")
-def cmd_copier_update(dry_run, project):
+@click.option(
+    "--no-isolate",
+    is_flag=True,
+    help="Run copier directly in each repo's main tree (legacy; unsafe while sessions are active)",
+)
+@click.option(
+    "--no-push",
+    is_flag=True,
+    help="Isolated mode: commit in the temp worktree but do not push HEAD:main",
+)
+def cmd_copier_update(dry_run, project, no_isolate, no_push):
     from .copier_update import run_copier_update
 
-    sys.exit(run_copier_update(dry_run=dry_run, project_filter=project))
+    sys.exit(
+        run_copier_update(
+            dry_run=dry_run,
+            project_filter=project,
+            isolate=not no_isolate,
+            push=not no_push,
+        )
+    )
 
 
 @_cli_group.command(
