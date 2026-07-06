@@ -33,6 +33,11 @@ except ImportError:  # pragma: no cover
 _ICON_SIZE = 128
 _DYNAMIC_PROFILE_PREFIX = "ai-cli-session-"
 
+# All session types parent to iTerm2's built-in "Default" profile (guaranteed
+# to exist). The per-type named profiles (ClaudeCode/GeminiCLI/...) were retired
+# 2026-07-05: the generator is the single source of truth for session profiles,
+# so no hand-maintained profiles need to exist on the machine. Override a type
+# here only if you deliberately want it to inherit from a custom base profile.
 _BASE_PROFILES: dict[str, str] = {
     "cc": "Default",
     "gemini": "Default",

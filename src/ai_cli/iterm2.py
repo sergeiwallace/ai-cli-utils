@@ -92,11 +92,11 @@ charcoal    = "#2d2d2d"
 ## icon_color = "#ffd700"   # omit to auto-derive
 
 [iterm2.base_profiles]
-## iTerm2 base profiles for each session type.
-## The generated Dynamic Profile inherits from these.
-## Override with the exact name of a profile in your iTerm2 profile list.
-## "Default" is guaranteed to exist; custom names (e.g. "ClaudeCode") require
-## you to create a matching profile in iTerm2 → Preferences → Profiles.
+## Parent iTerm2 profile each generated session profile inherits from.
+## Default (recommended): every session parents to the built-in "Default" and
+## the generator supplies name/color/icon/keymap/Semantic-History itself — no
+## hand-maintained profiles required. Override with the exact name of a custom
+## profile only if you deliberately want a session type to inherit from it.
 cc         = "Default"
 gemini     = "Default"
 shell      = "Default"

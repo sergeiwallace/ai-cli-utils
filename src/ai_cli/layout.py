@@ -79,7 +79,7 @@ class TabColors(BaseModel):
 
 class Tab(BaseModel):
     name: str
-    base_profile: str = "ClaudeCode"
+    session_type: str = "cc"
     colors: TabColors = Field(default_factory=TabColors)
     root: Pane
 
@@ -88,6 +88,14 @@ class Tab(BaseModel):
     def name_not_empty(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("tab name must not be empty")
+        return v
+
+    @field_validator("session_type")
+    @classmethod
+    def session_type_valid(cls, v: str) -> str:
+        allowed = {"cc", "gemini", "shell", "chrome", "caffeinate", "ssh"}
+        if v not in allowed:
+            raise ValueError(f"session_type must be one of {sorted(allowed)}")
         return v
 
 
@@ -181,18 +189,7 @@ def generate_layout_profiles(layout: Layout) -> list[Path]:
         tab_hex = tab.colors.tab_color or "#1e88e5"
         bg_hex = tab.colors.background
 
-        # Determine session type from base_profile convention
-        session_type = "cc"
-        if "Gemini" in tab.base_profile:
-            session_type = "gemini"
-        elif "Shell" in tab.base_profile:
-            session_type = "shell"
-        elif "Chrome" in tab.base_profile:
-            session_type = "chrome"
-        elif "Caffeinate" in tab.base_profile:
-            session_type = "caffeinate"
-        elif "SSH" in tab.base_profile:
-            session_type = "ssh"
+        session_type = tab.session_type
 
         # Generate tinted icon
         icon_color = tab.colors.icon_color or None
@@ -206,7 +203,7 @@ def generate_layout_profiles(layout: Layout) -> list[Path]:
         profile: dict = {
             "Name": profile_name,
             "Guid": guid,
-            "Dynamic Profile Parent Name": tab.base_profile,
+            "Dynamic Profile Parent Name": "Default",
             "Tab Color": _hex_to_iterm2_color(tab_hex),
             "Use Tab Color": True,
             "Title Components": 1,  # 1 = session name only ("Name" dropdown option)

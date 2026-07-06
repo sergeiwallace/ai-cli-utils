@@ -41,7 +41,7 @@ _MINIMAL_LAYOUT = {
     "tabs": [
         {
             "name": "main",
-            "base_profile": "ClaudeCode",
+            "session_type": "cc",
             "root": {"dir": "~", "command": "ai c 1"},
         }
     ],
@@ -52,7 +52,7 @@ _SPLIT_LAYOUT = {
     "tabs": [
         {
             "name": "dev",
-            "base_profile": "ClaudeCode",
+            "session_type": "cc",
             "colors": {"tab_color": "#5e35b1"},
             "root": {
                 "dir": "~/projects/foo",
@@ -105,11 +105,11 @@ class TestPaneSchema:
 class TestTabSchema:
     def test_tab_name_required(self):
         with pytest.raises(Exception):
-            Tab(name="", base_profile="ClaudeCode", root=Pane())
+            Tab(name="", session_type="cc", root=Pane())
 
-    def test_tab_default_base_profile(self):
+    def test_tab_default_session_type(self):
         t = Tab(name="dev", root=Pane())
-        assert t.base_profile == "ClaudeCode"
+        assert t.session_type == "cc"
 
     def test_tab_with_colors(self):
         t = Tab(name="dev", root=Pane(), colors=TabColors(tab_color="#5e35b1"))
@@ -194,7 +194,7 @@ class TestGenerateLayoutProfiles:
         ):
             paths = generate_layout_profiles(layout)
         data = json.loads(paths[0].read_text())
-        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "ClaudeCode"
+        assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "Default"
 
     def test_tab_color_set_in_profile(self, tmp_path):
         layout = Layout(
@@ -203,7 +203,7 @@ class TestGenerateLayoutProfiles:
                 "tabs": [
                     {
                         "name": "x",
-                        "base_profile": "ClaudeCode",
+                        "session_type": "cc",
                         "colors": {"tab_color": "#ff0000"},
                         "root": {"dir": "~"},
                     }
@@ -257,9 +257,9 @@ class TestGenerateLayoutProfiles:
             **{
                 "name": "multi",
                 "tabs": [
-                    {"name": "a", "base_profile": "ClaudeCode", "root": {"dir": "~"}},
-                    {"name": "b", "base_profile": "GeminiCLI", "root": {"dir": "~"}},
-                    {"name": "c", "base_profile": "ShellUtility", "root": {"dir": "~"}},
+                    {"name": "a", "session_type": "cc", "root": {"dir": "~"}},
+                    {"name": "b", "session_type": "gemini", "root": {"dir": "~"}},
+                    {"name": "c", "session_type": "shell", "root": {"dir": "~"}},
                 ],
             }
         )
@@ -511,14 +511,14 @@ class TestLoadLayoutNonMapping:
 
 
 class TestGenerateLayoutProfilesExtended:
-    """Covers session type branches (lines 191, 193, 195) and color fields (214, 216)."""
+    """Covers session_type flow-through, always-Default parent, and color fields."""
 
     def _make_tab(
-        self, base_profile: str, tab_color: str = "#1e88e5", bg: str | None = None, fg: str | None = None
+        self, session_type: str, tab_color: str = "#1e88e5", bg: str | None = None, fg: str | None = None
     ) -> dict:
         tab = {
             "name": "tab1",
-            "base_profile": base_profile,
+            "session_type": session_type,
             "colors": {"tab_color": tab_color},
             "root": {"dir": "~"},
         }
@@ -528,43 +528,45 @@ class TestGenerateLayoutProfilesExtended:
             tab["colors"]["foreground"] = fg
         return tab
 
-    def _run(self, base_profile: str, tmp_path: Path, **color_kwargs) -> dict:
+    def _run(self, session_type: str, tmp_path: Path, **color_kwargs):
         layout_data = {
             "name": "test",
-            "tabs": [self._make_tab(base_profile, **color_kwargs)],
+            "tabs": [self._make_tab(session_type, **color_kwargs)],
         }
         layout = Layout(**layout_data)
+        icon_mock = MagicMock(return_value=None)
         with (
             patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
-            patch("ai_cli.layout.generate_session_icon", return_value=None),
+            patch("ai_cli.layout.generate_session_icon", icon_mock),
         ):
             generate_layout_profiles(layout)
         profile_file = tmp_path / "layout-test-tab1.json"
-        return json.loads(profile_file.read_text())["Profiles"][0]
+        profile = json.loads(profile_file.read_text())["Profiles"][0]
+        return profile, icon_mock
 
-    def test_chrome_base_profile_sets_session_type(self, tmp_path):
-        """line 191: 'Chrome' in base_profile → session_type = 'chrome'."""
-        profile = self._run("ChromeTab", tmp_path)
-        assert profile["Dynamic Profile Parent Name"] == "ChromeTab"
+    def test_every_session_type_parents_to_default(self, tmp_path):
+        # Named per-type profiles retired — every layout profile parents to Default.
+        for stype in ("cc", "gemini", "shell", "chrome", "caffeinate", "ssh"):
+            profile, _ = self._run(stype, tmp_path)
+            assert profile["Dynamic Profile Parent Name"] == "Default", stype
 
-    def test_caffeinate_base_profile_sets_session_type(self, tmp_path):
-        """line 193: 'Caffeinate' in base_profile → session_type = 'caffeinate'."""
-        profile = self._run("CaffeinateTab", tmp_path)
-        assert profile["Dynamic Profile Parent Name"] == "CaffeinateTab"
+    def test_session_type_flows_to_icon_generation(self, tmp_path):
+        # generate_session_icon(session_key, tab_hex, session_type, icon_color)
+        _, icon_mock = self._run("chrome", tmp_path)
+        assert icon_mock.call_args.args[2] == "chrome"
 
-    def test_ssh_base_profile_sets_session_type(self, tmp_path):
-        """line 195: 'SSH' in base_profile → session_type = 'ssh'."""
-        profile = self._run("SSHTab", tmp_path)
-        assert profile["Dynamic Profile Parent Name"] == "SSHTab"
+    def test_invalid_session_type_rejected(self):
+        with pytest.raises(Exception):
+            Layout(name="t", tabs=[{"name": "x", "session_type": "bogus", "root": {"dir": "~"}}])
 
     def test_background_color_included_when_set(self, tmp_path):
         """line 214: bg_hex present → profile has 'Background Color' key."""
-        profile = self._run("ClaudeCode", tmp_path, bg="#111111")
+        profile, _ = self._run("cc", tmp_path, bg="#111111")
         assert "Background Color" in profile
 
     def test_foreground_color_included_when_set(self, tmp_path):
         """line 216: foreground present → profile has 'Foreground Color' key."""
-        profile = self._run("ClaudeCode", tmp_path, fg="#ffffff")
+        profile, _ = self._run("cc", tmp_path, fg="#ffffff")
         assert "Foreground Color" in profile
 
 
@@ -629,8 +631,8 @@ class TestWriteLaunchScript:
         multi_tab = {
             "name": "multi",
             "tabs": [
-                {"name": "tab-a", "base_profile": "ClaudeCode", "root": {"dir": "~"}},
-                {"name": "tab-b", "base_profile": "GeminiTab", "root": {"dir": "~"}},
+                {"name": "tab-a", "session_type": "cc", "root": {"dir": "~"}},
+                {"name": "tab-b", "session_type": "gemini", "root": {"dir": "~"}},
             ],
         }
         layout = Layout(**multi_tab)
