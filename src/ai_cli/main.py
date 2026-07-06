@@ -2277,6 +2277,22 @@ def cmd_trust_backfill(root):
         print("All workspaces under the root are already trusted — nothing to change.")
 
 
+@_cli_group.command(
+    "next-id",
+    help="Print the next PREFIX-N roadmap id from origin/main (advisory allocator; AIH-89). "
+    "e.g. `ai next-id AIH` -> AIH-102",
+)
+@click.argument("prefix")
+@click.option("--no-fetch", is_flag=True, help="Skip the git fetch; read the current origin/main ref as-is")
+def cmd_next_id(prefix, no_fetch):
+    from .roadmap import NextIdError, next_id
+
+    try:
+        click.echo(next_id(prefix, fetch=not no_fetch))
+    except NextIdError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @_cli_group.command("attach", help="Attach to a tmux session by name")
 @click.argument("session_name")
 def cmd_attach(session_name):
