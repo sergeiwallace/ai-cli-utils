@@ -55,7 +55,10 @@ _BASE_PROFILES: dict[str, str] = {
 # unset, so without this every Cmd-click falls back to the OS default app.
 _SEMANTIC_HISTORY: dict[str, str] = {
     "action": "command",
-    "text": r"code -gr \1:\2",
+    # `|| code -r` fallback: a click without a line number yields an empty \2 and a
+    # dangling colon (code -gr "<path>:") which exits non-zero — fall back to just
+    # opening the file in the reused window.
+    "text": r'code -gr "\1:\2" || code -r "\1"',
 }
 
 # Default icon tint when no tab color is assigned (session has no color set).
