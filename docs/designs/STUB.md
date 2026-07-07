@@ -19,6 +19,8 @@ template_version: "design-1.0.0"
 
 [High-level description of the design — what problem it solves and how.]
 
+<!-- Replacement/refactor design? Inventory the existing behavior being replaced; carry a parity decision (preserved / intentionally dropped + reason) into the plan's ACs. Full rule: docs/procedures/ac-writing-practices.md. -->
+
 <!-- /aido:region name="overview" -->
 
 <!-- aido:region name="decisions" kind="replaceable" -->

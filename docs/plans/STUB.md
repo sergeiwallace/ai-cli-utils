@@ -36,6 +36,8 @@ template_version: "plan-1.0.0"
 
 ## Task Breakdown
 
+<!-- Replacement/refactor task? Inventory the existing behavior FIRST; every item gets a parity AC (preserved / intentionally dropped + reason). Full rule: docs/procedures/ac-writing-practices.md. -->
+
 (none yet)
 
 <!-- /aido:region name="task_breakdown" -->
