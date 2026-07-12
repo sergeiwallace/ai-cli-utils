@@ -479,6 +479,12 @@ Re-grep of the target confirms:
      and link any per-decision ToC entry to that stable `#ad-N` id (NOT the auto-slug) so the link
      survives the status-suffix flip. Keep the visible `— `[PENDING | APPROVED …]`` suffix as-is. -->
 
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+     each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+     each on its own line — a blank line before each header, and a hard newline between the header
+     and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+     skeleton below already shows the correct shape; match it exactly. -->
+
 <a id="ad-1"></a>
 
 ### AD-1: [Decision name] — `[PENDING | APPROVED — (x) | CLOSED]`

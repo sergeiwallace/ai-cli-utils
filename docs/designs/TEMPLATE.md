@@ -206,6 +206,16 @@ All diagrams must use Mermaid syntax (```mermaid blocks). No ASCII art diagrams.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
 <!-- aido:ac-rules:mirror:end -->
 
+<!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes this from the doc alone
+     (task-spec best-practices research R-1780610095; full standard: docs/procedures/ac-writing-practices.md):
+     • Ship each AC as an executable test where feasible; commit failing tests first.
+     • Mandate >=1 NON-MOCKED behavioral assertion per behavior — do not mock the primary inputs;
+       gate on mutation score, treat line coverage as a floor not a target.
+     • Spec the WHAT (I/O, edge cases, failure paths, parity), NOT the HOW (internal data
+       structures, algorithm, naming) — over-constraining internals degrades quality.
+     • Exit gates are harness-enforced, runnable predicates (run the suite; fresh-context diff
+       review against the ACs), never self-declared "done". -->
+
 <!-- Example phase shape:
 ### Phase 1: [Name]
 - Scope: <!-- what ships -->
@@ -273,6 +283,12 @@ All diagrams must use Mermaid syntax (```mermaid blocks). No ASCII art diagrams.
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
 | D-1 | | (a) Option A, (b) Option B | | | | | `Pending` |
 | D-2 | | (a) Option A, (b) Option B | | | | | `Pending` |
+
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+     each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+     each on its own line — a blank line before each header, and a hard newline between the header
+     and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+     skeleton below already shows the correct shape; match it exactly. -->
 
 ### Decision Details
 
