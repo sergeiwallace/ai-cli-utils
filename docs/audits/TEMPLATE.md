@@ -503,10 +503,14 @@ Re-grep of the target confirms:
 
 #### Recommendation
 
-> **Decision:** `PENDING` <!-- Update to `APPROVED — (x) Full option name + implementation pointer` -->
+> **Recommended (AI):** <!-- one option + why -->
+> **Decision:** `PENDING`
 
-<!-- 2-3 sentences on which option and why. After approval, add a one-line pointer
-     to where the implementation lives (commit hash / file:line). -->
+<!-- On approval: set Decision to `APPROVED — (x) Full option name + implementation pointer`. Also
+     record Chosen (Sergei) = (x) and Diverged? = Yes/No vs the AI rec; if Yes, state WHY Sergei chose
+     differently. If the AI rec was corrected mid-review, KEEP the original + its reasoning — the
+     correction is signal (recommendation-vs-choice tracking: AIH-148 / decision-framework.md).
+     Then add a one-line pointer to where the implementation lives (commit hash / file:line). -->
 
 <a id="ad-2"></a>
 

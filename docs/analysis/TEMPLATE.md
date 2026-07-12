@@ -40,7 +40,14 @@ template_version: "analysis-1.0.0"
 
 ## Recommendation
 
-[Recommended option and why.]
+<!-- Recommendation-vs-choice tracking (AIH-148): state the AI's recommended option + why below.
+     When Sergei decides, record his Chosen option and — if it Diverged from the recommendation —
+     WHY, right here. If the rec was corrected mid-discussion, keep the original + its reasoning
+     (the correction is signal). See ai-harness docs/procedures/decision-framework.md. -->
+
+**Recommended (AI):** [option and why]
+
+**Chosen (Sergei):** [fill on decision] · **Diverged?** [Yes / No — if Yes, why]
 
 <!-- /aido:region name="recommendation" -->
 
