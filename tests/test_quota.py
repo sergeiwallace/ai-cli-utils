@@ -53,6 +53,50 @@ class TestParseUsageOutput:
         assert snap.weekly_sonnet_pct == 24.0
         assert snap.extra_pct == 0.0
 
+    # AIH-120: CC v2.1.207 replaced "Current week (Sonnet only)" with a per-model
+    # secondary line whose label is now a model NAME ("Fable"), with NO progress bar
+    # before "N% used". The old hardcoded "Sonnet only" regex matched nothing, so
+    # weekly_sonnet_pct went permanently None and the statusline dropped it.
+    _REAL_FABLE_OUTPUT = (
+        "  Current session\n"
+        "  ██████████████████                                 36% used\n"
+        "  Resets 7:59pm (America/New_York)\n\n"
+        "  Current week (all models)\n"
+        "  ██████                                             12% used\n"
+        "  Resets Jul 14 at 1:59pm (America/New_York)\n\n"
+        "  Current week (Fable)\n"
+        "                                                     0% used\n"
+    )
+
+    def test_when_fable_secondary_line_then_parsed_generically(self):
+        snap = _parse_usage_output(self._REAL_FABLE_OUTPUT)
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 12.0
+        assert snap.session_pct == 36.0
+        # Secondary per-model weekly line parsed generically (label != "all models"):
+        assert snap.weekly_sonnet_pct == 0.0
+        assert snap.weekly_model_name == "Fable"
+
+    def test_when_legacy_sonnet_only_then_model_name_captured(self):
+        # Back-compat: the old "Sonnet only" label still parses, and its name is captured.
+        snap = _parse_usage_output(self._REAL_USAGE_OUTPUT)
+        assert snap is not None
+        assert snap.weekly_sonnet_pct == 24.0
+        assert snap.weekly_model_name == "Sonnet only"
+
+    def test_when_no_secondary_weekly_line_then_model_name_none(self):
+        output = "  Current week (all models)\n  █████                                              40% used\n"
+        snap = _parse_usage_output(output)
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 40.0
+        assert snap.weekly_sonnet_pct is None
+        assert snap.weekly_model_name is None
+
+    def test_when_all_models_label_not_mistaken_for_secondary(self):
+        # The "all models" aggregate must never be captured as the secondary model line.
+        snap = _parse_usage_output(self._REAL_FABLE_OUTPUT)
+        assert snap.weekly_model_name != "all models"
+
     def test_when_all_fields_present_then_all_parsed(self):
         output = (
             "Current session: 12% used\n"

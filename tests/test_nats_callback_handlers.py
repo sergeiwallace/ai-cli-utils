@@ -231,6 +231,7 @@ def test_given_valid_snapshot_when_handler_then_calls_record(tmp_path):
         usage_percent=55.0,
         session_pct=10.0,
         weekly_sonnet_pct=20.0,
+        weekly_model_name=None,
         extra_pct=5.0,
         reset_at="2026-04-20T00:00:00Z",
     )

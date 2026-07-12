@@ -33,7 +33,12 @@ class QuotaSnapshot:
 
     weekly_all_models_pct: float  # primary quota metric — "Current week (all models)"
     session_pct: float | None = None  # "Current session"
-    weekly_sonnet_pct: float | None = None  # "Current week (Sonnet only)"
+    # Secondary per-model weekly limit — the "Current week (<model>)" line that is NOT
+    # "all models". Its label is a MODEL NAME that changes over time (was "Sonnet only",
+    # now "Fable", AIH-120). The pct keeps the historical field name for DB/KV back-compat;
+    # weekly_model_name carries the label so the statusline can name it correctly.
+    weekly_sonnet_pct: float | None = None
+    weekly_model_name: str | None = None  # e.g. "Fable", "Sonnet only", "Opus"
     extra_pct: float | None = None  # "Extra usage: X%" or 0.0 if "not enabled"
     reset_at: str | None = None  # next reset as UTC ISO string, e.g. "2026-04-18T11:59:00Z"
 
@@ -247,16 +252,33 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
         return None
 
     session_match = re.search(r"Current session.*?(\d+(?:\.\d+)?)\s*%\s*used", output, re.DOTALL | re.IGNORECASE)
-    sonnet_match = re.search(
-        r"Current week \(Sonnet only\).*?(\d+(?:\.\d+)?)\s*%\s*used", output, re.DOTALL | re.IGNORECASE
+
+    # Secondary per-model weekly limit (AIH-120): CC used to label this "Current week
+    # (Sonnet only)"; it is now a model name ("Current week (Fable)") and will keep
+    # changing as model tiers shift. Match every "Current week (<label>)" line generically
+    # and take the first one that is NOT the "all models" aggregate. re.DOTALL + non-greedy
+    # pairs each label with its own following "N% used" (the Fable line has no progress bar).
+    weekly_lines = re.findall(
+        r"Current week \(([^)]+)\).*?(\d+(?:\.\d+)?)\s*%\s*used",
+        output,
+        re.DOTALL | re.IGNORECASE,
     )
+    weekly_model_name: str | None = None
+    weekly_secondary_pct: float | None = None
+    for label, pct in weekly_lines:
+        if label.strip().lower() != "all models":
+            weekly_model_name = label.strip()
+            weekly_secondary_pct = float(pct)
+            break
+
     extra_match = re.search(r"Extra usage.*?(\d+(?:\.\d+)?)\s*%", output, re.DOTALL | re.IGNORECASE)
     extra_not_enabled = bool(re.search(r"Extra usage not enabled", output, re.IGNORECASE))
 
     return QuotaSnapshot(
         weekly_all_models_pct=float(weekly_all_match.group(1)),
         session_pct=float(session_match.group(1)) if session_match else None,
-        weekly_sonnet_pct=float(sonnet_match.group(1)) if sonnet_match else None,
+        weekly_sonnet_pct=weekly_secondary_pct,
+        weekly_model_name=weekly_model_name,
         extra_pct=float(extra_match.group(1)) if extra_match else (0.0 if extra_not_enabled else None),
         reset_at=_parse_reset_datetime(output),
     )
@@ -594,7 +616,7 @@ def _notify_threshold(notifier: Any, threshold: int, snapshot: QuotaSnapshot) ->
     title = f"Claude quota {threshold}% threshold crossed"
     body = f"Weekly (all models): {usage:.1f}%"
     if snapshot.weekly_sonnet_pct is not None:
-        body += f" | Sonnet: {snapshot.weekly_sonnet_pct:.1f}%"
+        body += f" | {snapshot.weekly_model_name or 'Sonnet'}: {snapshot.weekly_sonnet_pct:.1f}%"
     if snapshot.session_pct is not None:
         body += f" | Session: {snapshot.session_pct:.1f}%"
     if threshold >= 90:
@@ -770,7 +792,7 @@ def quota_scrape() -> int:
 
         print(f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%", end="")
         if snapshot.weekly_sonnet_pct is not None:
-            print(f", Sonnet {snapshot.weekly_sonnet_pct:.1f}%", end="")
+            print(f", {snapshot.weekly_model_name or 'Sonnet'} {snapshot.weekly_sonnet_pct:.1f}%", end="")
         if snapshot.session_pct is not None:
             print(f", session {snapshot.session_pct:.1f}%", end="")
         print()
@@ -779,6 +801,7 @@ def quota_scrape() -> int:
             usage_percent=snapshot.weekly_all_models_pct,
             session_pct=snapshot.session_pct,
             weekly_sonnet_pct=snapshot.weekly_sonnet_pct,
+            weekly_model_name=snapshot.weekly_model_name,
             extra_pct=snapshot.extra_pct,
             reset_at=snapshot.reset_at,
         )
@@ -924,6 +947,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
         "usage_percent": snapshot.weekly_all_models_pct,
         "session_pct": snapshot.session_pct,
         "weekly_sonnet_pct": snapshot.weekly_sonnet_pct,
+        "weekly_model_name": snapshot.weekly_model_name,
         "extra_pct": snapshot.extra_pct,
         "reset_at": snapshot.reset_at,
         "ts": time.time(),
@@ -1074,7 +1098,7 @@ def quota_statusline_part() -> int:
         conn.row_factory = sqlite3.Row
         _init_db(conn)
         rows = conn.execute(
-            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct FROM quota_snapshots"
+            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct, weekly_model_name FROM quota_snapshots"
             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
             (week_start_str,),
         ).fetchall()
@@ -1103,6 +1127,7 @@ def quota_statusline_part() -> int:
                             usage_percent=kv["usage_percent"],
                             session_pct=kv.get("session_pct"),
                             weekly_sonnet_pct=kv.get("weekly_sonnet_pct"),
+                            weekly_model_name=kv.get("weekly_model_name"),
                             extra_pct=kv.get("extra_pct"),
                             reset_at=kv.get("reset_at"),
                         )
@@ -1110,7 +1135,7 @@ def quota_statusline_part() -> int:
                         conn2.row_factory = sqlite3.Row
                         _init_db(conn2)
                         rows = conn2.execute(
-                            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct FROM quota_snapshots"
+                            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct, weekly_model_name FROM quota_snapshots"
                             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
                             (week_start_str,),
                         ).fetchall()
@@ -1128,11 +1153,12 @@ def quota_statusline_part() -> int:
 
         _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         usage_pct = rows[0]["usage_percent"]
-        # Use the most recent non-None Sonnet value — a single scrape that fails to parse
-        # the Sonnet breakdown produces None, which would otherwise mask valid older data.
-        sonnet_pct = next(
-            (r["weekly_sonnet_pct"] for r in rows if r["weekly_sonnet_pct"] is not None),
-            None,
+        # Use the most recent non-None secondary-model value (AI-CLI-83) — a single scrape
+        # that fails to parse the per-model breakdown produces None, which would otherwise mask
+        # valid older data. Take the model name from the SAME row so the label matches the value.
+        sonnet_pct, model_name = next(
+            ((r["weekly_sonnet_pct"], r["weekly_model_name"]) for r in rows if r["weekly_sonnet_pct"] is not None),
+            (None, None),
         )
         snapshot_age_hours = (
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
@@ -1165,7 +1191,13 @@ def quota_statusline_part() -> int:
         BOLD_CYAN = "\033[1;36m"
         BOLD_MAG = "\033[1;35m"
         week_label = "Week" if _cols >= 80 else "W"
-        son_label = "Son" if _cols >= 80 else "S"
+        # Label the secondary line with its actual model name (AIH-120: was "Sonnet",
+        # now "Fable", etc.). Fall back to legacy "Son"/"S" for pre-AIH-120 rows (no name).
+        if model_name:
+            _mn = model_name.strip().split()[0].title()  # "Sonnet only"->"Sonnet"; "Fable"->"Fable"
+            son_label = _mn[:6] if _cols >= 80 else _mn[:1]
+        else:
+            son_label = "Son" if _cols >= 80 else "S"
 
         # Sonnet part — fire scrape if absent so field populates on next refresh
         if sonnet_pct is None:

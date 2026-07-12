@@ -109,6 +109,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
             usage_percent REAL NOT NULL,
             session_pct REAL,
             weekly_sonnet_pct REAL,
+            weekly_model_name TEXT,
             extra_pct REAL,
             week_start TEXT NOT NULL,
             snapshotted_at TEXT NOT NULL
@@ -156,6 +157,7 @@ def _migrate_snapshot_columns(conn: sqlite3.Connection) -> None:
     new_cols = [
         ("weekly_sonnet_pct", "REAL"),
         ("extra_pct", "REAL"),
+        ("weekly_model_name", "TEXT"),  # AIH-120: label for the secondary per-model weekly line
     ]
     for col, typedef in new_cols:
         if col not in existing:
@@ -265,6 +267,7 @@ def record_quota_snapshot(
     weekly_sonnet_pct: float | None = None,
     extra_pct: float | None = None,
     reset_at: str | None = None,
+    weekly_model_name: str | None = None,
 ) -> None:
     """Insert a quota snapshot for the current week and update weekly state.
 
@@ -287,9 +290,9 @@ def record_quota_snapshot(
 
     conn.execute(
         """INSERT INTO quota_snapshots
-           (usage_percent, session_pct, weekly_sonnet_pct, extra_pct, week_start, snapshotted_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (usage_percent, session_pct, weekly_sonnet_pct, extra_pct, week_start, now_iso),
+           (usage_percent, session_pct, weekly_sonnet_pct, weekly_model_name, extra_pct, week_start, snapshotted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (usage_percent, session_pct, weekly_sonnet_pct, weekly_model_name, extra_pct, week_start, now_iso),
     )
 
     conn.execute(

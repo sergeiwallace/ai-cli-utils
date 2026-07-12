@@ -652,6 +652,7 @@ async def _on_quota_snapshot_handler(data: dict) -> None:
             usage_percent=data["usage_percent"],
             session_pct=data.get("session_pct"),
             weekly_sonnet_pct=data.get("weekly_sonnet_pct"),
+            weekly_model_name=data.get("weekly_model_name"),
             extra_pct=data.get("extra_pct"),
             reset_at=data.get("reset_at"),
         )
