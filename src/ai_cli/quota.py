@@ -379,9 +379,10 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         )
 
         # Poll for usage output, max 40s. Accept as soon as "Current week (all models)"
-        # and "% used" are both present, then give up to 2s grace for Sonnet data to
-        # render — CC renders the all-models line before the Sonnet-only line, so
-        # exiting on first valid parse silently drops weekly_sonnet_pct.
+        # and "% used" are both present, then give a grace window for the secondary
+        # per-model line to render — CC renders the all-models line before the per-model
+        # line ("Current week (Fable)", AIH-120), which can lag several seconds, so exiting
+        # on the first valid parse silently drops weekly_sonnet_pct/weekly_model_name.
         snapshot = None
         for _ in range(200):
             time.sleep(0.2)
@@ -395,9 +396,9 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                 snapshot = _parse_usage_output(cap.stdout)
                 if snapshot:
                     if snapshot.weekly_sonnet_pct is None:
-                        # All-models data present but Sonnet not yet rendered — wait
-                        # up to 2s for the Sonnet line to appear before accepting.
-                        for _ in range(10):
+                        # All-models present but the per-model line not yet rendered — wait
+                        # up to 8s for it to appear before accepting (it lags all-models).
+                        for _ in range(40):
                             time.sleep(0.2)
                             extra_cap = subprocess.run(
                                 ["tmux", "capture-pane", "-p", "-t", target, "-J"],
