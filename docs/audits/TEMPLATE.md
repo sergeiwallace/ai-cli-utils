@@ -151,7 +151,7 @@ template_version: "audit-1.0.0"
 
 <!-- 2-3 sentences naming the artifact, the commit/version, and why this audit was triggered.
      Examples:
-     - "RSMCLD-149 plan doc at commit abc1234, triggered by completion of T-04 implementation"
+     - "PROJ-149 plan doc at commit abc1234, triggered by completion of T-04 implementation"
      - "aido src/aido/nodes/research.py + related synthesis templates at commit 2cd236c,
        triggered by AIDO-107 codebase-wide audit for silent-degradation patterns"
      - "Every open roadmap task in aido/docs/roadmap/master-roadmap.md verified against
@@ -636,7 +636,7 @@ Re-grep of the target confirms:
 
 **Jira issues (read issue AND all comments):**
 
-- [RSMCLD-NNN](https://jira.bms.com/browse/RSMCLD-NNN) — <!-- AC source / what was verified -->
+- [PROJ-NNN](https://your-org.atlassian.net/browse/PROJ-NNN) — <!-- AC source / what was verified -->
 
 ## Appendix: Commands Run
 
@@ -666,10 +666,10 @@ Re-grep of the target confirms:
 **Date:** YYYY-MM-DD
 
 ```text
-You are a ROLE-DOMAIN-EXPERT (e.g. "senior pharmaceutical AI systems architect with deep
-hands-on expertise in Bayesian statistics, DMTA loop design, HTS drug discovery informatics, and
-GxP compliance engineering" / "principal staff engineer specializing in developer experience and
-AI-augmented software development at scale"). You have shipped production systems in this domain
+You are a ROLE-DOMAIN-EXPERT (e.g. "senior data-platform architect with deep hands-on
+expertise in distributed systems, data-pipeline design, and reliability engineering" /
+"principal staff engineer specializing in developer experience and AI-augmented software
+development at scale"). You have shipped production systems in this domain
 and you know the gap between what looks rigorous on paper and what actually holds up. You call out
 that gap directly. When you cannot verify a claim, you say so explicitly rather than waving past
 it. Your judgment is the product, not a summary.

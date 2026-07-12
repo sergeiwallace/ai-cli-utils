@@ -259,12 +259,20 @@ All diagrams must use Mermaid syntax (```mermaid blocks). No ASCII art diagrams.
 
 ### Decision Summary
 
-<!-- Update Status to `**Approved**` and Chosen/Rationale when decided. -->
+<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+     choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
+     - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
+       here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
+       silently overwrite it; the correction is signal.
+     - Chosen: the human's final pick. Fill when decided.
+     - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
+       WHY the human chose differently — that "why" is the highest-value datapoint.
+     Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
 
-| # | Decision | Options Considered | Chosen | Rationale | Status |
-|---|----------|-------------------|--------|-----------|--------|
-| D-1 | | (a) Option A, (b) Option B | | | `Pending` |
-| D-2 | | (a) Option A, (b) Option B | | | `Pending` |
+| # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
+|---|----------|-------------------|------------------|--------|-----------|-----------|--------|
+| D-1 | | (a) Option A, (b) Option B | | | | | `Pending` |
+| D-2 | | (a) Option A, (b) Option B | | | | | `Pending` |
 
 ### Decision Details
 
