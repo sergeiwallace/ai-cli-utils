@@ -16,7 +16,6 @@ PALETTE_FILE="/tmp/ai-cli-demo-palette.png"
 SENTINEL="/tmp/ai-cli-demo-done"
 DEMO_WINDOW_NAME="ai-cli-utils demo"
 
-BOLD="\033[1m"
 GREEN="\033[1;32m"
 DIM="\033[2m"
 RESET="\033[0m"
@@ -73,7 +72,8 @@ on run argv
   end tell
   return ""
 end run
-APPLESCRIPT)
+APPLESCRIPT
+)
 
 if [[ -z "$WINDOW_BOUNDS" ]]; then
   echo "Error: could not find iTerm2 window named \"${DEMO_WINDOW_NAME}\" — open it first" >&2

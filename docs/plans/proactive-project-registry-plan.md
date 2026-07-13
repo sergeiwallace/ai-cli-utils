@@ -476,7 +476,7 @@ Update README first-time setup section. Add `ai register` to CLI reference. Docu
 
 ## Open Questions
 
-1. **Hard-block removal scope**: Should `validate_registry_completeness()` also be removed as a hard-block for _ai-core_ users who have `main_project` configured but have new unregistered directories? Or should the interactive prompt survive for ai-core users (only disabled for non-ai-core users per D1b)? The current UX is useful for ensuring completeness — the gap window is the real problem, not the prompt itself.
+1. **Hard-block removal scope**: Should `validate_registry_completeness()` also be removed as a hard-block for *ai-core* users who have `main_project` configured but have new unregistered directories? Or should the interactive prompt survive for ai-core users (only disabled for non-ai-core users per D1b)? The current UX is useful for ensuring completeness — the gap window is the real problem, not the prompt itself.
 
 2. **`ai register` write target**: Should `ai register` also update `[tool.ai-cli]` in the project's `pyproject.toml` (if it exists), or only write to `sergei.toml`? Bidirectional sync vs. one-way.
 

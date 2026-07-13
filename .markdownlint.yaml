@@ -78,3 +78,13 @@ MD004: false
 # Don't enforce strict heading level increments — design doc appendices skip from h2 to h4
 # for visual structure in decision sections (## Appendix → #### Decision N → ##### Options)
 MD001: false
+
+# Standardize emphasis on asterisk (AIH-160; markdownlint v0.23 default flags inconsistent _/* usage)
+MD049:
+  style: asterisk
+MD050:
+  style: asterisk
+
+# Don't reject spaces inside code spans — audit/plan docs show literal patterns
+# with intentional trailing spaces (e.g. git conflict markers `^<<<<<<< `)
+MD038: false

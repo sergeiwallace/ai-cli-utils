@@ -33,9 +33,10 @@ repos:
 
   # ── Markdown lint ────────────────────────────────────────────────────────
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.14.0
+    rev: v0.23.0
     hooks:
       - id: markdownlint-cli2
+        args: [--fix]
         exclude: ^(\.claude/|\.githooks/|node_modules/|docs/research/)
 
 
@@ -50,7 +51,7 @@ repos:
 
   # ── Shell: shellcheck (warning+ only — suppress info/style noise) ───────
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.10.0.1
+    rev: v0.11.0.1
     hooks:
       - id: shellcheck
         args: [--severity=warning]
