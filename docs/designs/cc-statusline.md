@@ -94,6 +94,19 @@ Branch lookup (`git branch --show-current`) costs ~100ms. Cached in `$TMPDIR/.ai
 
 Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()` in `src/ai_cli/quota.py`).
 
+> **AIH-164 update (2026-07-13, CC 2.1.207):** the weekly **all-models %** and **5-hour** window
+> now come from CC's official `rate_limits` object on the statusLine **stdin** (`five_hour` +
+> `seven_day`, each `used_percentage` + `resets_at`) — deterministic, $0/zero-token. The
+> ai-harness `statusline-command.sh` extracts it, writes an account-global `~/.claude/state/quota.json`
+> (read by the new `quota-pct` ad-hoc tool, a `ctx-pct` sibling), and exports `AI_CLI_QUOTA_*`
+> env vars that `quota_statusline_part()` consumes as the authoritative source (recording a
+> *throttled* snapshot so the acceleration arrow keeps its cadence). The old `claude -p /usage`
+> print-mode capture is **retired** (emits no quota bars on 2.1.207). The hidden-pane `/usage`
+> scrape remains **only** for the single per-model **Fable** cap (`Current week (Fable)` — the
+> lone per-model datum `/usage` exposes; no multi-model breakdown exists), triggered on a
+> Fable-specific cadence with rate-limit **backoff**. See plan `ai-harness/docs/plans/aih-164-*`
+> + research `docs/research/claude-quota-statusline-rate-limits-2026.md`.
+
 ### Output Format
 
 **Normal phase** (week elapsed ≥ 24h):
