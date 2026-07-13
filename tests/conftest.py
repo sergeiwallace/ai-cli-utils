@@ -16,6 +16,45 @@ def _reset_registry_cache():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_quota_state(request, tmp_path_factory):
+    """Hermetic quota/statusline tests — never touch real user quota state (AI-CLI-97).
+
+    Two independent breaches this closes:
+
+    1. **Real quota DB.** ``_get_quota_db_path()`` falls back to the real
+       ``~/.local/state/ai-cli/quota.db`` when no override is set, so an unisolated
+       test reads/writes real quota history (which carries live ``Fable`` model data).
+       Redirect it to a per-test tmp file.
+    2. **Real background scrape subprocess.** ``quota_statusline_part()`` fires
+       ``_launch_background_scrape`` / ``_maybe_trigger_background_scrape``, which
+       ``subprocess.Popen(["ai","quota","scrape"], start_new_session=True)`` — a real
+       detached process that scrapes live usage and writes the real DB + NATS KV.
+       Under xdist these race across workers and inject real ``Fable`` data into a
+       test expecting isolated state (the intermittent ``F 🤖`` vs ``S 🤖`` flake).
+       No-op both spawners.
+
+    Tests that exercise the scrape spawners themselves (they mock ``subprocess.Popen``
+    locally and assert the real functions' behavior) opt out of the no-op via the
+    ``real_quota_scrape`` marker. ``set_db_path`` tests likewise re-set the path.
+    """
+    import ai_cli.quota_db as _qdb
+
+    tmp_db = tmp_path_factory.mktemp("quota_state") / "quota.db"
+    _qdb.set_db_path(tmp_db)
+    try:
+        if request.node.get_closest_marker("real_quota_scrape"):
+            yield  # test drives the real scrape functions (with its own Popen mock)
+        else:
+            with (
+                patch("ai_cli.quota._launch_background_scrape"),
+                patch("ai_cli.quota._maybe_trigger_background_scrape"),
+            ):
+                yield
+    finally:
+        _qdb.set_db_path(None)
+
+
+@pytest.fixture(autouse=True)
 def _suppress_auto_update():
     """Suppress _auto_update_if_stale for all tests.
 

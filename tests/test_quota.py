@@ -1803,7 +1803,33 @@ class TestTryReadKvSnapshotMachineKey:
 # --- quota_statusline_part ---
 
 
+class TestConftestQuotaHermeticity:
+    """AI-CLI-97: the conftest _isolate_quota_state fixture must keep every test off
+    real user quota state — the source of the fixed xdist-only flake (real ~/.local/
+    state/ai-cli/quota.db carries live Fable data; _launch/_maybe_trigger spawn a real
+    `ai quota scrape` subprocess that writes the real DB + NATS)."""
+
+    def test_quota_db_path_is_isolated_not_real(self):
+        import ai_cli.quota_db as qdb
+
+        p = str(qdb._get_quota_db_path())
+        # Redirected to a per-test tmp dir, never the real state dir.
+        assert "quota_state" in p
+        assert str(Path.home() / ".local" / "state" / "ai-cli") not in p
+
+    def test_scrape_spawners_are_neutralized(self):
+        import ai_cli.quota as q
+
+        # The autouse fixture no-ops both spawners, so no real `ai quota scrape`
+        # subprocess is launched (which would touch real DB/NATS). Prove no Popen fires.
+        with patch("subprocess.Popen") as mock_popen:
+            q._launch_background_scrape()
+            q._maybe_trigger_background_scrape("2020-01-01T00:00:00Z")  # stale ts
+        mock_popen.assert_not_called()
+
+
 class TestQuotaStatuslinePart:
+    @pytest.mark.real_quota_scrape
     def test_when_no_snapshot_then_shows_placeholder_and_triggers_scrape(self, tmp_path, capsys):
         """No data for current week → shows '📊 -' placeholder and launches a background scrape."""
         import ai_cli.quota_db as qdb
@@ -2467,6 +2493,7 @@ class TestQuotaSyncFromRemote:
 # --- _maybe_trigger_background_scrape ---
 
 
+@pytest.mark.real_quota_scrape
 class TestMaybeBackgroundScrape:
     def _stale_ts(self, minutes_ago: int = 35) -> str:
         now = datetime.now(timezone.utc)
