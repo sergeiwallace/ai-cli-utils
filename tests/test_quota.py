@@ -743,15 +743,18 @@ class TestGetUsageViaPrintMode:
 
 
 class TestGetClaudeUsageSnapshot:
-    def test_when_print_mode_returns_snapshot_then_returns_it_without_scraping(self):
+    def test_print_mode_retired_scrape_is_sole_path(self):
+        """AIH-164: print mode is retired from the capture path (dead on CC 2.1.207); the
+        hidden-pane scrape is the sole fallback and is called without consulting print mode."""
         snap = QuotaSnapshot(weekly_all_models_pct=17.0, session_pct=4.0, weekly_sonnet_pct=0.0)
         with (
-            patch("ai_cli.quota._get_usage_via_print_mode", return_value=snap),
-            patch("ai_cli.quota._scrape_usage_hidden_pane") as scrape,
+            patch("ai_cli.quota._get_usage_via_print_mode") as print_mode,
+            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape,
         ):
             result = _get_claude_usage_snapshot()
         assert result is snap
-        scrape.assert_not_called()  # print mode is primary — no tmux scrape when it succeeds
+        scrape.assert_called_once()
+        print_mode.assert_not_called()
 
     def test_when_print_mode_none_then_falls_back_to_scraper(self):
         snap = QuotaSnapshot(weekly_all_models_pct=72.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
@@ -1803,7 +1806,33 @@ class TestTryReadKvSnapshotMachineKey:
 # --- quota_statusline_part ---
 
 
+class TestConftestQuotaHermeticity:
+    """AI-CLI-97: the conftest _isolate_quota_state fixture must keep every test off
+    real user quota state — the source of the fixed xdist-only flake (real ~/.local/
+    state/ai-cli/quota.db carries live Fable data; _launch/_maybe_trigger spawn a real
+    `ai quota scrape` subprocess that writes the real DB + NATS)."""
+
+    def test_quota_db_path_is_isolated_not_real(self):
+        import ai_cli.quota_db as qdb
+
+        p = str(qdb._get_quota_db_path())
+        # Redirected to a per-test tmp dir, never the real state dir.
+        assert "quota_state" in p
+        assert str(Path.home() / ".local" / "state" / "ai-cli") not in p
+
+    def test_scrape_spawners_are_neutralized(self):
+        import ai_cli.quota as q
+
+        # The autouse fixture no-ops both spawners, so no real `ai quota scrape`
+        # subprocess is launched (which would touch real DB/NATS). Prove no Popen fires.
+        with patch("subprocess.Popen") as mock_popen:
+            q._launch_background_scrape()
+            q._maybe_trigger_background_scrape("2020-01-01T00:00:00Z")  # stale ts
+        mock_popen.assert_not_called()
+
+
 class TestQuotaStatuslinePart:
+    @pytest.mark.real_quota_scrape
     def test_when_no_snapshot_then_shows_placeholder_and_triggers_scrape(self, tmp_path, capsys):
         """No data for current week → shows '📊 -' placeholder and launches a background scrape."""
         import ai_cli.quota_db as qdb
@@ -2123,7 +2152,9 @@ class TestQuotaStatuslinePart:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
     def test_when_sonnet_pct_absent_then_shows_dimmed_placeholder_and_fires_scrape(self, tmp_path, capsys):
-        """weekly_sonnet_pct=None → '-% S' shown in output and _launch_background_scrape called."""
+        """weekly_sonnet_pct absent → '-% S' shown; the Fable scrape is scheduled (AIH-164 T-06:
+        via the backoff-aware _maybe_trigger_fable_scrape on the rate_limits env path, no longer an
+        unconditional per-render scrape)."""
         import ai_cli.quota_db as qdb
 
         week_start_str = qdb._get_current_week_start()
@@ -2132,7 +2163,10 @@ class TestQuotaStatuslinePart:
 
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            with patch("datetime.datetime") as MockDT:
+            with (
+                patch("datetime.datetime") as MockDT,
+                patch.dict(os.environ, {"AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}, clear=False),
+            ):
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
@@ -2143,7 +2177,7 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "-%" in out
             assert "S" in out
-            mock_scrape.assert_called_once()
+            mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires the scrape
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2467,6 +2501,7 @@ class TestQuotaSyncFromRemote:
 # --- _maybe_trigger_background_scrape ---
 
 
+@pytest.mark.real_quota_scrape
 class TestMaybeBackgroundScrape:
     def _stale_ts(self, minutes_ago: int = 35) -> str:
         now = datetime.now(timezone.utc)
@@ -2860,13 +2895,15 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
                 qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=None)
                 with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
-                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "0"}):
+                    with patch.dict(
+                        os.environ, {"AI_CLI_STATUSLINE_COLS": "0", "AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}
+                    ):
                         quota_statusline_part()
             out = capsys.readouterr().out
             assert "-%" in out
             assert "→-%" in out  # pace placeholder too
             assert "S" in out
-            mock_scrape.assert_called_once()
+            mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires (AIH-164 T-06)
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
