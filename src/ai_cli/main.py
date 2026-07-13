@@ -195,6 +195,11 @@ def _deploy_cc_config_files(project_path: Path) -> None:
     cc_dir = Path.home() / ".claude"
 
     # Files to deploy: (source relative to data_dir, dest relative to ~/.claude/)
+    # NOTE (AIH-164 audit F-02/AD-2): `data/statusline-command.sh` is the standalone-`ai`
+    # fallback and MUST be kept in sync with the canonical ai-harness copy
+    # (`ai-harness/.claude/statusline-command.sh`), which owns the statusline and wins via a
+    # symlink whenever ai-harness is installed (the `dst.is_symlink()` skip below). Re-sync with:
+    #   cp ~/projects/ai-harness/.claude/statusline-command.sh src/ai_cli/data/statusline-command.sh
     deployable = [
         ("statusline-command.sh", "statusline-command.sh"),
     ]
