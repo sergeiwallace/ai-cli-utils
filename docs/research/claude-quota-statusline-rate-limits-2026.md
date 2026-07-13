@@ -128,8 +128,16 @@ the genuinely hard, brittle part — the all-models path (Option 1) has no such 
 
 ## Open Questions
 
-1. Does `seven_day` ever represent the **Sonnet-only** weekly cap for Max, or always
-   all-models? (Observed: all-models. Assume all-models until a capture shows otherwise.)
+1. **[RESOLVED]** Does `seven_day` ever represent the **Sonnet-only** weekly cap for Max, or
+   always all-models?
+   - **Resolution (2026-07-13):** Always **all-models**. Full `/usage` capture on 2.1.207 shows
+     exactly three bars — `Current session` (=`five_hour`), `Current week (all models)`
+     (=`seven_day`), and `Current week (Fable)` (the one model-specific cap, NOT in `rate_limits`).
+     There is **no** Opus/Sonnet/Haiku breakdown. `--model sonnet` was tested and the secondary
+     line stayed `Current week (Fable)`, so **model-switching does not change it** — the second
+     cap is a fixed Anthropic-defined premium-model cap, not per-active-model. Implication:
+     AI-CLI-98's "capture ALL per-model via model-switching" premise is invalid; the only per-model
+     datum to capture is the single Fable cap (rate-limit-aware TUI scrape — AIH-164 D-4/T-06).
 2. Is `/api/oauth/usage` stable enough (auth, shape, rate-limit policy) to depend on for
    per-model, or is TUI scraping the lesser evil? (Resolve in the AI-CLI-98 plan.)
 3. Cross-machine: with stdin `rate_limits` as primary, is the NATS KV + quota-subscriber
