@@ -2804,16 +2804,20 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         assert "Fable" not in clean
         assert "F 🤖" in clean  # single-letter label immediately before the 🤖 glyph
 
-    def test_negative_weekly_pace_shows_minus_sign(self, tmp_path, capsys):
-        """AI-CLI-96 sign fix: when usage is BELOW the week-elapsed pace the delta is negative and
-        must render with a minus sign (was rendered as abs(), so under-pace looked like over-pace)."""
-        # ~161h elapsed = ~96% of week; usage 17% → delta = 17 - 96 = -79% (way under pace)
+    def test_weekly_pace_shown_as_magnitude_color_encodes_direction(self, tmp_path, capsys):
+        """AI-CLI-96: the pace is shown as a bare MAGNITUDE (no +/- sign) — the COLOR conveys
+        direction (green = ahead / on track, yellow/red = behind). Under pace → green + ✅ and
+        NO sign in the number (the earlier abs()-with-no-minus bug and the interim signed form
+        are both superseded)."""
+        # ~161h elapsed = ~96% of week; usage 17% → delta = 17 - 96 ≈ -79% (way under pace)
         out = self._capture(17.0, 0.0, hours_elapsed=161, tmp_path=tmp_path, capsys=capsys, cols=120)
         import re
 
         clean = re.sub(r"\033\[[0-9;]*m", "", out)
-        assert "→-" in clean  # negative weekly pace shows the minus sign
+        assert "→79%" in clean  # magnitude only
+        assert "→-" not in clean and "→+" not in clean  # no sign on the number
         assert "✅" in clean  # under pace = on track
+        assert "\033[32m" in out  # green delta color encodes "ahead / on track"
 
     def test_zero_cols_uses_narrow_labels(self, tmp_path, capsys):
         """cols=0 (unset) → narrow labels (default when statusline-command.sh is not the caller)."""
