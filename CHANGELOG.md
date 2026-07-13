@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-13
+
+### Added
+
+- Windows compatibility — cross-platform fixes so the package installs and runs on Windows:
+  - Machine profile auto-detection: `detect_machine_profile()` reads the `AI_HOST` env var
+    (falls back to `socket.gethostname()`) and maps `sys.platform` to a human-readable
+    `os_type` (`"windows"`, `"macos"`, `"linux"`). `ensure_machine_profile_registered()`
+    writes `host_id` and `os_type` to `config.toml` on first `load_config()` call — no
+    manual config edit needed on first run.
+  - Cross-platform root check: replaced `os.getuid() == 0` with `_is_root()` helper
+    (`ctypes.windll.shell32.IsUserAnAdmin()` on Windows, `os.getuid()` on POSIX).
+  - Replaced POSIX `find`/`rm` pycache cleanup with `Path.rglob("__pycache__")` +
+    `shutil.rmtree`.
+  - `is_cc_active_locally()` uses `psutil.process_iter()` on Windows instead of `pgrep`.
+  - Remote SSH transport (`os.execvp("zsh", ...)`) exits with a clear error message on
+    Windows rather than crashing.
+  - `DEFAULT_CONFIG` written with `encoding="utf-8"` (fixes `UnicodeEncodeError` on
+    Windows CP1252 locales when the config contains non-ASCII characters).
+
 ### Fixed
 
 - iTerm2 pane-header drift on session re-attach (`AI-CLI-59`, final). The pane is
@@ -20,21 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`c-sw-3` for Claude, `g-…` for Gemini/agy) so sessions stay visually
   distinguishable by engine.
 
-## [0.7.0] - 2026-04-27
-
 ### Removed
 
-- `ai gemini` command and the underlying `gemini.py` / `research.py` modules deleted. `aido research`
-  is now the canonical Gemini research path across all projects (`AIDO-60`). Migration: use
-  `aido research -d quick "query"` for lightweight lookups and `aido research -d standard/thorough`
-  for deep research.
+- `ai gemini` command and the underlying `gemini.py` / `research.py` modules deleted.
+  Migration: use a Gemini CLI tool directly for research queries.
 - Contract tests for `GeminiResult`, `AttemptLog`, and `run_gemini()` in `test_public_api.py`
   removed (symbols no longer exist).
 
 ### Changed
 
 - `ai spend gemini` help text updated to clarify it reads historical local JSONL logs only.
-  Use `aido spend gemini` to query current spend via the ai-core API.
 
 ## [0.6.1] - 2026-04-25
 
