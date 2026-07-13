@@ -7,7 +7,7 @@ Why this exists
 `.claude/settings.json` is copier `_skip_if_exists` (rendered once, then owned by
 the project), while the hook scripts it points at (under `.claude/hooks/`) are
 copier-managed and can be *removed* by an `_exclude` rule on `copier update`
-(e.g. flipping `include_airflow` off deletes `airflow-*` scripts). That pairing
+(e.g. a template change that drops a hook script). That pairing
 can strand a hook command pointing at a deleted script — which then fails at
 runtime with "No such file or directory" on every matching hook event.
 
