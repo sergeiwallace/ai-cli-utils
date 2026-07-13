@@ -741,6 +741,101 @@ _SCRAPE_LOCK_PATH = Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape.
 _SCRAPE_TTL_MINUTES = 30
 _SCRAPE_LOCK_STALE_MINUTES = 15
 _SCRAPER_BROKEN_PREFIX = "🚨 BROKEN 🚨 "
+
+# AIH-164 T-06: rate-limit-aware Fable (secondary per-model cap) scrape scheduling. The Fable
+# `Current week (<model>)` line is the ONLY per-model datum /usage exposes and is NOT in the
+# stdin rate_limits — so it still needs the TUI scrape. Its "Per-model breakdown" is frequently
+# server-side "rate limited"; back off progressively (10→20→40→80→120 min) while it stays
+# unavailable so we never hammer it, and reset on a fresh capture.
+_FABLE_SCRAPE_TTL_MINUTES = 30
+_FABLE_BACKOFF_BASE_MINUTES = 10
+_FABLE_BACKOFF_MAX_MINUTES = 120
+_FABLE_BACKOFF_MAX_MISSES = 4  # 10*2^4 = 160 → capped at 120
+_FABLE_BACKOFF_STATE = Path.home() / ".local" / "state" / "ai-cli" / "fable-scrape-backoff.json"
+
+
+def _save_fable_backoff(state: dict) -> None:
+    try:
+        import json
+
+        _FABLE_BACKOFF_STATE.parent.mkdir(parents=True, exist_ok=True)
+        _FABLE_BACKOFF_STATE.write_text(json.dumps(state))
+    except Exception:
+        pass
+
+
+def _maybe_trigger_fable_scrape(now, fable_ts: str | None) -> None:
+    """Trigger the /usage scrape on a FABLE-specific cadence with progressive backoff.
+
+    Decoupled from all-models snapshot freshness (AIH-164 T-06): T-02's rate_limits env path
+    keeps the all-models snapshot fresh, so the old snapshot-age trigger would never fire and the
+    Fable cap would go stale forever. Fires when the last non-null Fable snapshot is older than
+    ``_FABLE_SCRAPE_TTL_MINUTES``; while the breakdown stays rate-limited (Fable not refreshing)
+    the interval doubles up to ``_FABLE_BACKOFF_MAX_MINUTES``; a fresh capture resets it. Never
+    raises — the statusline path must be silent.
+    """
+    try:
+        import json
+        from datetime import datetime
+
+        state = {"last_attempt": 0.0, "misses": 0}
+        if _FABLE_BACKOFF_STATE.exists():
+            try:
+                state.update(json.loads(_FABLE_BACKOFF_STATE.read_text()))
+            except Exception:
+                pass
+
+        fable_age_min = float("inf")
+        if fable_ts is not None:
+            fable_dt = datetime.fromisoformat(fable_ts.replace("Z", "+00:00"))
+            fable_age_min = (now - fable_dt).total_seconds() / 60
+
+        # Fresh Fable → reset backoff, nothing to scrape.
+        if fable_age_min < _FABLE_SCRAPE_TTL_MINUTES:
+            if state.get("misses"):
+                state["misses"] = 0
+                _save_fable_backoff(state)
+            return
+
+        # Stale/missing Fable → scrape only once the (growing) backoff interval has elapsed.
+        misses = int(state.get("misses", 0))
+        interval = min(_FABLE_BACKOFF_BASE_MINUTES * (2**misses), _FABLE_BACKOFF_MAX_MINUTES)
+        elapsed_min = (now.timestamp() - float(state.get("last_attempt", 0.0))) / 60
+        if elapsed_min >= interval:
+            _launch_background_scrape()
+            state["misses"] = min(misses + 1, _FABLE_BACKOFF_MAX_MISSES)
+            state["last_attempt"] = now.timestamp()
+            _save_fable_backoff(state)
+    except Exception:
+        pass
+
+
+def _get_last_fable_snapshot(week_start: str):
+    """Return (weekly_sonnet_pct, weekly_model_name, snapshotted_at) for the most recent snapshot
+    this week whose Fable value is non-null, or (None, None, None). Unbounded (not LIMIT 3) so a
+    last-good Fable value survives even after the T-02 env snapshots push it past the 3 rows the
+    render reads (AIH-164 T-06 / audit F-04 interaction). Never raises."""
+    import sqlite3
+
+    from .quota_db import _get_quota_db_path, _init_db
+
+    try:
+        conn = sqlite3.connect(str(_get_quota_db_path()))
+        conn.row_factory = sqlite3.Row
+        _init_db(conn)
+        row = conn.execute(
+            "SELECT weekly_sonnet_pct, weekly_model_name, snapshotted_at FROM quota_snapshots"
+            " WHERE week_start = ? AND weekly_sonnet_pct IS NOT NULL ORDER BY snapshotted_at DESC LIMIT 1",
+            (week_start,),
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return (None, None, None)
+        return (row["weekly_sonnet_pct"], row["weekly_model_name"], row["snapshotted_at"])
+    except Exception:
+        return (None, None, None)
+
+
 _SCRAPE_DEBUG_PATH = Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape-debug.txt"
 
 
@@ -1271,19 +1366,36 @@ def quota_statusline_part() -> int:
             print(f"\U0001f4ca {DIM}-{RESET}")  # 📊 -
             return 0
 
-        _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         usage_pct = rows[0]["usage_percent"]
-        # Use the most recent non-None secondary-model value (AI-CLI-83) — a single scrape
-        # that fails to parse the per-model breakdown produces None, which would otherwise mask
-        # valid older data. Take the model name from the SAME row so the label matches the value.
-        sonnet_pct, model_name = next(
-            ((r["weekly_sonnet_pct"], r["weekly_model_name"]) for r in rows if r["weekly_sonnet_pct"] is not None),
-            (None, None),
-        )
+        # Last-good Fable (secondary per-model cap): the most recent non-null Fable snapshot this
+        # week, queried UNBOUNDED (AIH-164 T-06) so it survives even after T-02's fresh all-models
+        # env snapshots push it past the 3 rows read above (AI-CLI-83: a rate-limited scrape yields
+        # None and must not mask valid older data). model_name comes from the SAME row.
+        sonnet_pct, model_name, fable_ts = _get_last_fable_snapshot(week_start_str)
+        # Scrape scheduling (AIH-164 T-06): when all-models comes from the official rate_limits
+        # stdin (env vars present), the scrape's only job is refreshing the Fable cap — trigger it
+        # on a Fable-specific cadence with rate-limit backoff, NOT the (now always-fresh) all-models
+        # snapshot age. Without env vars (enterprise/no Pro-Max) the scrape still refreshes
+        # all-models, so keep the legacy snapshot-age trigger.
+        if os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT"):
+            _maybe_trigger_fable_scrape(now, fable_ts)
+        else:
+            _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         snapshot_age_hours = (
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600
         stale = snapshot_age_hours > 2.0  # scrape has been failing for >2h
+        # Fable-specific staleness (AIH-164 T-06): the Fable cap comes from the rate-limited TUI
+        # scrape, so its last-good value can be much older than the (stdin-fresh) all-models line.
+        # Mark the secondary slot stale when its own source snapshot is > 2h old.
+        fable_stale = False
+        if fable_ts is not None:
+            try:
+                fable_stale = (
+                    now - datetime.fromisoformat(fable_ts.replace("Z", "+00:00"))
+                ).total_seconds() / 3600 > 2.0
+            except Exception:
+                fable_stale = False
 
         ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         elapsed_secs = (now - ws_dt).total_seconds()
@@ -1320,9 +1432,10 @@ def quota_statusline_part() -> int:
         else:
             son_label = "S"
 
-        # Sonnet part — fire scrape if absent so field populates on next refresh
+        # Sonnet/Fable part. When absent, show the dim placeholder — the Fable scrape is scheduled
+        # by _maybe_trigger_fable_scrape above (rate-limit backoff-aware); do NOT fire an
+        # unconditional scrape here (it would hammer the rate-limited breakdown every render).
         if sonnet_pct is None:
-            _launch_background_scrape()
             sonnet_part = f"{BOLD_MAG}{son_label}{RESET} 🤖 {DIM}-% →-%{RESET}"
         else:
             if sonnet_pct < 50:
@@ -1343,9 +1456,12 @@ def quota_statusline_part() -> int:
                 s_icon = "✅"
             # Show the pace magnitude only — the color (from the SIGNED delta above) conveys
             # direction: GREEN = ahead / on track, YELLOW/RED = increasingly behind (AI-CLI-96).
+            # ⏱ when the Fable value's own source snapshot is stale (>2h) — the rate-limited
+            # breakdown hasn't refreshed, so the shown last-good value is aging (AIH-164 T-06).
+            _fable_stale_suffix = " \033[2m⏱\033[0m" if fable_stale else ""
             sonnet_part = (
                 f"{BOLD_MAG}{son_label}{RESET} 🤖 {s_color}{sonnet_pct:.0f}%{RESET}"
-                f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}"
+                f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}{_fable_stale_suffix}"
             )
 
         # Arrow: acceleration direction (requires \u22653 snapshots)

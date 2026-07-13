@@ -41,6 +41,13 @@ def _isolate_quota_state(request, tmp_path_factory):
 
     tmp_db = tmp_path_factory.mktemp("quota_state") / "quota.db"
     _qdb.set_db_path(tmp_db)
+    # AIH-164 T-06: redirect the Fable backoff-state file to a per-test tmp path so tests never
+    # read/write the real ~/.local/state/ai-cli/fable-scrape-backoff.json (which would leak
+    # scrape-scheduling state across tests / into the real user state).
+    import ai_cli.quota as _q
+
+    _orig_fable_state = _q._FABLE_BACKOFF_STATE
+    _q._FABLE_BACKOFF_STATE = tmp_path_factory.mktemp("fable_state") / "fable-scrape-backoff.json"
     try:
         if request.node.get_closest_marker("real_quota_scrape"):
             yield  # test drives the real scrape functions (with its own Popen mock)
@@ -52,6 +59,7 @@ def _isolate_quota_state(request, tmp_path_factory):
                 yield
     finally:
         _qdb.set_db_path(None)
+        _q._FABLE_BACKOFF_STATE = _orig_fable_state
 
 
 @pytest.fixture(autouse=True)

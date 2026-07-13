@@ -2152,7 +2152,9 @@ class TestQuotaStatuslinePart:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
     def test_when_sonnet_pct_absent_then_shows_dimmed_placeholder_and_fires_scrape(self, tmp_path, capsys):
-        """weekly_sonnet_pct=None → '-% S' shown in output and _launch_background_scrape called."""
+        """weekly_sonnet_pct absent → '-% S' shown; the Fable scrape is scheduled (AIH-164 T-06:
+        via the backoff-aware _maybe_trigger_fable_scrape on the rate_limits env path, no longer an
+        unconditional per-render scrape)."""
         import ai_cli.quota_db as qdb
 
         week_start_str = qdb._get_current_week_start()
@@ -2161,7 +2163,10 @@ class TestQuotaStatuslinePart:
 
         qdb.set_db_path(tmp_path / "quota.db")
         try:
-            with patch("datetime.datetime") as MockDT:
+            with (
+                patch("datetime.datetime") as MockDT,
+                patch.dict(os.environ, {"AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}, clear=False),
+            ):
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
@@ -2172,7 +2177,7 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "-%" in out
             assert "S" in out
-            mock_scrape.assert_called_once()
+            mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires the scrape
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2890,13 +2895,15 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
                 qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=None)
                 with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
-                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "0"}):
+                    with patch.dict(
+                        os.environ, {"AI_CLI_STATUSLINE_COLS": "0", "AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}
+                    ):
                         quota_statusline_part()
             out = capsys.readouterr().out
             assert "-%" in out
             assert "→-%" in out  # pace placeholder too
             assert "S" in out
-            mock_scrape.assert_called_once()
+            mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires (AIH-164 T-06)
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
