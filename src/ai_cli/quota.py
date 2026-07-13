@@ -1259,10 +1259,11 @@ def quota_statusline_part() -> int:
             else:
                 s_delta_color = GREEN
                 s_icon = "✅"
-            s_sign = "+" if sonnet_delta > 0 else ""
+            # Show the pace magnitude only — the color (from the SIGNED delta above) conveys
+            # direction: GREEN = ahead / on track, YELLOW/RED = increasingly behind (AI-CLI-96).
             sonnet_part = (
                 f"{BOLD_MAG}{son_label}{RESET} 🤖 {s_color}{sonnet_pct:.0f}%{RESET}"
-                f" {s_delta_color}→{s_sign}{sonnet_delta:.0f}%{RESET}"
+                f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}"
             )
 
         # Arrow: acceleration direction (requires \u22653 snapshots)
@@ -1282,14 +1283,12 @@ def quota_statusline_part() -> int:
                 arrow_char = "\u2193"  # ↓ decelerating
 
         stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
-        sign = "+" if delta > 0 else ""
-
         if elapsed_secs < 24 * 3600:
             # Seedling phase (first 24h): 🌱 always shown; informational only, no alarms.
             delta_color = BLUE
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
-                f" {delta_color}{arrow_char}{sign}{delta:.0f}%{RESET} \U0001f331{stale_suffix}"
+                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
                 f" | {sonnet_part}"
             )  # W 📊 N% →X% 🌱 [⏱] | Son M% →Y%
         else:
@@ -1306,7 +1305,7 @@ def quota_statusline_part() -> int:
             s_pace = f" {s_icon}" if sonnet_pct is not None else ""
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
-                f" {delta_color}{arrow_char}{sign}{delta:.0f}%{RESET} {icon}{stale_suffix}"
+                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET} {icon}{stale_suffix}"
                 f" | {sonnet_part}{s_pace}"
             )  # W 📊 N% →X% ✅/⚠️/🚨 [⏱] | Son 🤖 M% →Y% ✅/⚠️/🚨
     except Exception:
