@@ -464,15 +464,16 @@ def _get_usage_via_print_mode() -> QuotaSnapshot | None:
 
 
 def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
-    """Return a QuotaSnapshot for the current /usage.
+    """Return a QuotaSnapshot via the hidden-pane ``/usage`` scrape.
 
-    Primary: ``claude -p /usage`` (non-interactive, deterministic, ~$0). Fallback: the
-    legacy interactive-TUI hidden-pane scrape, used only when print mode yields nothing
-    (e.g. an older CC without slash-command support under -p, or a broken `claude` on PATH).
+    AIH-164: print mode (``claude -p /usage``) is **retired** from this capture path — on CC
+    2.1.207 it emits an insights-only view with no quota bars, so it always returned ``None``.
+    The all-models weekly + 5-hour numbers now come from the official statusLine ``rate_limits``
+    stdin (see :func:`quota_statusline_part`); this scrape remains the capture fallback and the
+    sole source of the secondary ``Current week (<model>)`` (Fable) cap (T-06). The
+    :func:`_get_usage_via_print_mode` helper is kept (dormant, unit-tested) in case a future CC
+    restores quota bars under ``-p``, but is intentionally no longer called here.
     """
-    snapshot = _get_usage_via_print_mode()
-    if snapshot is not None:
-        return snapshot
     return _scrape_usage_hidden_pane()
 
 
@@ -1106,12 +1107,90 @@ def _check_scrape_mismatch_prefix() -> None:
         pass
 
 
+# AIH-164: throttle env-sourced snapshot writes so the acceleration arrow keeps its ~10-min
+# cadence — an un-throttled per-render write would pin the arrow to "steady" (audit F-04/AD-1).
+_QUOTA_ENV_SNAPSHOT_THROTTLE_SECONDS = 600
+
+
+def _record_rate_limits_env_snapshot(now) -> None:
+    """AIH-164 T-02: persist CC's ``rate_limits`` (exported by the statusline as env vars) as a
+    THROTTLED quota snapshot, so the official all-models weekly % (+ 5h session %) flows through
+    the existing render + history path as the authoritative source.
+
+    Records only when there is no snapshot this week, the pct changed, or the last snapshot is
+    older than ``_QUOTA_ENV_SNAPSHOT_THROTTLE_SECONDS`` — preserving the sparse snapshot cadence
+    the acceleration arrow depends on. The seven-day reset epoch is routed through
+    ``record_quota_snapshot(reset_at=…)`` so the week anchor stays consistent across the
+    statusline and ``ai quota status`` (audit F-08). No-op when the env vars are absent
+    (enterprise/non-Pro-Max seat, or before the first API response).
+    """
+    import os
+    import sqlite3
+    from datetime import datetime as _dt, timezone as _tz
+
+    pct_raw = os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT")
+    if not pct_raw:
+        return
+    try:
+        seven_day_pct = float(pct_raw)
+    except ValueError:
+        return
+
+    five_hour_pct: float | None = None
+    fh_raw = os.environ.get("AI_CLI_QUOTA_FIVE_HOUR_PCT")
+    if fh_raw:
+        try:
+            five_hour_pct = float(fh_raw)
+        except ValueError:
+            five_hour_pct = None
+
+    reset_iso: str | None = None
+    reset_raw = os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_RESET")
+    if reset_raw:
+        try:
+            reset_iso = _dt.fromtimestamp(int(reset_raw), _tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (ValueError, OverflowError, OSError):
+            reset_iso = None
+
+    from .quota_db import _get_current_week_start, _get_quota_db_path, _init_db, record_quota_snapshot
+
+    # Throttle check against the most recent snapshot this week.
+    last = None
+    try:
+        week_start = _get_current_week_start(now)
+        conn = sqlite3.connect(str(_get_quota_db_path()))
+        conn.row_factory = sqlite3.Row
+        _init_db(conn)
+        last = conn.execute(
+            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
+            " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 1",
+            (week_start,),
+        ).fetchone()
+        conn.close()
+    except Exception:
+        last = None
+
+    should_record = True
+    if last is not None:
+        try:
+            last_ts = _dt.fromisoformat(last["snapshotted_at"].replace("Z", "+00:00"))
+            age = (now - last_ts).total_seconds()
+        except Exception:
+            age = _QUOTA_ENV_SNAPSHOT_THROTTLE_SECONDS + 1
+        if last["usage_percent"] == seven_day_pct and age < _QUOTA_ENV_SNAPSHOT_THROTTLE_SECONDS:
+            should_record = False
+
+    if should_record:
+        record_quota_snapshot(usage_percent=seven_day_pct, session_pct=five_hour_pct, reset_at=reset_iso)
+
+
 def quota_statusline_part() -> int:
     """Print a compact quota indicator for use in the statusline.
 
-    Primary source: NATS KV (shared across machines) when local data is stale.
-    Fast path: local SQLite when data is fresh (no network call).
-    Outputs: {pace_icon} {usage_pct:.0f}% {direction}{delta:.0f}%
+    Authoritative source (AIH-164): CC's official ``rate_limits`` stdin, exported by the
+    statusline as ``AI_CLI_QUOTA_*`` env vars and persisted here as a throttled snapshot.
+    Then: NATS KV (shared across machines) when local data is stale; local SQLite fast path
+    when fresh. Outputs: {pace_icon} {usage_pct:.0f}% {direction}{delta:.0f}%
     where delta = usage_pct - week_elapsed_pct.
     """
     import sqlite3
@@ -1129,6 +1208,9 @@ def quota_statusline_part() -> int:
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc)
+        # AIH-164 T-02: consume the official rate_limits env vars (throttled) BEFORE reading rows,
+        # so the fresh all-models value is the newest snapshot the render below picks up.
+        _record_rate_limits_env_snapshot(now)
         week_start_str = _get_current_week_start(now)
 
         db_path = _get_quota_db_path()

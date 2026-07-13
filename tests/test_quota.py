@@ -743,15 +743,18 @@ class TestGetUsageViaPrintMode:
 
 
 class TestGetClaudeUsageSnapshot:
-    def test_when_print_mode_returns_snapshot_then_returns_it_without_scraping(self):
+    def test_print_mode_retired_scrape_is_sole_path(self):
+        """AIH-164: print mode is retired from the capture path (dead on CC 2.1.207); the
+        hidden-pane scrape is the sole fallback and is called without consulting print mode."""
         snap = QuotaSnapshot(weekly_all_models_pct=17.0, session_pct=4.0, weekly_sonnet_pct=0.0)
         with (
-            patch("ai_cli.quota._get_usage_via_print_mode", return_value=snap),
-            patch("ai_cli.quota._scrape_usage_hidden_pane") as scrape,
+            patch("ai_cli.quota._get_usage_via_print_mode") as print_mode,
+            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape,
         ):
             result = _get_claude_usage_snapshot()
         assert result is snap
-        scrape.assert_not_called()  # print mode is primary — no tmux scrape when it succeeds
+        scrape.assert_called_once()
+        print_mode.assert_not_called()
 
     def test_when_print_mode_none_then_falls_back_to_scraper(self):
         snap = QuotaSnapshot(weekly_all_models_pct=72.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
