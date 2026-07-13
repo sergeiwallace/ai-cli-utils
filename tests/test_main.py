@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,26 +37,30 @@ from conftest import make_iterm2_config, run_cli
 
 class TestXdgHelpers:
     def test_get_xdg_state_home_when_env_var_set_then_uses_it(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
         monkeypatch.setenv("XDG_STATE_HOME", "/custom/state")
         result = get_xdg_state_home()
-        assert str(result) == "/custom/state/ai-cli-utils"
+        assert result == Path("/custom/state") / "ai-cli-utils"
 
     def test_get_xdg_state_home_when_no_env_var_then_uses_default(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         result = get_xdg_state_home()
         assert result.name == "ai-cli-utils"
-        assert ".local/state" in str(result)
+        assert ".local/state" in result.as_posix()
 
     def test_get_xdg_cache_home_when_env_var_set_then_uses_it(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
         monkeypatch.setenv("XDG_CACHE_HOME", "/custom/cache")
         result = get_xdg_cache_home()
-        assert str(result) == "/custom/cache/ai-cli-utils"
+        assert result == Path("/custom/cache") / "ai-cli-utils"
 
     def test_get_xdg_cache_home_when_no_env_var_then_uses_default(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         result = get_xdg_cache_home()
         assert result.name == "ai-cli-utils"
-        assert ".cache" in str(result)
+        assert ".cache" in result.as_posix()
 
 
 # --- load_config tests ---

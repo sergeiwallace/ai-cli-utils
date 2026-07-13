@@ -159,7 +159,10 @@ requires-dist = [
 provides-extras = ["dev", "api", "video", "video-ui"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.2" }]
+dev = [
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
+]
 
 [[package]]
 name = "aiosqlite"

@@ -1402,6 +1402,10 @@ def is_cc_active_on_server(remote_host: str) -> bool:
 
 def is_cc_active_locally() -> bool:
     """Check if Claude Code is active on this machine."""
+    if sys.platform == "win32":
+        import psutil
+
+        return any("claude" in (p.info.get("name") or "").lower() for p in psutil.process_iter(["name"]))
     result = subprocess.run(["pgrep", "-f", "claude"], capture_output=True)
     return result.returncode == 0
 

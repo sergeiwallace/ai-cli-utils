@@ -6,9 +6,16 @@ All other modules depend on this one.
 
 import json
 import os
+import socket
 import sys
 import tomllib
 from pathlib import Path
+
+_OS_TYPE_MAP = {
+    "win32": "windows",
+    "darwin": "macos",
+    "linux": "linux",
+}
 
 
 # --- XDG Directory Support ---
@@ -29,6 +36,54 @@ def _migrate_xdg_dir(old: Path, new: Path) -> Path:
     if old.exists() and not new.exists():
         old.rename(new)
     return new
+
+
+def detect_machine_profile() -> dict[str, str]:
+    """Return detected host_id and os_type for this machine.
+
+    host_id: AI_HOST env var → socket.gethostname() fallback
+    os_type: sys.platform mapped to 'windows' / 'macos' / 'linux'
+    """
+    host_id = os.environ.get("AI_HOST") or socket.gethostname()
+    os_type = _OS_TYPE_MAP.get(sys.platform, sys.platform)
+    return {"host_id": host_id, "os_type": os_type}
+
+
+def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
+    """Write detected host_id / os_type into config.toml if not already set.
+
+    Returns True if the file was modified (caller should reload config).
+    Prints a one-time status message when a new profile is written.
+    """
+    machine = config.get("machine", {})
+    missing = [k for k in ("host_id", "os_type") if not machine.get(k)]
+    if not missing:
+        return False
+
+    profile = detect_machine_profile()
+    text = config_path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+
+    insert_after: int | None = None
+    for i, line in enumerate(lines):
+        if line.strip() == "[machine]":
+            insert_after = i
+            break
+
+    additions = [f'{k} = "{profile[k]}"\n' for k in missing]
+
+    if insert_after is not None:
+        lines = lines[: insert_after + 1] + additions + lines[insert_after + 1 :]
+    else:
+        lines.append("\n[machine]\n")
+        lines.extend(additions)
+
+    config_path.write_text("".join(lines), encoding="utf-8")
+    print(
+        f"Machine profile registered: {profile['host_id']} ({profile['os_type']})",
+        file=sys.stderr,
+    )
+    return True
 
 
 def get_xdg_config_home() -> Path:
@@ -119,9 +174,12 @@ nats_servers = ["nats://localhost:4222"]
 
 [machine]
 ## Identifier for this machine. Used to target handoffs to a specific host.
-## Set AI_HOST in your shell environment (~/.zshenv or ~/.bashrc) so it is available to all processes.
-## Example values: "mac", "hetzner", "work-laptop"
+## Auto-detected from AI_HOST env var, then hostname; set manually to override.
+## Example values: "mac", "hetzner", "work-laptop", "acn-windows"
 # host_id = ""
+## OS type for this machine. Auto-detected from sys.platform on first run.
+## Values: "windows", "macos", "linux"
+# os_type = ""
 
 [update]
 ## Additional venv paths to install ai-cli-utils into after 'ai update'
@@ -165,14 +223,23 @@ def load_config():
 
     if not config_path.exists():
         config_dir.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(DEFAULT_CONFIG)
+        config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
 
     try:
         with open(config_path, "rb") as f:
-            return tomllib.load(f)
+            cfg = tomllib.load(f)
     except Exception as e:
         print(f"Warning: Failed to load config from {config_path}: {e}", file=sys.stderr)
         return {}
+
+    if ensure_machine_profile_registered(config_path, cfg):
+        try:
+            with open(config_path, "rb") as f:
+                cfg = tomllib.load(f)
+        except Exception:
+            pass
+
+    return cfg
 
 
 # --- State Management ---

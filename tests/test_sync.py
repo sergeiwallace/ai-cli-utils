@@ -3,6 +3,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
+import pytest
+
 from ai_cli.sync import (
     normalize_project_path,
     denormalize_project_name,
@@ -112,9 +114,13 @@ def test_denormalize_normalize_roundtrip():
 
 
 def test_get_local_prefix_returns_expected_format():
+    import sys
+
     prefix = get_local_prefix()
     assert prefix.endswith("-projects-")
-    assert prefix.startswith("-")
+    # POSIX home paths start with '/' → encoded '-'; Windows starts with drive letter
+    if sys.platform != "win32":
+        assert prefix.startswith("-")
 
 
 def test_get_local_prefix_consistent_with_home():
@@ -1343,14 +1349,28 @@ def test_is_cc_active_on_server_when_pgrep_returns_1_then_false():
 
 
 def test_is_cc_active_locally_when_pgrep_returns_0_then_true():
-    with patch("subprocess.run") as mock_run:
+    with patch("sys.platform", "linux"), patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
         assert is_cc_active_locally() is True
 
 
 def test_is_cc_active_locally_when_pgrep_returns_1_then_false():
-    with patch("subprocess.run") as mock_run:
+    with patch("sys.platform", "linux"), patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1)
+        assert is_cc_active_locally() is False
+
+
+def test_is_cc_active_locally_when_win32_and_claude_running_then_true():
+    proc = MagicMock()
+    proc.info = {"name": "claude.exe"}
+    with patch("sys.platform", "win32"), patch("psutil.process_iter", return_value=[proc]):
+        assert is_cc_active_locally() is True
+
+
+def test_is_cc_active_locally_when_win32_and_not_running_then_false():
+    proc = MagicMock()
+    proc.info = {"name": "python.exe"}
+    with patch("sys.platform", "win32"), patch("psutil.process_iter", return_value=[proc]):
         assert is_cc_active_locally() is False
 
 
@@ -1815,12 +1835,12 @@ def test_is_cc_active_on_server_when_not_running_then_false():
 
 
 def test_is_cc_active_locally_when_running_then_true():
-    with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+    with patch("sys.platform", "linux"), patch("subprocess.run", return_value=MagicMock(returncode=0)):
         assert is_cc_active_locally() is True
 
 
 def test_is_cc_active_locally_when_not_running_then_false():
-    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+    with patch("sys.platform", "linux"), patch("subprocess.run", return_value=MagicMock(returncode=1)):
         assert is_cc_active_locally() is False
 
 
@@ -1839,8 +1859,8 @@ def test_notify_conflicts_when_conflicts_exist_then_writes_log(tmp_path):
     assert "project1" in content
 
 
-def test_notify_conflicts_when_empty_then_noop():
-    with patch("ai_cli.sync.CONFLICT_LOG", Path("/tmp/nonexistent-test-log.log")):
+def test_notify_conflicts_when_empty_then_noop(tmp_path):
+    with patch("ai_cli.sync.CONFLICT_LOG", tmp_path / "nonexistent-test-log.log"):
         notify_conflicts([])  # Should not raise
 
 
@@ -4377,6 +4397,7 @@ def test_llm_merge_memory_conflict_when_no_api_key_then_returns_none(monkeypatch
 
 
 def test_llm_merge_memory_conflict_when_api_exception_then_returns_none(monkeypatch):
+    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
@@ -4392,6 +4413,7 @@ def test_llm_merge_memory_conflict_when_api_exception_then_returns_none(monkeypa
 
 def test_llm_merge_memory_conflict_when_llm_leaves_markers_then_returns_none(monkeypatch):
     """If the LLM output still contains conflict markers, we must reject it — applying it would corrupt the file."""
+    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
@@ -4409,6 +4431,7 @@ def test_llm_merge_memory_conflict_when_llm_leaves_markers_then_returns_none(mon
 
 def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content(monkeypatch):
     """Successful merge: both sides preserved, no conflict markers in output."""
+    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "fake-key")
@@ -4434,6 +4457,7 @@ def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content
 
 def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
     """GOOGLE_API_KEY_TIER_1 should be preferred over GEMINI_API_KEY when both are set."""
+    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "tier1-key")
@@ -4464,6 +4488,7 @@ def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
 def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_then_file_written_no_conflict_file(tmp_path):
     """When LLM successfully merges conflict markers, the merged content goes to dst and staging is updated.
     No .conflict file should be created. applied_count should reflect the merge."""
+    pytest.importorskip("google.genai", reason="google-genai not installed")
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
     conflict_dir = tmp_path / "conflicts"
@@ -4508,6 +4533,7 @@ def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_then_file_writt
 
 def test_apply_pull_files_when_conflict_markers_and_llm_fails_then_conflict_file_written(tmp_path):
     """When LLM fails (no key), conflict file is written and local CC file is NOT modified."""
+    pytest.importorskip("google.genai", reason="google-genai not installed")
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
     conflict_dir = tmp_path / "conflicts"
@@ -4570,6 +4596,7 @@ def test_apply_pull_files_when_conflict_markers_and_dry_run_then_llm_not_called(
 
 
 def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_verbose_then_prints_auto_merged(tmp_path, capsys):
+    pytest.importorskip("google.genai", reason="google-genai not installed")
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
     conflict_dir = tmp_path / "conflicts"

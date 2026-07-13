@@ -1,4 +1,4 @@
-"""Tests for platform-aware XDG path helpers and _pid_alive() in config.py."""
+"""Tests for platform-aware XDG path helpers, _pid_alive(), and machine profile detection."""
 
 import os
 from pathlib import Path
@@ -6,7 +6,14 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_cli.config import _pid_alive, get_xdg_cache_home, get_xdg_config_home, get_xdg_state_home
+from ai_cli.config import (
+    _pid_alive,
+    detect_machine_profile,
+    ensure_machine_profile_registered,
+    get_xdg_cache_home,
+    get_xdg_config_home,
+    get_xdg_state_home,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +245,134 @@ class TestPidAlive:
         with patch("psutil.pid_exists", return_value=True):
             result = _pid_alive(1)
         assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# detect_machine_profile()
+# ---------------------------------------------------------------------------
+
+
+class TestDetectMachineProfile:
+    def test_when_ai_host_set_then_uses_it_as_host_id(self):
+        with patch.dict(os.environ, {"AI_HOST": "acn-windows"}, clear=False):
+            result = detect_machine_profile()
+        assert result["host_id"] == "acn-windows"
+
+    def test_when_ai_host_unset_then_falls_back_to_hostname(self):
+        env = {k: v for k, v in os.environ.items() if k != "AI_HOST"}
+        with patch.dict(os.environ, env, clear=True), patch("socket.gethostname", return_value="my-box"):
+            result = detect_machine_profile()
+        assert result["host_id"] == "my-box"
+
+    @pytest.mark.parametrize(
+        "platform,expected",
+        [("win32", "windows"), ("darwin", "macos"), ("linux", "linux")],
+    )
+    def test_os_type_mapped_from_platform(self, platform, expected):
+        with patch("sys.platform", platform):
+            result = detect_machine_profile()
+        assert result["os_type"] == expected
+
+    def test_unknown_platform_uses_platform_string(self):
+        with patch("sys.platform", "freebsd"):
+            result = detect_machine_profile()
+        assert result["os_type"] == "freebsd"
+
+    def test_returns_dict_with_required_keys(self):
+        result = detect_machine_profile()
+        assert "host_id" in result
+        assert "os_type" in result
+
+
+# ---------------------------------------------------------------------------
+# ensure_machine_profile_registered()
+# ---------------------------------------------------------------------------
+
+_MINIMAL_CONFIG = """\
+[behavior]
+notify_on_exit = true
+
+[machine]
+## Auto-detected machine identity
+# host_id = ""
+# os_type = ""
+"""
+
+_ALREADY_CONFIGURED = """\
+[machine]
+host_id = "my-server"
+os_type = "linux"
+"""
+
+
+class TestEnsureMachineProfileRegistered:
+    def test_when_both_missing_then_writes_both_keys(self, tmp_path):
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text(_MINIMAL_CONFIG)
+        with (
+            patch.dict(os.environ, {"AI_HOST": "acn-windows"}, clear=False),
+            patch("sys.platform", "win32"),
+        ):
+            result = ensure_machine_profile_registered(cfg_file, {})
+        assert result is True
+        text = cfg_file.read_text()
+        assert 'host_id = "acn-windows"' in text
+        assert 'os_type = "windows"' in text
+
+    def test_when_both_already_set_then_returns_false_and_no_write(self, tmp_path):
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text(_ALREADY_CONFIGURED)
+        original_mtime = cfg_file.stat().st_mtime
+        result = ensure_machine_profile_registered(cfg_file, {"machine": {"host_id": "my-server", "os_type": "linux"}})
+        assert result is False
+        assert cfg_file.stat().st_mtime == original_mtime
+
+    def test_when_only_host_id_missing_then_writes_only_host_id(self, tmp_path):
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text("[machine]\nos_type = \"linux\"\n")
+        with patch.dict(os.environ, {"AI_HOST": "my-box"}, clear=False):
+            result = ensure_machine_profile_registered(cfg_file, {"machine": {"os_type": "linux"}})
+        assert result is True
+        text = cfg_file.read_text()
+        assert 'host_id = "my-box"' in text
+
+    def test_when_machine_section_missing_then_appends_new_section(self, tmp_path):
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text("[behavior]\nnotify_on_exit = true\n")
+        with (
+            patch.dict(os.environ, {"AI_HOST": "box1"}, clear=False),
+            patch("sys.platform", "linux"),
+        ):
+            result = ensure_machine_profile_registered(cfg_file, {})
+        assert result is True
+        text = cfg_file.read_text()
+        assert "[machine]" in text
+        assert 'host_id = "box1"' in text
+        assert 'os_type = "linux"' in text
+
+    def test_written_config_is_valid_toml(self, tmp_path):
+        import tomllib
+
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text(_MINIMAL_CONFIG)
+        with (
+            patch.dict(os.environ, {"AI_HOST": "testhost"}, clear=False),
+            patch("sys.platform", "linux"),
+        ):
+            ensure_machine_profile_registered(cfg_file, {})
+        with open(cfg_file, "rb") as f:
+            parsed = tomllib.load(f)
+        assert parsed["machine"]["host_id"] == "testhost"
+        assert parsed["machine"]["os_type"] == "linux"
+
+    def test_prints_message_on_registration(self, tmp_path, capsys):
+        cfg_file = tmp_path / "config.toml"
+        cfg_file.write_text(_MINIMAL_CONFIG)
+        with (
+            patch.dict(os.environ, {"AI_HOST": "acn-windows"}, clear=False),
+            patch("sys.platform", "win32"),
+        ):
+            ensure_machine_profile_registered(cfg_file, {})
+        captured = capsys.readouterr()
+        assert "acn-windows" in captured.err
+        assert "windows" in captured.err

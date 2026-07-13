@@ -135,6 +135,21 @@ from .tunnel import (  # noqa: E402,F401
 # --- Helpers ---
 
 
+def _is_root() -> bool:
+    """Return True if the current process has elevated / root privileges.
+
+    On Windows checks for Administrator via ctypes; on POSIX checks uid == 0.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+    return os.getuid() == 0
+
+
 def _find_aicli_project_path(config: dict) -> "Path | None":
     """Locate the ai-cli-utils source tree regardless of cwd.
 
@@ -933,11 +948,10 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
                     env={**os.environ, "VIRTUAL_ENV": str(venv_path)},
                     check=False,
                 )
-        # Clear pycache
-        subprocess.run(
-            ["find", str(project_path), "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
-            check=False,
-        )
+        # Clear pycache (cross-platform)
+        for _cache_dir in project_path.rglob("__pycache__"):
+            if _cache_dir.is_dir():
+                shutil.rmtree(_cache_dir, ignore_errors=True)
         # Record HEAD hash so session start (and each running wrapper's self-update)
         # can detect staleness. This is the monotonic update signal — it changes on
         # every update, unlike the package version which is restored to base above.
@@ -1345,6 +1359,9 @@ def _do_session_launch(
             sys.exit(0)
         else:
             # Pure SSH transport — no VPN switching.
+            if sys.platform == "win32":
+                print("Error: remote SSH transport is not supported on Windows", file=sys.stderr)
+                sys.exit(1)
             os.execvp("zsh", ["zsh", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
 
     # When running as the remote side of an --remote session, cd into the project directory
@@ -1380,7 +1397,7 @@ def _do_session_launch(
 
     if bare:
         if engine == "c":
-            perms = [] if os.getuid() == 0 else ["--dangerously-skip-permissions"]
+            perms = [] if _is_root() else ["--dangerously-skip-permissions"]
             os.execvp("claude", ["claude"] + perms + extra_args)
         else:
             _gcmd = shlex.split(gemini_cmd)
@@ -1463,7 +1480,7 @@ def _do_session_launch(
     if once:
         cd_pref = f"cd {worktree_path} && " if worktree_path else ""
         if engine == "c":
-            perms = "" if os.getuid() == 0 else "--dangerously-skip-permissions"
+            perms = "" if _is_root() else "--dangerously-skip-permissions"
             os.execvp(
                 "tmux",
                 ["tmux", "new-session", "-s", session_id]
