@@ -434,8 +434,45 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         )
 
 
+def _get_usage_via_print_mode() -> QuotaSnapshot | None:
+    """Fetch /usage non-interactively via ``claude -p /usage``.
+
+    Robust primary path (AIH-120 follow-up / AI-CLI-94). Print mode runs the slash
+    command, waits for the data, prints the complete result to stdout, and exits —
+    deterministic, ~1-2s, and $0 (measured: num_turns=0, zero tokens, total_cost_usd=0;
+    /usage is metadata, not a model turn). It has none of the interactive-TUI hidden-pane
+    scrape's nondeterminism: no readiness race (print mode blocks until the command
+    completes), no async mid-render sampling (the per-model "Current week (<model>)" line
+    is always present), no terminal-size/animation dependence.
+
+    Returns None if print mode is unavailable or the output can't be parsed, so the caller
+    falls back to the legacy hidden-pane scrape (belt-and-suspenders for CC versions where
+    slash commands aren't yet supported under -p).
+    """
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "/usage"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0 or "% used" not in (result.stdout or ""):
+        return None
+    return _parse_usage_output(result.stdout)
+
+
 def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
-    """Return a QuotaSnapshot from a hidden tmux window, or None if unavailable."""
+    """Return a QuotaSnapshot for the current /usage.
+
+    Primary: ``claude -p /usage`` (non-interactive, deterministic, ~$0). Fallback: the
+    legacy interactive-TUI hidden-pane scrape, used only when print mode yields nothing
+    (e.g. an older CC without slash-command support under -p, or a broken `claude` on PATH).
+    """
+    snapshot = _get_usage_via_print_mode()
+    if snapshot is not None:
+        return snapshot
     return _scrape_usage_hidden_pane()
 
 

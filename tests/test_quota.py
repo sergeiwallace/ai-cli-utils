@@ -13,6 +13,7 @@ import pytest
 from ai_cli.quota import (
     QuotaSnapshot,
     _get_claude_usage_snapshot,
+    _get_usage_via_print_mode,
     _maybe_trigger_background_scrape,
     _parse_reset_datetime,
     _parse_usage_output,
@@ -700,17 +701,74 @@ class TestScrapeUsageHiddenPane:
 # --- _get_claude_usage_snapshot ---
 
 
+# Real `claude -p /usage` print-mode output (CC v2.1.207): inline "label: N% used · resets"
+# form, per-model line always present. This is the deterministic replacement for the flaky
+# interactive-TUI scrape (AIH-120 follow-up).
+_PRINT_MODE_USAGE_OUTPUT = (
+    "You are currently using your subscription to power your Claude Code usage\n\n"
+    "Current session: 4% used · resets Jul 13 at 5:30pm (America/New_York)\n"
+    "Current week (all models): 17% used · resets Jul 14 at 2pm (America/New_York)\n"
+    "Current week (Fable): 0% used\n\n"
+    "What's contributing to your limits usage?\n"
+)
+
+
+class TestGetUsageViaPrintMode:
+    def test_when_print_mode_output_then_parsed(self):
+        proc = MagicMock(returncode=0, stdout=_PRINT_MODE_USAGE_OUTPUT)
+        with patch("ai_cli.quota.subprocess.run", return_value=proc) as run:
+            snap = _get_usage_via_print_mode()
+        # Invoked non-interactively — no tmux, just `claude -p /usage`.
+        run.assert_called_once()
+        assert run.call_args.args[0] == ["claude", "-p", "/usage"]
+        assert snap is not None
+        assert snap.weekly_all_models_pct == 17.0
+        assert snap.session_pct == 4.0
+        assert snap.weekly_sonnet_pct == 0.0
+        assert snap.weekly_model_name == "Fable"
+
+    def test_when_nonzero_returncode_then_none(self):
+        proc = MagicMock(returncode=1, stdout="")
+        with patch("ai_cli.quota.subprocess.run", return_value=proc):
+            assert _get_usage_via_print_mode() is None
+
+    def test_when_no_percent_used_then_none(self):
+        proc = MagicMock(returncode=0, stdout="some unrelated output\n")
+        with patch("ai_cli.quota.subprocess.run", return_value=proc):
+            assert _get_usage_via_print_mode() is None
+
+    def test_when_subprocess_raises_then_none(self):
+        with patch("ai_cli.quota.subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 30)):
+            assert _get_usage_via_print_mode() is None
+
+
 class TestGetClaudeUsageSnapshot:
-    def test_when_scraper_returns_snapshot_then_returns_it(self):
-        snap = QuotaSnapshot(weekly_all_models_pct=72.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
-        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap):
+    def test_when_print_mode_returns_snapshot_then_returns_it_without_scraping(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=17.0, session_pct=4.0, weekly_sonnet_pct=0.0)
+        with (
+            patch("ai_cli.quota._get_usage_via_print_mode", return_value=snap),
+            patch("ai_cli.quota._scrape_usage_hidden_pane") as scrape,
+        ):
             result = _get_claude_usage_snapshot()
         assert result is snap
+        scrape.assert_not_called()  # print mode is primary — no tmux scrape when it succeeds
 
-    def test_when_scraper_returns_none_then_returns_none(self):
-        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
+    def test_when_print_mode_none_then_falls_back_to_scraper(self):
+        snap = QuotaSnapshot(weekly_all_models_pct=72.0, session_pct=10.0, weekly_sonnet_pct=30.0, extra_pct=0.0)
+        with (
+            patch("ai_cli.quota._get_usage_via_print_mode", return_value=None),
+            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=snap) as scrape,
+        ):
             result = _get_claude_usage_snapshot()
-        assert result is None
+        assert result is snap
+        scrape.assert_called_once()
+
+    def test_when_both_none_then_returns_none(self):
+        with (
+            patch("ai_cli.quota._get_usage_via_print_mode", return_value=None),
+            patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None),
+        ):
+            assert _get_claude_usage_snapshot() is None
 
 
 # --- _notify_threshold ---
