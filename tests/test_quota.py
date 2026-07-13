@@ -2757,7 +2757,7 @@ class TestStatuslineScript:
 class TestQuotaStatuslinePartAdaptiveLabels:
     """AI-CLI-64: adaptive-width labels, left-side labels, Sonnet pace % in statusline output."""
 
-    def _capture(self, usage_percent, sonnet_pct, hours_elapsed, tmp_path, capsys, cols=0):
+    def _capture(self, usage_percent, sonnet_pct, hours_elapsed, tmp_path, capsys, cols=0, model_name=None):
         import ai_cli.quota_db as qdb
         import os
 
@@ -2770,7 +2770,9 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=usage_percent, weekly_sonnet_pct=sonnet_pct)
+                qdb.record_quota_snapshot(
+                    usage_percent=usage_percent, weekly_sonnet_pct=sonnet_pct, weekly_model_name=model_name
+                )
                 with patch("ai_cli.quota._launch_background_scrape"):
                     with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": str(cols)}):
                         quota_statusline_part()
@@ -2786,11 +2788,32 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         assert "Week" not in out
         assert "Son" not in out
 
-    def test_wide_terminal_uses_Week_and_Son_labels(self, tmp_path, capsys):
-        """cols >= 80 → full Week and Son labels."""
+    def test_wide_terminal_uses_Week_label_and_single_letter_secondary(self, tmp_path, capsys):
+        """cols >= 80 → full 'Week' primary label; the secondary label is always single-letter
+        now (AI-CLI-96 — user asked for 'F' not 'Fable'), so 'Son'/'Sonnet' never appears."""
         out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=80)
         assert "Week" in out
-        assert "Son" in out
+        assert "Son" not in out  # secondary is compact single-letter, not "Son"/"Sonnet"
+
+    def test_secondary_label_is_first_letter_of_model_name(self, tmp_path, capsys):
+        """AI-CLI-96: the secondary label is the first letter of the model name — 'Fable' -> 'F'."""
+        out = self._capture(42.0, 0.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=120, model_name="Fable")
+        import re
+
+        clean = re.sub(r"\033\[[0-9;]*m", "", out)
+        assert "Fable" not in clean
+        assert "F 🤖" in clean  # single-letter label immediately before the 🤖 glyph
+
+    def test_negative_weekly_pace_shows_minus_sign(self, tmp_path, capsys):
+        """AI-CLI-96 sign fix: when usage is BELOW the week-elapsed pace the delta is negative and
+        must render with a minus sign (was rendered as abs(), so under-pace looked like over-pace)."""
+        # ~161h elapsed = ~96% of week; usage 17% → delta = 17 - 96 = -79% (way under pace)
+        out = self._capture(17.0, 0.0, hours_elapsed=161, tmp_path=tmp_path, capsys=capsys, cols=120)
+        import re
+
+        clean = re.sub(r"\033\[[0-9;]*m", "", out)
+        assert "→-" in clean  # negative weekly pace shows the minus sign
+        assert "✅" in clean  # under pace = on track
 
     def test_zero_cols_uses_narrow_labels(self, tmp_path, capsys):
         """cols=0 (unset) → narrow labels (default when statusline-command.sh is not the caller)."""
@@ -2843,8 +2866,8 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_wide_terminal_sonnet_absent_uses_Son_label(self, tmp_path, capsys):
-        """Wide terminal + missing Sonnet data → 'Son' label in placeholder."""
+    def test_wide_terminal_secondary_absent_uses_single_letter_label(self, tmp_path, capsys):
+        """Wide terminal + missing secondary data → single-letter 'S' fallback (AI-CLI-96), not 'Son'."""
         import ai_cli.quota_db as qdb
         import os
 
@@ -2865,7 +2888,8 @@ class TestQuotaStatuslinePartAdaptiveLabels:
             import re
 
             clean = re.sub(r"\033\[[0-9;]*m", "", out)
-            assert "Son" in clean
+            assert "Son" not in clean
+            assert "S 🤖" in clean  # single-letter fallback label
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 

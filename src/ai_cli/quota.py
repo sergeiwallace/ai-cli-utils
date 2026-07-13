@@ -1229,13 +1229,14 @@ def quota_statusline_part() -> int:
         BOLD_CYAN = "\033[1;36m"
         BOLD_MAG = "\033[1;35m"
         week_label = "Week" if _cols >= 80 else "W"
-        # Label the secondary line with its actual model name (AIH-120: was "Sonnet",
-        # now "Fable", etc.). Fall back to legacy "Son"/"S" for pre-AIH-120 rows (no name).
+        # Label the secondary line with the FIRST LETTER of its actual model name (AIH-120:
+        # was "Sonnet", now "Fable"). Single-letter keeps the statusline compact ("F" for
+        # Fable, "S" for Sonnet); the 🤖 glyph already marks it as the per-model line. Fall
+        # back to "S" for pre-AIH-120 rows that have no stored model name.
         if model_name:
-            _mn = model_name.strip().split()[0].title()  # "Sonnet only"->"Sonnet"; "Fable"->"Fable"
-            son_label = _mn[:6] if _cols >= 80 else _mn[:1]
+            son_label = model_name.strip()[:1].upper()  # "Fable"->"F", "Sonnet only"->"S"
         else:
-            son_label = "Son" if _cols >= 80 else "S"
+            son_label = "S"
 
         # Sonnet part — fire scrape if absent so field populates on next refresh
         if sonnet_pct is None:
@@ -1288,7 +1289,7 @@ def quota_statusline_part() -> int:
             delta_color = BLUE
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
-                f" {delta_color}{arrow_char}{sign}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
+                f" {delta_color}{arrow_char}{sign}{delta:.0f}%{RESET} \U0001f331{stale_suffix}"
                 f" | {sonnet_part}"
             )  # W 📊 N% →X% 🌱 [⏱] | Son M% →Y%
         else:
@@ -1305,7 +1306,7 @@ def quota_statusline_part() -> int:
             s_pace = f" {s_icon}" if sonnet_pct is not None else ""
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
-                f" {delta_color}{arrow_char}{sign}{abs(delta):.0f}%{RESET} {icon}{stale_suffix}"
+                f" {delta_color}{arrow_char}{sign}{delta:.0f}%{RESET} {icon}{stale_suffix}"
                 f" | {sonnet_part}{s_pace}"
             )  # W 📊 N% →X% ✅/⚠️/🚨 [⏱] | Son 🤖 M% →Y% ✅/⚠️/🚨
     except Exception:
