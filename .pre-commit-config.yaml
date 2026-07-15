@@ -74,6 +74,15 @@ repos:
         language: script
         pass_filenames: false
         always_run: true
+      # Fail the commit if docs/README.md is stale vs doc frontmatter (AIH-172).
+      # Only runs when a docs/*.md file is staged. Regenerate with
+      # `aido docs index`. Bypass: SKIP=docs-index-check git commit
+      - id: docs-index-check
+        name: docs index up to date (aido docs index --check)
+        entry: aido docs index --check
+        language: system
+        files: ^docs/.*\.md$
+        pass_filenames: false
       - id: test-gate
         name: test gate (mise-aware, tech-stack auto-detect)
         entry: .githooks/test-gate.sh
