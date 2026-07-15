@@ -23,6 +23,7 @@ from . import session as _session
 from . import session_script as _session_script
 from . import transport as _transport
 from . import tunnel as _tunnel
+from .git_repair import _git_env, repair_bare_worktree_config
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
@@ -195,6 +196,11 @@ def _deploy_cc_config_files(project_path: Path) -> None:
     cc_dir = Path.home() / ".claude"
 
     # Files to deploy: (source relative to data_dir, dest relative to ~/.claude/)
+    # NOTE (AIH-164 audit F-02/AD-2): `data/statusline-command.sh` is the standalone-`ai`
+    # fallback and MUST be kept in sync with the canonical ai-harness copy
+    # (`ai-harness/.claude/statusline-command.sh`), which owns the statusline and wins via a
+    # symlink whenever ai-harness is installed (the `dst.is_symlink()` skip below). Re-sync with:
+    #   cp ~/projects/ai-harness/.claude/statusline-command.sh src/ai_cli/data/statusline-command.sh
     deployable = [
         ("statusline-command.sh", "statusline-command.sh"),
     ]
@@ -1417,6 +1423,15 @@ def _do_session_launch(
     # Worktree setup
     worktree_path = None
     if config.get("worktree", {}).get("enabled", True) and not no_worktree:
+        # Repair backstop (AI-CLI-99), early — before any git work this launch does.
+        # repo_root is the shared main working tree and must never be
+        # core.bare=true / carry a stale core.worktree, regardless of source
+        # (leaked GIT_* env, a prior interrupted worktree op, CC's own
+        # isolation:worktree tool, ...).
+        _repair_root = _session.detect_repo_root()
+        if _repair_root:
+            repair_bare_worktree_config(_repair_root)
+
         worktree_path = _session.create_worktree(ai_name)
         if worktree_path:
             # Self-healing: detect index corruption (many staged deletions that don't reflect
@@ -1429,10 +1444,13 @@ def _do_session_launch(
                 capture_output=True,
                 text=True,
                 cwd=worktree_path,
+                env=_git_env(),
             )
             if len(_deleted.stdout.strip().splitlines()) > 50:
-                subprocess.run(["git", "read-tree", "HEAD"], capture_output=True, cwd=worktree_path)
-                subprocess.run(["git", "update-index", "--refresh"], capture_output=True, cwd=worktree_path)
+                subprocess.run(["git", "read-tree", "HEAD"], capture_output=True, cwd=worktree_path, env=_git_env())
+                subprocess.run(
+                    ["git", "update-index", "--refresh"], capture_output=True, cwd=worktree_path, env=_git_env()
+                )
                 print(
                     f"Info: index corruption auto-healed in {worktree_path.name} "
                     f"({len(_deleted.stdout.strip().splitlines())} staged deletions reset to HEAD).",
@@ -1446,16 +1464,22 @@ def _do_session_launch(
                 capture_output=True,
                 text=True,
                 cwd=worktree_path,
+                env=_git_env(),
             )
             if pull.returncode != 0:
                 # Abort any in-progress rebase and reset index to HEAD to prevent corruption.
-                subprocess.run(["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path)
-                subprocess.run(["git", "restore", "--staged", "."], capture_output=True, cwd=worktree_path)
+                subprocess.run(["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path, env=_git_env())
+                subprocess.run(
+                    ["git", "restore", "--staged", "."], capture_output=True, cwd=worktree_path, env=_git_env()
+                )
                 print(
                     f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
                     f"(autostash pop conflict?). Index restored to HEAD.",
                     file=sys.stderr,
                 )
+            # Repair backstop again after this launch's git work.
+            if _repair_root:
+                repair_bare_worktree_config(_repair_root)
 
     d = _config.get_session_map(engine)
     uuid = d.get(ai_name)

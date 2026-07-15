@@ -86,18 +86,27 @@ def test_env_records_after_throttle_window(monkeypatch, capsys):
     assert _count_snapshots() == 2, "did not record after throttle window elapsed"
 
 
-def test_env_reset_persisted_as_anchor(monkeypatch, capsys):
-    """The env reset epoch is routed through record_quota_snapshot(reset_at=…) → weekly_state
-    reset_at reflects it, so the statusline + `ai quota status` share one week boundary (F-08)."""
-    _set_env(monkeypatch, seven_day_pct="20")
-    quota_statusline_part()
+def test_env_reset_routed_to_record_quota_snapshot(monkeypatch, capsys):
+    """The env reset epoch is routed through `record_quota_snapshot(reset_at=<ISO of the epoch>)`
+    so the anchor stays consistent (F-08). Strengthened per audit N-03: spy on the call and assert
+    the reset_at kwarg IS the env epoch converted to ISO (the weak version passed even when the
+    epoch was never routed, because record_quota_snapshot always writes a derived reset_at)."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    epoch = _set_env(monkeypatch, seven_day_pct="20")
+    expected_iso = datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with patch("ai_cli.quota_db.record_quota_snapshot") as spy:
+        quota_statusline_part()
     capsys.readouterr()
-    conn = sqlite3.connect(str(qdb._get_quota_db_path()))
-    try:
-        row = conn.execute("SELECT reset_at FROM weekly_state").fetchone()
-    finally:
-        conn.close()
-    assert row is not None and row[0], "reset anchor not persisted from env"
+    assert spy.called, "record_quota_snapshot never called from the env path"
+    # The env-sourced call carries the reset epoch converted to ISO.
+    env_calls = [c for c in spy.call_args_list if c.kwargs.get("reset_at") == expected_iso]
+    assert env_calls, (
+        f"env reset epoch not routed as reset_at={expected_iso!r}; "
+        f"got {[c.kwargs.get('reset_at') for c in spy.call_args_list]!r}"
+    )
+    assert env_calls[0].kwargs.get("usage_percent") == 20.0
 
 
 def test_no_env_var_leaves_existing_behavior(monkeypatch, capsys):

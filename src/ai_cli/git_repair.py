@@ -1,0 +1,110 @@
+"""Shared git-subprocess safety helpers (AI-CLI-99).
+
+Prevents the recurring ``core.bare=true`` / stale ``core.worktree`` corruption
+class on a repo's main working tree. Root cause: worktree tooling runs ``git``
+subprocesses that INHERIT the parent process's environment. When the parent is
+itself running inside a git worktree (e.g. a nested CC session launched from
+``.worktrees/sw-N``), git context env vars (``GIT_DIR``, ``GIT_WORK_TREE``, ...)
+leak into ``git worktree add/remove`` subprocess calls. Because many
+sessions/worktrees share one gitdir, this can write ``core.bare``/
+``core.worktree`` onto the SHARED main-repo config, corrupting every session
+operating from the main tree path (``fatal: this operation must be run in a
+work tree``).
+
+Two layers of defense:
+
+1. ``_git_env()`` — strip git-targeting env vars before every git subprocess
+   call that touches repo/worktree structure, so it always targets the repo
+   passed via ``-C``/``cwd``, never one redirected by an inherited
+   ``GIT_DIR``/``GIT_WORK_TREE``.
+2. ``repair_bare_worktree_config()`` — a deterministic backstop: assert +
+   repair a normal working tree's ``core.bare``/``core.worktree`` regardless
+   of source. This covers corruption paths we don't control (e.g. Claude
+   Code's own ``isolation: worktree`` sub-agent tool).
+"""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# Vars that redirect git's repo/worktree targeting. Stripping these prevents a
+# subprocess from silently operating on a different repo/worktree than the one
+# named via -C/cwd. Innocuous GIT_* vars (SSH, prompts, author/committer
+# identity) are deliberately NOT in this list and stay untouched.
+_GIT_TARGETING_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+)
+
+
+def _git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an env dict safe to pass as ``env=`` to a ``git`` subprocess.
+
+    Strips vars that redirect git's repo/worktree targeting (``GIT_DIR``,
+    ``GIT_WORK_TREE``, etc.) so the subprocess always operates on the repo
+    given via ``-C``/``cwd``, never one inherited from the caller's own git
+    context. Keeps other ``GIT_*`` vars (``GIT_SSH*``, ``GIT_TERMINAL_PROMPT``,
+    ``GIT_AUTHOR_*``, ``GIT_COMMITTER_*``, ...) untouched.
+    """
+    env = dict(base_env if base_env is not None else os.environ)
+    for var in _GIT_TARGETING_VARS:
+        env.pop(var, None)
+    return env
+
+
+def repair_bare_worktree_config(repo_root: Path) -> bool:
+    """Assert + repair a normal working tree's ``core.bare``/``core.worktree``.
+
+    ``repo_root`` must be a NORMAL git working tree (never intentionally
+    bare). If ``core.bare`` has been flipped to ``true``, or a stale
+    ``core.worktree`` is set, this repairs both and returns ``True`` (logging
+    a visible warning so recurrence is observable). A healthy repo is a no-op
+    returning ``False``.
+    """
+    repaired = False
+
+    bare = subprocess.run(
+        ["git", "-C", str(repo_root), "config", "--local", "--get", "core.bare"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if bare.returncode == 0 and bare.stdout.strip() == "true":
+        subprocess.run(
+            ["git", "-C", str(repo_root), "config", "--local", "core.bare", "false"],
+            capture_output=True,
+            env=_git_env(),
+        )
+        print(
+            f"WARNING: repaired core.bare=true corruption on {repo_root} (reset to false)",
+            file=sys.stderr,
+        )
+        repaired = True
+
+    worktree_cfg = subprocess.run(
+        ["git", "-C", str(repo_root), "config", "--local", "--get", "core.worktree"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if worktree_cfg.returncode == 0 and worktree_cfg.stdout.strip():
+        subprocess.run(
+            ["git", "-C", str(repo_root), "config", "--local", "--unset", "core.worktree"],
+            capture_output=True,
+            env=_git_env(),
+        )
+        print(
+            f"WARNING: repaired stale core.worktree={worktree_cfg.stdout.strip()!r} on {repo_root} (unset)",
+            file=sys.stderr,
+        )
+        repaired = True
+
+    return repaired

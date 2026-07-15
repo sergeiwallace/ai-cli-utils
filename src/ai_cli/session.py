@@ -20,6 +20,7 @@ from .config import (
     get_current_project_name,
     load_project_registry,
 )
+from .git_repair import _git_env, repair_bare_worktree_config
 
 
 def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
@@ -485,7 +486,7 @@ def detect_repo_root():
     # Use --git-common-dir so we get the main repo root even when called from
     # inside a git worktree (--show-toplevel would return the worktree path instead,
     # causing create_worktree to nest worktrees and create circular .direnv symlinks).
-    res = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True)
+    res = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, env=_git_env())
     if res.returncode != 0:
         return None
     git_common = Path(res.stdout.strip())
@@ -507,11 +508,22 @@ def create_worktree(ai_name: str) -> Path | None:
     if not repo_root:
         return None
 
+    # Deterministic repair backstop (AI-CLI-99): repo_root is a normal working
+    # tree and must never be core.bare=true / carry a stale core.worktree.
+    # Check + repair BEFORE any worktree op, regardless of what corrupted it.
+    repair_bare_worktree_config(repo_root)
+
     wt_dir = repo_root / WORKTREE_DIR / ai_name
     if wt_dir.exists():
         # Verify it's still registered as a valid worktree; prune stale ones first
-        subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root)
-        res = subprocess.run(["git", "worktree", "list", "--porcelain"], capture_output=True, text=True, cwd=repo_root)
+        subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env())
+        res = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            env=_git_env(),
+        )
         if str(wt_dir) in res.stdout:
             return wt_dir
         # Stale directory not in git's index — remove and recreate
@@ -523,12 +535,21 @@ def create_worktree(ai_name: str) -> Path | None:
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Try creating new branch, fallback to existing
-    res = subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", branch], capture_output=True)
+    res = subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", branch], capture_output=True, env=_git_env())
     if res.returncode != 0:
-        subprocess.run(["git", "worktree", "add", str(wt_dir), branch], capture_output=True)
+        subprocess.run(["git", "worktree", "add", str(wt_dir), branch], capture_output=True, env=_git_env())
 
     # Track origin/main so git push ships to main, git pull --rebase syncs from main
-    subprocess.run(["git", "branch", "--set-upstream-to=origin/main", branch], capture_output=True, cwd=repo_root)
+    subprocess.run(
+        ["git", "branch", "--set-upstream-to=origin/main", branch],
+        capture_output=True,
+        cwd=repo_root,
+        env=_git_env(),
+    )
+
+    # Repair again after the add — the backstop for whatever just ran (defense
+    # in depth alongside the env scrub above).
+    repair_bare_worktree_config(repo_root)
 
     if wt_dir.exists():
         # Symlink critical environment files
@@ -557,7 +578,10 @@ def cleanup_worktree(ai_name: str):
         return
 
     # Only remove if clean
-    diff = subprocess.run(["git", "-C", str(wt_dir), "diff", "--quiet"])
-    cached = subprocess.run(["git", "-C", str(wt_dir), "diff", "--cached", "--quiet"])
+    diff = subprocess.run(["git", "-C", str(wt_dir), "diff", "--quiet"], env=_git_env())
+    cached = subprocess.run(["git", "-C", str(wt_dir), "diff", "--cached", "--quiet"], env=_git_env())
     if diff.returncode == 0 and cached.returncode == 0:
-        subprocess.run(["git", "worktree", "remove", str(wt_dir)], capture_output=True)
+        subprocess.run(["git", "worktree", "remove", str(wt_dir)], capture_output=True, env=_git_env())
+        # Backstop repair after teardown — worktree remove is the other
+        # documented trigger for the core.bare/core.worktree corruption class.
+        repair_bare_worktree_config(repo_root)
