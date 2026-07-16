@@ -87,6 +87,13 @@ if [ ${#FIND_DIRS[@]} -gt 0 ]; then
 fi
 
 if [ -n "$HAS_PYTHON" ]; then
+    # macOS: git hooks are exec'd via /bin/sh, and SIP strips DYLD_* on that exec, so an
+    # ambient / .envrc DYLD_FALLBACK_LIBRARY_PATH does NOT reach the hook's pytest. Re-provide
+    # the Homebrew lib path here so tests importing native-lib-backed deps (e.g. weasyprint →
+    # libgobject/pango/cairo) resolve. No-op off macOS or without Homebrew.
+    if [ "$(uname)" = "Darwin" ] && [ -d /opt/homebrew/lib ]; then
+        export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+    fi
     # Resolve pytest: mise (.python-version) → .venv → system PATH
     PYTEST=""
     if [ -f "$REPO_ROOT/.python-version" ]; then

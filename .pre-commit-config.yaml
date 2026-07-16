@@ -44,9 +44,16 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.21
     hooks:
+      # Exclude .githooks/ — those .py files are vendored from project-template and
+      # are re-linted at each repo's own line-length (88/100/120/150 vary across the
+      # fleet), so a template that ships them at any single width churns on every
+      # copier update. Vendored/template-managed files should not be linted by the
+      # consuming repo; edit them upstream in project-template. (AIH-174)
       - id: ruff-check
         args: [--fix]
+        exclude: ^\.githooks/
       - id: ruff-format
+        exclude: ^\.githooks/
 
 
   # ── Shell: shellcheck (warning+ only — suppress info/style noise) ───────

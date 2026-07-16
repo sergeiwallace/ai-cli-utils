@@ -117,7 +117,9 @@ def main() -> int:
         for event, cmd in iter_commands(data):
             for ref in local_script_refs(cmd):
                 if not (root / ref).is_file():
-                    problems.append(f"{fname}: {event} hook references missing script '{ref}'\n      command: {cmd}")
+                    problems.append(
+                        f"{fname}: {event} hook references missing script '{ref}'\n      command: {cmd}"
+                    )
     if problems:
         sys.stderr.write(
             "✖ .claude/settings.json hook validation failed — hook command(s) point at scripts that do not exist:\n\n"
