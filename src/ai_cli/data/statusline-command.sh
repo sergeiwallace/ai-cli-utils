@@ -508,6 +508,22 @@ else
 
 fi
 
+# --- Weekly quota reset datetime (AIH-239) ---
+# The weekly all-models ("all sessions") reset and the weekly Fable cap reset are the
+# SAME cycle, so one datetime covers both. Rendered as its own segment after the quota
+# part (weekly + Fable) and before the tip. Prefer the value exported from this render's
+# rate_limits; fall back to the persisted quota.json cache. Epoch seconds → human date,
+# portable across macOS (date -r) and Linux/Hetzner (date -d @).
+reset_part=""
+_wk_reset="${AI_CLI_QUOTA_SEVEN_DAY_RESET:-}"
+[ -z "$_wk_reset" ] && _wk_reset=$(jq -r '.seven_day_reset // empty' "$HOME/.claude/state/quota.json" 2>/dev/null)
+if [[ "$_wk_reset" =~ ^[0-9]+$ ]]; then
+  if _wk_str=$(date -r "$_wk_reset" '+%a %-m/%-d %H:%M' 2>/dev/null); then :
+  elif _wk_str=$(date -d "@$_wk_reset" '+%a %-m/%-d %H:%M' 2>/dev/null); then :
+  else _wk_str=""; fi
+  [ -n "$_wk_str" ] && reset_part="\033[2mwk↻ ${_wk_str}\033[0m"
+fi
+
 # --- Assemble ---
 sep="\033[2m│\033[0m"
 if [[ -n "$worktree_name" ]]; then
@@ -523,6 +539,7 @@ fi
 [ -n "$tmux_part" ] && [ -z "$worktree_name" ] && line="${line} ${sep} ${tmux_part}"
 line="${line} ${sep} ${ctx_part}"
 [ -n "$quota_part" ] && line="${line} ${sep} ${quota_part}"
+[ -n "$reset_part" ] && line="${line} ${sep} ${reset_part}"
 [ -n "$sess_24h_part" ] && line="${line} ${sep} ${sess_24h_part}"
 [ -n "$agg_24h_part" ] && line="${line} ${sep} ${agg_24h_part}"
 [ -n "$agg_7d_part" ] && line="${line} ${sep} ${agg_7d_part}"
