@@ -2,8 +2,7 @@
 
 > Auto-generated from YAML frontmatter. Run `aido docs index` to refresh.
 
-**63 docs** across 19 categories.
- 12 symlinked from other projects.
+**51 docs** across 11 categories.
 
 ## Design
 
@@ -15,7 +14,6 @@ Architectural 'how' — system design, tradeoff analysis.
 | [Citation Validation for ai gemini Research Output](designs/archive/citation-validation.md) | archived | claude-sonnet-4-6 2026-04-21 | citation-validation, gemini, research, lychee, semantic-scholar, AI-CLI-50 |
 | [Claude Usage Telemetry — Token Tracking and Quota Pacing](designs/claude-usage-telemetry.md) | approved | R-5 deep-think 2026-04-01, opus synthesis 2026-04-01 | claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23, AI-CLI-55, AI-CLI-56 |
 | [Quota Notification System](designs/notification-system.md) | approved | session-2026-04-20 | quota, notifications, circus, ntfy, discord, process-management |
-| [['Design Title']](designs/STUB.md) | stub | aido-stub (link) | design |
 | [[Project Name] — Architecture & Design Philosophy](designs/ARCH-TEMPLATE.md) | active | <!-- claude-opus / human / etc. --> | architecture, platform, design-philosophy |
 | [ai-cli-utils — Architecture](designs/architecture.md) | active | claude-sonnet-4-6 2026-04-18 | architecture, cli, gemini, quota, sync, nats, circus |
 | [iTerm2 Tab Title and Color System — Design](designs/iterm2-title-color-system.md) | implemented | ai-cli-utils | iterm2, tab-title, tab-color, session-title, fleet, gemini, remote, mosh |
@@ -40,7 +38,6 @@ Tactical implementation — tasks, batches, gates.
 | [Skill Audit, Copier Automation, and Session Config Drift Prevention](plans/skill-audit-copier-automation-plan.md) | complete | ai-cli-utils | session-config, skills, copier, project-template, automation, auto-restart |
 | [Terminal Demo Video — Implementation Plan](plans/demo-video-plan.md) | in_progress | ai-cli-utils | demo, gif, screencapture, ffmpeg, readme |
 | [Windows Out-of-Box Support — Implementation Plan](plans/windows-support-plan.md) | complete | ai-cli-utils | windows, portability, cross-platform, AI-CLI-29 |
-| [['Plan Title']](plans/STUB.md) | stub | aido-stub (link) | plan |
 | [ai ws — Workspace-wide git pull/rebase for all repos and worktrees](plans/workspace-sync-plan.md) | in_progress | internal | git, worktrees, workspace, sync |
 | [iTerm2 + ntfy Session Status Integration — Implementation Plan](plans/iterm2-ntfy-session-status-plan.md) | active | internal | iterm2, ntfy, notifications, session-status, ai-cli, nats |
 | [iTerm2 Fleet Management Configuration — Implementation Plan](plans/iterm2-fleet-config-plan.md) | active | internal | iterm2, terminal, fleet-management, ai-cli, configuration |
@@ -60,24 +57,7 @@ Synthesized findings — comparisons, best practices, deep dives.
 | [GitHub Repository Automation & Ecosystem Tooling for Python CLI Projects](research/github-repo-automation.md) | complete | opus-researcher-2026-03-29 | github, automation, ci-cd, bots, open-source, python, cli |
 | [Open-Source Python CLI Package Best Practices](research/open-source-package-best-practices.md) | complete | opus-researcher-2026-03-29 | open-source, python, cli, github, pypi, best-practices |
 | [Terminal Tab/Pane Title, Color, and Icon Customization for AI Fleet Management — Research](research/iterm2-terminal-customization-research.md) | complete | gemini-deep-think-2026-04-02 | iterm2, terminal, tab-title, tab-color, session-title, fleet, gemini, remote, mosh, tmux, wezterm, kitty, ghostty |
-| [['Research Topic']](research/STUB.md) | stub | aido-stub (link) | research |
 | [iTerm2 Power User Configuration for AI Agent Fleet Management](research/iterm2-fleet-management-config.md) | complete | claude-opus-2026-03-29 | research, iterm2, terminal, fleet-management, ssh, tmux, developer-tools |
-
-## Procedure
-
-Repeatable processes — workflows referenced from CLAUDE.md.
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [['Procedure Title']](procedures/STUB.md) | stub | aido-stub (link) | procedure |
-
-## Tool
-
-Developer tools and CLI documentation.
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [['Tool Title']](tools/STUB.md) | stub | aido-stub (link) | tool |
 
 ## Test
 
@@ -86,25 +66,6 @@ Testing templates and tracking.
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
 | [UAT — iTerm2 Tab Title and Color System Redesign](test/uat-iterm2-title-color-redesign.md) | pending | ai-cli-utils | iterm2, uat, tab-title, tab-color, fleet, gemini |
-| [['Test Title']](test/STUB.md) | stub | aido-stub (link) | test |
-
-## Analysis
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [['Analysis Title']](analysis/STUB.md) | stub | aido-stub (link) | analysis |
-
-## Audit
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [['Audit Title']](audits/STUB.md) | stub | aido-stub (link) | audit |
-
-## Bug
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [['Bug Title']](bugs/STUB.md) | stub | aido-stub (link) | bug |
 
 ## Bugs
 
@@ -121,23 +82,11 @@ Testing templates and tracking.
 |-----|--------|--------|------|
 | [VPN-Aware Transport Switching](designs/vpn-transport-switching.md) | draft | internal | mosh, ssh, vpn, transport, session-management |
 
-## Fable-Prompt
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [[FILL: Fable Coordinator Task Title]](prompts/fable/STUB.md) | stub | fable-prompt-stub (link) | fable-5, claude-code, orchestration, subagents, coordinator |
-
 ## Guide
 
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
 | [Optional: NATS Setup for Fleet Messaging](guides/nats-setup.md) | current | internal | nats, messaging, fleet, optional, setup |
-
-## Handoff
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [['Handoff Title']](handoffs/STUB.md) | stub | aido-stub (link) | handoff |
 
 ## Plans
 
@@ -161,12 +110,6 @@ Testing templates and tracking.
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
 | [Research Prompt Registry](research/prompts/research-prompt-registry.md) | active | project-template | research, prompts |
-
-## Spec
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [Spec Document Template](specs/SPEC-TEMPLATE.md) | template | ai-cli-utils (link) | spec |
 
 ## Tools
 
