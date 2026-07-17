@@ -25,6 +25,15 @@
   6. After each round, add a line item to the Approval Log: date, round N, key decisions/approvals from that round.
 -->
 
+<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+  with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
+  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
+  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
+  (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
+  Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
+  `<!-- toc:skip -->` / `<!-- toc:include -->` on a heading override the heuristic. -->
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -210,6 +219,24 @@ to KV — Hetzner owns the data and Hetzner writes it.
 -->
 
 ## Task Breakdown
+
+> **AC quality rules** (`docs/procedures/ac-writing-practices.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+<!-- aido:ac-rules:mirror:begin -->
+- Every AC is independently testable — a test can fail if only this AC is violated.
+- Every AC is falsifiable — "works correctly" is not an AC.
+- At least one failure-path AC per public function changed.
+- Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
+<!-- aido:ac-rules:mirror:end -->
+
+<!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes each task from the doc alone
+  (task-spec best-practices research R-1780610095; full standard: docs/procedures/ac-writing-practices.md):
+  • Ship each AC as an executable test where feasible; commit failing tests first.
+  • Mandate >=1 NON-MOCKED behavioral assertion per behavior — do not mock the primary inputs;
+  gate on mutation score, treat line coverage as a floor not a target.
+  • Spec the WHAT (I/O, edge cases, failure paths, parity), NOT the HOW (internal data
+  structures, algorithm, naming) — over-constraining internals degrades quality.
+  • Exit gates are harness-enforced, runnable predicates (run the suite; fresh-context diff
+  review against the ACs), never self-declared "done". -->
 
 ### T-00a: Persistent Mac quota snapshot subscriber (JetStream durable)
 
