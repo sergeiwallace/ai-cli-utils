@@ -23,6 +23,15 @@ source: claude-sonnet-4-6
   6. After each round, add a line item to the Approval Log: date, round N, key decisions/approvals from that round.
 -->
 
+<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+  with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
+  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
+  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
+  (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
+  Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
+  `<!-- toc:skip -->` / `<!-- toc:include -->` on a heading override the heuristic. -->
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -67,6 +76,16 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 ### Decision Summary
 
+<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+  choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
+  - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
+  here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
+  silently overwrite it; the correction is signal.
+  - Chosen: the human's final pick. Fill when decided.
+  - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
+  WHY the human chose differently — that "why" is the highest-value datapoint.
+  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+
 | # | Decision | Options | Status |
 |---|----------|---------|--------|
 | D1 | Registry feature opt-in gating | (a) Always-on hard-block (current), (b) Skip if `main_project` unconfigured | `PENDING` |
@@ -74,6 +93,12 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 | D3 | Project-local config in `pyproject.toml` | (a) Skip (sergei.toml only), (b) Optional `[tool.ai-cli]`, (c) Separate `.ai-project.toml` | `PENDING` |
 | D4 | Multi-user first-run UX | (a) Manual `ai setup` after install, (b) First-run auto-detect + prompt, (c) Graceful no-op if unconfigured | `PENDING` |
 | D5 | Copier hook mechanism | (a) `_tasks` entry calls `ai register`, (b) Inline Python in `_tasks`, (c) Separate post-copy script | `PENDING` |
+
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+  each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+  each on its own line — a blank line before each header, and a hard newline between the header
+  and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+  skeleton below already shows the correct shape; match it exactly. -->
 
 ---
 
@@ -298,6 +323,24 @@ _tasks:
 ---
 
 ## Task Breakdown
+
+> **AC quality rules** (`docs/procedures/ac-writing-practices.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+<!-- aido:ac-rules:mirror:begin -->
+- Every AC is independently testable — a test can fail if only this AC is violated.
+- Every AC is falsifiable — "works correctly" is not an AC.
+- At least one failure-path AC per public function changed.
+- Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
+<!-- aido:ac-rules:mirror:end -->
+
+<!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes each task from the doc alone
+  (task-spec best-practices research R-1780610095; full standard: docs/procedures/ac-writing-practices.md):
+  • Ship each AC as an executable test where feasible; commit failing tests first.
+  • Mandate >=1 NON-MOCKED behavioral assertion per behavior — do not mock the primary inputs;
+  gate on mutation score, treat line coverage as a floor not a target.
+  • Spec the WHAT (I/O, edge cases, failure paths, parity), NOT the HOW (internal data
+  structures, algorithm, naming) — over-constraining internals degrades quality.
+  • Exit gates are harness-enforced, runnable predicates (run the suite; fresh-context diff
+  review against the ACs), never self-declared "done". -->
 
 ### T-01: Make registry validation opt-in (D1)
 

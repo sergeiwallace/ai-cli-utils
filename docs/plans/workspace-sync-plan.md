@@ -6,7 +6,9 @@ status: in_progress
 source: internal
 date: 2026-04-25
 linked_task: AI-CLI-64
+template_version: "plan-1.0.0"
 ---
+<!-- aido:region name="overview" kind="replaceable" -->
 
 # ai ws — Workspace-wide git pull/rebase
 
@@ -15,6 +17,15 @@ linked_task: AI-CLI-64
 **Created:** 2026-04-25
 
 **Task:** `AI-CLI-64`
+
+<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+  with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
+  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
+  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
+  (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
+  Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
+  `<!-- toc:skip -->` / `<!-- toc:include -->` on a heading override the heuristic. -->
 
 ## Table of Contents
 
@@ -52,10 +63,26 @@ Running `git pull --rebase` across all project repos and their worktrees is tedi
 
 ### Decision Summary
 
+<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+  choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
+  - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
+  here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
+  silently overwrite it; the correction is signal.
+  - Chosen: the human's final pick. Fill when decided.
+  - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
+  WHY the human chose differently — that "why" is the highest-value datapoint.
+  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+
 | # | Decision | Options | Status |
 |---|----------|---------|--------|
 | D1 | How to enumerate repos | (a) Config list, (b) Parse `.code-workspace`, (c) Scan `~/projects/` | `APPROVED: (b)` |
 | D2 | Command name | (a) `ai ws pull`, (b) `ai sync repos`, (c) `ai ws sync`, (d) `ai sync workspace` | `APPROVED: (a)` |
+
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+  each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+  each on its own line — a blank line before each header, and a hard newline between the header
+  and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+  skeleton below already shows the correct shape; match it exactly. -->
 
 ### D1: How to enumerate repos — `[APPROVED: (b) Parse .code-workspace]`
 
@@ -215,6 +242,24 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Task Breakdown
 
+> **AC quality rules** (`docs/procedures/ac-writing-practices.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+<!-- aido:ac-rules:mirror:begin -->
+- Every AC is independently testable — a test can fail if only this AC is violated.
+- Every AC is falsifiable — "works correctly" is not an AC.
+- At least one failure-path AC per public function changed.
+- Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
+<!-- aido:ac-rules:mirror:end -->
+
+<!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes each task from the doc alone
+  (task-spec best-practices research R-1780610095; full standard: docs/procedures/ac-writing-practices.md):
+  • Ship each AC as an executable test where feasible; commit failing tests first.
+  • Mandate >=1 NON-MOCKED behavioral assertion per behavior — do not mock the primary inputs;
+  gate on mutation score, treat line coverage as a floor not a target.
+  • Spec the WHAT (I/O, edge cases, failure paths, parity), NOT the HOW (internal data
+  structures, algorithm, naming) — over-constraining internals degrades quality.
+  • Exit gates are harness-enforced, runnable predicates (run the suite; fresh-context diff
+  review against the ACs), never self-declared "done". -->
+
 ### T-01: Workspace file parser
 
 **Size:** S | **Batch:** 1
@@ -366,3 +411,29 @@ Update `docs/tools/ai-cli-usage.md` with `ai ws pull` usage. Same commit as T-03
 | 2026-04-27 | D1: APPROVED (b) Parse `.code-workspace` | Single source of truth; JSON5 stripping via regex |
 | 2026-04-27 | D2: APPROVED (a) `ai ws pull` | Short, `ws` group, exact git verb |
 | 2026-04-27 | OQ2/OQ3: both yes | Default and remote workspace paths configurable in `config.toml [workspace]` |
+
+<!-- /aido:region name="overview" -->
+
+<!-- aido:region name="decisions" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="decisions" -->
+
+<!-- aido:region name="task_breakdown" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="task_breakdown" -->
+
+<!-- aido:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="feedback_rounds" -->
+
+<!-- aido:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="approval_log" -->
