@@ -5,7 +5,9 @@ tags: [quota, notifications, circus, ntfy, discord, process-management]
 status: approved
 source: session-2026-04-20
 task: AI-CLI-25
+template_version: "design-1.0.0"
 ---
+<!-- aido:region name="overview" kind="replaceable" -->
 
 # Quota Notification System
 
@@ -23,6 +25,16 @@ task: AI-CLI-25
   5. Never overwrite prior rounds.
   6. After each round, add a line item to the Approval Log: date, round N, key decisions/approvals from that round.
 -->
+
+<!-- AIDO-128: the ToC sits ABOVE the Executive Summary (it is self-referential otherwise).
+  D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc, with GitHub-style
+  anchors (lowercase, spaces→hyphens, punctuation stripped) so they navigate in-window
+  (incl. VS Code Remote-SSH). `aido toc check` validates this once AIDO-127 lands. If
+  all-`###` proves too noisy, fall back to D5 (a) "meaningful `###`" — a deterministic
+  OR-rule: include a `###` when it (1) has child `####`, (2) its section body ≥ ~8-10
+  lines, (3) its parent `##` is allowlisted (Design Decisions / Open Questions /
+  appendices), or (4) matches a pattern (`### D-N`); `<!-- toc:skip -->` /
+  `<!-- toc:include -->` on a heading override the heuristic. -->
 
 ## Table of Contents
 
@@ -49,12 +61,28 @@ task: AI-CLI-25
 
 ### Decision Summary
 
+<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+  choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
+  - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
+  here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
+  silently overwrite it; the correction is signal.
+  - Chosen: the human's final pick. Fill when decided.
+  - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
+  WHY the human chose differently — that "why" is the highest-value datapoint.
+  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
 | 1 | Process management for quota-watch | PID file + manual restart, systemd, Circus | Circus | Already a declared dependency; consistent with signal-watch | Approved |
 | 2 | OS fallback behaviour | Only when no primary channel configured, always as last resort | Always fire on failure too | Better than silent miss; a channel should always be configured but new installs need protection | Approved |
 | 3 | Config source | Config file only, env vars only, layered | Layered (config file → env var) | Allows Doppler injection without requiring file edits; consistent with existing ai-cli config pattern | Approved |
 | 4 | Notifier API storage | Database, config file, hybrid | Config file for channels + SQLite for history | Config is static structure (config file); history is mutable state (SQLite) | Approved |
+
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+  each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+  each on its own line — a blank line before each header, and a hard newline between the header
+  and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+  skeleton below already shows the correct shape; match it exactly. -->
 
 ### Decision Details
 
@@ -485,3 +513,23 @@ The `notification_log` table provides a persistent record so duplicates are visi
 | 2026-04-20 | Round 1 | D1 (Circus) approved. D2 (parallel channels) approved — keep both Discord and ntfy; AI-CLI-49 added to evaluate long-term. D3 (layered config) approved after expanding with options/pros/cons/recommendation. |
 | 2026-04-20 | Round 2 | OQ1 → OS fallback fires on failure too; Notifier API added; D4 added (config file + SQLite hybrid). OQ2 → phases removed, flat implementation plan. OQ3 → ai notifications log CLI designed. |
 | 2026-04-20 | Round 3 | D4 (Notifier API storage: config file + SQLite) approved. All decisions approved — doc ready for implementation. |
+
+<!-- /aido:region name="overview" -->
+
+<!-- aido:region name="decisions" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="decisions" -->
+
+<!-- aido:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="feedback_rounds" -->
+
+<!-- aido:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="approval_log" -->

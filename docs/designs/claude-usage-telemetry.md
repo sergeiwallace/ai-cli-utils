@@ -5,7 +5,9 @@ tags: [claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23, A
 status: approved
 source: R-5 deep-think 2026-04-01, opus synthesis 2026-04-01
 citation_review: pending — review claims against citation validation reports as part of AI-CLI-53 doc audit
+template_version: "design-1.0.0"
 ---
+<!-- aido:region name="overview" kind="replaceable" -->
 
 # Claude Usage Telemetry — Token Tracking and Quota Pacing
 
@@ -24,6 +26,16 @@ citation_review: pending — review claims against citation validation reports a
   5. Never overwrite prior rounds.
   6. After each round, add a line item to the Approval Log: date, round N, key decisions/approvals from that round.
 -->
+
+<!-- AIDO-128: the ToC sits ABOVE the Executive Summary (it is self-referential otherwise).
+  D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc, with GitHub-style
+  anchors (lowercase, spaces→hyphens, punctuation stripped) so they navigate in-window
+  (incl. VS Code Remote-SSH). `aido toc check` validates this once AIDO-127 lands. If
+  all-`###` proves too noisy, fall back to D5 (a) "meaningful `###`" — a deterministic
+  OR-rule: include a `###` when it (1) has child `####`, (2) its section body ≥ ~8-10
+  lines, (3) its parent `##` is allowlisted (Design Decisions / Open Questions /
+  appendices), or (4) matches a pattern (`### D-N`); `<!-- toc:skip -->` /
+  `<!-- toc:include -->` on a heading override the heuristic. -->
 
 ## Table of Contents
 
@@ -68,6 +80,16 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 
 ### Decision Summary
 
+<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+  choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
+  - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
+  here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
+  silently overwrite it; the correction is signal.
+  - Chosen: the human's final pick. Fill when decided.
+  - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
+  WHY the human chose differently — that "why" is the highest-value datapoint.
+  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
 | 1 | Limit detection strategy | (a) Web UI scraping, (b) Heuristic aggregation, (c) Hybrid: aggregation + manual anchor, (d) Automated tmux terminal scraping | (d) tmux scraping | Direct server-side percentage with no manual anchoring or heuristic drift; if it works, nothing else needed | **Approved** |
@@ -80,6 +102,12 @@ R-5 (deep-think, 2026-04-01) surveyed Anthropic's official surfaces, community t
 | 8 | Sonnet % alert thresholds (AI-CLI-55) | Same as all-models, or tighter | Same as all-models | Consistent; revisable after observing real usage | **Approved** |
 | 9 | Statusline label names and styling (AI-CLI-64) | (A) color/bold `W`/`S`, (B) `Week`/`Son`, (C) `All`/`Son`, (D) icons, (E) adaptive-width with color/bold | (E) adaptive-width | `Week`/`Son` when terminal wide enough; `W`/`S` when narrow; both styled with bold + distinct color as field headers | **Approved** |
 | 10 | Sonnet pace % visibility (AI-CLI-64) | (a) always show dimmed placeholder + background scrape, (b) omit until populated | (a) dimmed placeholder + scrape | Consistent with D6 and weekly pace behavior; prevents layout jitter | **Approved** |
+
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+  each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+  each on its own line — a blank line before each header, and a hard newline between the header
+  and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+  skeleton below already shows the correct shape; match it exactly. -->
 
 ### Decision Details
 
@@ -690,6 +718,26 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 
 ## Implementation Phases
 
+<!-- Per-phase task ACs follow the canonical AC quality rules. `docs/procedures/ac-writing-practices.md`
+  is AUTHORITATIVE (open it for the full/latest standard; this inline reminder is sync-checked
+  against its canonical block by `aido validate-doc` and must not be edited independently): -->
+<!-- aido:ac-rules:mirror:begin -->
+- Every AC is independently testable — a test can fail if only this AC is violated.
+- Every AC is falsifiable — "works correctly" is not an AC.
+- At least one failure-path AC per public function changed.
+- Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
+<!-- aido:ac-rules:mirror:end -->
+
+<!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes this from the doc alone
+  (task-spec best-practices research R-1780610095; full standard: docs/procedures/ac-writing-practices.md):
+  • Ship each AC as an executable test where feasible; commit failing tests first.
+  • Mandate >=1 NON-MOCKED behavioral assertion per behavior — do not mock the primary inputs;
+  gate on mutation score, treat line coverage as a floor not a target.
+  • Spec the WHAT (I/O, edge cases, failure paths, parity), NOT the HOW (internal data
+  structures, algorithm, naming) — over-constraining internals degrades quality.
+  • Exit gates are harness-enforced, runnable predicates (run the suite; fresh-context diff
+  review against the ACs), never self-declared "done". -->
+
 ### Phase 1: tmux Scraping + Capture + Local Store ✅ (Shipped 2026-04-07)
 
 - Hidden pane scraper (`_scrape_usage_hidden_pane`) — injects `/usage` into CC, captures all 4 metrics
@@ -937,3 +985,23 @@ Format diagrams using Mermaid.js or ASCII. Format math using LaTeX.
 NEVER generate binary images.
 </grounding_instructions>
 ```
+
+<!-- /aido:region name="overview" -->
+
+<!-- aido:region name="decisions" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="decisions" -->
+
+<!-- aido:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="feedback_rounds" -->
+
+<!-- aido:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="approval_log" -->

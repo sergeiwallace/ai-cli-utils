@@ -12,6 +12,16 @@ source: internal
 
 **Created:** 2026-04-06
 
+<!-- AIDO-128: the ToC sits ABOVE the Executive Summary (it is self-referential otherwise).
+  D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc, with GitHub-style
+  anchors (lowercase, spaces→hyphens, punctuation stripped) so they navigate in-window
+  (incl. VS Code Remote-SSH). `aido toc check` validates this once AIDO-127 lands. If
+  all-`###` proves too noisy, fall back to D5 (a) "meaningful `###`" — a deterministic
+  OR-rule: include a `###` when it (1) has child `####`, (2) its section body ≥ ~8-10
+  lines, (3) its parent `##` is allowlisted (Design Decisions / Open Questions /
+  appendices), or (4) matches a pattern (`### D-N`); `<!-- toc:skip -->` /
+  `<!-- toc:include -->` on a heading override the heuristic. -->
+
 ## Table of Contents
 
 - [Problem Statement](#problem-statement)
@@ -92,12 +102,28 @@ When mosh dies, `subprocess.run()` returns to the Python process. This is the ke
 
 ### Decision Summary
 
+<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+  choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
+  - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
+  here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
+  silently overwrite it; the correction is signal.
+  - Chosen: the human's final pick. Fill when decided.
+  - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
+  WHY the human chose differently — that "why" is the highest-value datapoint.
+  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
 | 1 | Where to put the VPN watcher | (a) Circus watcher, (b) Inline in transport loop, (c) Standalone daemon | **(a) Circus watcher** | Circus is a core architecture foundation; single watcher serves all sessions; supervised | **Approved** |
 | 2 | How to kill the active transport | (a) SIGTERM to child via NATS signal, (b) Transport loop self-manages | **(a) SIGTERM to child** | Transport loop subscribes to NATS `vpn.state.changed`, self-terminates child | **Approved** |
 | 3 | How to track transport state | (a) PID files in XDG state dir, (b) In-memory only | **(a) State JSON files** | External visibility for `ai ps`, `ai reconnect`, and Circus watcher | **Approved** |
 | 4 | VPN watcher lifecycle | (a) One global Circus watcher, (b) Per-session watcher | **(a) One global watcher** | Lazy start on first remote session; shared by all; torn down when last session exits | **Approved** |
+
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+  each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+  each on its own line — a blank line before each header, and a hard newline between the header
+  and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+  skeleton below already shows the correct shape; match it exactly. -->
 
 ### Decision Details
 
