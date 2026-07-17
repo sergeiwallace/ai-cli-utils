@@ -13,6 +13,8 @@
 
 default_stages: [pre-commit]
 
+exclude: ^\.beads/
+
 repos:
   # ── File-level sanity checks (D-03 Option 3c: maximal bundle) ────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks
