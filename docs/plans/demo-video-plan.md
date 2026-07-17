@@ -4,9 +4,20 @@ category: plan
 tags: [demo, gif, screencapture, ffmpeg, readme]
 status: in_progress
 task: AI-CLI-52
+template_version: "plan-1.0.0"
 ---
+<!-- aido:region name="overview" kind="replaceable" -->
 
 # Terminal Demo Video — Implementation Plan
+
+<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+  with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
+  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
+  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
+  (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
+  Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
+  `<!-- toc:skip -->` / `<!-- toc:include -->` on a heading override the heuristic. -->
 
 ## Table of Contents
 
@@ -94,3 +105,29 @@ Full details: `~/projects/sergei/docs/plans/mcp-config-hygiene-cleanup.md`
 ## Approval Log
 
 - **2026-04-19, Round 1**: Plan drafted. Approach approved — screencapture + ffmpeg, full-screen iTerm2 recording, autonomous script.
+
+<!-- /aido:region name="overview" -->
+
+<!-- aido:region name="decisions" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="decisions" -->
+
+<!-- aido:region name="task_breakdown" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="task_breakdown" -->
+
+<!-- aido:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="feedback_rounds" -->
+
+<!-- aido:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="approval_log" -->

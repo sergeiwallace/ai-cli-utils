@@ -6,7 +6,9 @@ status: active
 source: claude-sonnet-4-6
 task_id: AI-CLI-68
 created: 2026-04-27
+template_version: "plan-1.0.0"
 ---
+<!-- aido:region name="overview" kind="replaceable" -->
 
 # AI-CLI-68: Quota Scrape Format-Change Detection
 
@@ -22,10 +24,26 @@ The format-change condition is precise: `"% used"` appears in the captured outpu
 
 ## Decision Summary
 
+<!-- Recommendation-vs-choice tracking (AIH-148): track the AI recommendation and the human
+  choice in SEPARATE columns so preference-divergence is queryable, not buried in prose.
+  - Recommended (AI): the AI's pick. If the rec was CORRECTED mid-discussion, put the final pick
+  here and KEEP the original recommendation + its reasoning in Rationale (or the detail) — never
+  silently overwrite it; the correction is signal.
+  - Chosen: the human's final pick. Fill when decided.
+  - Diverged?: `Yes` if Chosen != Recommended (final), else `No`. On `Yes`, Rationale MUST state
+  WHY the human chose differently — that "why" is the highest-value datapoint.
+  Full rules: ai-harness docs/procedures/decision-framework.md (Decision Summary tracking). -->
+
 | # | Decision | Options Considered | Status |
 | --- | --- | --- | --- |
 | D1 | Scraper detection approach | (A) DB flag + debug dump + statusline indicator, (B) log-only | `APPROVED: (A)` |
 | D2 | Broken statusline indicator style | (A) red bg banner, (B) bold red text, (C) red banner + hint, (D) emoji-only | `PENDING` |
+
+<!-- DECISION FORMATTING (AIH-114) — applies when filling in REAL option content below:
+  each option's Pros and Cons must be BULLETED lists, and `**Pros:**` / `**Cons:**` must be
+  each on its own line — a blank line before each header, and a hard newline between the header
+  and its bullet list — otherwise PDF export collapses them onto one line. The placeholder
+  skeleton below already shows the correct shape; match it exactly. -->
 
 ---
 
@@ -263,3 +281,29 @@ ACs to cover:
 | 2026-04-27 | 1 | Design proposed by Claude (Option A); plan doc created |
 | 2026-04-29 | 2 | D1 approved (Option A); D2 options presented for user selection; plan restructured with D1/D2 format |
 | 2026-04-29 | 3 | D2 approved: emoji-only `🚨 BROKEN 🚨` prefix, no ANSI codes, prepended (not replacing) quota output |
+
+<!-- /aido:region name="overview" -->
+
+<!-- aido:region name="decisions" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="decisions" -->
+
+<!-- aido:region name="task_breakdown" kind="replaceable" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="task_breakdown" -->
+
+<!-- aido:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="feedback_rounds" -->
+
+<!-- aido:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /aido:region name="approval_log" -->
