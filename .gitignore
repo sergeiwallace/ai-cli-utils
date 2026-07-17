@@ -109,3 +109,9 @@ docs/specs/SPEC-TEMPLATE.md
 docs/specs/STUB.md.jinja
 docs/social/TEMPLATE.md
 # <<< ai-harness canonical symlinks (AIH-119) <<<
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

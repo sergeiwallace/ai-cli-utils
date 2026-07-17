@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "AI_CLI",
+  "project_id": "7b29dca2-c13c-480d-bbec-2a6696264fba"
+}
