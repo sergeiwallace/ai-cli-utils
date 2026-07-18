@@ -1806,8 +1806,15 @@ def cmd_quota_watch_group():
 
 
 @cmd_quota_watch_group.command("start", help="Register quota-watch with Circus and start it")
-def cmd_quota_watch_start():
-    _process_manager._cmd_quota_watch_start()
+@click.option(
+    "--auto",
+    is_flag=True,
+    default=False,
+    hidden=True,
+    help="Per-session auto-start path — gated on [quota_watch] auto_start in config.toml.",
+)
+def cmd_quota_watch_start(auto):
+    _process_manager._cmd_quota_watch_start(auto=auto)
     sys.exit(0)
 
 

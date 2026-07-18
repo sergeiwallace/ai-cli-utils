@@ -132,8 +132,21 @@ def _cmd_signal_watch_status() -> None:
         print("circusd not running.")
 
 
-def _cmd_quota_watch_start() -> None:
-    """Register quota-watch as a Circus watcher and start it."""
+def _cmd_quota_watch_start(auto: bool = False) -> None:
+    """Register quota-watch as a Circus watcher and start it.
+
+    ``auto=True`` is the per-session-launch auto-start path (session_script.py);
+    it is gated on ``[quota_watch] auto_start`` in config.toml (default off — the
+    CC statusline already surfaces weekly usage, so unattended ntfy/discord alerts
+    are opt-in). A bare, explicitly-typed ``ai quota watch start`` (``auto=False``)
+    always registers regardless of the config flag — explicit intent is honored.
+    """
+    if auto:
+        from .config import load_config
+
+        if not load_config().get("quota_watch", {}).get("auto_start", False):
+            return
+
     endpoint = _ensure_circusd()
     from circus.client import CircusClient
 
