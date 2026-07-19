@@ -1,4 +1,5 @@
 {
+  "git.detectWorktrees": true,
   "[plaintext]": {
     "editor.wordWrap": "on"
   },
