@@ -1,4 +1,3 @@
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -33,23 +32,29 @@ def test_find_project_dir_when_lowercase_projects_exists_then_returns_it():
         assert _find_project_dir("myapp", _home=home) == expected
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin", reason="macOS filesystem is case-insensitive; Projects/ and projects/ resolve identically"
-)
 def test_find_project_dir_when_only_uppercase_Projects_exists_then_returns_lowercase():
-    """Function always returns lowercase projects/ path regardless of what exists on disk."""
+    """Function always returns lowercase projects/ path regardless of what exists on disk.
+
+    Not actually platform-dependent: _find_project_dir() is a pure path-join with no
+    filesystem probing (true since the initial commit), so this holds identically on
+    case-insensitive (macOS/Windows) and case-sensitive (Linux) filesystems alike.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)
         (home / "Projects" / "myapp").mkdir(parents=True)
         assert _find_project_dir("myapp", _home=home) == home / "projects" / "myapp"
 
 
-@pytest.mark.skipif(sys.platform == "darwin", reason="macOS filesystem is case-insensitive")
 def test_find_project_dir_when_lowercase_takes_priority_over_uppercase():
+    """Both dirs "exist" is irrelevant to the pure-path-join function under test, but
+    on a case-insensitive filesystem (macOS/Windows) `projects/` and `Projects/` are
+    the same on-disk directory — exist_ok=True keeps the setup portable instead of
+    skipping the test outright on those platforms.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)
         (home / "projects" / "myapp").mkdir(parents=True)
-        (home / "Projects" / "myapp").mkdir(parents=True)
+        (home / "Projects" / "myapp").mkdir(parents=True, exist_ok=True)
         assert _find_project_dir("myapp", _home=home) == home / "projects" / "myapp"
 
 
