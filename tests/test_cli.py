@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -417,6 +418,55 @@ class TestCliDispatchBranches:
 
 
 class TestCliSessionSetupBranches:
+    def test_given_missing_direnv_when_bare_agent_executes_then_exits_with_actionable_error(self, tmp_path, capsys):
+        from ai_cli.main import _exec_with_direnv
+
+        with patch("os.execvp", side_effect=FileNotFoundError):
+            with pytest.raises(SystemExit) as exc_info:
+                _exec_with_direnv(tmp_path, ["claude"])
+
+        assert exc_info.value.code == 1
+        assert "Install direnv" in capsys.readouterr().err
+
+    def test_given_stale_launch_environment_when_bare_claude_starts_then_execs_under_direnv(self):
+        """A direct Claude launch must delegate environment resolution to direnv."""
+        with (
+            patch("sys.argv", ["ai", "c", "--bare"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch.dict(os.environ, {"STALE_PROJECT_OVERRIDE": "present"}),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        executable, command = mock_exec.call_args[0]
+        assert executable == "direnv"
+        assert command[:3] == ["direnv", "exec", str(Path.cwd())]
+        assert command[3] == "claude"
+
+    def test_given_project_without_envrc_when_bare_gemini_starts_then_still_execs_direnv(self, tmp_path, monkeypatch):
+        """direnv owns the no-.envrc no-op instead of bypassing the launch wrapper."""
+        monkeypatch.chdir(tmp_path)
+        assert not (tmp_path / ".envrc").exists()
+
+        with (
+            patch("sys.argv", ["ai", "g", "--bare"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.is_current_project_resolved", return_value=True),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        executable, command = mock_exec.call_args[0]
+        assert executable == "direnv"
+        assert command[:3] == ["direnv", "exec", str(tmp_path)]
+        assert command[3] == "gemini"
+
     def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self):
         with patch("sys.argv", ["ai", "c", "--bare"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -715,6 +765,7 @@ class TestCliOncePath:
                                                     cli()
                                             assert mock_exec.call_args[0][0] == "tmux"
                                             bash_cmd = mock_exec.call_args[0][1][-1]
+                                            assert "direnv exec" in bash_cmd
                                             assert "--dangerously-skip-permissions" in bash_cmd
 
     def test_cli_when_once_and_claude_root_then_execvp_without_perms(self):
@@ -731,6 +782,7 @@ class TestCliOncePath:
                                                 with pytest.raises(SystemExit):
                                                     cli()
                                             bash_cmd = mock_exec.call_args[0][1][-1]
+                                            assert "direnv exec" in bash_cmd
                                             assert "--dangerously-skip-permissions" not in bash_cmd
 
     def test_cli_when_once_and_gemini_with_uuid_then_resumes(self):
@@ -750,6 +802,7 @@ class TestCliOncePath:
                                             with pytest.raises(SystemExit):
                                                 cli()
                                         bash_cmd = mock_exec.call_args[0][1][-1]
+                                        assert "direnv exec" in bash_cmd
                                         assert "uuid123" in bash_cmd
 
     def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self):
@@ -767,6 +820,7 @@ class TestCliOncePath:
                                             with pytest.raises(SystemExit):
                                                 cli()
                                         bash_cmd = mock_exec.call_args[0][1][-1]
+                                        assert "direnv exec" in bash_cmd
                                         assert "resume load" in bash_cmd
 
 

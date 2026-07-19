@@ -237,6 +237,38 @@ class TestGetEngineScript:
             )
         assert "unknown" in result
 
+    def test_given_no_worktree_when_generating_script_then_all_agent_starts_use_direnv(self):
+        script = get_engine_script(
+            engine="c",
+            ai_name="session-1",
+            session="c-session-1",
+            prefix="c-session-",
+            project_prefix="session",
+        )
+
+        assert 'direnv_root="$PWD"' in script
+        assert 'direnv exec "$direnv_root" "$@"' in script
+        assert script.count("run_agent claude") == 4
+        assert "--continue" in script
+        assert 'exec zsh "$_script_stable_path"' in script
+        assert "direnv denied or could not evaluate .envrc" in script
+
+    def test_given_worktree_when_generating_script_then_direnv_uses_worktree_cwd(self):
+        script = get_engine_script(
+            engine="g",
+            ai_name="session-1",
+            session="g-session-1",
+            prefix="g-session-",
+            project_prefix="session",
+            worktree_dir="/tmp/project-worktree",
+            is_remote=True,
+        )
+
+        assert "cd /tmp/project-worktree" in script
+        assert script.index('direnv_root="$PWD"') > script.index("cd /tmp/project-worktree")
+        assert script.count("run_agent gemini") == 4
+        assert "exec $SHELL" in script
+
     def _make_script(self, **kwargs):
         defaults = dict(
             engine="c",
