@@ -3,6 +3,7 @@
 > Auto-generated from YAML frontmatter. Run `aido docs index` to refresh.
 
 **51 docs** across 11 categories.
+ 3 symlinked from other projects.
 
 ## Design
 
@@ -101,9 +102,9 @@ Testing templates and tracking.
 
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
-| [AC Writing Practices](procedures/ac-writing-practices.md) | active | AIDO-69 | ac, acceptance-criteria, plan-docs, quality, feature-parity |
-| [Claude Token Efficiency Guide](procedures/claude-token-efficiency.md) | active | internal | claude, tokens, efficiency, models, quota |
-| [Reasoning Checkpoints](procedures/reasoning-checkpoints.md) | active | internal | reasoning, checkpoints, quality, agents, claude-code |
+| [AC Writing Practices](procedures/ac-writing-practices.md) | active | AIDO-69 (link) | ac, acceptance-criteria, plan-docs, quality, feature-parity |
+| [Claude Token Efficiency Guide](procedures/claude-token-efficiency.md) | active | sergei (link) | claude, tokens, efficiency, models, quota |
+| [Reasoning Checkpoints](procedures/reasoning-checkpoints.md) | active | sergei — design doc docs/designs/reasoning-checkpoints.md (link) | reasoning, checkpoints, quality, agents, claude-code |
 
 ## Research-Prompts
 
