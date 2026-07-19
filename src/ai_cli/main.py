@@ -136,6 +136,18 @@ from .tunnel import (  # noqa: E402,F401
 # --- Helpers ---
 
 
+def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
+    """Replace this process with ``command`` under the project's direnv environment."""
+    try:
+        os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
+    except FileNotFoundError:
+        print(
+            "Error: direnv is required to start an agent with the project environment. Install direnv and retry.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _is_root() -> bool:
     """Return True if the current process has elevated / root privileges.
 
@@ -1404,10 +1416,10 @@ def _do_session_launch(
     if bare:
         if engine == "c":
             perms = [] if _is_root() else ["--dangerously-skip-permissions"]
-            os.execvp("claude", ["claude"] + perms + extra_args)
+            _exec_with_direnv(Path.cwd(), ["claude"] + perms + extra_args)
         else:
             _gcmd = shlex.split(gemini_cmd)
-            os.execvp(_gcmd[0], _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + extra_args)
+            _exec_with_direnv(Path.cwd(), _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + extra_args)
 
     if resume:
         session = _session.resolve_session(prefix, name)
@@ -1502,29 +1514,36 @@ def _do_session_launch(
             _iterm_env_flags += ["-e", f"{_var}={_val}"]
 
     if once:
-        cd_pref = f"cd {worktree_path} && " if worktree_path else ""
+        target_root = worktree_path or Path.cwd()
+        cd_prefix = f"cd {shlex.quote(str(target_root))} && "
         if engine == "c":
-            perms = "" if _is_root() else "--dangerously-skip-permissions"
+            command = ["claude"]
+            if not _is_root():
+                command.append("--dangerously-skip-permissions")
+            command += ["--name", ai_name]
             os.execvp(
                 "tmux",
                 ["tmux", "new-session", "-s", session_id]
                 + _iterm_env_flags
-                + ["--", "zsh", "-c", f"{cd_pref}claude {perms} --name {ai_name}".strip()],
+                + ["--", "zsh", "-c", cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command])],
             )
         else:
+            command = shlex.split(gemini_cmd) + ["-y", sandbox_flag]
             if uuid:
+                command += ["-r", uuid]
                 os.execvp(
                     "tmux",
                     ["tmux", "new-session", "-s", session_id]
                     + _iterm_env_flags
-                    + ["--", "zsh", "-c", f"{cd_pref}{gemini_cmd} -y {sandbox_flag} -r {uuid}"],
+                    + ["--", "zsh", "-c", cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command])],
                 )
             else:
+                command += ["-i", f"/resume load {ai_name}"]
                 os.execvp(
                     "tmux",
                     ["tmux", "new-session", "-s", session_id]
                     + _iterm_env_flags
-                    + ["--", "zsh", "-c", f"{cd_pref}{gemini_cmd} -y {sandbox_flag} -i '/resume load {ai_name}'"],
+                    + ["--", "zsh", "-c", cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command])],
                 )
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch

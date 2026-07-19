@@ -87,6 +87,15 @@ def get_engine_script(
 
     script = f"""
     {cd_cmd}
+    direnv_root="$PWD"
+    run_agent() {{
+      direnv exec "$direnv_root" "$@"
+      agent_exit_code=$?
+      if (( agent_exit_code != 0 )); then
+        echo "Error: agent command did not complete successfully under direnv for $direnv_root. If direnv denied or could not evaluate .envrc, run 'direnv allow $direnv_root' and correct the reported error." >&2
+      fi
+      return "$agent_exit_code"
+    }}
     first_run=true
     ai_name="{ai_name}"
     engine="{engine}"
@@ -412,11 +421,11 @@ def get_engine_script(
         resume_msg=$(cat "$prompt_file")
         rm -f "$prompt_file"
         if [[ "$engine" == "c" ]]; then
-          claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"
+          run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"
         else
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if [[ -n "$uuid" ]]; then {gemini_cmd} -y {sandbox_flag} -r "$uuid"
-          else {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+          if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
+          else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         fi
       else
@@ -445,15 +454,15 @@ if found: sys.stdout.write(found)
 " "$cc_project_dir" "$ai_name" 2>/dev/null)
           if [[ -n "$matched_file" ]]; then
             touch "$matched_file" 2>/dev/null
-            claude $claude_perms_flag --continue --name "$ai_name"
+            run_agent claude $claude_perms_flag --continue --name "$ai_name"
           elif [[ -d "$cc_project_dir" ]] && [[ -n "$(find "$cc_project_dir" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null)" ]]; then
-            claude $claude_perms_flag --continue --name "$ai_name"
+            run_agent claude $claude_perms_flag --continue --name "$ai_name"
           else
-            claude $claude_perms_flag --name "$ai_name"
+            run_agent claude $claude_perms_flag --name "$ai_name"
           fi
         else
-          if [[ -n "$uuid" ]]; then {gemini_cmd} -y {sandbox_flag} -r "$uuid"
-          else {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+          if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
+          else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         fi
       fi
