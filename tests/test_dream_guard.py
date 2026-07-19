@@ -37,3 +37,18 @@ class TestDreamGuard:
                 # No CC projects dir = no recent writes
                 with patch.object(Path, "home", return_value=tmp_path):
                     _wait_for_dream_completion(verbose=False)
+
+    def test_wait_when_active_marker_then_waits_until_watcher_clears_it(self, tmp_path):
+        """The on-disk marker closes the gap between detecting and subscribing to NATS."""
+        state_path = tmp_path / "memory-dream-active"
+        state_path.write_text("123")
+
+        def settle_write(_seconds):
+            state_path.unlink()
+
+        with patch("ai_cli.sync._dream_state_path", return_value=state_path):
+            with patch("ai_cli.config._pid_alive", return_value=True):
+                with patch("time.sleep", side_effect=settle_write) as sleep:
+                    _wait_for_dream_completion(verbose=False)
+
+        sleep.assert_called_once()

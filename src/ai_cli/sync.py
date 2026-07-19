@@ -25,6 +25,7 @@ import sys
 import time
 import shutil
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ from typing import Optional
 
 CONFLICT_LOG = Path.home() / ".claude-sync-conflicts.log"
 CONFLICT_DIR = Path.home() / ".claude-sync-conflicts"
+_DREAM_GUARD_TIMEOUT_SECONDS = 30.0
+_DREAM_GUARD_POLL_SECONDS = 0.1
 
 _GIT_ENV = {
     **os.environ,
@@ -143,6 +146,13 @@ def _cc_projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
+def _dream_state_path() -> Path:
+    """Return the watcher-owned marker that makes a dream write observable."""
+    from .config import get_xdg_state_home
+
+    return get_xdg_state_home() / "memory-dream-active"
+
+
 def _parse_flags(flags: list[str]) -> tuple[bool, bool, bool, bool, bool]:
     """Parse common sync flags. Returns (memories_only, dry_run, verbose, force, prefer_remote)."""
     return (
@@ -234,29 +244,28 @@ def _jsonl_custom_title(path: Path) -> Optional[str]:
 
 
 def should_sync_file(path: Path, memories_only: bool) -> bool:
-    """Returns True if the file should be synced given the memories_only flag."""
-    if path.name == ".DS_Store":
-        return False
-    if "tool-results" in path.parts:
-        return False
-    # subagents/ lives inside session lock dirs ({uuid}/subagents/). Syncing it
-    # recreates the lock directory on the remote machine, causing CC to treat the
-    # session as "active" and hide it from the /resume picker.
-    if "subagents" in path.parts:
-        return False
-    # Conflict files go to CONFLICT_DIR, never the CC project dirs or staging repo.
-    if path.name.startswith("conflict-") and path.suffix == ".jsonl":
-        return False
-    if path.suffix == ".conflict":
-        return False
-    # Non-markdown files in memory/ subdirs (e.g. .consolidate-lock) are machine-local
-    # state and must never cross machines — syncing them triggers spurious conflict
-    # detections and can block consolidation on the remote.
-    if "memory" in path.parts and path.suffix != ".md":
-        return False
+    """Return whether a Claude Code session-state file belongs in bidirectional sync.
+
+    This is intentionally an allowlist.  ``~/.claude/projects`` can contain
+    arbitrary files associated with a project, including copies of git-owned
+    configuration or source files.  Only Claude conversation logs and memory
+    markdown are two-way mutable session state; code and configuration flow
+    through their repository's normal git remote.
+    """
+    if is_memory_file(path):
+        return True
     if memories_only:
-        return is_memory_file(path)
-    return True
+        return False
+
+    # Conversation logs are the only non-memory file type owned by this sync.
+    # Keep the explicit subagents check because those JSONL files recreate
+    # session lock directories on the receiving machine.
+    return (
+        is_jsonl_file(path)
+        and not path.name.startswith("conflict-")
+        and "tool-results" not in path.parts
+        and "subagents" not in path.parts
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -794,6 +803,7 @@ def apply_pull_files(
       applied_count: int
     """
     conflicts: list[str] = []
+    conflict_events: list[dict[str, str]] = []
     applied_count = 0
     # Files where staging should be overwritten with local to prevent re-detection.
     # Populated during divergence handling; committed to staging after apply loop.
@@ -864,6 +874,14 @@ def apply_pull_files(
                             shutil.copy2(src, conflict_path)
                         conflict_str = f"jsonl  {bare_name}/{rel.name} — remote saved as {conflict_path}"
                         conflicts.append(conflict_str)
+                        conflict_events.append(
+                            {
+                                "path": f"{bare_name}/{rel}",
+                                "direction": "remote_to_local",
+                                "classification": "jsonl_diverged",
+                                "artifact": str(conflict_path),
+                            }
+                        )
                         print(
                             f"JSONL CONFLICT: {bare_name}/{rel.name} — remote version saved as {conflict_name}",
                             file=sys.stderr,
@@ -899,6 +917,14 @@ def apply_pull_files(
                             shutil.copy2(src, conflict_path)
                         conflict_str = f"memory {bare_name}/{rel} — .conflict file written"
                         conflicts.append(conflict_str)
+                        conflict_events.append(
+                            {
+                                "path": f"{bare_name}/{rel}",
+                                "direction": "remote_to_local",
+                                "classification": "memory_merge_markers_unresolved",
+                                "artifact": str(conflict_path),
+                            }
+                        )
                         print(
                             f"CONFLICT: {bare_name}/{rel} — resolve manually with: ai sync resolve",
                             file=sys.stderr,
@@ -929,6 +955,7 @@ def apply_pull_files(
 
     return {
         "conflicts": conflicts,
+        "conflict_events": conflict_events,
         "applied_count": applied_count,
         "staging_to_overwrite": staging_to_overwrite,
         "staging_to_commit": staging_to_commit,
@@ -948,163 +975,109 @@ def _find_project_worktrees(project_path: Path) -> list[Path]:
 
 
 def _git_is_clean(path: Path) -> bool:
-    """Return True if the working tree at path has no uncommitted changes."""
-    r = subprocess.run(
-        ["git", "-C", str(path), "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-    )
-    return r.returncode == 0 and r.stdout.strip() == ""
+    """Return whether a repository working tree has no uncommitted changes."""
+    result = subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
+    return result.returncode == 0 and not result.stdout.strip()
 
 
 def _git_pull_rebase(path: Path) -> tuple[bool, str]:
-    """Run git pull --rebase at path. Returns (success, output)."""
-    r = subprocess.run(
-        ["git", "-C", str(path), "pull", "--rebase"],
-        capture_output=True,
-        text=True,
-    )
-    return r.returncode == 0, (r.stdout + r.stderr).strip()
+    """Run git pull --rebase at path. Retained for direct library callers only."""
+    result = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True)
+    return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 
 def _git_stash_pull_pop(path: Path) -> tuple[bool, str]:
-    """Stash, pull --rebase, pop. Returns (success, combined output)."""
-    lines: list[str] = []
+    """Stash, pull --rebase, and restore local changes for a direct library caller."""
+    output: list[str] = []
     stash = subprocess.run(
         ["git", "-C", str(path), "stash", "push", "-m", "ai-sync auto-stash"],
         capture_output=True,
         text=True,
     )
-    lines.append(stash.stdout.strip())
+    output.append(stash.stdout.strip())
     if stash.returncode != 0:
-        return False, "\n".join(lines)
-    pull = subprocess.run(
-        ["git", "-C", str(path), "pull", "--rebase"],
-        capture_output=True,
-        text=True,
-    )
-    lines.append(pull.stdout.strip())
-    pop = subprocess.run(
-        ["git", "-C", str(path), "stash", "pop"],
-        capture_output=True,
-        text=True,
-    )
-    lines.append(pop.stdout.strip())
-    success = pull.returncode == 0 and pop.returncode == 0
-    return success, "\n".join(l for l in lines if l)
+        return False, "\n".join(output)
+    pull = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True)
+    output.append(pull.stdout.strip())
+    pop = subprocess.run(["git", "-C", str(path), "stash", "pop"], capture_output=True, text=True)
+    output.append(pop.stdout.strip())
+    return pull.returncode == 0 and pop.returncode == 0, "\n".join(part for part in output if part)
 
 
 def _cc_session_state_for_worktree(project_name: str, wt_dir: Path) -> Optional[str]:
-    """Return CC session state for a worktree: 'active', 'idle', or None (no session).
-
-    Maps .worktrees/<wt_name> to tmux session c-<project>-<N> (trailing digits of wt_name).
-    """
-    m = re.search(r"(\d+)$", wt_dir.name)
-    if not m:
+    """Return an active/idle Claude Code state for a worktree, if one is known."""
+    match = re.search(r"(\d+)$", wt_dir.name)
+    if not match:
         return None
-    session_name = f"c-{project_name}-{m.group(1)}"
-
-    has = subprocess.run(
-        ["tmux", "has-session", "-t", session_name],
-        capture_output=True,
-    )
-    if has.returncode != 0:
+    session_name = f"c-{project_name}-{match.group(1)}"
+    has_session = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True)
+    if has_session.returncode != 0:
         return None
-
-    pane_pid_r = subprocess.run(
-        ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"],
-        capture_output=True,
-        text=True,
+    pane = subprocess.run(
+        ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"], capture_output=True, text=True
     )
-    if pane_pid_r.returncode != 0 or not pane_pid_r.stdout.strip():
+    if pane.returncode != 0 or not pane.stdout.strip():
         return "idle"
-
-    pane_pid = pane_pid_r.stdout.strip().split()[0]
-    pgrep = subprocess.run(
-        ["pgrep", "-P", pane_pid, "claude"],
-        capture_output=True,
-        text=True,
-    )
-    if pgrep.returncode != 0 or not pgrep.stdout.strip():
+    pane_pid = pane.stdout.strip().split()[0]
+    claude = subprocess.run(["pgrep", "-P", pane_pid, "claude"], capture_output=True, text=True)
+    if claude.returncode != 0 or not claude.stdout.strip():
         return "idle"
-
-    claude_pid = pgrep.stdout.strip().split()[0]
-    state_r = subprocess.run(
-        ["ps", "-o", "state=", "-p", claude_pid],
-        capture_output=True,
-        text=True,
+    state = subprocess.run(
+        ["ps", "-o", "state=", "-p", claude.stdout.strip().split()[0]], capture_output=True, text=True
     )
-    state = state_r.stdout.strip()
-    return "active" if state.startswith("R") else "idle"
+    return "active" if state.stdout.strip().startswith("R") else "idle"
 
 
 def sync_repos(updated_bare_names: set[str], projects_dir: Path, verbose: bool) -> None:
-    """Pull project repos and worktrees whose CC dirs were updated in a sync pull.
+    """Synchronize repositories for an explicit library caller.
 
-    For each unique project derived from updated_bare_names:
-    - Main tree: pull if clean; stash+pull+pop with warning if dirty.
-    - Each worktree: pull if clean; skip with log if dirty (CC state affects log detail).
-
-    Not called for --memories-only or --dry-run pulls.
+    ``sync_pull`` deliberately does not call this function: session-state sync
+    must never initiate source-code changes.  It remains for compatibility with
+    callers that explicitly choose to run normal git operations themselves.
     """
-    # Derive unique project names (strip --worktrees-* suffix from bare names)
-    project_names: set[str] = set()
-    for bare in updated_bare_names:
-        wt_marker = "--worktrees-"
-        idx = bare.find(wt_marker)
-        project_names.add(bare[:idx] if idx != -1 else bare)
-
+    project_names = {bare.split("--worktrees-", 1)[0] for bare in updated_bare_names}
     for project_name in sorted(project_names):
         project_path = projects_dir / project_name
-        if not project_path.is_dir():
+        if (
+            not project_path.is_dir()
+            or subprocess.run(
+                ["git", "-C", str(project_path), "rev-parse", "--git-dir"], capture_output=True
+            ).returncode
+        ):
             continue
-        is_repo = subprocess.run(
-            ["git", "-C", str(project_path), "rev-parse", "--git-dir"],
-            capture_output=True,
-        )
-        if is_repo.returncode != 0:
-            continue
-
-        # --- Main tree ---
         if _git_is_clean(project_path):
-            ok, out = _git_pull_rebase(project_path)
+            ok, output = _git_pull_rebase(project_path)
             if ok:
                 print(f"  sync-repos: pulled {project_name}")
             else:
-                print(f"  sync-repos: pull failed for {project_name}: {out}", file=sys.stderr)
-            if verbose and out:
-                print(f"    {out}")
+                print(f"  sync-repos: pull failed for {project_name}: {output}", file=sys.stderr)
         else:
-            ok, out = _git_stash_pull_pop(project_path)
+            ok, output = _git_stash_pull_pop(project_path)
             if ok:
                 print(f"  sync-repos: stash+pulled {project_name} (main tree had local changes)", file=sys.stderr)
             else:
-                print(f"  sync-repos: stash+pull failed for {project_name}: {out}", file=sys.stderr)
-
-        # --- Worktrees ---
-        for wt in _find_project_worktrees(project_path):
-            if _git_is_clean(wt):
-                ok, out = _git_pull_rebase(wt)
+                print(f"  sync-repos: stash+pull failed for {project_name}: {output}", file=sys.stderr)
+        for worktree in _find_project_worktrees(project_path):
+            if _git_is_clean(worktree):
+                ok, output = _git_pull_rebase(worktree)
                 if ok:
-                    print(f"  sync-repos: pulled {project_name}/{wt.name}")
+                    print(f"  sync-repos: pulled {project_name}/{worktree.name}")
                 else:
-                    print(f"  sync-repos: pull failed for {project_name}/{wt.name}: {out}", file=sys.stderr)
-                if verbose and out:
-                    print(f"    {out}")
+                    print(f"  sync-repos: pull failed for {project_name}/{worktree.name}: {output}", file=sys.stderr)
             else:
-                state = _cc_session_state_for_worktree(project_name, wt)
+                state = _cc_session_state_for_worktree(project_name, worktree)
                 if state == "active":
                     print(
-                        f"  sync-repos: skipped {project_name}/{wt.name} (dirty, CC actively executing)",
+                        f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, CC actively executing)",
                         file=sys.stderr,
                     )
                 elif state == "idle":
                     print(
-                        f"  sync-repos: skipped {project_name}/{wt.name} (dirty, CC session idle — pull manually when ready)",
+                        f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, CC session idle — pull manually when ready)"
                     )
                 else:
                     print(
-                        f"  sync-repos: skipped {project_name}/{wt.name} (dirty, no active CC session — pull manually when ready)",
+                        f"  sync-repos: skipped {project_name}/{worktree.name} (dirty, no active CC session — pull manually when ready)"
                     )
 
 
@@ -1457,8 +1430,13 @@ def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> Optional
 # ---------------------------------------------------------------------------
 
 
-def notify_conflicts(conflicts: list[str]) -> None:
-    """Fire a notification banner (macOS only) and append to the persistent conflict log."""
+def notify_conflicts(conflicts: list[str], events: Optional[list[dict[str, str]]] = None) -> None:
+    """Notify about conflicts and append structured, diagnosable event records.
+
+    ``events`` is supplied by ``apply_pull_files`` at the point the conflict is
+    classified.  The fallback retains useful logs for programmatic callers that
+    only have legacy display strings.
+    """
     summary = ", ".join(conflicts[:3])
     if len(conflicts) > 3:
         summary += f" (+{len(conflicts) - 3} more)"
@@ -1474,10 +1452,28 @@ def notify_conflicts(conflicts: list[str]) -> None:
             capture_output=True,
         )
 
-    ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-    with open(CONFLICT_LOG, "a") as f:
-        for conflict in conflicts:
-            f.write(f"{ts} CONFLICT {conflict}\n")
+    if events is None:
+        events = [
+            {
+                "path": conflict,
+                "direction": "unknown",
+                "classification": "unclassified_legacy_caller",
+                "artifact": "",
+            }
+            for conflict in conflicts
+        ]
+
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    CONFLICT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with CONFLICT_LOG.open("a", encoding="utf-8") as log:
+        for event in events:
+            log.write(
+                json.dumps(
+                    {"event": "sync_conflict", "timestamp": timestamp, **event},
+                    sort_keys=True,
+                )
+                + "\n"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1656,11 +1652,49 @@ def _pre_pull_push_memories(cfg: SyncConfig, cc_projects_dir: Path, verbose: boo
 
 
 def _wait_for_dream_completion(verbose: bool) -> None:
-    """Check if auto-dream is actively writing and wait for it to finish.
+    """Wait for the watcher-owned dream marker to clear before staging memory.
 
-    Checks the memory-watch PID file to see if the daemon is running,
-    then subscribes briefly to memory.dream.completed if a dream is active.
-    Waits up to 30s, then proceeds regardless. Non-fatal if NATS unavailable.
+    NATS completion events are lossy for this purpose: a write can settle in
+    the interval between detecting it and subscribing.  The memory watcher now
+    writes an on-disk marker before publishing ``dream.started`` and removes it
+    only after the debounce settles, making the guard race-free and independent
+    of NATS availability.
+    """
+    state_path = _dream_state_path()
+    if not state_path.exists():
+        _wait_for_dream_completion_legacy(verbose)
+        return
+
+    try:
+        from .config import _pid_alive
+
+        writer_pid = int(state_path.read_text(encoding="utf-8").strip())
+        if not _pid_alive(writer_pid):
+            state_path.unlink(missing_ok=True)
+            return
+    except (OSError, ValueError):
+        return
+
+    if verbose:
+        print("Dream write detected — waiting for completion (up to 30s)...")
+    deadline = time.monotonic() + _DREAM_GUARD_TIMEOUT_SECONDS
+    while state_path.exists() and time.monotonic() < deadline:
+        time.sleep(_DREAM_GUARD_POLL_SECONDS)
+
+    if verbose:
+        if state_path.exists():
+            print("Dream wait timed out after 30s — proceeding anyway.")
+        else:
+            print("Dream completed — proceeding with sync push.")
+
+
+def _wait_for_dream_completion_legacy(verbose: bool) -> None:
+    """Use the pre-marker NATS guard for an older running memory watcher.
+
+    A watcher upgraded with this release always creates ``memory-dream-active``
+    first.  This fallback lets a sync invocation coexist safely with a watcher
+    that has not yet been restarted; it is removed from the normal path once the
+    marker exists.
     """
     import asyncio
     from .messaging import NATSClient
@@ -1668,22 +1702,14 @@ def _wait_for_dream_completion(verbose: bool) -> None:
     try:
         pid_path = _pid_file_path("memory-watch")
         if not pid_path.exists():
-            return  # No memory watcher running — no dream guard needed
-
+            return
         client = NATSClient()
 
-        async def check():
+        async def check() -> None:
             await client.connect()
             if not client.nc:
-                return  # NATS unavailable — proceed without guard
-
-            # Check for recent dream.started without a corresponding dream.completed
-            # by publishing a probe and checking if memory watcher reports active dream
-            # Simple approach: check if the memory watcher PID is alive and the
-            # MEMORY.md mtime is recent (within last 5s = likely mid-dream)
-            from pathlib import Path as _Path
-
-            cc_projects = _Path.home() / ".claude" / "projects"
+                return
+            cc_projects = Path.home() / ".claude" / "projects"
             recent_write = False
             if cc_projects.exists():
                 now = time.time()
@@ -1694,37 +1720,33 @@ def _wait_for_dream_completion(verbose: bool) -> None:
                             break
                     except Exception:
                         pass
-
             if not recent_write:
                 await client.close()
                 return
-
             if verbose:
                 print("Dream write detected — waiting for completion (up to 30s)...")
-
             completed = asyncio.Event()
 
-            async def on_completed(data):
+            async def on_completed(_data) -> None:
                 completed.set()
 
-            # Subscribe briefly and wait
-            sub = await client.nc.subscribe(
+            subscription = await client.nc.subscribe(
                 "memory.dream.completed", cb=lambda msg: asyncio.ensure_future(on_completed({}))
             )
             try:
-                await asyncio.wait_for(completed.wait(), timeout=30.0)
+                await asyncio.wait_for(completed.wait(), timeout=_DREAM_GUARD_TIMEOUT_SECONDS)
                 if verbose:
                     print("Dream completed — proceeding with sync push.")
             except asyncio.TimeoutError:
                 if verbose:
                     print("Dream wait timed out after 30s — proceeding anyway.")
             finally:
-                await sub.unsubscribe()
+                await subscription.unsubscribe()
                 await client.close()
 
         asyncio.run(check())
     except Exception:
-        pass  # Non-fatal — sync proceeds normally
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1913,12 +1935,6 @@ def sync_pull(flags: list[str]) -> int:
         translate_history_jsonl(verbose=verbose)
         retranslate_project_jsonls(verbose=verbose)
         purge_phantom_history_entries(verbose=verbose)
-        updated_bare_names: set[str] = result.get("updated_bare_names", set())
-        if updated_bare_names:
-            from .config import _get_projects_dir
-
-            sync_repos(updated_bare_names, _get_projects_dir(), verbose)
-
     if not dry_run:
         # Commit and push any staging files that were modified during apply:
         # - staging_to_overwrite: local won a divergence, copy local → staging then commit
@@ -1950,7 +1966,7 @@ def sync_pull(flags: list[str]) -> int:
 
     if result["conflicts"]:
         if not dry_run:
-            notify_conflicts(result["conflicts"])
+            notify_conflicts(result["conflicts"], result.get("conflict_events"))
         return 2
 
     return 0

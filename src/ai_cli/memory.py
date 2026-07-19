@@ -8,6 +8,7 @@ Linux-only (inotify via watchdog). Mac follow-up: SW-655.
 """
 
 import asyncio
+import os
 import sys
 import time
 from pathlib import Path
@@ -74,12 +75,15 @@ def memory_watch() -> int:
     PID file guard prevents duplicate instances.
     Exit codes: 0 = clean stop, 1 = error
     """
-    from .sync import _acquire_pid_file, _release_pid_file
+    from .sync import _acquire_pid_file, _dream_state_path, _release_pid_file
     from .messaging import NATSClient
 
     if not _acquire_pid_file("memory-watch"):
         print("ai memory watch is already running.", file=sys.stderr)
         return 2
+
+    dream_state_path = _dream_state_path()
+    dream_state_path.unlink(missing_ok=True)
 
     client = NATSClient()
 
@@ -94,6 +98,8 @@ def memory_watch() -> int:
         return 1
 
     def on_write_start(path):
+        dream_state_path.parent.mkdir(parents=True, exist_ok=True)
+        dream_state_path.write_text(str(os.getpid()), encoding="utf-8")
         print(f"[memory-watch] dream started: {path}")
         try:
             loop.run_until_complete(client.publish("memory.dream.started", {"path": str(path), "ts": time.time()}))
@@ -101,6 +107,7 @@ def memory_watch() -> int:
             print(f"[memory-watch] failed to publish dream.started: {e}", file=sys.stderr)
 
     def on_write_settle():
+        dream_state_path.unlink(missing_ok=True)
         print("[memory-watch] dream completed (2s debounce)")
         try:
             loop.run_until_complete(client.publish("memory.dream.completed", {"ts": time.time()}))
@@ -134,6 +141,7 @@ def memory_watch() -> int:
     finally:
         observer.stop()
         observer.join()
+        dream_state_path.unlink(missing_ok=True)
         loop.run_until_complete(client.close())
         loop.close()
         _release_pid_file("memory-watch")

@@ -1,5 +1,6 @@
 import re
 import subprocess
+import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -236,6 +237,12 @@ def test_should_sync_file_when_memory_non_md_file_then_false():
 
 def test_should_sync_file_when_memory_md_file_and_not_memories_only_then_true():
     assert should_sync_file(Path("memory/user_profile.md"), memories_only=False) is True
+
+
+def test_should_sync_file_when_git_tracked_project_source_then_false():
+    """Only Claude session state, never project source, may enter the sync channel."""
+    assert should_sync_file(Path("src/myapp/service.py"), memories_only=False) is False
+    assert should_sync_file(Path("config/settings.json"), memories_only=False) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1385,8 +1392,29 @@ def test_notify_conflicts_when_called_then_appends_to_log(tmp_path):
         notify_conflicts(["memory myproject/memory/file.md — .conflict file written"])
 
     log_content = log_path.read_text()
-    assert "CONFLICT" in log_content
+    assert "sync_conflict" in log_content
     assert "myproject/memory/file.md" in log_content
+
+
+def test_notify_conflicts_when_structured_event_then_logs_path_direction_and_classification(tmp_path):
+    log_path = tmp_path / ".claude-sync-conflicts.log"
+    event = {
+        "path": "myproject/memory/MEMORY.md",
+        "direction": "remote_to_local",
+        "classification": "memory_merge_markers_unresolved",
+        "artifact": "/tmp/conflict/MEMORY.md.conflict",
+    }
+
+    with patch("subprocess.run"), patch("ai_cli.sync.CONFLICT_LOG", log_path):
+        notify_conflicts(["memory myproject/memory/MEMORY.md — .conflict file written"], [event])
+
+    logged = json.loads(log_path.read_text())
+    assert logged["event"] == "sync_conflict"
+    assert logged["timestamp"].endswith("Z")
+    assert logged["path"] == event["path"]
+    assert logged["direction"] == event["direction"]
+    assert logged["classification"] == event["classification"]
+    assert logged["artifact"] == event["artifact"]
 
 
 def test_notify_conflicts_when_many_conflicts_then_truncates_notification(tmp_path):
@@ -1506,9 +1534,10 @@ def test_sync_watch_when_nats_unavailable_returns_nonzero():
 
     with patch("ai_cli.sync._acquire_pid_file", return_value=True):
         with patch("ai_cli.sync._release_pid_file"):
-            with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    result = sync_watch([])
+            with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AsyncMock()):
+                with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
+                    with patch("asyncio.sleep", new=AsyncMock()):
+                        result = sync_watch([])
 
     assert result == 1
 
@@ -1539,10 +1568,11 @@ def test_sync_watch_when_nats_available_runs_pull_on_message(tmp_path):
 
     with patch("ai_cli.sync._acquire_pid_file", return_value=True):
         with patch("ai_cli.sync._release_pid_file"):
-            with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
-                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
-                    with patch("ai_cli.sync.sync_pull", side_effect=fake_sync_pull):
-                        result = sync_watch([])
+            with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AsyncMock()):
+                with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
+                    with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                        with patch("ai_cli.sync.sync_pull", side_effect=fake_sync_pull):
+                            result = sync_watch([])
 
     assert result == 0
     assert pull_calls == [["--force"]]
@@ -3538,10 +3568,11 @@ def test_sync_watch_when_pull_returns_2_then_prints_conflict_message(tmp_path, c
 
     with patch("ai_cli.sync._acquire_pid_file", return_value=True):
         with patch("ai_cli.sync._release_pid_file"):
-            with patch("nats.connect", new=AM(return_value=mock_nc)):
-                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
-                    with patch("ai_cli.sync.sync_pull", return_value=2):
-                        result = sync_watch([])
+            with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AM()):
+                with patch("nats.connect", new=AM(return_value=mock_nc)):
+                    with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                        with patch("ai_cli.sync.sync_pull", return_value=2):
+                            result = sync_watch([])
 
     assert result == 0
     assert "conflicts preserved" in capsys.readouterr().out
@@ -3563,10 +3594,11 @@ def test_sync_watch_when_pull_fails_then_prints_failure_message(tmp_path, capsys
 
     with patch("ai_cli.sync._acquire_pid_file", return_value=True):
         with patch("ai_cli.sync._release_pid_file"):
-            with patch("nats.connect", new=AM(return_value=mock_nc)):
-                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
-                    with patch("ai_cli.sync.sync_pull", return_value=1):
-                        result = sync_watch([])
+            with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AM()):
+                with patch("nats.connect", new=AM(return_value=mock_nc)):
+                    with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                        with patch("ai_cli.sync.sync_pull", return_value=1):
+                            result = sync_watch([])
 
     assert result == 0
     assert "pull failed" in capsys.readouterr().err
@@ -3586,9 +3618,10 @@ def test_sync_watch_when_verbose_then_prints_connected(tmp_path, capsys):
 
     with patch("ai_cli.sync._acquire_pid_file", return_value=True):
         with patch("ai_cli.sync._release_pid_file"):
-            with patch("nats.connect", new=AM(return_value=mock_nc)):
-                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
-                    result = sync_watch(["--verbose"])
+            with patch("ai_cli.messaging.NATSClient._open_ssh_tunnel", new=AM()):
+                with patch("nats.connect", new=AM(return_value=mock_nc)):
+                    with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                        result = sync_watch(["--verbose"])
 
     assert result == 0
     assert "connected to NATS" in capsys.readouterr().out
@@ -5438,6 +5471,39 @@ def test_sync_repos_when_dry_run_then_not_called(tmp_path):
                         sync_pull(["--dry-run"])
 
     assert not sync_repos_called, "sync_repos called in dry-run mode"
+
+
+def test_sync_pull_when_session_state_updated_then_never_syncs_project_repositories(tmp_path):
+    """A session pull must not turn into a pull, stash, or write in a project repo."""
+    cfg = _make_pull_cfg(tmp_path)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+    cfg.staging_dir.mkdir()
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+            with patch("ai_cli.sync.init_staging_repo"):
+                with patch("ai_cli.sync._pre_pull_push_memories"):
+                    with patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir):
+                        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                            with patch(
+                                "ai_cli.sync.apply_pull_files",
+                                return_value={
+                                    "conflicts": [],
+                                    "conflict_events": [],
+                                    "applied_count": 1,
+                                    "staging_to_overwrite": [],
+                                    "staging_to_commit": [],
+                                    "updated_bare_names": {"myproject"},
+                                },
+                            ):
+                                with patch("ai_cli.sync.translate_history_jsonl"):
+                                    with patch("ai_cli.sync.retranslate_project_jsonls"):
+                                        with patch("ai_cli.sync.purge_phantom_history_entries"):
+                                            with patch("ai_cli.sync.sync_repos") as sync_repos_mock:
+                                                assert sync_pull([]) == 0
+
+    sync_repos_mock.assert_not_called()
 
 
 def test_apply_pull_files_when_file_applied_then_updated_bare_names_populated(tmp_path):
