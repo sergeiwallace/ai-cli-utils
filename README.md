@@ -114,8 +114,9 @@ ai c -s/--sandbox      # Explicitly enable sandboxing
 ai c -W/--no-worktree  # Disable git worktree isolation
 ```text
 
-When a worktree's `.envrc` is byte-for-byte identical to an already-approved
-repository-root `.envrc`, `ai` approves that new worktree path automatically.
+When a worktree's `.envrc` is byte-for-byte identical to a repository-root
+`.envrc` that `direnv` can successfully execute, `ai` approves that new
+worktree path automatically.
 Changed or unapproved `.envrc` files still require an explicit `direnv allow`.
 Targeted session launches (`ai c <name>` and `ai g <name>`) do not pause for
 unrelated project-registry discovery prompts.

@@ -93,7 +93,13 @@ def get_engine_script(
       direnv exec "$direnv_root" "$@"
       agent_exit_code=$?
       if (( agent_exit_code != 0 )); then
-        if [[ -f "$direnv_root/.envrc" ]] && direnv status --json 2>/dev/null | grep -qE '"allowed"[[:space:]]*:[[:space:]]*0'; then
+        # A cheap, isolated re-probe (not a redirect on the command above) — that
+        # command is a long-running interactive process (claude/gemini), and
+        # capturing its stderr for later inspection would buffer it instead of
+        # streaming to the terminal in real time. direnv's block state is
+        # deterministic given .envrc + approval state, so this probe reflects
+        # the same outcome the failed launch just hit, without touching its I/O.
+        if direnv exec "$direnv_root" true 2>&1 | grep -qE 'direnv: error.*\.envrc is blocked'; then
           agent_direnv_blocked=true
         fi
         echo "Error: agent command did not complete successfully under direnv for $direnv_root. If direnv denied or could not evaluate .envrc, run 'direnv allow $direnv_root' and correct the reported error." >&2

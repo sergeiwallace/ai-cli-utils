@@ -264,7 +264,11 @@ class TestGetEngineScript:
         )
 
         assert "agent_direnv_blocked=false" in script
-        assert "direnv status --json" in script
+        # The main agent invocation's stdio must be untouched — it's a long-running
+        # interactive process; buffering its stderr would break real-time streaming.
+        assert 'direnv exec "$direnv_root" "$@"\n' in script
+        assert "direnv: error.*\\.envrc is blocked" in script
+        assert "direnv status --json" not in script
         assert "AI CLI stopped because direnv blocked $direnv_root/.envrc" in script
         assert "direnv allow $direnv_root" in script
 
@@ -1035,6 +1039,48 @@ class TestDoSessionLaunchRegistryDiscovery:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _do_session_launch(**kwargs)
+
+        assert exc_info.value.code == 0
+        validate.assert_not_called()
+
+    def test_given_targeted_cli_launch_and_unregistered_directory_when_started_then_skips_registry_discovery(
+        self, tmp_path, monkeypatch
+    ):
+        """The Click command path must preserve targeted-launch discovery bypass."""
+        import ai_cli.config as config_module
+
+        projects_dir = tmp_path / "projects"
+        project_dir = projects_dir / "myproject"
+        project_dir.mkdir(parents=True)
+        (projects_dir / "unregistered-worktrees").mkdir()
+        registry_path = tmp_path / "projects.toml"
+        registry_path.write_text(
+            '[[projects]]\nname = "myproject"\ntask_prefix = "MYPROJECT"\ntype = "tool"\nactive = true\n'
+        )
+        monkeypatch.chdir(project_dir)
+
+        with (
+            patch("sys.argv", ["ai", "c", "--once", "2"]),
+            patch("ai_cli.config.load_config", return_value={"worktree": {"enabled": False}}),
+            patch("ai_cli.config._get_project_registry_path", return_value=registry_path),
+            patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
+            patch("ai_cli.session._get_projects_dir", return_value=projects_dir),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._auto_update_if_stale"),
+            patch("ai_cli.tunnel._ensure_nats_tunnel"),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("c-myproject-2", "myproject-2")),
+            patch("ai_cli.trust.ensure_workspace_trusted"),
+            patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+            patch.object(
+                config_module,
+                "validate_registry_completeness",
+                wraps=config_module.validate_registry_completeness,
+            ) as validate,
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cli()
 
         assert exc_info.value.code == 0
         validate.assert_not_called()

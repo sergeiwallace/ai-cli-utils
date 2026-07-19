@@ -846,7 +846,7 @@ class TestCreateWorktree:
                 result = create_worktree("sw-2")
         assert result == wt_dir
 
-    def test_create_worktree_when_matching_root_envrc_is_approved_then_allows_new_worktree(self, tmp_path):
+    def test_create_worktree_when_matching_root_envrc_is_usable_then_allows_new_worktree(self, tmp_path):
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
@@ -859,8 +859,10 @@ class TestCreateWorktree:
                 wt_dir.mkdir(parents=True, exist_ok=True)
                 (wt_dir / ".envrc").write_text((repo_root / ".envrc").read_text())
                 return MagicMock(returncode=0, stdout="")
-            if cmd == ["direnv", "status", "--json"]:
-                return MagicMock(returncode=0, stdout='{"state": {"foundRC": {"allowed": 1}}}')
+            if cmd == ["direnv", "exec", str(wt_dir), "true"]:
+                return MagicMock(returncode=1, stdout="")
+            if cmd == ["direnv", "exec", str(repo_root), "true"]:
+                return MagicMock(returncode=0, stdout="")
             return MagicMock(returncode=0, stdout="")
 
         with (
@@ -872,7 +874,7 @@ class TestCreateWorktree:
         assert result == wt_dir
         assert ["direnv", "allow", str(wt_dir)] in calls
 
-    def test_create_worktree_when_root_envrc_is_unapproved_then_does_not_allow_worktree(self, tmp_path):
+    def test_create_worktree_when_root_envrc_is_unusable_then_does_not_allow_worktree(self, tmp_path):
         repo_root = tmp_path / "repo"
         wt_dir = repo_root / ".worktrees" / "session-1"
         wt_dir.mkdir(parents=True)
@@ -882,8 +884,10 @@ class TestCreateWorktree:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd == ["direnv", "status", "--json"]:
-                return MagicMock(returncode=0, stdout='{"state": {"foundRC": {"allowed": 0}}}')
+            if cmd == ["direnv", "exec", str(wt_dir), "true"]:
+                return MagicMock(returncode=1, stdout="")
+            if cmd == ["direnv", "exec", str(repo_root), "true"]:
+                return MagicMock(returncode=1, stdout="")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=str(wt_dir))
             return MagicMock(returncode=0, stdout="")
@@ -895,6 +899,32 @@ class TestCreateWorktree:
             result = create_worktree("session-1")
 
         assert result == wt_dir
+        assert not any(call[:2] == ["direnv", "allow"] for call in calls)
+
+    def test_create_worktree_when_worktree_envrc_is_usable_then_skips_root_check(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        wt_dir = repo_root / ".worktrees" / "session-1"
+        wt_dir.mkdir(parents=True)
+        (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
+        (wt_dir / ".envrc").write_text("export EXAMPLE=value\n")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == ["direnv", "exec", str(wt_dir), "true"]:
+                return MagicMock(returncode=0, stdout="")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return MagicMock(returncode=0, stdout=str(wt_dir))
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = create_worktree("session-1")
+
+        assert result == wt_dir
+        assert ["direnv", "exec", str(repo_root), "true"] not in calls
         assert not any(call[:2] == ["direnv", "allow"] for call in calls)
 
 
