@@ -1860,8 +1860,10 @@ class TestQuotaStatuslinePart:
             qdb.set_db_path(None)  # type: ignore[arg-type]
             q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
-    def test_when_under_pace_then_shows_green_icon_and_steady_arrow(self, tmp_path, capsys):
-        """delta < -5 with single snapshot → ✅ icon, → arrow (insufficient data for acceleration)."""
+    def test_when_under_pace_then_shows_green_delta_and_steady_arrow(self, tmp_path, capsys):
+        """delta < -5 with single snapshot → GREEN delta color, → arrow (insufficient data
+        for acceleration). No ✅ icon (dropped 2026-07-19, AIH-274 compaction pass) — color
+        alone conveys "on track" now."""
         import ai_cli.quota_db as qdb
 
         # Pin `now` to 50% through the billing week so week_elapsed_pct ≈ 50%
@@ -1881,17 +1883,18 @@ class TestQuotaStatuslinePart:
             assert result == 0
             out = capsys.readouterr().out
             assert "5%" in out
-            assert "✅" in out
+            assert "\033[32m" in out  # GREEN delta color = on track
             assert "→" in out  # steady: only 1 snapshot, no acceleration data
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_over_pace_then_shows_alert_icon(self, tmp_path, capsys):
-        """delta > +5 in normal phase (≥24h elapsed) → 🚨 icon."""
+    def test_when_over_pace_then_shows_red_delta(self, tmp_path, capsys):
+        """delta > +5 in normal phase (≥24h elapsed) → RED delta color. No 🚨 icon (dropped
+        2026-07-19, AIH-274 compaction pass) — color alone conveys "running hot" now."""
         import ai_cli.quota_db as qdb
 
         # Pin `now` to 25h into the week (post-seedling) so normal-phase bands apply.
-        # week_elapsed_pct ≈ 14.9%, delta = 95 - 14.9 ≈ 80 >> 5 → 🚨
+        # week_elapsed_pct ≈ 14.9%, delta = 95 - 14.9 ≈ 80 >> 5 → RED
         week_start_str = qdb._get_current_week_start()
         week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         fixed_now = week_start_dt + timedelta(hours=25)
@@ -1907,7 +1910,7 @@ class TestQuotaStatuslinePart:
             assert result == 0
             out = capsys.readouterr().out
             assert "95%" in out
-            assert "🚨" in out
+            assert "\033[31m" in out  # RED delta color = significantly over pace
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2815,35 +2818,40 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_narrow_terminal_uses_W_and_S_labels(self, tmp_path, capsys):
-        """cols < 80 → single-character W and S labels."""
+    def test_narrow_terminal_uses_ccWk_and_ccS_labels(self, tmp_path, capsys):
+        """The primary/secondary labels are fixed ("ccWk"/"ccS") regardless of terminal
+        width (2026-07-19, AIH-274 — "ccWk" pairs with Codex's "cxWk"; the old wide/narrow
+        "Week"/"W" branch was removed since "ccWk" is already narrow-terminal-short)."""
         out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=79)
-        assert "W" in out
-        assert "S" in out
+        assert "ccWk" in out
+        assert "ccS" in out
         assert "Week" not in out
         assert "Son" not in out
 
-    def test_wide_terminal_uses_Week_label_and_single_letter_secondary(self, tmp_path, capsys):
-        """cols >= 80 → full 'Week' primary label; the secondary label is always single-letter
-        now (AI-CLI-96 — user asked for 'F' not 'Fable'), so 'Son'/'Sonnet' never appears."""
+    def test_wide_terminal_still_uses_ccWk_and_single_letter_secondary(self, tmp_path, capsys):
+        """cols >= 80 makes no difference anymore (2026-07-19, AIH-274) — same "ccWk" primary
+        label and single-letter secondary as any other width; 'Son'/'Sonnet'/'Week' never
+        appear."""
         out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=80)
-        assert "Week" in out
+        assert "ccWk" in out
+        assert "Week" not in out
         assert "Son" not in out  # secondary is compact single-letter, not "Son"/"Sonnet"
 
-    def test_secondary_label_is_first_letter_of_model_name(self, tmp_path, capsys):
-        """AI-CLI-96: the secondary label is the first letter of the model name — 'Fable' -> 'F'."""
+    def test_secondary_label_is_cc_prefixed_first_letter_of_model_name(self, tmp_path, capsys):
+        """AI-CLI-96 + AIH-274: the secondary label is "cc" + the first letter of the model
+        name — 'Fable' -> 'ccF'. No 🤖 glyph (dropped 2026-07-19, AIH-274 compaction pass)."""
         out = self._capture(42.0, 0.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=120, model_name="Fable")
         import re
 
         clean = re.sub(r"\033\[[0-9;]*m", "", out)
         assert "Fable" not in clean
-        assert "F 🤖" in clean  # single-letter label immediately before the 🤖 glyph
+        assert "ccF " in clean  # single-letter label, cc-prefixed, no 🤖 glyph after it
 
     def test_weekly_pace_shown_as_magnitude_color_encodes_direction(self, tmp_path, capsys):
         """AI-CLI-96: the pace is shown as a bare MAGNITUDE (no +/- sign) — the COLOR conveys
-        direction (green = ahead / on track, yellow/red = behind). Under pace → green + ✅ and
-        NO sign in the number (the earlier abs()-with-no-minus bug and the interim signed form
-        are both superseded)."""
+        direction (green = ahead / on track, yellow/red = behind). Under pace → green and NO
+        sign in the number (the earlier abs()-with-no-minus bug and the interim signed form
+        are both superseded). No ✅ icon (dropped 2026-07-19, AIH-274 compaction pass)."""
         # ~161h elapsed = ~96% of week; usage 17% → delta = 17 - 96 ≈ -79% (way under pace)
         out = self._capture(17.0, 0.0, hours_elapsed=161, tmp_path=tmp_path, capsys=capsys, cols=120)
         import re
@@ -2851,14 +2859,14 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         clean = re.sub(r"\033\[[0-9;]*m", "", out)
         assert "→79%" in clean  # magnitude only
         assert "→-" not in clean and "→+" not in clean  # no sign on the number
-        assert "✅" in clean  # under pace = on track
         assert "\033[32m" in out  # green delta color encodes "ahead / on track"
 
-    def test_zero_cols_uses_narrow_labels(self, tmp_path, capsys):
-        """cols=0 (unset) → narrow labels (default when statusline-command.sh is not the caller)."""
+    def test_zero_cols_still_uses_ccWk_and_ccS_labels(self, tmp_path, capsys):
+        """cols=0 (unset, default when statusline-command.sh is not the caller) makes no
+        difference anymore (2026-07-19, AIH-274) — same fixed "ccWk"/"ccS" labels."""
         out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=0)
-        assert "W" in out
-        assert "S" in out
+        assert "ccWk" in out
+        assert "ccS" in out
         assert "Week" not in out
 
     def test_sonnet_pace_shown_as_delta_from_week_elapsed(self, tmp_path, capsys):
@@ -2895,9 +2903,7 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
                 qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=None)
                 with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
-                    with patch.dict(
-                        os.environ, {"AI_CLI_STATUSLINE_COLS": "0", "AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}
-                    ):
+                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "0", "AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}):
                         quota_statusline_part()
             out = capsys.readouterr().out
             assert "-%" in out
@@ -2908,7 +2914,7 @@ class TestQuotaStatuslinePartAdaptiveLabels:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
     def test_wide_terminal_secondary_absent_uses_single_letter_label(self, tmp_path, capsys):
-        """Wide terminal + missing secondary data → single-letter 'S' fallback (AI-CLI-96), not 'Son'."""
+        """Wide terminal + missing secondary data → 'ccS' fallback (AI-CLI-96 + AIH-274), not 'Son'."""
         import ai_cli.quota_db as qdb
         import os
 
@@ -2930,7 +2936,7 @@ class TestQuotaStatuslinePartAdaptiveLabels:
 
             clean = re.sub(r"\033\[[0-9;]*m", "", out)
             assert "Son" not in clean
-            assert "S 🤖" in clean  # single-letter fallback label
+            assert "ccS " in clean  # single-letter fallback label, cc-prefixed, no 🤖 glyph
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 

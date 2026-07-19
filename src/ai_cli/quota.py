@@ -1418,25 +1418,32 @@ def quota_statusline_part() -> int:
         else:
             pct_color = RED
 
-        # Terminal width — passed by statusline-command.sh via AI_CLI_STATUSLINE_COLS
-        _cols = int(os.environ.get("AI_CLI_STATUSLINE_COLS", "0"))
-        BOLD_CYAN = "\033[1;36m"
-        BOLD_MAG = "\033[1;35m"
-        week_label = "Week" if _cols >= 80 else "W"
+        # AI_CLI_STATUSLINE_COLS (passed by statusline-command.sh) used to pick "Week" (wide)
+        # vs "W" (narrow); superseded by a fixed "ccWk" (Claude Code Weekly) label
+        # (2026-07-19) so it pairs visually with Codex's "cxWk" — already narrow-terminal-
+        # short, so the width branch is gone and the env var is no longer read here.
+        # Anthropic orange #D97757, 24-bit truecolor — verified via live web search against
+        # Anthropic's actual brand-color page (2026-07-19, explicit request), not guessed
+        # from memory. Both "ccWk" and "ccF" are Claude-branded, so both use it (were
+        # BOLD_CYAN/BOLD_MAG — arbitrary ANSI colors with no brand meaning).
+        BOLD_CYAN = "\033[1;38;2;217;119;87m"
+        BOLD_MAG = "\033[1;38;2;217;119;87m"
+        week_label = "ccWk"
         # Label the secondary line with the FIRST LETTER of its actual model name (AIH-120:
         # was "Sonnet", now "Fable"). Single-letter keeps the statusline compact ("F" for
-        # Fable, "S" for Sonnet); the 🤖 glyph already marks it as the per-model line. Fall
-        # back to "S" for pre-AIH-120 rows that have no stored model name.
+        # Fable, "S" for Sonnet).
         if model_name:
-            son_label = model_name.strip()[:1].upper()  # "Fable"->"F", "Sonnet only"->"S"
+            son_label = "cc" + model_name.strip()[:1].upper()  # "Fable"->"ccF", "Sonnet only"->"ccS"
         else:
-            son_label = "S"
+            son_label = "ccS"
 
         # Sonnet/Fable part. When absent, show the dim placeholder — the Fable scrape is scheduled
         # by _maybe_trigger_fable_scrape above (rate-limit backoff-aware); do NOT fire an
         # unconditional scrape here (it would hammer the rate-limited breakdown every render).
+        # No 🤖 glyph (dropped 2026-07-19, AIH-274 compaction pass — the label letter already
+        # marks it as the per-model line).
         if sonnet_pct is None:
-            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} 🤖 {DIM}-% →-%{RESET}"
+            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}-% →-%{RESET}"
         else:
             if sonnet_pct < 50:
                 s_color = GREEN
@@ -1445,22 +1452,21 @@ def quota_statusline_part() -> int:
             else:
                 s_color = RED
             sonnet_delta = sonnet_pct - week_elapsed_pct
+            # Pace status is conveyed by color + arrow direction alone (2026-07-19, AIH-274
+            # compaction pass) — no ✅/⚠️/🚨 icon. GREEN = ahead/on track, YELLOW = running
+            # hot, RED = significantly over pace.
             if sonnet_delta > 25:
                 s_delta_color = RED
-                s_icon = "\U0001f6a8"  # 🚨
             elif sonnet_delta > 10:
                 s_delta_color = YELLOW
-                s_icon = "⚠️"
             else:
                 s_delta_color = GREEN
-                s_icon = "✅"
-            # Show the pace magnitude only — the color (from the SIGNED delta above) conveys
-            # direction: GREEN = ahead / on track, YELLOW/RED = increasingly behind (AI-CLI-96).
             # ⏱ when the Fable value's own source snapshot is stale (>2h) — the rate-limited
             # breakdown hasn't refreshed, so the shown last-good value is aging (AIH-164 T-06).
+            # This is a real signal (not decorative), so it stays even after the icon cleanup.
             _fable_stale_suffix = " \033[2m⏱\033[0m" if fable_stale else ""
             sonnet_part = (
-                f"{BOLD_MAG}{son_label}{RESET} 🤖 {s_color}{sonnet_pct:.0f}%{RESET}"
+                f"{BOLD_MAG}{son_label}{RESET} {s_color}{sonnet_pct:.0f}%{RESET}"
                 f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}{_fable_stale_suffix}"
             )
 
@@ -1481,31 +1487,31 @@ def quota_statusline_part() -> int:
                 arrow_char = "\u2193"  # ↓ decelerating
 
         stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
+        # No 📊 glyph and no ✅/⚠️/🚨 pace-status icon (dropped 2026-07-19, AIH-274
+        # compaction pass, explicit request) — arrow direction + color alone convey pace.
+        # 🌱 (seedling, first-24h-only) and ⏱ (stale, a real signal) are unrelated
+        # decorations kept as-is.
         if elapsed_secs < 24 * 3600:
             # Seedling phase (first 24h): 🌱 always shown; informational only, no alarms.
             delta_color = BLUE
             print(
-                f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
+                f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
                 f" | {sonnet_part}"
-            )  # W 📊 N% →X% 🌱 [⏱] | Son M% →Y%
+            )  # ccWk N% →X% 🌱 [⏱] | ccF M% →Y%
         else:
             # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
             if delta <= 10:
-                icon = "\u2705"  # ✅
                 delta_color = GREEN
             elif delta <= 25:
-                icon = "\u26a0\ufe0f"  # ⚠️
                 delta_color = YELLOW
             else:
-                icon = "\U0001f6a8"  # 🚨
                 delta_color = RED
-            s_pace = f" {s_icon}" if sonnet_pct is not None else ""
             print(
-                f"{BOLD_CYAN}{week_label}{RESET} \U0001f4ca {pct_color}{usage_pct:.0f}%{RESET}"
-                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET} {icon}{stale_suffix}"
-                f" | {sonnet_part}{s_pace}"
-            )  # W 📊 N% →X% ✅/⚠️/🚨 [⏱] | Son 🤖 M% →Y% ✅/⚠️/🚨
+                f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
+                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
+                f" | {sonnet_part}"
+            )  # ccWk N% →X% [⏱] | ccF M% →Y%
     except Exception:
         pass
     return 0

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Claude Code status line — compact layout
 # Shows: clock | model | project:branch ⎇ worktree | [tmux session — only when NOT in a worktree] |
-#   ctx% | quota (Week+Fable) / cache↑% | Cx (Codex 5h estimate, AIH-255) | CxWk (Codex weekly, live
-#   account/rateLimits/read telemetry, AIH-274) | Wk reset datetime | CxWk reset datetime | tip
+#   ctx% | quota (cc+Fable) / cache↑% | cxWk (Codex weekly, live account/rateLimits/read
+#   telemetry, AIH-274) | ccWk reset datetime (7/21 2 PM) | cxWk reset datetime | tip
 #
 # CC_BILLING_MODE=subscription (default) — show OAuth quota via `ai quota statusline-part`
 # CC_BILLING_MODE=api                   — show cache-hit % only. The four cost items
@@ -514,117 +514,89 @@ fi
 # Consolidates the ANSI codes/icons the reset-datetime and Codex segments both use, so
 # they read as one visual language instead of independently-invented dim/gray text (the
 # original "hard to read" complaint — DIM (\033[2m) is low-contrast on many terminal
-# themes). Mirrors ai_cli/quota.py's GREEN/YELLOW/RED/BOLD_CYAN/BOLD_MAG semantics
-# (that script is Python, a different repo — true shared code isn't practical across the
-# language boundary, so this block keeps the same codes/thresholds by convention, not by
-# import).
+# themes). Mirrors ai_cli/quota.py's GREEN/YELLOW/RED/ANTHROPIC semantics (that script is
+# Python, a different repo — true shared code isn't practical across the language
+# boundary, so this block keeps the same codes/thresholds by convention, not by import).
+#
+# Brand colors (2026-07-19, explicit request) — 24-bit truecolor, verified via live web
+# search against each company's actual brand-color pages, not guessed from memory:
+#   OpenAI  #10A37F (the ChatGPT teal-green — NOT blue; that was Sergei's initial guess,
+#            corrected against the source) — labels every Codex segment ("cxWk").
+#   Anthropic #D97757 (Claude orange) — labels every Claude Code segment ("ccWk").
+# Requires a 24-bit-color-capable terminal (iTerm2/Terminal.app both are); no fallback to
+# the 16-color palette was added since this machine's terminal is already confirmed to
+# support it and a fallback would double the palette for no observed need.
 _SLC_RESET="\033[0m"
 _SLC_GREEN="\033[32m"
 _SLC_YELLOW="\033[33m"
 _SLC_RED="\033[31m"
 _SLC_CYAN="\033[36m"
-_SLC_BOLD_CYAN="\033[1;36m"
-_SLC_BOLD_BLUE="\033[1;34m"
+_SLC_OPENAI="\033[1;38;2;16;163;127m"       # bold #10A37F — Codex/OpenAI-branded labels
+_SLC_ANTHROPIC="\033[1;38;2;217;119;87m"    # bold #D97757 — Claude/Anthropic-branded labels
 
-# $1=epoch seconds -> "%a %-m/%-d %-I:%M %p %Z" (e.g. "Sun 7/20 2:00 PM EDT"), or empty.
-# %Z resolves the correct EST/EDT (or whatever zone) at that instant from the system tz —
-# deliberately not a hardcoded "EST": a literal EST label would be wrong for roughly half
-# the year (US Eastern runs EDT under daylight time, which covers most of the summer).
+# $1=epoch seconds -> "%-m/%-d %-I %p" (e.g. "7/21 2 PM"), or empty. Compact per Sergei's
+# explicit ask (2026-07-19): date kept (a weekly reset is always days out — a bare "2 PM"
+# with no day was genuinely ambiguous, per his own follow-up correction), but no weekday
+# name, no minutes, no timezone. Rounds DOWN to the hour (a 2:47 PM reset shows as "2 PM").
 # Portable across macOS (`date -r`) and Linux/Hetzner (`date -d @`).
 _sl_fmt_epoch() {
   local ep="$1" out
   [[ "$ep" =~ ^[0-9]+$ ]] || return 1
-  if out=$(date -r "$ep" '+%a %-m/%-d %-I:%M %p %Z' 2>/dev/null); then :
-  elif out=$(date -d "@$ep" '+%a %-m/%-d %-I:%M %p %Z' 2>/dev/null); then :
+  if out=$(date -r "$ep" '+%-m/%-d %-I %p' 2>/dev/null); then :
+  elif out=$(date -d "@$ep" '+%-m/%-d %-I %p' 2>/dev/null); then :
   else return 1; fi
   printf '%s' "$out"
 }
 
-# --- Weekly quota reset datetime (AIH-239; recolored + reformatted AIH-274) ---
+# Same as _sl_fmt_epoch but keeps minutes (e.g. "7/24 11:24 PM") — used for cxWk's reset
+# only, per Sergei's explicit ask (2026-07-19): ccWk resets on the flat hour, cxWk does
+# not, so ccWk stays hour-only while cxWk needs the precision.
+_sl_fmt_epoch_min() {
+  local ep="$1" out
+  [[ "$ep" =~ ^[0-9]+$ ]] || return 1
+  if out=$(date -r "$ep" '+%-m/%-d %-I:%M %p' 2>/dev/null); then :
+  elif out=$(date -d "@$ep" '+%-m/%-d %-I:%M %p' 2>/dev/null); then :
+  else return 1; fi
+  printf '%s' "$out"
+}
+
+# --- Claude weekly quota reset datetime (AIH-239; recolored/reformatted/relabeled AIH-274) ---
 # The weekly all-models ("all sessions") reset and the weekly Fable cap reset are the
 # SAME cycle, so one datetime covers both. Prefer the value exported from this render's
-# rate_limits; fall back to the persisted quota.json cache.
+# rate_limits; fall back to the persisted quota.json cache. Labeled "ccWk" (Claude Code
+# weekly) to pair with Codex's "cxWk" below — was "Wk", ambiguous once both providers have
+# a weekly segment.
 reset_part=""
 _wk_reset="${AI_CLI_QUOTA_SEVEN_DAY_RESET:-}"
 [ -z "$_wk_reset" ] && _wk_reset=$(jq -r '.seven_day_reset // empty' "$HOME/.claude/state/quota.json" 2>/dev/null)
 if _wk_str=$(_sl_fmt_epoch "$_wk_reset"); then
-  reset_part="${_SLC_BOLD_CYAN}Wk${_SLC_RESET} 🔄 ${_SLC_CYAN}${_wk_str}${_SLC_RESET}"
+  reset_part="${_SLC_ANTHROPIC}ccWk${_SLC_RESET} 🔄 ${_SLC_CYAN}${_wk_str}${_SLC_RESET}"
 fi
 
-# --- Codex 5h-window usage estimate (AIH-255; recolored + trend-tracked AIH-274) ---
-# codex-pct reads ~/.codex/usage.log (written by the cx wrapper) and estimates 5h-window
-# usage against Codex's published per-tier message ranges — an ESTIMATE, not an exact quota
-# API (codex-pct itself flags this on stderr). Cheap (jq over a small file) but still a
-# process spawn, and this script renders "many times/sec while streaming" (see file header),
-# so cache it for 30s the same way the quota block above avoids re-spawning `ai quota` every
-# render. Full path (not bare `codex-pct`) — this script doesn't assume ~/.claude/bin is on PATH.
+# --- Codex WEEKLY usage quota (AIH-274) — live account/rateLimits/read telemetry ---
+# codex-weekly-pct reads a REAL backend percentage (OpenAI doesn't publish the weekly
+# denominator, but the app-server exposes actual usedPercent/resetsAt for the account's
+# 7-day window — see docs/research/codex-dual-model-orchestration.md's "Weekly quota"
+# finding, 2026-07-19). Not cheap (spawns `codex app-server --stdio`, ~0.5-1s measured
+# locally) — 300s cache, far longer than a cheap local-file read would need; weekly usage
+# doesn't move render-to-render. Absent entirely until the first successful reading.
 #
-# Trend, not Fable-style pace: Fable/CC's "→X%" pace compares usage against elapsed-fraction
-# of a FIXED weekly cycle (a well-defined "expected %" baseline). Codex's 5h window is a
-# ROLLING lookback with no fixed cycle start — there is no equivalent "expected %" to compare
-# against, so reusing Fable's exact formula here would be a fabricated number, not a real one.
-# Instead this tracks a real trend: the delta versus a reading anchored ~10 minutes ago,
-# refreshed on its own slower cadence, giving an honest "climbing / falling / flat" signal
-# rather than pretending to a week-elapsed-baseline this window doesn't have.
-codex_part=""
-_cxcache="${TMPDIR:-/tmp}/.ai-sl-codexpct-${UID:-0}"
-_cxtrend="${TMPDIR:-/tmp}/.ai-sl-codexpct-trend-${UID:-0}"
-_cx_pct=""; _cx_fresh=0
-if [ -f "$_cxcache" ]; then
-  { IFS= read -r _cxts && IFS= read -r _cxraw; } < "$_cxcache" 2>/dev/null
-  if [[ "$_cxts" =~ ^[0-9]+$ ]] && (( $(date +%s) - _cxts < 30 )); then
-    _cx_fresh=1
-    # "NONE" is the negative-cache sentinel (distinct from "" so an unavailable reading is
-    # still cached for the 30s window instead of re-spawning codex-pct on every render).
-    [[ "$_cxraw" == "NONE" ]] || _cx_pct="$_cxraw"
-  fi
-fi
-if (( ! _cx_fresh )) && [ -x "$HOME/.claude/bin/codex-pct" ]; then
-  _cx_pct=$("$HOME/.claude/bin/codex-pct" 2>/dev/null)
-  [[ "$_cx_pct" =~ ^[0-9]+$ ]] || _cx_pct=""
-  printf '%d\n%s' "$(date +%s)" "${_cx_pct:-NONE}" > "$_cxcache" 2>/dev/null
-fi
-if [[ "$_cx_pct" =~ ^[0-9]+$ ]]; then
-  _cx_now=$(date +%s)
-  _cx_anchor_pct=""; _cx_anchor_age=999999
-  if [ -f "$_cxtrend" ]; then
-    { IFS= read -r _cxats && IFS= read -r _cxapct; } < "$_cxtrend" 2>/dev/null
-    if [[ "$_cxats" =~ ^[0-9]+$ ]] && [[ "$_cxapct" =~ ^[0-9]+$ ]]; then
-      _cx_anchor_pct="$_cxapct"
-      _cx_anchor_age=$(( _cx_now - _cxats ))
-    fi
-  fi
-  # Refresh the anchor once it's >=10 min old (or missing) — keeps the comparison window
-  # meaningful (not noise from a 30s-apart pair) without ever going stale for long.
-  if [ -z "$_cx_anchor_pct" ] || (( _cx_anchor_age >= 600 )); then
-    printf '%d\n%s' "$_cx_now" "$_cx_pct" > "$_cxtrend" 2>/dev/null
-  fi
-  if   (( _cx_pct < 50 )); then _cx_pct_color="$_SLC_GREEN"
-  elif (( _cx_pct < 75 )); then _cx_pct_color="$_SLC_YELLOW"
-  else                           _cx_pct_color="$_SLC_RED"; fi
-  _cx_trend=""
-  if [ -n "$_cx_anchor_pct" ] && (( _cx_anchor_age < 3600 )); then
-    _cx_delta=$(( _cx_pct - _cx_anchor_pct ))
-    _cx_arrow="→"; _cx_delta_color="$_SLC_GREEN"
-    if   (( _cx_delta >= 15 )); then _cx_arrow="↑"; _cx_delta_color="$_SLC_RED"
-    elif (( _cx_delta >= 5 ));  then _cx_arrow="↑"; _cx_delta_color="$_SLC_YELLOW"
-    elif (( _cx_delta <= -5 )); then _cx_arrow="↓"; _cx_delta_color="$_SLC_GREEN"; fi
-    _cx_delta_abs=${_cx_delta#-}
-    _cx_trend=" ${_cx_delta_color}${_cx_arrow}${_cx_delta_abs}%${_SLC_RESET}"
-  fi
-  codex_part="${_SLC_BOLD_BLUE}Cx${_SLC_RESET} ⏳ ${_cx_pct_color}${_cx_pct}%${_SLC_RESET}${_cx_trend}"
-fi
-
-# --- Codex WEEKLY usage quota (AIH-274 follow-on) — live account/rateLimits/read telemetry ---
-# Distinct mechanism from the 5h estimate above: codex-weekly-pct reads a REAL backend
-# percentage (OpenAI doesn't publish weekly denominators, but the app-server exposes actual
-# usedPercent/resetsAt for the account's 7-day window — see docs/research/
-# codex-dual-model-orchestration.md's "Weekly quota" finding, 2026-07-19). Not cheap (spawns
-# `codex app-server --stdio`, ~0.5-1s measured locally) — cache far longer than the 5h
-# estimate's 30s; weekly usage doesn't move render-to-render. Absent entirely until the first
-# successful reading (same absent-until-first-success convention as codex_part above).
+# The Codex 5h-window heuristic segment (`codex-pct`, AIH-255) was REMOVED from the
+# statusline by explicit request (2026-07-19) — not close to that cap, not worth the
+# space; `codex-pct` itself is untouched and still used elsewhere (e.g. `cx`'s own
+# tracking).
+#
+# Pace formula now MATCHES ai_cli/quota.py's ccWk/ccF exactly (corrected 2026-07-19 —
+# the first version compared against a rolling recent-history anchor instead, which is a
+# genuinely different and less useful signal: it answers "is this climbing right now"
+# rather than "am I on track to blow the weekly cap before it resets", which is the
+# actual question that matters). The elapsed-fraction-of-cycle baseline Fable/CC derive
+# from a locally-tracked `week_start` is derived here instead from the response's own
+# `resets_at` + `window_duration_mins` (window_start = resets_at - window_duration) — no
+# local week-start tracking needed, since codex-weekly-pct already returns both.
 codex_weekly_part=""
 _cxwkcache="${TMPDIR:-/tmp}/.ai-sl-codexweeklypct-${UID:-0}"
+_cxwksnap="${TMPDIR:-/tmp}/.ai-sl-codexweeklypct-snapshots-${UID:-0}"
 _cxwk_json=""; _cxwk_fresh=0
 if [ -f "$_cxwkcache" ]; then
   { IFS= read -r _cxwkts && IFS= read -r _cxwkraw; } < "$_cxwkcache" 2>/dev/null
@@ -637,18 +609,72 @@ if (( ! _cxwk_fresh )) && [ -x "$HOME/.claude/bin/codex-weekly-pct" ]; then
   _cxwk_json=$("$HOME/.claude/bin/codex-weekly-pct" --json 2>/dev/null)
   echo "$_cxwk_json" | jq -e '.used_percent' >/dev/null 2>&1 || _cxwk_json=""
   printf '%d\n%s' "$(date +%s)" "${_cxwk_json:-NONE}" > "$_cxwkcache" 2>/dev/null
+  # Snapshot history for the acceleration arrow (mirrors Fable's 3-snapshot mechanism,
+  # AI-CLI-96) — append ONLY on a genuine fresh fetch (every ~300s), never every render,
+  # so the 3 points span real time instead of clustering in one render burst. Keep last 3.
+  if [ -n "$_cxwk_json" ]; then
+    _cxwk_snap_pct=$(echo "$_cxwk_json" | jq -r '.used_percent // empty' 2>/dev/null)
+    if [[ "$_cxwk_snap_pct" =~ ^[0-9]+$ ]]; then
+      { [ -f "$_cxwksnap" ] && tail -n 2 "$_cxwksnap"; printf '%d\t%s\n' "$(date +%s)" "$_cxwk_snap_pct"; } > "${_cxwksnap}.tmp" 2>/dev/null \
+        && mv -f "${_cxwksnap}.tmp" "$_cxwksnap" 2>/dev/null
+    fi
+  fi
 fi
 codex_weekly_reset_part=""
 if [ -n "$_cxwk_json" ]; then
   _cxwk_pct=$(echo "$_cxwk_json" | jq -r '.used_percent // empty' 2>/dev/null)
   _cxwk_resets=$(echo "$_cxwk_json" | jq -r '.resets_at // empty' 2>/dev/null)
-  if [[ "$_cxwk_pct" =~ ^[0-9]+$ ]]; then
+  _cxwk_windowmins=$(echo "$_cxwk_json" | jq -r '.window_duration_mins // 10080' 2>/dev/null)
+  if [[ "$_cxwk_pct" =~ ^[0-9]+$ ]] && [[ "$_cxwk_resets" =~ ^[0-9]+$ ]] && [[ "$_cxwk_windowmins" =~ ^[0-9]+$ ]]; then
     if   (( _cxwk_pct < 50 )); then _cxwk_color="$_SLC_GREEN"
     elif (( _cxwk_pct < 75 )); then _cxwk_color="$_SLC_YELLOW"
     else                             _cxwk_color="$_SLC_RED"; fi
-    codex_weekly_part="${_SLC_BOLD_BLUE}CxWk${_SLC_RESET} 🗓️ ${_cxwk_color}${_cxwk_pct}%${_SLC_RESET}"
-    if _cxwk_str=$(_sl_fmt_epoch "$_cxwk_resets"); then
-      codex_weekly_reset_part="${_SLC_BOLD_BLUE}CxWk${_SLC_RESET} 🔄 ${_SLC_CYAN}${_cxwk_str}${_SLC_RESET}"
+
+    # Elapsed-fraction-of-cycle pace delta — same thresholds/sign convention as
+    # ai_cli/quota.py's ccWk/ccF (>25 red / >10 yellow / else green; magnitude shown,
+    # color conveys direction: usage running ahead of elapsed time = behind budget = hot).
+    _cxwk_now=$(date +%s)
+    read -r _cxwk_delta _cxwk_delta_color <<EOF_PACE
+$(awk -v now="$_cxwk_now" -v resets="$_cxwk_resets" -v winmins="$_cxwk_windowmins" -v pct="$_cxwk_pct" '
+BEGIN {
+  win_secs = winmins * 60
+  if (win_secs <= 0) win_secs = 604800
+  week_start = resets - win_secs
+  elapsed = now - week_start
+  if (elapsed < 0) elapsed = 0
+  if (elapsed > win_secs) elapsed = win_secs
+  elapsed_pct = (elapsed / win_secs) * 100
+  delta = pct - elapsed_pct
+  absd = delta < 0 ? -delta : delta
+  color = (delta > 25) ? "RED" : (delta > 10) ? "YELLOW" : "GREEN"
+  printf "%.0f %s", absd, color
+}')
+EOF_PACE
+    case "$_cxwk_delta_color" in
+      RED)    _cxwk_delta_color="$_SLC_RED" ;;
+      YELLOW) _cxwk_delta_color="$_SLC_YELLOW" ;;
+      *)      _cxwk_delta_color="$_SLC_GREEN" ;;
+    esac
+
+    # Acceleration arrow from up to 3 persisted snapshots (mirrors Fable's mechanism
+    # exactly — rate_recent vs rate_prev, >1.0 %/h accelerating, <-1.0 decelerating).
+    _cxwk_arrow="→"
+    if [ -f "$_cxwksnap" ] && [ "$(wc -l < "$_cxwksnap" 2>/dev/null || echo 0)" -ge 3 ]; then
+      _cxwk_arrow=$(tail -n 3 "$_cxwksnap" | awk -F'\t' '
+        { ts[NR]=$1; pct[NR]=$2 }
+        END {
+          if (NR < 3) { print "→"; exit }
+          dt01 = (ts[3]-ts[2]) / 3600; dt12 = (ts[2]-ts[1]) / 3600
+          rr = (dt01 > 0) ? (pct[3]-pct[2]) / dt01 : 0
+          rp = (dt12 > 0) ? (pct[2]-pct[1]) / dt12 : 0
+          accel = rr - rp
+          if (accel > 1.0) print "↑"; else if (accel < -1.0) print "↓"; else print "→"
+        }')
+    fi
+
+    codex_weekly_part="${_SLC_OPENAI}cxWk${_SLC_RESET} ${_cxwk_color}${_cxwk_pct}%${_SLC_RESET} ${_cxwk_delta_color}${_cxwk_arrow}${_cxwk_delta}%${_SLC_RESET}"
+    if _cxwk_str=$(_sl_fmt_epoch_min "$_cxwk_resets"); then
+      codex_weekly_reset_part="${_SLC_OPENAI}cxWk${_SLC_RESET} 🔄 ${_SLC_CYAN}${_cxwk_str}${_SLC_RESET}"
     fi
   fi
 fi
@@ -667,11 +693,11 @@ fi
 # session name (e.g. "c-aih-2" vs worktree "aih-2") is redundant — drop it to free space.
 [ -n "$tmux_part" ] && [ -z "$worktree_name" ] && line="${line} ${sep} ${tmux_part}"
 line="${line} ${sep} ${ctx_part}"
-# Quota-gauge segments grouped together (AIH-274): Week+Fable (quota_part) -> Codex 5h ->
-# Codex weekly, then both reset datetimes, then the rest. Previously codex_part rendered
-# near the end of the line, separated from the Fable segment it's conceptually paired with.
+# Quota-gauge segments grouped together (AIH-274): cc+Fable (quota_part) -> cxWk (Codex
+# weekly) -> both reset datetimes, then the rest. The Codex 5h segment (codex_part) that
+# used to render here was removed by explicit request (2026-07-19) — see the cxWk block
+# above for why.
 [ -n "$quota_part" ] && line="${line} ${sep} ${quota_part}"
-[ -n "$codex_part" ] && line="${line} ${sep} ${codex_part}"
 [ -n "$codex_weekly_part" ] && line="${line} ${sep} ${codex_weekly_part}"
 [ -n "$reset_part" ] && line="${line} ${sep} ${reset_part}"
 [ -n "$codex_weekly_reset_part" ] && line="${line} ${sep} ${codex_weekly_reset_part}"
