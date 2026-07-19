@@ -1,1 +1,1 @@
-/Users/sergeiwallace/projects/ai-harness/docs/procedures/autonomous-completion-format.md
+../../../ai-harness/docs/procedures/autonomous-completion-format.md

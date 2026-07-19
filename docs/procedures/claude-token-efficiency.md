@@ -1,1 +1,1 @@
-/Users/sergeiwallace/projects/ai-harness/docs/procedures/claude-token-efficiency.md
+../../../ai-harness/docs/procedures/claude-token-efficiency.md

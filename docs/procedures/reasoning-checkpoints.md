@@ -1,1 +1,1 @@
-/Users/sergeiwallace/projects/ai-harness/docs/procedures/reasoning-checkpoints.md
+../../../ai-harness/docs/procedures/reasoning-checkpoints.md

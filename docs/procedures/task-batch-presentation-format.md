@@ -1,1 +1,1 @@
-/Users/sergeiwallace/projects/ai-harness/docs/procedures/task-batch-presentation-format.md
+../../../ai-harness/docs/procedures/task-batch-presentation-format.md

@@ -1,1 +1,1 @@
-/Users/sergeiwallace/projects/ai-harness/docs/procedures/ac-writing-practices.md
+../../../ai-harness/docs/procedures/ac-writing-practices.md
