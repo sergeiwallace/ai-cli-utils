@@ -103,6 +103,11 @@ docs/plans/TEMPLATE.md
 docs/plans/STUB.md
 docs/procedures/TEMPLATE.md
 docs/procedures/STUB.md
+docs/procedures/ac-writing-practices.md
+docs/procedures/autonomous-completion-format.md
+docs/procedures/claude-token-efficiency.md
+docs/procedures/reasoning-checkpoints.md
+docs/procedures/task-batch-presentation-format.md
 docs/research/TEMPLATE.md
 docs/research/STUB.md
 docs/test/TEMPLATE.md
