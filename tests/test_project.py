@@ -341,6 +341,23 @@ class TestValidateRegistryCompleteness:
         ):
             assert validate_registry_completeness(interactive=True) is False
 
+    def test_validate_when_interrupted_then_preserves_registry_and_propagates_interrupt(self, tmp_path):
+        registry = tmp_path / "registry.toml"
+        original = b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n'
+        registry.write_bytes(original)
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "newapp").mkdir(parents=True)
+        (projects_dir / "anotherapp").mkdir(parents=True)
+        with (
+            patch("ai_cli.config._get_project_registry_path", return_value=registry),
+            patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
+            patch("builtins.input", side_effect=["y", KeyboardInterrupt]),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            validate_registry_completeness(interactive=True)
+        assert registry.read_bytes() == original
+
     def test_validate_skips_hidden_dirs(self, tmp_path):
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')

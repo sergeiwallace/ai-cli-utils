@@ -253,6 +253,21 @@ class TestGetEngineScript:
         assert 'exec zsh "$_script_stable_path"' in script
         assert "direnv denied or could not evaluate .envrc" in script
 
+    def test_given_direnv_blocks_auto_restart_when_agent_exits_then_script_prints_recovery_command(self):
+        script = get_engine_script(
+            engine="c",
+            ai_name="session-1",
+            session="c-session-1",
+            prefix="c-session-",
+            project_prefix="session",
+            worktree_dir="/tmp/project-worktree",
+        )
+
+        assert "agent_direnv_blocked=false" in script
+        assert "direnv status --json" in script
+        assert "AI CLI stopped because direnv blocked $direnv_root/.envrc" in script
+        assert "direnv allow $direnv_root" in script
+
     def test_given_worktree_when_generating_script_then_direnv_uses_worktree_cwd(self):
         script = get_engine_script(
             engine="g",
@@ -840,6 +855,15 @@ class TestCliDispatchExtended:
                 cli()
             assert exc.value.code == 1  # exits because -R requires remote host
 
+    def test_when_keyboard_interrupt_raised_then_exits_cleanly_without_traceback(self):
+        """A raw Ctrl-C (e.g. from the registry-sync input() prompt) must not
+        propagate past cli() as an unhandled KeyboardInterrupt — standalone_mode=False
+        means Click won't convert it to click.exceptions.Abort on its own."""
+        with patch("ai_cli.main._cli_group", side_effect=KeyboardInterrupt):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
 
 class TestResolveIsRemote:
     def test_when_flag_true_then_returns_true_regardless_of_host(self):
@@ -977,3 +1001,40 @@ class TestDoSessionLaunchWindowsTmuxGuard:
                 _do_session_launch(**self._base_kwargs())
         # Should reach subprocess.run (SystemExit 0) not the guard (SystemExit 1)
         assert exc_info.value.code != 1
+
+
+class TestDoSessionLaunchRegistryDiscovery:
+    def test_given_named_launch_and_unregistered_other_project_when_started_then_skips_registry_prompt(self):
+        from ai_cli.main import _do_session_launch
+
+        kwargs = dict(
+            engine="c",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            remote=False,
+            project="",
+            is_remote=False,
+            project_prefix_override="",
+            extra_args=[],
+            config={"worktree": {"enabled": True}},
+        )
+        with (
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=False) as validate,
+            patch("ai_cli.session.is_current_project_resolved", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="app"),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("c-app-1", "app-1")),
+            patch("ai_cli.session.create_worktree", return_value=Path("/tmp/project-worktree")),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(**kwargs)
+
+        assert exc_info.value.code == 0
+        validate.assert_not_called()

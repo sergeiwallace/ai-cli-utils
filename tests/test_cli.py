@@ -1306,6 +1306,34 @@ class TestCliInternalMissingArgs:
 
 class TestCliRegistryValidation:
     def test_cli_when_registry_incomplete_noninteractive_then_exits(self, tmp_path):
+        """A bare `ai c` (no name/project — AI-CLI-113 only skips discovery for a
+        *targeted* launch) still validates the registry and exits noninteractively."""
+        registry = tmp_path / "registry.toml"
+        registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
+        projects_dir = tmp_path / "projects"
+        (projects_dir / "app").mkdir(parents=True)
+        (projects_dir / "unregistered").mkdir(parents=True)
+
+        with (
+            patch("sys.argv", ["ai", "c"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="app"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.config._get_project_registry_path", return_value=registry),
+            patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
+            patch("sys.stdin", MagicMock(isatty=MagicMock(return_value=False))),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 1
+
+    def test_cli_when_named_launch_and_registry_incomplete_then_skips_validation(self, tmp_path):
+        """AI-CLI-113: a targeted launch (`ai c 1`) must not block on registry
+        discovery for an unrelated, unregistered project — see also
+        TestDoSessionLaunchRegistryDiscovery in test_main.py for the unit-level check.
+        Reaching a real session-launch attempt (not registry validation) is enough
+        to prove discovery was skipped; SystemExit surfaces from downstream launch
+        logic, not from validate_registry_completeness."""
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
         projects_dir = tmp_path / "projects"
@@ -1319,11 +1347,16 @@ class TestCliRegistryValidation:
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
+            patch("ai_cli.config.validate_registry_completeness") as mock_validate,
             patch("sys.stdin", MagicMock(isatty=MagicMock(return_value=False))),
+            patch("ai_cli.session.is_current_project_resolved", return_value=False),
         ):
             with pytest.raises(SystemExit) as exc:
                 cli()
+            # is_current_project_resolved() False → the launch path's own
+            # "no project resolved" guard exits 1, never reaching registry validation.
             assert exc.value.code == 1
+            mock_validate.assert_not_called()
 
 
 class TestCliDaemonDispatch:

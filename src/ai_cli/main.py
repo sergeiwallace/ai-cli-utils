@@ -1254,10 +1254,10 @@ def _do_session_launch(
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
     is_remote = _session._resolve_is_remote(is_remote)
 
-    # Validate registry before resolving the project prefix so that a prefix
-    # entered interactively on first run is used for the current session, not
-    # just future ones.
-    if not project_prefix_override:
+    # Discovery is useful when creating an unqualified session, but a named
+    # session or explicit project already identifies the launch target.  Do not
+    # make that targeted launch wait for unrelated project-registration input.
+    if not project_prefix_override and not name and not project:
         if not _config.validate_registry_completeness(interactive=sys.stdin.isatty()):
             sys.exit(1)
 
@@ -2413,6 +2413,12 @@ def cli() -> None:
         exc.show()
         sys.exit(exc.exit_code)
     except click.exceptions.Abort:
+        sys.exit(1)
+    except KeyboardInterrupt:
+        # standalone_mode=False means Click does not convert a raw Ctrl-C
+        # (e.g. from an interactive input() prompt like registry sync) into
+        # click.exceptions.Abort itself — without this handler it propagates
+        # as an unhandled KeyboardInterrupt and prints a Python traceback.
         sys.exit(1)
     sys.exit(0)
 

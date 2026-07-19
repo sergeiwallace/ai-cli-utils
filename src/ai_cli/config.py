@@ -400,7 +400,9 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
     """Check that all ~/projects/* directories are registered. Returns True if complete.
 
     If interactive=True and unregistered dirs found, prompts user to register.
-    Returns False (and prints error) if user declines registration.
+    Returns False (and prints error) if user declines registration or stdin ends.
+    A keyboard interrupt propagates so the caller can abort immediately; no
+    registry changes are written unless every prompt completes successfully.
     """
     # Skip if no registry configured
     if _get_project_registry_path() is None:
@@ -430,6 +432,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
 
     registry_path = _get_project_registry_path()
     assert registry_path is not None
+    entries: list[tuple[str, str]] = []
     for name in unregistered:
         suggested_prefix = name.upper().replace("-", "_")[:8]
         try:
@@ -438,7 +441,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
                 f"Suggested task_prefix: {suggested_prefix}\n"
                 f"Add to registry? [Y/n, or enter custom prefix]: "
             ).strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             print("\nRegistry incomplete — exiting.", file=sys.stderr)
             return False
 
@@ -448,10 +451,14 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
 
         prefix = answer if answer and answer.lower() != "y" else suggested_prefix
 
-        # Append to registry TOML
-        entry = f'\n[[projects]]\nname = "{name}"\ntask_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
-        with open(registry_path, "a") as f:
-            f.write(entry)
+        entries.append((name, prefix))
+
+    # Commit all prompted registrations at once so cancellation or rejection
+    # cannot leave a partially updated registry behind.
+    with open(registry_path, "a") as f:
+        for name, prefix in entries:
+            f.write(f'\n[[projects]]\nname = "{name}"\ntask_prefix = "{prefix}"\ntype = "tool"\nactive = true\n')
+    for name, prefix in entries:
         print(f'Registered "{name}" with prefix "{prefix}"')
 
     # Force reload after registration

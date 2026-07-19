@@ -88,10 +88,14 @@ def get_engine_script(
     script = f"""
     {cd_cmd}
     direnv_root="$PWD"
+    agent_direnv_blocked=false
     run_agent() {{
       direnv exec "$direnv_root" "$@"
       agent_exit_code=$?
       if (( agent_exit_code != 0 )); then
+        if [[ -f "$direnv_root/.envrc" ]] && direnv status --json 2>/dev/null | grep -qE '"allowed"[[:space:]]*:[[:space:]]*0'; then
+          agent_direnv_blocked=true
+        fi
         echo "Error: agent command did not complete successfully under direnv for $direnv_root. If direnv denied or could not evaluate .envrc, run 'direnv allow $direnv_root' and correct the reported error." >&2
       fi
       return "$agent_exit_code"
@@ -490,6 +494,9 @@ if found: sys.stdout.write(found)
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
+        if $agent_direnv_blocked; then
+          echo "AI CLI stopped because direnv blocked $direnv_root/.envrc. Run 'direnv allow $direnv_root' in another terminal, then run 'ai $engine $ai_name' to relaunch."
+        fi
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi

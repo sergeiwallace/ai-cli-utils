@@ -525,6 +525,7 @@ def create_worktree(ai_name: str) -> Path | None:
             env=_git_env(),
         )
         if str(wt_dir) in res.stdout:
+            _allow_trusted_worktree_envrc(repo_root, wt_dir)
             return wt_dir
         # Stale directory not in git's index — remove and recreate
         import shutil
@@ -565,8 +566,56 @@ def create_worktree(ai_name: str) -> Path | None:
         from .trust import ensure_workspace_trusted
 
         ensure_workspace_trusted([repo_root, wt_dir])
+        _allow_trusted_worktree_envrc(repo_root, wt_dir)
         return wt_dir
     return None
+
+
+def _allow_trusted_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:
+    """Approve a worktree .envrc only when it exactly matches an approved root file.
+
+    direnv approvals are path-specific.  Git creates the worktree's tracked
+    ``.envrc`` during checkout, but that new path is not approved just because
+    the repository root's identical file is.  Restrict automatic approval to
+    an exact byte-for-byte copy of an already-approved root .envrc; a changed,
+    missing, or unapproved file remains subject to direnv's normal prompt.
+    """
+    root_envrc = repo_root / ".envrc"
+    worktree_envrc = worktree_dir / ".envrc"
+    if not root_envrc.is_file() or not worktree_envrc.is_file():
+        return
+
+    try:
+        if root_envrc.read_bytes() != worktree_envrc.read_bytes():
+            return
+    except OSError:
+        return
+
+    try:
+        status = subprocess.run(
+            ["direnv", "status", "--json"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return
+
+    try:
+        root_allowed = status.returncode == 0 and json.loads(status.stdout)["state"]["foundRC"]["allowed"] == 1
+    except (KeyError, TypeError, ValueError):
+        return
+    if not root_allowed:
+        return
+
+    subprocess.run(
+        ["direnv", "allow", str(worktree_dir)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def cleanup_worktree(ai_name: str):
