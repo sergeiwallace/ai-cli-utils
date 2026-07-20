@@ -1,10 +1,107 @@
 import io
 import os
+import shlex
+import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 import ai_cli.config as _config_module
+
+
+_TEST_TMUX_PREFIX = "pytest-leak-guard-"
+_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv"})
+
+
+def _command_program(command):
+    """Return the executable name from a subprocess argument, if present."""
+    if isinstance(command, (list, tuple)):
+        command = command[0] if command else None
+    elif isinstance(command, str):
+        command = shlex.split(command)[0] if command else None
+    if not command:
+        return None
+    return os.path.basename(os.fspath(command))
+
+
+def _reject_real_agent_process(command, allowed_binaries=frozenset()):
+    """Fail loudly when a test reaches a real agent or tmux process boundary."""
+    program = _command_program(command)
+    if program in _PROTECTED_TEST_BINARIES - allowed_binaries:
+        raise RuntimeError(
+            f"test attempted to spawn a real `{program}` process — "
+            "mock subprocess.run, subprocess.Popen, or os.execvp explicitly in this test"
+        )
+
+
+def _cleanup_test_tmux_sessions(run):
+    """Kill only sessions created with the test-only leak-guard prefix."""
+    try:
+        sessions = run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
+    except OSError:
+        return
+    if sessions.returncode != 0:
+        return
+    for session_name in sessions.stdout.splitlines():
+        if session_name.startswith(_TEST_TMUX_PREFIX):
+            try:
+                run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+            except OSError:
+                return
+
+
+@pytest.fixture(autouse=True)
+def _reject_real_agent_processes(request):
+    """Prevent test launches from creating live tmux/agent processes (AI-CLI-117).
+
+    Session-launch tests that patch ``os.execvp`` must also patch ``subprocess.run``
+    when execution can reach the detached tmux creation step.  These outer patches
+    allow explicit test-level ``patch(...)`` calls to replace them, while turning a
+    missed mock into a clear failure instead of an orphaned live session.
+    """
+    # subprocess.run and subprocess.Popen both need the real_tmux allowance —
+    # the isolated-socket integration tests use `run` for the tmux_server
+    # fixture's own teardown cleanup (`tmux -S <sock> kill-server`, which runs
+    # after each test's own tighter-scoped mocks have already exited) and
+    # libtmux itself uses `Popen` internally for every tmux command it issues
+    # against that same isolated socket. execvp is deliberately excluded even
+    # for real_tmux tests: every test in that suite already self-mocks
+    # os.execvp (a real execvp("tmux", ...) call never returns on success, so
+    # letting one slip through would silently replace the pytest worker
+    # process instead of failing loudly), and libtmux never calls it.
+    allowed_binaries = frozenset({"tmux"}) if request.node.get_closest_marker("real_tmux") else frozenset()
+    real_run = subprocess.run
+    real_popen = subprocess.Popen
+    real_execvp = os.execvp
+
+    def guarded_run(*args, **kwargs):
+        command = args[0] if args else kwargs.get("args")
+        _reject_real_agent_process(command, allowed_binaries)
+        return real_run(*args, **kwargs)
+
+    def guarded_popen(*args, **kwargs):
+        command = args[0] if args else kwargs.get("args")
+        _reject_real_agent_process(command, allowed_binaries)
+        return real_popen(*args, **kwargs)
+
+    def guarded_execvp(*args, **kwargs):
+        command = args[0] if args else kwargs.get("file")
+        _reject_real_agent_process(command)
+        return real_execvp(*args, **kwargs)
+
+    with (
+        patch("subprocess.run", side_effect=guarded_run),
+        patch("subprocess.Popen", side_effect=guarded_popen),
+        patch("os.execvp", side_effect=guarded_execvp),
+    ):
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_tmux_sessions_after_suite():
+    """Backstop cleanup for test-only tmux names if an explicit mock is bypassed."""
+    yield
+    _cleanup_test_tmux_sessions(subprocess.run)
 
 
 @pytest.fixture(autouse=True)

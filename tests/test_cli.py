@@ -2306,12 +2306,18 @@ class TestLocalProjectChdir:
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.session.build_session_name", return_value=("g-myproject-1", "myproject-1")),
+            patch(
+                "ai_cli.session.build_session_name",
+                return_value=("pytest-leak-guard-g-myproject-1", "pytest-leak-guard-myproject-1"),
+            ),
             patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
             patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("subprocess.run", return_value=MagicMock(returncode=1)),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir") as mock_chdir,
         ):
@@ -2327,12 +2333,18 @@ class TestLocalProjectChdir:
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.config.get_current_project_name", return_value="sw"),
-            patch("ai_cli.session.build_session_name", return_value=("g-sw-1", "sw-1")),
+            patch(
+                "ai_cli.session.build_session_name",
+                return_value=("pytest-leak-guard-g-sw-1", "pytest-leak-guard-sw-1"),
+            ),
             patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
             patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("subprocess.run", return_value=MagicMock(returncode=1)),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir") as mock_chdir,
         ):
@@ -2347,7 +2359,7 @@ class TestLocalProjectChdir:
 
         def capture_build(engine, prefix, name, config, **kwargs):
             captured["prefix"] = prefix
-            return ("c-hm-1", "hm-1")
+            return ("pytest-leak-guard-c-hm-1", "pytest-leak-guard-hm-1")
 
         with (
             patch("sys.argv", ["ai", "c", "1", "-p", "myapp-mobile"]),
@@ -2362,9 +2374,12 @@ class TestLocalProjectChdir:
             patch("ai_cli.session.build_session_name", side_effect=capture_build),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.trust.ensure_workspace_trusted"),
             patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("subprocess.run", return_value=MagicMock(returncode=1)),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir"),
         ):

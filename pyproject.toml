@@ -87,6 +87,7 @@ testpaths = ["tests"]
 addopts = "-n auto"
 markers = [
     "real_quota_scrape: test drives the real quota-scrape spawn functions (opts out of the conftest no-op; must mock subprocess.Popen itself)",
+    "real_tmux: test owns an isolated tmux socket and explicitly opts in to tmux subprocess calls",
 ]
 
 [tool.pyright]

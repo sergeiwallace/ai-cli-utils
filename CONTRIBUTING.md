@@ -79,6 +79,9 @@ ruff check src/ tests/ && ruff format --check src/ tests/ && pytest
 - Test names follow `test_{given}_{when}_{then}` pattern
 - Use pytest fixtures for shared setup
 - Mock at system boundaries only (subprocess, filesystem, network)
+- Session-launch tests that mock `os.execvp` must also mock `subprocess.run` when the
+  path can create or manage a tmux session. The test safety guard rejects unmocked
+  `tmux`, `claude`, `gemini`, and `direnv` processes so tests cannot leave live sessions behind.
 - Every public function needs at least one failure-path test
 
 ## Project Structure
