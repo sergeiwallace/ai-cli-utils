@@ -1632,6 +1632,10 @@ class TestEngineScriptProjectName:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
         assert "handoff-caught-$tmux_session" in script
 
+    def test_get_engine_script_exit_trap_cleans_session_metadata(self):
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
+        assert "session-meta-$tmux_session.json" in script
+
     def test_get_engine_script_while_loop_logs_handoff_pickup(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
         assert "handoff.while_loop_pickup" in script

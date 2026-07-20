@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 
@@ -19,6 +20,7 @@ from ai_cli.process_hygiene import (
     _verdict_for,
     auto_clean_orphans,
     cmd_ps,
+    collect_idle_since_launch_sessions,
     collect_local_processes,
     collect_remote_processes,
     format_ps_table,
@@ -357,6 +359,44 @@ class TestCollectLocalProcesses:
         assert procs == []
 
 
+class TestCollectIdleSinceLaunchSessions:
+    def test_given_old_session_with_no_activity_when_collected_then_marks_suspect(self, tmp_path):
+        pid = 1234
+        started_at = 1_000_000
+        (tmp_path / f"{pid}.json").write_text(
+            json.dumps({"pid": pid, "startedAt": started_at * 1000, "updatedAt": started_at * 1000})
+        )
+
+        with patch("psutil.pid_exists", return_value=True):
+            sessions = collect_idle_since_launch_sessions(
+                tmp_path,
+                min_age_seconds=24 * 3600,
+                max_activity_seconds=5,
+                now=started_at + 2 * 86400,
+            )
+
+        assert len(sessions) == 1
+        assert sessions[0].verdict == "suspect"
+        assert sessions[0].detail == "idle since launch (2d, never used)"
+
+    def test_given_old_session_with_real_activity_when_collected_then_skips(self, tmp_path):
+        pid = 1234
+        started_at = 1_000_000
+        (tmp_path / f"{pid}.json").write_text(
+            json.dumps({"pid": pid, "startedAt": started_at * 1000, "updatedAt": (started_at + 60) * 1000})
+        )
+
+        with patch("psutil.pid_exists", return_value=True):
+            sessions = collect_idle_since_launch_sessions(
+                tmp_path,
+                min_age_seconds=24 * 3600,
+                max_activity_seconds=5,
+                now=started_at + 2 * 86400,
+            )
+
+        assert sessions == []
+
+
 # ---------------------------------------------------------------------------
 # Cache read/write
 # ---------------------------------------------------------------------------
@@ -662,6 +702,41 @@ class TestCmdPs:
         assert rc == 0
         full = "\n".join(output)
         assert "orphaned" in full
+
+    def test_given_idle_since_launch_session_when_ps_then_prints_distinct_label(self):
+        idle_session = _proc(
+            name="claude",
+            verdict="suspect",
+            score=SUSPECT_THRESHOLD,
+            detail="idle since launch (2d, never used)",
+        )
+        output: list[str] = []
+
+        with (
+            patch("ai_cli.process_hygiene.collect_local_processes", return_value=[]),
+            patch("ai_cli.process_hygiene.collect_idle_since_launch_sessions", return_value=[idle_session]),
+        ):
+            rc = cmd_ps([], self._make_config(), stdout_fn=output.append)
+
+        assert rc == 0
+        assert "idle since launch (2d, never used)" in "\n".join(output)
+
+    def test_given_idle_detection_settings_when_ps_then_passes_them_to_collector(self):
+        with (
+            patch("ai_cli.process_hygiene.collect_local_processes", return_value=[]),
+            patch("ai_cli.process_hygiene.collect_idle_since_launch_sessions", return_value=[]) as collect_idle,
+        ):
+            cmd_ps(
+                [],
+                self._make_config(
+                    process_hygiene={
+                        "idle_since_launch_hours": 12,
+                        "idle_since_launch_activity_seconds": 10,
+                    }
+                ),
+            )
+
+        assert collect_idle.call_args.kwargs == {"min_age_seconds": 12 * 3600, "max_activity_seconds": 10}
 
     def test_given_ps_clean_with_orphan_when_confirmed_then_kills(self, tmp_path):
         orphan = _proc(pid=9999, verdict="orphaned", score=90, machine="local")

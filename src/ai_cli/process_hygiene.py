@@ -31,6 +31,8 @@ import psutil
 ORPHAN_THRESHOLD = 80
 SUSPECT_THRESHOLD = 40
 CACHE_TTL_SECONDS = 1800  # 30 minutes
+IDLE_SINCE_LAUNCH_HOURS = 24
+IDLE_SINCE_LAUNCH_ACTIVITY_SECONDS = 5
 
 
 def _get_state_dir() -> Path:
@@ -77,6 +79,52 @@ def _verdict_for(score: int) -> str:
     elif score >= SUSPECT_THRESHOLD:
         return "suspect"
     return "active"
+
+
+def collect_idle_since_launch_sessions(
+    session_dir: Path | None = None,
+    min_age_seconds: float = IDLE_SINCE_LAUNCH_HOURS * 3600,
+    max_activity_seconds: float = IDLE_SINCE_LAUNCH_ACTIVITY_SECONDS,
+    now: float | None = None,
+) -> list[ProcessInfo]:
+    """Return live Claude sessions that have had no activity since launch."""
+    session_dir = session_dir or Path.home() / ".claude" / "sessions"
+    now = time.time() if now is None else now
+    sessions: list[ProcessInfo] = []
+
+    try:
+        registry_files = session_dir.glob("*.json")
+    except OSError:
+        return sessions
+
+    for path in registry_files:
+        try:
+            data = json.loads(path.read_text())
+            pid = int(data["pid"])
+            started_at = float(data["startedAt"]) / 1000
+            updated_at = float(data["updatedAt"]) / 1000
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            continue
+
+        age = now - started_at
+        activity = updated_at - started_at
+        if age < min_age_seconds or activity < 0 or activity > max_activity_seconds or not psutil.pid_exists(pid):
+            continue
+
+        sessions.append(
+            ProcessInfo(
+                pid=pid,
+                name="claude",
+                age_seconds=age,
+                score=SUSPECT_THRESHOLD,
+                verdict="suspect",
+                detail=f"idle since launch ({_fmt_age(age)}, never used)",
+                machine="local",
+                args=str(data.get("cwd", "")),
+            )
+        )
+
+    return sessions
 
 
 # ---------------------------------------------------------------------------
@@ -683,6 +731,10 @@ def cmd_ps(
             pass
     hygiene_cfg = config.get("process_hygiene", {})
     cache_ttl = int(hygiene_cfg.get("cache_ttl_minutes", 30)) * 60
+    idle_since_launch_hours = float(hygiene_cfg.get("idle_since_launch_hours", IDLE_SINCE_LAUNCH_HOURS))
+    idle_since_launch_activity_seconds = float(
+        hygiene_cfg.get("idle_since_launch_activity_seconds", IDLE_SINCE_LAUNCH_ACTIVITY_SECONDS)
+    )
     log_path = _get_state_dir() / "process-hygiene.log"
 
     # Determine sub-action
@@ -707,6 +759,12 @@ def cmd_ps(
             refresh = True
 
     local = collect_local_processes()
+    local.extend(
+        collect_idle_since_launch_sessions(
+            min_age_seconds=idle_since_launch_hours * 3600,
+            max_activity_seconds=idle_since_launch_activity_seconds,
+        )
+    )
 
     remote: list[ProcessInfo] = []
     cache_age: float | None = None
