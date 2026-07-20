@@ -158,8 +158,18 @@ def get_engine_script(
     config_changed_file="$_ai_state_dir/config-changed-$tmux_session"
     _config_reload_idle_secs={config_reload_idle_secs}
 
+    # Files whose CHANGE should trigger an idle-restart. CLAUDE.md content is
+    # re-injected every turn (a genuinely live reload), but .claude/settings.json's
+    # `env` block is read ONLY at CC process startup — a `/compact` never re-reads it,
+    # so an override left there (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) silently stays
+    # baked into an already-running session forever unless this watcher also tracks
+    # settings.json (AI-CLI-115 — confirmed live: a session ran 2+ days past a
+    # settings.json fix with the stale env still active, because only CLAUDE.md was
+    # hashed here).
+    _config_watch_files="$HOME/projects/CLAUDE.md $(pwd)/CLAUDE.md $HOME/.claude/settings.json $(pwd)/.claude/settings.json $(pwd)/.mcp.json"
+
     # Write initial config hash baseline for change detection
-    cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1 > "$config_hash_file"
+    cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1 > "$config_hash_file"
 
     # Clean up any stale exit signals from a previous killed session.
     # Without this, a leftover signal_file causes the watcher to inject /exit
@@ -237,7 +247,7 @@ def get_engine_script(
 
         # Config change detection (CC only, every 10s)
         if [[ "$engine" == "c" ]] && (( counter % 10 == 0 )); then
-          _current_hash=$(cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1)
+          _current_hash=$(cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1)
           _last_hash=$(cat "$config_hash_file" 2>/dev/null || echo "")
           if [[ -n "$_current_hash" && "$_current_hash" != "$_last_hash" && ! -f "$config_changed_file" ]]; then
             date +%s > "$config_changed_file"
@@ -253,7 +263,7 @@ def get_engine_script(
           if (( _idle_secs >= _config_reload_idle_secs )); then
             _last_line=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
             if echo "$_last_line" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-              _new_hash=$(cat "$HOME/projects/CLAUDE.md" "$(pwd)/CLAUDE.md" 2>/dev/null | sha256sum | cut -d' ' -f1)
+              _new_hash=$(cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1)
               echo "$_new_hash" > "$config_hash_file"
               rm -f "$config_changed_file"
               touch "$signal_file"
