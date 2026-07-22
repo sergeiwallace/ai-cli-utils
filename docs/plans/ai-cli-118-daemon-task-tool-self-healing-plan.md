@@ -139,14 +139,25 @@ daemon.
   `tool_use`/`tool_result` in the transcript, or `None` if there is none.
 - `has_tool_activity_since(transcript_path: Path, since: datetime) -> bool` — whether any successful
   **non-`Task*`** tool call appears after `since` (proof the session is still actively working).
-- `failed_task_lookup_after(transcript_path: Path, since: datetime) -> bool` — the **direct** signal:
-  whether an ID-correlated `ToolSearch` `tool_use` whose input names the `Task*` family resolves to a
-  `tool_result` of `"No matching deferred tools found"` after `since`.
+- `last_failed_task_lookup_after(transcript_path: Path, since: datetime) -> datetime | None` — the
+  **direct** signal: the tz-aware UTC timestamp of the most recent ID-correlated `ToolSearch`
+  `tool_use` (whose input names the `Task*` family) whose `tool_result` is `"No matching deferred
+  tools found"` after `since`, or `None` if none exists. **N-01 fix:** returns a timestamp, not a
+  bare bool, specifically so `assess_session` can compare it against `last_task_tool_call` and apply
+  "latest observation wins" — a failed lookup is not a permanent verdict; a later successful `Task*`
+  call must clear it.
 - `assess_session(session: SessionInfo, restarts: list[datetime], now: datetime, *, min_idle: timedelta) -> Verdict`
   — the heuristic; returns a `Verdict` dataclass with a reason-coded `state`
-  (`confirmed_unavailable` | `at_risk_after_restart` | `healthy` | `unobservable` | `unsupported`),
-  a human `reason: str`, `restart_at`, and `last_task_call`. Direct confirmation outranks correlation;
-  missing/unreadable artifacts return `unobservable` (never `healthy`); non-macOS returns `unsupported`.
+  (`confirmed_unavailable` | `at_risk_after_restart` | `healthy` | `no_issue_observed` |
+  `unobservable` | `unsupported`), a human `reason: str`, `restart_at`, and `last_task_call`.
+  **Latest observation wins** between `last_task_tool_call` (success) and
+  `last_failed_task_lookup_after` (failure) — whichever is more recent determines
+  `confirmed_unavailable` vs. `healthy`; correlation-only evidence (no direct signal either way) is
+  `at_risk_after_restart`; genuinely insufficient evidence (merely idle, min-idle not elapsed) is
+  `no_issue_observed` — **N-02 fix:** this is a distinct state from `healthy`, which is reserved for
+  affirmative evidence only (a successful `Task*` call was actually observed, or the session's lease
+  is known-fresh). Missing/unreadable artifacts return `unobservable` (never `healthy` or
+  `no_issue_observed`); non-macOS returns `unsupported`.
 
 **Acceptance criteria (T-01):**
 
@@ -167,22 +178,33 @@ daemon.
 - [ ] If `last_task_tool_call` reads a transcript with no `Task*` call (or a missing/unreadable file), then the system shall return `None` and shall not raise.
 - [ ] When `has_tool_activity_since` reads a transcript with a successful non-`Task*` tool call after `since`, the system shall return `True`.
 - [ ] If `has_tool_activity_since` finds only `Task*` calls, or no tool calls, after `since` (or the file is unreadable), then the system shall return `False` and shall not raise.
-- [ ] When `failed_task_lookup_after` reads a transcript containing an ID-correlated `ToolSearch`(Task-family) `tool_use` whose `tool_result` is `"No matching deferred tools found"` after `since`, the system shall return `True`.
-- [ ] If `failed_task_lookup_after` finds no such correlated failed lookup after `since` (or the file is unreadable), then the system shall return `False` and shall not raise.
+- [ ] When `last_failed_task_lookup_after` reads a transcript containing an ID-correlated `ToolSearch`(Task-family) `tool_use` whose `tool_result` is `"No matching deferred tools found"` after `since`, the system shall return the tz-aware UTC timestamp of the most recent such failure.
+- [ ] If `last_failed_task_lookup_after` finds no such correlated failed lookup after `since` (or the file is unreadable), then the system shall return `None` and shall not raise.
 
 *Timestamp normalization (F-2):*
 - [ ] When `assess_session` compares the daemon-log ISO-UTC, transcript ISO-UTC, and session epoch-millisecond timestamps, the system shall normalize all three to tz-aware UTC before comparison.
 - [ ] If any timestamp input is naive (no tz) or otherwise unparseable, then the system shall treat that artifact as unobservable for that comparison and shall not raise or silently coerce it to a wrong-tz value.
+- [ ] When two compared timestamps (e.g. a failure vs. a success, or `now − R` vs. `min_idle`) are exactly equal, the system shall treat the boundary as **not yet elapsed** (`now − R == min_idle` does not satisfy `≥ min_idle`; a failure and success at the identical instant do not clear each other — the failure wins, since it cannot be proven superseded).
+- [ ] If `now` is earlier than a session's recorded `started_at` or the daemon's recorded restart time (clock skew / an artifact from a different clock source), then the system shall treat the elapsed-time comparison as unobservable rather than computing a negative duration.
 
-*`assess_session` reason-coded verdicts (DV-1 / AD-1):*
-- [ ] **(confirmed_unavailable)** When `failed_task_lookup_after` is `True` for a session after its most recent upgrade-restart, `assess_session` shall return `state = "confirmed_unavailable"`, and this shall outrank every correlation-based verdict.
-- [ ] **(at_risk_after_restart)** When a session started before an upgrade-restart R, its last successful `Task*` call predates R with no `Task*` call after R, it has continued non-`Task*` tool activity after R, `now − R ≥ min_idle`, and no direct failed lookup is observed, `assess_session` shall return `state = "at_risk_after_restart"`.
-- [ ] **(healthy — already reconnected)** If a successful `Task*` call exists after the most recent restart, then `assess_session` shall return `state = "healthy"`.
-- [ ] **(healthy — no restart since)** If the most recent upgrade-restart predates the session's last successful `Task*` call, then `assess_session` shall return `state = "healthy"`.
-- [ ] **(healthy — started after restart)** If the session started after the most recent upgrade-restart, then `assess_session` shall return `state = "healthy"` (its lease is fresh).
-- [ ] **(healthy — merely idle)** If the session has had no non-`Task*` activity since the restart and no direct failed lookup, then `assess_session` shall return `state = "healthy"` with a reason noting insufficient evidence (cannot distinguish disconnect from idle; safer not to flag).
-- [ ] **(healthy — min-idle race)** If `now − R < min_idle` and no direct failed lookup, then `assess_session` shall return `state = "healthy"` (reason: min-idle not elapsed).
-- [ ] **(unobservable — F-3)** If the transcript or session artifacts required to assess a session are missing or unreadable, then `assess_session` shall return `state = "unobservable"` and shall NOT degrade to `healthy`.
+*`assess_session` reason-coded verdicts (DV-1 / AD-1, N-01/N-02 fixes applied):*
+
+"Latest observation wins" (N-01): compute `last_success = last_task_tool_call(...)` and
+`last_failure = last_failed_task_lookup_after(..., since=restart_at)`. If both are `None`, there is
+no direct observation either way — fall through to the correlation/insufficient-evidence rules
+below. If only one exists, it wins. If both exist, whichever timestamp is **later** wins — a
+`last_failure` after `last_success` means `confirmed_unavailable`; a `last_success` after
+`last_failure` means `healthy`, clearing the earlier failure.
+
+- [ ] **(confirmed_unavailable — direct, no later recovery)** When `last_failed_task_lookup_after` returns a timestamp for a session after its most recent upgrade-restart, and either no successful `Task*` call exists after that restart or the latest successful call predates that failure timestamp, `assess_session` shall return `state = "confirmed_unavailable"`, and this shall outrank every correlation-based verdict.
+- [ ] **(healthy — recovered after a prior failure)** If a session has both a failed lookup and a later successful `Task*` call after the most recent restart (the successful call's timestamp is after the failure's), then `assess_session` shall return `state = "healthy"`, not `confirmed_unavailable` — a later successful observation clears an earlier failure.
+- [ ] **(at_risk_after_restart)** When a session started before an upgrade-restart R, its last successful `Task*` call predates R with no `Task*` call after R, it has continued non-`Task*` tool activity after R, `now − R ≥ min_idle`, and no direct failed lookup is observed after R, `assess_session` shall return `state = "at_risk_after_restart"`.
+- [ ] **(healthy — already reconnected, no failure observed)** If a successful `Task*` call exists after the most recent restart and no failed lookup is observed after that restart, then `assess_session` shall return `state = "healthy"`.
+- [ ] **(healthy — no restart since)** If the most recent upgrade-restart predates the session's last successful `Task*` call (and no failed lookup is observed after that restart), then `assess_session` shall return `state = "healthy"`.
+- [ ] **(healthy — started after restart)** If the session started after the most recent upgrade-restart, then `assess_session` shall return `state = "healthy"` (its lease is known-fresh — this is affirmative evidence, not an absence of evidence).
+- [ ] **(no_issue_observed — merely idle)** If the session has had no non-`Task*` activity since the restart and no direct failed or successful `Task*` observation, then `assess_session` shall return `state = "no_issue_observed"` (NOT `"healthy"` — this is insufficient evidence, not affirmative health; cannot distinguish disconnect from idle, so it is not flagged, but it must be distinguishable downstream from a genuine affirmative pass).
+- [ ] **(no_issue_observed — min-idle race)** If `now − R < min_idle` and no direct failed or successful observation exists, then `assess_session` shall return `state = "no_issue_observed"` (reason: min-idle not elapsed; NOT `"healthy"`).
+- [ ] **(unobservable — F-3)** If the transcript or session artifacts required to assess a session are missing or unreadable, then `assess_session` shall return `state = "unobservable"` and shall NOT degrade to `healthy` or `no_issue_observed`.
 - [ ] **(unsupported — F-3)** If the host platform is not macOS, then `assess_session` shall return `state = "unsupported"` (the `~/.claude/daemon.log` restart semantics are macOS-only for now).
 
 **Dependencies:** None
@@ -209,20 +231,24 @@ a scriptable signal.
 - Options carry short and long forms: `-j/--json`, `-n/--name <N>`.
 - `--json` emits a JSON array, one object per assessed session, each:
   `{"name": str, "pid": int, "session_id": str, "cwd": str, "state":
-  "confirmed_unavailable"|"at_risk_after_restart"|"healthy"|"unobservable"|"unsupported",
+  "confirmed_unavailable"|"at_risk_after_restart"|"healthy"|"no_issue_observed"|"unobservable"|"unsupported",
   "reason": str, "restart_at": str|null (ISO-8601 UTC), "last_task_call": str|null (ISO-8601 UTC),
   "recovery": str|null}`. `recovery` is populated only for actionable (`confirmed_unavailable`/
-  `at_risk_after_restart`) states; `null` otherwise.
+  `at_risk_after_restart`) states; `null` otherwise. **N-02:** `no_issue_observed` is reported as its
+  own state (never collapsed into `"healthy"`) so a machine consumer can distinguish "confirmed
+  working" from "no evidence either way" even though both are non-actionable for exit-code purposes.
 - Exit code: non-zero when any assessed session is `confirmed_unavailable` or `at_risk_after_restart`
-  (or a named session is not-live); zero for all-`healthy`, `unobservable`, or `unsupported`.
+  (or a named session is not-live); zero for `healthy`, `no_issue_observed`, `unobservable`, or
+  `unsupported` (none of these are actionable, but they remain distinguishable in the reported state).
 
 **Acceptance criteria (T-02):**
 - [ ] When `ai session check-tasks` runs with one or more live sessions in a `confirmed_unavailable` or `at_risk_after_restart` state, the system shall print a per-session verdict naming the session, its state, its reason, and the truthful recovery steps, and shall exit non-zero.
 - [ ] When `ai session check-tasks` runs and every live session is `healthy`, the system shall report all-clear and exit zero.
 - [ ] When `ai session check-tasks --json` (or `-j`) runs, the system shall emit a JSON array — one object per assessed session, conforming to the CLI-contract schema above — to stdout.
-- [ ] When `ai session check-tasks --name <N>` (or `-n <N>`) runs, the system shall assess only session `<N>`.
+- [ ] When `ai session check-tasks --name <N>` (or `-n <N>`) runs and exactly one live session matches `<N>`, the system shall assess only that session.
+- [ ] If `ai session check-tasks --name <N>` matches more than one live session (duplicate names are permitted, DV-5), then the system shall report all matches with their distinguishing `pid`s and exit non-zero as an ambiguity error, rather than silently picking one.
 - [ ] If `ai session check-tasks --name <N>` names a session with no live process, then the system shall report it as not-live and exit non-zero (distinct from an all-clear).
-- [ ] If `~/.claude/daemon.log` is absent, then `ai session check-tasks` shall treat "no known restarts" as all-clear and exit zero without raising.
+- [ ] If `~/.claude/daemon.log` is absent, then `ai session check-tasks` shall report `unobservable` (NOT all-clear/`healthy`) — **F-3 fix:** the daemon log is a required artifact for restart correlation; its absence means restart history cannot be determined, not that no restarts occurred, and must not silently degrade to a healthy-looking zero-exit result.
 - [ ] If `ai session check-tasks` runs on a non-macOS platform, then the system shall report `unsupported` and exit zero (neither an error nor a false all-clear).
 
 **Dependencies:** T-01
@@ -243,7 +269,9 @@ Roadmap + a short procedure note updated in the same commit.
 
 - Files created: none
 - Files modified: `src/ai_cli/config.py` (or the config schema) for `[task_tool_health]` defaults
-  (`min_idle_seconds`; `enabled` reserved for the deferred watcher, documented as such),
+  (`min_idle_seconds` only — **N-03 fix:** the `enabled` flag is NOT part of this task's scope; it
+  belongs to the deferred watcher's own spec, see [Deferred / follow-up work](#deferred--follow-up-work-not-built-in-this-plan),
+  and must not be added as dead configuration before that watcher exists),
   `docs/roadmap/master-roadmap.md` (mark AI-CLI-118 progress), a short note in the relevant
   procedure/README
 - Tests added: `tests/test_task_tool_health.py::TestConfigDefaults`, remediation-string assertions
@@ -272,10 +300,10 @@ Roadmap + a short procedure note updated in the same commit.
 
 | # | Decision | Options Considered | Recommended (AI) | Chosen (Sergei) | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|-----------------|-----------|-----------|--------|
-| D-1 | Detection architecture / where detection runs | (a) SessionStart hook nudge only, (b) on-demand CLI only, (c) library + on-demand CLI + periodic background sweep | (a-narrowed) detection library + on-demand CLI now; periodic sweep **deferred** to a dedicated watcher post-validation | — (pending) | — (pending) | **Original rec was (c)** (crit 2 blast-radius + silent-mid-session value). Revised after Round-1 audit (AD-3): roadmap AI-CLI-118 is a P2 lightweight nudge for a once-observed quirk; an always-on sweep is speculative structural complexity (crit 5) whose only high-confidence trigger (`confirmed_unavailable`) is already in-band — ship the low-blast library + CLI, defer the sweep (crit 4 sequencing). | Recommended (AI) — awaiting review |
+| D-1 | Detection architecture / where detection runs | (a) SessionStart hook nudge only, (b) on-demand CLI only, (c) library + on-demand CLI + periodic background sweep, (d) library + on-demand CLI now, sweep deferred | (d) — N-04: was mislabeled "(a-narrowed)" pre-fix, now its own option | — (pending) | — (pending) | **Original rec was (c)** (crit 2 blast-radius + silent-mid-session value). Revised after Round-1 audit (AD-3): roadmap AI-CLI-118 is a P2 lightweight nudge for a once-observed quirk; an always-on sweep is speculative structural complexity (crit 5) whose only high-confidence trigger (`confirmed_unavailable`) is already in-band — ship the low-blast library + CLI, defer the sweep (crit 4 sequencing). | Recommended (AI) — awaiting review |
 | D-2 | Where the periodic sweep runs (when built) | (a) new dedicated Circus watch service, (b) fold into the existing `ai quota watch` loop, (c) ai-core scheduled JobDef on Hetzner | (a) dedicated watcher — **but the sweep itself is deferred** (see D-1/AD-3) | — (pending) | — (pending) | **Original rec was (b)** fold-into-quota-watch. Revised after Round-1 audit (AD-3/DV-2): quota-watch is off by default and folding couples unrelated quota-scraping side effects (crit 2); if/when proactive monitoring is validated, build a dedicated watcher (a), not the fold. (c) wrong host (crit 2). | Recommended (AI) — awaiting review |
 | D-3 | Remediation level | (a) notify-only, (b) guided restart command, (c) fully automatic unattended restart | (a) surface truthful **exit-and-relaunch** recovery steps; reject (c); defer a confirmed `session restart` command | — (pending) | — (pending) | Crit 1 (reversibility) + blast radius reject (c). Revised after Round-1 audit (AD-2/DV-4): `ai c <N>` on a live session only `tmux attach`es, so the "one-command restart" was false — surface truthful steps; defer a real restart command until the restart-restores-tools premise is empirically confirmed (crit 4 sequencing). | Recommended (AI) — awaiting review |
-| D-4 | Detection confidence model (false-positive control) | (a) restart-correlation alone, (b) three-signal boolean `disconnected_suspected`, (c) live `ToolSearch` probe | (a-tiered) reason-coded model: `confirmed_unavailable` (direct failed lookup) / `at_risk_after_restart` (demoted correlation) / `healthy` / `unobservable` / `unsupported` | — (pending) | — (pending) | **Original rec was (b)** three-signal boolean. Revised after Round-1 audit (AD-1/DV-1): the correlation proves only "used Task* before, worked after", not a broken registry; the incident transcript has a direct failed-lookup signal the boolean ignored. Reason-coded tiers are shared contract infra (crit 2) — demote correlation, add the direct tier, never degrade unobservable/unsupported to healthy. (c) infeasible. | Recommended (AI) — awaiting review |
+| D-4 | Detection confidence model (false-positive control) | (a) restart-correlation alone, (b) three-signal boolean `disconnected_suspected`, (c) live `ToolSearch` probe, (d) reason-coded evidence-tiered model | (d): `confirmed_unavailable` / `at_risk_after_restart` / `healthy` / `no_issue_observed` / `unobservable` / `unsupported`, "latest observation wins" (N-01) — was mislabeled "(a-tiered)" pre-fix, now its own option | — (pending) | — (pending) | **Original rec was (b)** three-signal boolean. Revised after Round-1 audit (AD-1/DV-1): the correlation proves only "used Task* before, worked after", not a broken registry; the incident transcript has a direct failed-lookup signal the boolean ignored. Further revised after Round-2 (N-01/N-02): split `healthy` (affirmative-only) from a new `no_issue_observed` (insufficient evidence) state, and made the direct-failure signal a timestamp so a later success clears it. Reason-coded tiers are shared contract infra (crit 2) — demote correlation, add the direct tier, never degrade unobservable/unsupported to healthy/no_issue_observed. (c) infeasible. | Recommended (AI) — awaiting review |
 
 <a id="d-1"></a>
 
@@ -315,11 +343,24 @@ session *after* a daemon restart, without the session itself having to notice.
 
 - Most surface area: a library + a command + an always-on poll-loop edit and its dedup/notification/lifecycle machinery — see the audit's DV-2/F-1/F-3 for the operational-complexity cost.
 
+##### (d) Detection library + on-demand CLI now; periodic sweep deferred to a dedicated watcher — **N-04 fix: this option was previously mislabeled "(a-narrowed)"; it is its own distinct option, not a variant of (a)**
+
+**Pros:**
+
+- Ships the library + CLI's `confirmed_unavailable` direct catch and explicit on-demand check now,
+  low blast-radius, fully testable against synthetic fixtures.
+- Keeps the door open: the on-demand CLI is exactly what a future sweep or hook would call.
+
+**Cons:**
+
+- No proactive, fully-unattended catch of a silent mid-session drop until the deferred watcher is
+  built (accepted — see Rationale).
+
 ##### Recommendation
 
 > **Original decision (pre-audit):** ✅ Approved — auto (2026-07-22); confidence: high — (c) library + CLI + periodic sweep. Rationale: criterion 2 (blast radius) + the silent-mid-session nature.
 
-> **Revised after Round 1 audit (2026-07-22) — AD-3:** Recommend **(a-narrowed): detection library +
+> **Revised after Round 1 audit (2026-07-22) — AD-3:** Recommend **(d): detection library +
 > on-demand CLI now; defer the periodic sweep** to a dedicated watcher, built only after the
 > detection confidence model (D-4) is validated in a real reproduction. Confidence: high. Criteria
 > moved: **criterion 5** (the always-on sweep is speculative structural complexity for a
@@ -327,7 +368,8 @@ session *after* a daemon restart, without the session itself having to notice.
 > (ship the low-blast, testable library + CLI that delivers the `confirmed_unavailable` catch and the
 > explicit check; add the proactive sweep as separate infra once the premise is proven — filed as a
 > follow-up task). The SessionStart hook from (a) remains scoped out for *self*-detection, but the
-> on-demand CLI is exactly what a hook would call to sweep *other* sessions.
+> on-demand CLI (b) is exactly what a hook would call to sweep *other* sessions — (d) is (b) shipped
+> now, with (c)'s sweep explicitly deferred rather than built.
 
 ---
 
@@ -459,30 +501,37 @@ boolean ignored — a `ToolSearch(select:Task…)` result of `"No matching defer
 
 **Cons:** infeasible — no external surface can query another live session's tool registry (the hard constraint).
 
-##### (a-tiered) Reason-coded evidence model (revised recommendation)
+##### (d) Reason-coded evidence-tiered model — **N-04 fix: this option was previously mislabeled "(a-tiered)"; it is its own distinct option, not a variant of (a)**
 
 **Pros:**
 
-- `confirmed_unavailable` — an ID-correlated failed `Task*` `ToolSearch` after the most recent restart — is a *direct* observation, not a correlation; it outranks everything.
+- `confirmed_unavailable` — an ID-correlated failed `Task*` `ToolSearch` after the most recent restart, when not superseded by a later successful call (N-01: "latest observation wins") — is a *direct* observation, not a correlation; it outranks correlation-only evidence.
 - `at_risk_after_restart` — the demoted three-signal correlation — is surfaced with honest, lower confidence, never as a confirmed disconnect.
-- `healthy` is affirmative-only; `unobservable` (missing/unreadable artifacts) and `unsupported` (non-macOS) are distinct states that never degrade to `healthy` (fixes F-3).
+- `healthy` is reserved for **affirmative** evidence only (a real successful `Task*` observation, or a known-fresh lease); `no_issue_observed` is a distinct state for genuinely insufficient evidence (merely idle, min-idle race) so it is never conflated with a confirmed pass (N-02 fix); `unobservable` (missing/unreadable required artifacts) and `unsupported` (non-macOS) never degrade to `healthy` or `no_issue_observed` (fixes F-3).
 
 **Cons:**
 
-- Direct confirmation only appears after the session attempts a `Task*` lookup; requires per-state messaging/exit-code semantics.
+- Direct confirmation only appears after the session attempts a `Task*` lookup; requires six distinct
+  states' worth of messaging/exit-code semantics instead of a boolean.
 
 ##### Recommendation
 
 > **Original decision (pre-audit):** ✅ Approved — auto (2026-07-22); confidence: high — (b) multi-signal boolean.
 
-> **Revised after Round 1 audit (2026-07-22) — AD-1 / DV-1:** Recommend the **(a-tiered) reason-coded
-> model** with states `confirmed_unavailable` / `at_risk_after_restart` / `healthy` / `unobservable`
-> / `unsupported`. Confidence: high. Criteria: **criterion 2** (the `Verdict`/reason contract is
-> shared single-source-of-truth infra consumed by the CLI, JSON output, exit codes, and the future
-> watcher — a fast-decaying two-way door, **criterion 1**). This replaces the boolean
-> `disconnected_suspected` with `Verdict.state`; the direct `failed_task_lookup_after` signal is added
-> to T-01. The accepted downside — a genuinely-disconnected but idle session stays `healthy` until it
-> does more tool work or attempts a lookup — is the safe direction to err.
+> **Revised after Round 1 audit (2026-07-22) — AD-1 / DV-1, further revised after Round 2 (N-01/N-02):**
+> Recommend the **(d) reason-coded evidence-tiered model** with states `confirmed_unavailable` /
+> `at_risk_after_restart` / `healthy` / `no_issue_observed` / `unobservable` / `unsupported`.
+> Confidence: high. Criteria: **criterion 2** (the `Verdict`/reason contract is shared
+> single-source-of-truth infra consumed by the CLI, JSON output, exit codes, and the future watcher —
+> a fast-decaying two-way door, **criterion 1**). This replaces the boolean `disconnected_suspected`
+> with `Verdict.state`; the direct `last_failed_task_lookup_after` signal is added to T-01, returning
+> a timestamp (not a bare bool) specifically so a later successful call can supersede an earlier
+> failure (Round 2 found the original bool-based design couldn't express this — N-01). `healthy` and
+> `no_issue_observed` were split apart after Round 2 found the original design conflated "confirmed
+> working" with "no evidence either way" under one `healthy` label (N-02). The accepted downside — a
+> genuinely-disconnected but idle session reports `no_issue_observed` (not flagged) until it does more
+> tool work or attempts a lookup — is the safe direction to err, and is now at least honestly labeled
+> as low-evidence rather than misreported as a confirmed pass.
 
 ### Post-hoc automated-mode digest
 

@@ -437,17 +437,118 @@ fleet decision, not an AI-CLI-118 blocker.)
   unavailable (this run hit the AIH-321 broken-worktree-symlink bug — the auditor correctly fell
   back to reading the templates from elsewhere rather than skipping the check).
 
+## Round 2 — Verification Pass (append-only)
+
+**Round 2 auditor:** Codex (`cx review`, effort: high) — fresh agent, no memory of Round 1, read-only sandbox
+
+**Round 2 date:** 2026-07-22
+
+**Round 2 scope:** verify every Round 1 finding (IC-N/JA-N/DV-N/F-N) and AD-1..AD-4 against the Round 1 fix commit `8e0cfee`; independently re-verify DV-1 and DV-4 against source; surface any NEW issues (N-N) the incorporation itself introduced.
+
+### R2 Summary
+
+**Verification result:** of 16 Round 1 findings, **12 PASS, 3 PARTIAL, 1 FAIL**. Both **CRITICAL findings (DV-1, DV-4) PASS** independent re-verification. Of AD-1..AD-4: **AD-1 through AD-3 PASS; AD-4 FAILS policy validation** (the "no doc-hygiene change" recommendation, while honestly recorded as AI-pending rather than falsely approved, conflicts with `ai-cli-utils/CLAUDE.md`'s binding public-package-hygiene rule — see below).
+
+**NEW issues surfaced:** 2 MAJOR + 2 MINOR — **N-01** (a later successful `Task*` call couldn't clear an earlier failed-lookup verdict — the `confirmed_unavailable` state was effectively permanent once triggered), **N-02** (`healthy` was used both for genuine affirmative evidence AND "insufficient evidence," contradicting the design's own "healthy is affirmative-only" claim), **N-03** (the narrowed current scope still added a dead `enabled` config flag owned by the deferred watcher), **N-04** (the revised D-1/D-4 recommendations were labeled "(a-narrowed)"/"(a-tiered)" — modifiers of existing options rather than their own listed options, making it unclear which enumerated choice a human ratifying D-1/D-4 would actually be approving).
+
+### R2.1 IC/JA/DV verification
+
+| ID | Verdict |
+|---|---|
+| IC-1 | PASS |
+| IC-2 | PASS |
+| JA-1 | PASS |
+| JA-2 | PASS |
+| JA-3 | PARTIAL — duplicate-name `--name` ambiguity and clock-skew/equality-boundary handling still unspecified |
+| JA-4 | PASS |
+| DV-1 | **PASS — CRITICAL cleared** |
+| DV-2 | PASS |
+| DV-3 | PASS |
+| DV-4 | **PASS — CRITICAL cleared** (independently re-verified a second time against `main.py:1579-1626`/`session_script.py`; noted the Round 1 audit's own line-number citation had drifted by the time of re-verification — `main.py:1591` vs the actual attach line `1600` — a citation-freshness note, not a behavioral error) |
+| DV-5 | PASS |
+| DV-6 | PASS |
+
+### R2.2 F-N verification
+
+| ID | Verdict |
+|---|---|
+| F-1 | PASS |
+| F-2 | PARTIAL — normalization done; equality-boundary/clock-skew ACs still missing |
+| F-3 | PARTIAL — non-macOS + generic unobservable specified, but a separate CLI AC still said an absent `~/.claude/daemon.log` is "all-clear," directly contradicting the F-3 fix |
+| F-4 | FAIL — see AD-4 below |
+
+### R2.3 AD-N verification
+
+| ID | Verdict |
+|---|---|
+| AD-1 | PASS |
+| AD-2 | PASS |
+| AD-3 | PASS |
+| AD-4 | **FAIL** — `ai-cli-utils/CLAUDE.md` states plainly: "This is a **public open-source package**... no personal identifiers... no private project names or prefixes." The plan retains a personal-name decision column and internal task IDs throughout. The "no change" recommendation cannot stand as a valid resolution for *this doc alone* without either a governing-policy change or an explicit exception. |
+
+### R2.4 NEW issues (N-N)
+
+- **N-01 (MAJOR):** `failed_task_lookup_after` returned a bare bool with no timestamp, so a `confirmed_unavailable` verdict from an old failed lookup could never be cleared by a later successful `Task*` call — the two ACs ("direct failure outranks everything" + "success after restart → healthy") were jointly satisfiable and contradictory for a fail-then-recover timeline.
+- **N-02 (MAJOR):** `healthy` was returned both for genuine affirmative evidence (a real successful call observed) and for "insufficient evidence" cases (merely idle, min-idle race), directly contradicting D-4's own stated "healthy is affirmative-only" design intent.
+- **N-03 (MINOR):** T-03's current deliverables still modified the config schema for an `enabled` flag whose only defined consumer is the explicitly-deferred watcher — dead configuration in the narrowed-scope build.
+- **N-04 (MINOR):** D-1's and D-4's revised recommendations ("(a-narrowed)", "(a-tiered)") didn't correspond to any option actually listed in the Decision Summary's "Options Considered" cell.
+
+### R2 Recommendations
+
+**MUST fix before implementation:** N-01, N-02, F-3's absent-daemon-log contradiction, AD-4 resolution (or explicit deferral to a broader policy decision).
+**SHOULD fix before ratification:** N-03, N-04, JA-3/F-2's remaining boundary gaps.
+
+## Round 3 — Fixes Applied (Claude, direct — not a full re-audit)
+
+Given Round 2's remaining findings were narrow and well-specified (no new architectural ambiguity),
+Claude applied fixes directly to the plan doc rather than spinning up a third full Codex round —
+each cross-checked against the same source evidence Round 1/2 already established:
+
+- **N-01 fixed:** `failed_task_lookup_after(bool)` → `last_failed_task_lookup_after(datetime | None)`;
+  `assess_session` now applies "latest observation wins" between the last successful call and the
+  last failed lookup. New ACs cover both directions (fail→success = `healthy`, success→fail =
+  `confirmed_unavailable`).
+- **N-02 fixed:** split `healthy` (affirmative-only: a real successful call observed, or a
+  known-fresh lease) from a new distinct state `no_issue_observed` (merely idle / min-idle race —
+  genuinely insufficient evidence). State enum is now 6-valued, not 5. CLI/JSON contract updated to
+  report `no_issue_observed` as its own value (never collapsed into `"healthy"`), though it remains
+  non-actionable (exit zero) like `healthy`.
+- **N-03 fixed:** removed the `enabled` flag from T-03's current deliverables; it now lives only in
+  the already-deferred watcher spec.
+- **N-04 fixed:** D-1 and D-4 each gained an explicit, properly-listed option `(d)` for the actual
+  revised recommendation, replacing the ambiguous "(a-narrowed)"/"(a-tiered)" modifiers, in both the
+  Decision Summary table and the detail sections.
+- **F-3's absent-daemon-log contradiction fixed:** that CLI AC now returns `unobservable` (not
+  all-clear) when `~/.claude/daemon.log` is absent, consistent with T-01's own unobservable rule.
+- **F-2's remaining gaps fixed:** added explicit equality-boundary (`==` is "not yet elapsed"/"failure
+  wins on a tie") and clock-skew (negative-duration) ACs.
+- **JA-3's remaining gap (duplicate `--name` ambiguity) fixed:** added an explicit AC requiring an
+  ambiguity error (not silent first-match) when `--name` matches more than one live session.
+- **AD-4 NOT resolved for this plan** — confirmed the conflict is real (`ai-cli-utils/CLAUDE.md`'s
+  public-package-hygiene rule is explicit and binding) but is a **repo-wide pre-existing pattern**
+  (this same convention runs throughout `docs/roadmap/master-roadmap.md` already), not something a
+  single plan-doc edit can coherently resolve. Confirmed `docs/` is never shipped in the PyPI package
+  (`pyproject.toml`: `packages = ["src/ai_cli"]` only) — low-stakes, repo-visibility-only. Filed as
+  its own follow-up: `AI-CLI-119` (reconsider/relax the rule's scope for internal planning docs).
+
+**Not re-verified by a fresh Round 3 audit agent** — these fixes are recorded here for the human
+reviewer's visibility; a Round 3 (or Round 4) Codex verification pass before implementation begins
+is recommended but not required, since the plan's own Decisions remain `PENDING` human review
+regardless (implementation cannot start until then).
+
 ## Sign-Off Checklist
 
-- [ ] All CRITICAL / P0 findings have linked fixes
-- [ ] All MAJOR / P1 findings are fixed or explicitly deferred
+- [x] All CRITICAL / P0 findings have linked fixes (DV-1, DV-4 — both PASS on Round 2 verification)
+- [x] All MAJOR / P1 findings are fixed or explicitly deferred (N-01/N-02 fixed directly; AD-4/F-4
+  deferred to AI-CLI-119, a separate repo-wide policy decision)
 - [x] AD-1 through AD-4 are approved or closed with rationale (AI recommendations recorded with
-  confidence + decision-framework criterion; awaiting human ratification before implementation)
+  confidence + decision-framework criterion; AD-4 explicitly deferred rather than resolved; all
+  awaiting human ratification before implementation)
 - [x] Verification Matrix run on 10 findings/checks; 10/10 reproduced (+ DV-4 independently
-  re-verified by Claude)
-- [ ] At least one append-only verification round completed
-- [ ] Final re-grep verification completed
-- [x] No unrecorded inline fixes were applied
+  re-verified by Claude, twice)
+- [x] At least one append-only verification round completed (Round 2)
+- [ ] Final re-grep verification completed (recommended before implementation, not yet run)
+- [x] No unrecorded inline fixes were applied (Round 3 fixes recorded above with rationale)
 - [x] Already-Correct Items populated with specific evidence
 - [x] Anti-Patterns section records audit methodology lessons
 - [ ] User reviewed and approved sign-off
