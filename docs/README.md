@@ -2,7 +2,7 @@
 
 > Auto-generated from YAML frontmatter. Run `aido docs index` to refresh.
 
-**49 docs** across 10 categories.
+**50 docs** across 11 categories.
 
 ## Design
 
@@ -67,6 +67,12 @@ Testing templates and tracking.
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
 | [UAT — iTerm2 Tab Title and Color System Redesign](test/uat-iterm2-title-color-redesign.md) | pending | ai-cli-utils | iterm2, uat, tab-title, tab-color, fleet, gemini |
+
+## Audit
+
+| Doc | Status | Source | Tags |
+|-----|--------|--------|------|
+| [AI-CLI-118 daemon-restart Task* tool self-healing plan — audit](audits/ai-cli-118-daemon-task-tool-self-healing-plan-audit.md) | draft | aido-stub | audit, ai-cli-118, daemon, task-tools |
 
 ## Bugs
 
