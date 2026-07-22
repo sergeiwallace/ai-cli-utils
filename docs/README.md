@@ -2,8 +2,7 @@
 
 > Auto-generated from YAML frontmatter. Run `aido docs index` to refresh.
 
-**51 docs** across 11 categories.
- 3 symlinked from other projects.
+**49 docs** across 10 categories.
 
 ## Design
 
@@ -31,6 +30,7 @@ Tactical implementation — tasks, batches, gates.
 | [AI-CLI-68: Quota Scrape Format-Change Detection — Plan](plans/quota-scrape-format-detection-plan.md) | active | claude-sonnet-4-6 | quota, scrape, telemetry, statusline, db |
 | [CDP Browser Debug Server — Implementation Plan](plans/cdp-plan.md) | draft | ai-cli-utils | cdp, chrome, devtools, browser, debugging |
 | [Circus-Managed signal-watch](plans/circus-signal-watch-plan.md) | implemented | session-2026-04-01 | signal-watch, circus, handoff, process-management |
+| [Detect and remediate CC daemon-restart Task* tool disconnects](plans/ai-cli-118-daemon-task-tool-self-healing-plan.md) | draft | None | plan |
 | [Gemini Deep Research — OAuth Fix & GCP Client Setup](plans/archive/gemini-deep-research-oauth-plan.md) | archived | ai-cli-utils | gemini, oauth, deep-research, gcp, ai-cli-45 |
 | [Implementation Plan — Gemini Checkpoint-to-Chat Conversion](plans/archive/gemini-checkpoint-chat-conversion-plan.md) | archived | session-2026-04-08 | ai-cli, gemini, session-resume, checkpoint, chat-files |
 | [Implementation Plan — Geo-Aware SSH Reverse Proxy for `ai gemini`](plans/archive/geo-aware-proxy-tunnel-plan.md) | archived | claude-sonnet-4-6 | ai-cli, ai-gemini, geo-restriction, ssh, socks-proxy, deep-research |
@@ -97,14 +97,6 @@ Testing templates and tracking.
 | [Going Public — Repository Automation & Hardening Plan](plans/going-public-plan.md) | APPROVED | R-2 research | open-source, github, automation, ci-cd |
 | [Proactive Project Registry Registration — Implementation Plan](plans/proactive-project-registry-plan.md) | DRAFT | claude-sonnet-4-6 | registry, config, setup, copier, multi-user |
 | [main.py Refactor — Module Extraction + CLI Dispatch Redesign](plans/main-py-refactor-plan.md) | implemented | internal | refactor, architecture, cli, modules |
-
-## Procedures
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [AC Writing Practices](procedures/ac-writing-practices.md) | active | AIDO-69 (link) | ac, acceptance-criteria, plan-docs, quality, feature-parity |
-| [Claude Token Efficiency Guide](procedures/claude-token-efficiency.md) | active | sergei (link) | claude, tokens, efficiency, models, quota |
-| [Reasoning Checkpoints](procedures/reasoning-checkpoints.md) | active | sergei — design doc docs/designs/reasoning-checkpoints.md (link) | reasoning, checkpoints, quality, agents, claude-code |
 
 ## Research-Prompts
 
