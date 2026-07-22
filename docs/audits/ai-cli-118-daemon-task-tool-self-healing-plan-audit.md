@@ -34,26 +34,32 @@ assumptions about `~/.claude/daemon.log` / `~/.claude/sessions/*.json` / transcr
 
 **Latest round:** Round 1
 
-**Outstanding by severity / verdict:**
+**Outstanding by severity / verdict (post-incorporation, 2026-07-22):**
 
-| Severity | Count | Fixed | Deferred |
+| Severity | Count | Fixed / Resolved | Deferred (captured) |
 |---|---:|---:|---:|
-| CRITICAL / P0 | 2 | 0 | 0 |
-| MAJOR / P1 | 13 | 0 | 0 |
-| MINOR / P2 | 1 | 0 | 0 |
+| CRITICAL / P0 | 2 | 2 | 0 |
+| MAJOR / P1 | 13 | 10 | 3 |
+| MINOR / P2 | 1 | 1 | 0 |
 | Cosmetic / P3 | 0 | 0 | 0 |
-| **Total** | **16** | **0** | **0** |
+| **Total** | **16** | **13** | **3** |
 
-**Ship-readiness verdict:** **NOT ready for implementation.** The proposed detector does not
-establish Task-tool failure (it's a correlation heuristic, not a confirmed-disconnect signal — and
-the real incident transcript contains a *more direct* signal the plan ignores, DV-1), the
-background execution path is disabled by default (DV-2), and the documented recovery command does
-not restart an existing session (DV-4 — **independently verified by Claude against
-`main.py:1591`, confirmed correct**: `ai c N` on an already-running session only
-`tmux attach-session`s to the same live process). Three policy/design decisions (AD-1/2/3) require
-team input before the plan can be corrected. **Claude also independently corrected the upstream
-research doc** (`claude-code-daemon-restart-task-tool-disconnect.md` §5) which had made the same
-wrong "restart via `ai c N`" claim DV-4 caught — see that doc's commit `e3823ac`.
+*"Deferred (captured)" = DV-3 / F-1 / F-2 — the notification-contract, atomic-dedup, and
+UTC-normalization requirements for the **proactive sweep**, which AD-3 defers out of this plan; their
+specs are recorded in the plan's "Deferred / follow-up work" section so the follow-up starts correct
+(F-2's UTC normalization is *also* fixed inline in T-01 for the on-demand path).*
+
+**Ship-readiness verdict (Round 1):** **NOT ready for implementation** — the original detector did not
+establish Task-tool failure (DV-1), the background execution path was disabled by default (DV-2), and
+the documented recovery command did not restart an existing session (DV-4, independently re-verified
+against `main.py:1591`). **Post-incorporation status (2026-07-22):** AD-1..AD-4 resolved (AI
+recommendations) and the plan revised — reason-coded detector (AD-1), truthful recovery + deferred
+restart command (AD-2), narrowed scope with a deferred dedicated-watcher sweep (AD-3), no doc-hygiene
+change (AD-4); all 16 findings fixed inline or captured in the plan's Deferred section. **The plan now
+awaits human ratification of the four AI-recommended Decisions before implementation begins.** Claude
+also independently corrected the upstream research doc
+(`claude-code-daemon-restart-task-tool-disconnect.md` §5), which had made the same wrong
+"restart via `ai c N`" claim DV-4 caught — see that doc's commit `e3823ac`.
 
 <!-- /aido:region name="scope" -->
 
@@ -184,25 +190,26 @@ below; summarized in the tables above.)*
 
 | Finding | Status | How resolved |
 |---|---|---|
-| IC-1 | OPEN — read-only review | Rewrite certainty claims (plan + research doc). Research doc's DV-4-adjacent claim already corrected by Claude (`e3823ac`); IC-1's broader "root-caused"/"validated" language in the plan itself still needs softening to match the research doc's own [INFERENCE] framing. |
-| IC-2 | TEAM INPUT NEEDED | See AD-3. |
-| JA-1 | OPEN — read-only review | Reset human-choice fields to pending until Sergei actually reviews. |
-| JA-2 | OPEN — read-only review | Add short forms and JSON schema. |
-| JA-3 | OPEN — read-only review | Expand AC and test matrix per the gaps listed. |
-| JA-4 | OPEN — read-only review | Restore template structure (ACs inline per task) and fix the ToC. |
-| DV-1 | TEAM INPUT NEEDED | See AD-1. |
-| DV-2 | TEAM INPUT NEEDED | See AD-3. |
-| DV-3 | OPEN — read-only review | Align delivery contract and returned-result handling with the real `Notifier`. |
-| DV-4 | TEAM INPUT NEEDED | See AD-2. **Root claim independently verified correct by Claude; upstream research doc already corrected.** |
-| DV-5 | OPEN — read-only review | Specify real schema (`kind`, numeric `startedAt`, `procStart`) and process identity. |
-| DV-6 | OPEN — read-only review | Replace the cursor claim with a complete, honestly-scoped design. |
-| F-1 | OPEN — read-only review | Add atomic state machine and contention tests. |
-| F-2 | OPEN — read-only review | Specify UTC normalization and boundary behavior. |
-| F-3 | TEAM INPUT NEEDED | Platform scope is part of AD-3. |
-| F-4 | TEAM INPUT NEEDED | See AD-4 (new — added by Claude during incorporation, not in Codex's original AD set). |
+| IC-1 | FIXED (plan revised) | Overview certainty language softened to `[INFERENCE]`-qualified (matches research doc); research doc's DV-4-adjacent claim already corrected by Claude (`e3823ac`). |
+| IC-2 | RESOLVED via AD-3 | Scope narrowed to library + on-demand CLI; sweep deferred (plan D-1 revised). |
+| JA-1 | FIXED (plan revised) | Decision Summary `Chosen (Sergei)`/`Diverged?` reset to `— (pending)`; Status → "Recommended (AI) — awaiting review"; column-semantics note added per the framework's own definition. |
+| JA-2 | FIXED (plan revised) | Added `-j/--json`, `-n/--name` short forms + an explicit JSON-array object schema in T-02's CLI contract. |
+| JA-3 | FIXED (plan revised) | Expanded ACs: ID-correlated tool_use/tool_result, numeric-`startedAt`, `kind` filtering + `procStart` PID-reuse defense, duplicate names, JSON schema, `NotificationResult` combinations (deferred-sweep spec), UTC normalization; failure-path ACs per public function. |
+| JA-4 | FIXED (plan revised) | ACs moved inline per task; standalone "Acceptance Criteria" section removed; ToC now includes `Feedback Rounds` + every real heading. |
+| DV-1 | RESOLVED via AD-1 | Reason-coded tiers (`confirmed_unavailable`/`at_risk_after_restart`/`healthy`/`unobservable`/`unsupported`) replace the boolean; `failed_task_lookup_after` added (plan D-4 revised). |
+| DV-2 | RESOLVED via AD-3 | Sweep deferred; not folded into off-by-default quota-watch (plan D-2 revised). |
+| DV-3 | FIXED (deferred-spec) | Deferred-sweep spec now states the real `Notifier.send()` contract (never raises; returns `list[NotificationResult]`; OS fallback-only), inspect `.success` per channel, handle all combinations. |
+| DV-4 | RESOLVED via AD-2 | False `ai c <N>` "restart" claim removed; truthful exit-and-relaunch surfaced (plan D-3 revised). Root claim independently re-verified against `main.py:1591,1600,1626`. |
+| DV-5 | FIXED (plan revised) | T-01 specifies `kind=="interactive"` filter, numeric-ms `started_at`, `procStart` process-identity validation, duplicate-name handling — grounded in a real `~/.claude/sessions/*.json` record. |
+| DV-6 | FIXED (plan revised) | False byte-offset/last-verdict cursor claim removed; OQ-2 re-scoped to the real `cc_usage.py` watermark pattern (ISO timestamp, whole-file read); no cursor needed for the on-demand CLI. |
+| F-1 | FIXED (deferred-spec) | Atomic dedup (`O_CREAT|O_EXCL`/lock, pending→sent state, retry/backoff, stale-claim cleanup) specified in the deferred-sweep section; shell-`touch` TOCTOU precedent noted as unsuitable. |
+| F-2 | FIXED (plan revised) | Explicit UTC-normalization ACs covering the three clocks (daemon ISO, transcript ISO, session epoch-ms) + naive/invalid handling in T-01. |
+| F-3 | RESOLVED via AD-3 | macOS-only; `unobservable`/`unsupported` are distinct verdict states that never degrade to `healthy` (plan T-01/T-02 ACs). |
+| F-4 | RESOLVED via AD-4 | No doc-hygiene change (consistent with repo convention); a repo-wide scrub is a separate fleet decision, not an AI-CLI-118 blocker. |
 
-No finding was marked "FAIL — fixed inline"; no commit was created by the auditor (read-only
-sandbox, per design).
+No finding was marked "FAIL — fixed inline" during Round 1 (read-only sandbox); the "FIXED (plan
+revised)" / "RESOLVED via AD-N" statuses above reflect the **post-audit incorporation pass** (Claude,
+2026-07-22) into the plan doc, recorded here as the resolution trail.
 
 ### R1 Verification Matrix
 
@@ -241,7 +248,17 @@ remediation value.
 
 **Recommendation (Codex, Round 1):** (a), with `confirmed_unavailable`, `at_risk_after_restart`,
 `healthy`, `unobservable`, and `unsupported` as distinct reason-coded states.
-**Decision:** `PENDING`
+**Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved, refined.**
+Confidence: **high.** Decision-framework criterion that moved it: **criterion 2 (blast radius)**,
+backed by **criterion 1 (fast-decaying reversibility)** — the `Verdict`/reason-code contract is shared
+single-source-of-truth infra consumed by the CLI, JSON output, exit codes, and any future watcher, so
+it must be robust. Independently verified against source: the direct signal is real (`ToolSearch`
+Task-family lookup → `"No matching deferred tools found"`, ID-correlatable in the transcript), and the
+five-state set is kept but sharpened — `confirmed_unavailable` requires an **ID-correlated**
+lookup→failure pair after the most recent restart; `healthy` is affirmative-only; `unobservable`
+(missing/unreadable artifacts) and `unsupported` (non-macOS) must **never** degrade to `healthy` (the
+F-3 fix). Revises plan D-4 and the `Verdict` shape (boolean `disconnected_suspected` → reason-coded
+`state`); adds `failed_task_lookup_after` to T-01.
 
 <a id="ad-2"></a>
 
@@ -270,7 +287,18 @@ escalation, timeout, cross-platform tests; recovery still needs empirical valida
 
 **Recommendation (Codex, Round 1):** (a) for this plan; treat (b) as separate work after recovery
 is verified.
-**Decision:** `PENDING`
+**Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved; reject
+(c); defer (b).** Confidence: **high.** Criterion: **criterion 4 (cost of wrong-simple vs.
+over-engineering) + the sequencing carve-out.** Not a plain "simpler wins": (b) would build a
+process-killing restart command on an **unverified premise** — the plan's own OQ-1 admits
+restart-restores-`Task*` is unconfirmed — and on a proxy signal that can false-positive (criterion 1:
+killing a live foreground client mid-turn is one-way, high-blast). Verified against source
+(`main.py:1591,1600,1626`): `ai c <N>` on a live session only `tmux attach-session -d`s — DV-4
+confirmed. Surface truthful exit-and-relaunch steps now (exit the CC client so the session-script
+wrapper relaunches a fresh `claude --continue`, then `ai c <N>` to reattach); defer the confirmed
+`session restart` command until AD-1 is validated in a reproduction AND restart-restores-tools is
+empirically confirmed — **filed to the plan's Deferred / follow-up section.** Revises plan D-3; removes
+the false "`ai c <N>` = restart" claim everywhere.
 
 <a id="ad-3"></a>
 
@@ -299,7 +327,18 @@ monitoring; existing loop latency/exception behavior needs changes regardless.
 
 **Recommendation (Codex, Round 1):** (a) until AD-1 is validated; if proactive monitoring remains
 a requirement, choose (b), not the quota watcher.
-**Decision:** `PENDING`
+**Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved; defer
+the sweep; reject (c).** Confidence: **high.** Criteria: **criterion 5 (YAGNI — speculative structural
+complexity)** + **criterion 2 (concern-coupling / blast radius)** + **criterion 4 sequencing.** The
+roadmap entry is a P2 "lightweight nudge" for a **once-observed** quirk (read directly:
+`master-roadmap.md:5`); an always-on sweep is speculative infra whose only high-confidence trigger
+(`confirmed_unavailable`, post-AD-1) is already in-band. Verified: quota-watch is off by default
+(`config.py:147` / `process_manager.py:147`, `auto_start=False`), so folding (c) both mis-hosts and
+couples unrelated quota-scraping side effects. Ship the library + on-demand CLI now (low-blast,
+testable); defer the proactive sweep to a **dedicated** local watcher post-validation — **filed to the
+plan's Deferred / follow-up section** with the DV-3/F-1/F-2 requirements captured. macOS-only for now;
+non-macOS → `unsupported` (F-3). Revises plan D-1 (scope) and D-2 (host, now dedicated-watcher /
+deferred).
 
 <a id="ad-4"></a>
 
@@ -332,7 +371,15 @@ coherent, not a one-doc fix); loses the AIH-148 divergence-tracking value this c
 visibility; no other roadmap/plan entry in this repo has ever been scrubbed this way, and changing
 it for one doc would be inconsistent without a deliberate repo-wide decision. Flagging as PENDING
 rather than self-resolving since it touches a fleet-wide convention, not just this plan.
-**Decision:** `PENDING`
+**Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved: no
+change.** Confidence: **high.** Criterion: **criterion 2 (consistency with the established repo-wide
+convention)** — trivial, reversible, contained (one-liner resolution, scorer skipped per the
+framework). Every other doc in this repo uses `AI-CLI-N` IDs and the decision-framework's own
+`Chosen (Sergei)` column; the projects-wide naming-hygiene rule targets outward-facing *writing*
+(PRs, posts, emails), not a package's internal `docs/` planning tree. Changing one doc without a
+repo-wide policy would be inconsistent and would lose the AIH-148 divergence-tracking value the column
+exists for. No plan change required. (If Sergei wants a repo-wide scrub policy, that is a separate
+fleet decision, not an AI-CLI-118 blocker.)
 
 ## Outstanding Issues to Fix
 
@@ -394,7 +441,8 @@ rather than self-resolving since it touches a fleet-wide convention, not just th
 
 - [ ] All CRITICAL / P0 findings have linked fixes
 - [ ] All MAJOR / P1 findings are fixed or explicitly deferred
-- [ ] AD-1 through AD-4 are approved or closed with rationale
+- [x] AD-1 through AD-4 are approved or closed with rationale (AI recommendations recorded with
+  confidence + decision-framework criterion; awaiting human ratification before implementation)
 - [x] Verification Matrix run on 10 findings/checks; 10/10 reproduced (+ DV-4 independently
   re-verified by Claude)
 - [ ] At least one append-only verification round completed
@@ -424,5 +472,6 @@ matrix output and the complete Appendix: Files Read / Appendix: Commands Run lis
 | Date | Round | Notes |
 |------|-------|-------|
 | 2026-07-22 | Round 1 | Codex `cx review --effort high`, read-only. 16 findings (2 CRITICAL, 13 MAJOR, 1 MINOR), 4 AD-N decisions (AD-4 added by Claude during incorporation). Verdict: not ready for implementation. Claude independently re-verified DV-4 against `main.py:1591` (confirmed) and corrected the upstream research doc's workaround claim (`ai-harness` `e3823ac`). |
+| 2026-07-22 | Round 1 incorporation | AD-1..AD-4 resolved (AI recommendations via the AIH-139 decision framework; awaiting human ratification). AD-1 → reason-coded confidence model; AD-2 → truthful exit-and-relaunch + defer confirmed restart command; AD-3 → narrow to library + CLI, defer sweep to a dedicated watcher; AD-4 → no doc-hygiene change. All 16 findings resolved or captured in the plan's Deferred section (sweep DV-3/F-1/F-2; confirmed restart command). Every DV-N re-verified directly against source (`main.py`, `notifications.py`, `quota.py`, `config.py`, `cc_usage.py`, a real `sessions/*.json`) before trusting the audit's quotes. |
 
 <!-- /aido:region name="audit_log" -->
