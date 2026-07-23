@@ -501,10 +501,15 @@ class TestCliSessionSetupBranches:
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
-                            with patch("subprocess.run", side_effect=_run):
-                                with patch("os.execvp", side_effect=SystemExit(0)):
-                                    with pytest.raises(SystemExit):
-                                        cli()
+                            # See _run_c_with_fake_subprocess's comment: the blanket
+                            # subprocess.run mock's generic success default incidentally
+                            # answers AI-CLI-99's unrelated detect_repo_root() repair-backstop
+                            # call, tripping its worktree-nesting guard when run from a worktree.
+                            with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                with patch("subprocess.run", side_effect=_run):
+                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                        with pytest.raises(SystemExit):
+                                            cli()
         assert len(killed) == 1
 
     def test_cli_when_no_explicit_sandbox_and_session_exists_then_attaches_without_kill(self):
@@ -523,10 +528,15 @@ class TestCliSessionSetupBranches:
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
-                            with patch("subprocess.run", side_effect=_run):
-                                with patch("os.execvp", side_effect=SystemExit(0)):
-                                    with pytest.raises(SystemExit):
-                                        cli()
+                            # See _run_c_with_fake_subprocess's comment: the blanket
+                            # subprocess.run mock's generic success default incidentally
+                            # answers AI-CLI-99's unrelated detect_repo_root() repair-backstop
+                            # call, tripping its worktree-nesting guard when run from a worktree.
+                            with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                with patch("subprocess.run", side_effect=_run):
+                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                        with pytest.raises(SystemExit):
+                                            cli()
         assert len(killed) == 0
 
     def test_cli_when_iterm2_env_set_then_passes_terminal_flags_to_tmux_new_session(self):
@@ -850,12 +860,18 @@ class TestCliSessionExecvp:
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
                                             existing = MagicMock(returncode=0)
-                                            with patch("subprocess.run", return_value=existing):
-                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
-                                                assert "attach-session" in mock_exec.call_args[0][1]
-                                                assert "-d" in mock_exec.call_args[0][1]
+                                            # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
+                                            # comment: the blanket subprocess.run mock incidentally
+                                            # answers AI-CLI-99's unrelated detect_repo_root()
+                                            # repair-backstop call too, tripping its worktree-nesting
+                                            # guard when run from a worktree.
+                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                                with patch("subprocess.run", return_value=existing):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+                                                    assert "attach-session" in mock_exec.call_args[0][1]
+                                                    assert "-d" in mock_exec.call_args[0][1]
 
     def test_cli_when_no_existing_session_then_creates_new(self):
         run_calls = []
@@ -953,10 +969,19 @@ class TestCliWorktreeGitPull:
                                 with patch("ai_cli.session.create_worktree", return_value=worktree_path):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            with patch("subprocess.run", side_effect=subprocess_side_effect):
-                                                with patch("os.execvp", side_effect=SystemExit(0)):
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
+                                            # AI-CLI-99's repair backstop calls detect_repo_root() for
+                                            # real (unrelated to this test's own subprocess mock, which
+                                            # only cares about the worktree-index-healing calls below).
+                                            # Left unmocked, the blanket subprocess.run patch's generic
+                                            # "success, empty stdout" default makes detect_repo_root()
+                                            # treat the real process cwd as the git-common-dir, which
+                                            # trips its own worktree-nesting guard whenever the test
+                                            # suite happens to run from inside a git worktree.
+                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                                with patch("subprocess.run", side_effect=subprocess_side_effect):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
         return worktree_path
 
     def test_when_worktree_index_corrupted_then_heals_before_pull(self, tmp_path):
