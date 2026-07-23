@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 import ai_cli.config as _config_module
+from ai_cli.git_repair import _GIT_TARGETING_VARS
 
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
@@ -116,6 +117,26 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
     the isolation empirically (`XDG_STATE_HOME=$(mktemp -d)` made the full suite deterministic).
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg_state_home")))
+
+
+@pytest.fixture(autouse=True)
+def _strip_git_targeting_env_vars(monkeypatch):
+    """Never inherit GIT_DIR/GIT_WORK_TREE/etc. into test subprocesses (AI-CLI-121).
+
+    `git_repair._git_env()` already strips these before every git subprocess the app's own
+    code issues, specifically because they redirect git's repo/worktree targeting rather than
+    honoring `-C`/`cwd` — see that module's docstring for the full AI-CLI-99 rationale. Tests
+    that shell out to `git` directly in their own ephemeral fixture repos (`test_sync.py`,
+    `test_roadmap.py`, `test_trust.py`, `test_setup.py`, `test_git_repair.py`) never got the
+    same protection. Confirmed live: invoking the full suite through this repo's own pre-commit
+    pre-push hook — which manipulates the index/work-tree via these exact variables while
+    staging unstaged changes for the hook run — reproduced 17 failures + 9 errors that were
+    100% absent running the identical suite/command directly (bypassing pre-commit). Stripping
+    them for the whole test session removes the leak at its source, matching the app's own
+    established pattern instead of requiring every git-shelling test to defend itself.
+    """
+    for var in _GIT_TARGETING_VARS:
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture(autouse=True)
