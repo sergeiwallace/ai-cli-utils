@@ -1,3 +1,13 @@
+> ⚠️ **Beads migration status (SW-841 Phase-3) — read before assuming this doc is retired.**
+> This repo's roadmap was bulk-exported into a Beads (`bd`) store as a data snapshot
+> (2026-07-17). **This roadmap doc is still the authoritative source for task tracking** —
+> the actual cutover that would retire it (freeze pass T-08 + deprecation phase T-09–T-13) has
+> NOT executed yet, gated on a design decision (D-16) Sergei hasn't ratified. **Until cutover
+> ships: keep creating and updating tasks here as normal, and in the CC task panel as usual** —
+> do not treat the presence of a `.beads/` directory as a signal that this doc is retired.
+> Canonical status: [sergei/docs/plans/beads-phase3-migration-plan.md](../../../sergei/docs/plans/beads-phase3-migration-plan.md) (see T-08, Phase 4). This
+> notice will be replaced with an archive notice once cutover actually completes.
+
 # ai-cli-utils Roadmap
 
 ## Open
