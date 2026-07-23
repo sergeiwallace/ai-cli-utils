@@ -22,6 +22,19 @@ stub: false
 
 **Research:** [📄 ai-harness/docs/research/claude-code-daemon-restart-task-tool-disconnect.md](../../../ai-harness/docs/research/claude-code-daemon-restart-task-tool-disconnect.md)
 
+> **⚠️ Superseding finding (2026-07-22, same day) — read before resuming this plan.** The
+> daemon-restart-causes-a-stale-lease root-cause model this whole plan is built on was directly
+> tested and falsified (neither session restart nor daemon restart fixed the symptom). The
+> actual likely root cause is unrelated to the daemon entirely — an upstream Claude Code
+> GrowthBook model-gate bug (`tengu_vellum_ash`, matching
+> [anthropics/claude-code#75577](https://github.com/anthropics/claude-code/issues/75577)).
+> Full writeup: [📄 ai-harness/docs/bugs/aih-335-task-tool-permanently-disabled.md](../../../ai-harness/docs/bugs/aih-335-task-tool-permanently-disabled.md).
+> **This plan's D-1/D-3/D-4 detection-and-remediation design may need re-examination against
+> the real mechanism before implementation proceeds** — the daemon-log-correlation detection
+> heuristic (D-1/D-4) and the "exit and relaunch" remediation guidance (D-3) were both designed
+> around the now-superseded theory. Not yet resolved which parts of the plan still hold up;
+> flag for Sergei's review alongside the pending D-3 ratification.
+
 **Audit:** [📄 ai-cli-utils/docs/audits/ai-cli-118-daemon-task-tool-self-healing-plan-audit.md](../audits/ai-cli-118-daemon-task-tool-self-healing-plan-audit.md) — Round 1 (Codex, 16 findings) incorporated; AD-1..AD-4 resolved (AI recommendations, awaiting human ratification).
 
 **Mode:** `--mode automated` — Decisions were first auto-resolved via the AIH-139 decision scorer
