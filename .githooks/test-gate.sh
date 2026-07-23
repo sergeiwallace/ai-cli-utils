@@ -7,6 +7,22 @@
 #   SKIP_TESTS=1  — skip this gate entirely
 set -uo pipefail
 
+# AI-CLI-70/AIH-70 root cause: git itself injects GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE
+# (and related GIT_* vars) into every hook process it invokes. pre-commit strips these
+# before its OWN internal git plumbing (see pre_commit/git.py's no_git_env(), tracking
+# upstream pre-commit issue #300) but does NOT strip them before running this script —
+# so without this, every subprocess we spawn (pytest, and any test that shells out to
+# git inside an ephemeral tmp fixture repo) inherits env vars pointing at THIS worktree.
+# A test's own git command there, unless it explicitly overrides these, silently
+# retargets at the real repo instead of its own fixture — corrupting this worktree's
+# index/working tree. Unsetting them here is safe: git falls back to cwd-based repo
+# discovery, which resolves to the same worktree since we haven't changed directory.
+for _v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_CONFIG GIT_CONFIG_GLOBAL; do
+    unset "$_v"
+done
+unset _v
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ERRORS=0
 
