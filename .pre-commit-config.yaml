@@ -13,6 +13,12 @@
 
 default_stages: [pre-commit]
 
+# Beads (bd) manages everything under .beads/ — machine-generated Dolt config +
+# JSONL exports + audit log. They must NOT be processed by the file-formatting
+# hooks (check-json/check-yaml/end-of-file-fixer/trailing-whitespace): bd's output
+# doesn't satisfy them, and the pre-push stash/auto-fix/restore dance conflicts on
+# the churning store files (SW-841 #73). Global-exclude the whole dir. Committed
+# .beads/issues.jsonl is still version-controlled; it's just not linted.
 exclude: ^\.beads/
 
 repos:

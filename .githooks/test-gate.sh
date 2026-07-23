@@ -27,8 +27,14 @@ unset _CHANGED
 # HEAD-sentinel cache: if tests already passed on this HEAD, skip the re-run.
 # Sentinel is written at end of this script after all tests pass; it's also
 # written by running this script directly (e.g. `bash .githooks/test-gate.sh`
-# after manual pytest). Cache lives in .git/ (not tracked, per-clone).
-SENTINEL=".git/pytest-last-pass"
+# after manual pytest). Cache lives in the git dir (not tracked, per-clone).
+# NOTE: resolve the git dir via `git rev-parse --git-dir` — a literal ".git" is a
+# FILE (a gitdir: pointer), not a directory, inside a git worktree, so a hardcoded
+# ".git/…" path silently no-ops there and the cache never engages (the ai-cli
+# `.worktrees/sw-N` sessions are all worktrees). --git-dir returns the worktree's
+# own private git dir (…/.git/worktrees/<name>), a real writable directory.
+GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
+SENTINEL="$GIT_DIR_PATH/pytest-last-pass"
 if [ -f "$SENTINEL" ]; then
     CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
     LAST_PASS=$(cat "$SENTINEL" 2>/dev/null || echo "")
@@ -106,8 +112,53 @@ if [ -n "$HAS_PYTHON" ]; then
 
     if [ -n "$PYTEST" ]; then
         echo "[test-gate] Python detected → $PYTEST"
-        # Capture exit code without tripping set -e
-        "$PYTEST" "$REPO_ROOT" --tb=short -q && PYTEST_EXIT=0 || PYTEST_EXIT=$?
+        PYTEST_EXIT=""
+
+        # Optional remote offload (CORE-40): run the Python suite on a box where the
+        # test DB is LOCAL — e.g. ai-core's Postgres on Hetzner, ~14x faster than
+        # crossing Tailscale per query (37s vs ~9min). Opt-in per-repo:
+        #   git config testgate.remote "user@host:/abs/path/to/runner-checkout"
+        # Unset = run locally (fleet default — byte-identical to before). The runner
+        # path is a dedicated checkout on the box with its own venv + .envrc (DSN via
+        # direnv/Doppler). We rsync the LOCAL working tree (so uncommitted changes are
+        # gated too) and run pytest there. ANY remote failure (unreachable / rsync /
+        # ssh) falls back to a local run — a flaky tunnel must never block a push.
+        REMOTE="${TEST_GATE_REMOTE:-$(git -C "$REPO_ROOT" config testgate.remote 2>/dev/null || true)}"
+        if [ -n "$REMOTE" ] && command -v rsync >/dev/null 2>&1; then
+            RHOST="${REMOTE%%:*}"; RPATH="${REMOTE#*:}"
+            if ssh -o ConnectTimeout=8 -o BatchMode=yes "$RHOST" true 2>/dev/null; then
+                echo "[test-gate] Offloading Python suite → $RHOST:$RPATH (local DB there; rsync + remote pytest)"
+                if rsync -az --delete \
+                        --exclude '.git' --exclude '.venv/' --exclude '__pycache__/' \
+                        --exclude '.pytest_cache/' --exclude 'node_modules/' --exclude '*.db' \
+                        "$REPO_ROOT/" "$RHOST:$RPATH/"; then
+                    # Remote run is serial (the box shares one test DB — no per-worker
+                    # isolation, so xdist would deadlock on DROP SCHEMA). uv sync is a
+                    # fast no-op when deps are unchanged.
+                    ssh "$RHOST" "cd '$RPATH' && direnv allow . >/dev/null 2>&1; direnv exec . uv sync --all-extras --dev -q && direnv exec . .venv/bin/pytest . --tb=short -q" \
+                        && PYTEST_EXIT=0 || PYTEST_EXIT=$?
+                    echo "[test-gate] remote suite exit=$PYTEST_EXIT"
+                else
+                    echo "[test-gate] WARN: rsync to $RHOST failed — falling back to a local run"
+                fi
+            else
+                echo "[test-gate] WARN: remote $RHOST unreachable — falling back to a local run"
+            fi
+        fi
+
+        # Local run — the default, or the fallback when the remote path bailed.
+        if [ -z "$PYTEST_EXIT" ]; then
+            # Parallelize across cores when pytest-xdist is installed. Guarded so a
+            # repo/env without xdist still runs serially instead of erroring on -n.
+            XDIST_ARG=""
+            if "$PYTEST" --help 2>/dev/null | grep -q -- "--numprocesses"; then
+                XDIST_ARG="-n auto"
+                echo "[test-gate] pytest-xdist detected → running parallel ($XDIST_ARG)"
+            fi
+            # Capture exit code without tripping set -e
+            "$PYTEST" "$REPO_ROOT" --tb=short -q $XDIST_ARG && PYTEST_EXIT=0 || PYTEST_EXIT=$?
+        fi
+
         if [ "$PYTEST_EXIT" -eq 5 ]; then
             echo "[test-gate] No tests collected — skipping Python gate"
         elif [ "$PYTEST_EXIT" -ne 0 ]; then
@@ -127,8 +178,8 @@ fi
 # Tests passed — record this HEAD so subsequent pushes on the same SHA skip the
 # re-run. Future commits bump HEAD and invalidate the cache automatically.
 CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
-if [ -n "$CURRENT_HEAD" ] && [ -d .git ]; then
-    echo "$CURRENT_HEAD" > .git/pytest-last-pass
+if [ -n "$CURRENT_HEAD" ] && [ -d "$GIT_DIR_PATH" ]; then
+    echo "$CURRENT_HEAD" > "$SENTINEL"
 fi
 
 exit 0
