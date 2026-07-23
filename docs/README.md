@@ -2,8 +2,7 @@
 
 > Auto-generated from YAML frontmatter. Run `aido docs index` to refresh.
 
-**54 docs** across 13 categories.
- 3 symlinked from other projects.
+**51 docs** across 12 categories.
 
 ## Design
 
@@ -110,14 +109,6 @@ Testing templates and tracking.
 | [Going Public — Repository Automation & Hardening Plan](plans/going-public-plan.md) | APPROVED | R-2 research | open-source, github, automation, ci-cd |
 | [Proactive Project Registry Registration — Implementation Plan](plans/proactive-project-registry-plan.md) | DRAFT | claude-sonnet-4-6 | registry, config, setup, copier, multi-user |
 | [main.py Refactor — Module Extraction + CLI Dispatch Redesign](plans/main-py-refactor-plan.md) | implemented | internal | refactor, architecture, cli, modules |
-
-## Procedures
-
-| Doc | Status | Source | Tags |
-|-----|--------|--------|------|
-| [AC Writing Practices](procedures/ac-writing-practices.md) | active | AIDO-69 (link) | ac, acceptance-criteria, plan-docs, quality, feature-parity |
-| [Claude Token Efficiency Guide](procedures/claude-token-efficiency.md) | active | sergei (link) | claude, tokens, efficiency, models, quota |
-| [Reasoning Checkpoints](procedures/reasoning-checkpoints.md) | active | sergei — design doc docs/designs/reasoning-checkpoints.md (link) | reasoning, checkpoints, quality, agents, claude-code |
 
 ## Research-Prompts
 
