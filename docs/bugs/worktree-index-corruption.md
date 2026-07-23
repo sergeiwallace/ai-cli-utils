@@ -147,13 +147,62 @@ Tests: `tests/test_cli.py::TestCliWorktreeGitPull` — 5 new tests covering:
 - Healing triggers both `read-tree` and `update-index --refresh`
 - Warning message printed to stderr
 
+## Root Cause Analysis — Round 3 (2026-07-23, AI-CLI-121)
+
+Recurred 3+ times in `.worktrees/aih346-uv-worktree-fix` and once more in a brand-new worktree
+(`.worktrees/aih346-fresh`, created via plain `git worktree add`, no autostash involved at all) —
+proving Round 2's autostash-perpetuation theory isn't the only mechanism. Investigated by reading
+`pre-commit` 4.6.0's own source directly rather than re-guessing:
+
+**Confirmed mechanism:** git itself (not pre-commit) injects `GIT_DIR`/`GIT_WORK_TREE`/
+`GIT_INDEX_FILE` (and related `GIT_*` vars) into the environment of every hook process it invokes —
+this is long-standing, documented git behavior; pre-commit's own `pre_commit/git.py:no_git_env()`
+exists specifically to work around it, citing their own tracking issue
+([pre-commit/pre-commit#300](https://github.com/pre-commit/pre-commit/issues/300)). pre-commit
+strips these vars before its *own* internal git plumbing (`staged_files_only`'s stash/checkout
+dance, store clone/init) — but does **not** strip them before executing a hook's configured `entry`
+command. Confirmed directly in `pre_commit/languages/unsupported_script.py` (the module backing
+`language: script`, which `test-gate` uses): `run_hook()` calls `lang_base.run_xargs()` with no env
+sanitization at all.
+
+Net effect: `test-gate.sh`, `uv run pytest`, and every subprocess pytest spawns inherit the *real*
+worktree's `GIT_DIR`/`GIT_WORK_TREE` raw. Any test that shells out to `git` inside its own ephemeral
+tmp fixture repo — this repo's own test suite does exactly that, being a git-tooling CLI — silently
+retargets at the real worktree instead of its throwaway fixture unless it explicitly clears those
+vars first, since explicit `GIT_*` env vars override cwd-based repo discovery. This is very plausibly
+why AI-CLI-70 is unique to this repo in the fleet: no other repo's own test suite shells real `git`
+subprocess calls from inside a pre-commit/pre-push-hook-spawned process.
+
+This is additive to, not a replacement for, Round 1/2's fixes (rebase-conflict-resolution and the
+autostash cycle are still real, independent proximate causes) — but it is a distinct, now-closed
+contributing mechanism, and the most direct explanation for repeated same-session recurrence this
+time around.
+
+### Fix — Round 3
+
+Strip the git-targeting env var set (mirroring pre-commit's own `no_git_env()` allowlist) at the
+very top of `.githooks/test-gate.sh`, before anything else runs — canonical source:
+`project-template/template/.githooks/test-gate.sh` (`project-template@b0ef80a`), applied to
+`ai-cli-utils` at `39dfe6f`. Safe: with the vars unset, git falls back to cwd-based discovery, which
+resolves to the same worktree since cwd hasn't changed.
+
+**Verification:** a push that had been failing on a fresh, undiagnosed leak (real git commit-message
+content bleeding into `test_sync.py` fixture assertions) passed cleanly through the full hook chain,
+including `test-gate`, on the very next attempt after this fix — no other change between the failing
+and passing runs.
+
 ## Verification
 
 - [x] `git status --short` shows no D or ?? lines after recovery
 - [x] Push completes with hooks enabled (no `SKIP_TESTS=1` bypass)
 - [x] Pre-push guard hook catches corruption before it can be pushed (16/16 tests pass)
 - [x] Session startup auto-heals corrupt index before autostash captures it (5/5 new tests pass)
-- [ ] Confirm corruption does not recur across session boundaries (requires next session observation)
+- [x] Confirm corruption does not recur across session boundaries — **partially confirmed
+      2026-07-23:** it DID recur (twice more, in two different worktrees, one with no autostash
+      involved), which led to the Round 3 root-cause fix above. Round 3 addresses a distinct,
+      confirmed contributing mechanism (hook-inherited `GIT_*` env leaking into the test suite's own
+      git subprocess calls); it is not a guarantee against every possible cause of this class of
+      corruption, but it closes the one directly implicated in this session's recurrences.
 
 ## Lessons Learned
 
