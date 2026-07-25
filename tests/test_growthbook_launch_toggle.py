@@ -1,5 +1,5 @@
-"""Coverage for the opt-in pre-launch settings override in the generated launch
-template: when a worktree carries a marker file, the template writes a specific
+"""Coverage for the unconditional pre-launch settings override in the generated
+launch template: on every Claude Code launch, the template writes a specific
 `env` override into `.claude/settings.local.json` before the agent process
 starts, on every launch and every restart.
 
@@ -27,20 +27,24 @@ import pytest
 
 from ai_cli.session_script import get_engine_script
 
-MARKER_RELPATH = ".claude/.ai-cli-growthbook-toggle"
 SETTINGS_RELPATH = ".claude/settings.local.json"
 
 
 def _extract_toggle_block(script: str) -> str:
-    """Pull the `if [[ "$engine" == "c" && -f ".claude/.ai-cli-growthbook-toggle" ...`
-    block out of the generated template so the test always exercises whatever
-    the template actually does, rather than a hand-copied duplicate that could
-    drift out of sync."""
+    """Pull the `if [[ "$engine" == "c" ]]; then ...` growthbook-override block
+    out of the generated template so the test always exercises whatever the
+    template actually does, rather than a hand-copied duplicate that could
+    drift out of sync.
+
+    The template has several `if [[ "$engine" == "c" ]]; then` conditionals at
+    different indentation levels; anchor on the growthbook block's specific
+    6-space indent (and its `python3 -c` body) to select the right one."""
     m = re.search(
-        r'if \[\[ "\$engine" == "c" && -f "\.claude/\.ai-cli-growthbook-toggle" \]\]; then\n(?:.*\n)*?      fi\n',
+        r'^ {6}if \[\[ "\$engine" == "c" \]\]; then\n {8}python3 -c "\n(?:.*\n)*? {6}fi\n',
         script,
+        re.MULTILINE,
     )
-    assert m, "generated template no longer defines the growthbook launch toggle — did it move or get renamed?"
+    assert m, "generated template no longer defines the growthbook launch override — did it move or get renamed?"
     return m.group(0)
 
 
@@ -62,9 +66,8 @@ def toggle_block():
     return _extract_toggle_block(script)
 
 
-def test_given_marker_present_when_toggle_runs_then_settings_local_json_gets_the_override(tmp_path, toggle_block):
+def test_given_engine_c_when_toggle_runs_then_settings_local_json_always_gets_the_override(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
 
     result = _run_toggle_block(tmp_path, "c", toggle_block)
 
@@ -77,7 +80,6 @@ def test_given_marker_present_when_toggle_runs_then_settings_local_json_gets_the
 
 def test_given_existing_settings_local_json_when_toggle_runs_then_other_keys_are_preserved(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
     settings_path = tmp_path / SETTINGS_RELPATH
     settings_path.write_text(json.dumps({"env": {"OTHER_VAR": "keep-me"}, "hooks": {"foo": "bar"}}))
 
@@ -90,18 +92,8 @@ def test_given_existing_settings_local_json_when_toggle_runs_then_other_keys_are
     assert data["hooks"] == {"foo": "bar"}
 
 
-def test_given_no_marker_when_toggle_runs_then_settings_local_json_is_not_created(tmp_path, toggle_block):
+def test_given_gemini_engine_when_toggle_runs_then_no_write_happens(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
-
-    result = _run_toggle_block(tmp_path, "c", toggle_block)
-
-    assert result.returncode == 0, result.stderr
-    assert not (tmp_path / SETTINGS_RELPATH).exists()
-
-
-def test_given_gemini_engine_when_toggle_runs_even_with_marker_present_then_no_write_happens(tmp_path, toggle_block):
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
 
     result = _run_toggle_block(tmp_path, "g", toggle_block)
 
@@ -113,7 +105,6 @@ def test_given_malformed_existing_settings_local_json_when_toggle_runs_then_it_r
     tmp_path, toggle_block
 ):
     (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
     settings_path = tmp_path / SETTINGS_RELPATH
     settings_path.write_text("{not valid json")
 
