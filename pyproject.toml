@@ -63,11 +63,7 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.8",
     "pre-commit>=4",
-    "aido",
 ]
-
-[tool.uv.sources]
-aido = { path = "../aido", editable = true }
 
 [dependency-groups]
 dev = [
