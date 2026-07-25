@@ -1,1 +1,0 @@
-../../../ai-harness/docs/procedures/reasoning-checkpoints.md

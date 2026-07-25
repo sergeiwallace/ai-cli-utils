@@ -1,1 +1,0 @@
-../../../ai-harness/docs/procedures/ac-writing-practices.md

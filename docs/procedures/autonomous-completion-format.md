@@ -1,1 +1,0 @@
-../../../ai-harness/docs/procedures/autonomous-completion-format.md
