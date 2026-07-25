@@ -33,6 +33,7 @@ dependencies = [
     "pillow>=10.0",
     "portalocker>=2.0",
     "psutil>=5.9",
+    "pydantic>=2.13.3",
 ]
 
 [project.urls]

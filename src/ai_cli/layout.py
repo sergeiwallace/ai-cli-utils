@@ -17,12 +17,7 @@ from typing import Optional
 
 import yaml
 
-try:
-    from pydantic import BaseModel, Field, field_validator, model_validator
-
-    _PYDANTIC_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _PYDANTIC_AVAILABLE = False
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .icon_generator import (
     generate_session_icon,
