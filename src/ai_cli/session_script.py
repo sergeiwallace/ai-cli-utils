@@ -437,6 +437,30 @@ def get_engine_script(
         timeout 8 ai internal handoff-drain "$project_name" "$tmux_session" 2>/dev/null || true
       fi
 
+      # Optional pre-launch settings override (opt-in via a marker file in the
+      # worktree). Some Claude Code feature checks resolve once, very early in
+      # process startup, before a same-process settings change (e.g. one written
+      # by a SessionStart hook) can influence them. Writing the override here,
+      # before the agent process starts at all, sidesteps that ordering entirely
+      # instead of racing it. Runs on every launch and every --continue restart,
+      # not just first run, since it sits ahead of every run_agent invocation below.
+      if [[ "$engine" == "c" && -f ".claude/.ai-cli-growthbook-toggle" ]]; then
+        python3 -c "
+import json, os
+path = '.claude/settings.local.json'
+data = {{}}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        data = {{}}
+data.setdefault('env', {{}})['DISABLE_GROWTHBOOK'] = ''
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+" 2>/dev/null || true
+      fi
+
       if [[ -f "$prompt_file" ]]; then
         resume_msg=$(cat "$prompt_file")
         rm -f "$prompt_file"
