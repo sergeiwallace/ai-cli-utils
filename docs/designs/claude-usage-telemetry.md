@@ -718,7 +718,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 
 ## Implementation Phases
 
-<!-- Per-phase task ACs follow the canonical AC quality rules. `docs/procedures/ac-writing-practices.md`
+<!-- Per-phase task ACs follow the canonical AC quality rules. `docs/procedures/task-authoring-standards.md`
   is AUTHORITATIVE (open it for the full/latest standard; this inline reminder is sync-checked
   against its canonical block by `aido validate-doc` and must not be edited independently): -->
 <!-- aido:ac-rules:mirror:begin -->
@@ -729,7 +729,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 <!-- aido:ac-rules:mirror:end -->
 
 <!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes this from the doc alone
-  (task-spec best-practices research R-1780610095; full standard: docs/procedures/ac-writing-practices.md):
+  (task-spec best-practices research R-1780610095; full standard: docs/procedures/task-authoring-standards.md):
   • Ship each AC as an executable test where feasible; commit failing tests first.
   • Mandate >=1 NON-MOCKED behavioral assertion per behavior — do not mock the primary inputs;
   gate on mutation score, treat line coverage as a floor not a target.

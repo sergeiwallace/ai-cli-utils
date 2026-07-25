@@ -108,7 +108,7 @@ tier and adds a direct `confirmed_unavailable` tier for the observed failed look
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/ac-writing-practices.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
 <!-- aido:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.

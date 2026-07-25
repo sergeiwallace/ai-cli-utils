@@ -242,7 +242,7 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/ac-writing-practices.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
 <!-- aido:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
@@ -251,7 +251,7 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 <!-- aido:ac-rules:mirror:end -->
 
 <!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes each task from the doc alone
-  (task-spec best-practices research R-1780610095; full standard: docs/procedures/ac-writing-practices.md):
+  (task-spec best-practices research R-1780610095; full standard: docs/procedures/task-authoring-standards.md):
   • Ship each AC as an executable test where feasible; commit failing tests first.
   • Mandate >=1 NON-MOCKED behavioral assertion per behavior — do not mock the primary inputs;
   gate on mutation score, treat line coverage as a floor not a target.
