@@ -2,7 +2,7 @@
 
 > Auto-generated from YAML frontmatter. Run `aido docs index` to refresh.
 
-**55 docs** across 14 categories.
+**58 docs** across 15 categories.
 
 ## Design
 
@@ -13,7 +13,9 @@ Architectural 'how' — system design, tradeoff analysis.
 | [CC Statusline — Design Document](designs/cc-statusline.md) | active | claude-sonnet-4-6 | statusline, quota, iterm2, claude-code |
 | [Citation Validation for ai gemini Research Output](designs/archive/citation-validation.md) | archived | claude-sonnet-4-6 2026-04-21 | citation-validation, gemini, research, lychee, semantic-scholar, AI-CLI-50 |
 | [Claude Usage Telemetry — Token Tracking and Quota Pacing](designs/claude-usage-telemetry.md) | approved | R-5 deep-think 2026-04-01, opus synthesis 2026-04-01 | claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23, AI-CLI-55, AI-CLI-56 |
+| [Event-Driven Platform Architecture](designs/event-driven-platform.md) | approved | sergei | event-driven, nats, pub-sub, messaging, fleet, sync, architecture, platform |
 | [Quota Notification System](designs/notification-system.md) | approved | session-2026-04-20 | quota, notifications, circus, ntfy, discord, process-management |
+| [User Behavior Telemetry — Design Document](designs/user-behavior-telemetry.md) | draft | sergei | telemetry, analytics, nudges, guidance, privacy, sqlite |
 | [[Project Name] — Architecture & Design Philosophy](designs/ARCH-TEMPLATE.md) | active | <!-- claude-opus / human / etc. --> | architecture, platform, design-philosophy |
 | [ai-cli-utils — Architecture](designs/architecture.md) | active | claude-sonnet-4-6 2026-04-18 | architecture, cli, gemini, quota, sync, nats, circus |
 | [iTerm2 Tab Title and Color System — Design](designs/iterm2-title-color-system.md) | implemented | ai-cli-utils | iterm2, tab-title, tab-color, session-title, fleet, gemini, remote, mosh |
@@ -66,7 +68,7 @@ Repeatable processes — workflows referenced from CLAUDE.md.
 
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
-| [📄 ai-harness/docs/procedures/root-cause-and-fix.md (local)](../../ai-harness/docs/procedures/root-cause-and-fix.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/root-cause-and-fix.md)) | active | ai-harness | procedure, bug-fix, root-cause-analysis, tdd, debugging, regression-testing |
+| [📄 ai-harness/docs/procedures/root-cause-and-fix.md (local)](../../../../ai-harness/docs/procedures/root-cause-and-fix.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/root-cause-and-fix.md)) | active | ai-harness | procedure, bug-fix, root-cause-analysis, tdd, debugging, regression-testing |
 
 ## Test
 
@@ -109,6 +111,12 @@ Testing templates and tracking.
 |-----|--------|--------|------|
 | [Optional: NATS Setup for Fleet Messaging](guides/nats-setup.md) | current | internal | nats, messaging, fleet, optional, setup |
 
+## Infrastructure
+
+| Doc | Status | Source | Tags |
+|-----|--------|--------|------|
+| [CC Memory & History Sync Phase 2 — Bidirectional `ai sync` CLI](designs/cc-sync-phase2.md) | approved | sergei | cc, sync, ai-cli, git |
+
 ## Plans
 
 | Doc | Status | Source | Tags |
@@ -122,9 +130,9 @@ Testing templates and tracking.
 
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
-| [📄 ai-harness/docs/procedures/task-authoring-standards.md (local)](../../ai-harness/docs/procedures/task-authoring-standards.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/task-authoring-standards.md)) | active | ai-harness | ac, acceptance-criteria, plan-docs, quality, feature-parity |
-| [📄 ai-harness/docs/procedures/claude-token-efficiency.md (local)](../../ai-harness/docs/procedures/claude-token-efficiency.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/claude-token-efficiency.md)) | active | ai-harness | claude, tokens, efficiency, models, quota |
-| [📄 ai-harness/docs/procedures/reasoning-checkpoints.md (local)](../../ai-harness/docs/procedures/reasoning-checkpoints.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/reasoning-checkpoints.md)) | active | ai-harness | reasoning, checkpoints, quality, agents, claude-code |
+| [📄 ai-harness/docs/procedures/task-authoring-standards.md (local)](../../../../ai-harness/docs/procedures/task-authoring-standards.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/task-authoring-standards.md)) | active | ai-harness | ac, acceptance-criteria, plan-docs, quality, feature-parity |
+| [📄 ai-harness/docs/procedures/claude-token-efficiency.md (local)](../../../../ai-harness/docs/procedures/claude-token-efficiency.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/claude-token-efficiency.md)) | active | ai-harness | claude, tokens, efficiency, models, quota |
+| [📄 ai-harness/docs/procedures/reasoning-checkpoints.md (local)](../../../../ai-harness/docs/procedures/reasoning-checkpoints.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/reasoning-checkpoints.md)) | active | ai-harness | reasoning, checkpoints, quality, agents, claude-code |
 
 ## Research-Prompts
 
