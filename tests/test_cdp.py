@@ -283,6 +283,13 @@ class TestCmdCdpStart:
 
 @patch.object(sys, "platform", "darwin")
 class TestCmdCdpStartMacOS:
+    @pytest.fixture(autouse=True)
+    def _requested_port_free(self):
+        # Keep these tests deterministic: the requested port is free, so the
+        # auto-increment path is not taken (that path has its own test class).
+        with patch("ai_cli.tunnel._port_in_use", return_value=False):
+            yield
+
     def test_when_on_macos_then_uses_open_na_not_popen(self, tmp_path):
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
