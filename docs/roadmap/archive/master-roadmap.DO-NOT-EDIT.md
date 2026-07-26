@@ -1,12 +1,10 @@
-> ⚠️ **Beads migration status (SW-841 Phase-3) — read before assuming this doc is retired.**
-> This repo's roadmap was bulk-exported into a Beads (`bd`) store as a data snapshot
-> (2026-07-17). **This roadmap doc is still the authoritative source for task tracking** —
-> the actual cutover that would retire it (freeze pass T-08 + deprecation phase T-09–T-13) has
-> NOT executed yet, gated on a design decision (D-16) Sergei hasn't ratified. **Until cutover
-> ships: keep creating and updating tasks here as normal, and in the CC task panel as usual** —
-> do not treat the presence of a `.beads/` directory as a signal that this doc is retired.
-> Canonical status: [sergei/docs/plans/beads-phase3-migration-plan.md](../../../sergei/docs/plans/beads-phase3-migration-plan.md) (see T-08, Phase 4). This
-> notice will be replaced with an archive notice once cutover actually completes.
+> ⚠️ **RETIRED — do not use, do not edit**
+>
+> This file is a **historical record only**. Beads (`bd`) is now the authoritative task store for **ai-cli-utils** — the Beads Phase-4 cutover for this repo completed on **2026-07-25** (see the retirement report: sergei/docs/analysis/sw-884-reconciliation/t12-roadmap-retirement-report.md).
+>
+> **Use the live Beads workflow instead:** `bd ready` / `bd create` / `bd show` in this repo's checkout, per the fleet's bd-authoritative workflow context (`agents-base.md`, shipped T-09).
+>
+> **If you are an agent or human who finds this file:** treat it as archive-only. Do not add a checkbox task, change a task checkbox, append an ownership tag, or assign a display id here — look up the live task in this repo's Beads store instead (`bd list` / `bd show <id>`).
 
 # ai-cli-utils Roadmap
 
