@@ -110,7 +110,7 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
     """Hermetic XDG state dir — never touch the real ~/.local/state/ai-cli-utils (AI-CLI-121).
 
     `config.get_xdg_state_home()`/`process_hygiene._get_state_dir()` both fall back to the
-    real ``~/.local/state`` when unset. Several git/roadmap tests create ephemeral temp git
+    real ``~/.local/state`` when unset. Several git tests create ephemeral temp git
     repos and expect a clean, uncontended state directory; without isolation they race against
     whatever else (other test runs, live `ai` CLI processes) is concurrently reading/writing the
     real one, producing exactly the `git commit`/`git init` failures this task fixed by proving
@@ -127,7 +127,7 @@ def _strip_git_targeting_env_vars(monkeypatch):
     code issues, specifically because they redirect git's repo/worktree targeting rather than
     honoring `-C`/`cwd` — see that module's docstring for the full AI-CLI-99 rationale. Tests
     that shell out to `git` directly in their own ephemeral fixture repos (`test_sync.py`,
-    `test_roadmap.py`, `test_trust.py`, `test_setup.py`, `test_git_repair.py`) never got the
+    `test_trust.py`, `test_setup.py`, `test_git_repair.py`) never got the
     same protection. Confirmed live: invoking the full suite through this repo's own pre-commit
     pre-push hook — which manipulates the index/work-tree via these exact variables while
     staging unstaged changes for the hook run — reproduced 17 failures + 9 errors that were
