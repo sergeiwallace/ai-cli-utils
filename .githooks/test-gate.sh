@@ -24,6 +24,12 @@ done
 unset _v
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+# In a linked worktree, --show-toplevel is the WORKTREE dir, which never carries
+# a committed .venv. --git-common-dir always points at the main tree's .git (in
+# the main tree itself, its dirname is the repo root too — same value either
+# way), so anchor venv/PATH pytest resolution there instead (AIH-409). The
+# ambient GIT_* scrub already happens above (AI-CLI-70) before subprocesses run.
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 ERRORS=0
 
 if [ "${SKIP_TESTS:-0}" = "1" ]; then
@@ -116,15 +122,26 @@ if [ -n "$HAS_PYTHON" ]; then
     if [ "$(uname)" = "Darwin" ] && [ -d /opt/homebrew/lib ]; then
         export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
     fi
-    # Resolve pytest: mise (.python-version) → .venv → system PATH
+    # Resolve pytest: mise (.python-version) → main-tree .venv → PATH, but ONLY if
+    # PATH's pytest resolves under the main tree. A bare `command -v pytest` would
+    # silently accept whatever venv the invoking shell happens to have active —
+    # in a linked worktree that can be a DIFFERENT repo's interpreter+conftest
+    # (AIH-409); worse, if that foreign suite happens to pass, the gate records a
+    # pass having tested nothing here. If nothing repo-owned resolves, fail loud.
     PYTEST=""
     if [ -f "$REPO_ROOT/.python-version" ]; then
         PY_VER=$(cat "$REPO_ROOT/.python-version")
         MISE_PYTEST="$HOME/.local/share/mise/installs/python/$PY_VER/bin/pytest"
         [ -f "$MISE_PYTEST" ] && PYTEST="$MISE_PYTEST"
     fi
-    [ -z "$PYTEST" ] && [ -f "$REPO_ROOT/.venv/bin/pytest" ] && PYTEST="$REPO_ROOT/.venv/bin/pytest"
-    [ -z "$PYTEST" ] && command -v pytest &>/dev/null && PYTEST="pytest"
+    [ -z "$PYTEST" ] && [ -f "$MAIN_ROOT/.venv/bin/pytest" ] && PYTEST="$MAIN_ROOT/.venv/bin/pytest"
+    PATH_PYTEST=""
+    if [ -z "$PYTEST" ]; then
+        PATH_PYTEST="$(command -v pytest 2>/dev/null || true)"
+        case "$PATH_PYTEST" in
+            "$MAIN_ROOT"/*) PYTEST="$PATH_PYTEST" ;;
+        esac
+    fi
 
     if [ -n "$PYTEST" ]; then
         echo "[test-gate] Python detected → $PYTEST"
@@ -182,7 +199,11 @@ if [ -n "$HAS_PYTHON" ]; then
             ERRORS=1
         fi
     else
-        echo "[test-gate] Python sources found but no pytest available — skipping"
+        echo "[test-gate] ERROR: no repo-owned pytest found for $REPO_ROOT. Looked for:"
+        echo "[test-gate]   - mise: \$HOME/.local/share/mise/installs/python/<version>/bin/pytest (needs $REPO_ROOT/.python-version)"
+        echo "[test-gate]   - venv: $MAIN_ROOT/.venv/bin/pytest"
+        echo "[test-gate]   - PATH pytest under $MAIN_ROOT (found: ${PATH_PYTEST:-<none>})"
+        ERRORS=1
     fi
 fi
 

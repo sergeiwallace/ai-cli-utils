@@ -89,15 +89,12 @@ repos:
         language: script
         pass_filenames: false
         always_run: true
-      # Fail the commit if docs/README.md is stale vs doc frontmatter (AIH-172).
-      # Only runs when a docs/*.md file is staged. Regenerate with
-      # `aido docs index`. Bypass: SKIP=docs-index-check git commit
-      - id: docs-index-check
-        name: docs index up to date (aido docs index --check)
-        entry: aido docs index --check
-        language: system
-        files: ^docs/.*\.md$
-        pass_filenames: false
+      # docs-index-check REMOVED (CORE-55). The generated docs/README.md index had
+      # no reader -- nothing in the fleet consumed it -- yet the gate blocked every
+      # docs commit until it was regenerated. It also could not be regenerated
+      # correctly from a linked worktree (AIH-396), so the only in-worktree remedy
+      # was its own forbidden SKIP=docs-index-check bypass. Removed deliberately,
+      # gate-first: docs/README.md content is untouched by this change.
       - id: test-gate
         name: test gate (mise-aware, tech-stack auto-detect)
         entry: .githooks/test-gate.sh
