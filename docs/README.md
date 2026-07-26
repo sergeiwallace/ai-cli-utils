@@ -66,7 +66,7 @@ Repeatable processes — workflows referenced from CLAUDE.md.
 
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
-| [📄 ai-harness/docs/procedures/root-cause-and-fix.md (local)](../../../../ai-harness/docs/procedures/root-cause-and-fix.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/root-cause-and-fix.md)) | active | ai-harness | procedure, bug-fix, root-cause-analysis, tdd, debugging, regression-testing |
+| [📄 ai-harness/docs/procedures/root-cause-and-fix.md (local)](../../ai-harness/docs/procedures/root-cause-and-fix.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/root-cause-and-fix.md)) | active | ai-harness | procedure, bug-fix, root-cause-analysis, tdd, debugging, regression-testing |
 
 ## Test
 
@@ -122,9 +122,9 @@ Testing templates and tracking.
 
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
-| [📄 ai-harness/docs/procedures/task-authoring-standards.md (local)](../../../../ai-harness/docs/procedures/task-authoring-standards.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/task-authoring-standards.md)) | active | ai-harness | ac, acceptance-criteria, plan-docs, quality, feature-parity |
-| [📄 ai-harness/docs/procedures/claude-token-efficiency.md (local)](../../../../ai-harness/docs/procedures/claude-token-efficiency.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/claude-token-efficiency.md)) | active | ai-harness | claude, tokens, efficiency, models, quota |
-| [📄 ai-harness/docs/procedures/reasoning-checkpoints.md (local)](../../../../ai-harness/docs/procedures/reasoning-checkpoints.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/reasoning-checkpoints.md)) | active | ai-harness | reasoning, checkpoints, quality, agents, claude-code |
+| [📄 ai-harness/docs/procedures/task-authoring-standards.md (local)](../../ai-harness/docs/procedures/task-authoring-standards.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/task-authoring-standards.md)) | active | ai-harness | ac, acceptance-criteria, plan-docs, quality, feature-parity |
+| [📄 ai-harness/docs/procedures/claude-token-efficiency.md (local)](../../ai-harness/docs/procedures/claude-token-efficiency.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/claude-token-efficiency.md)) | active | ai-harness | claude, tokens, efficiency, models, quota |
+| [📄 ai-harness/docs/procedures/reasoning-checkpoints.md (local)](../../ai-harness/docs/procedures/reasoning-checkpoints.md) ([GitHub](https://github.com/sergeiwallace/ai-harness/blob/main/docs/procedures/reasoning-checkpoints.md)) | active | ai-harness | reasoning, checkpoints, quality, agents, claude-code |
 
 ## Research-Prompts
 
