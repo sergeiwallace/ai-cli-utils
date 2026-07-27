@@ -1,9 +1,16 @@
-"""Tests for the core.bare=true / stale core.worktree corruption fix (AI-CLI-99)."""
+"""Tests for the core.bare=true / stale core.worktree corruption fix (AI-CLI-99),
+plus the AIH-443 phantom-deletion detection guards."""
 
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from ai_cli.git_repair import _GIT_TARGETING_VARS, _git_env, repair_bare_worktree_config
+from ai_cli.git_repair import (
+    _GIT_TARGETING_VARS,
+    _git_env,
+    detect_missing_tracked_symlinks,
+    detect_stranded_autostash,
+    repair_bare_worktree_config,
+)
 
 
 # --- _git_env ---
@@ -176,3 +183,125 @@ def test_repair_when_real_repo_corrupted_then_fixes_it_end_to_end(tmp_path):
         ["git", "-C", str(repo), "config", "--local", "--get", "core.worktree"], capture_output=True
     )
     assert worktree_cfg.returncode != 0  # unset
+
+
+# --- detect_stranded_autostash (AIH-443) ---
+
+
+def _git(repo, *args, **kwargs):
+    return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True, text=True, check=False, **kwargs)
+
+
+def test_detect_stranded_autostash_when_pop_conflicts_then_finds_it_end_to_end(tmp_path):
+    """Reproduces the exact failure this guard exists for: a same-line local vs.
+    remote edit makes `git pull --rebase --autostash` return 0 while leaving a
+    conflict and a stash entry behind — the launcher's `pull.returncode != 0`
+    check alone would never see this."""
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    _git(remote, "init", "-q", "-b", "main")
+    _git(remote, "config", "user.email", "t@t")
+    _git(remote, "config", "user.name", "t")
+    (remote / "f.txt").write_text("line1\n")
+    _git(remote, "add", "f.txt")
+    _git(remote, "commit", "-q", "-m", "init")
+
+    local = tmp_path / "local"
+    subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True)
+    _git(local, "config", "user.email", "t@t")
+    _git(local, "config", "user.name", "t")
+
+    # Local: uncommitted change, never staged or committed.
+    (local / "f.txt").write_text("local-change\n")
+
+    # Remote: someone else edits the same line and pushes.
+    (remote / "f.txt").write_text("remote-change\n")
+    _git(remote, "commit", "-q", "-am", "remote edits same line")
+
+    _git(local, "fetch", "-q", "origin", "main")
+    pull = _git(local, "pull", "--rebase", "--autostash", "origin", "main")
+
+    assert pull.returncode == 0  # the exact lie this guard exists to catch
+
+    stranded = detect_stranded_autostash(local)
+
+    assert stranded is not None
+    assert "stash@{0}" in stranded
+
+
+def test_detect_stranded_autostash_when_clean_pull_then_none(tmp_path):
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    _git(remote, "init", "-q", "-b", "main")
+    _git(remote, "config", "user.email", "t@t")
+    _git(remote, "config", "user.name", "t")
+    (remote / "f.txt").write_text("line1\n")
+    _git(remote, "add", "f.txt")
+    _git(remote, "commit", "-q", "-m", "init")
+
+    local = tmp_path / "local"
+    subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True)
+    _git(local, "config", "user.email", "t@t")
+    _git(local, "config", "user.name", "t")
+
+    (remote / "g.txt").write_text("unrelated\n")
+    _git(remote, "add", "g.txt")
+    _git(remote, "commit", "-q", "-m", "unrelated remote change")
+
+    _git(local, "fetch", "-q", "origin", "main")
+    pull = _git(local, "pull", "--rebase", "--autostash", "origin", "main")
+
+    assert pull.returncode == 0
+    assert detect_stranded_autostash(local) is None
+
+
+# --- detect_missing_tracked_symlinks (AIH-443 Shape A) ---
+
+
+def test_detect_missing_tracked_symlinks_when_symlink_missing_from_disk_then_reports_it(tmp_path):
+    """Reproduces AIH-443 Shape A's exact signature: a tracked symlink HEAD still
+    lists is absent from disk (verified `os.path.lexists` failure), with no git
+    error anywhere — the same shape a Claude Code `isolation: worktree` checkout
+    produced for 21 real symlinks in one sub-agent worktree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "real.md").write_text("real content\n")
+    link = repo / "docs" / "link.md"
+    link.symlink_to("real.md")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init with a tracked symlink")
+
+    assert detect_missing_tracked_symlinks(repo) == []  # sanity: present and tracked
+
+    # Simulate the checkout dropping the symlink from disk (Shape A) — the index/
+    # HEAD are untouched, exactly matching `git status` reporting a deletion
+    # nobody made while `git show HEAD:<path>` still succeeds.
+    link.unlink()
+
+    missing = detect_missing_tracked_symlinks(repo)
+
+    assert missing == ["docs/link.md"]
+    show = _git(repo, "show", "HEAD:docs/link.md")
+    assert show.returncode == 0  # still present in HEAD — a real "phantom" deletion
+
+
+def test_detect_missing_tracked_symlinks_when_regular_file_missing_then_ignored(tmp_path):
+    """A missing REGULAR file (Shape B's signature, not Shape A's) must not be
+    reported here — the two shapes are confirmed distinct root causes and this
+    detector is scoped to the symlink-specific mechanism only."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "f.txt").write_text("content\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+
+    (repo / "f.txt").unlink()
+
+    assert detect_missing_tracked_symlinks(repo) == []

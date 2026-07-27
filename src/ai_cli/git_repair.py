@@ -21,6 +21,25 @@ Two layers of defense:
    repair a normal working tree's ``core.bare``/``core.worktree`` regardless
    of source. This covers corruption paths we don't control (e.g. Claude
    Code's own ``isolation: worktree`` sub-agent tool).
+
+A third, detection-only layer (AIH-443) covers two distinct "phantom deletion"
+signatures found across six worktrees in three repos, both silent — ``git
+status`` reports a tracked path as deleted, with no error anywhere:
+
+3. ``detect_stranded_autostash()`` — ``git pull --rebase --autostash`` can
+   return exit code ``0`` even when the automatic stash pop conflicted
+   (reproduced directly: a same-line local/remote edit conflict leaves
+   ``UU`` markers and a stash entry behind, while the wrapping ``git pull``
+   still reports success). The launcher's existing autostash-conflict guard
+   (``if pull.returncode != 0`` in ``main.py``) cannot see this — it never
+   fires, because the return code lies. This finds the leftover stash so a
+   caller can warn instead of silently trusting the return code.
+4. ``detect_missing_tracked_symlinks()`` — a git-tracked symlink (mode
+   ``120000``) that HEAD lists but that is absent from the working tree
+   (``lstat`` fails). Confirmed root cause of AIH-443 Shape A: a Claude Code
+   ``isolation: worktree`` sub-agent checkout dropped 21 tracked symlinks
+   (verified via ``git ls-tree`` mode + target-resolution testing) while every
+   regular file checked out correctly, with no error surfaced anywhere.
 """
 
 import os
@@ -108,3 +127,60 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
         repaired = True
 
     return repaired
+
+
+def detect_stranded_autostash(repo_root: Path) -> str | None:
+    """Return the top ``git stash list`` entry if it looks like a leftover
+    ``--autostash``, else ``None``.
+
+    An autostash is meant to be transient: created before a rebase, popped
+    (and dropped) after. If the pop conflicts, git can leave the entry behind
+    and print a warning to stderr WITHOUT the wrapping ``git pull --rebase
+    --autostash`` command's exit code reflecting the failure (reproduced
+    directly — see module docstring). Any stash entry present immediately
+    after that call in this launcher's flow is presumptively this leftover:
+    no other step in this flow creates one.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "stash", "list"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.splitlines()
+    if not lines:
+        return None
+    return lines[0].strip()
+
+
+def detect_missing_tracked_symlinks(repo_root: Path) -> list[str]:
+    """Return tracked symlink paths (mode ``120000`` in HEAD) absent from disk.
+
+    A normal checkout always materializes every tracked path, symlink or not.
+    A path that HEAD lists as a symlink but that fails ``lstat`` on disk is
+    exactly AIH-443 Shape A's signature: ``git status`` reports it deleted,
+    ``git show HEAD:<path>`` and ``origin/main`` both still have it, and
+    nothing on this fleet's side ever touched it (verified by full sub-agent
+    transcript audit — the checkout itself never materialized these entries).
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-tree", "-r", "HEAD"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if result.returncode != 0:
+        return []
+    missing: list[str] = []
+    for line in result.stdout.splitlines():
+        meta, _, path = line.partition("\t")
+        if not path:
+            continue
+        mode = meta.split()[0] if meta.split() else ""
+        if mode != "120000":
+            continue
+        if not os.path.lexists(repo_root / path):
+            missing.append(path)
+    return missing

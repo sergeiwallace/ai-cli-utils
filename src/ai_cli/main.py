@@ -23,7 +23,12 @@ from . import session as _session
 from . import session_script as _session_script
 from . import transport as _transport
 from . import tunnel as _tunnel
-from .git_repair import _git_env, repair_bare_worktree_config
+from .git_repair import (
+    _git_env,
+    detect_missing_tracked_symlinks,
+    detect_stranded_autostash,
+    repair_bare_worktree_config,
+)
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
@@ -1513,9 +1518,37 @@ def _do_session_launch(
                     f"(autostash pop conflict?). Index restored to HEAD.",
                     file=sys.stderr,
                 )
+            # AIH-443: `pull.returncode` can be 0 even when the autostash pop conflicted
+            # (reproduced directly — git leaves conflict markers + a stash entry behind
+            # but still reports the wrapping `git pull` as successful), so the returncode
+            # check above cannot be trusted alone. Check for the leftover stash explicitly
+            # and warn loudly instead of silently proceeding into a half-applied worktree.
+            _stranded = detect_stranded_autostash(worktree_path)
+            if _stranded:
+                print(
+                    f"WARNING: {worktree_path.name} has a stranded autostash ({_stranded}) — "
+                    f"the autostash pop likely conflicted even though git reported success. "
+                    f"Local changes may be sitting in the stash instead of the working tree. "
+                    f"Inspect with `git -C {worktree_path} stash show -p` before doing anything else.",
+                    file=sys.stderr,
+                )
             # Repair backstop again after this launch's git work.
             if _repair_root:
                 repair_bare_worktree_config(_repair_root)
+            # AIH-443 Shape A: a Claude Code `isolation: worktree` checkout can silently
+            # drop tracked symlinks (confirmed: 21 symlinks missing from disk in one
+            # sub-agent worktree while HEAD and origin/main both had them, no error
+            # anywhere). Not something this launcher can fix at the source, but it can
+            # stop it from being silent.
+            _missing_symlinks = detect_missing_tracked_symlinks(worktree_path)
+            if _missing_symlinks:
+                print(
+                    f"WARNING: {worktree_path.name} is missing {len(_missing_symlinks)} tracked "
+                    f"symlink(s) present in HEAD (checkout dropped them silently) — "
+                    f"e.g. {_missing_symlinks[0]}. Restore with "
+                    f"`git -C {worktree_path} checkout -- <path>`.",
+                    file=sys.stderr,
+                )
 
     d = _config.get_session_map(engine)
     uuid = d.get(ai_name)
