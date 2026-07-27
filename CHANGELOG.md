@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Session watcher busy-spun instead of polling once per second (`AI-CLI-129`). The
+  loop paced itself with `read -t 1 -r < /dev/null`, which never blocks: `/dev/null`
+  returns EOF immediately, so `read` returns before its timeout applies. Measured at
+  ~140 ticks/second against a specified 1, for the lifetime of every session — each
+  tick able to fire `tmux capture-pane`, `ai internal publish-heartbeat` and a
+  `sha256sum` pipeline. Every duration the loop derives from its tick counter
+  (`counter >= 10` as a 10-second startup grace period, `counter % 30` as a 30-second
+  heartbeat, `counter % 10` as a 10-second config-hash check) was wrong by the same
+  factor. Replaced with `sleep 1`.
+
+- `ai update`'s live-session template refresh rewrote every session's stable launch
+  script unconditionally, and had no bound on how often it could run (`AI-CLI-129`).
+  An unchanged script is now left alone, so its mtime — the hot-reload signal every
+  running wrapper polls — is no longer bumped for nothing, and a plain `ai c`
+  re-attach no longer makes the running wrapper `exec` a pointless reload. The
+  refresh now also refuses to run past 20 attempts in 60 seconds (tracked in-process
+  and in the state dir) and reports the runaway caller once per window on stderr,
+  rather than spawning a `tmux list-sessions` subprocess plus a write and a chmod per
+  live session for as long as the caller keeps asking.
+
 ## [0.7.0] - 2026-07-13
 
 ### Added

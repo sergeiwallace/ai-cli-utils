@@ -284,7 +284,12 @@ def get_engine_script(
           tmux send-keys -t "$tmux_session" C-u
           tmux send-keys -t "$tmux_session" "R"
         fi
-        read -t 1 -r < /dev/null 2>/dev/null || true
+        # One tick per second — every duration in this loop is counted in ticks
+        # ("counter >= 10" == 10s, "counter % 30" == every 30s). This must actually
+        # block: `read -t 1 < /dev/null` does not, because /dev/null returns EOF
+        # immediately, which turned this into a busy loop firing tmux/ai/sha256sum
+        # subprocesses at ~140 Hz for the life of every session (AI-CLI-129).
+        sleep 1
       done) &
       watcher_pid=$!
     }}
