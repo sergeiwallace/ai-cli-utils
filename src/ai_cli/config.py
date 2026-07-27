@@ -153,6 +153,13 @@ enabled = true
 [session]
 ## Session names: c-{project}-{n} or c-r-{project}-{n} for remote sessions
 stale_session_timeout = 15
+## Wrap sessions in tmux? Default true. Set false to make bare mode the default
+## (equivalent to always passing -b/--bare). tmux is a C binary and cannot be
+## installed by pip/uv, so machines without it should set this false.
+## Trade-off: without tmux you lose detach/reattach (`ai ls`, `ai attach`),
+## sessions surviving a dropped SSH connection, and remote access from another
+## device. If you only run sessions in a local terminal, false is fine.
+# use_tmux = true
 
 [remote]
 ## Remote server for AI sessions (ai c --remote)

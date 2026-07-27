@@ -1236,19 +1236,43 @@ def _do_session_launch(
     extra_args: "list[str]",
     config: dict,
 ) -> None:
-    # On Windows, tmux must be installed via MSYS2 (pacman -S tmux). Give a
-    # clear message rather than crashing with a cryptic FileNotFoundError.
-    if sys.platform == "win32":
-        import shutil
+    # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
+    # only the client library, so tmux can never be auto-installed by pip/uv and
+    # must be preflighted here.
+    #
+    # `[session] use_tmux = false` opts a machine out of tmux entirely (equivalent
+    # to always passing -b/--bare). tmux exists to keep sessions alive for detach
+    # /reattach -- remote access from a phone, surviving a dropped SSH connection,
+    # `ai ls`/`ai attach`. On a machine that only ever runs sessions in a local
+    # terminal, it buys nothing and its absence should not be fatal.
+    if not config.get("session", {}).get("use_tmux", True):
+        bare = True
 
-        if not shutil.which("tmux"):
-            print(
-                "Error: tmux not found. Install it via MSYS2:\n"
-                "  pacman -S tmux\n"
-                "See docs for details: https://github.com/sergeiwallace/ai-cli-utils#windows",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    if not bare and not shutil.which("tmux"):
+        # Previously this check was gated on sys.platform == "win32", so every
+        # non-Windows machine without tmux crashed with a raw FileNotFoundError
+        # from deep inside cleanup_stale_sessions() instead of this message.
+        if sys.platform == "win32":
+            _hint = "  pacman -S tmux            (MSYS2)"
+        elif sys.platform == "darwin":
+            _hint = "  brew install tmux"
+        else:
+            _hint = "  sudo apt install tmux     (or: dnf/yum/pacman/conda install tmux)"
+        print(
+            "Error: tmux not found, and it is required for the default session mode.\n"
+            f"{_hint}\n"
+            "\n"
+            "Or run without tmux:\n"
+            "  ai <engine> -b            one-off bare launch (no tmux)\n"
+            "  [session] use_tmux = false     in ~/.config/ai-cli-utils/config.toml\n"
+            "                            to make bare the default on this machine\n"
+            "\n"
+            "tmux provides detach/reattach (ai ls, ai attach), sessions that survive a\n"
+            "dropped SSH connection, and remote access from another device. If you only\n"
+            "run sessions in a local terminal, use_tmux = false is a fine permanent choice.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
