@@ -933,8 +933,14 @@ class TestEnsureCircusd:
                 _ensure_circusd()
 
 
-class TestDoSessionLaunchWindowsTmuxGuard:
-    """T-09: on Windows without tmux, _do_session_launch exits with a clear error."""
+class TestDoSessionLaunchTmuxGuard:
+    """The tmux preflight in _do_session_launch, on every platform.
+
+    Originally Windows-only (T-09). Broadened in 55ace53 because every non-Windows
+    machine without tmux was crashing with a raw FileNotFoundError from deep inside
+    cleanup_stale_sessions() instead of this message. The guard now fires on all
+    platforms, with a platform-appropriate install hint and the use_tmux opt-out.
+    """
 
     def _base_kwargs(self):
         return dict(
@@ -989,8 +995,13 @@ class TestDoSessionLaunchWindowsTmuxGuard:
         # confirming the guard was passed
         assert exc_info.value.code != 1 or "tmux not found" not in (capsys.readouterr().err)
 
-    def test_when_non_windows_and_tmux_not_found_then_no_guard_exit(self):
-        """Guard must not fire on Linux/macOS even if tmux is absent."""
+    def test_when_non_windows_and_tmux_not_found_then_guard_exits_with_platform_hint(self, capsys):
+        """The guard DOES fire on Linux/macOS — that is the point of 55ace53.
+
+        This previously asserted the opposite, encoding the very bug 55ace53 fixed:
+        without the guard, a non-Windows machine lacking tmux died on a raw
+        FileNotFoundError inside cleanup_stale_sessions() with no actionable message.
+        """
         from ai_cli.main import _do_session_launch
 
         with (
@@ -1003,7 +1014,52 @@ class TestDoSessionLaunchWindowsTmuxGuard:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _do_session_launch(**self._base_kwargs())
-        # Should reach subprocess.run (SystemExit 0) not the guard (SystemExit 1)
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "tmux not found" in err
+        # Platform-appropriate install hint, not the MSYS2/pacman one.
+        assert "apt install tmux" in err
+        # The escape hatch must be discoverable from the error itself.
+        assert "use_tmux = false" in err
+
+    def test_when_darwin_and_tmux_not_found_then_hint_is_homebrew(self, capsys):
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "darwin"),
+            patch("shutil.which", return_value=None),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(**self._base_kwargs())
+        assert exc_info.value.code == 1
+        assert "brew install tmux" in capsys.readouterr().err
+
+    def test_when_use_tmux_false_and_tmux_absent_then_guard_is_skipped(self):
+        """The opt-out is the escape hatch the error message advertises.
+
+        Nothing covered it before, so `use_tmux = false` could have silently stopped
+        working and the only symptom would be a machine that cannot launch a session
+        at all.
+        """
+        from ai_cli.main import _do_session_launch
+
+        kwargs = self._base_kwargs()
+        kwargs["config"] = {"session": {"use_tmux": False}}
+        with (
+            patch("sys.platform", "linux"),
+            patch("shutil.which", return_value=None),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(**kwargs)
+        # Reached subprocess.run (0), not the tmux guard (1).
         assert exc_info.value.code != 1
 
 
