@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai quota scrape` leaked Claude Code's update downloads to disk at roughly 8 GB/day
+  (`AI-CLI-131`). The scrape launches `claude` in a throwaway tmux session and kills
+  that session unconditionally about 15 seconds later; Claude Code had by then begun
+  downloading any newer version into `~/.cache/claude/staging/`, so the kill truncated
+  the download mid-write and orphaned the partial binary. Nothing reaped it — Claude
+  Code only removes a staging entry it successfully installs. Under the `*/10` cron
+  that is ~144 orphans a day: the Hetzner box held 402 entries totalling 23 GB, 400 of
+  them created exactly on cron minutes, and reached 0 bytes free. The scrape now runs
+  Claude Code with `DISABLE_AUTOUPDATER=1`, so an ephemeral read-only scrape never
+  starts a download it cannot finish, and sweeps staging entries left idle for over an
+  hour after each run. The sweep only removes well-formed entry directories past that
+  age, so a download in flight for a real session is never touched.
+
 - Session watcher busy-spun instead of polling once per second (`AI-CLI-129`). The
   loop paced itself with `read -t 1 -r < /dev/null`, which never blocks: `/dev/null`
   returns EOF immediately, so `read` returns before its timeout applies. Measured at

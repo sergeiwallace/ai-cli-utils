@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -284,6 +285,65 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
     )
 
 
+# --- CC auto-update staging reaper (AI-CLI-131) ---
+
+#: Entries CC creates under its staging dir, named "<major>.<minor>.<patch>.<pid>.<epoch_ms>".
+#: Matched strictly so the reaper can only ever delete things it positively recognises.
+_CC_STAGING_ENTRY_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+\.\d+$")
+
+#: An in-flight CC update download completes in minutes at most, so an entry untouched for
+#: an hour is definitively dead and safe to remove even if some other CC session created it.
+CC_STAGING_MAX_AGE_S = 3600
+
+
+def _cc_staging_dir() -> Path:
+    """Directory CC downloads pending updates into before promoting them."""
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return base / "claude" / "staging"
+
+
+def reap_cc_update_staging(max_age_s: int = CC_STAGING_MAX_AGE_S) -> int:
+    """Delete CC update-staging entries left behind by a killed scrape session.
+
+    The bound on AI-CLI-131: the scrape kills its CC session while CC may still be
+    downloading an update, orphaning a partial binary that nothing else reaps. Running this
+    on every scrape caps the directory at roughly one ``max_age_s`` window of debris instead
+    of letting it grow without limit.
+
+    Deliberately conservative — only well-formed entry directories older than ``max_age_s``
+    are removed, so a download in flight for another CC session is never touched. Returns
+    the number of entries removed; never raises, since bounding disk is not worth failing a
+    scrape over.
+    """
+    staging = _cc_staging_dir()
+    cutoff = time.time() - max_age_s
+    removed = 0
+    try:
+        entries = list(staging.iterdir())
+    except OSError:
+        return 0
+
+    for entry in entries:
+        try:
+            if not _CC_STAGING_ENTRY_RE.match(entry.name) or not entry.is_dir():
+                continue
+            if entry.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(entry)
+            removed += 1
+        except OSError:
+            continue
+
+    if removed:
+        # Surfaced, not silent: the */10 cron redirects to ~/.local/log/quota-scrape.log, so
+        # a recurring leak shows up there rather than only as a full disk.
+        print(
+            f"ai quota: reaped {removed} orphaned CC update-staging entries from {staging}",
+            file=sys.stderr,
+        )
+    return removed
+
+
 def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     """Scrape /usage from a hidden tmux session running a bare CC session.
 
@@ -327,9 +387,25 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             timeout=2,
         )
 
-        # Start CC with no-op permissions (read-only scraping, never runs tools)
+        # Start CC with no-op permissions (read-only scraping, never runs tools).
+        #
+        # DISABLE_AUTOUPDATER=1 (AI-CLI-131): CC starts a background download of any newer
+        # version into ~/.cache/claude/staging/<ver>.<pid>.<ms>/ on startup. This session is
+        # killed unconditionally ~15s later by the finally block below, which truncates that
+        # download mid-write and orphans the partial file — nothing ever reaps it. Under the
+        # */10 cron that is ~144 partials/day (~8 GB/day; the Hetzner box reached 23 GB and
+        # 0 bytes free). An ephemeral read-only scrape has no business updating anything, so
+        # the download must never start. Shell-prefix form rather than `new-session -e` so it
+        # does not depend on tmux >= 3.2.
         subprocess.run(
-            ["tmux", "send-keys", "-t", target, "claude --dangerously-skip-permissions", "Enter"],
+            [
+                "tmux",
+                "send-keys",
+                "-t",
+                target,
+                "DISABLE_AUTOUPDATER=1 claude --dangerously-skip-permissions",
+                "Enter",
+            ],
             capture_output=True,
             timeout=2,
         )
@@ -432,6 +508,9 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             capture_output=True,
             timeout=3,
         )
+        # Second line of defence behind DISABLE_AUTOUPDATER=1 above: sweep anything a
+        # previous (or otherwise-configured) scrape orphaned, so staging stays bounded.
+        reap_cc_update_staging()
 
 
 def _get_usage_via_print_mode() -> QuotaSnapshot | None:

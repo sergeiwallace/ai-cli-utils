@@ -21,6 +21,7 @@ from ai_cli.quota import (
     _run_nats_quota_listener,
     _scrape_usage_hidden_pane,
     _try_read_kv_snapshot,
+    reap_cc_update_staging,
     quota_record,
     quota_scrape,
     quota_status,
@@ -398,6 +399,101 @@ class TestResetAnchorPersistence:
             assert anchor_file.read_text().strip() == "2026-04-18T11:59:00Z"  # unchanged
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
+
+
+# --- CC auto-update staging leak (AI-CLI-131) ---
+
+
+class TestCcUpdateStagingLeak:
+    """The scrape kills its CC session ~15s after launch, which truncates any update
+    download CC started and orphans the partial binary. On the Hetzner box that reached
+    402 entries / 23 GB under the */10 cron, taking the disk to 0 bytes free.
+    """
+
+    @pytest.fixture
+    def staging(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        d = tmp_path / "claude" / "staging"
+        d.mkdir(parents=True)
+        return d
+
+    def _entry(self, staging: Path, name: str, age_s: float, size: int = 1024) -> Path:
+        d = staging / name
+        d.mkdir()
+        (d / "claude").write_bytes(b"\0" * size)
+        t = time.time() - age_s
+        os.utime(d, (t, t))
+        return d
+
+    def test_given_cc_session_when_scrape_launches_it_then_autoupdater_is_disabled(self):
+        """Root cause: CC must not start a background download it will be killed mid-way
+        through. The launch command has to carry DISABLE_AUTOUPDATER=1."""
+        sent = []
+
+        def fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = ""
+            if cmd[0] == "tmux" and cmd[1] == "send-keys":
+                sent.append(cmd[4])
+            return r
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            _scrape_usage_hidden_pane()
+
+        launch = [s for s in sent if "claude" in s]
+        assert launch, "scrape never launched claude"
+        assert launch[0] == "DISABLE_AUTOUPDATER=1 claude --dangerously-skip-permissions"
+
+    def test_given_stale_orphaned_entries_when_reaping_then_all_removed(self, staging):
+        for i in range(5):
+            self._entry(staging, f"2.1.220.{100 + i}.178500000000{i}", age_s=7200)
+
+        assert reap_cc_update_staging() == 5
+        assert list(staging.iterdir()) == []
+
+    def test_given_download_still_in_flight_when_reaping_then_it_survives(self, staging):
+        """A real download takes minutes; reaping one mid-write would break another
+        session's update. Only entries idle past the age bound may go."""
+        self._entry(staging, "2.1.220.4242.1785000000000", age_s=30)
+
+        assert reap_cc_update_staging() == 0
+        assert (staging / "2.1.220.4242.1785000000000").exists()
+
+    def test_given_unrecognised_sibling_when_reaping_then_it_survives(self, staging):
+        """The reaper deletes only what it positively recognises as a staging entry."""
+        other = staging / "locks"
+        other.mkdir()
+        (other / "cc.lock").write_text("held")
+        os.utime(other, (time.time() - 99999, time.time() - 99999))
+
+        assert reap_cc_update_staging() == 0
+        assert (other / "cc.lock").exists()
+
+    def test_given_no_staging_dir_when_reaping_then_returns_zero_without_raising(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "nonexistent"))
+
+        assert reap_cc_update_staging() == 0
+
+    def test_given_stale_entries_when_scrape_runs_then_they_are_reaped(self, staging):
+        """The guard must be wired into the scrape, not merely importable — an unreferenced
+        reaper would leave the box growing exactly as before."""
+        for i in range(3):
+            self._entry(staging, f"2.1.220.{200 + i}.178500000100{i}", age_s=7200)
+
+        fail = MagicMock()
+        fail.returncode = 1
+        with patch("subprocess.run", return_value=fail), patch("time.sleep"):
+            _scrape_usage_hidden_pane()
+
+        assert list(staging.iterdir()) == []
+
+    def test_given_reap_fails_when_scrape_runs_then_snapshot_still_returned(self, staging):
+        """Bounding disk must never cost a scrape."""
+        self._entry(staging, "2.1.220.300.1785000002000", age_s=7200)
+
+        with patch("ai_cli.quota.shutil.rmtree", side_effect=OSError("read-only fs")):
+            assert reap_cc_update_staging() == 0
 
 
 # --- _scrape_usage_hidden_pane ---
