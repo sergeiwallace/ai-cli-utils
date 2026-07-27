@@ -26,6 +26,7 @@ from . import tunnel as _tunnel
 from .git_repair import (
     _git_env,
     detect_missing_tracked_symlinks,
+    detect_phantom_deleted_files,
     detect_stranded_autostash,
     repair_bare_worktree_config,
 )
@@ -1627,6 +1628,22 @@ def _do_session_launch(
                     f"symlink(s) present in HEAD (checkout dropped them silently) — "
                     f"e.g. {_missing_symlinks[0]}. Restore with "
                     f"`git -C {worktree_path} checkout -- <path>`.",
+                    file=sys.stderr,
+                )
+            # AIH-443 Shape C: a tracked REGULAR file the index still holds but that
+            # is gone from disk. Neither check above can see it — there is no stranded
+            # stash (pre-commit uses its own patch file under ~/.cache/pre-commit, not
+            # `git stash`) and the mode is not 120000. pre-commit's `staged_files_only`
+            # then re-applies the deletion after every hook run, so the worktree never
+            # self-heals and `git status` looks identical each time.
+            _phantom = detect_phantom_deleted_files(worktree_path)
+            if _phantom:
+                print(
+                    f"WARNING: {worktree_path.name} is missing {len(_phantom)} tracked "
+                    f"file(s) that the index still holds — e.g. {_phantom[0]}. "
+                    f"Committing now would delete content that is still live on the "
+                    f"remote. Restore with "
+                    f"`git -C {worktree_path} checkout -- <path>` before committing.",
                     file=sys.stderr,
                 )
 

@@ -8,6 +8,7 @@ from ai_cli.git_repair import (
     _GIT_TARGETING_VARS,
     _git_env,
     detect_missing_tracked_symlinks,
+    detect_phantom_deleted_files,
     detect_stranded_autostash,
     repair_bare_worktree_config,
 )
@@ -305,3 +306,146 @@ def test_detect_missing_tracked_symlinks_when_regular_file_missing_then_ignored(
     (repo / "f.txt").unlink()
 
     assert detect_missing_tracked_symlinks(repo) == []
+
+
+# --- detect_phantom_deleted_files (AIH-443 Shape C) ---
+
+
+def _init_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "plan.md").write_text("plan content\n" * 40)
+    (repo / "keep.txt").write_text("untouched\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+def _precommit_staged_files_only_cycle(repo):
+    """Replay pre-commit's `staged_files_only` exactly, without needing pre-commit.
+
+    Mirrors `pre_commit/staged_files_only.py::_unstaged_changes_cleared`: capture
+    the unstaged diff as a binary patch, `git checkout -- .` to clear the working
+    tree, then re-apply the patch in the `finally:` block. Returns the patch bytes
+    so a test can assert what pre-commit would have persisted to its cache.
+    """
+    tree = _git(repo, "write-tree").stdout.strip()
+    diff = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "diff-index",
+            "--ignore-submodules",
+            "--binary",
+            "--exit-code",
+            "--no-color",
+            "--no-ext-diff",
+            tree,
+            "--",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if diff.returncode == 0:
+        return b""
+    patch_file = repo.parent / "patch-capture"
+    patch_file.write_bytes(diff.stdout)
+    _git(repo, "-c", "submodule.recurse=0", "checkout", "--", ".")
+    _git(repo, "apply", "--whitespace=nowarn", str(patch_file))
+    return diff.stdout
+
+
+def test_detect_phantom_deleted_files_when_tracked_regular_file_missing_then_reports_it(tmp_path):
+    """Shape C's exact signature: the index still holds the blob, HEAD still has it,
+    but the file is gone from disk — so `git status` shows a deletion nobody made and
+    committing would remove content still live on the remote."""
+    repo = _init_repo(tmp_path)
+
+    assert detect_phantom_deleted_files(repo) == []  # sanity: healthy tree is silent
+
+    (repo / "docs" / "plan.md").unlink()
+
+    assert detect_phantom_deleted_files(repo) == ["docs/plan.md"]
+    assert _git(repo, "show", "HEAD:docs/plan.md").returncode == 0  # content still safe
+
+
+def test_detect_phantom_deleted_files_when_worktree_clean_then_empty(tmp_path):
+    """Negative control: the detector must be silent on a healthy tree, otherwise
+    firing on the sick one proves nothing."""
+    repo = _init_repo(tmp_path)
+
+    assert detect_phantom_deleted_files(repo) == []
+
+
+def test_detect_phantom_deleted_files_when_file_modified_not_deleted_then_ignored(tmp_path):
+    """An ordinary unstaged edit is not a phantom deletion and must not warn."""
+    repo = _init_repo(tmp_path)
+
+    (repo / "docs" / "plan.md").write_text("edited\n")
+
+    assert detect_phantom_deleted_files(repo) == []
+
+
+def test_detect_phantom_deleted_files_when_missing_entry_is_symlink_then_ignored(tmp_path):
+    """Shape A stays with its own detector: a missing tracked symlink has a different
+    cause and a different fix, so reporting it here would double-warn."""
+    repo = _init_repo(tmp_path)
+    link = repo / "docs" / "link.md"
+    link.symlink_to("plan.md")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add tracked symlink")
+
+    link.unlink()
+
+    assert detect_phantom_deleted_files(repo) == []
+    assert detect_missing_tracked_symlinks(repo) == ["docs/link.md"]
+
+
+def test_detect_stranded_autostash_when_phantom_deletion_present_then_blind_to_it(tmp_path):
+    """Why Shape C needed a new detector at all: pre-commit stashes to its OWN patch
+    file under ~/.cache/pre-commit, never `git stash`, so the Shape B guard sees an
+    empty stash list and stays silent on a genuinely broken worktree."""
+    repo = _init_repo(tmp_path)
+    (repo / "docs" / "plan.md").unlink()
+
+    assert detect_stranded_autostash(repo) is None  # the blindness, reproduced
+    assert detect_phantom_deleted_files(repo) == ["docs/plan.md"]
+
+
+def test_detect_phantom_deleted_files_when_precommit_cycle_runs_then_deletion_survives(tmp_path):
+    """The perpetuation mechanism, reproduced end to end.
+
+    pre-commit's `staged_files_only` captures the lone deletion as a patch, runs
+    `git checkout -- .` (which RESTORES the file — the very fix), then re-applies the
+    patch, deleting it again. The tree ends byte-identical to how it started and
+    nothing errors, which is why this shape survived every pull and every hook run on
+    `aido/.worktrees/aido-1` for over 24 hours.
+    """
+    repo = _init_repo(tmp_path)
+    (repo / "docs" / "plan.md").unlink()
+
+    patch_bytes = _precommit_staged_files_only_cycle(repo)
+
+    assert b"deleted file mode 100644" in patch_bytes  # what lands in the patch cache
+    assert not (repo / "docs" / "plan.md").exists()  # restored, then re-deleted
+    assert detect_phantom_deleted_files(repo) == ["docs/plan.md"]
+    assert _git(repo, "stash", "list").stdout.strip() == ""  # no stash, ever
+
+
+def test_detect_phantom_deleted_files_when_restored_then_precommit_cycle_is_a_noop(tmp_path):
+    """`git checkout -- <path>` is a durable fix: with a clean tree pre-commit's
+    `git diff-index` returns 0, so no patch is captured and nothing gets replayed."""
+    repo = _init_repo(tmp_path)
+    (repo / "docs" / "plan.md").unlink()
+
+    _git(repo, "checkout", "--", "docs/plan.md")
+    patch_bytes = _precommit_staged_files_only_cycle(repo)
+
+    assert patch_bytes == b""
+    assert (repo / "docs" / "plan.md").exists()
+    assert detect_phantom_deleted_files(repo) == []

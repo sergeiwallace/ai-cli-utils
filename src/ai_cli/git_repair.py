@@ -40,6 +40,31 @@ status`` reports a tracked path as deleted, with no error anywhere:
    ``isolation: worktree`` sub-agent checkout dropped 21 tracked symlinks
    (verified via ``git ls-tree`` mode + target-resolution testing) while every
    regular file checked out correctly, with no error surfaced anywhere.
+5. ``detect_phantom_deleted_files()`` — AIH-443 Shape C, a REGULAR tracked file
+   (mode ``100644``/``100755``) that the index still holds but that is absent
+   from disk, with no stranded stash anywhere. Both detectors above are blind
+   to it by construction: (3) finds nothing because ``git stash list`` is
+   empty, and (4) skips it because the mode is not ``120000``.
+
+   Shape C is kept alive by pre-commit, not by git. Every pre-commit-managed
+   hook invocation (``pre-commit``, ``pre-push``, ``post-merge``,
+   ``post-checkout``, ``post-rewrite``) enters
+   ``pre_commit/staged_files_only.py::_unstaged_changes_cleared``, whose
+   ``git diff-index`` sees the lone deletion as an unstaged change and takes
+   the ``retcode == 1 and diff_stdout.strip()`` branch. That branch writes the
+   deletion to ``~/.cache/pre-commit/patch<epoch>-<pid>``, runs
+   ``git checkout -- .`` (which RESTORES the file to disk), and then
+   re-applies the saved deletion patch in its ``finally:`` block — removing the
+   file again. pre-commit therefore runs the exact command that would heal the
+   worktree and then faithfully undoes it, leaving the tree byte-identical to
+   how it started and raising nothing. Directly observed on
+   ``aido/.worktrees/aido-1``: the index's cached stat for the missing path was
+   rewritten with the real size/inode at 19:11:45 (the ``git checkout -- .``)
+   and the containing directory's mtime moved again at 19:11:47 (the re-apply).
+
+   A plain ``git checkout -- <path>`` DOES fix it durably: once the tree is
+   clean, ``git diff-index`` returns 0 and pre-commit never captures a patch,
+   so nothing is left to replay.
 """
 
 import os
@@ -184,3 +209,46 @@ def detect_missing_tracked_symlinks(repo_root: Path) -> list[str]:
         if not os.path.lexists(repo_root / path):
             missing.append(path)
     return missing
+
+
+def detect_phantom_deleted_files(repo_root: Path) -> list[str]:
+    """Return tracked REGULAR file paths the index holds but that are gone from disk.
+
+    AIH-443 Shape C. ``git ls-files --deleted`` lists exactly the index entries
+    whose working-tree file fails ``lstat``, which is the ``" D"`` status
+    signature: the index (and HEAD) still carry the blob, so committing would
+    delete real content that is still live on ``origin/main``.
+
+    Symlink entries are excluded so this never double-reports Shape A, which
+    ``detect_missing_tracked_symlinks()`` already covers with its own,
+    differently-actionable warning.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-files", "--deleted", "-z"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if result.returncode != 0:
+        return []
+
+    phantom: list[str] = []
+    for path in result.stdout.split("\0"):
+        if not path:
+            continue
+        # `git ls-files --deleted` cannot report the mode itself, so ask the
+        # index per path. Only reached when something is already missing, so
+        # the healthy case costs exactly one subprocess.
+        entry = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "-s", "--", path],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+        )
+        fields = entry.stdout.split()
+        if entry.returncode != 0 or not fields:
+            continue
+        if fields[0] == "120000":
+            continue
+        phantom.append(path)
+    return phantom
