@@ -94,6 +94,16 @@ Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remot
 
 Auto-runs `git pull --rebase --autostash` at session start to keep worktree current.
 
+**Bare mode (`-b`, or `[session] use_tmux = false`):** worktree isolation, `--name`,
+and conversation resume all still apply — tmux is not a prerequisite for any of them.
+A bare launch creates `.worktrees/<project>-N` on branch `wt-<project>-N`, `cd`s into
+it, pins `CLAUDE_CODE_TASK_LIST_ID` to the session name, and passes `--continue` when
+a transcript titled for this session already exists. The one thing bare mode cannot
+offer is the auto-resume *loop*: nothing supervises the process, so when the engine
+exits the session is over. Auto-index assignment also switches source — with tmux it
+probes live sessions, in bare mode it scans `.worktrees/` and treats a directory with
+no live engine process as a reusable slot.
+
 **iTerm2 Session Name and Session Title:** when running inside iTerm2, each session automatically configures two tmux options on the new (or resumed) pane:
 
 - `allow-passthrough all` — enables DCS passthrough so iTerm2-specific escape sequences (OSC 1, `SetProfile`, etc.) sent from inside tmux reach the outer terminal. Without this, name-setting sequences are silently dropped.

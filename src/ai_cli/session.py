@@ -272,13 +272,76 @@ def is_current_project_resolved() -> bool:
         return False
 
 
-def find_next_index(prefix: str) -> int:
+def find_next_index(prefix: str, use_tmux: bool = True) -> int:
+    """Return the lowest unused session index for ``prefix``.
+
+    With tmux, occupancy is authoritative: a live ``tmux has-session`` means the
+    slot is taken.  In bare mode there is no server to ask (and tmux may not be
+    installed at all), so fall back to the on-disk worktree directories, which
+    are the only durable record a bare session leaves behind.
+    """
+    if not use_tmux:
+        return _find_next_index_from_worktrees(prefix)
     i = 1
     while True:
         res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{i}"], capture_output=True)
         if res.returncode != 0:
             return i
         i += 1
+
+
+def _find_next_index_from_worktrees(prefix: str) -> int:
+    """Return the lowest index with no live bare session, using worktrees on disk.
+
+    ``prefix`` is a tmux-style session prefix (``c-myproject-``); worktrees are
+    named with the ai_name form (``myproject-1``), so the leading engine segment
+    is stripped before matching.  A worktree whose directory exists but whose
+    engine process is gone is a *reusable* slot, not an occupied one — otherwise
+    indexes would climb forever, since bare mode has no session-exit hook to
+    remove the worktree (the tmux path's EXIT trap does that).
+    """
+    ai_prefix = re.sub(r"^[cg](-r)?-", "", prefix)
+    try:
+        repo_root = detect_repo_root()
+    except RuntimeError:
+        repo_root = None
+    if not repo_root:
+        return 1
+    wt_base = repo_root / WORKTREE_DIR
+    i = 1
+    while True:
+        candidate = wt_base / f"{ai_prefix}{i}"
+        if not candidate.exists() or not _worktree_has_live_session(candidate):
+            return i
+        i += 1
+
+
+def _worktree_has_live_session(worktree_dir: Path) -> bool:
+    """True when some engine process is currently running inside ``worktree_dir``.
+
+    Used to decide whether a leftover worktree directory represents an active
+    bare session or a reusable slot.  Falls back to treating the slot as free
+    when process inspection is unavailable, so a launch is never blocked
+    outright by a missing/denied psutil probe.
+    """
+    try:
+        import psutil
+    except Exception:
+        return False
+
+    target = str(worktree_dir)
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            if "claude" not in name and "gemini" not in name and "node" not in name:
+                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                if "claude" not in cmdline and "gemini" not in cmdline:
+                    continue
+            if proc.cwd() == target:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+            continue
+    return False
 
 
 def find_recent_session(prefix: str) -> str:
@@ -436,7 +499,12 @@ def _resolve_is_remote(is_remote_flag: bool) -> bool:
 
 
 def build_session_name(
-    engine_type: str, project_prefix: str, name: str, config: dict | None = None, is_remote: bool = False
+    engine_type: str,
+    project_prefix: str,
+    name: str,
+    config: dict | None = None,
+    is_remote: bool = False,
+    use_tmux: bool = True,
 ) -> tuple[str, str]:
     """Build tmux session name and ai_name.
 
@@ -444,6 +512,11 @@ def build_session_name(
       e.g. c-myproject-1, c-r-myproject-1, g-myproject-2
     ai_name (used for --name, worktrees, session map): {project}-{index}
       e.g. myproject-1, myproject-2
+
+    ``use_tmux=False`` (bare mode) switches auto-index discovery from live tmux
+    sessions to on-disk worktrees.  The returned session name is still built in
+    the same format so it remains a stable key for the session map and logs even
+    though no tmux session will exist.
     """
     engine_short = "c" if engine_type == "c" else "g"
     remote_seg = "-r" if is_remote else ""
@@ -471,11 +544,11 @@ def build_session_name(
     if clean_name.isdigit():
         return f"{tmux_base}{clean_name}", f"{ai_base}{clean_name}"
     if not clean_name:
-        idx = find_next_index(tmux_base)
+        idx = find_next_index(tmux_base, use_tmux=use_tmux)
         return f"{tmux_base}{idx}", f"{ai_base}{idx}"
     tmux_named = f"{tmux_base}{clean_name}-"
     ai_named = f"{ai_base}{clean_name}-"
-    idx = find_next_index(tmux_named)
+    idx = find_next_index(tmux_named, use_tmux=use_tmux)
     return f"{tmux_named}{idx}", f"{ai_named}{idx}"
 
 

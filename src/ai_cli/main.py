@@ -156,6 +156,99 @@ def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
         sys.exit(1)
 
 
+def _cc_project_dir(cwd: Path) -> Path:
+    """Return the ``~/.claude/projects`` directory Claude Code uses for ``cwd``.
+
+    Claude Code slugifies the absolute cwd by replacing every **non-alphanumeric**
+    character with ``-`` (``/home/me/my_proj`` -> ``-home-me-my-proj``).  Note the
+    underscore: an earlier version of this logic used a ``sed 's|[/.]|-|g'``
+    equivalent that replaced only ``/`` and ``.``, which silently computed the
+    wrong directory for any path containing ``_`` and made session resume miss.
+    """
+    return Path.home() / ".claude" / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
+
+
+def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
+    """Return the newest CC transcript under ``cwd`` whose ``customTitle`` is ``title``.
+
+    Claude Code's ``--continue`` picks the most recently modified conversation in
+    the project directory, so callers ``touch`` the returned file to make the
+    session named for this launch win.  ``--resume <uuid>`` is deliberately not
+    used: it opens a search picker rather than resuming directly.
+    """
+    project_dir = _cc_project_dir(cwd)
+    if not project_dir.is_dir():
+        return None
+    try:
+        candidates = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            with path.open("rb") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    found = record.get("customTitle", "")
+                    if found:
+                        # Only the first titled record matters — later ones repeat it.
+                        if found == title:
+                            return path
+                        break
+        except OSError:
+            continue
+    return None
+
+
+def _bare_engine_command(
+    engine: str,
+    ai_name: str,
+    target_root: Path,
+    uuid: str | None,
+    gemini_cmd: str,
+    sandbox_flag: str,
+    extra_args: list[str],
+) -> list[str]:
+    """Build the argv for a bare (no-tmux) engine launch.
+
+    Bare mode is a real session, not a degraded one: it gets the same
+    ``--name``/resume treatment the tmux session script applies, so ``ai c 1``
+    behaves consistently on machines where tmux is unavailable or opted out via
+    ``[session] use_tmux = false``.  The tmux path's auto-resume *loop* is the
+    only thing bare mode genuinely cannot offer — nothing supervises the process
+    to restart it.
+    """
+    if engine == "c":
+        command = ["claude"]
+        if not _is_root():
+            command.append("--dangerously-skip-permissions")
+        command += ["--name", ai_name]
+        # Resume this session's own prior conversation when one exists. --continue
+        # picks by mtime, so touch the matching transcript to make it the newest.
+        matched = _find_cc_session_by_title(target_root, ai_name)
+        if matched is not None:
+            try:
+                os.utime(matched, None)
+                command.append("--continue")
+            except OSError:
+                pass
+        elif _cc_project_dir(target_root).is_dir() and any(_cc_project_dir(target_root).glob("*.jsonl")):
+            command.append("--continue")
+        return command + extra_args
+
+    command = shlex.split(gemini_cmd) + ["-y", sandbox_flag]
+    if uuid:
+        command += ["-r", uuid]
+    else:
+        command += ["-i", f"/resume load {ai_name}"]
+    return command + extra_args
+
+
 def _is_root() -> bool:
     """Return True if the current process has elevated / root privileges.
 
@@ -1575,24 +1668,36 @@ def _do_session_launch(
 
         ensure_workspace_trusted([Path.cwd()])
 
-    if bare:
-        if engine == "c":
-            perms = [] if _is_root() else ["--dangerously-skip-permissions"]
-            _exec_with_direnv(Path.cwd(), ["claude"] + perms + extra_args)
-        else:
-            _gcmd = shlex.split(gemini_cmd)
-            _exec_with_direnv(Path.cwd(), _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + extra_args)
+    # NOTE: bare mode does NOT short-circuit here. It shares the worktree
+    # creation, session naming, and resume resolution below with the tmux path,
+    # and execs the engine once that setup is done (see the `if bare:` block
+    # after worktree setup). Returning early here was a long-standing bug: on any
+    # machine with `[session] use_tmux = false` — or any `-b/--bare` launch —
+    # `ai c N` silently degraded to a plain `claude` in the repo root, with no
+    # worktree isolation, no --name, and no session resume. Nothing about
+    # worktrees requires tmux; the two concerns were only ever coupled by the
+    # order of these statements.
 
-    if resume:
+    # -r/--resume means "re-attach to the running tmux session". In bare mode
+    # there is no tmux session to attach to, and the engine's own conversation
+    # resume is already applied unconditionally below, so the flag is a no-op
+    # rather than an error.
+    if resume and not bare:
         session = _session.resolve_session(prefix, name)
         if not session:
             print(f"No matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
-    _session.cleanup_stale_sessions(config)
+    # Stale-session sweeping and index discovery both drive tmux. In bare mode
+    # there is no tmux server to query (it may not even be installed), so skip
+    # the sweep and let build_session_name fall back to its non-tmux path.
+    if not bare:
+        _session.cleanup_stale_sessions(config)
     current_project_name = _config.get_current_project_name()
-    session_id, ai_name = _session.build_session_name(engine, project_prefix, name, config, is_remote=is_remote)
+    session_id, ai_name = _session.build_session_name(
+        engine, project_prefix, name, config, is_remote=is_remote, use_tmux=not bare
+    )
 
     # Worktree setup
     worktree_path = None
@@ -1716,6 +1821,25 @@ def _do_session_launch(
             uuid = latest
             d[ai_name] = uuid
             _config.save_session_map(d, engine)
+
+    if bare:
+        # Bare launch: no tmux, but everything else the tmux path sets up has now
+        # run — worktree created and synced, ai_name assigned, resume target
+        # resolved. cd into the worktree first: `direnv exec DIR cmd` loads DIR's
+        # environment but does NOT change the working directory, so without this
+        # the engine would start in the repo root with the worktree's env.
+        target_root = worktree_path or Path.cwd()
+        try:
+            os.chdir(target_root)
+        except OSError as exc:
+            print(f"Error: cannot enter session directory {target_root}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if engine == "c":
+            # Pin the task-list namespace to ai_name, matching the tmux session
+            # script, so the CC task panel survives process restarts.
+            os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
+        command = _bare_engine_command(engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args)
+        _exec_with_direnv(target_root, command)
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
     # so _iterm2_fleet_setup inside the bash script would silently no-op without them.

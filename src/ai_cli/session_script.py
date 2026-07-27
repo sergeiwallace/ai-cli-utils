@@ -482,7 +482,11 @@ with open(path, 'w') as f:
           # Find the most recent conversation matching $ai_name by customTitle.
           # Touch it so --continue (which picks by mtime) resumes the right one.
           # --resume UUID opens a search picker instead of resuming directly, so avoid it.
-          cc_project_dir="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[/.]|-|g')"
+          # Claude Code slugifies the cwd by replacing every NON-ALPHANUMERIC
+          # character with '-'. A narrower 's|[/.]|-|g' left '_' untouched and so
+          # computed the wrong directory for any path containing an underscore,
+          # silently disabling session resume there.
+          cc_project_dir="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[^a-zA-Z0-9]|-|g')"
           matched_file=$(python3 -c "
 import json,os,sys
 d,t=sys.argv[1],sys.argv[2]
