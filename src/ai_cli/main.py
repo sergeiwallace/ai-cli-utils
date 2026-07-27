@@ -27,8 +27,9 @@ from .git_repair import (
     _git_env,
     detect_missing_tracked_symlinks,
     detect_phantom_deleted_files,
-    detect_stranded_autostash,
+    pull_rebase_autostash,
     repair_bare_worktree_config,
+    unmerged_paths,
 )
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
@@ -998,7 +999,40 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
     # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
     subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, check=False)
     print("Pulling latest from origin...")
-    subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=project_path, check=False)
+    # AIH-443 Shape B: `git pull --rebase --autostash` exits 0 even when its
+    # automatic stash pop conflicted, so the exit code alone cannot be trusted
+    # (measured on git 2.43.0 and 2.55.0). Left unchecked this strands the
+    # checkout: the index keeps conflict stages, every later pull refuses with
+    # "Pulling is not possible because you have unmerged files", and the repo
+    # never advances again. That is how the Hetzner box sat 50 commits behind
+    # for five days while its disk filled — see docs/bugs/stranded-autostash.md.
+    pull, stranded = pull_rebase_autostash(project_path)
+    # A conflicted index means the pull could not advance the checkout — whether
+    # this run caused it or a previous one did. Either way the source tree is
+    # stale and cannot be built from, and every later pull will refuse too, so
+    # this must be fatal rather than a warning that scrolls past.
+    _conflicted = unmerged_paths(project_path)
+    if stranded or _conflicted:
+        detail = stranded or f"pre-existing conflict in {', '.join(sorted(_conflicted))}"
+        print(
+            f"Error: {project_path} has a conflicted index ({detail}); "
+            f"git pull exited {pull.returncode}.\n"
+            f"  Refusing to install from a half-applied checkout — it would ship broken or stale code.\n"
+            f"  Nothing has been discarded. Resolve, then re-run:\n"
+            f"    git -C {project_path} status\n"
+            f"    git -C {project_path} stash list",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if pull.returncode != 0:
+        # Tree is intact (nothing new conflicted, no autostash stranded), so the
+        # pull merely failed — e.g. no network. Installing the current checkout
+        # is still valid; say so rather than pretending the pull worked.
+        print(
+            f"Warning: git pull failed (exit {pull.returncode}); installing the current checkout.\n"
+            f"  {pull.stderr.strip()}",
+            file=sys.stderr,
+        )
     # Abort if pull left unresolved conflict markers — installing with conflicts produces a broken package
     src_dir = project_path / "src"
     conflict_files = []
@@ -1579,16 +1613,11 @@ def _do_session_launch(
                     file=sys.stderr,
                 )
             # Sync worktree with any changes that landed on main from other sessions.
-            # If stash-pop conflicts (e.g. remote commit touches same files as local changes),
-            # abort cleanly rather than leaving the index in a corrupted state.
-            pull = subprocess.run(
-                ["git", "pull", "--rebase", "--autostash"],
-                capture_output=True,
-                text=True,
-                cwd=worktree_path,
-                env=_git_env(),
-            )
-            if pull.returncode != 0:
+            # AIH-443 Shape B: this pull exits 0 even when its automatic stash pop
+            # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
+            # measures repo state either side of the call instead.
+            pull, stranded = pull_rebase_autostash(worktree_path)
+            if pull.returncode != 0 and not stranded:
                 # Abort any in-progress rebase and reset index to HEAD to prevent corruption.
                 subprocess.run(["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path, env=_git_env())
                 subprocess.run(
@@ -1596,23 +1625,25 @@ def _do_session_launch(
                 )
                 print(
                     f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
-                    f"(autostash pop conflict?). Index restored to HEAD.",
+                    f"(exit {pull.returncode}). Index restored to HEAD.",
                     file=sys.stderr,
                 )
-            # AIH-443: `pull.returncode` can be 0 even when the autostash pop conflicted
-            # (reproduced directly — git leaves conflict markers + a stash entry behind
-            # but still reports the wrapping `git pull` as successful), so the returncode
-            # check above cannot be trusted alone. Check for the leftover stash explicitly
-            # and warn loudly instead of silently proceeding into a half-applied worktree.
-            _stranded = detect_stranded_autostash(worktree_path)
-            if _stranded:
+            if stranded:
+                # Refuse the launch. Dropping an agent into a worktree whose index
+                # carries conflict stages is how AIH-443's phantom deletions spread
+                # across six worktrees. Nothing is auto-repaired: the user's work is
+                # in the stash and only they can say how to reconcile it.
                 print(
-                    f"WARNING: {worktree_path.name} has a stranded autostash ({_stranded}) — "
-                    f"the autostash pop likely conflicted even though git reported success. "
-                    f"Local changes may be sitting in the stash instead of the working tree. "
-                    f"Inspect with `git -C {worktree_path} stash show -p` before doing anything else.",
+                    f"Error: syncing worktree {worktree_path.name} stranded it ({stranded}).\n"
+                    f"  `git pull --rebase --autostash` exited {pull.returncode}, but its stash pop conflicted.\n"
+                    f"  Refusing to launch a session into a conflicted worktree.\n"
+                    f"  Your changes are safe. Inspect, then resolve:\n"
+                    f"    git -C {worktree_path} status\n"
+                    f"    git -C {worktree_path} stash list\n"
+                    f"    git -C {worktree_path} stash show -p stash@{{0}}",
                     file=sys.stderr,
                 )
+                sys.exit(1)
             # Repair backstop again after this launch's git work.
             if _repair_root:
                 repair_bare_worktree_config(_repair_root)

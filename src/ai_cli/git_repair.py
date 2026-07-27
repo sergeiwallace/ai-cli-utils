@@ -26,14 +26,16 @@ A third, detection-only layer (AIH-443) covers two distinct "phantom deletion"
 signatures found across six worktrees in three repos, both silent — ``git
 status`` reports a tracked path as deleted, with no error anywhere:
 
-3. ``detect_stranded_autostash()`` — ``git pull --rebase --autostash`` can
-   return exit code ``0`` even when the automatic stash pop conflicted
-   (reproduced directly: a same-line local/remote edit conflict leaves
-   ``UU`` markers and a stash entry behind, while the wrapping ``git pull``
-   still reports success). The launcher's existing autostash-conflict guard
-   (``if pull.returncode != 0`` in ``main.py``) cannot see this — it never
-   fires, because the return code lies. This finds the leftover stash so a
-   caller can warn instead of silently trusting the return code.
+3. ``pull_rebase_autostash()`` — ``git pull --rebase --autostash`` returns exit
+   code ``0`` even when the automatic stash pop conflicted. Measured directly
+   on git 2.55.0 (macOS) and 2.43.0 (Linux): a same-line local/remote edit
+   leaves three unmerged index stages, conflict markers on disk and the
+   autostash still on the stack, with no rebase/merge marker file to signal an
+   operation in progress — and the wrapping ``git pull`` still exits ``0``. A
+   caller checking only ``returncode != 0`` therefore cannot see it. This
+   wrapper measures repo STATE either side of the pull instead of trusting the
+   exit code, so the caller can fail loudly rather than proceed into a
+   half-applied tree. See ``docs/bugs/stranded-autostash.md``.
 4. ``detect_missing_tracked_symlinks()`` — a git-tracked symlink (mode
    ``120000``) that HEAD lists but that is absent from the working tree
    (``lstat`` fails). Confirmed root cause of AIH-443 Shape A: a Claude Code
@@ -154,18 +156,28 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
     return repaired
 
 
-def detect_stranded_autostash(repo_root: Path) -> str | None:
-    """Return the top ``git stash list`` entry if it looks like a leftover
-    ``--autostash``, else ``None``.
+def unmerged_paths(repo_root: Path) -> set[str]:
+    """Return paths carrying unmerged (conflict) stages in the index.
 
-    An autostash is meant to be transient: created before a rebase, popped
-    (and dropped) after. If the pop conflicts, git can leave the entry behind
-    and print a warning to stderr WITHOUT the wrapping ``git pull --rebase
-    --autostash`` command's exit code reflecting the failure (reproduced
-    directly — see module docstring). Any stash entry present immediately
-    after that call in this launcher's flow is presumptively this leftover:
-    no other step in this flow creates one.
+    This is the unambiguous signal that a repo is mid-conflict: unlike a stash
+    entry it cannot be produced by ordinary user activity, and unlike
+    ``.git/MERGE_HEAD``/``rebase-merge`` it survives an operation that
+    "completed" while leaving conflicts behind — which is exactly the stranded
+    autostash signature.
     """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-files", "--unmerged"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if result.returncode != 0:
+        return set()
+    return {line.split("\t", 1)[1] for line in result.stdout.splitlines() if "\t" in line}
+
+
+def stash_count(repo_root: Path) -> int:
+    """Return the number of entries on the stash stack (0 if unreadable)."""
     result = subprocess.run(
         ["git", "-C", str(repo_root), "stash", "list"],
         capture_output=True,
@@ -173,11 +185,56 @@ def detect_stranded_autostash(repo_root: Path) -> str | None:
         env=_git_env(),
     )
     if result.returncode != 0:
-        return None
-    lines = result.stdout.splitlines()
-    if not lines:
-        return None
-    return lines[0].strip()
+        return 0
+    return len(result.stdout.splitlines())
+
+
+def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess, str | None]:
+    """Run ``git pull --rebase --autostash`` and verify what it actually did.
+
+    Returns ``(completed_process, stranded_reason)``. ``stranded_reason`` is
+    ``None`` when the repo is in a usable state afterwards, and a
+    human-readable description when THIS pull left it stranded.
+
+    Git's exit code does not cover the autostash pop: when the pop conflicts,
+    git prints a warning to stderr and still exits ``0`` (measured on 2.43.0
+    and 2.55.0). So the strand is detected from repo state either side of the
+    call rather than from the exit code:
+
+    * unmerged index stages that were not there before the pull, or
+    * a stash stack that grew across the pull (the autostash never popped).
+
+    Both are measured as a DELTA. A repo the user was already resolving a
+    conflict in, or one holding unrelated WIP stashes, is not this pull's
+    doing and is not reported — the shipped ``detect_stranded_autostash``
+    reported any stash at all, which false-positives on every launch in a repo
+    with saved WIP (the stranded Hetzner box itself held three such entries).
+
+    A non-zero exit with a clean tree (network failure, say) is NOT a strand:
+    the caller can carry on from the existing checkout. It is reported through
+    the returned process object so the caller can still decide.
+    """
+    before_unmerged = unmerged_paths(repo_root)
+    before_stashes = stash_count(repo_root)
+
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "pull", "--rebase", "--autostash"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+
+    new_unmerged = unmerged_paths(repo_root) - before_unmerged
+    stash_growth = stash_count(repo_root) - before_stashes
+
+    reasons = []
+    if new_unmerged:
+        reasons.append(f"{len(new_unmerged)} newly conflicted path(s): {', '.join(sorted(new_unmerged))}")
+    if stash_growth > 0:
+        reasons.append(f"{stash_growth} autostash entr(y/ies) left on the stash stack")
+    if not reasons:
+        return result, None
+    return result, "; ".join(reasons)
 
 
 def detect_missing_tracked_symlinks(repo_root: Path) -> list[str]:

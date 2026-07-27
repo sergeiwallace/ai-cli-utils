@@ -1785,13 +1785,72 @@ class TestDeploy:
                 cli()
             assert exc.value.code == 0
 
-        cmds = [" ".join(c) for c in calls]
-        checkout_idx = next((i for i, c in enumerate(cmds) if "checkout" in c and "pyproject.toml" in c), None)
-        pull_idx = next((i for i, c in enumerate(cmds) if "git" in c and "pull" in c), None)
+        # Match on argv tokens, not on a joined string: tmp_path names contain
+        # this test's own name, so a substring search for "pull" also matches
+        # unrelated `git` calls whose only "pull" is inside the repo path.
+        checkout_idx = next((i for i, c in enumerate(calls) if "checkout" in c and "pyproject.toml" in c), None)
+        pull_idx = next((i for i, c in enumerate(calls) if c[:1] == ["git"] and "pull" in c), None)
         assert checkout_idx is not None, "git checkout -- pyproject.toml not called"
         assert pull_idx is not None, "git pull not called"
         assert checkout_idx < pull_idx, "checkout must run before pull"
-        assert "--autostash" in cmds[pull_idx], "pull must use --autostash"
+        assert "--autostash" in calls[pull_idx], "pull must use --autostash"
+
+    def test_deploy_when_autostash_pop_conflicts_then_aborts_instead_of_installing(self, tmp_path, capsys):
+        """AIH-443 Shape B, end to end through the real `ai update` path against
+        real git. The pull exits 0 while its autostash pop conflicts; `ai update`
+        must refuse rather than install from the half-applied checkout.
+
+        Deliberately NOT mocked: the defect IS git's exit code, so a fake
+        subprocess would only replay whatever the fake was told to return and
+        would pass against the broken code too.
+        """
+
+        def git(repo, *args):
+            return subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        remote = tmp_path / "remote"
+        remote.mkdir()
+        git(remote, "init", "-q", "-b", "main")
+        (remote / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "0.1.0"\n')
+        (remote / "shared.txt").write_text("line1\n")
+        git(remote, "add", "-A")
+        git(remote, "commit", "-q", "-m", "init")
+
+        project = tmp_path / "project"
+        subprocess.run(["git", "clone", "-q", str(remote), str(project)], check=True)
+        (project / "shared.txt").write_text("local-change\n")  # uncommitted
+        (remote / "shared.txt").write_text("remote-change\n")
+        git(remote, "commit", "-q", "-am", "remote edits same line")
+
+        uv_called = []
+        real_run = subprocess.run
+
+        def guarded_run(cmd, **kwargs):
+            # Let real git through; intercept only the install so the test never
+            # mutates the developer's toolchain.
+            if cmd and str(cmd[0]).endswith("uv"):
+                uv_called.append(list(cmd))
+                return MagicMock(returncode=0, stdout="")
+            return real_run(cmd, **kwargs)
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(project)}}),
+            patch("subprocess.run", side_effect=guarded_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 1
+        assert not uv_called, "must not install from a checkout whose index carries conflict stages"
+        assert "conflicted index" in capsys.readouterr().err
+        # And the repo really was left in the defect's state, not merely asserted to be.
+        assert git(project, "ls-files", "--unmerged").stdout.strip()
 
     def test_deploy_when_conflict_markers_in_source_then_aborts(self, tmp_path, capsys):
         pyproject = tmp_path / "pyproject.toml"

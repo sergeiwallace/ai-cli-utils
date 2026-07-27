@@ -9,8 +9,10 @@ from ai_cli.git_repair import (
     _git_env,
     detect_missing_tracked_symlinks,
     detect_phantom_deleted_files,
-    detect_stranded_autostash,
+    pull_rebase_autostash,
     repair_bare_worktree_config,
+    stash_count,
+    unmerged_paths,
 )
 
 
@@ -186,74 +188,158 @@ def test_repair_when_real_repo_corrupted_then_fixes_it_end_to_end(tmp_path):
     assert worktree_cfg.returncode != 0  # unset
 
 
-# --- detect_stranded_autostash (AIH-443) ---
+# --- pull_rebase_autostash / unmerged_paths / stash_count (AIH-443 Shape B) ---
+#
+# These drive real `git` subprocesses on real repos on purpose. The defect IS
+# git's exit-code behaviour, so a mocked subprocess would assert only what the
+# mock was told to say and would pass just as happily against the broken code.
 
 
 def _git(repo, *args, **kwargs):
     return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True, text=True, check=False, **kwargs)
 
 
-def test_detect_stranded_autostash_when_pop_conflicts_then_finds_it_end_to_end(tmp_path):
-    """Reproduces the exact failure this guard exists for: a same-line local vs.
-    remote edit makes `git pull --rebase --autostash` return 0 while leaving a
-    conflict and a stash entry behind — the launcher's `pull.returncode != 0`
-    check alone would never see this."""
-    remote = tmp_path / "remote"
-    remote.mkdir()
-    _git(remote, "init", "-q", "-b", "main")
-    _git(remote, "config", "user.email", "t@t")
-    _git(remote, "config", "user.name", "t")
-    (remote / "f.txt").write_text("line1\n")
-    _git(remote, "add", "f.txt")
-    _git(remote, "commit", "-q", "-m", "init")
+def _make_remote(path):
+    path.mkdir()
+    _git(path, "init", "-q", "-b", "main")
+    _git(path, "config", "user.email", "t@t")
+    _git(path, "config", "user.name", "t")
+    (path / "f.txt").write_text("line1\n")
+    _git(path, "add", "f.txt")
+    _git(path, "commit", "-q", "-m", "init")
+    return path
 
-    local = tmp_path / "local"
+
+def _clone(remote, local):
     subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True)
     _git(local, "config", "user.email", "t@t")
     _git(local, "config", "user.name", "t")
+    return local
 
-    # Local: uncommitted change, never staged or committed.
-    (local / "f.txt").write_text("local-change\n")
 
-    # Remote: someone else edits the same line and pushes.
+def _remote_edits_same_line(remote):
     (remote / "f.txt").write_text("remote-change\n")
     _git(remote, "commit", "-q", "-am", "remote edits same line")
 
-    _git(local, "fetch", "-q", "origin", "main")
-    pull = _git(local, "pull", "--rebase", "--autostash", "origin", "main")
 
-    assert pull.returncode == 0  # the exact lie this guard exists to catch
+def test_pull_rebase_autostash_when_pop_conflicts_then_reports_strand_despite_exit_zero(tmp_path):
+    """The defect itself: a same-line local-vs-remote edit makes the autostash
+    pop conflict, yet `git pull --rebase --autostash` still exits 0. Measured on
+    git 2.43.0 and 2.55.0. A caller gating on `returncode != 0` sees success and
+    walks into a conflicted index — which stranded the Hetzner box 50 commits
+    behind for five days."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (local / "f.txt").write_text("local-change\n")  # uncommitted, never staged
+    _remote_edits_same_line(remote)
 
-    stranded = detect_stranded_autostash(local)
+    pull, stranded = pull_rebase_autostash(local)
 
-    assert stranded is not None
-    assert "stash@{0}" in stranded
+    assert pull.returncode == 0, "if this ever becomes non-zero, git fixed the defect and the guard can be simplified"
+    assert stranded is not None, "the guard must see the strand the exit code hides"
+    assert "f.txt" in stranded
+    # And the repo really is stranded, exactly as the live specimen was:
+    assert unmerged_paths(local) == {"f.txt"}
+    assert stash_count(local) == 1
+    assert not (local / ".git" / "MERGE_HEAD").exists()  # no operation "in progress" to signal it
+    assert not (local / ".git" / "rebase-merge").exists()
 
 
-def test_detect_stranded_autostash_when_clean_pull_then_none(tmp_path):
-    remote = tmp_path / "remote"
-    remote.mkdir()
-    _git(remote, "init", "-q", "-b", "main")
-    _git(remote, "config", "user.email", "t@t")
-    _git(remote, "config", "user.name", "t")
-    (remote / "f.txt").write_text("line1\n")
-    _git(remote, "add", "f.txt")
-    _git(remote, "commit", "-q", "-m", "init")
+def test_pull_rebase_autostash_when_clean_pull_then_no_strand(tmp_path):
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (remote / "g.txt").write_text("unrelated\n")
+    _git(remote, "add", "g.txt")
+    _git(remote, "commit", "-q", "-m", "unrelated remote change")
 
-    local = tmp_path / "local"
-    subprocess.run(["git", "clone", "-q", str(remote), str(local)], check=True)
-    _git(local, "config", "user.email", "t@t")
-    _git(local, "config", "user.name", "t")
+    pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode == 0
+    assert stranded is None
+    assert unmerged_paths(local) == set()
+
+
+def test_pull_rebase_autostash_when_repo_holds_unrelated_wip_stashes_then_clean_pull_is_not_flagged(tmp_path):
+    """Regression for the false positive that made the previous guard useless:
+    it reported ANY stash entry as a strand. The stranded Hetzner main tree held
+    three unrelated WIP stashes, so that guard would have cried wolf on every
+    clean launch — and a warning that always fires is a warning nobody reads."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (local / "f.txt").write_text("my real work in progress\n")
+    _git(local, "stash", "push", "-q", "-m", "WIP on main: real work")
+    assert stash_count(local) == 1
 
     (remote / "g.txt").write_text("unrelated\n")
     _git(remote, "add", "g.txt")
     _git(remote, "commit", "-q", "-m", "unrelated remote change")
 
-    _git(local, "fetch", "-q", "origin", "main")
-    pull = _git(local, "pull", "--rebase", "--autostash", "origin", "main")
+    pull, stranded = pull_rebase_autostash(local)
 
     assert pull.returncode == 0
-    assert detect_stranded_autostash(local) is None
+    assert stranded is None, "a pre-existing WIP stash is not this pull's doing"
+    assert stash_count(local) == 1, "and it must be left untouched"
+
+
+def test_pull_rebase_autostash_when_index_already_conflicted_then_strand_not_attributed_to_this_pull(tmp_path):
+    """An already-conflicted repo is not re-blamed on the next pull. Git refuses
+    to pull at all here (non-zero), and the caller decides what that means —
+    `ai update` treats any conflicted index as fatal, `ai c N` only refuses when
+    the launch itself caused it."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (local / "f.txt").write_text("local-change\n")
+    _remote_edits_same_line(remote)
+    _, first = pull_rebase_autostash(local)
+    assert first is not None  # strand it
+
+    (remote / "g.txt").write_text("more upstream work\n")
+    _git(remote, "add", "g.txt")
+    _git(remote, "commit", "-q", "-m", "more upstream")
+
+    pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode != 0, "git refuses to pull onto an unmerged index"
+    assert stranded is None, "the conflict predates this pull"
+    assert unmerged_paths(local) == {"f.txt"}, "caller can still see the repo is unusable"
+
+
+def test_pull_rebase_autostash_when_remote_unreachable_then_fails_without_stranding(tmp_path):
+    """A pull that merely fails leaves the tree intact — that is not a strand,
+    and callers must stay usable offline."""
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    _git(local, "remote", "set-url", "origin", str(tmp_path / "does-not-exist"))
+
+    pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode != 0
+    assert stranded is None
+    assert unmerged_paths(local) == set()
+
+
+def test_unmerged_paths_when_index_has_conflict_stages_then_returns_those_paths(tmp_path):
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    (local / "f.txt").write_text("local-change\n")
+    _remote_edits_same_line(remote)
+    assert unmerged_paths(local) == set()
+
+    pull_rebase_autostash(local)
+
+    assert unmerged_paths(local) == {"f.txt"}
+
+
+def test_stash_count_when_entries_pushed_then_counts_them(tmp_path):
+    remote = _make_remote(tmp_path / "remote")
+    local = _clone(remote, tmp_path / "local")
+    assert stash_count(local) == 0
+
+    for i in range(3):
+        (local / "f.txt").write_text(f"wip {i}\n")
+        _git(local, "stash", "push", "-q", "-m", f"wip {i}")
+
+    assert stash_count(local) == 3
 
 
 # --- detect_missing_tracked_symlinks (AIH-443 Shape A) ---
@@ -406,14 +492,17 @@ def test_detect_phantom_deleted_files_when_missing_entry_is_symlink_then_ignored
     assert detect_missing_tracked_symlinks(repo) == ["docs/link.md"]
 
 
-def test_detect_stranded_autostash_when_phantom_deletion_present_then_blind_to_it(tmp_path):
+def test_shape_b_guard_when_phantom_deletion_present_then_blind_to_it(tmp_path):
     """Why Shape C needed a new detector at all: pre-commit stashes to its OWN patch
     file under ~/.cache/pre-commit, never `git stash`, so the Shape B guard sees an
-    empty stash list and stays silent on a genuinely broken worktree."""
+    empty stash list and an unconflicted index, and stays silent on a genuinely
+    broken worktree."""
     repo = _init_repo(tmp_path)
     (repo / "docs" / "plan.md").unlink()
 
-    assert detect_stranded_autostash(repo) is None  # the blindness, reproduced
+    # The blindness, reproduced against the Shape B guard's actual inputs.
+    assert stash_count(repo) == 0
+    assert unmerged_paths(repo) == set()
     assert detect_phantom_deleted_files(repo) == ["docs/plan.md"]
 
 
