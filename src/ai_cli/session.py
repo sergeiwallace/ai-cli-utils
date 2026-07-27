@@ -540,19 +540,41 @@ def create_worktree(ai_name: str) -> Path | None:
     if res.returncode != 0:
         subprocess.run(["git", "worktree", "add", str(wt_dir), branch], capture_output=True, env=_git_env())
 
-    # Track origin/main so git push ships to main, git pull --rebase syncs from main
-    subprocess.run(
-        ["git", "branch", "--set-upstream-to=origin/main", branch],
-        capture_output=True,
-        cwd=repo_root,
-        env=_git_env(),
-    )
-
     # Repair again after the add — the backstop for whatever just ran (defense
     # in depth alongside the env scrub above).
     repair_bare_worktree_config(repo_root)
 
     if wt_dir.exists():
+        # Track origin/main so git push ships to main, git pull --rebase syncs
+        # from main. This must not fail silently (AI-CLI-128): a worktree
+        # branch left without an upstream is one `git push` away from git
+        # suggesting `--set-upstream origin wt-X`, which publishes a
+        # same-named remote branch instead of shipping to main — the exact
+        # drift that stranded ai-ide-mobile/mobile-1 46 commits behind main
+        # for months. Retry once, then raise loudly rather than returning a
+        # worktree that looks fine but is one push away from that state.
+        upstream_res = subprocess.run(
+            ["git", "branch", "--set-upstream-to=origin/main", branch],
+            capture_output=True,
+            cwd=repo_root,
+            env=_git_env(),
+        )
+        if upstream_res.returncode != 0:
+            upstream_res = subprocess.run(
+                ["git", "branch", "--set-upstream-to=origin/main", branch],
+                capture_output=True,
+                cwd=repo_root,
+                env=_git_env(),
+            )
+        if upstream_res.returncode != 0:
+            stderr = upstream_res.stderr.decode(errors="replace").strip()
+            raise RuntimeError(
+                f"create_worktree: failed to set upstream=origin/main on branch "
+                f"{branch!r} after retry (AI-CLI-128 — a worktree branch with no "
+                f"upstream is one `git push` away from publishing a same-named "
+                f"remote branch). git stderr: {stderr}"
+            )
+
         # Symlink critical environment files
         for item in [".venv", ".claude", ".gemini", ".direnv"]:
             src = repo_root / item

@@ -79,6 +79,16 @@ repos:
         entry: .githooks/corrupt-index-guard.sh
         language: script
         stages: [pre-push]
+      # Reject publishing a canonical `wt-*` worktree branch to a same-named
+      # remote ref (e.g. `git push --set-upstream origin wt-X`). Worktree
+      # branches ship via `git push origin HEAD:main` only. AI-CLI-128.
+      - id: wt-branch-push-guard
+        name: wt-branch-push-guard (no publishing worktree branches)
+        entry: .githooks/wt-branch-push-guard.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
       # Fail if any .claude/settings.json hook command points at a script that
       # no longer exists (e.g. a copier _exclude removed it but the
       # _skip_if_exists settings.json still references it). Cheap; runs every

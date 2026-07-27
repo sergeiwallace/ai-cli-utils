@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 
 from ai_cli.main import (
     build_session_name,
@@ -1023,6 +1025,47 @@ class TestCreateWorktreeSymlink:
 
         assert (wt_dir / ".venv").is_symlink()
         assert result == wt_dir
+
+
+class TestCreateWorktreeUpstreamGuard:
+    """AI-CLI-128: --set-upstream-to=origin/main must not fail silently."""
+
+    def test_create_worktree_when_set_upstream_fails_once_then_retries_and_succeeds(self, tmp_path):
+        wt_dir = tmp_path / ".worktrees" / "sw-1"
+        upstream_attempts = []
+
+        def mock_run(cmd, **kwargs):
+            m = MagicMock(returncode=0, stdout="", stderr=b"")
+            if "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            elif cmd[:2] == ["git", "branch"] and "--set-upstream-to=origin/main" in cmd:
+                upstream_attempts.append(cmd)
+                m.returncode = 1 if len(upstream_attempts) == 1 else 0
+            return m
+
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                result = create_worktree("sw-1")
+
+        assert result == wt_dir
+        assert len(upstream_attempts) == 2
+
+    def test_create_worktree_when_set_upstream_fails_twice_then_raises(self, tmp_path):
+        wt_dir = tmp_path / ".worktrees" / "sw-2"
+
+        def mock_run(cmd, **kwargs):
+            m = MagicMock(returncode=0, stdout="", stderr=b"")
+            if "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            elif cmd[:2] == ["git", "branch"] and "--set-upstream-to=origin/main" in cmd:
+                m.returncode = 1
+                m.stderr = b"fatal: branch 'wt-sw-2' does not exist"
+            return m
+
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                with pytest.raises(RuntimeError, match="AI-CLI-128"):
+                    create_worktree("sw-2")
 
 
 # --- cleanup_worktree ---

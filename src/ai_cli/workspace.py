@@ -39,6 +39,30 @@ def _pull_rebase(path: Path) -> tuple[int, str]:
     return rc, (stdout + stderr).strip()
 
 
+def _upstream_drift(wt: Path) -> str | None:
+    """Return a warning string if a canonical worktree branch isn't tracking
+    origin/main, else None (AI-CLI-128).
+
+    A worktree branch left without upstream — or tracking anything other than
+    origin/main — is the precursor state that let ai-ide-mobile/mobile-1 sit
+    46 commits behind main for months while reporting "0 ahead, 0 behind"
+    against its own dead upstream. This surfaces drift instead of letting it
+    accumulate silently; it does not fail the pull.
+    """
+    rc, branch, _ = _run(["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"])
+    branch = branch.strip()
+    if rc != 0 or not branch.startswith("wt-"):
+        return None  # not a canonical wt-* worktree branch, or detached HEAD
+
+    rc, upstream, _ = _run(["git", "-C", str(wt), "rev-parse", "--abbrev-ref", f"{branch}@{{u}}"])
+    upstream = upstream.strip()
+    if rc != 0:
+        return f"{branch}: no upstream configured"
+    if upstream != "origin/main":
+        return f"{branch}: upstream is {upstream}, not origin/main"
+    return None
+
+
 def _get_worktrees(path: Path) -> list[Path]:
     """Return paths of all linked worktrees (excludes main worktree and bare)."""
     _, stdout, _ = _run(["git", "-C", str(path), "worktree", "list", "--porcelain"])
@@ -77,6 +101,7 @@ def ws_pull(
     total_pulled = 0
     total_stashed = 0
     total_dirty = 0
+    total_drifted = 0
 
     for folder in folders:
         name = folder.name
@@ -109,10 +134,14 @@ def ws_pull(
         worktrees = _get_worktrees(folder)
         clean_wts: list[str] = []
         dirty_wts: list[str] = []
+        drifted: list[str] = []
 
         for wt in worktrees:
             if not wt.exists():
                 continue
+            drift = _upstream_drift(wt)
+            if drift:
+                drifted.append(f"{name}/{wt.name}: {drift}")
             if _is_dirty(wt):
                 dirty_wts.append(wt.name)
                 total_dirty += 1
@@ -137,5 +166,11 @@ def ws_pull(
         for wt_name in dirty_wts:
             print(f"  ↷  {name}/{wt_name}  (dirty, skipped)")
 
+        for msg in drifted:
+            print(f"  ✗  {msg}  (not tracking origin/main — AI-CLI-128)")
+            total_drifted += 1
+
     print(f"\nDone: {total_pulled} pulled, {total_stashed} stashed+pulled, {total_dirty} skipped (dirty)")
+    if total_drifted:
+        print(f"⚠  {total_drifted} worktree branch(es) not tracking origin/main — see above")
     return 0

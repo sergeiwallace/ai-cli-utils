@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_cli.workspace import _parse_workspace_folders, ws_pull
+from ai_cli.workspace import _parse_workspace_folders, _upstream_drift, ws_pull
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +295,138 @@ class TestWsPull:
             result = ws_pull(ws)
 
         assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# _upstream_drift (AI-CLI-128)
+# ---------------------------------------------------------------------------
+
+
+class TestUpstreamDrift:
+    def test_non_wt_branch_returns_none(self, tmp_path):
+        def run(cmd):
+            if "--abbrev-ref" in cmd and "HEAD" in cmd:
+                return (0, "main\n", "")
+            return (0, "", "")
+
+        with patch("ai_cli.workspace._run", side_effect=run):
+            assert _upstream_drift(tmp_path) is None
+
+    def test_head_rev_parse_fails_returns_none(self, tmp_path):
+        def run(cmd):
+            if "--abbrev-ref" in cmd and "HEAD" in cmd:
+                return (128, "", "fatal: not a git repository")
+            return (0, "", "")
+
+        with patch("ai_cli.workspace._run", side_effect=run):
+            assert _upstream_drift(tmp_path) is None
+
+    def test_wt_branch_no_upstream_returns_warning(self, tmp_path):
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined:
+                return (0, "wt-sw-1\n", "")
+            if "@{u}" in joined:
+                return (128, "", "fatal: no upstream configured for branch 'wt-sw-1'")
+            return (0, "", "")
+
+        with patch("ai_cli.workspace._run", side_effect=run):
+            result = _upstream_drift(tmp_path)
+        assert result is not None
+        assert "no upstream" in result
+
+    def test_wt_branch_wrong_upstream_returns_warning(self, tmp_path):
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined:
+                return (0, "wt-sw-1\n", "")
+            if "@{u}" in joined:
+                return (0, "origin/wt-sw-1\n", "")
+            return (0, "", "")
+
+        with patch("ai_cli.workspace._run", side_effect=run):
+            result = _upstream_drift(tmp_path)
+        assert result is not None
+        assert "origin/wt-sw-1" in result
+
+    def test_wt_branch_correct_upstream_returns_none(self, tmp_path):
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined:
+                return (0, "wt-sw-1\n", "")
+            if "@{u}" in joined:
+                return (0, "origin/main\n", "")
+            return (0, "", "")
+
+        with patch("ai_cli.workspace._run", side_effect=run):
+            assert _upstream_drift(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# ws_pull drift reporting (AI-CLI-128)
+# ---------------------------------------------------------------------------
+
+
+class TestWsPullDriftReporting:
+    def test_ws_pull_when_worktree_drifted_then_logs_warning(self, tmp_path, capsys):
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        wt = tmp_path / "wt1"
+        wt.mkdir()
+        ws = _make_workspace(tmp_path, [repo])
+        wt_output = _worktree_porcelain(repo, [(wt, "wt-branch")])
+
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined and str(wt) in joined:
+                return (0, "wt-branch\n", "")
+            if "@{u}" in joined and str(wt) in joined:
+                return (128, "", "fatal: no upstream configured for branch 'wt-branch'")
+            if "rev-parse" in joined:
+                return (0, ".git\n", "")
+            if "status" in joined and "--porcelain" in joined:
+                return (0, "", "")
+            if "worktree" in joined and "list" in joined:
+                return (0, wt_output, "")
+            if "pull" in joined:
+                return (0, "", "")
+            return (0, "", "")
+
+        with patch("ai_cli.workspace._run", side_effect=run):
+            result = ws_pull(ws)
+
+        out = capsys.readouterr().out
+        assert "AI-CLI-128" in out
+        assert "not tracking origin/main" in out
+        assert result == 0  # report-only, never fails the pull
+
+    def test_ws_pull_when_no_drift_then_no_warning(self, tmp_path, capsys):
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        wt = tmp_path / "wt1"
+        wt.mkdir()
+        ws = _make_workspace(tmp_path, [repo])
+        wt_output = _worktree_porcelain(repo, [(wt, "wt-branch")])
+
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined and str(wt) in joined:
+                return (0, "wt-branch\n", "")
+            if "@{u}" in joined and str(wt) in joined:
+                return (0, "origin/main\n", "")
+            if "rev-parse" in joined:
+                return (0, ".git\n", "")
+            if "status" in joined and "--porcelain" in joined:
+                return (0, "", "")
+            if "worktree" in joined and "list" in joined:
+                return (0, wt_output, "")
+            if "pull" in joined:
+                return (0, "", "")
+            return (0, "", "")
+
+        with patch("ai_cli.workspace._run", side_effect=run):
+            ws_pull(ws)
+
+        out = capsys.readouterr().out
+        assert "AI-CLI-128" not in out
+        assert "not tracking origin/main" not in out
