@@ -984,6 +984,74 @@ class TestCliWorktreeGitPull:
                                                             cli()
         return worktree_path
 
+    def test_when_worktree_conflict_predates_launch_then_resolution_is_not_discarded(self, tmp_path):
+        """`ai c N` must not wipe a conflict resolution the user is part-way
+        through. The pull fails (git refuses on an unmerged index), and the old
+        unconditional `git rebase --abort` + `git restore --staged .` cleanup
+        would clear the stages — destroying their work to "prevent corruption".
+
+        Real git throughout: the cleanup's damage is to real index state, which a
+        mocked subprocess cannot exhibit.
+        """
+
+        def git(repo, *args):
+            return subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        remote = tmp_path / "remote"
+        remote.mkdir()
+        git(remote, "init", "-q", "-b", "main")
+        (remote / "f.txt").write_text("line1\n")
+        git(remote, "add", "f.txt")
+        git(remote, "commit", "-q", "-m", "init")
+
+        worktree_path = tmp_path / ".worktrees" / "sw-1"
+        subprocess.run(["git", "clone", "-q", str(remote), str(worktree_path)], check=True)
+        # Strand it first, so the conflict genuinely predates the launch below.
+        (worktree_path / "f.txt").write_text("local-change\n")
+        (remote / "f.txt").write_text("remote-change\n")
+        git(remote, "commit", "-q", "-am", "remote edits same line")
+        git(worktree_path, "pull", "--rebase", "--autostash")
+        conflict_before = git(worktree_path, "ls-files", "--unmerged").stdout
+        assert conflict_before, "fixture must actually be conflicted"
+
+        restore_calls = []
+        real_run = subprocess.run
+
+        def spy_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "restore" in cmd:
+                restore_calls.append(list(cmd))
+            # Real git only; never reach a real tmux/agent boundary.
+            if isinstance(cmd, list) and cmd and cmd[0] == "git":
+                return real_run(cmd, *args, **kwargs)
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "c", "1"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")),
+            patch("ai_cli.session.create_worktree", return_value=worktree_path),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session_script.get_engine_script", return_value="script"),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("subprocess.run", side_effect=spy_run),
+            patch("os.execvp", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        assert not restore_calls, "must not run git restore --staged on a pre-existing conflict"
+        assert git(worktree_path, "ls-files", "--unmerged").stdout == conflict_before, (
+            "the user's conflict stages must survive the launch untouched"
+        )
+
     def test_when_worktree_index_corrupted_then_heals_before_pull(self, tmp_path):
         """When the worktree has >50 staged deletions, git read-tree HEAD runs before git pull."""
         # Simulate 55 staged deletions (corruption signature)

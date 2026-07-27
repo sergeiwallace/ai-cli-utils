@@ -96,10 +96,10 @@ box: stamp file and HEAD were both `4711d4e`.
 
 ## Blast radius (live incident)
 
-`sergei@178.104.70.139:~/projects/ai-cli-utils` stranded 2026-07-22 21:42:40, found 2026-07-27 —
+A remote build host's checkout of this repo stranded 2026-07-22 21:42:40 and was found 2026-07-27 —
 **five days**, 50 commits behind, zero local commits at stake. During that window a runaway log grew
-to 1.97 GB and filled the disk (CORE-88/CORE-89), and a shipped quota-scrape fix could not be
-deployed there. One exit-0-on-failure produced a dead server.
+to 1.97 GB and filled the host's disk, and a shipped quota-scrape fix could not be deployed there.
+One exit-0-on-failure produced a dead server.
 
 ## Fix
 
@@ -107,11 +107,31 @@ deployed there. One exit-0-on-failure produced a dead server.
 trusting the exit code, and reports a strand when *this* pull caused one:
 
 * unmerged index paths that were not present before, or
-* a stash stack that grew across the call.
+* stash entries that were not present before (compared by commit id, not by count — a count cannot
+  distinguish "this pull stranded one" from "another process dropped one and this pull added one"),
+* **and** no git operation left in progress.
 
-Both are deltas, so a repo the user is already resolving a conflict in, or one holding unrelated WIP
-stashes, is not misattributed. A non-zero exit with an intact tree (no network, say) is not a
-strand — callers stay usable offline.
+That last clause is the discriminator between the two ways a repo acquires conflict stages. Measured:
+
+| scenario | exit | unmerged | stash | operation in progress |
+| -------- | ---- | -------- | ----- | --------------------- |
+| autostash-pop strand (this defect) | **0** | 3 | 1 | **none** |
+| ordinary rebase-body conflict | 1 | 3 | 0 | `rebase-merge` |
+| rebase-body conflict with an autostash in play | 1 | 3 | 0 | `rebase-merge` |
+
+Only the first is silent. Without the clause the guard would refuse the very session that could
+resolve an ordinary rebase conflict, and would offer stash advice for a pull that never stashed
+anything.
+
+Both deltas are measured against a "before" snapshot, so a conflict the user is already resolving,
+or unrelated WIP stashes, are not misattributed. A non-zero exit with an intact tree (no network,
+say) is not a strand — callers stay usable offline.
+
+The state probes raise `GitProbeError` rather than returning an empty result, and an unverifiable
+repo is reported AS a strand. "I could not look" and "I looked and it was clean" must not be the
+same value; that is how a gate goes inert. Paths are read with `ls-files --unmerged -z` and decoded
+with the filesystem encoding, so a non-UTF-8 filename under `core.quotePath=false` cannot make the
+probe throw instead of answer.
 
 Callers:
 
@@ -122,8 +142,13 @@ Callers:
   across six worktrees. A pre-existing conflict is left alone, so a session can still be launched to
   help resolve one.
 
-Nothing is auto-repaired and no stash is ever dropped: the user's work is in the stash and only they
-can say how to reconcile it.
+The existing `git rebase --abort` + `git restore --staged .` cleanup on the launch path now runs
+**only if the worktree was clean before the pull**, so it can only ever undo work this launch
+started. Unconditionally, it aborted a rebase the user was part-way through and cleared their
+conflict stages — destroying resolution work in the name of preventing corruption.
+
+Nothing else is auto-repaired and no stash is ever dropped: the user's work is in the stash and only
+they can say how to reconcile it.
 
 ## Proving the guard can fail
 

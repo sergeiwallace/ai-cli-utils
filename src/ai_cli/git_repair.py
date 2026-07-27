@@ -156,66 +156,129 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
     return repaired
 
 
+class GitProbeError(RuntimeError):
+    """A read-only git state probe could not be answered.
+
+    Raised rather than returning an empty result so a caller gating on repo
+    state fails CLOSED. "I could not look" and "I looked and it was clean" are
+    the same value otherwise, which is how a gate ends up inert.
+    """
+
+
+def _probe(repo_root: Path, *args: str) -> str:
+    """Run a read-only git query, raising ``GitProbeError`` if it cannot answer.
+
+    Decoded with the filesystem encoding and ``surrogateescape``, the same way
+    Python decodes paths: a filename that is not valid UTF-8 (possible on Linux
+    whenever ``core.quotePath`` is off) then round-trips as surrogates instead
+    of raising ``UnicodeDecodeError`` inside a gate.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        encoding=sys.getfilesystemencoding(),
+        errors="surrogateescape",
+        env=_git_env(),
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise GitProbeError(f"`git {' '.join(args)}` failed (exit {result.returncode}): {stderr}")
+    return result.stdout
+
+
 def unmerged_paths(repo_root: Path) -> set[str]:
     """Return paths carrying unmerged (conflict) stages in the index.
 
     This is the unambiguous signal that a repo is mid-conflict: unlike a stash
     entry it cannot be produced by ordinary user activity, and unlike
     ``.git/MERGE_HEAD``/``rebase-merge`` it survives an operation that
-    "completed" while leaving conflicts behind — which is exactly the stranded
-    autostash signature.
+    "completed" while leaving conflicts behind — exactly the stranded autostash
+    signature.
+
+    Uses ``-z`` so paths arrive verbatim rather than shell-quoted, which keeps
+    spaces, tabs and newlines in filenames from being mistaken for separators.
+    Raises ``GitProbeError`` if git cannot answer.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "ls-files", "--unmerged"],
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-    )
-    if result.returncode != 0:
-        return set()
-    return {line.split("\t", 1)[1] for line in result.stdout.splitlines() if "\t" in line}
+    out = _probe(repo_root, "ls-files", "--unmerged", "-z")
+    paths = set()
+    for record in out.split("\0"):
+        if not record:
+            continue
+        _, _, path = record.partition("\t")
+        if path:
+            paths.add(path)
+    return paths
 
 
-def stash_count(repo_root: Path) -> int:
-    """Return the number of entries on the stash stack (0 if unreadable)."""
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "stash", "list"],
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-    )
-    if result.returncode != 0:
-        return 0
-    return len(result.stdout.splitlines())
+def stash_entries(repo_root: Path) -> set[str]:
+    """Return the commit ids currently on the stash stack.
+
+    Identities, not a count: a count cannot tell "this pull stranded one" from
+    "another process dropped one and this pull added one". Raises
+    ``GitProbeError`` if git cannot answer.
+    """
+    out = _probe(repo_root, "stash", "list", "--format=%H")
+    return {line for line in out.split() if line}
+
+
+def operation_in_progress(repo_root: Path) -> str | None:
+    """Return the name of an in-flight git operation, or ``None``.
+
+    The discriminator between the two ways a repo ends up with conflict stages.
+    An ordinary rebase/merge conflict leaves a marker saying so, and git tells
+    the user what to do about it. A stranded autostash pop leaves conflict
+    stages with NO marker at all — measured: rebase-body conflict leaves
+    ``rebase-merge`` and exits 1, an autostash-pop conflict leaves nothing and
+    exits 0. Only the second is silent, and only the second is this defect.
+    """
+    git_dir = Path(_probe(repo_root, "rev-parse", "--absolute-git-dir").strip())
+    for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
+        if (git_dir / marker).exists():
+            return marker
+    return None
 
 
 def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess, str | None]:
     """Run ``git pull --rebase --autostash`` and verify what it actually did.
 
     Returns ``(completed_process, stranded_reason)``. ``stranded_reason`` is
-    ``None`` when the repo is in a usable state afterwards, and a
-    human-readable description when THIS pull left it stranded.
+    ``None`` when the repo is usable afterwards, and a human-readable
+    description when THIS pull stranded it.
 
     Git's exit code does not cover the autostash pop: when the pop conflicts,
-    git prints a warning to stderr and still exits ``0`` (measured on 2.43.0
-    and 2.55.0). So the strand is detected from repo state either side of the
-    call rather than from the exit code:
+    git warns on stderr and still exits ``0`` (measured on 2.43.0 and 2.55.0),
+    leaving conflict stages and the autostash behind. So the strand is detected
+    from repo state either side of the call:
 
-    * unmerged index stages that were not there before the pull, or
-    * a stash stack that grew across the pull (the autostash never popped).
+    * unmerged index paths that were not there before, or
+    * stash entries that were not there before (the autostash never popped),
+    * and NO git operation left in progress.
 
-    Both are measured as a DELTA. A repo the user was already resolving a
-    conflict in, or one holding unrelated WIP stashes, is not this pull's
-    doing and is not reported — the shipped ``detect_stranded_autostash``
-    reported any stash at all, which false-positives on every launch in a repo
-    with saved WIP (the stranded Hetzner box itself held three such entries).
+    That last clause matters. A plain rebase conflict also produces unmerged
+    paths, but it exits non-zero and leaves ``rebase-merge`` behind, so git has
+    already told the user. Reporting it here would refuse the very session that
+    could resolve it, and would offer stash advice for a pull that never
+    stashed anything.
 
-    A non-zero exit with a clean tree (network failure, say) is NOT a strand:
-    the caller can carry on from the existing checkout. It is reported through
-    the returned process object so the caller can still decide.
+    Both deltas are measured against a "before" snapshot, so a conflict the user
+    was already resolving, or unrelated WIP stashes, are not misattributed.
+
+    A non-zero exit with a clean tree (no network, say) is NOT a strand: the
+    caller can carry on from the existing checkout, and gets the exit code via
+    the returned process object.
+
+    If a state probe cannot run at all, that is reported AS a strand — an
+    unverifiable repo is treated as unsafe rather than assumed clean.
     """
-    before_unmerged = unmerged_paths(repo_root)
-    before_stashes = stash_count(repo_root)
+    try:
+        before_unmerged = unmerged_paths(repo_root)
+        before_stashes = stash_entries(repo_root)
+    except GitProbeError as e:
+        before_unmerged, before_stashes = None, None
+        probe_failure: str | None = str(e)
+    else:
+        probe_failure = None
 
     result = subprocess.run(
         ["git", "-C", str(repo_root), "pull", "--rebase", "--autostash"],
@@ -224,14 +287,26 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
         env=_git_env(),
     )
 
-    new_unmerged = unmerged_paths(repo_root) - before_unmerged
-    stash_growth = stash_count(repo_root) - before_stashes
+    if probe_failure:
+        return result, f"repo state could not be verified before the pull — {probe_failure}"
+
+    try:
+        new_unmerged = unmerged_paths(repo_root) - before_unmerged
+        new_stashes = stash_entries(repo_root) - before_stashes
+        in_progress = operation_in_progress(repo_root)
+    except GitProbeError as e:
+        return result, f"repo state could not be verified after the pull — {e}"
+
+    if in_progress:
+        # git left an explicit marker, so the conflict is visible by ordinary
+        # means and the caller's own non-zero handling applies.
+        return result, None
 
     reasons = []
     if new_unmerged:
         reasons.append(f"{len(new_unmerged)} newly conflicted path(s): {', '.join(sorted(new_unmerged))}")
-    if stash_growth > 0:
-        reasons.append(f"{stash_growth} autostash entr(y/ies) left on the stash stack")
+    if new_stashes:
+        reasons.append(f"{len(new_stashes)} autostash entr(y/ies) left on the stash stack")
     if not reasons:
         return result, None
     return result, "; ".join(reasons)

@@ -24,6 +24,7 @@ from . import session_script as _session_script
 from . import transport as _transport
 from . import tunnel as _tunnel
 from .git_repair import (
+    GitProbeError,
     _git_env,
     detect_missing_tracked_symlinks,
     detect_phantom_deleted_files,
@@ -978,6 +979,19 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
             _handoff._log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
 
+def _has_conflict_or_unknown(repo_root) -> bool:
+    """True if the repo has conflict stages, or if that cannot be determined.
+
+    Fails closed on purpose: callers use this to decide whether a destructive
+    cleanup is safe, and "I could not check" must never license discarding
+    someone's in-progress conflict resolution.
+    """
+    try:
+        return bool(unmerged_paths(repo_root))
+    except GitProbeError:
+        return True
+
+
 # --- Command implementations (invoked by Click handlers below) ---
 
 
@@ -1004,14 +1018,18 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
     # (measured on git 2.43.0 and 2.55.0). Left unchecked this strands the
     # checkout: the index keeps conflict stages, every later pull refuses with
     # "Pulling is not possible because you have unmerged files", and the repo
-    # never advances again. That is how the Hetzner box sat 50 commits behind
-    # for five days while its disk filled — see docs/bugs/stranded-autostash.md.
+    # never advances again. That is how the remote build host sat 50 commits
+    # behind for five days while its disk filled — docs/bugs/stranded-autostash.md.
     pull, stranded = pull_rebase_autostash(project_path)
     # A conflicted index means the pull could not advance the checkout — whether
     # this run caused it or a previous one did. Either way the source tree is
     # stale and cannot be built from, and every later pull will refuse too, so
     # this must be fatal rather than a warning that scrolls past.
-    _conflicted = unmerged_paths(project_path)
+    try:
+        _conflicted = unmerged_paths(project_path)
+    except GitProbeError as e:
+        # Cannot verify; refuse rather than install from an unverifiable tree.
+        _conflicted = {f"<unverifiable: {e}>"}
     if stranded or _conflicted:
         detail = stranded or f"pre-existing conflict in {', '.join(sorted(_conflicted))}"
         print(
@@ -1616,9 +1634,13 @@ def _do_session_launch(
             # AIH-443 Shape B: this pull exits 0 even when its automatic stash pop
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
+            _conflicted_before = _has_conflict_or_unknown(worktree_path)
             pull, stranded = pull_rebase_autostash(worktree_path)
-            if pull.returncode != 0 and not stranded:
-                # Abort any in-progress rebase and reset index to HEAD to prevent corruption.
+            if pull.returncode != 0 and not stranded and not _conflicted_before:
+                # Reset only when the tree was clean beforehand, so this cleanup can
+                # only ever undo work THIS launch started. Doing it unconditionally
+                # would abort a rebase the user is part-way through and wipe their
+                # conflict resolution — the opposite of the intent.
                 subprocess.run(["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path, env=_git_env())
                 subprocess.run(
                     ["git", "restore", "--staged", "."], capture_output=True, cwd=worktree_path, env=_git_env()
@@ -1628,6 +1650,13 @@ def _do_session_launch(
                     f"(exit {pull.returncode}). Index restored to HEAD.",
                     file=sys.stderr,
                 )
+            elif pull.returncode != 0 and not stranded:
+                print(
+                    f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
+                    f"(exit {pull.returncode}). Left as-is — this worktree already had "
+                    f"a conflict in progress and nothing here will discard it.",
+                    file=sys.stderr,
+                )
             if stranded:
                 # Refuse the launch. Dropping an agent into a worktree whose index
                 # carries conflict stages is how AIH-443's phantom deletions spread
@@ -1635,12 +1664,11 @@ def _do_session_launch(
                 # in the stash and only they can say how to reconcile it.
                 print(
                     f"Error: syncing worktree {worktree_path.name} stranded it ({stranded}).\n"
-                    f"  `git pull --rebase --autostash` exited {pull.returncode}, but its stash pop conflicted.\n"
+                    f"  `git pull --rebase --autostash` exited {pull.returncode} but did not finish cleanly.\n"
                     f"  Refusing to launch a session into a conflicted worktree.\n"
-                    f"  Your changes are safe. Inspect, then resolve:\n"
+                    f"  Nothing was discarded. Inspect, then resolve:\n"
                     f"    git -C {worktree_path} status\n"
-                    f"    git -C {worktree_path} stash list\n"
-                    f"    git -C {worktree_path} stash show -p stash@{{0}}",
+                    f"    git -C {worktree_path} stash list",
                     file=sys.stderr,
                 )
                 sys.exit(1)
