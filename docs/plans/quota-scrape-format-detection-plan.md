@@ -8,7 +8,7 @@ task_id: AI-CLI-68
 created: 2026-04-27
 template_version: "plan-1.0.0"
 ---
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # AI-CLI-68: Quota Scrape Format-Change Detection
 
@@ -282,28 +282,28 @@ ACs to cover:
 | 2026-04-29 | 2 | D1 approved (Option A); D2 options presented for user selection; plan restructured with D1/D2 format |
 | 2026-04-29 | 3 | D2 approved: emoji-only `🚨 BROKEN 🚨` prefix, no ANSI codes, prepended (not replacing) quota output |
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="decisions" -->
-
-<!-- aido:region name="task_breakdown" kind="replaceable" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="task_breakdown" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="feedback_rounds" -->
-
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="task_breakdown" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="task_breakdown" -->
+
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="feedback_rounds" -->
+
+<!-- doc:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="approval_log" -->

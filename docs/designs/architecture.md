@@ -6,7 +6,7 @@ status: active
 source: claude-sonnet-4-6 2026-04-18
 template_version: "design-1.0.0"
 ---
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # ai-cli-utils — Architecture
 
@@ -221,22 +221,22 @@ The tool installs as a single `ai` command. There is no server component — all
 | `google-cloud-bigquery` | (optional) GCP billing for `ai spend gemini` |
 | `pydantic` | (optional) Layout file schema validation |
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="decisions" -->
-
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="feedback_rounds" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="feedback_rounds" -->
+
+<!-- doc:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="approval_log" -->

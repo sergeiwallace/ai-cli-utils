@@ -7,7 +7,7 @@ source: session-2026-04-20
 task: AI-CLI-25
 template_version: "design-1.0.0"
 ---
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # Quota Notification System
 
@@ -514,22 +514,22 @@ The `notification_log` table provides a persistent record so duplicates are visi
 | 2026-04-20 | Round 2 | OQ1 → OS fallback fires on failure too; Notifier API added; D4 added (config file + SQLite hybrid). OQ2 → phases removed, flat implementation plan. OQ3 → ai notifications log CLI designed. |
 | 2026-04-20 | Round 3 | D4 (Notifier API storage: config file + SQLite) approved. All decisions approved — doc ready for implementation. |
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="decisions" -->
-
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="feedback_rounds" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="feedback_rounds" -->
+
+<!-- doc:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="approval_log" -->

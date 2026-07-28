@@ -69,7 +69,7 @@ still awaiting Sergei's review.
 - [Feedback Rounds](#feedback-rounds)
 - [Approval Log](#approval-log)
 
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 ## Overview
 
@@ -109,13 +109,13 @@ tier and adds a direct `confirmed_unavailable` tier for the observed failed look
 ## Task Breakdown
 
 > **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
-<!-- aido:ac-rules:mirror:begin -->
+<!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
 - Phrase every AC with EARS keywords: `When <trigger>, the system shall <response>` (event-driven); `While <state>` / `Where <feature>` (state-driven / optional); `If <condition>, then the system shall <response>` (unwanted-behavior / failure path).
 - At least one failure-path AC — EARS `If <condition>, then the system shall …` — per public function changed.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
-<!-- aido:ac-rules:mirror:end -->
+<!-- doc:ac-rules:mirror:end -->
 
 This is **net-new** work (no module being replaced), so no feature-parity inventory is required
 (see [What must NOT regress](#what-must-not-regress-constraints--non-goals) for the ordinary
@@ -297,9 +297,9 @@ Roadmap + a short procedure note updated in the same commit.
 
 **Dependencies:** T-01, T-02
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 ## Decisions
 
@@ -592,9 +592,9 @@ the Decision Summary's `Chosen (Sergei)` / `Diverged?` columns are `— (pending
 Two decisions defer robustness that must be filed as tasks: the proactive sweep (D-1/D-3/AD-3) and a
 confirmed `session restart` command (D-3/AD-2). No metered research was fired.
 
-<!-- /aido:region name="decisions" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="task_breakdown" kind="replaceable" -->
+<!-- doc:region name="task_breakdown" kind="replaceable" -->
 
 ## Deferred / follow-up work (not built in this plan)
 
@@ -770,17 +770,17 @@ Questions):
 > 3. <!-- Response to question 3 -->
 > - <enter feedback here>
 
-<!-- /aido:region name="task_breakdown" -->
+<!-- /doc:region name="task_breakdown" -->
 
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
 
 ## Feedback Rounds
 
 (none yet — APPEND_ONLY: prior rounds frozen byte-for-byte)
 
-<!-- /aido:region name="feedback_rounds" -->
+<!-- /doc:region name="feedback_rounds" -->
 
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="approval_log" kind="append_only" -->
 
 ## Approval Log
 
@@ -789,4 +789,4 @@ Questions):
 | 2026-07-22 | D-1..D-4 auto-resolved | `--mode automated` run; D-1/D-3/D-4 high confidence, D-2 medium; none left PENDING. Awaiting Sergei review (may override any in Feedback Round 1). |
 | 2026-07-22 | Round 1 audit incorporated; D-1..D-4 revised (AD-1..AD-4 resolved) | Codex `cx review` (16 findings) incorporated. AD-1 → reason-coded confidence model (revises D-4); AD-2 → truthful exit-and-relaunch, defer confirmed restart command (revises D-3); AD-3 → narrow to library + CLI, defer sweep to a dedicated watcher (revises D-1/D-2); AD-4 → no doc-hygiene change. All four are **AI recommendations awaiting human ratification** — `Chosen (Sergei)`/`Diverged?` remain pending (JA-1). Two deferred-robustness items filed to the Deferred section (sweep; confirmed restart command). |
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="approval_log" -->

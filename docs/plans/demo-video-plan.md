@@ -6,7 +6,7 @@ status: in_progress
 task: AI-CLI-52
 template_version: "plan-1.0.0"
 ---
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # Terminal Demo Video — Implementation Plan
 
@@ -106,28 +106,28 @@ Full details: `~/projects/sergei/docs/plans/mcp-config-hygiene-cleanup.md`
 
 - **2026-04-19, Round 1**: Plan drafted. Approach approved — screencapture + ffmpeg, full-screen iTerm2 recording, autonomous script.
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="decisions" -->
-
-<!-- aido:region name="task_breakdown" kind="replaceable" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="task_breakdown" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="feedback_rounds" -->
-
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="task_breakdown" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="task_breakdown" -->
+
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="feedback_rounds" -->
+
+<!-- doc:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="approval_log" -->

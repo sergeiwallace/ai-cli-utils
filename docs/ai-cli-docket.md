@@ -22,7 +22,7 @@ unblock impact. `priority_override` always wins over the derived score.
 (1/2/3/5/8/13/20), `unblock_count`, `agent_ready`, `priority_override`, and
 derived `score`.
 
-<!-- aido:region name="review_queue" kind="replaceable" -->
+<!-- doc:region name="review_queue" kind="replaceable" -->
 
 ## Review Queue
 
@@ -30,9 +30,9 @@ Items requiring Sergei's decision, review, or merge; ordered priority→impact.
 
 (none yet)
 
-<!-- /aido:region name="review_queue" -->
+<!-- /doc:region name="review_queue" -->
 
-<!-- aido:region name="autonomous_batch" kind="replaceable" -->
+<!-- doc:region name="autonomous_batch" kind="replaceable" -->
 
 ## Autonomous Batch
 
@@ -41,9 +41,9 @@ belong here.
 
 (none yet)
 
-<!-- /aido:region name="autonomous_batch" -->
+<!-- /doc:region name="autonomous_batch" -->
 
-<!-- aido:region name="provenance_log" kind="append_only" -->
+<!-- doc:region name="provenance_log" kind="append_only" -->
 
 ## Provenance Log
 
@@ -51,4 +51,4 @@ belong here.
 |------|--------|----------------|
 | YYYY-MM-DD | Created | Generated from `docs/docket/STUB.md` |
 
-<!-- /aido:region name="provenance_log" -->
+<!-- /doc:region name="provenance_log" -->

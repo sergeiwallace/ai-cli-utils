@@ -18,7 +18,7 @@ template_version: "audit-1.0.0"
 
 **Target commit:** `8bf0857d0ddb5f79ea27411bc03aad4fb8750d95`
 
-<!-- aido:region name="scope" kind="replaceable" -->
+<!-- doc:region name="scope" kind="replaceable" -->
 
 ## Scope
 
@@ -61,9 +61,9 @@ also independently corrected the upstream research doc
 (`claude-code-daemon-restart-task-tool-disconnect.md` §5), which had made the same wrong
 "restart via `ai c N`" claim DV-4 caught — see that doc's commit `e3823ac`.
 
-<!-- /aido:region name="scope" -->
+<!-- /doc:region name="scope" -->
 
-<!-- aido:region name="round_1_findings" kind="replaceable" -->
+<!-- doc:region name="round_1_findings" kind="replaceable" -->
 
 ## Round 1 — Main Audit
 
@@ -564,9 +564,9 @@ with commands+expected+actual, Files Read, and Commands Run) preserved at:
 finding's core evidence and recommendation; consult the raw file for the full quoted verification
 matrix output and the complete Appendix: Files Read / Appendix: Commands Run listings if needed).
 
-<!-- /aido:region name="round_1_findings" -->
+<!-- /doc:region name="round_1_findings" -->
 
-<!-- aido:region name="audit_log" kind="append_only" -->
+<!-- doc:region name="audit_log" kind="append_only" -->
 
 ## Audit Log
 
@@ -575,4 +575,4 @@ matrix output and the complete Appendix: Files Read / Appendix: Commands Run lis
 | 2026-07-22 | Round 1 | Codex `cx review --effort high`, read-only. 16 findings (2 CRITICAL, 13 MAJOR, 1 MINOR), 4 AD-N decisions (AD-4 added by Claude during incorporation). Verdict: not ready for implementation. Claude independently re-verified DV-4 against `main.py:1591` (confirmed) and corrected the upstream research doc's workaround claim (`ai-harness` `e3823ac`). |
 | 2026-07-22 | Round 1 incorporation | AD-1..AD-4 resolved (AI recommendations via the AIH-139 decision framework; awaiting human ratification). AD-1 → reason-coded confidence model; AD-2 → truthful exit-and-relaunch + defer confirmed restart command; AD-3 → narrow to library + CLI, defer sweep to a dedicated watcher; AD-4 → no doc-hygiene change. All 16 findings resolved or captured in the plan's Deferred section (sweep DV-3/F-1/F-2; confirmed restart command). Every DV-N re-verified directly against source (`main.py`, `notifications.py`, `quota.py`, `config.py`, `cc_usage.py`, a real `sessions/*.json`) before trusting the audit's quotes. |
 
-<!-- /aido:region name="audit_log" -->
+<!-- /doc:region name="audit_log" -->
