@@ -99,6 +99,15 @@ venv = ".venv"
 line-length = 120
 
 [tool.ruff.lint]
+# Declared explicitly rather than inherited (BUG-006). These four prefixes were
+# ruff's default select through 0.15.x, and are the rule set this repo has
+# actually been linted against — the `ignore` entries below are all E7 codes,
+# which only makes sense against this select. Ruff 0.16.0 redefined its default
+# from these 59 rules to 413, silently importing 1075 findings from rule
+# families (SIM, BLE, PLW, UP, S, I, …) the repo never opted into. Adopting any
+# of those is deliberate, reviewed work — tracked separately, see AI-CLI-141 —
+# not something a patch-level tool upgrade gets to decide.
+select = ["E4", "E7", "E9", "F"]
 ignore = [
     "E701",  # multiple-statements-on-one-line (colon) — established compact style in main.py
     "E702",  # multiple-statements-on-one-line (semicolon) — established compact style in main.py

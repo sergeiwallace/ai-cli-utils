@@ -42,7 +42,11 @@ uv run pytest tests/test_main.py::test_remote_flag_when_host_configured_then_ssh
 
 ## Code Style
 
-This project uses [ruff](https://github.com/astral-sh/ruff) for linting and formatting.
+This project uses [ruff](https://github.com/astral-sh/ruff) for linting and formatting,
+pinned to an exact version in `pyproject.toml` and `.pre-commit-config.yaml`. The enabled
+rule set is declared explicitly via `[tool.ruff.lint] select`, rather than inherited from
+ruff's default — a ruff upgrade is free to change that default, and one did, which would
+otherwise silently redefine what the gate enforces.
 
 ```bash
 # Check lint
@@ -63,8 +67,18 @@ uv run ruff format src/ tests/
 All contributions must pass this before merge:
 
 ```bash
-ruff check src/ tests/ && ruff format --check src/ tests/ && pytest
+uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run pytest
 ```text
+
+**Run it through `uv run`, not a bare `ruff`/`pytest`.** A bare `ruff` resolves through
+`PATH`, which may be a different version than `pyproject.toml` pins — and the ruff version
+decides the verdict. A venv one minor version behind the pin reported "All checks passed!"
+for a tree the pinned binary found 1075 errors in (see
+[BUG-006](docs/bugs/ruff-gate-inherited-ruleset.md)). `uv run` syncs the environment to the
+lockfile first, so the gate and the pre-commit hook agree.
+
+The `ruff-version-sync` pre-commit hook fails the commit if the installed ruff does not
+match the pin, so this can't drift silently again.
 
 ## Pull Request Process
 
