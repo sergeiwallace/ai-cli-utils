@@ -109,9 +109,19 @@ class NATSClient:
     async def connect(self):
         """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts.
 
-        Passes max_reconnect_attempts=0 to the nats library to disable its own internal
-        retry loop (default 60 attempts × 2s = 2-minute hang when NATS is unavailable).
-        Our own retry loop handles backoff instead.
+        Passes max_reconnect_attempts=1 to the nats library to bound its own internal
+        initial-connect retry loop (AIDO-294). max_reconnect_attempts=0 looks like it
+        should mean "no retries" but does NOT: nats-py's _select_next_server() only
+        discards a server from its pool when `max_reconnect_attempts > 0` is true, so
+        0 is treated as unlimited (equivalent to a negative value) — the server is
+        never discarded, the pool never empties, NoServersError is never raised, and
+        connect() never returns. With a single configured server this produced a
+        genuine infinite loop (~2s busy-sleep cadence) rather than the documented
+        "60 attempts x 2s = 2-minute hang", and was the root cause of 3+ day old
+        orphaned `ai internal publish` processes (49 found in one census). A value of
+        1 lets the pool-discard condition (`reconnects > max_reconnect_attempts`) fire
+        after two failed attempts, so nats.connect() reliably raises NoServersError
+        and our own retry loop below handles backoff instead, as originally intended.
 
         error_cb silences the nats library's verbose per-attempt tracebacks — connection
         failures are expected when NATS is not running locally (e.g. on Mac).
@@ -131,7 +141,7 @@ class NATSClient:
 
                 self.nc = await nats.connect(
                     servers=self.servers,
-                    max_reconnect_attempts=0,
+                    max_reconnect_attempts=1,
                     error_cb=_noop_error_cb,
                 )
                 self.js = self.nc.jetstream()

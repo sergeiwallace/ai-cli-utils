@@ -1,9 +1,57 @@
 import asyncio
+import socket
 import subprocess
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
 from ai_cli.messaging import NATSClient
+
+
+def _unreachable_local_port() -> int:
+    """Bind an ephemeral local port then close it so nothing listens there."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class TestNATSClientConnectRealBoundary:
+    """AIDO-294: connect() must return in bounded time against a live-but-
+    unreachable server. Exercises the REAL nats-py connect() (unmocked) —
+    the defect lives inside nats-py's own initial-connect retry loop
+    (`_select_next_server`), which every other test in this file mocks
+    away via `patch("nats.connect", ...)`. That mocking is correct for
+    testing our own retry/backoff logic, but it can never catch this
+    defect, since the defect is what nats.connect() itself does when
+    left unmocked.
+    """
+
+    def test_connect_returns_within_bounded_time_when_server_unreachable(self):
+        port = _unreachable_local_port()
+        client = NATSClient(servers=[f"nats://127.0.0.1:{port}"])
+
+        async def run():
+            start = time.monotonic()
+            await asyncio.wait_for(client.connect(), timeout=20)
+            return time.monotonic() - start
+
+        try:
+            elapsed = asyncio.run(run())
+        except asyncio.TimeoutError:
+            raise AssertionError(
+                "NATSClient.connect() did not return within 20s against an "
+                "unreachable server — this is the AIDO-294 hang: nats-py's "
+                "max_reconnect_attempts=0 does not disable its internal "
+                "retry loop (it is treated as unlimited), so "
+                "_select_next_server() retries forever and connect() never "
+                "returns. Orphaned `ai internal publish` processes were "
+                "found alive for 3+ days as a result."
+            ) from None
+
+        assert client.nc is None
+        assert elapsed < 20
 
 
 class TestNATSClientConnect:
