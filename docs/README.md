@@ -93,6 +93,7 @@ Testing templates and tracking.
 | [[BUG-001] iTerm2 tab title and color system — multiple bugs](bugs/iterm2-title-color-system.md) | uat-in-progress | ai-cli-utils | iterm2, tab-title, tab-color, session-title, gemini, remote, mosh |
 | [[BUG-002] Automatic tmux injection triggers CC rewind conversation TUI](bugs/prompt-injection-rewind-menu.md) | investigating | ai-cli-utils | bug, injection, tmux, signal-watch, watcher, cc-session |
 | [[BUG-003] Session launch broken on non-Mac hosts — wrong repo, blocked .envrc, failed update](bugs/session-launch-non-mac-host.md) | fix-deployed | ai-cli-utils | session, worktree, direnv, update, portability, linux |
+| [[BUG-004] Session worktrees branch from HEAD, not origin/main — not PR-clean, and the sync rebases the wrong commits](bugs/worktree-base-not-origin-main.md) | fix-deployed | ai-cli-utils | session, worktree, git, branch, upstream, credentials |
 
 ## Designs
 

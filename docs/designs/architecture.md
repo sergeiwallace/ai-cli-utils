@@ -193,7 +193,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 **Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without requiring a local scrape on every machine.
 
-**Git worktree isolation** — each `ai c N` session runs in `.worktrees/sw-N/` on branch `wt-sw-N` tracking `origin/main`. Created and destroyed by `main.py`. Commits ship directly to `origin/main` via `git push origin HEAD:main`.
+**Git worktree isolation** — each `ai c N` session runs in `.worktrees/sw-N/` on branch `wt-sw-N`, **created at `origin/main`** and tracking `origin/main`. Created and destroyed by `main.py`. Commits ship directly to `origin/main` via `git push origin HEAD:main`. Base and upstream are both pinned deliberately: `git worktree add -b` defaults its start-point to the main tree's current HEAD, which silently produces a branch that is not PR-clean whenever that tree is parked on something other than `main` (BUG-004). An unresolvable `origin/main` is a hard failure, never a fallback to HEAD.
 
 **CC session sync via bare git** — `sync.py` uses a bare git repo as the transport for CC JSONL + memory files between machines. Conflict detection is file-level mtime comparison logged to `~/.claude-sync-conflicts.log`.
 
