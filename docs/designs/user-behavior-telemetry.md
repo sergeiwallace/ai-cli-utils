@@ -18,6 +18,8 @@ template_version: "design-1.0.0"
 
 **Status:** DRAFT
 
+**Tracked as:** `AI-CLI-142`
+
 **Created:** 2026-03-18
 
 **Research:** [docs/research/telemetry-event-design-early-stage-apps.md](../research/telemetry-event-design-early-stage-apps.md)
