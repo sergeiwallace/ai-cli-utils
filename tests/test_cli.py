@@ -2032,11 +2032,15 @@ class TestDeploy:
             assert exc.value.code == 0, "a failed pull must not abort the install"
 
         err = capsys.readouterr().err
-        assert "could not update the source tree" in err
+        assert "installing the current checkout" in err
         assert "could not read from remote repository" in err, f"git's reason must be shown; got {err!r}"
 
-    def test_deploy_when_detached_head_then_skips_pull(self, tmp_path, capsys):
-        """In a detached HEAD there is no branch to pull into — skip, don't guess."""
+    def test_deploy_when_detached_head_then_pulls_without_guessing_a_branch(self, tmp_path):
+        """In a detached HEAD there is no branch to name, so add no explicit refspec.
+
+        Guessing one would pull the wrong branch. git's own "You are not currently on a
+        branch" handling applies instead.
+        """
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')
         calls = []
@@ -2059,8 +2063,9 @@ class TestDeploy:
                 cli()
             assert exc.value.code == 0
 
-        assert not any("pull" in c for c in calls), "must not attempt a pull in detached HEAD"
-        assert "detached HEAD" in capsys.readouterr().err
+        pull = next((c for c in calls if "pull" in c), None)
+        assert pull is not None, "git pull not called"
+        assert "origin" not in pull, f"must not name a branch in detached HEAD, got {pull!r}"
 
     def test_deploy_when_conflict_markers_in_source_then_aborts(self, tmp_path, capsys):
         pyproject = tmp_path / "pyproject.toml"

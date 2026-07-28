@@ -158,13 +158,33 @@ def _git(*args, cwd):
 
 
 def _make_repo(path: Path) -> Path:
-    path.mkdir(parents=True)
-    _git("init", "-b", "main", cwd=path)
+    """A real repo cloned from a bare remote, so ``origin/main`` exists.
+
+    ``create_worktree`` hard-fails when it cannot set a worktree branch's upstream to
+    ``origin/main`` (AI-CLI-128), so a plain ``git init`` fixture is not a repo the
+    launcher will accept.
+    """
+    remote = path.parent / f"{path.name}-origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(remote)],
+        check=True,
+        capture_output=True,
+    )
+
+    seed = path.parent / f"{path.name}-seed"
+    seed.mkdir(parents=True)
+    _git("init", "-b", "main", cwd=seed)
+    _git("config", "user.email", "t@example.com", cwd=seed)
+    _git("config", "user.name", "T", cwd=seed)
+    (seed / "README.md").write_text("hi\n")
+    _git("add", "-A", cwd=seed)
+    _git("commit", "-m", "init", cwd=seed)
+    _git("push", "-q", str(remote), "main", cwd=seed)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", "-q", str(remote), str(path)], check=True, capture_output=True)
     _git("config", "user.email", "t@example.com", cwd=path)
     _git("config", "user.name", "T", cwd=path)
-    (path / "README.md").write_text("hi\n")
-    _git("add", "-A", cwd=path)
-    _git("commit", "-m", "init", cwd=path)
     return path
 
 
@@ -229,8 +249,10 @@ def test_given_unreachable_remote_when_pull_fails_then_session_still_starts_with
     one.  The worktree here has an ``origin`` that cannot be reached.
     """
     repo = _make_repo(tmp_path / "projects" / "myproject")
+    # Point origin at a path that does not exist, *after* cloning — so origin/main still
+    # exists locally (create_worktree requires it) but the fetch itself must fail.
     subprocess.run(
-        ["git", "remote", "add", "origin", str(tmp_path / "nope.git")],
+        ["git", "remote", "set-url", "origin", str(tmp_path / "nope.git")],
         cwd=repo,
         check=True,
         capture_output=True,

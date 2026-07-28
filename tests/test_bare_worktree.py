@@ -201,15 +201,30 @@ def _git(*args, cwd):
 
 @pytest.fixture
 def real_repo(tmp_path):
-    """A real git repo with one commit, so `git worktree add` genuinely works."""
+    """A real git repo with one commit and a real ``origin``, cloned from a bare remote.
+
+    The clone is what makes ``origin/main`` exist. ``create_worktree`` hard-fails when it
+    cannot set a worktree branch's upstream to ``origin/main`` (AI-CLI-128: a branch with
+    no upstream is one ``git push`` away from publishing a same-named remote branch), so a
+    bare ``git init`` fixture no longer represents a repo the launcher will accept.
+    """
+    remote = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True, capture_output=True)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git("init", "-b", "main", cwd=seed)
+    _git("config", "user.email", "t@example.com", cwd=seed)
+    _git("config", "user.name", "T", cwd=seed)
+    (seed / "README.md").write_text("hi\n")
+    _git("add", "-A", cwd=seed)
+    _git("commit", "-m", "init", cwd=seed)
+    _git("push", "-q", str(remote), "main", cwd=seed)
+
     repo = tmp_path / "myproject"
-    repo.mkdir()
-    _git("init", "-b", "main", cwd=repo)
+    subprocess.run(["git", "clone", "-q", str(remote), str(repo)], check=True, capture_output=True)
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "T", cwd=repo)
-    (repo / "README.md").write_text("hi\n")
-    _git("add", "-A", cwd=repo)
-    _git("commit", "-m", "init", cwd=repo)
     return repo
 
 

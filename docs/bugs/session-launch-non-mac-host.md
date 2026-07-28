@@ -167,12 +167,27 @@ volume, CI checking out to `/build`, a clone into `~/src` — they failed with
   session *without* the project environment. A degraded session beats no session.
 - **`session_script.py`** — `\.envrc` → `[.]envrc`, equivalent in ERE, valid in Python.
   Verified the regex still matches the blocked-message text and still rejects unrelated text.
-- **`main.py` — `_pull_source_tree()`** (new) pulls `origin <branch>` explicitly when the
-  branch has no upstream, skips the pull in detached HEAD, and reports git's own error
-  instead of discarding it.
-- **`main.py` — worktree sync warning** now surfaces git's last error line rather than
-  always blaming an "autostash pop conflict?", which sent diagnosis down the wrong path for
-  the far more common causes (no network, missing credentials).
+- **`git_repair.py` — `_pull_refspec()`** (new) makes `pull_rebase_autostash()` pass an
+  explicit `origin <branch>` when the branch has no upstream, and add nothing in a detached
+  HEAD (where guessing a branch would be wrong). Placing it in the shared helper fixes both
+  the `ai update` path and the worktree-sync path at once.
+- **`main.py` — worktree sync warning** now quotes git's last error line. An exit code
+  alone does not distinguish no-network from missing credentials, and the user cannot
+  re-run the pull to find out once the index has been restored.
+
+**Reconciled with concurrent upstream work.** While this was being fixed, `origin/main`
+advanced 29 commits, two of which overlap:
+
+- `2742783` reached the *identical* NATS root cause and fix (`max_reconnect_attempts=1`)
+  independently, with better provenance (a census of 49 orphaned `ai internal publish`
+  processes). Upstream's docstring was kept; this branch adds only the `asyncio.wait_for`
+  deadline, because relying on the library to honour its own options is not itself a bound.
+- `dde49f6` fixed the same stale tmux-guard test left behind by `55ace53`. Upstream's
+  version was kept (it also covers the Homebrew hint on darwin); the duplicate added here
+  was dropped.
+- `a653fbd` made `create_worktree` hard-fail when a worktree branch's upstream cannot be
+  set to `origin/main`. The launch-test fixtures here therefore clone from a bare remote
+  instead of using a bare `git init`, so `origin/main` genuinely exists.
 - **`tests/conftest.py`** — new autouse fixture points `projects_dir` at the checkout's own
   parent, fixing the hermeticity defect once at the process boundary instead of per test.
 
@@ -189,7 +204,13 @@ volume, CI checking out to `/build`, a clone into `~/src` — they failed with
       with git's reason and still installs
 - [x] `CLAUDE_CODE_TASK_LIST_ID` pinned to `ai_name`; no tmux invoked in bare mode
 - [x] `ruff check` + `ruff format --check` clean
-- [ ] Full `pytest` run green (in progress at time of writing)
+- [x] Full `pytest` green: 1961 passed, 7 skipped, 0 failed (rebased on `origin/main`)
+- [x] Verified with the real installed `ai` binary, not just the source tree, in all 10
+      registered repos: `kg-2`, `aih-1`, `aido-1`, `ai-cli-1`, `core-1`, `sw-1`, `acto-1`,
+      `credo-1`, `cmkt-1`, `tpl-1`
+- [x] No CC session created in tmux (counted session-shaped tmux sessions before/after a
+      launch: 0 → 0). Note tmux *is* installed here, so its absence could not have been
+      the evidence.
 
 ## Lessons Learned
 
