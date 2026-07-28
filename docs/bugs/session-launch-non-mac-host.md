@@ -8,7 +8,7 @@ related_docs:
   - docs/bugs/worktree-index-corruption.md
 ---
 
-<!-- aido:region name="summary" kind="replaceable" -->
+<!-- doc:region name="summary" kind="replaceable" -->
 
 # [BUG-003] Session launch broken on non-Mac hosts — wrong repo, blocked .envrc, failed update
 
@@ -232,17 +232,17 @@ advanced 29 commits, two of which overlap:
   conftest boundary is the same "fix it once at the process boundary" approach the existing
   `GIT_*` scrub already uses; per-test defence had already failed here.
 
-<!-- /aido:region name="summary" -->
+<!-- /doc:region name="summary" -->
 
-<!-- aido:region name="reproduction" kind="replaceable" -->
+<!-- doc:region name="reproduction" kind="replaceable" -->
 
-<!-- /aido:region name="reproduction" -->
+<!-- /doc:region name="reproduction" -->
 
-<!-- aido:region name="root_cause" kind="replaceable" -->
+<!-- doc:region name="root_cause" kind="replaceable" -->
 
-<!-- /aido:region name="root_cause" -->
+<!-- /doc:region name="root_cause" -->
 
-<!-- aido:region name="fix_log" kind="append_only" -->
+<!-- doc:region name="fix_log" kind="append_only" -->
 
 ### 2026-07-28 — all four causes fixed
 
@@ -251,9 +251,9 @@ tests in `tests/test_session_launch_locality.py`, `tests/test_no_syntax_warnings
 `tests/test_bare_worktree.py`, `tests/test_cli.py`, `tests/test_main.py`,
 `tests/conftest.py`.
 
-<!-- /aido:region name="fix_log" -->
+<!-- /doc:region name="fix_log" -->
 
-<!-- aido:region name="appendix_evidence" kind="immutable" -->
+<!-- doc:region name="appendix_evidence" kind="immutable" -->
 
 ### Evidence — worktree landed in the wrong repo (before the fix)
 
@@ -290,4 +290,4 @@ aido → STUB_CLAUDE_CWD=/…/aido/.worktrees/aido-1
 core → STUB_CLAUDE_CWD=/…/ai-core/.worktrees/core-1
 ```
 
-<!-- /aido:region name="appendix_evidence" -->
+<!-- /doc:region name="appendix_evidence" -->
