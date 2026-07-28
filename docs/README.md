@@ -92,6 +92,7 @@ Testing templates and tracking.
 | [[AI-CLI-70] Git worktree index corruption — hundreds of D/untracked changes after rebase](bugs/worktree-index-corruption.md) | fix-deployed | ai-cli-utils | bug, git, worktree, recurring |
 | [[BUG-001] iTerm2 tab title and color system — multiple bugs](bugs/iterm2-title-color-system.md) | uat-in-progress | ai-cli-utils | iterm2, tab-title, tab-color, session-title, gemini, remote, mosh |
 | [[BUG-002] Automatic tmux injection triggers CC rewind conversation TUI](bugs/prompt-injection-rewind-menu.md) | investigating | ai-cli-utils | bug, injection, tmux, signal-watch, watcher, cc-session |
+| [[BUG-003] Session launch broken on non-Mac hosts — wrong repo, blocked .envrc, failed update](bugs/session-launch-non-mac-host.md) | fix-deployed | ai-cli-utils | session, worktree, direnv, update, portability, linux |
 
 ## Designs
 

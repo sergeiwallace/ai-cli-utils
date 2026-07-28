@@ -270,10 +270,46 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
 
     assert len(execs) == 1, "expected exactly one exec"
     file, args, cwd_at_exec = execs[0]
-    assert file == "direnv"
+    # This fixture repo has no .envrc, so the engine is exec'd directly — direnv
+    # has nothing to load and must not be a precondition for launching.
+    assert file == "claude"
     assert cwd_at_exec == str(worktree), "must chdir into the worktree before exec"
-    # direnv exec must be pointed at the worktree, not the repo root.
-    assert args[2] == str(worktree)
+    assert "--name" in args and args[args.index("--name") + 1] == "kg-1"
+
+
+def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo, tmp_path, monkeypatch):
+    """With a usable .envrc, the engine must start under the worktree's environment.
+
+    ``direnv exec DIR`` must be pointed at the *worktree*, not the repo root, or
+    the session gets the wrong project environment.
+    """
+    (real_repo / ".envrc").write_text("export PROJECT_ENV=1\n")
+    monkeypatch.chdir(real_repo)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    execs: list[tuple] = []
+
+    def fake_execvp(file, args):
+        execs.append((file, list(args), os.getcwd()))
+        raise SystemExit(0)
+
+    with (
+        patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main._direnv_env_usable", return_value=True),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.session._allow_trusted_worktree_envrc"),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_launch_kwargs())
+
+    worktree = real_repo / ".worktrees" / "kg-1"
+    file, args, cwd_at_exec = execs[0]
+    assert file == "direnv"
+    assert args[:3] == ["direnv", "exec", str(worktree)]
+    assert cwd_at_exec == str(worktree)
     assert "--name" in args and args[args.index("--name") + 1] == "kg-1"
 
 

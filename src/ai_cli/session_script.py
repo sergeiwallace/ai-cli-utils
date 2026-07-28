@@ -99,7 +99,7 @@ def get_engine_script(
         # streaming to the terminal in real time. direnv's block state is
         # deterministic given .envrc + approval state, so this probe reflects
         # the same outcome the failed launch just hit, without touching its I/O.
-        if direnv exec "$direnv_root" true 2>&1 | grep -qE 'direnv: error.*\.envrc is blocked'; then
+        if direnv exec "$direnv_root" true 2>&1 | grep -qE 'direnv: error.*[.]envrc is blocked'; then
           agent_direnv_blocked=true
         fi
         echo "Error: agent command did not complete successfully under direnv for $direnv_root. If direnv denied or could not evaluate .envrc, run 'direnv allow $direnv_root' and correct the reported error." >&2

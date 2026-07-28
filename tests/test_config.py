@@ -329,7 +329,7 @@ class TestEnsureMachineProfileRegistered:
 
     def test_when_only_host_id_missing_then_writes_only_host_id(self, tmp_path):
         cfg_file = tmp_path / "config.toml"
-        cfg_file.write_text("[machine]\nos_type = \"linux\"\n")
+        cfg_file.write_text('[machine]\nos_type = "linux"\n')
         with patch.dict(os.environ, {"AI_HOST": "my-box"}, clear=False):
             result = ensure_machine_profile_registered(cfg_file, {"machine": {"os_type": "linux"}})
         assert result is True

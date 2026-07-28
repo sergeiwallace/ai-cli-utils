@@ -484,18 +484,21 @@ def resolve_session(prefix: str, name: str) -> str:
 
 
 def _resolve_is_remote(is_remote_flag: bool) -> bool:
-    """Return True when --is-remote was passed OR the process is running on a non-Mac host.
+    """Return True only for a session launched *from another machine* over SSH.
 
-    The --is-remote flag is injected by the local machine when SSHing to a remote
-    host to launch a session.  When ``ai c`` / ``ai g`` is run *directly* on a
-    remote host (e.g. AI_HOST=hetzner), the flag is absent but the session
-    should still receive the ``c-r-`` / ``g-r-`` prefix so quota pane discovery
-    and other host-aware logic work correctly.
+    ``--is-remote`` is injected into the remote command line by the local machine
+    when it SSHes out to launch a session, and is the only trustworthy signal:
+    it means "someone else drove this launch", which is what the ``c-r-`` /
+    ``g-r-`` prefix and the chdir-to-configured-project behaviour exist for.
+
+    This deliberately does **not** infer remoteness from ``AI_HOST``.  That
+    heuristic ("any host not named mac is remote") treated every ordinary local
+    launch on a Linux or Windows workstation as remote, which sent the launch
+    down the ``is_remote`` branch and created the worktree inside the configured
+    *main* project instead of the repo the user was actually in.  A host having a
+    name says nothing about who initiated the session.
     """
-    if is_remote_flag:
-        return True
-    host = os.environ.get("AI_HOST", "")
-    return bool(host) and host not in ("mac",)
+    return is_remote_flag
 
 
 def build_session_name(

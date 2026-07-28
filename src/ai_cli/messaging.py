@@ -112,6 +112,11 @@ class NATSClient:
         except Exception:  # noqa: BLE001, S110 — reap best-effort, TimeoutExpired included
             pass
 
+    # Bound on the whole connect() call, including the library's own retries. Nothing
+    # here is on a user-visible critical path -- every caller treats a null client as
+    # "messaging unavailable" -- so failing fast always beats blocking.
+    _CONNECT_DEADLINE_SECS = 10
+
     async def connect(self):
         """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts.
 
@@ -129,8 +134,13 @@ class NATSClient:
         after two failed attempts, so nats.connect() reliably raises NoServersError
         and our own retry loop below handles backoff instead, as originally intended.
 
+        The call is additionally wrapped in a hard deadline, because relying on the
+        library to honour its own options is not itself a bound: a partially-reachable
+        server (accepts the TCP connection, never completes the NATS handshake) would
+        otherwise still hang a caller indefinitely.
+
         error_cb silences the nats library's verbose per-attempt tracebacks — connection
-        failures are expected when NATS is not running locally (e.g. on Mac).
+        failures are expected when NATS is not running locally.
         """
         await self._open_ssh_tunnel()
         retry_delay = 1
@@ -145,14 +155,17 @@ class NATSClient:
                     # Uncovered Lines.
                     pass
 
-                self.nc = await nats.connect(
-                    servers=self.servers,
-                    max_reconnect_attempts=1,
-                    error_cb=_noop_error_cb,
+                self.nc = await asyncio.wait_for(
+                    nats.connect(
+                        servers=self.servers,
+                        max_reconnect_attempts=1,
+                        error_cb=_noop_error_cb,
+                    ),
+                    timeout=self._CONNECT_DEADLINE_SECS,
                 )
                 self.js = self.nc.jetstream()
                 return
-            except (NoServersError, TimeoutError, OSError):
+            except (NoServersError, TimeoutError, asyncio.TimeoutError, OSError):
                 if attempt == max_retries - 1:
                     return  # self.nc remains None -- callers must check
                 await asyncio.sleep(retry_delay)

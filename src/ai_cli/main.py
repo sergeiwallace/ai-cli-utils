@@ -145,15 +145,77 @@ from .tunnel import (  # noqa: E402,F401
 
 
 def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
-    """Replace this process with ``command`` under the project's direnv environment."""
-    try:
-        os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
-    except FileNotFoundError:
+    """Replace this process with ``command``, under direnv when that is possible.
+
+    direnv is an enhancement, never a precondition for starting a session.  Three
+    cases are handled explicitly, because ``direnv exec`` fails *closed*: on an
+    unapproved (or erroring) ``.envrc`` it exits non-zero and never runs the
+    command at all.  Exec'ing it unconditionally therefore turned a mere trust
+    prompt into a launch that died with only "…/.envrc is blocked" on stderr and
+    no engine ever started.
+
+    - No ``.envrc`` anywhere above the target: nothing to load, exec directly.
+      This also lets sessions start on hosts without direnv installed.
+    - ``.envrc`` present and usable: exec through ``direnv exec`` as before.
+    - ``.envrc`` present but blocked/erroring: warn with the approval command and
+      exec the engine anyway, without the project environment.  Losing project
+      env vars is a degraded session; losing the session entirely is not
+      recoverable from inside the tool.
+    """
+    envrc = _find_envrc(project_root)
+    if envrc is not None and _direnv_env_usable(project_root):
+        try:
+            os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
+        except FileNotFoundError:
+            pass  # fall through to a direct exec below
+    elif envrc is not None:
         print(
-            "Error: direnv is required to start an agent with the project environment. Install direnv and retry.",
+            f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
+            f"  Approve it with:  direnv allow {envrc.parent}",
             file=sys.stderr,
         )
+
+    try:
+        os.execvp(command[0], command)
+    except FileNotFoundError:
+        print(f"Error: {command[0]} not found on PATH.", file=sys.stderr)
         sys.exit(1)
+
+
+def _find_envrc(start: Path) -> "Path | None":
+    """Return the nearest ``.envrc`` at or above ``start``, or None if there is none.
+
+    direnv searches parent directories, so a repo without its own ``.envrc`` can
+    still inherit one; checking only ``start`` would skip a usable environment.
+    """
+    try:
+        resolved = start.resolve()
+    except OSError:
+        resolved = start
+    for directory in (resolved, *resolved.parents):
+        candidate = directory / ".envrc"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _direnv_env_usable(project_root: Path) -> bool:
+    """True when ``direnv exec <project_root>`` can actually run a command there.
+
+    Probes with a trivial command rather than reading ``direnv status``, whose
+    fields do not reliably report whether the environment will load (the same
+    reason ``_allow_trusted_worktree_envrc`` uses this check).
+    """
+    try:
+        probe = subprocess.run(
+            ["direnv", "exec", str(project_root), "true"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    return probe.returncode == 0
 
 
 def _cc_project_dir(cwd: Path) -> Path:
@@ -1750,9 +1812,16 @@ def _do_session_launch(
                 subprocess.run(
                     ["git", "restore", "--staged", "."], capture_output=True, cwd=worktree_path, env=_git_env()
                 )
+                # Quote git's own last line. An exit code alone does not say whether
+                # this was no network, missing credentials for the remote, or something
+                # that needs attention, and the user cannot re-run the pull to find out
+                # once the index has been restored.
+                _reason = (pull.stderr or pull.stdout or "").strip().splitlines()
+                _detail = f" Last git error: {_reason[-1]}" if _reason else ""
                 print(
                     f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
-                    f"(exit {pull.returncode}). Index restored to HEAD.",
+                    f"(exit {pull.returncode}) — starting the session on the branch as-is "
+                    f"(it may be behind main). Index restored to HEAD.{_detail}",
                     file=sys.stderr,
                 )
             elif pull.returncode != 0 and not stranded:

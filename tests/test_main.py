@@ -267,7 +267,11 @@ class TestGetEngineScript:
         # The main agent invocation's stdio must be untouched — it's a long-running
         # interactive process; buffering its stderr would break real-time streaming.
         assert 'direnv exec "$direnv_root" "$@"\n' in script
-        assert "direnv: error.*\\.envrc is blocked" in script
+        # `[.]` not `\.`: the regex lives inside a Python f-string, where `\.` is not a
+        # recognised escape (SyntaxWarning today, SyntaxError in a future Python). The two
+        # are equivalent in ERE — see tests/test_no_syntax_warnings.py.
+        assert "direnv: error.*[.]envrc is blocked" in script
+        assert "\\.envrc" not in script, "an invalid Python escape must not be reintroduced"
         assert "direnv status --json" not in script
         assert "AI CLI stopped because direnv blocked $direnv_root/.envrc" in script
         assert "direnv allow $direnv_root" in script
@@ -878,13 +882,20 @@ class TestResolveIsRemote:
         with patch.dict(os.environ, {"AI_HOST": "mac"}):
             assert _resolve_is_remote(False) is False
 
-    def test_when_flag_false_and_hetzner_host_then_returns_true(self):
-        with patch.dict(os.environ, {"AI_HOST": "hetzner"}):
-            assert _resolve_is_remote(False) is True
+    def test_when_flag_false_and_named_linux_host_then_returns_false(self):
+        """A named host is NOT evidence of a remote session.
 
-    def test_when_flag_false_and_arbitrary_remote_host_then_returns_true(self):
+        This previously returned True for any AI_HOST != "mac", which made every
+        ordinary local launch on a Linux workstation take the remote branch and
+        create its worktree inside the configured main project instead of the
+        repo the user was in.
+        """
+        with patch.dict(os.environ, {"AI_HOST": "my-linux-box"}):
+            assert _resolve_is_remote(False) is False
+
+    def test_when_flag_false_and_arbitrary_host_then_returns_false(self):
         with patch.dict(os.environ, {"AI_HOST": "devserver"}):
-            assert _resolve_is_remote(False) is True
+            assert _resolve_is_remote(False) is False
 
     def test_when_flag_false_and_no_host_env_then_returns_false(self):
         env = {k: v for k, v in os.environ.items() if k != "AI_HOST"}
@@ -1019,7 +1030,8 @@ class TestDoSessionLaunchTmuxGuard:
         assert "tmux not found" in err
         # Platform-appropriate install hint, not the MSYS2/pacman one.
         assert "apt install tmux" in err
-        # The escape hatch must be discoverable from the error itself.
+        # Both escape hatches must be named so the user can choose.
+        assert "-b" in err
         assert "use_tmux = false" in err
 
     def test_when_darwin_and_tmux_not_found_then_hint_is_homebrew(self, capsys):

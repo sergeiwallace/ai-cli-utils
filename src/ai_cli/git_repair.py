@@ -239,6 +239,37 @@ def operation_in_progress(repo_root: Path) -> str | None:
     return None
 
 
+def _pull_refspec(repo_root: Path) -> list[str]:
+    """Return explicit ``["origin", "<branch>"]`` when the branch has no upstream.
+
+    A bare ``git pull`` requires tracking information. A checkout parked on an unpushed
+    local branch (``fix/…``) has none, so the pull aborts with "There is no tracking
+    information for the current branch" and a wall of git advice — it never contacts the
+    remote at all. Naming the remote and branch explicitly makes the pull work there.
+
+    Returns ``[]`` when an upstream exists (let git use it) or in a detached HEAD, where
+    there is no branch to pull into and guessing one would be wrong.
+    """
+    upstream = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if upstream.returncode == 0:
+        return []
+    branch = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    current = branch.stdout.strip()
+    if branch.returncode != 0 or not current or current == "HEAD":
+        return []
+    return ["origin", current]
+
+
 def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess, str | None]:
     """Run ``git pull --rebase --autostash`` and verify what it actually did.
 
@@ -281,7 +312,7 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
         probe_failure = None
 
     result = subprocess.run(
-        ["git", "-C", str(repo_root), "pull", "--rebase", "--autostash"],
+        ["git", "-C", str(repo_root), "pull", "--rebase", "--autostash", *_pull_refspec(repo_root)],
         capture_output=True,
         text=True,
         env=_git_env(),
