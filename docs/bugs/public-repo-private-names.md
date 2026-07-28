@@ -196,10 +196,12 @@ private repository names need no such exception — they have no legitimate form
 - [x] `src/` + `tests/` + `scripts/` + `setup.sh`: clean under the discriminating pattern.
 - [x] Whole repository excluding archives: clean, with one known carve-out (below).
 - [x] Private repository names, whole repository: clean.
-- [x] Full suite: 1966 passed, 7 skipped, 0 failed (baseline 1965 + the 5 new guard tests,
-      less the recount noted in the Fix Log).
-- [x] `ruff format --check src/ tests/`: clean. `ruff check src/ tests/`: the new file is
-      clean; the repository's ~1076 pre-existing violations are a separate tracked issue.
+- [x] Full suite: 1970 passed, 7 skipped, 0 failed — exactly the 1965-test baseline plus the
+      5 new guard tests.
+- [x] `ruff format --check src/ tests/`: clean (82 files). `ruff check src/ tests/`: the new
+      file passes on its own; the repository reports 1075 pre-existing violations (1076 before
+      this change), a separate tracked issue. The commit used `SKIP=ruff-check`, because that
+      hook runs `--fix` and rewrote three unrelated files for those pre-existing violations.
 
 **Known carve-out.** `.pre-commit-config.yaml:9` still contains the private name in a comment
 citing a cross-repo plan document. It was left untouched on purpose: a concurrent change owns
