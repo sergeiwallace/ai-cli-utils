@@ -42,7 +42,7 @@ _MAX_TICKS = 4
 
 def _watcher_loop_body() -> str:
     """The bash body of the watcher's ``while true`` loop, verbatim from the template."""
-    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="sergei")
+    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="myproject")
     watcher_start = script.index("start_watcher() {")
     body_start = script.index("while true; do", watcher_start) + len("while true; do")
     body_end = script.index("done) &", body_start)
@@ -139,7 +139,7 @@ def _install_session_meta(state: Path, tmux_session: str, ai_name: str) -> None:
                 "prefix": "c-sw-",
                 "project_prefix": "sw",
                 "worktree_dir": "/tmp/wt",
-                "project_name": "sergei",
+                "project_name": "myproject",
             }
         )
     )

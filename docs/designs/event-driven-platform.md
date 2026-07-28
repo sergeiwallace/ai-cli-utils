@@ -3,12 +3,12 @@ title: "Event-Driven Platform Architecture"
 category: design
 tags: [event-driven, nats, pub-sub, messaging, fleet, sync, architecture, platform]
 status: approved
-source: sergei
+source: myproject
 ---
 
-> **Migrated from `sergei` (SW-837, 2026-07-26).** This design doc followed its implementation
-> into this repo: the code it describes lives here, not in `sergei`, since the SW-907 repo-ownership
-> migration. `sergei/docs/designs/event-driven-platform.md` is now a `status: moved` stub pointing here.
+> **Migrated from `myproject` (SW-837, 2026-07-26).** This design doc followed its implementation
+> into this repo: the code it describes lives here, not in `myproject`, since the SW-907 repo-ownership
+> migration. `myproject/docs/designs/event-driven-platform.md` is now a `status: moved` stub pointing here.
 > Content is unchanged by the move — any drift between this doc and the current code predates it
 > and is not a migration artifact.
 

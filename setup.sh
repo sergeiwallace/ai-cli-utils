@@ -116,11 +116,11 @@ fi
 
 # Verify Doppler is available (canonical secrets store — replaces envchain/Keychain)
 if command -v doppler &>/dev/null; then
-    ok "Doppler found — secrets load from Doppler (project: sergei, config: dev)."
-    info "To add secrets: doppler secrets set KEY_NAME --project sergei --config dev"
+    ok "Doppler found — secrets load from Doppler (project: your Doppler project, config: dev)."
+    info "To add secrets: doppler secrets set KEY_NAME --project <your-project> --config dev"
 else
     warn "Doppler not found. Install: brew install dopplerhq/cli/doppler"
-    warn "Then run: doppler login && doppler secrets set KEY_NAME --project sergei --config dev"
+    warn "Then run: doppler login && doppler secrets set KEY_NAME --project <your-project> --config dev"
 fi
 
 

@@ -26,7 +26,7 @@ derived `score`.
 
 ## Review Queue
 
-Items requiring Sergei's decision, review, or merge; ordered priority→impact.
+Items requiring the maintainer's decision, review, or merge; ordered priority→impact.
 
 (none yet)
 

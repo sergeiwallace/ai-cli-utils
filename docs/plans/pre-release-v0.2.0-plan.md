@@ -139,27 +139,27 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 
 | Location | Issue | Fix |
 |----------|-------|-----|
-| `src/ai_cli/gemini.py:155` | `"sergei"` hardcoded as Doppler project name | Make configurable via config key |
+| `src/ai_cli/gemini.py:155` | `"<private-project-name>"` hardcoded as Doppler project name | Make configurable via config key |
 | `src/ai_cli/messaging.py:18` | `"aido"` hardcoded as NATS topic | Remove or make fully configurable |
-| `src/ai_cli/messaging.py:50–55` | `"sergei"`, `"178.104.70.139"` as hardcoded defaults | Remove defaults or use `None` |
+| `src/ai_cli/messaging.py:50–55` | `"<private-project-name>"`, `"178.104.70.139"` as hardcoded defaults | Remove defaults or use `None` |
 | `src/ai_cli/main.py:443,564,566` | `sw-1`, `aido-2` in comments | Replace with generic examples (`myproject-1`, `session-2`) |
-| `src/ai_cli/main.py:720` | `# sergei = "purple"` commented-out personal config | Remove |
-| `tests/test_project.py` | `sergei.toml`, `"sergei"` project name, `/home/sergei/` paths | Rename to `registry.toml`, `"myproject"`, `/home/user/` |
-| `tests/test_sync.py:50–51` | `_MAC_PREFIX = "-Users-sergeiwallace-projects-"`, `_SERVER_PREFIX = "-home-sergei-projects-"` | Generalize to `-Users-user-projects-`, `-home-user-projects-` |
-| `tests/test_cli.py:378` | `{"sw": "sergei"}` alias | Generic: `{"mp": "myproject"}` |
-| `tests/test_cli.py:1059` | `sergei.toml` registry path | `registry.toml` |
-| `tests/test_cli.py:1608` | `"178.104.70.139"`, `"sergei"` in tunnel config | `"192.0.2.1"`, `"user"` |
-| `tests/test_cli.py:1821,1830,1837` | `ai-ide-mobile`, `"sergei"` project names | Generic names |
-| `tests/test_messaging.py:276,284,334,355,374` | `"178.104.70.139"`, `"sergei"` | `"192.0.2.1"`, `"user"` |
+| `src/ai_cli/main.py:720` | `# <private-project-name> = "purple"` commented-out personal config | Remove |
+| `tests/test_project.py` | `<private-project-name>.toml`, `"<private-project-name>"` project name, personal home-dir paths | Rename to `registry.toml`, `"myproject"`, `/home/user/` |
+| `tests/test_sync.py:50–51` | `_MAC_PREFIX`/`_SERVER_PREFIX` hardcode personal home-dir prefixes | Generalize to `-Users-user-projects-`, `-home-user-projects-` |
+| `tests/test_cli.py:378` | `{"sw": "<private-project-name>"}` alias | Generic: `{"mp": "myproject"}` |
+| `tests/test_cli.py:1059` | `<private-project-name>.toml` registry path | `registry.toml` |
+| `tests/test_cli.py:1608` | `"178.104.70.139"`, `"<private-project-name>"` in tunnel config | `"192.0.2.1"`, `"user"` |
+| `tests/test_cli.py:1821,1830,1837` | `ai-ide-mobile`, `"<private-project-name>"` project names | Generic names |
+| `tests/test_messaging.py:276,284,334,355,374` | `"178.104.70.139"`, `"<private-project-name>"` | `"192.0.2.1"`, `"user"` |
 | `tests/test_messaging_jetstream.py:260` | `"aido"` NATS topic in test | Generic |
-| `tests/test_session.py:419,425` | `"sergei"` in `.gemini/tmp/` path | `"user"` |
+| `tests/test_session.py:419,425` | `"<private-project-name>"` in `.gemini/tmp/` path | `"user"` |
 | `docs/bugs/` | Session names like `c-aido-2`, `c-art-2` in bug reports | Leave as-is (historical bug docs, not public API) |
 
 **Note on `setup.py` and `test_setup.py`:** `ai-core` appears as the feature name throughout (e.g. `_is_managed_platform()`, "managed platform detected"). **Decision (2026-04-04):** rename to generic — `_is_managed_platform()` / "managed platform detected". All references in `setup.py`, `test_setup.py`, and any docs updated accordingly.
 
 **Audit command to verify clean:**
 ```bash
-git grep -rn "ai-core\|aido\|\bsergei\b\|sergeiwallace\|178\.104" -- src/ tests/
+git grep -rn "ai-core\|aido\|<private-project-name>\|sergeiwallace\|178\.104" -- src/ tests/
 ```text
 
 Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (where these names appear in their correct context as rule definitions), and `setup.py`/`test_setup.py` pending the ai-core rename decision.
@@ -210,17 +210,17 @@ Phase 4 is split into two sub-phases: **4a (backup — Claude executes)** and **
 
 1. **Local bare clone backup (Mac):**
    ```bash
-   git clone --mirror /Users/sergeiwallace/projects/ai-cli-utils \
-     /Users/sergeiwallace/projects-archive/ai-cli-utils-history.git
+   git clone --mirror /Users/user/projects/ai-cli-utils \
+     /Users/user/projects-archive/ai-cli-utils-history.git
    ```text
 
 2. **Create private GitHub backup repo and push:**
    ```bash
    gh repo create ai-cli-utils-history --private \
      --description "Full git history backup of ai-cli-utils (pre-squash). See README."
-   git -C /Users/sergeiwallace/projects-archive/ai-cli-utils-history.git \
+   git -C /Users/user/projects-archive/ai-cli-utils-history.git \
      remote set-url origin git@github.com:sergeiwallace/ai-cli-utils-history.git
-   git -C /Users/sergeiwallace/projects-archive/ai-cli-utils-history.git push --mirror
+   git -C /Users/user/projects-archive/ai-cli-utils-history.git push --mirror
    ```text
 
 3. **Add README to backup repo** noting its purpose (pre-squash history archive, not the active repo).
@@ -235,7 +235,7 @@ Once backup is confirmed and approved:
 
 1. **Squash all history to a single commit:**
    ```bash
-   cd /Users/sergeiwallace/projects/ai-cli-utils
+   cd /Users/user/projects/ai-cli-utils
    git checkout --orphan clean-history
    git add -A
    git commit -m "Initial release"
@@ -260,7 +260,7 @@ After Phase 4b (squash), do a full final review before version bump. Split into 
 
 #### Step 1 — Privacy & Public Safety (Claude)
 
-- `git grep -rn "ai-core\|aido\|\bsergei\b\|sergeiwallace\|178\.104"` across entire repo (not just src/tests — also docs, configs, comments, scripts)
+- `git grep -rn "ai-core\|aido\|<private-project-name>\|sergeiwallace\|178\.104"` across entire repo (not just src/tests — also docs, configs, comments, scripts)
 - Grep for private email patterns and internal hostnames
 - Verify `git log --oneline` shows single "Initial release" commit — no history leakage
 

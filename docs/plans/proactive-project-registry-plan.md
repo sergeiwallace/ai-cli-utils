@@ -52,9 +52,9 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 **Background from design discussion (2026-04-24/25):**
 
-- `sergei.toml` is non-negotiable as the authoritative registry — it drives session naming (`c-AIH-1`), `-p project` flag, remote session prefix, and `get_project_aliases()` lookup. Any proactive mechanism still writes to the registry; it just replaces the interactive prompt.
+- `myproject.toml` is non-negotiable as the authoritative registry — it drives session naming (`c-AIH-1`), `-p project` flag, remote session prefix, and `get_project_aliases()` lookup. Any proactive mechanism still writes to the registry; it just replaces the interactive prompt.
 - Open-source repos (ai-cli-utils, hegemony, etc.) cannot carry instance-specific project-local config. The optional project-local file is for **private repos** that want self-describing identity — anyone cloning them gets auto-registered without the interactive gate.
-- The belt is `sergei.toml`. The suspenders are: `ai register` (scriptable), copier `_tasks` hook (proactive), optional `[tool.ai-cli]` in `pyproject.toml` (self-describing).
+- The belt is `myproject.toml`. The suspenders are: `ai register` (scriptable), copier `_tasks` hook (proactive), optional `[tool.ai-cli]` in `pyproject.toml` (self-describing).
 - The copier hook closes the gap window — the main pain point. The project-local file is a nice-to-have for the open-source-aware multi-user use case. Both are small additions (~35 LOC total across `main.py` + `config.py`).
 
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing from the goal?
@@ -90,7 +90,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 |---|----------|---------|--------|
 | D1 | Registry feature opt-in gating | (a) Always-on hard-block (current), (b) Skip if `main_project` unconfigured | `PENDING` |
 | D2 | `ai register` subcommand scope | (a) Standalone non-interactive CLI, (b) Enhanced `ai setup` wizard, (c) Both | `PENDING` |
-| D3 | Project-local config in `pyproject.toml` | (a) Skip (sergei.toml only), (b) Optional `[tool.ai-cli]`, (c) Separate `.ai-project.toml` | `PENDING` |
+| D3 | Project-local config in `pyproject.toml` | (a) Skip (myproject.toml only), (b) Optional `[tool.ai-cli]`, (c) Separate `.ai-project.toml` | `PENDING` |
 | D4 | Multi-user first-run UX | (a) Manual `ai setup` after install, (b) First-run auto-detect + prompt, (c) Graceful no-op if unconfigured | `PENDING` |
 | D5 | Copier hook mechanism | (a) `_tasks` entry calls `ai register`, (b) Inline Python in `_tasks`, (c) Separate post-copy script | `PENDING` |
 
@@ -185,7 +185,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 **Problem:** Open-source repos can't carry instance-specific `task_prefix` config. But private repos would benefit from being self-describing — anyone cloning them gets auto-registered without the interactive gate.
 
-#### (a) Skip — sergei.toml only
+#### (a) Skip — myproject.toml only
 
 **Pros:**
 
@@ -207,7 +207,7 @@ project_type = "tool"
 **Pros:**
 
 - Standard Python project metadata location (PEP 518 / `[tool.*]` namespace)
-- ai-cli reads it on first session launch → auto-writes to sergei.toml; skips interactive prompt
+- ai-cli reads it on first session launch → auto-writes to myproject.toml; skips interactive prompt
 - Open-source repos simply omit the section (no private data exposed)
 - project-template can include it as a copier variable, auto-populated at `copier copy` time
 
@@ -234,7 +234,7 @@ project_type = "tool"
 
 ### D4: Multi-user / public package first-run UX — `[PENDING]`
 
-**Problem:** A developer who `pip install`s ai-cli-utils and runs `ai c 1` for the first time should get a helpful guided experience, not a hard-block or a confusing prompt about `sergei.toml`. The task prefix / roadmap system is optional and shouldn't be in their face immediately.
+**Problem:** A developer who `pip install`s ai-cli-utils and runs `ai c 1` for the first time should get a helpful guided experience, not a hard-block or a confusing prompt about `myproject.toml`. The task prefix / roadmap system is optional and shouldn't be in their face immediately.
 
 #### (a) Manual `ai setup` after install (current state, essentially)
 
@@ -369,7 +369,7 @@ Guard `validate_registry_completeness()` in `config.py` with a check for `main_p
 **Size:** M
 **Batch:** 1
 
-Add `ai register --project NAME --prefix PREFIX --type TYPE [--projects-dir DIR]` subcommand. Non-interactive. Writes `[[projects]]` entry to `sergei.toml` (or configured registry path). Idempotent — updates existing entry if name matches, creates new if not. Prints confirmation or "already registered, updated." Exit 0 on success; exit 1 on registry not found (registry path must exist).
+Add `ai register --project NAME --prefix PREFIX --type TYPE [--projects-dir DIR]` subcommand. Non-interactive. Writes `[[projects]]` entry to `myproject.toml` (or configured registry path). Idempotent — updates existing entry if name matches, creates new if not. Prints confirmation or "already registered, updated." Exit 0 on success; exit 1 on registry not found (registry path must exist).
 
 **Deliverables:**
 
@@ -419,7 +419,7 @@ Extend the existing `ai setup` command to: (1) scan `projects_dir` for existing 
 **Size:** S
 **Batch:** 2
 
-Add a read path in `validate_registry_completeness()` (or a new `_read_project_local_config()` helper): if the current working directory contains a `pyproject.toml` with `[tool.ai-cli]` section, extract `task_prefix` and `project_type`, auto-register without prompting, and write to `sergei.toml`. Fires only if the project is not already registered.
+Add a read path in `validate_registry_completeness()` (or a new `_read_project_local_config()` helper): if the current working directory contains a `pyproject.toml` with `[tool.ai-cli]` section, extract `task_prefix` and `project_type`, auto-register without prompting, and write to `myproject.toml`. Fires only if the project is not already registered.
 
 **Deliverables:**
 
@@ -452,11 +452,11 @@ Add `ai register` call to `project-template/_tasks` so every `copier copy` proac
 
 **Acceptance criteria:**
 
-- [ ] `copier copy ~/projects/project-template new-project` (with `task_prefix` provided) → `ai register` called → project appears in `sergei.toml`
+- [ ] `copier copy ~/projects/project-template new-project` (with `task_prefix` provided) → `ai register` called → project appears in `myproject.toml`
 - [ ] `ai` not installed → `_tasks` exits 0, no error
 - [ ] New projects from template include `[tool.ai-cli]` in `pyproject.toml`
 
-**Note:** This task lives in `project-template`, not `ai-cli-utils`. Track as separate sergei roadmap task; listed here for context.
+**Note:** This task lives in `project-template`, not `ai-cli-utils`. Track as separate myproject roadmap task; listed here for context.
 
 **Dependencies:** T-02 shipped to PyPI
 
@@ -515,21 +515,21 @@ Update README first-time setup section. Add `ai register` to CLI reference. Docu
 | Plan approval | Before Batch 1 coding | Approve scope, resolve D1–D5 |
 | Batch 1 review | After T-01 + T-02 | Verify opt-in guard + `ai register` behavior |
 | Batch 3 approval | Before project-template update | Confirm copier `_tasks` mechanism |
-| UAT | After all batches | Verify end-to-end: copier copy → auto-registered in sergei.toml |
+| UAT | After all batches | Verify end-to-end: copier copy → auto-registered in myproject.toml |
 
 ## Open Questions
 
 1. **Hard-block removal scope**: Should `validate_registry_completeness()` also be removed as a hard-block for *ai-core* users who have `main_project` configured but have new unregistered directories? Or should the interactive prompt survive for ai-core users (only disabled for non-ai-core users per D1b)? The current UX is useful for ensuring completeness — the gap window is the real problem, not the prompt itself.
 
-2. **`ai register` write target**: Should `ai register` also update `[tool.ai-cli]` in the project's `pyproject.toml` (if it exists), or only write to `sergei.toml`? Bidirectional sync vs. one-way.
+2. **`ai register` write target**: Should `ai register` also update `[tool.ai-cli]` in the project's `pyproject.toml` (if it exists), or only write to `myproject.toml`? Bidirectional sync vs. one-way.
 
 3. **Multi-user install scan**: Should `ai setup` offer a batch "scan and register all existing projects" option for new users who have an existing `~/projects/` structure? Useful for onboarding a new machine without running `ai register` per project.
 
 4. **Open-source doc guidance**: Should the README explicitly say "if this repo is public/open-source, omit `[tool.ai-cli]` from `pyproject.toml`"? Or is the opt-in nature of the section sufficient?
 
-5. **`TODO` default prefix**: Is a `TODO` placeholder prefix in `ai setup` acceptable, or should the setup wizard require a real prefix before proceeding? Risk: `TODO` prefix gets committed to sergei.toml and never updated.
+5. **`TODO` default prefix**: Is a `TODO` placeholder prefix in `ai setup` acceptable, or should the setup wizard require a real prefix before proceeding? Risk: `TODO` prefix gets committed to myproject.toml and never updated.
 
-6. **project-template scope**: T-05 touches `project-template`, which is a separate copier-managed project. Should it be a separate roadmap task in sergei, or folded into this AI-CLI task with a dependency note? (Recommendation: separate SW-XXX task, linked here.)
+6. **project-template scope**: T-05 touches `project-template`, which is a separate copier-managed project. Should it be a separate roadmap task in myproject, or folded into this AI-CLI task with a dependency note? (Recommendation: separate SW-XXX task, linked here.)
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <!-- Response to question 1 -->
@@ -556,4 +556,4 @@ Update README first-time setup section. Add `ai register` to CLI reference. Docu
 
 | Date | Round | Notes |
 |------|-------|-------|
-| 2026-04-25 | 0 | Plan drafted from design discussion in sergei sw-1 session; D1–D5 + 6 OQs pending user review |
+| 2026-04-25 | 0 | Plan drafted from design discussion in myproject sw-1 session; D1–D5 + 6 OQs pending user review |

@@ -26,21 +26,21 @@ task pending Beads setup.
 
 Four distinct failures on a Linux host with `AI_HOST` set and `[session] use_tmux = false`:
 
-1. **Session created in the wrong repository.** Running `ai c` inside
-   `bms-semantic-knowledge-graph` created the worktree, the `wt-kg-1` branch, and the
-   session under the *configured main project* instead:
+1. **Session created in the wrong repository.** Running `ai c` inside `myapp` created the
+   worktree, the `wt-app-1` branch, and the session under the *configured main project*
+   instead:
 
    ```
-   /…/projects/sw-bms-workspace/.worktrees/kg-1
+   /…/projects/myworkspace/.worktrees/app-1
    ```
 
-   The session name (`kg-1`) was correct, so the mistake was silent — the tab looked right
+   The session name (`app-1`) was correct, so the mistake was silent — the tab looked right
    while the session was editing a different repository.
 
 2. **No engine ever started.** The launch died with only a direnv message and exit 1:
 
    ```
-   direnv: error /…/sw-bms-workspace/.worktrees/kg-2/.envrc is blocked.
+   direnv: error /…/myworkspace/.worktrees/app-2/.envrc is blocked.
    Run `direnv allow` to approve its content
    ```
 
@@ -72,19 +72,18 @@ Four distinct failures on a Linux host with `AI_HOST` set and `[session] use_tmu
 - `ai-cli-utils` 0.7.0
 - `[session] use_tmux = false`; tmux not installed and not installable on this host
 - `[project] projects_dir` pointed at a mounted filesystem, **not** `~/projects`
-- `[project] main_project = "sw-bms-workspace"`
+- `[project] main_project = "myworkspace"`
 - direnv installed; no `.envrc` approved yet (fresh machine)
-- Repos affected: all of them — `bms-semantic-knowledge-graph` (`kg`), `ai-harness` (`aih`),
-  `aido`, `ai-cli-utils`, `ai-core` (`core`)
+- Repos affected: every registered repo, `ai-cli-utils` itself included
 
 ## Reproduction Steps
 
 1. Set `AI_HOST` to any value other than `mac`, and `[project] main_project` to a repo other
    than the one you will launch from.
-2. `cd` into a *different* registered repo (e.g. `bms-semantic-knowledge-graph`).
+2. `cd` into a *different* registered repo (e.g. `myapp`).
 3. Run `ai c`.
 4. Observe: the worktree is created under `main_project`, not the current repo
-   (`git -C <main_project> worktree list` shows `kg-1`), and — if any `.envrc` in that path
+   (`git -C <main_project> worktree list` shows `app-1`), and — if any `.envrc` in that path
    is unapproved — the command exits 1 having started no engine.
 
 Measured directly, rather than inferred:
@@ -194,8 +193,8 @@ advanced 29 commits, two of which overlap:
 ## Verification
 
 - [x] `_resolve_is_remote` is False for a named non-Mac host, True only for the flag
-- [x] `ai c` in each repo creates the worktree **in that repo**: `kg-1`, `aih-1`, `aido-1`,
-      `ai-cli-1`, `core-1` — verified live with a stub engine printing its own cwd/argv
+- [x] `ai c` in each repo creates the worktree **in that repo** — verified live in five
+      registered repos with a stub engine printing its own cwd/argv
 - [x] A blocked `.envrc` still starts the engine (warning, not exit 1)
 - [x] No `.envrc` present → engine exec'd directly, so hosts without direnv work
 - [x] No module emits `SyntaxWarning` (suite-wide check, `tests/test_no_syntax_warnings.py`);
@@ -206,8 +205,7 @@ advanced 29 commits, two of which overlap:
 - [x] `ruff check` + `ruff format --check` clean
 - [x] Full `pytest` green: 1961 passed, 7 skipped, 0 failed (rebased on `origin/main`)
 - [x] Verified with the real installed `ai` binary, not just the source tree, in all 10
-      registered repos: `kg-2`, `aih-1`, `aido-1`, `ai-cli-1`, `core-1`, `sw-1`, `acto-1`,
-      `credo-1`, `cmkt-1`, `tpl-1`
+      registered repos on the host
 - [x] No CC session created in tmux (counted session-shaped tmux sessions before/after a
       launch: 0 → 0). Note tmux *is* installed here, so its absence could not have been
       the evidence.
@@ -251,6 +249,14 @@ tests in `tests/test_session_launch_locality.py`, `tests/test_no_syntax_warnings
 `tests/test_bare_worktree.py`, `tests/test_cli.py`, `tests/test_main.py`,
 `tests/conftest.py`.
 
+### 2026-07-28 — repository names anonymised for publication (BUG-005)
+
+This document originally named the private repositories the failure was observed in, which
+this public package's naming rule forbids. Every repository and session name here is now a
+generic placeholder (`myapp`/`app-1`, `myworkspace`, `mylib`, `mysite`, `myservice`). No
+finding, command, output, or count was altered — including inside the immutable evidence
+appendix, where only the names were substituted. See `docs/bugs/public-repo-private-names.md`.
+
 <!-- /doc:region name="fix_log" -->
 
 <!-- doc:region name="appendix_evidence" kind="immutable" -->
@@ -258,16 +264,16 @@ tests in `tests/test_session_launch_locality.py`, `tests/test_no_syntax_warnings
 ### Evidence — worktree landed in the wrong repo (before the fix)
 
 ```
-$ cd bms-semantic-knowledge-graph && ai c
-direnv: error /…/sw-bms-workspace/.worktrees/kg-1/.envrc is blocked…
+$ cd myapp && ai c
+direnv: error /…/myworkspace/.worktrees/app-1/.envrc is blocked…
 
-$ git -C bms-semantic-knowledge-graph worktree list
-/…/projects/bms-semantic-knowledge-graph  940d6b8 [sergei/dev-workspace]
+$ git -C myapp worktree list
+/…/projects/myapp  940d6b8 [dev-workspace]
 
-$ git -C sw-bms-workspace worktree list
-/…/projects/sw-bms-workspace                  ce76fa8 [main]
-/…/projects/sw-bms-workspace/.worktrees/kg-1  ce76fa8 [wt-kg-1]
-/…/projects/sw-bms-workspace/.worktrees/kg-2  ce76fa8 [wt-kg-2]
+$ git -C myworkspace worktree list
+/…/projects/myworkspace                   ce76fa8 [main]
+/…/projects/myworkspace/.worktrees/app-1  ce76fa8 [wt-app-1]
+/…/projects/myworkspace/.worktrees/app-2  ce76fa8 [wt-app-2]
 ```
 
 ### Evidence — `direnv exec` skips the command on a blocked .envrc
@@ -283,11 +289,11 @@ direnv: error /…/.envrc is blocked. Run `direnv allow` to approve its content
 ### Evidence — correct behaviour after the fix (stub engine reporting its own cwd/argv)
 
 ```
-kg   → STUB_CLAUDE_CWD=/…/bms-semantic-knowledge-graph/.worktrees/kg-1
-       STUB_CLAUDE_ARGV=--dangerously-skip-permissions --name kg-1
-aih  → STUB_CLAUDE_CWD=/…/ai-harness/.worktrees/aih-1
-aido → STUB_CLAUDE_CWD=/…/aido/.worktrees/aido-1
-core → STUB_CLAUDE_CWD=/…/ai-core/.worktrees/core-1
+app  → STUB_CLAUDE_CWD=/…/myapp/.worktrees/app-1
+       STUB_CLAUDE_ARGV=--dangerously-skip-permissions --name app-1
+lib  → STUB_CLAUDE_CWD=/…/mylib/.worktrees/lib-1
+site → STUB_CLAUDE_CWD=/…/mysite/.worktrees/site-1
+svc  → STUB_CLAUDE_CWD=/…/myservice/.worktrees/svc-1
 ```
 
 <!-- /doc:region name="appendix_evidence" -->

@@ -14,7 +14,7 @@ source: internal
 **Revised:** 2026-04-11 (round 3 / implementation)
 
 **Task:** `AI-CLI-41`
-**Related:** SW-767 (sergei — track token usage per research run)
+**Related:** SW-767 (myproject — track token usage per research run)
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.

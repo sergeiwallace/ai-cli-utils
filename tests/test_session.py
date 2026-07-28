@@ -1288,14 +1288,14 @@ class TestIsCurrentProjectResolved:
     """Guard for the silent 'myproject'/cwd-derived session fallback (#10)."""
 
     def test_true_when_inside_ai_session(self, monkeypatch):
-        monkeypatch.setenv("AI_TMUX_SESSION", "c-sergei-1")
+        monkeypatch.setenv("AI_TMUX_SESSION", "c-myproject-1")
         assert is_current_project_resolved() is True
 
     def test_true_when_registered_project(self, monkeypatch):
         monkeypatch.delenv("AI_TMUX_SESSION", raising=False)
         with (
-            patch("ai_cli.session.get_current_project_name", return_value="sergei"),
-            patch("ai_cli.session.load_project_registry", return_value=[{"name": "sergei"}]),
+            patch("ai_cli.session.get_current_project_name", return_value="myproject"),
+            patch("ai_cli.session.load_project_registry", return_value=[{"name": "myproject"}]),
         ):
             assert is_current_project_resolved() is True
 

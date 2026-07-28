@@ -86,7 +86,7 @@ Which repos to pull after a sync.
 
 #### (a) Affected repos only
 
-Map updated CC project dirs (e.g. `~/.claude/projects/-Users-...-projects-sergei/`) back to repo paths (`~/projects/sergei/`). Pull only repos whose memory or JSONL files changed in this sync.
+Map updated CC project dirs (e.g. `~/.claude/projects/-Users-...-projects-myproject/`) back to repo paths (`~/projects/myproject/`). Pull only repos whose memory or JSONL files changed in this sync.
 
 **Pros:**
 - Scoped and fast — only touches repos that actually changed

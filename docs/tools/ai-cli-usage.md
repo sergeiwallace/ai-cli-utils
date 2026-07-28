@@ -270,8 +270,8 @@ Pull/rebase all repos and their worktrees listed in a VS Code `.code-workspace` 
 
 ```toml
 [workspace]
-local_path = "~/projects/sergei/ai-core-local.code-workspace"
-remote_path = "~/projects/sergei/ai-core-remote.code-workspace"
+local_path = "~/projects/myproject/ai-core-local.code-workspace"
+remote_path = "~/projects/myproject/ai-core-remote.code-workspace"
 ```
 
 Default falls back to `ai-core-local.code-workspace` if not configured.
@@ -279,9 +279,9 @@ Default falls back to `ai-core-local.code-workspace` if not configured.
 **Example output:**
 
 ```text
-Workspace: ~/projects/sergei/ai-core-local.code-workspace (13 repos)
+Workspace: ~/projects/myproject/ai-core-local.code-workspace (13 repos)
 
-  ✓  sergei          main
+  ✓  myproject          main
   ✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
   ⚠  ai-core         main  (stashed+pulled)
   ✓  ai-cli-utils    main

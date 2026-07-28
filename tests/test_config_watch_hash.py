@@ -8,8 +8,7 @@ change and trigger an idle restart so a long-running session actually picks it
 up. Before this fix, the watcher's change-detection hash covered only
 `CLAUDE.md`, so a `.claude/settings.json` (or `.mcp.json`) edit was invisible to
 it forever — a session could run for days past a fix with the stale config still
-active. See sergei commits `7315f0e2` / `87eacfe6` and ai-cli-utils commit
-(this fix) for the concrete incident.
+active.
 
 These tests run the ACTUAL hash-computation snippet extracted from the generated
 template in a real bash subprocess against a controlled temp filesystem — a
@@ -57,7 +56,7 @@ def _hash_via_bash(home: str, cwd: str, watch_files_line: str) -> str:
 
 @pytest.fixture
 def watch_files_line():
-    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="sergei")
+    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="myproject")
     return _extract_config_watch_files_line(script)
 
 

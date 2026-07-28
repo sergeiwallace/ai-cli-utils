@@ -45,7 +45,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | File | Description |
 |------|-------------|
 | `main.py` | CLI entrypoint (`ai` command); command dispatch, session-launch plumbing, update/deploy helpers. Thin after AI-CLI-39 refactor — most subsystems now live in dedicated modules below |
-| `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `sergei.toml`) |
+| `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `myproject.toml`) |
 | `session.py` | Session naming (`c-myproject-1` etc.), worktree creation/cleanup, Gemini UUID/checkpoint lookup |
 | `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
 | `handoff.py` | Handoff queue (`post`, `check`, `claim`, `complete`) + signal-watch helper `_claim_handoff_for_signal` |

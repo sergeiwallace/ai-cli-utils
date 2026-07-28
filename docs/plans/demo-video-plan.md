@@ -98,7 +98,7 @@ Claude Code ships a **built-in `computer-use` MCP server** (Anthropic-bundled, c
 - **Requires:** macOS only, Claude Code v2.1.85+, Pro/Max claude.ai auth, interactive session, Accessibility + Screen Recording permissions.
 - **Safety:** machine-wide lock, per-app approval, terminal excluded from screenshots, global `Esc` to abort.
 
-Full details: `~/projects/sergei/docs/plans/mcp-config-hygiene-cleanup.md`
+Full details: `~/projects/myproject/docs/plans/mcp-config-hygiene-cleanup.md`
 
 ---
 

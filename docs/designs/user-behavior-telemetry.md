@@ -3,13 +3,13 @@ title: "User Behavior Telemetry — Design Document"
 category: design
 tags: [telemetry, analytics, nudges, guidance, privacy, sqlite]
 status: draft
-source: sergei
+source: myproject
 template_version: "design-1.0.0"
 ---
 
-> **Migrated from `sergei` (SW-837, 2026-07-26).** This design doc followed its implementation
-> into this repo: the code it describes lives here, not in `sergei`, since the SW-907 repo-ownership
-> migration. `sergei/docs/designs/user-behavior-telemetry.md` is now a `status: moved` stub pointing here.
+> **Migrated from `myproject` (SW-837, 2026-07-26).** This design doc followed its implementation
+> into this repo: the code it describes lives here, not in `myproject`, since the SW-907 repo-ownership
+> migration. `myproject/docs/designs/user-behavior-telemetry.md` is now a `status: moved` stub pointing here.
 > Content is unchanged by the move — any drift between this doc and the current code predates it
 > and is not a migration artifact.
 <!-- doc:region name="overview" kind="replaceable" -->

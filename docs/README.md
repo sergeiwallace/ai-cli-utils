@@ -13,9 +13,9 @@ Architectural 'how' — system design, tradeoff analysis.
 | [CC Statusline — Design Document](designs/cc-statusline.md) | active | claude-sonnet-4-6 | statusline, quota, iterm2, claude-code |
 | [Citation Validation for ai gemini Research Output](designs/archive/citation-validation.md) | archived | claude-sonnet-4-6 2026-04-21 | citation-validation, gemini, research, lychee, semantic-scholar, AI-CLI-50 |
 | [Claude Usage Telemetry — Token Tracking and Quota Pacing](designs/claude-usage-telemetry.md) | approved | R-5 deep-think 2026-04-01, opus synthesis 2026-04-01 | claude, quota, telemetry, token-tracking, pacing, AI-CLI-22, AI-CLI-23, AI-CLI-55, AI-CLI-56 |
-| [Event-Driven Platform Architecture](designs/event-driven-platform.md) | approved | sergei | event-driven, nats, pub-sub, messaging, fleet, sync, architecture, platform |
+| [Event-Driven Platform Architecture](designs/event-driven-platform.md) | approved | myproject | event-driven, nats, pub-sub, messaging, fleet, sync, architecture, platform |
 | [Quota Notification System](designs/notification-system.md) | approved | session-2026-04-20 | quota, notifications, circus, ntfy, discord, process-management |
-| [User Behavior Telemetry — Design Document](designs/user-behavior-telemetry.md) | draft | sergei | telemetry, analytics, nudges, guidance, privacy, sqlite |
+| [User Behavior Telemetry — Design Document](designs/user-behavior-telemetry.md) | draft | myproject | telemetry, analytics, nudges, guidance, privacy, sqlite |
 | [[Project Name] — Architecture & Design Philosophy](designs/ARCH-TEMPLATE.md) | active | <!-- claude-opus / human / etc. --> | architecture, platform, design-philosophy |
 | [ai-cli-utils — Architecture](designs/architecture.md) | active | claude-sonnet-4-6 2026-04-18 | architecture, cli, gemini, quota, sync, nats, circus |
 | [iTerm2 Tab Title and Color System — Design](designs/iterm2-title-color-system.md) | implemented | ai-cli-utils | iterm2, tab-title, tab-color, session-title, fleet, gemini, remote, mosh |
@@ -94,6 +94,7 @@ Testing templates and tracking.
 | [[BUG-002] Automatic tmux injection triggers CC rewind conversation TUI](bugs/prompt-injection-rewind-menu.md) | investigating | ai-cli-utils | bug, injection, tmux, signal-watch, watcher, cc-session |
 | [[BUG-003] Session launch broken on non-Mac hosts — wrong repo, blocked .envrc, failed update](bugs/session-launch-non-mac-host.md) | fix-deployed | ai-cli-utils | session, worktree, direnv, update, portability, linux |
 | [[BUG-004] Session worktrees branch from HEAD, not origin/main — not PR-clean, and the sync rebases the wrong commits](bugs/worktree-base-not-origin-main.md) | fix-deployed | ai-cli-utils | session, worktree, git, branch, upstream, credentials |
+| [[BUG-005] A private project name and two private repository names leak into this public package](bugs/public-repo-private-names.md) | fix-deployed | ai-cli-utils | hygiene, public-package, naming, privacy, regression-guard |
 
 ## Designs
 
@@ -117,7 +118,7 @@ Testing templates and tracking.
 
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
-| [CC Memory & History Sync Phase 2 — Bidirectional `ai sync` CLI](designs/cc-sync-phase2.md) | approved | sergei | cc, sync, ai-cli, git |
+| [CC Memory & History Sync Phase 2 — Bidirectional `ai sync` CLI](designs/cc-sync-phase2.md) | approved | myproject | cc, sync, ai-cli, git |
 
 ## Plans
 

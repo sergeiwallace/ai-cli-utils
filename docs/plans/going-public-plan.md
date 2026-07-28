@@ -190,7 +190,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 
 Ask a CC session to verify these before flipping:
 
-- [ ] `grep -rn "178.104\|hetzner-ai-dev\|sergeipwallace" src/ tests/` — no personal infra references in source
+- [ ] `grep -rn "178.104\|hetzner-ai-dev\|sergeiwallace" src/ tests/` — no personal infra references in source
 - [ ] `uv tool install ai-cli-utils && ai --help` — clean install from PyPI works
 - [ ] README renders correctly on GitHub (all badges, all sections, no broken links)
 - [ ] CHANGELOG version links point to correct compare URLs
@@ -353,7 +353,7 @@ ssh-keygen -t ed25519 -C "ai-cli-utils CI" -f ~/.ssh/ci_integration -N ""
 
 In `~/.ssh/authorized_keys` on Hetzner, add the public key with a `command=` restriction:
 ```text
-command="cd /home/sergei/projects/ai-cli-utils && bash",restrict ssh-ed25519 AAAA... ai-cli-utils CI
+command="cd /home/user/projects/ai-cli-utils && bash",restrict ssh-ed25519 AAAA... ai-cli-utils CI
 ```text
 
 This means even if the key leaks, it can only run a constrained shell in the project directory.
@@ -362,8 +362,8 @@ This means even if the key leaks, it can only run a constrained shell in the pro
 
 In GitHub repo Settings → Secrets and variables → Actions:
 - `INTEGRATION_SSH_KEY` — contents of `~/.ssh/ci_integration` (private key)
-- `INTEGRATION_SSH_HOST` — `178.104.70.139`
-- `INTEGRATION_SSH_USER` — `sergei`
+- `INTEGRATION_SSH_HOST` — the integration host's address
+- `INTEGRATION_SSH_USER` — the integration host's SSH user
 
 #### Step 4: Add integration workflow
 

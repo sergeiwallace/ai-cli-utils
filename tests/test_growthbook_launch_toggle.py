@@ -74,7 +74,7 @@ def _run_toggle_block(tmp_path, engine: str, block: str) -> subprocess.Completed
 
 @pytest.fixture
 def toggle_block():
-    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="sergei")
+    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="myproject")
     return _extract_toggle_block(script)
 
 

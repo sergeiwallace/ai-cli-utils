@@ -208,7 +208,7 @@ def is_jsonl_file(path: Path) -> bool:
 def _wt_name_from_bare_name(bare_name: str) -> Optional[str]:
     """Return the worktree session name from a bare CC dir name, or None if not a worktree dir.
 
-    E.g. "sergei--worktrees-sw-5" → "sw-5", "sergei" → None.
+    E.g. "myproject--worktrees-session-5" → "session-5", "myproject" → None.
     """
     marker = "--worktrees-"
     idx = bare_name.find(marker)

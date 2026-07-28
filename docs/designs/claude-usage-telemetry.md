@@ -710,7 +710,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - **NATS JetStream**: `quota.snapshot` subject (stream: `quota`) — Hetzner publishes after each scrape; Mac durable consumer `quota-subscriber-mac` replays missed messages on reconnect
 - **NATS core**: `hw.events.usage.claude.snapshot` subject — Hetzner publishes alongside `quota.snapshot` so the ai-core `UsageConsumer` can ingest snapshots into Postgres for cross-provider usage reporting
 - **NATS KV (`hw_state`)**: `quota.claude.current` key — Hetzner writes after each scrape; other services (workers, dashboards) read without SSHing to Mac. (Renamed from the older `quota.claude.weekly` key — consumers now read the single canonical "latest snapshot" key.)
-- **hw-scheduling (sergei)**: `claude_quota_scrape` job (Hetzner, 10 min) triggers scrape; `claude_quota_sync` job (Mac, 10 min) SSH-pulls as fallback catch-up; `gemini_cost_sync` job (Hetzner, 4h) tracks Gemini API cost separately
+- **hw-scheduling (myproject)**: `claude_quota_scrape` job (Hetzner, 10 min) triggers scrape; `claude_quota_sync` job (Mac, 10 min) SSH-pulls as fallback catch-up; `gemini_cost_sync` job (Hetzner, 4h) tracks Gemini API cost separately
 - **`ai internal quota-subscriber`**: persistent Circus-managed daemon on Mac; JetStream durable consumer for `quota.snapshot`; survives CC session exits
 - **Platform MCP**: future integration for quota state in priority guidance
 - **Orchestrated sessions**: AI orchestrator-spawned CC sessions should be captured by the shared statusLine hook; validate in test harness
