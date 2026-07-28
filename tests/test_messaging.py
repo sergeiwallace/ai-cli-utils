@@ -4,7 +4,6 @@ import subprocess
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 from ai_cli.messaging import NATSClient
 
 
@@ -39,7 +38,7 @@ class TestNATSClientConnectRealBoundary:
 
         try:
             elapsed = asyncio.run(run())
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise AssertionError(
                 "NATSClient.connect() did not return within 20s against an "
                 "unreachable server — this is the AIDO-294 hang: nats-py's "
@@ -72,9 +71,11 @@ class TestNATSClientConnect:
         client = NATSClient()
 
         async def run():
-            with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    await client.connect()
+            with (
+                patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
+                patch("asyncio.sleep", new=AsyncMock()),
+            ):
+                await client.connect()
 
         asyncio.run(run())
         assert client.nc is None
@@ -94,9 +95,8 @@ class TestNATSClientConnect:
             return mock_nc
 
         async def run():
-            with patch("nats.connect", new=fake_connect):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    await client.connect()
+            with patch("nats.connect", new=fake_connect), patch("asyncio.sleep", new=AsyncMock()):
+                await client.connect()
 
         asyncio.run(run())
         assert client.nc is mock_nc
@@ -127,9 +127,11 @@ class TestNATSClientPublish:
         client = NATSClient()
 
         async def run():
-            with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    return await client.publish_heartbeat("sess-1", {"status": "WORKING"})
+            with (
+                patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
+                patch("asyncio.sleep", new=AsyncMock()),
+            ):
+                return await client.publish_heartbeat("sess-1", {"status": "WORKING"})
 
         result = asyncio.run(run())
         assert result is False
@@ -155,9 +157,11 @@ class TestNATSClientPublish:
         client = NATSClient()
 
         async def run():
-            with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    return await client.publish_event("sess-2", "STARTED")
+            with (
+                patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
+                patch("asyncio.sleep", new=AsyncMock()),
+            ):
+                return await client.publish_event("sess-2", "STARTED")
 
         result = asyncio.run(run())
         assert result is False
@@ -233,9 +237,11 @@ class TestNATSClientSubscribe:
             received.append(data)
 
         async def run():
-            with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
-                with patch("asyncio.sleep", new=fake_sleep):
-                    await client.subscribe("sync.pull.requested", on_message)
+            with (
+                patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+                patch("asyncio.sleep", new=fake_sleep),
+            ):
+                await client.subscribe("sync.pull.requested", on_message)
 
         asyncio.run(run())
         assert received == [{"machine": "mac"}]
@@ -250,9 +256,11 @@ class TestNATSClientSubscribe:
             called.append(data)
 
         async def run():
-            with patch("nats.connect", new=AsyncMock(side_effect=NoServersError)):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    await client.subscribe("sync.pull.requested", on_message)
+            with (
+                patch("nats.connect", new=AsyncMock(side_effect=NoServersError)),
+                patch("asyncio.sleep", new=AsyncMock()),
+            ):
+                await client.subscribe("sync.pull.requested", on_message)
 
         asyncio.run(run())
         assert called == []  # No crash, no callback invoked
@@ -273,9 +281,11 @@ class TestNATSClientSubscribe:
             received.append(data)
 
         async def run():
-            with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
-                with patch("asyncio.sleep", side_effect=asyncio.CancelledError):
-                    await client.subscribe("sync.pull.requested", on_message)
+            with (
+                patch("nats.connect", new=AsyncMock(return_value=mock_nc)),
+                patch("asyncio.sleep", side_effect=asyncio.CancelledError),
+            ):
+                await client.subscribe("sync.pull.requested", on_message)
 
         asyncio.run(run())
         # Malformed JSON produces empty dict, callback still called
@@ -299,9 +309,11 @@ class TestSshTunnel:
         mock_conn = MagicMock()
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
-        with patch("ai_cli.messaging.socket.create_connection", return_value=mock_conn):
-            with patch("ai_cli.messaging.subprocess.Popen") as mock_popen:
-                asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch("ai_cli.messaging.socket.create_connection", return_value=mock_conn),
+            patch("ai_cli.messaging.subprocess.Popen") as mock_popen,
+        ):
+            asyncio.run(client._open_ssh_tunnel())
         mock_popen.assert_not_called()
         assert client._tunnel_proc is None
 
@@ -322,12 +334,14 @@ class TestSshTunnel:
             return mock_conn  # tunnel up on retry
 
         fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
-        with patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection):
-            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen:
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
-                        with patch("ai_cli.transport._is_vpn_active", return_value=False):
-                            asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection),
+            patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("ai_cli.config.load_config", return_value=fake_cfg),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
 
         mock_popen.assert_called_once_with(
             ["ssh", "-fNL", "4222:localhost:4222", "-o", "ConnectTimeout=5", "-p", "22", "user@192.0.2.1"],
@@ -341,12 +355,14 @@ class TestSshTunnel:
         client = NATSClient()
         mock_proc = MagicMock()
         fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
-        with patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")):
-            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
-                        with patch("ai_cli.transport._is_vpn_active", return_value=False):
-                            asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")),
+            patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc),
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("ai_cli.config.load_config", return_value=fake_cfg),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
         assert client._tunnel_proc is mock_proc  # proc stored even if port never came up
 
     def test_when_tunnel_up_then_ssh_f_parent_is_reaped(self, monkeypatch):
@@ -369,12 +385,14 @@ class TestSshTunnel:
             return conn
 
         fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
-        with patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection):
-            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
-                        with patch("ai_cli.transport._is_vpn_active", return_value=False):
-                            asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch("ai_cli.messaging.socket.create_connection", side_effect=mock_create_connection),
+            patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc),
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("ai_cli.config.load_config", return_value=fake_cfg),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
 
         mock_proc.poll.assert_called()  # reap ran
 
@@ -386,12 +404,14 @@ class TestSshTunnel:
         mock_proc.poll.return_value = None  # not exited yet → must wait()
 
         fake_cfg = {"remote": {"host": "192.0.2.1", "user": "user", "port": 22}}
-        with patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")):
-            with patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc):
-                with patch("asyncio.sleep", new=AsyncMock()):
-                    with patch("ai_cli.config.load_config", return_value=fake_cfg):
-                        with patch("ai_cli.transport._is_vpn_active", return_value=False):
-                            asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch("ai_cli.messaging.socket.create_connection", side_effect=OSError("refused")),
+            patch("ai_cli.messaging.subprocess.Popen", return_value=mock_proc),
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("ai_cli.config.load_config", return_value=fake_cfg),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
 
         mock_proc.wait.assert_called_once()  # reaped via wait when still running
 
@@ -413,17 +433,18 @@ class TestNATSClientCloseTunnel:
 class TestOpenSshTunnel:
     def test_skips_when_not_mac(self):
         client = NATSClient()
-        with patch.dict("os.environ", {"AI_HOST": "hetzner"}):
-            with patch("subprocess.Popen") as mock_popen:
-                asyncio.run(client._open_ssh_tunnel())
+        with patch.dict("os.environ", {"AI_HOST": "hetzner"}), patch("subprocess.Popen") as mock_popen:
+            asyncio.run(client._open_ssh_tunnel())
         mock_popen.assert_not_called()
 
     def test_skips_when_port_already_reachable(self):
         client = NATSClient()
-        with patch.dict("os.environ", {"AI_HOST": "mac"}):
-            with patch("socket.create_connection"):  # succeeds — port open
-                with patch("subprocess.Popen") as mock_popen:
-                    asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch("socket.create_connection"),  # succeeds — port open
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            asyncio.run(client._open_ssh_tunnel())
         mock_popen.assert_not_called()
 
     def test_uses_vpn_host_when_configured(self):
@@ -436,13 +457,15 @@ class TestOpenSshTunnel:
             popen_calls.append(cmd)
             return MagicMock()
 
-        with patch.dict("os.environ", {"AI_HOST": "mac"}):
-            with patch("socket.create_connection", side_effect=OSError):
-                with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch("asyncio.sleep", new=AsyncMock(side_effect=lambda _: None)):
-                        with patch("ai_cli.config.load_config", return_value=config):
-                            with patch("ai_cli.transport._is_vpn_active", return_value=True):
-                                asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch("socket.create_connection", side_effect=OSError),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("asyncio.sleep", new=AsyncMock(side_effect=lambda _: None)),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.transport._is_vpn_active", return_value=True),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
 
         assert len(popen_calls) == 1
         ssh_cmd = " ".join(popen_calls[0])
@@ -462,13 +485,15 @@ class TestOpenSshTunnel:
         async def fake_sleep(_):
             pass
 
-        with patch.dict("os.environ", {"AI_HOST": "mac"}):
-            with patch("socket.create_connection", side_effect=OSError):
-                with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)):
-                        with patch("ai_cli.config.load_config", return_value=config):
-                            with patch("ai_cli.transport._is_vpn_active", return_value=False):
-                                asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch("socket.create_connection", side_effect=OSError),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("asyncio.sleep", new=AsyncMock(side_effect=fake_sleep)),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
 
         assert len(popen_calls) == 1
         ssh_cmd = popen_calls[0]
@@ -484,12 +509,14 @@ class TestOpenSshTunnel:
             popen_calls.append(cmd)
             return MagicMock()
 
-        with patch.dict("os.environ", {"AI_HOST": "mac"}):
-            with patch("socket.create_connection", side_effect=OSError):
-                with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch("asyncio.sleep", new=AsyncMock()):
-                        with patch("ai_cli.config.load_config", side_effect=Exception("no config")):
-                            asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch("socket.create_connection", side_effect=OSError),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("ai_cli.config.load_config", side_effect=Exception("no config")),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
 
         # No tunnel opened — no host/user available when config fails
         assert len(popen_calls) == 0
@@ -511,13 +538,15 @@ class TestOpenSshTunnel:
             popen_calls.append(cmd)
             return MagicMock()
 
-        with patch.dict("os.environ", {"AI_HOST": "mac"}):
-            with patch("socket.create_connection", side_effect=OSError):
-                with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch("asyncio.sleep", new=AsyncMock()):
-                        with patch("ai_cli.config.load_config", return_value=config):
-                            with patch("ai_cli.transport._is_vpn_active", return_value=False):
-                                asyncio.run(client._open_ssh_tunnel())
+        with (
+            patch.dict("os.environ", {"AI_HOST": "mac"}),
+            patch("socket.create_connection", side_effect=OSError),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+        ):
+            asyncio.run(client._open_ssh_tunnel())
 
         assert len(popen_calls) == 1
         ssh_cmd = " ".join(popen_calls[0])
