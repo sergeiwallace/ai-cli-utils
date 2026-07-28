@@ -802,6 +802,7 @@ class TestCmdPs:
         with (
             patch("ai_cli.process_hygiene.collect_local_processes", return_value=[]),
             patch("ai_cli.process_hygiene.collect_remote_processes", return_value=([], None)),
+            patch("ai_cli.process_hygiene.collect_idle_since_launch_sessions", return_value=[]),
         ):
             rc = cmd_ps(["clean"], self._make_config(), stdout_fn=output.append)
 
