@@ -579,6 +579,45 @@ def detect_repo_root():
     return root
 
 
+def _resolve_worktree_base(repo_root: Path) -> str:
+    """Return the commit a NEW session worktree branch must start at.
+
+    Always ``origin/main``. ``git worktree add -b <branch> <dir>`` with no
+    start-point branches from whatever the main working tree currently has checked
+    out, which is only ``main`` by coincidence. In a repo parked on a long-running
+    workspace branch the new branch silently inherits that branch's commits while
+    ``--set-upstream-to=origin/main`` still claims it tracks ``main`` — so it is not
+    PR-clean (promoting it opens a pull request full of unrelated commits) and its
+    first ``git pull --rebase`` tries to replay those commits onto ``main``.
+
+    The remote-tracking ref is used as-is rather than fetched here: the launch
+    already runs ``git pull --rebase`` inside the new worktree, which is what makes
+    it current. Resolving the base must not itself depend on the network, or an
+    unreachable remote would stop the launch outright instead of merely leaving the
+    worktree a little behind.
+
+    Raises ``RuntimeError`` when ``origin/main`` cannot be resolved. There is
+    deliberately no fallback to ``HEAD``: that silent fallback is the defect, and an
+    unanchored worktree branch fails later and more confusingly, at push or PR time
+    (the same reasoning as AI-CLI-128's upstream hard-fail, which would reject this
+    repo moments later anyway).
+    """
+    res = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if res.returncode != 0 or not (res.stdout or "").strip():
+        raise RuntimeError(
+            f"create_worktree: cannot resolve origin/main in {repo_root} — refusing to create a "
+            f"session worktree based on the current HEAD instead. A worktree branch must start at "
+            f"origin/main so it stays PR-clean and its sync rebases onto main. Fix the repo first: "
+            f"ensure it has an `origin` remote with a `main` branch and run `git fetch origin main`."
+        )
+    return "refs/remotes/origin/main"
+
+
 def create_worktree(ai_name: str) -> Path | None:
     repo_root = detect_repo_root()
     if not repo_root:
@@ -609,10 +648,18 @@ def create_worktree(ai_name: str) -> Path | None:
         shutil.rmtree(wt_dir, ignore_errors=True)
 
     branch = f"wt-{ai_name}"
+    # Resolve the base BEFORE creating anything, so an unresolvable one leaves no
+    # half-made worktree directory behind.
+    base = _resolve_worktree_base(repo_root)
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    # Try creating new branch, fallback to existing
-    res = subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", branch], capture_output=True, env=_git_env())
+    # Try creating the branch at the resolved base; fall back to checking out an
+    # existing branch of that name. The fallback deliberately passes no start-point:
+    # a `wt-<name>` that already exists carries a previous session's commits, and
+    # forcing it back to origin/main would discard them.
+    res = subprocess.run(
+        ["git", "worktree", "add", str(wt_dir), "-b", branch, base], capture_output=True, env=_git_env()
+    )
     if res.returncode != 0:
         subprocess.run(["git", "worktree", "add", str(wt_dir), branch], capture_output=True, env=_git_env())
 

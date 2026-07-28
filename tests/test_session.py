@@ -805,6 +805,19 @@ class TestDetectRepoRoot:
 # --- create_worktree ---
 
 
+def _stub_worktree_base():
+    """Stub the ``origin/main`` base lookup for tests that mock ``subprocess.run`` wholesale.
+
+    ``create_worktree`` resolves the new branch's start-point by asking git for
+    ``refs/remotes/origin/main``, which a blanket ``subprocess.run`` mock cannot
+    answer.  These tests assert unrelated behaviour (symlinking, upstream retry,
+    stale-directory recreation), so the base lookup is stubbed rather than faked.
+    The start-point behaviour itself is covered against real git repositories in
+    ``tests/test_worktree_base.py``.
+    """
+    return patch("ai_cli.session._resolve_worktree_base", return_value="refs/remotes/origin/main")
+
+
 class TestCreateWorktree:
     def test_create_worktree_when_no_repo_then_returns_none(self):
         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -843,7 +856,7 @@ class TestCreateWorktree:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return m
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-2")
         assert result == wt_dir
@@ -869,6 +882,7 @@ class TestCreateWorktree:
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            _stub_worktree_base(),
             patch("subprocess.run", side_effect=fake_run),
         ):
             result = create_worktree("session-1")
@@ -948,7 +962,7 @@ class TestCreateWorktreeEdgeCases:
                 m.stdout = ""
             return m
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-3")
         assert result == wt_dir
@@ -969,12 +983,15 @@ class TestCreateWorktreeEdgeCases2:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return m
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-4")
         assert result == wt_dir
         add_calls = [c for c in calls if "worktree" in c and "add" in c]
         assert len(add_calls) == 2
+        # The retry checks out the existing branch with NO start-point, so a previous
+        # session's commits on wt-sw-4 are never reset to origin/main.
+        assert add_calls[1] == ["git", "worktree", "add", str(wt_dir), "wt-sw-4"]
 
     def test_create_worktree_when_src_not_exists_then_skips_symlink(self, tmp_path):
         """Covers lines 454-455: src doesn't exist, so no symlink."""
@@ -986,7 +1003,7 @@ class TestCreateWorktreeEdgeCases2:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return m
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-5")
         assert result == wt_dir
@@ -999,7 +1016,7 @@ class TestCreateWorktreeEdgeCases2:
             m = MagicMock(returncode=1, stdout="")
             return m
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-6")
         assert result is None
@@ -1018,7 +1035,7 @@ class TestCreateWorktreeSymlink:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             return MagicMock(returncode=0, stdout="")
 
-        with patch("ai_cli.session.detect_repo_root", return_value=repo_root):
+        with patch("ai_cli.session.detect_repo_root", return_value=repo_root), _stub_worktree_base():
             with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                 with patch("subprocess.run", side_effect=fake_run):
                     result = create_worktree("sw-1")
@@ -1043,7 +1060,7 @@ class TestCreateWorktreeUpstreamGuard:
                 m.returncode = 1 if len(upstream_attempts) == 1 else 0
             return m
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 result = create_worktree("sw-1")
 
@@ -1062,7 +1079,7 @@ class TestCreateWorktreeUpstreamGuard:
                 m.stderr = b"fatal: branch 'wt-sw-2' does not exist"
             return m
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 with pytest.raises(RuntimeError, match="AI-CLI-128"):
                     create_worktree("sw-2")
