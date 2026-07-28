@@ -1,12 +1,11 @@
 ---
-# Pre-commit framework config (SW-796 — adopted Option 1c Round 1, 2026-04-23).
+# Pre-commit framework config (adopted 2026-04-23).
 # Runs on every `git commit` (pre-commit stage) and `git push` (pre-push stage).
 #
 # Install: `pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push`
 # (Auto-run by copier `_tasks` on copy + update.)
 #
-# Update hook pins: `pre-commit autoupdate` (quarterly — see D-02 in
-# sergei/docs/plans/pre-commit-linting-expansion.md).
+# Update hook pins: `pre-commit autoupdate` (quarterly).
 #
 # Skip hooks: `SKIP=hook-id git commit` (specific hook) or `SKIP_TESTS=1 git push`
 # (test-gate.sh only — not a pre-commit-framework env var).
