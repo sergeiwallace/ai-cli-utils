@@ -50,7 +50,7 @@ repos:
 
   # ── Python: ruff (check --fix + format) ──────────────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.21
+    rev: v0.16.0
     hooks:
       # Exclude .githooks/ — those .py files are vendored from project-template and
       # are re-linted at each repo's own line-length (88/100/120/150 vary across the
@@ -97,6 +97,17 @@ repos:
         name: validate .claude/settings.json hook script refs exist
         entry: .githooks/validate-claude-settings.py
         language: script
+        pass_filenames: false
+        always_run: true
+      # ruff-unification sweep (AIH-473, 2026-07-27): the ruff-pre-commit rev
+      # above and pyproject.toml's ruff pin are two independent pins
+      # provisioning two separate binaries. Nothing else keeps them equal, so
+      # they drift silently. Fails loudly at commit time instead of being
+      # discovered months later as a green-gate/red-terminal mismatch.
+      - id: ruff-version-sync
+        name: ruff version sync (pre-commit rev == pyproject.toml pin)
+        entry: python3 scripts/check_ruff_version_sync.py
+        language: system
         pass_filenames: false
         always_run: true
       # docs-index-check REMOVED (CORE-55). The generated docs/README.md index had
