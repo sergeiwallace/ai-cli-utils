@@ -70,3 +70,9 @@ produce the same explicit unavailable output because neither has a current-week 
 - `uv run pytest -n 0 tests/test_quota_fable_availability.py tests/test_quota_fable_scrape.py tests/test_quota.py -q`
   — the Fable coverage passed; one unrelated existing scrape-spawn test failed because its lock-file
   parent directory is absent in this fresh sandbox.
+
+## Addendum — 2026-07-29
+
+The secondary Fable segment was removed from the statusline entirely because the upstream per-model
+usage data has no realistic near-term path to return. The statusline now renders only the all-models
+`ccWk` segment. The scraper, stored data, and backoff machinery remain in place for separate review.

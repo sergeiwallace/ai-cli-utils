@@ -1392,7 +1392,7 @@ def quota_statusline_part() -> int:
         conn.row_factory = sqlite3.Row
         _init_db(conn)
         rows = conn.execute(
-            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct, weekly_model_name FROM quota_snapshots"
+            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
             (week_start_str,),
         ).fetchall()
@@ -1429,7 +1429,7 @@ def quota_statusline_part() -> int:
                         conn2.row_factory = sqlite3.Row
                         _init_db(conn2)
                         rows = conn2.execute(
-                            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct, weekly_model_name FROM quota_snapshots"
+                            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
                             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
                             (week_start_str,),
                         ).fetchall()
@@ -1446,36 +1446,13 @@ def quota_statusline_part() -> int:
             return 0
 
         usage_pct = rows[0]["usage_percent"]
-        # Last-good Fable (secondary per-model cap): the most recent non-null Fable snapshot this
-        # week, queried UNBOUNDED (AIH-164 T-06) so it survives even after T-02's fresh all-models
-        # env snapshots push it past the 3 rows read above (AI-CLI-83: a rate-limited scrape yields
-        # None and must not mask valid older data). model_name comes from the SAME row.
-        sonnet_pct, model_name, fable_ts = _get_last_fable_snapshot(week_start_str)
-        # Scrape scheduling (AIH-164 T-06): when all-models comes from the official rate_limits
-        # stdin (env vars present), the scrape's only job is refreshing the Fable cap — trigger it
-        # on a Fable-specific cadence with rate-limit backoff, NOT the (now always-fresh) all-models
-        # snapshot age. Without env vars (enterprise/no Pro-Max) the scrape still refreshes
-        # all-models, so keep the legacy snapshot-age trigger.
-        if os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT"):
-            _maybe_trigger_fable_scrape(now, fable_ts)
-        else:
+        # Without the official rate_limits input, retain the legacy all-models refresh cadence.
+        if not os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT"):
             _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         snapshot_age_hours = (
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600
         stale = snapshot_age_hours > 2.0  # scrape has been failing for >2h
-        # Fable-specific staleness (AIH-164 T-06): the Fable cap comes from the rate-limited TUI
-        # scrape, so its last-good value can be much older than the (stdin-fresh) all-models line.
-        # Mark the secondary slot stale when its own source snapshot is > 2h old.
-        fable_stale = False
-        if fable_ts is not None:
-            try:
-                fable_stale = (
-                    now - datetime.fromisoformat(fable_ts.replace("Z", "+00:00"))
-                ).total_seconds() / 3600 > 2.0
-            except Exception:
-                fable_stale = False
-
         ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         elapsed_secs = (now - ws_dt).total_seconds()
         week_elapsed_pct = min(elapsed_secs / (7 * 24 * 3600) * 100.0, 100.0)
@@ -1503,50 +1480,9 @@ def quota_statusline_part() -> int:
         # short, so the width branch is gone and the env var is no longer read here.
         # Anthropic orange #D97757, 24-bit truecolor — verified via live web search against
         # Anthropic's actual brand-color page (2026-07-19, explicit request), not guessed
-        # from memory. Both "ccWk" and "ccF" are Claude-branded, so both use it (were
-        # BOLD_CYAN/BOLD_MAG — arbitrary ANSI colors with no brand meaning).
+        # from memory.
         BOLD_CYAN = "\033[1;38;2;217;119;87m"
-        BOLD_MAG = "\033[1;38;2;217;119;87m"
         week_label = "ccWk"
-        # Label the secondary line with the FIRST LETTER of its actual model name. A non-null
-        # unnamed value is legacy Sonnet data, but a missing value is the Fable meter being
-        # unavailable, not evidence that the meter changed to Sonnet.
-        if sonnet_pct is None:
-            son_label = "ccF"
-        elif model_name:
-            son_label = "cc" + model_name.strip()[:1].upper()  # "Fable"->"ccF", "Sonnet only"->"ccS"
-        else:
-            son_label = "ccS"
-
-        # Fable is no longer available from the upstream /usage surface. Preserve any current-week
-        # last-good value, but make stale and absent values explicit and never derive a pace delta
-        # from them. The scrape scheduler above remains backoff-aware; do not launch an additional
-        # scrape here.
-        if sonnet_pct is None:
-            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}UNAVAILABLE{RESET}"
-        elif fable_stale:
-            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}{sonnet_pct:.0f}% STALE{RESET}"
-        else:
-            if sonnet_pct < 50:
-                s_color = GREEN
-            elif sonnet_pct < 75:
-                s_color = YELLOW
-            else:
-                s_color = RED
-            sonnet_delta = sonnet_pct - week_elapsed_pct
-            # Pace status is conveyed by color + arrow direction alone (2026-07-19, AIH-274
-            # compaction pass) — no ✅/⚠️/🚨 icon. GREEN = ahead/on track, YELLOW = running
-            # hot, RED = significantly over pace.
-            if sonnet_delta > 25:
-                s_delta_color = RED
-            elif sonnet_delta > 10:
-                s_delta_color = YELLOW
-            else:
-                s_delta_color = GREEN
-            sonnet_part = (
-                f"{BOLD_MAG}{son_label}{RESET} {s_color}{sonnet_pct:.0f}%{RESET}"
-                f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}"
-            )
 
         # Arrow: acceleration direction (requires \u22653 snapshots)
         arrow_char = "\u2192"  # → steady (default / insufficient data)
@@ -1575,8 +1511,7 @@ def quota_statusline_part() -> int:
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
-                f" | {sonnet_part}"
-            )  # ccWk N% →X% 🌱 [⏱] | ccF M% →Y%
+            )  # ccWk N% →X% 🌱 [⏱]
         else:
             # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
             if delta <= 10:
@@ -1588,8 +1523,7 @@ def quota_statusline_part() -> int:
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
-                f" | {sonnet_part}"
-            )  # ccWk N% →X% [⏱] | ccF M% →Y%
+            )  # ccWk N% →X% [⏱]
     except Exception:
         pass
     return 0

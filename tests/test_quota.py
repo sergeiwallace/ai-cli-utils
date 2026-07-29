@@ -2223,64 +2223,6 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_sonnet_pct_present_then_shown_with_S_label_and_W_label_on_all_models(self, tmp_path, capsys):
-        """weekly_sonnet_pct in snapshot → '87% S' appended; all-models % gets 'W' label."""
-        import ai_cli.quota_db as qdb
-
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        fixed_now = week_start_dt + timedelta(hours=30)  # post-seedling
-
-        qdb.set_db_path(tmp_path / "quota.db")
-        try:
-            with patch("datetime.datetime") as MockDT:
-                MockDT.now.return_value = fixed_now
-                MockDT.strptime.side_effect = datetime.strptime
-                MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=87.0)
-                with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
-                    result = quota_statusline_part()
-            assert result == 0
-            out = capsys.readouterr().out
-            assert "42%" in out
-            assert "W" in out
-            assert "87%" in out
-            assert "S" in out
-            mock_scrape.assert_not_called()
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
-
-    def test_when_fable_pct_absent_then_shows_unavailable_and_fires_scrape(self, tmp_path, capsys):
-        """weekly_sonnet_pct absent → explicit Fable unavailability; the Fable scrape is scheduled (AIH-164 T-06:
-        via the backoff-aware _maybe_trigger_fable_scrape on the rate_limits env path, no longer an
-        unconditional per-render scrape)."""
-        import ai_cli.quota_db as qdb
-
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        fixed_now = week_start_dt + timedelta(hours=30)  # post-seedling
-
-        qdb.set_db_path(tmp_path / "quota.db")
-        try:
-            with (
-                patch("datetime.datetime") as MockDT,
-                patch.dict(os.environ, {"AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}, clear=False),
-            ):
-                MockDT.now.return_value = fixed_now
-                MockDT.strptime.side_effect = datetime.strptime
-                MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=None)
-                with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
-                    result = quota_statusline_part()
-            assert result == 0
-            out = capsys.readouterr().out
-            assert "ccF" in out
-            assert "UNAVAILABLE" in out
-            assert "→-%" not in out
-            mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires the scrape
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
-
 
 class TestQuotaStatuslinePartLegacyDb:
     """AI-CLI-56 regression: quota_statusline_part must survive legacy DBs missing weekly_sonnet_pct."""
@@ -2890,9 +2832,9 @@ class TestStatuslineScript:
 
 
 class TestQuotaStatuslinePartAdaptiveLabels:
-    """AI-CLI-64: adaptive-width labels, left-side labels, Sonnet pace % in statusline output."""
+    """Statusline labels and primary weekly pace output."""
 
-    def _capture(self, usage_percent, sonnet_pct, hours_elapsed, tmp_path, capsys, cols=0, model_name=None):
+    def _capture(self, usage_percent, hours_elapsed, tmp_path, capsys, cols=0):
         import ai_cli.quota_db as qdb
         import os
 
@@ -2905,9 +2847,7 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                 MockDT.now.return_value = fixed_now
                 MockDT.strptime.side_effect = datetime.strptime
                 MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(
-                    usage_percent=usage_percent, weekly_sonnet_pct=sonnet_pct, weekly_model_name=model_name
-                )
+                qdb.record_quota_snapshot(usage_percent=usage_percent)
                 with patch("ai_cli.quota._launch_background_scrape"):
                     with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": str(cols)}):
                         quota_statusline_part()
@@ -2915,34 +2855,19 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_narrow_terminal_uses_ccWk_and_ccS_labels(self, tmp_path, capsys):
-        """The primary/secondary labels are fixed ("ccWk"/"ccS") regardless of terminal
-        width (2026-07-19, AIH-274 — "ccWk" pairs with Codex's "cxWk"; the old wide/narrow
-        "Week"/"W" branch was removed since "ccWk" is already narrow-terminal-short)."""
-        out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=79)
-        assert "ccWk" in out
-        assert "ccS" in out
-        assert "Week" not in out
-        assert "Son" not in out
-
-    def test_wide_terminal_still_uses_ccWk_and_single_letter_secondary(self, tmp_path, capsys):
-        """cols >= 80 makes no difference anymore (2026-07-19, AIH-274) — same "ccWk" primary
-        label and single-letter secondary as any other width; 'Son'/'Sonnet'/'Week' never
-        appear."""
-        out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=80)
+    def test_narrow_terminal_uses_ccwk_label(self, tmp_path, capsys):
+        """The primary label is fixed regardless of terminal width."""
+        out = self._capture(42.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=79)
         assert "ccWk" in out
         assert "Week" not in out
-        assert "Son" not in out  # secondary is compact single-letter, not "Son"/"Sonnet"
+        assert "ccF" not in out and "ccS" not in out
 
-    def test_secondary_label_is_cc_prefixed_first_letter_of_model_name(self, tmp_path, capsys):
-        """AI-CLI-96 + AIH-274: the secondary label is "cc" + the first letter of the model
-        name — 'Fable' -> 'ccF'. No 🤖 glyph (dropped 2026-07-19, AIH-274 compaction pass)."""
-        out = self._capture(42.0, 0.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=120, model_name="Fable")
-        import re
-
-        clean = re.sub(r"\033\[[0-9;]*m", "", out)
-        assert "Fable" not in clean
-        assert "ccF " in clean  # single-letter label, cc-prefixed, no 🤖 glyph after it
+    def test_wide_terminal_still_uses_ccwk_label(self, tmp_path, capsys):
+        """Terminal width does not change the primary label."""
+        out = self._capture(42.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=80)
+        assert "ccWk" in out
+        assert "Week" not in out
+        assert "ccF" not in out and "ccS" not in out
 
     def test_weekly_pace_shown_as_magnitude_color_encodes_direction(self, tmp_path, capsys):
         """AI-CLI-96: the pace is shown as a bare MAGNITUDE (no +/- sign) — the COLOR conveys
@@ -2950,7 +2875,7 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         sign in the number (the earlier abs()-with-no-minus bug and the interim signed form
         are both superseded). No ✅ icon (dropped 2026-07-19, AIH-274 compaction pass)."""
         # ~161h elapsed = ~96% of week; usage 17% → delta = 17 - 96 ≈ -79% (way under pace)
-        out = self._capture(17.0, 0.0, hours_elapsed=161, tmp_path=tmp_path, capsys=capsys, cols=120)
+        out = self._capture(17.0, hours_elapsed=161, tmp_path=tmp_path, capsys=capsys, cols=120)
         import re
 
         clean = re.sub(r"\033\[[0-9;]*m", "", out)
@@ -2958,24 +2883,16 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         assert "→-" not in clean and "→+" not in clean  # no sign on the number
         assert "\033[32m" in out  # green delta color encodes "ahead / on track"
 
-    def test_zero_cols_still_uses_ccWk_and_ccS_labels(self, tmp_path, capsys):
-        """cols=0 (unset, default when statusline-command.sh is not the caller) makes no
-        difference anymore (2026-07-19, AIH-274) — same fixed "ccWk"/"ccS" labels."""
-        out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=0)
+    def test_zero_cols_still_uses_ccwk_label(self, tmp_path, capsys):
+        """An unset width does not change the primary label."""
+        out = self._capture(42.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=0)
         assert "ccWk" in out
-        assert "ccS" in out
         assert "Week" not in out
-
-    def test_sonnet_pace_shown_as_delta_from_week_elapsed(self, tmp_path, capsys):
-        """Sonnet pace = sonnet_pct - week_elapsed_pct; displayed as →+X% or →-X%."""
-        # 30h elapsed = ~17.9% of week; sonnet=40% → delta = +22%
-        out = self._capture(40.0, 40.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=0)
-        assert "40%" in out  # sonnet_pct shown
-        assert "→" in out  # pace arrow present
+        assert "ccF" not in out and "ccS" not in out
 
     def test_labels_appear_left_of_percentages(self, tmp_path, capsys):
         """Label (W or Week) appears before the usage percentage in the output."""
-        out = self._capture(42.0, 87.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=0)
+        out = self._capture(42.0, hours_elapsed=30, tmp_path=tmp_path, capsys=capsys, cols=0)
         # Strip ANSI codes to check order
         import re
 
@@ -2983,96 +2900,3 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         w_pos = clean.index("W")
         pct_pos = clean.index("42%")
         assert w_pos < pct_pos, f"Label W should precede 42% but got: {clean!r}"
-
-    def test_fable_absent_shows_dimmed_unavailable(self, tmp_path, capsys):
-        """sonnet_pct=None → explicit unavailable Fable meter with no pace delta."""
-        import ai_cli.quota_db as qdb
-        import os
-
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        fixed_now = week_start_dt + timedelta(hours=30)
-        qdb.set_db_path(tmp_path / "quota.db")
-        try:
-            with patch("datetime.datetime") as MockDT:
-                MockDT.now.return_value = fixed_now
-                MockDT.strptime.side_effect = datetime.strptime
-                MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=None)
-                with patch("ai_cli.quota._launch_background_scrape") as mock_scrape:
-                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "0", "AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}):
-                        quota_statusline_part()
-            out = capsys.readouterr().out
-            assert "ccF" in out
-            assert "UNAVAILABLE" in out
-            assert "→-%" not in out
-            mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires (AIH-164 T-06)
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
-
-    def test_wide_terminal_secondary_absent_uses_fable_unavailable_label(self, tmp_path, capsys):
-        """Wide terminal + missing secondary data keeps the Fable identity and shows unavailability."""
-        import ai_cli.quota_db as qdb
-        import os
-
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        fixed_now = week_start_dt + timedelta(hours=30)
-        qdb.set_db_path(tmp_path / "quota.db")
-        try:
-            with patch("datetime.datetime") as MockDT:
-                MockDT.now.return_value = fixed_now
-                MockDT.strptime.side_effect = datetime.strptime
-                MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                qdb.record_quota_snapshot(usage_percent=42.0, weekly_sonnet_pct=None)
-                with patch("ai_cli.quota._launch_background_scrape"):
-                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "120"}):
-                        quota_statusline_part()
-            out = capsys.readouterr().out
-            import re
-
-            clean = re.sub(r"\033\[[0-9;]*m", "", out)
-            assert "Son" not in clean
-            assert "ccF UNAVAILABLE" in clean
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
-
-    def test_when_latest_snapshot_has_null_sonnet_but_earlier_has_value_then_fallback_used(self, tmp_path, capsys):
-        """AI-CLI-83: a scrape with no Sonnet parse (None) must not mask valid data from earlier rows."""
-        import ai_cli.quota_db as qdb
-
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        fixed_now = week_start_dt + timedelta(hours=30)
-        qdb.set_db_path(tmp_path / "quota.db")
-        try:
-            conn = qdb._get_conn()
-            # Older snapshot has Sonnet data; newer one has None (scrape parse failure)
-            older_ts = (fixed_now - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            newer_ts = (fixed_now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            conn.execute(
-                "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
-                (week_start_str, 30.0, 25.0, older_ts),
-            )
-            conn.execute(
-                "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
-                (week_start_str, 31.0, None, newer_ts),
-            )
-            conn.commit()
-            conn.close()
-            with patch("datetime.datetime") as MockDT:
-                MockDT.now.return_value = fixed_now
-                MockDT.strptime.side_effect = datetime.strptime
-                MockDT.fromisoformat.side_effect = datetime.fromisoformat
-                with patch("ai_cli.quota._try_read_kv_snapshot", return_value=None):
-                    with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "80"}):
-                        quota_statusline_part()
-            out = capsys.readouterr().out
-            import re
-
-            clean = re.sub(r"\033\[[0-9;]*m", "", out)
-            # Sonnet value from older row should be used, not the None from newer
-            assert "25%" in clean
-            assert "-%" not in clean
-        finally:
-            qdb.set_db_path(None)  # type: ignore[arg-type]
