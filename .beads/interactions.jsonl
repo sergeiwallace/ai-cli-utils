@@ -92,3 +92,4 @@
 {"id":"int-c3947266da175fbfdc5c7f453d8deb86","kind":"field_change","created_at":"2026-07-28T19:43:41.943498764Z","actor":"Sergei Wallace","issue_id":"AI-CLI-urv","extra":{"field":"priority","new_value":"1","old_value":"2"}}
 {"id":"int-00baa08377ea98dcd48fa9ebec285bf2","kind":"field_change","created_at":"2026-07-28T20:29:40.095930409Z","actor":"Sergei Wallace","issue_id":"AI-CLI-urv","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-fc123d56281c788fc3324b5ca0325dfe","kind":"field_change","created_at":"2026-07-29T12:36:03.422838Z","actor":"T","issue_id":"AI-CLI-4ss","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-e6ddcbbeb9236ba1e302d9214cf2ab30","kind":"field_change","created_at":"2026-07-29T21:01:15.7352984Z","actor":"sergei.wallace","issue_id":"AI-CLI-vs8","extra":{"field":"status","new_value":"closed","old_value":"open"}}
