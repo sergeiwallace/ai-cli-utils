@@ -1508,21 +1508,24 @@ def quota_statusline_part() -> int:
         BOLD_CYAN = "\033[1;38;2;217;119;87m"
         BOLD_MAG = "\033[1;38;2;217;119;87m"
         week_label = "ccWk"
-        # Label the secondary line with the FIRST LETTER of its actual model name (AIH-120:
-        # was "Sonnet", now "Fable"). Single-letter keeps the statusline compact ("F" for
-        # Fable, "S" for Sonnet).
-        if model_name:
+        # Label the secondary line with the FIRST LETTER of its actual model name. A non-null
+        # unnamed value is legacy Sonnet data, but a missing value is the Fable meter being
+        # unavailable, not evidence that the meter changed to Sonnet.
+        if sonnet_pct is None:
+            son_label = "ccF"
+        elif model_name:
             son_label = "cc" + model_name.strip()[:1].upper()  # "Fable"->"ccF", "Sonnet only"->"ccS"
         else:
             son_label = "ccS"
 
-        # Sonnet/Fable part. When absent, show the dim placeholder — the Fable scrape is scheduled
-        # by _maybe_trigger_fable_scrape above (rate-limit backoff-aware); do NOT fire an
-        # unconditional scrape here (it would hammer the rate-limited breakdown every render).
-        # No 🤖 glyph (dropped 2026-07-19, AIH-274 compaction pass — the label letter already
-        # marks it as the per-model line).
+        # Fable is no longer available from the upstream /usage surface. Preserve any current-week
+        # last-good value, but make stale and absent values explicit and never derive a pace delta
+        # from them. The scrape scheduler above remains backoff-aware; do not launch an additional
+        # scrape here.
         if sonnet_pct is None:
-            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}-% →-%{RESET}"
+            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}UNAVAILABLE{RESET}"
+        elif fable_stale:
+            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}{sonnet_pct:.0f}% STALE{RESET}"
         else:
             if sonnet_pct < 50:
                 s_color = GREEN
@@ -1540,13 +1543,9 @@ def quota_statusline_part() -> int:
                 s_delta_color = YELLOW
             else:
                 s_delta_color = GREEN
-            # ⏱ when the Fable value's own source snapshot is stale (>2h) — the rate-limited
-            # breakdown hasn't refreshed, so the shown last-good value is aging (AIH-164 T-06).
-            # This is a real signal (not decorative), so it stays even after the icon cleanup.
-            _fable_stale_suffix = " \033[2m⏱\033[0m" if fable_stale else ""
             sonnet_part = (
                 f"{BOLD_MAG}{son_label}{RESET} {s_color}{sonnet_pct:.0f}%{RESET}"
-                f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}{_fable_stale_suffix}"
+                f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}"
             )
 
         # Arrow: acceleration direction (requires \u22653 snapshots)

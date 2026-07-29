@@ -2250,8 +2250,8 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_sonnet_pct_absent_then_shows_dimmed_placeholder_and_fires_scrape(self, tmp_path, capsys):
-        """weekly_sonnet_pct absent → '-% S' shown; the Fable scrape is scheduled (AIH-164 T-06:
+    def test_when_fable_pct_absent_then_shows_unavailable_and_fires_scrape(self, tmp_path, capsys):
+        """weekly_sonnet_pct absent → explicit Fable unavailability; the Fable scrape is scheduled (AIH-164 T-06:
         via the backoff-aware _maybe_trigger_fable_scrape on the rate_limits env path, no longer an
         unconditional per-render scrape)."""
         import ai_cli.quota_db as qdb
@@ -2274,8 +2274,9 @@ class TestQuotaStatuslinePart:
                     result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
-            assert "-%" in out
-            assert "S" in out
+            assert "ccF" in out
+            assert "UNAVAILABLE" in out
+            assert "→-%" not in out
             mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires the scrape
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
@@ -2983,8 +2984,8 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         pct_pos = clean.index("42%")
         assert w_pos < pct_pos, f"Label W should precede 42% but got: {clean!r}"
 
-    def test_sonnet_absent_shows_dimmed_placeholder(self, tmp_path, capsys):
-        """sonnet_pct=None → '-% →-%' placeholder with label on left."""
+    def test_fable_absent_shows_dimmed_unavailable(self, tmp_path, capsys):
+        """sonnet_pct=None → explicit unavailable Fable meter with no pace delta."""
         import ai_cli.quota_db as qdb
         import os
 
@@ -3002,15 +3003,15 @@ class TestQuotaStatuslinePartAdaptiveLabels:
                     with patch.dict(os.environ, {"AI_CLI_STATUSLINE_COLS": "0", "AI_CLI_QUOTA_SEVEN_DAY_PCT": "42"}):
                         quota_statusline_part()
             out = capsys.readouterr().out
-            assert "-%" in out
-            assert "→-%" in out  # pace placeholder too
-            assert "S" in out
+            assert "ccF" in out
+            assert "UNAVAILABLE" in out
+            assert "→-%" not in out
             mock_scrape.assert_called_once()  # Fable absent → backoff trigger fires (AIH-164 T-06)
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_wide_terminal_secondary_absent_uses_single_letter_label(self, tmp_path, capsys):
-        """Wide terminal + missing secondary data → 'ccS' fallback (AI-CLI-96 + AIH-274), not 'Son'."""
+    def test_wide_terminal_secondary_absent_uses_fable_unavailable_label(self, tmp_path, capsys):
+        """Wide terminal + missing secondary data keeps the Fable identity and shows unavailability."""
         import ai_cli.quota_db as qdb
         import os
 
@@ -3032,7 +3033,7 @@ class TestQuotaStatuslinePartAdaptiveLabels:
 
             clean = re.sub(r"\033\[[0-9;]*m", "", out)
             assert "Son" not in clean
-            assert "ccS " in clean  # single-letter fallback label, cc-prefixed, no 🤖 glyph
+            assert "ccF UNAVAILABLE" in clean
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
