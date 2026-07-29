@@ -16,7 +16,6 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 from .config import get_xdg_state_home
 
@@ -78,7 +77,7 @@ def _dynamic_profile_dir() -> Path:
     return d
 
 
-def _source_logo_path(session_type: str) -> Optional[Path]:
+def _source_logo_path(session_type: str) -> Path | None:
     """Return absolute path to the source logo for session_type, or None."""
     filename = _SOURCE_LOGOS.get(session_type)
     if not filename:
@@ -143,7 +142,7 @@ def _hex_to_iterm2_color(hex_color: str) -> dict:
 # ── Icon generation ────────────────────────────────────────────────────────────
 
 
-def _tint_image(img: "Image.Image", tint_hex: str) -> "Image.Image":
+def _tint_image(img: Image.Image, tint_hex: str) -> Image.Image:
     """Tint an RGBA image: replaces all pixels with tint color, preserving alpha."""
     r, g, b = _hex_to_rgb(tint_hex)
     img_rgba = img.convert("RGBA")
@@ -156,10 +155,10 @@ def _tint_image(img: "Image.Image", tint_hex: str) -> "Image.Image":
 
 def generate_session_icon(
     session_name: str,
-    tab_hex: Optional[str],
+    tab_hex: str | None,
     session_type: str,
-    icon_color: Optional[str] = None,
-) -> Optional[Path]:
+    icon_color: str | None = None,
+) -> Path | None:
     """Generate a tinted PNG icon for this session and write it to the cache.
 
     Args:
@@ -196,9 +195,9 @@ def generate_dynamic_profile(
     session_name: str,
     tab_hex: str,
     session_type: str,
-    icon_path: Optional[Path] = None,
-    background_hex: Optional[str] = None,
-    base_profile: Optional[str] = None,
+    icon_path: Path | None = None,
+    background_hex: str | None = None,
+    base_profile: str | None = None,
 ) -> Path:
     """Write a Dynamic Profile JSON for this session. Returns the path.
 
@@ -238,14 +237,24 @@ def generate_dynamic_profile(
         profile["Custom Icon Path"] = str(icon_path)
 
     data = {"Profiles": [profile]}
-    out_path = _dynamic_profile_dir() / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json"
-    # Atomic write: iTerm2's FSEvents watcher can read the file mid-write if we use
-    # write_text() directly (open→write→close is not atomic). Write to a temp file in
-    # the same directory then os.replace() for a POSIX-atomic rename (AI-CLI-84).
-    dir_fd = out_path.parent
+    profile_dir = _dynamic_profile_dir()
+    out_path = profile_dir / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json"
+    # Atomic write: iTerm2's `reallyReloadDynamicProfiles` re-enumerates and re-parses
+    # EVERY non-dotfile/non-tilde-suffixed entry in the watched DynamicProfiles dir on
+    # ANY filesystem event, with no .json/.tmp extension filter (confirmed by reading
+    # iTerm2's shipped sources/Settings/Profiles/iTermDynamicProfileManager.m). A temp
+    # file staged inside that directory — even briefly, even after AI-CLI-84's
+    # os.replace()-based atomic rename — is itself a candidate profile iTerm2 may try
+    # (and fail) to parse, or successfully parse as a short-lived duplicate of the
+    # Guid it's about to replace. Stage the temp file in the DynamicProfiles dir's
+    # PARENT instead: guaranteed same filesystem (required for os.replace() atomicity)
+    # and confirmed outside iTerm2's watched folder set, which covers only
+    # DynamicProfiles/ itself, never its parent (AIH-478).
+    staging_dir = profile_dir.parent
     with tempfile.NamedTemporaryFile(
         mode="w",
-        dir=dir_fd,
+        dir=staging_dir,
+        prefix=".ai-cli-staging-",
         suffix=".json.tmp",
         delete=False,
     ) as tmp:
@@ -262,9 +271,9 @@ def cleanup_session_files(session_name: str) -> None:
     """
     try:
         (_icon_cache_dir() / f"{session_name}.png").unlink(missing_ok=True)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — EXIT-trap cleanup must never block session exit
         pass
     try:
         (_dynamic_profile_dir() / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json").unlink(missing_ok=True)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — EXIT-trap cleanup must never block session exit
         pass

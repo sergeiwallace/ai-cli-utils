@@ -23,7 +23,15 @@ from . import session as _session
 from . import session_script as _session_script
 from . import transport as _transport
 from . import tunnel as _tunnel
-from .git_repair import _git_env, repair_bare_worktree_config
+from .git_repair import (
+    GitProbeError,
+    _git_env,
+    detect_missing_tracked_symlinks,
+    detect_phantom_deleted_files,
+    pull_rebase_autostash,
+    repair_bare_worktree_config,
+    unmerged_paths,
+)
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
@@ -137,15 +145,170 @@ from .tunnel import (  # noqa: E402,F401
 
 
 def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
-    """Replace this process with ``command`` under the project's direnv environment."""
-    try:
-        os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
-    except FileNotFoundError:
+    """Replace this process with ``command``, under direnv when that is possible.
+
+    direnv is an enhancement, never a precondition for starting a session.  Three
+    cases are handled explicitly, because ``direnv exec`` fails *closed*: on an
+    unapproved (or erroring) ``.envrc`` it exits non-zero and never runs the
+    command at all.  Exec'ing it unconditionally therefore turned a mere trust
+    prompt into a launch that died with only "…/.envrc is blocked" on stderr and
+    no engine ever started.
+
+    - No ``.envrc`` anywhere above the target: nothing to load, exec directly.
+      This also lets sessions start on hosts without direnv installed.
+    - ``.envrc`` present and usable: exec through ``direnv exec`` as before.
+    - ``.envrc`` present but blocked/erroring: warn with the approval command and
+      exec the engine anyway, without the project environment.  Losing project
+      env vars is a degraded session; losing the session entirely is not
+      recoverable from inside the tool.
+    """
+    envrc = _find_envrc(project_root)
+    if envrc is not None and _direnv_env_usable(project_root):
+        try:
+            os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
+        except FileNotFoundError:
+            pass  # fall through to a direct exec below
+    elif envrc is not None:
         print(
-            "Error: direnv is required to start an agent with the project environment. Install direnv and retry.",
+            f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
+            f"  Approve it with:  direnv allow {envrc.parent}",
             file=sys.stderr,
         )
+
+    try:
+        os.execvp(command[0], command)
+    except FileNotFoundError:
+        print(f"Error: {command[0]} not found on PATH.", file=sys.stderr)
         sys.exit(1)
+
+
+def _find_envrc(start: Path) -> "Path | None":
+    """Return the nearest ``.envrc`` at or above ``start``, or None if there is none.
+
+    direnv searches parent directories, so a repo without its own ``.envrc`` can
+    still inherit one; checking only ``start`` would skip a usable environment.
+    """
+    try:
+        resolved = start.resolve()
+    except OSError:
+        resolved = start
+    for directory in (resolved, *resolved.parents):
+        candidate = directory / ".envrc"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _direnv_env_usable(project_root: Path) -> bool:
+    """True when ``direnv exec <project_root>`` can actually run a command there.
+
+    Probes with a trivial command rather than reading ``direnv status``, whose
+    fields do not reliably report whether the environment will load (the same
+    reason ``_allow_trusted_worktree_envrc`` uses this check).
+    """
+    try:
+        probe = subprocess.run(
+            ["direnv", "exec", str(project_root), "true"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    return probe.returncode == 0
+
+
+def _cc_project_dir(cwd: Path) -> Path:
+    """Return the ``~/.claude/projects`` directory Claude Code uses for ``cwd``.
+
+    Claude Code slugifies the absolute cwd by replacing every **non-alphanumeric**
+    character with ``-`` (``/home/me/my_proj`` -> ``-home-me-my-proj``).  Note the
+    underscore: an earlier version of this logic used a ``sed 's|[/.]|-|g'``
+    equivalent that replaced only ``/`` and ``.``, which silently computed the
+    wrong directory for any path containing ``_`` and made session resume miss.
+    """
+    return Path.home() / ".claude" / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
+
+
+def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
+    """Return the newest CC transcript under ``cwd`` whose ``customTitle`` is ``title``.
+
+    Claude Code's ``--continue`` picks the most recently modified conversation in
+    the project directory, so callers ``touch`` the returned file to make the
+    session named for this launch win.  ``--resume <uuid>`` is deliberately not
+    used: it opens a search picker rather than resuming directly.
+    """
+    project_dir = _cc_project_dir(cwd)
+    if not project_dir.is_dir():
+        return None
+    try:
+        candidates = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            with path.open("rb") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    found = record.get("customTitle", "")
+                    if found:
+                        # Only the first titled record matters — later ones repeat it.
+                        if found == title:
+                            return path
+                        break
+        except OSError:
+            continue
+    return None
+
+
+def _bare_engine_command(
+    engine: str,
+    ai_name: str,
+    target_root: Path,
+    uuid: str | None,
+    gemini_cmd: str,
+    sandbox_flag: str,
+    extra_args: list[str],
+) -> list[str]:
+    """Build the argv for a bare (no-tmux) engine launch.
+
+    Bare mode is a real session, not a degraded one: it gets the same
+    ``--name``/resume treatment the tmux session script applies, so ``ai c 1``
+    behaves consistently on machines where tmux is unavailable or opted out via
+    ``[session] use_tmux = false``.  The tmux path's auto-resume *loop* is the
+    only thing bare mode genuinely cannot offer — nothing supervises the process
+    to restart it.
+    """
+    if engine == "c":
+        command = ["claude"]
+        if not _is_root():
+            command.append("--dangerously-skip-permissions")
+        command += ["--name", ai_name]
+        # Resume this session's own prior conversation when one exists. --continue
+        # picks by mtime, so touch the matching transcript to make it the newest.
+        matched = _find_cc_session_by_title(target_root, ai_name)
+        if matched is not None:
+            try:
+                os.utime(matched, None)
+                command.append("--continue")
+            except OSError:
+                pass
+        elif _cc_project_dir(target_root).is_dir() and any(_cc_project_dir(target_root).glob("*.jsonl")):
+            command.append("--continue")
+        return command + extra_args
+
+    command = shlex.split(gemini_cmd) + ["-y", sandbox_flag]
+    if uuid:
+        command += ["-r", uuid]
+    else:
+        command += ["-i", f"/resume load {ai_name}"]
+    return command + extra_args
 
 
 def _is_root() -> bool:
@@ -328,29 +491,105 @@ def _engine_script_from_meta(meta: dict) -> str:
     )
 
 
-def _write_stable_session_script(tmux_session: str) -> bool:
-    """Rewrite ``sessions/<tmux_session>.sh`` from persisted metadata.
+def _write_launch_script_if_changed(script_path: Path, script: str) -> bool:
+    """Write a session launch script, leaving it alone when it is already current.
 
-    Bumps the stable script's mtime, which the running wrapper's hot-reload watches —
+    The script's mtime is the hot-reload signal every running wrapper polls, so an
+    unconditional rewrite makes every live session ``exec`` a reload even when the
+    regenerated bytes are identical (AI-CLI-129). Returns True if the file changed.
+    """
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if script_path.read_text() == script and script_path.stat().st_mode & 0o777 == 0o700:
+            return False
+    except OSError:
+        pass
+    script_path.write_text(script)
+    os.chmod(script_path, 0o700)
+    return True
+
+
+# Bound on how often the live-session template refresh may run. Each run spawns a
+# ``tmux list-sessions`` subprocess plus a write and a chmod per live session, so a
+# caller that re-enters it in a loop turns it into a subprocess storm against the
+# tmux server and the state dir (AI-CLI-129). A real `ai update` fires it once, so
+# a budget of a few per minute is far above any legitimate use.
+_REFRESH_BURST_LIMIT = 20
+_REFRESH_BURST_WINDOW_SECS = 60.0
+_REFRESH_CALL_TIMES: list[float] = []
+_REFRESH_BURST_REPORTED_AT = 0.0
+
+
+def _refresh_within_burst_budget() -> bool:
+    """Record a refresh attempt; return False (loudly) once the burst budget is spent.
+
+    Tracked both in-process and in the state dir, so a loop inside one process and a
+    loop that re-execs ``ai update`` are both caught. An unwritable state dir
+    degrades to the in-process counter rather than disabling the bound.
+    """
+    global _REFRESH_CALL_TIMES, _REFRESH_BURST_REPORTED_AT
+    now = time.time()
+    calls_path = _config.get_xdg_state_home() / "refresh-template-calls.json"
+    try:
+        persisted = [float(t) for t in json.loads(calls_path.read_text())]
+    except (OSError, ValueError, TypeError):
+        persisted = []
+    persisted = [t for t in persisted if 0 <= now - t < _REFRESH_BURST_WINDOW_SECS]
+    in_process = [t for t in _REFRESH_CALL_TIMES if 0 <= now - t < _REFRESH_BURST_WINDOW_SECS]
+
+    persisted.append(now)
+    in_process.append(now)
+    _REFRESH_CALL_TIMES = in_process[-_REFRESH_BURST_LIMIT * 2 :]
+    try:
+        calls_path.parent.mkdir(parents=True, exist_ok=True)
+        calls_path.write_text(json.dumps(persisted[-_REFRESH_BURST_LIMIT * 2 :]))
+    except OSError:
+        pass
+
+    attempts = max(len(persisted), len(in_process))
+    if attempts <= _REFRESH_BURST_LIMIT:
+        return True
+    # Report once per window: a caller spinning at kHz would otherwise turn the
+    # complaint into the same kind of storm the bound exists to stop.
+    if now - _REFRESH_BURST_REPORTED_AT >= _REFRESH_BURST_WINDOW_SECS:
+        _REFRESH_BURST_REPORTED_AT = now
+        print(
+            f"Error: live session-template refresh attempted {attempts} times in "
+            f"{int(_REFRESH_BURST_WINDOW_SECS)}s (limit {_REFRESH_BURST_LIMIT}) — refusing to run. "
+            "Something is driving `ai update` in a loop; find and stop the caller (AI-CLI-129).",
+            file=sys.stderr,
+        )
+    return False
+
+
+def _write_stable_session_script(tmux_session: str) -> bool:
+    """Bring ``sessions/<tmux_session>.sh`` in line with persisted metadata.
+
+    A changed script bumps its mtime, which the running wrapper's hot-reload watches —
     so a live session picks up a new template on its next restart without a full
-    ``ai c`` relaunch. Returns False if no metadata exists for the session.
+    ``ai c`` relaunch. An unchanged script is left untouched. Returns False only when
+    the session has no usable metadata.
+    """
+    return _sync_stable_session_script(tmux_session) is not None
+
+
+def _sync_stable_session_script(tmux_session: str) -> "bool | None":
+    """Regenerate a session's stable script from metadata, skipping no-op writes.
+
+    Returns True if the on-disk script changed, False if it was already current, and
+    None if the session has no usable ``session-meta-*.json``.
     """
     state_dir = _config.get_xdg_state_home()
     meta_path = state_dir / f"session-meta-{tmux_session}.json"
     if not meta_path.exists():
-        return False
+        return None
     try:
         meta = json.loads(meta_path.read_text())
         script = _engine_script_from_meta(meta)
     except Exception as exc:
         print(f"  (warning: could not regenerate {tmux_session}: {exc})", file=sys.stderr)
-        return False
-    sessions_dir = state_dir / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    script_path = sessions_dir / f"{tmux_session}.sh"
-    script_path.write_text(script)
-    os.chmod(script_path, 0o700)
-    return True
+        return None
+    return _write_launch_script_if_changed(state_dir / "sessions" / f"{tmux_session}.sh", script)
 
 
 def _refresh_live_session_scripts() -> int:
@@ -358,8 +597,12 @@ def _refresh_live_session_scripts() -> int:
 
     Called after ``ai update`` installs a new template so the wrapper's mtime
     hot-reload fires on each session's next restart. A session is "ai-cli-managed"
-    iff it has a ``session-meta-*.json``. Best-effort; returns the count refreshed.
+    iff it has a ``session-meta-*.json``. Best-effort; returns the count of scripts
+    that actually changed — sessions already on the current template are left alone
+    so they do not hot-reload for nothing.
     """
+    if not _refresh_within_burst_budget():
+        return 0
     try:
         ls = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
     except Exception:
@@ -369,7 +612,7 @@ def _refresh_live_session_scripts() -> int:
     refreshed = 0
     for sname in ls.stdout.split():
         if (_config.get_xdg_state_home() / f"session-meta-{sname}.json").exists():
-            if _write_stable_session_script(sname):
+            if _sync_stable_session_script(sname):
                 print(f"  refreshed session template: {sname}")
                 refreshed += 1
     return refreshed
@@ -891,6 +1134,19 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
             _handoff._log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
 
+def _has_conflict_or_unknown(repo_root) -> bool:
+    """True if the repo has conflict stages, or if that cannot be determined.
+
+    Fails closed on purpose: callers use this to decide whether a destructive
+    cleanup is safe, and "I could not check" must never license discarding
+    someone's in-progress conflict resolution.
+    """
+    try:
+        return bool(unmerged_paths(repo_root))
+    except GitProbeError:
+        return True
+
+
 # --- Command implementations (invoked by Click handlers below) ---
 
 
@@ -912,7 +1168,44 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
     # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
     subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, check=False)
     print("Pulling latest from origin...")
-    subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=project_path, check=False)
+    # AIH-443 Shape B: `git pull --rebase --autostash` exits 0 even when its
+    # automatic stash pop conflicted, so the exit code alone cannot be trusted
+    # (measured on git 2.43.0 and 2.55.0). Left unchecked this strands the
+    # checkout: the index keeps conflict stages, every later pull refuses with
+    # "Pulling is not possible because you have unmerged files", and the repo
+    # never advances again. That is how the remote build host sat 50 commits
+    # behind for five days while its disk filled — docs/bugs/stranded-autostash.md.
+    pull, stranded = pull_rebase_autostash(project_path)
+    # A conflicted index means the pull could not advance the checkout — whether
+    # this run caused it or a previous one did. Either way the source tree is
+    # stale and cannot be built from, and every later pull will refuse too, so
+    # this must be fatal rather than a warning that scrolls past.
+    try:
+        _conflicted = unmerged_paths(project_path)
+    except GitProbeError as e:
+        # Cannot verify; refuse rather than install from an unverifiable tree.
+        _conflicted = {f"<unverifiable: {e}>"}
+    if stranded or _conflicted:
+        detail = stranded or f"pre-existing conflict in {', '.join(sorted(_conflicted))}"
+        print(
+            f"Error: {project_path} has a conflicted index ({detail}); "
+            f"git pull exited {pull.returncode}.\n"
+            f"  Refusing to install from a half-applied checkout — it would ship broken or stale code.\n"
+            f"  Nothing has been discarded. Resolve, then re-run:\n"
+            f"    git -C {project_path} status\n"
+            f"    git -C {project_path} stash list",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if pull.returncode != 0:
+        # Tree is intact (nothing new conflicted, no autostash stranded), so the
+        # pull merely failed — e.g. no network. Installing the current checkout
+        # is still valid; say so rather than pretending the pull worked.
+        print(
+            f"Warning: git pull failed (exit {pull.returncode}); installing the current checkout.\n"
+            f"  {pull.stderr.strip()}",
+            file=sys.stderr,
+        )
     # Abort if pull left unresolved conflict markers — installing with conflicts produces a broken package
     src_dir = project_path / "src"
     conflict_files = []
@@ -1236,19 +1529,43 @@ def _do_session_launch(
     extra_args: "list[str]",
     config: dict,
 ) -> None:
-    # On Windows, tmux must be installed via MSYS2 (pacman -S tmux). Give a
-    # clear message rather than crashing with a cryptic FileNotFoundError.
-    if sys.platform == "win32":
-        import shutil
+    # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
+    # only the client library, so tmux can never be auto-installed by pip/uv and
+    # must be preflighted here.
+    #
+    # `[session] use_tmux = false` opts a machine out of tmux entirely (equivalent
+    # to always passing -b/--bare). tmux exists to keep sessions alive for detach
+    # /reattach -- remote access from a phone, surviving a dropped SSH connection,
+    # `ai ls`/`ai attach`. On a machine that only ever runs sessions in a local
+    # terminal, it buys nothing and its absence should not be fatal.
+    if not config.get("session", {}).get("use_tmux", True):
+        bare = True
 
-        if not shutil.which("tmux"):
-            print(
-                "Error: tmux not found. Install it via MSYS2:\n"
-                "  pacman -S tmux\n"
-                "See docs for details: https://github.com/sergeiwallace/ai-cli-utils#windows",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    if not bare and not shutil.which("tmux"):
+        # Previously this check was gated on sys.platform == "win32", so every
+        # non-Windows machine without tmux crashed with a raw FileNotFoundError
+        # from deep inside cleanup_stale_sessions() instead of this message.
+        if sys.platform == "win32":
+            _hint = "  pacman -S tmux            (MSYS2)"
+        elif sys.platform == "darwin":
+            _hint = "  brew install tmux"
+        else:
+            _hint = "  sudo apt install tmux     (or: dnf/yum/pacman/conda install tmux)"
+        print(
+            "Error: tmux not found, and it is required for the default session mode.\n"
+            f"{_hint}\n"
+            "\n"
+            "Or run without tmux:\n"
+            "  ai <engine> -b            one-off bare launch (no tmux)\n"
+            "  [session] use_tmux = false     in ~/.config/ai-cli-utils/config.toml\n"
+            "                            to make bare the default on this machine\n"
+            "\n"
+            "tmux provides detach/reattach (ai ls, ai attach), sessions that survive a\n"
+            "dropped SSH connection, and remote access from another device. If you only\n"
+            "run sessions in a local terminal, use_tmux = false is a fine permanent choice.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
@@ -1413,24 +1730,36 @@ def _do_session_launch(
 
         ensure_workspace_trusted([Path.cwd()])
 
-    if bare:
-        if engine == "c":
-            perms = [] if _is_root() else ["--dangerously-skip-permissions"]
-            _exec_with_direnv(Path.cwd(), ["claude"] + perms + extra_args)
-        else:
-            _gcmd = shlex.split(gemini_cmd)
-            _exec_with_direnv(Path.cwd(), _gcmd + ["-y", "-s" if use_sandbox else "--no-sandbox"] + extra_args)
+    # NOTE: bare mode does NOT short-circuit here. It shares the worktree
+    # creation, session naming, and resume resolution below with the tmux path,
+    # and execs the engine once that setup is done (see the `if bare:` block
+    # after worktree setup). Returning early here was a long-standing bug: on any
+    # machine with `[session] use_tmux = false` — or any `-b/--bare` launch —
+    # `ai c N` silently degraded to a plain `claude` in the repo root, with no
+    # worktree isolation, no --name, and no session resume. Nothing about
+    # worktrees requires tmux; the two concerns were only ever coupled by the
+    # order of these statements.
 
-    if resume:
+    # -r/--resume means "re-attach to the running tmux session". In bare mode
+    # there is no tmux session to attach to, and the engine's own conversation
+    # resume is already applied unconditionally below, so the flag is a no-op
+    # rather than an error.
+    if resume and not bare:
         session = _session.resolve_session(prefix, name)
         if not session:
             print(f"No matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
-    _session.cleanup_stale_sessions(config)
+    # Stale-session sweeping and index discovery both drive tmux. In bare mode
+    # there is no tmux server to query (it may not even be installed), so skip
+    # the sweep and let build_session_name fall back to its non-tmux path.
+    if not bare:
+        _session.cleanup_stale_sessions(config)
     current_project_name = _config.get_current_project_name()
-    session_id, ai_name = _session.build_session_name(engine, project_prefix, name, config, is_remote=is_remote)
+    session_id, ai_name = _session.build_session_name(
+        engine, project_prefix, name, config, is_remote=is_remote, use_tmux=not bare
+    )
 
     # Worktree setup
     worktree_path = None
@@ -1469,29 +1798,87 @@ def _do_session_launch(
                     file=sys.stderr,
                 )
             # Sync worktree with any changes that landed on main from other sessions.
-            # If stash-pop conflicts (e.g. remote commit touches same files as local changes),
-            # abort cleanly rather than leaving the index in a corrupted state.
-            pull = subprocess.run(
-                ["git", "pull", "--rebase", "--autostash"],
-                capture_output=True,
-                text=True,
-                cwd=worktree_path,
-                env=_git_env(),
-            )
-            if pull.returncode != 0:
-                # Abort any in-progress rebase and reset index to HEAD to prevent corruption.
+            # AIH-443 Shape B: this pull exits 0 even when its automatic stash pop
+            # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
+            # measures repo state either side of the call instead.
+            _conflicted_before = _has_conflict_or_unknown(worktree_path)
+            pull, stranded = pull_rebase_autostash(worktree_path)
+            if pull.returncode != 0 and not stranded and not _conflicted_before:
+                # Reset only when the tree was clean beforehand, so this cleanup can
+                # only ever undo work THIS launch started. Doing it unconditionally
+                # would abort a rebase the user is part-way through and wipe their
+                # conflict resolution — the opposite of the intent.
                 subprocess.run(["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path, env=_git_env())
                 subprocess.run(
                     ["git", "restore", "--staged", "."], capture_output=True, cwd=worktree_path, env=_git_env()
                 )
+                # Quote git's own last line. An exit code alone does not say whether
+                # this was no network, missing credentials for the remote, or something
+                # that needs attention, and the user cannot re-run the pull to find out
+                # once the index has been restored.
+                _reason = (pull.stderr or pull.stdout or "").strip().splitlines()
+                _detail = f" Last git error: {_reason[-1]}" if _reason else ""
                 print(
                     f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
-                    f"(autostash pop conflict?). Index restored to HEAD.",
+                    f"(exit {pull.returncode}) — starting the session on the branch as-is "
+                    f"(it may be behind main). Index restored to HEAD.{_detail}",
                     file=sys.stderr,
                 )
+            elif pull.returncode != 0 and not stranded:
+                print(
+                    f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
+                    f"(exit {pull.returncode}). Left as-is — this worktree already had "
+                    f"a conflict in progress and nothing here will discard it.",
+                    file=sys.stderr,
+                )
+            if stranded:
+                # Refuse the launch. Dropping an agent into a worktree whose index
+                # carries conflict stages is how AIH-443's phantom deletions spread
+                # across six worktrees. Nothing is auto-repaired: the user's work is
+                # in the stash and only they can say how to reconcile it.
+                print(
+                    f"Error: syncing worktree {worktree_path.name} stranded it ({stranded}).\n"
+                    f"  `git pull --rebase --autostash` exited {pull.returncode} but did not finish cleanly.\n"
+                    f"  Refusing to launch a session into a conflicted worktree.\n"
+                    f"  Nothing was discarded. Inspect, then resolve:\n"
+                    f"    git -C {worktree_path} status\n"
+                    f"    git -C {worktree_path} stash list",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             # Repair backstop again after this launch's git work.
             if _repair_root:
                 repair_bare_worktree_config(_repair_root)
+            # AIH-443 Shape A: a Claude Code `isolation: worktree` checkout can silently
+            # drop tracked symlinks (confirmed: 21 symlinks missing from disk in one
+            # sub-agent worktree while HEAD and origin/main both had them, no error
+            # anywhere). Not something this launcher can fix at the source, but it can
+            # stop it from being silent.
+            _missing_symlinks = detect_missing_tracked_symlinks(worktree_path)
+            if _missing_symlinks:
+                print(
+                    f"WARNING: {worktree_path.name} is missing {len(_missing_symlinks)} tracked "
+                    f"symlink(s) present in HEAD (checkout dropped them silently) — "
+                    f"e.g. {_missing_symlinks[0]}. Restore with "
+                    f"`git -C {worktree_path} checkout -- <path>`.",
+                    file=sys.stderr,
+                )
+            # AIH-443 Shape C: a tracked REGULAR file the index still holds but that
+            # is gone from disk. Neither check above can see it — there is no stranded
+            # stash (pre-commit uses its own patch file under ~/.cache/pre-commit, not
+            # `git stash`) and the mode is not 120000. pre-commit's `staged_files_only`
+            # then re-applies the deletion after every hook run, so the worktree never
+            # self-heals and `git status` looks identical each time.
+            _phantom = detect_phantom_deleted_files(worktree_path)
+            if _phantom:
+                print(
+                    f"WARNING: {worktree_path.name} is missing {len(_phantom)} tracked "
+                    f"file(s) that the index still holds — e.g. {_phantom[0]}. "
+                    f"Committing now would delete content that is still live on the "
+                    f"remote. Restore with "
+                    f"`git -C {worktree_path} checkout -- <path>` before committing.",
+                    file=sys.stderr,
+                )
 
     d = _config.get_session_map(engine)
     uuid = d.get(ai_name)
@@ -1503,6 +1890,25 @@ def _do_session_launch(
             uuid = latest
             d[ai_name] = uuid
             _config.save_session_map(d, engine)
+
+    if bare:
+        # Bare launch: no tmux, but everything else the tmux path sets up has now
+        # run — worktree created and synced, ai_name assigned, resume target
+        # resolved. cd into the worktree first: `direnv exec DIR cmd` loads DIR's
+        # environment but does NOT change the working directory, so without this
+        # the engine would start in the repo root with the worktree's env.
+        target_root = worktree_path or Path.cwd()
+        try:
+            os.chdir(target_root)
+        except OSError as exc:
+            print(f"Error: cannot enter session directory {target_root}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if engine == "c":
+            # Pin the task-list namespace to ai_name, matching the tmux session
+            # script, so the CC task panel survives process restarts.
+            os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
+        command = _bare_engine_command(engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args)
+        _exec_with_direnv(target_root, command)
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
     # so _iterm2_fleet_setup inside the bash script would silently no-op without them.
@@ -1582,14 +1988,13 @@ def _do_session_launch(
         # Explicit sandbox flag — kill old session so it recreates with new settings
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
-    # Stable script path: written on every launch/re-attach so the session script's
-    # mtime check detects updates (e.g. after `ai update`) and hot-reloads.
+    # Stable script path: refreshed on every launch/re-attach so the session script's
+    # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
+    # only when the template actually changed — otherwise a plain re-attach would bump
+    # the mtime and make the running wrapper exec a pointless reload (AI-CLI-129).
     _sessions_dir = _config.get_xdg_state_home() / "sessions"
-    _sessions_dir.mkdir(parents=True, exist_ok=True)
     _script_path = str(_sessions_dir / f"{session_id}.sh")
-    with open(_script_path, "w") as _sf:
-        _sf.write(script)
-    os.chmod(_script_path, 0o700)
+    _write_launch_script_if_changed(Path(_script_path), script)
 
     if existing.returncode == 0:
         # Session exists — write fresh script (hot-reload detection), configure

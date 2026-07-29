@@ -3,7 +3,7 @@
 
 Handles two types of contamination:
 1. Stub files: <10KB OR <30 lines (catches large-record stubs that slip past the size gate)
-2. Cross-project sessions (e.g., aido-N sessions in sergei/ dirs)
+2. Cross-project sessions (e.g., mylib-N sessions in myproject/ dirs)
 
 Files are archived to ~/.claude-session-archive/YYYY-MM-DD/, never deleted.
 Dry-run by default; pass --execute to actually move files.
@@ -24,7 +24,7 @@ STUB_LINE_THRESHOLD = 30  # files with fewer lines than this are stubs
 # Maps customTitle prefix patterns to expected staging subdir names.
 # Order matters: more specific patterns first (sw-N-suffix before sw-N).
 TITLE_PATTERNS: list[tuple[re.Pattern, callable]] = [
-    (re.compile(r"^sw-(\d+)", re.IGNORECASE), lambda m: f"sergei--worktrees-sw-{m.group(1)}"),
+    (re.compile(r"^sw-(\d+)", re.IGNORECASE), lambda m: f"myproject--worktrees-sw-{m.group(1)}"),
     (re.compile(r"^aido-(\d+)", re.IGNORECASE), lambda m: f"aido--worktrees-aido-{m.group(1)}"),
     (re.compile(r"^art-(\d+)", re.IGNORECASE), lambda m: f"artelier--worktrees-art-{m.group(1)}"),
     (re.compile(r"^aurion-(\d+)", re.IGNORECASE), lambda m: f"aurion--worktrees-aurion-{m.group(1)}"),
@@ -80,15 +80,15 @@ def get_custom_title_and_linecount(jsonl_path: Path) -> tuple[str | None, int]:
 def extract_project_subdir(dir_name: str, is_staging: bool) -> str:
     """Extract the project subdir name from a full directory name.
 
-    Local CC dirs use encoded paths like '-Users-sergeiwallace-projects-sergei'
-    while staging dirs use short names like 'sergei'.
+    Local CC dirs use encoded paths like '-Users-user-projects-myproject'
+    while staging dirs use short names like 'myproject'.
     Returns the short project name suitable for matching against expected staging dirs.
     """
     if is_staging:
         return dir_name
 
     # Local CC dir: strip the path prefix to get the project-relative part
-    # e.g., '-Users-sergeiwallace-projects-sergei--worktrees-sw-1' -> 'sergei--worktrees-sw-1'
+    # e.g., '-Users-user-projects-myproject--worktrees-session-1' -> 'myproject--worktrees-session-1'
     # The prefix pattern is '-{home_path}-projects-'
     # We find '-projects-' and take everything after it
     marker = "-projects-"

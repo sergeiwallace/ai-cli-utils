@@ -19,9 +19,12 @@ behavioral test, not a string-presence check — matching the convention in
 """
 
 import json
+import os
 import re
 import subprocess
+import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +32,19 @@ from ai_cli.session_script import get_engine_script
 
 MARKER_RELPATH = ".claude/.ai-cli-growthbook-toggle"
 SETTINGS_RELPATH = ".claude/settings.local.json"
+
+
+def _minimal_path_with_python3() -> str:
+    """A deliberately minimal PATH that still contains a real ``python3``.
+
+    A hardcoded ``/usr/bin:/bin:/sbin:/usr/sbin`` assumes a distro layout. On a
+    conda-based image ``python3`` lives in ``/opt/conda/bin`` and nothing is at
+    ``/usr/bin/python3``, so the template's ``python3 -c … 2>/dev/null || true`` silently
+    did nothing and the assertions failed while the code under test was fine. Derive the
+    directory from the running interpreter instead of guessing at it.
+    """
+    interpreter_dir = str(Path(sys.executable).parent)
+    return os.pathsep.join([interpreter_dir, "/usr/bin", "/bin", "/sbin", "/usr/sbin"])
 
 
 def _extract_toggle_block(script: str) -> str:
@@ -49,7 +65,7 @@ def _run_toggle_block(tmp_path, engine: str, block: str) -> subprocess.Completed
     return subprocess.run(
         ["bash", "-c", snippet],
         cwd=str(tmp_path),
-        env={"PATH": "/usr/bin:/bin:/sbin:/usr/sbin"},
+        env={"PATH": _minimal_path_with_python3()},
         capture_output=True,
         text=True,
         timeout=10,
@@ -58,7 +74,7 @@ def _run_toggle_block(tmp_path, engine: str, block: str) -> subprocess.Completed
 
 @pytest.fixture
 def toggle_block():
-    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="sergei")
+    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="myproject")
     return _extract_toggle_block(script)
 
 

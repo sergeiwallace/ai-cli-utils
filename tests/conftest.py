@@ -2,11 +2,13 @@ import io
 import os
 import shlex
 import subprocess
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 import ai_cli.config as _config_module
+import ai_cli.session as _session_module
 from ai_cli.git_repair import _GIT_TARGETING_VARS
 
 
@@ -137,6 +139,67 @@ def _strip_git_targeting_env_vars(monkeypatch):
     """
     for var in _GIT_TARGETING_VARS:
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_nats_connections(request, monkeypatch):
+    """Never let a test open a real NATS connection (AI-CLI-121 class).
+
+    ``post_handoff`` and the fleet event publishers are fire-and-forget: they build a
+    ``NATSClient`` and ``asyncio.run(...)`` a publish, wrapped in ``except Exception:
+    pass``.  That swallows a *failure* but cannot shorten a *hang*, so on any machine with
+    no NATS server six handoff tests blocked until the suite's timeout killed them —
+    exercising the network instead of the file-writing behaviour they assert.
+
+    The block is applied to ``nats.connect`` -- the actual network boundary -- rather than
+    to ``NATSClient.connect``. Overriding the latter would also neutralise the many tests
+    that legitimately drive ``connect()`` with their own ``nats.connect`` mock (retry
+    behaviour, JetStream handle setup); those tests patch this same name inside their own
+    ``with`` block, which nests inside this fixture and therefore still wins.
+
+    Tests that genuinely want a live server opt out with the ``real_nats`` marker.
+    """
+    if request.node.get_closest_marker("real_nats"):
+        yield
+        return
+
+    import nats
+
+    from ai_cli.messaging import NoServersError
+
+    async def _refuse(*args, **kwargs):
+        raise NoServersError("NATS connections are blocked in tests")
+
+    monkeypatch.setattr(nats, "connect", _refuse)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _projects_dir_contains_the_checkout(monkeypatch):
+    """Make ``projects_dir`` resolve to this checkout's own parent directory.
+
+    ``is_current_project_resolved()`` reads the real filesystem: it answers True
+    when cwd is physically under ``projects_dir``.  Session-launch tests that
+    patch ``get_project_prefix`` intend to bypass project resolution entirely,
+    but that later-added guard runs before the prefix is ever used, so they only
+    passed on a machine where the checkout happened to sit at
+    ``~/projects/<name>`` — the default. On any other layout (a work machine
+    where repos live on a mounted volume, CI checking out to ``/build``, a
+    plain ``git clone`` into ``~/src``) the guard short-circuits the launch with
+    "no project resolved" and 22 launch tests fail for a reason that has nothing
+    to do with what they assert.
+
+    Pointing ``projects_dir`` at the checkout's parent restores that implicit
+    assumption for every layout, rather than requiring each launch test to
+    defend itself — the same "fix it once at the process boundary" approach the
+    ``GIT_*`` scrub above takes. Tests that specifically exercise resolution
+    (both the True and False cases) patch ``_get_projects_dir`` or
+    ``is_current_project_resolved`` themselves, and those inner patches still
+    win.
+    """
+    checkout_parent = Path(__file__).resolve().parent.parent.parent
+    monkeypatch.setattr(_config_module, "_get_projects_dir", lambda: checkout_parent)
+    monkeypatch.setattr(_session_module, "_get_projects_dir", lambda: checkout_parent)
 
 
 @pytest.fixture(autouse=True)

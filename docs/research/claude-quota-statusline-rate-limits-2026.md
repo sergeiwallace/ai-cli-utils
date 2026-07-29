@@ -18,7 +18,7 @@ related_docs:
 
 **Tasks:** AI-CLI-98 (capture all per-model weekly quotas), AI-CLI-94 (first-class Fable tracking), AIH-120 (secondary weekly line)
 
-<!-- aido:region name="context" kind="immutable" -->
+<!-- doc:region name="context" kind="immutable" -->
 
 ## Context
 
@@ -33,9 +33,9 @@ slot depends on is gone from the TUI, replaced by a dedicated, frequently rate-l
 **Primary period:** 2026
 **Source weighting:** 2026 primary (CC 2.1.x release notes, live empirical capture on 2.1.207)
 
-<!-- /aido:region name="context" -->
+<!-- /doc:region name="context" -->
 
-<!-- aido:region name="body" kind="replaceable" -->
+<!-- doc:region name="body" kind="replaceable" -->
 
 ## Temporal Scope
 
@@ -148,9 +148,9 @@ the genuinely hard, brittle part — the all-models path (Option 1) has no such 
 [^1]: Anthropic. (2026). [Customize your status line — rate_limits fields](https://code.claude.com/docs/en/statusline). Claude Code Docs. Verified accessible (HTTP 200) 2026-07-13. (`rate_limits.five_hour|seven_day.used_percentage|resets_at`; "appears only for Claude.ai subscribers after the first API response; each window may be independently absent".)
 [^2]: Anthropic community. (2026). [Add Quota Information Access to Claude Code CLI (#13585, OPEN)](https://github.com/anthropics/claude-code/issues/13585). GitHub. Verified accessible 2026-07-13. (Confirms `rate_limits` statusline fix landed v2.1.80; official `claude quota --json` for headless still unshipped; community references the internal `/api/oauth/usage` endpoint. #44328 closed as duplicate of this.)
 
-<!-- /aido:region name="body" -->
+<!-- /doc:region name="body" -->
 
-<!-- aido:region name="appendix_research_prompt" kind="immutable" -->
+<!-- doc:region name="appendix_research_prompt" kind="immutable" -->
 
 ## Appendix: Research Prompt
 
@@ -167,9 +167,9 @@ a live statusLine-stdin capture on CC 2.1.207. This doc predates use of the aido
 appendix template for its authoring flow.
 ```
 
-<!-- /aido:region name="appendix_research_prompt" -->
+<!-- /doc:region name="appendix_research_prompt" -->
 
-<!-- aido:region name="appendix_provenance" kind="replaceable" -->
+<!-- doc:region name="appendix_provenance" kind="replaceable" -->
 
 ## Appendix: Provenance Ledger
 
@@ -181,13 +181,13 @@ JSON. Observed `rate_limits.seven_day.used_percentage=20`, `five_hour.used_perce
 in the same session. Also confirmed `claude -p "/usage"` on 2.1.207 emits insights-only
 text (no quota bars). No online source (first-party runtime observation).
 
-<!-- /aido:region name="appendix_provenance" -->
+<!-- /doc:region name="appendix_provenance" -->
 
-<!-- aido:region name="run_history" kind="append_only" -->
+<!-- doc:region name="run_history" kind="append_only" -->
 
 ## Run History
 
 2026-07-13 — Manual authoring (opus, session aih-2). Findings from inline research + live
 CC 2.1.207 capture. No aido run.
 
-<!-- /aido:region name="run_history" -->
+<!-- /doc:region name="run_history" -->

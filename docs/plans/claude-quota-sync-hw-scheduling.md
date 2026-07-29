@@ -221,12 +221,12 @@ to KV — Hetzner owns the data and Hetzner writes it.
 ## Task Breakdown
 
 > **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
-<!-- aido:ac-rules:mirror:begin -->
+<!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
 - At least one failure-path AC per public function changed.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
-<!-- aido:ac-rules:mirror:end -->
+<!-- doc:ac-rules:mirror:end -->
 
 <!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes each task from the doc alone
   (task-spec best-practices research R-1780610095; full standard: docs/procedures/task-authoring-standards.md):
@@ -420,7 +420,7 @@ and restart hw-clock and hw-worker-hetzner/mac to pick up new job definitions.
 
 **Deliverables:**
 - `ai update` run on both Hetzner and Mac (deploys T-00a/T-00c to ai-cli)
-- Sergei updated on both machines (deploys T-01/T-00b/T-02/T-03 to hw-scheduling)
+- `myproject` updated on both machines (deploys T-01/T-00b/T-02/T-03 to hw-scheduling)
 - `quota-subscriber` watcher added to Mac Circus config; circusd restarted
 - hw-clock restarted (picks up `claude_quota_scrape` + `claude_quota_sync`)
 - hw-worker-hetzner restarted (registers `claude_quota_scrape` + `gemini_cost_sync`)
@@ -550,5 +550,5 @@ and restart hw-clock and hw-worker-hetzner/mac to pick up new job definitions.
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-08 | Round 1 | Scope approved. Option C primary + Option A fallback (not A-only). Session % in DB, not statusline. Weekly all-models % only. Hetzner writes KV directly (no Mac round-trip). Real-time via persistent subscriber. Three prerequisite tasks added: T-00a (Mac subscriber), T-00b (Hetzner scrape schedule), T-00c (KV write). |
-| 2026-04-08 | Implementation | Batches 1+2 shipped. T-00a/T-00c in ai-cli-utils (6e626b3). T-01/T-00b/T-02/T-03/T-04 in sergei (38effc7). 23 new tests across both repos. |
+| 2026-04-08 | Implementation | Batches 1+2 shipped. T-00a/T-00c in ai-cli-utils (6e626b3). T-01/T-00b/T-02/T-03/T-04 in myproject (38effc7). 23 new tests across both repos. |
 | 2026-04-08 | Deploy (T-05) | All components live. quota-subscriber active under Mac Circus. hw-worker-mac running (launchd, NATS_URL fixed to localhost). hw-clock + hw-worker-hetzner restarted. claude_quota_scrape + claude_quota_sync + gemini_cost_sync all scheduled. Stale hw-worker-hetzner process (PID 2535635) is orphaned — clean up via `ai ps clean`. |

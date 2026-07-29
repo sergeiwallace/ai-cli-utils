@@ -272,13 +272,76 @@ def is_current_project_resolved() -> bool:
         return False
 
 
-def find_next_index(prefix: str) -> int:
+def find_next_index(prefix: str, use_tmux: bool = True) -> int:
+    """Return the lowest unused session index for ``prefix``.
+
+    With tmux, occupancy is authoritative: a live ``tmux has-session`` means the
+    slot is taken.  In bare mode there is no server to ask (and tmux may not be
+    installed at all), so fall back to the on-disk worktree directories, which
+    are the only durable record a bare session leaves behind.
+    """
+    if not use_tmux:
+        return _find_next_index_from_worktrees(prefix)
     i = 1
     while True:
         res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{i}"], capture_output=True)
         if res.returncode != 0:
             return i
         i += 1
+
+
+def _find_next_index_from_worktrees(prefix: str) -> int:
+    """Return the lowest index with no live bare session, using worktrees on disk.
+
+    ``prefix`` is a tmux-style session prefix (``c-myproject-``); worktrees are
+    named with the ai_name form (``myproject-1``), so the leading engine segment
+    is stripped before matching.  A worktree whose directory exists but whose
+    engine process is gone is a *reusable* slot, not an occupied one — otherwise
+    indexes would climb forever, since bare mode has no session-exit hook to
+    remove the worktree (the tmux path's EXIT trap does that).
+    """
+    ai_prefix = re.sub(r"^[cg](-r)?-", "", prefix)
+    try:
+        repo_root = detect_repo_root()
+    except RuntimeError:
+        repo_root = None
+    if not repo_root:
+        return 1
+    wt_base = repo_root / WORKTREE_DIR
+    i = 1
+    while True:
+        candidate = wt_base / f"{ai_prefix}{i}"
+        if not candidate.exists() or not _worktree_has_live_session(candidate):
+            return i
+        i += 1
+
+
+def _worktree_has_live_session(worktree_dir: Path) -> bool:
+    """True when some engine process is currently running inside ``worktree_dir``.
+
+    Used to decide whether a leftover worktree directory represents an active
+    bare session or a reusable slot.  Falls back to treating the slot as free
+    when process inspection is unavailable, so a launch is never blocked
+    outright by a missing/denied psutil probe.
+    """
+    try:
+        import psutil
+    except Exception:
+        return False
+
+    target = str(worktree_dir)
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            if "claude" not in name and "gemini" not in name and "node" not in name:
+                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                if "claude" not in cmdline and "gemini" not in cmdline:
+                    continue
+            if proc.cwd() == target:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+            continue
+    return False
 
 
 def find_recent_session(prefix: str) -> str:
@@ -421,22 +484,30 @@ def resolve_session(prefix: str, name: str) -> str:
 
 
 def _resolve_is_remote(is_remote_flag: bool) -> bool:
-    """Return True when --is-remote was passed OR the process is running on a non-Mac host.
+    """Return True only for a session launched *from another machine* over SSH.
 
-    The --is-remote flag is injected by the local machine when SSHing to a remote
-    host to launch a session.  When ``ai c`` / ``ai g`` is run *directly* on a
-    remote host (e.g. AI_HOST=hetzner), the flag is absent but the session
-    should still receive the ``c-r-`` / ``g-r-`` prefix so quota pane discovery
-    and other host-aware logic work correctly.
+    ``--is-remote`` is injected into the remote command line by the local machine
+    when it SSHes out to launch a session, and is the only trustworthy signal:
+    it means "someone else drove this launch", which is what the ``c-r-`` /
+    ``g-r-`` prefix and the chdir-to-configured-project behaviour exist for.
+
+    This deliberately does **not** infer remoteness from ``AI_HOST``.  That
+    heuristic ("any host not named mac is remote") treated every ordinary local
+    launch on a Linux or Windows workstation as remote, which sent the launch
+    down the ``is_remote`` branch and created the worktree inside the configured
+    *main* project instead of the repo the user was actually in.  A host having a
+    name says nothing about who initiated the session.
     """
-    if is_remote_flag:
-        return True
-    host = os.environ.get("AI_HOST", "")
-    return bool(host) and host not in ("mac",)
+    return is_remote_flag
 
 
 def build_session_name(
-    engine_type: str, project_prefix: str, name: str, config: dict | None = None, is_remote: bool = False
+    engine_type: str,
+    project_prefix: str,
+    name: str,
+    config: dict | None = None,
+    is_remote: bool = False,
+    use_tmux: bool = True,
 ) -> tuple[str, str]:
     """Build tmux session name and ai_name.
 
@@ -444,6 +515,11 @@ def build_session_name(
       e.g. c-myproject-1, c-r-myproject-1, g-myproject-2
     ai_name (used for --name, worktrees, session map): {project}-{index}
       e.g. myproject-1, myproject-2
+
+    ``use_tmux=False`` (bare mode) switches auto-index discovery from live tmux
+    sessions to on-disk worktrees.  The returned session name is still built in
+    the same format so it remains a stable key for the session map and logs even
+    though no tmux session will exist.
     """
     engine_short = "c" if engine_type == "c" else "g"
     remote_seg = "-r" if is_remote else ""
@@ -471,11 +547,11 @@ def build_session_name(
     if clean_name.isdigit():
         return f"{tmux_base}{clean_name}", f"{ai_base}{clean_name}"
     if not clean_name:
-        idx = find_next_index(tmux_base)
+        idx = find_next_index(tmux_base, use_tmux=use_tmux)
         return f"{tmux_base}{idx}", f"{ai_base}{idx}"
     tmux_named = f"{tmux_base}{clean_name}-"
     ai_named = f"{ai_base}{clean_name}-"
-    idx = find_next_index(tmux_named)
+    idx = find_next_index(tmux_named, use_tmux=use_tmux)
     return f"{tmux_named}{idx}", f"{ai_named}{idx}"
 
 
@@ -501,6 +577,45 @@ def detect_repo_root():
             "This would nest worktrees — aborting. Check git rev-parse --git-common-dir output."
         )
     return root
+
+
+def _resolve_worktree_base(repo_root: Path) -> str:
+    """Return the commit a NEW session worktree branch must start at.
+
+    Always ``origin/main``. ``git worktree add -b <branch> <dir>`` with no
+    start-point branches from whatever the main working tree currently has checked
+    out, which is only ``main`` by coincidence. In a repo parked on a long-running
+    workspace branch the new branch silently inherits that branch's commits while
+    ``--set-upstream-to=origin/main`` still claims it tracks ``main`` — so it is not
+    PR-clean (promoting it opens a pull request full of unrelated commits) and its
+    first ``git pull --rebase`` tries to replay those commits onto ``main``.
+
+    The remote-tracking ref is used as-is rather than fetched here: the launch
+    already runs ``git pull --rebase`` inside the new worktree, which is what makes
+    it current. Resolving the base must not itself depend on the network, or an
+    unreachable remote would stop the launch outright instead of merely leaving the
+    worktree a little behind.
+
+    Raises ``RuntimeError`` when ``origin/main`` cannot be resolved. There is
+    deliberately no fallback to ``HEAD``: that silent fallback is the defect, and an
+    unanchored worktree branch fails later and more confusingly, at push or PR time
+    (the same reasoning as AI-CLI-128's upstream hard-fail, which would reject this
+    repo moments later anyway).
+    """
+    res = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+    )
+    if res.returncode != 0 or not (res.stdout or "").strip():
+        raise RuntimeError(
+            f"create_worktree: cannot resolve origin/main in {repo_root} — refusing to create a "
+            f"session worktree based on the current HEAD instead. A worktree branch must start at "
+            f"origin/main so it stays PR-clean and its sync rebases onto main. Fix the repo first: "
+            f"ensure it has an `origin` remote with a `main` branch and run `git fetch origin main`."
+        )
+    return "refs/remotes/origin/main"
 
 
 def create_worktree(ai_name: str) -> Path | None:
@@ -533,26 +648,56 @@ def create_worktree(ai_name: str) -> Path | None:
         shutil.rmtree(wt_dir, ignore_errors=True)
 
     branch = f"wt-{ai_name}"
+    # Resolve the base BEFORE creating anything, so an unresolvable one leaves no
+    # half-made worktree directory behind.
+    base = _resolve_worktree_base(repo_root)
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    # Try creating new branch, fallback to existing
-    res = subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", branch], capture_output=True, env=_git_env())
+    # Try creating the branch at the resolved base; fall back to checking out an
+    # existing branch of that name. The fallback deliberately passes no start-point:
+    # a `wt-<name>` that already exists carries a previous session's commits, and
+    # forcing it back to origin/main would discard them.
+    res = subprocess.run(
+        ["git", "worktree", "add", str(wt_dir), "-b", branch, base], capture_output=True, env=_git_env()
+    )
     if res.returncode != 0:
         subprocess.run(["git", "worktree", "add", str(wt_dir), branch], capture_output=True, env=_git_env())
-
-    # Track origin/main so git push ships to main, git pull --rebase syncs from main
-    subprocess.run(
-        ["git", "branch", "--set-upstream-to=origin/main", branch],
-        capture_output=True,
-        cwd=repo_root,
-        env=_git_env(),
-    )
 
     # Repair again after the add — the backstop for whatever just ran (defense
     # in depth alongside the env scrub above).
     repair_bare_worktree_config(repo_root)
 
     if wt_dir.exists():
+        # Track origin/main so git push ships to main, git pull --rebase syncs
+        # from main. This must not fail silently (AI-CLI-128): a worktree
+        # branch left without an upstream is one `git push` away from git
+        # suggesting `--set-upstream origin wt-X`, which publishes a
+        # same-named remote branch instead of shipping to main — the exact
+        # drift that stranded ai-ide-mobile/mobile-1 46 commits behind main
+        # for months. Retry once, then raise loudly rather than returning a
+        # worktree that looks fine but is one push away from that state.
+        upstream_res = subprocess.run(
+            ["git", "branch", "--set-upstream-to=origin/main", branch],
+            capture_output=True,
+            cwd=repo_root,
+            env=_git_env(),
+        )
+        if upstream_res.returncode != 0:
+            upstream_res = subprocess.run(
+                ["git", "branch", "--set-upstream-to=origin/main", branch],
+                capture_output=True,
+                cwd=repo_root,
+                env=_git_env(),
+            )
+        if upstream_res.returncode != 0:
+            stderr = upstream_res.stderr.decode(errors="replace").strip()
+            raise RuntimeError(
+                f"create_worktree: failed to set upstream=origin/main on branch "
+                f"{branch!r} after retry (AI-CLI-128 — a worktree branch with no "
+                f"upstream is one `git push` away from publishing a same-named "
+                f"remote branch). git stderr: {stderr}"
+            )
+
         # Symlink critical environment files
         for item in [".venv", ".claude", ".gemini", ".direnv"]:
             src = repo_root / item

@@ -56,7 +56,7 @@ Four problems solved together:
 | `propagate` | **Delete** | No remaining use case. Projects-wide config = one symlinked file. Copier handles template-managed files. `/persist` handles per-project CLAUDE.md. Nothing left for propagate to do. |
 | `direct` | **Fix model names** | References `gemini-3.0-flash`/`gemini-3.0-pro` — outdated. Should be `gemini-3-flash-preview`/`gemini-3.1-pro-preview`. |
 | `review` | **Fix model name** | `gemini-3-pro-preview` → `gemini-3.1-pro-preview` in fallback chain. |
-| `next` | **Fix scope** | Template version calls `get_cross_project_priorities` (83–255KB, scopeless). Default should be local roadmap read (per per-project override in ai-cli-utils). Sergei can override with cross-project query in its own SKILL.md. |
+| `next` | **Fix scope** | Template version calls `get_cross_project_priorities` (83–255KB, scopeless). Default should be local roadmap read (per per-project override in ai-cli-utils). `myproject` can override with cross-project query in its own SKILL.md. |
 | `persist` | **Fix line limits** | States "CLAUDE.md ~400-line limit" — should be "projects-wide ~250 lines; project-specific ~100 lines". |
 | `spec`, `save-state`, `status`, `honest`, `audit-docs`, `handoff`, `spend` | **No change** | All current. |
 
@@ -71,7 +71,7 @@ Four problems solved together:
 1. **Delete `propagate/`** — remove the entire skill directory.
 2. **`direct/SKILL.md`** — replace `gemini-3.0-flash` → `gemini-3-flash-preview`, `gemini-3.0-pro` → `gemini-3.1-pro-preview`.
 3. **`review/SKILL.md`** — replace `gemini-3-pro-preview` → `gemini-3.1-pro-preview` in both fallback chains.
-4. **`next/SKILL.md.jinja`** (rename from `SKILL.md`) — default content is local roadmap read. Add copier variable `use_cross_project_next` (bool, default `false`) to `copier.yaml`. When `true`, render the cross-project SQLite query variant instead. Sergei's `.copier-answers.yml` sets `use_cross_project_next: true` — copier re-renders correctly on every `ai copier-update` run with no manual step required.
+4. **`next/SKILL.md.jinja`** (rename from `SKILL.md`) — default content is local roadmap read. Add copier variable `use_cross_project_next` (bool, default `false`) to `copier.yaml`. When `true`, render the cross-project SQLite query variant instead. the maintainer's `.copier-answers.yml` sets `use_cross_project_next: true` — copier re-renders correctly on every `ai copier-update` run with no manual step required.
 5. **`persist/SKILL.md`** — update line limits to: "projects-wide ~250 lines; project-specific ~100 lines (~350 combined)". Line limits are a quality/attention heuristic, not a token budget — keep them tight to preserve instruction recall.
 
 Run `cd ~/projects/project-template && uv run --extra test pytest tests/ -q`. Commit and push.
@@ -195,7 +195,7 @@ Commit and push `~/projects/CLAUDE.md` directly (it's the projects-wide file, no
 - [x] Auto-restart does not fire when user has text in the prompt box
 - [x] Projects-wide config change triggers all sessions; project-specific triggers only that project's sessions
 - [x] Copier run across all 14 projects; no conflict markers remain
-- [x] Sergei gets `next` SKILL.md with cross-project query (via `use_cross_project_next: true` in `.copier-answers.yml`)
+- [x] `myproject` gets `next` SKILL.md with cross-project query (via `use_cross_project_next: true` in `.copier-answers.yml`)
 - [x] Drift prevention rule added to `~/projects/CLAUDE.md`
 - [x] All tests pass (`ruff check`, `ruff format --check`, `pytest`)
 

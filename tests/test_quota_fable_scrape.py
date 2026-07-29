@@ -86,33 +86,31 @@ def test_backoff_caps_at_max_misses(tmp_path, monkeypatch):
     assert json.loads(state.read_text())["misses"] == q._FABLE_BACKOFF_MAX_MISSES
 
 
-# --- integration: decoupled trigger + last-good survival ---
+# --- integration: the statusline no longer drives the Fable scrape or its rendering ---
+#
+# The ccF segment was removed from quota_statusline_part() entirely (the upstream /usage line
+# it depended on is gone for good; see docs/bugs/fable-statusline-unavailable.md). The two
+# tests this replaces asserted that the render path fires (or skips) a Fable-specific scrape
+# and displays a last-good Fable value — both premises are now intentionally false, not a
+# regression. _maybe_trigger_fable_scrape() and _get_last_fable_snapshot() themselves are
+# untouched (tested directly above/below); only their use from the render path is gone.
 
 
-def test_fable_scrape_fires_despite_fresh_all_models(monkeypatch, capsys):
-    """The key T-06 fix: a fresh all-models snapshot (from env) must NOT suppress the Fable
-    scrape — otherwise Fable goes stale forever."""
+def test_statusline_never_triggers_fable_scrape_even_with_no_fable_data(monkeypatch, capsys):
+    """quota_statusline_part() no longer calls _maybe_trigger_fable_scrape at all -- confirms
+    the removal is complete, not an oversight that happens to not fire in this particular case."""
     monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_PCT", "20")
     monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_RESET", str(int(datetime.now(timezone.utc).timestamp()) + 86400))
     qdb.record_quota_snapshot(usage_percent=20.0)  # fresh all-models, NO Fable
-    with patch("ai_cli.quota._launch_background_scrape") as scrape:
+    with patch("ai_cli.quota._maybe_trigger_fable_scrape") as fable_scrape:
         quota_statusline_part()
     capsys.readouterr()
-    scrape.assert_called()  # Fable trigger fired even though all-models is fresh
+    fable_scrape.assert_not_called()
 
 
-def test_fable_scrape_not_fired_when_fable_fresh(monkeypatch, capsys):
-    monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_PCT", "20")
-    qdb.record_quota_snapshot(usage_percent=20.0, weekly_sonnet_pct=5.0, weekly_model_name="Fable")
-    with patch("ai_cli.quota._launch_background_scrape") as scrape:
-        quota_statusline_part()
-    capsys.readouterr()
-    scrape.assert_not_called()  # Fable is fresh → no scrape
-
-
-def test_last_good_fable_survives_past_limit_3(monkeypatch, capsys):
-    """A Fable value recorded earlier must still render after later all-models-only snapshots
-    push it past the 3 rows the render reads (unbounded _get_last_fable_snapshot)."""
+def test_last_good_fable_survives_lookup_but_render_never_shows_it(monkeypatch, capsys):
+    """_get_last_fable_snapshot's unbounded past-limit-3 lookup still works (untouched, real
+    coverage), but the statusline render must never surface that value, even when it exists."""
     week_start = qdb._get_current_week_start()
     conn = sqlite3.connect(str(qdb._get_quota_db_path()))
     qdb._init_db(conn)
@@ -138,4 +136,8 @@ def test_last_good_fable_survives_past_limit_3(monkeypatch, capsys):
     with patch("ai_cli.quota._launch_background_scrape"):
         quota_statusline_part()
     out = capsys.readouterr().out
-    assert "F" in out and "7%" in out  # Fable value still shown despite being row 5
+    # Check the Fable label specifically, not a raw "7%" substring -- the real (unmocked)
+    # ccWk pace-delta is computed from wall-clock time and can coincidentally contain "7%"
+    # on an unrelated run, which flaked this assertion under randomized test ordering.
+    assert "ccF" not in out
+    assert "ccS" not in out

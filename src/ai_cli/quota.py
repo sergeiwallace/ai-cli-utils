@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -284,6 +285,65 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
     )
 
 
+# --- CC auto-update staging reaper (AI-CLI-131) ---
+
+#: Entries CC creates under its staging dir, named "<major>.<minor>.<patch>.<pid>.<epoch_ms>".
+#: Matched strictly so the reaper can only ever delete things it positively recognises.
+_CC_STAGING_ENTRY_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+\.\d+$")
+
+#: An in-flight CC update download completes in minutes at most, so an entry untouched for
+#: an hour is definitively dead and safe to remove even if some other CC session created it.
+CC_STAGING_MAX_AGE_S = 3600
+
+
+def _cc_staging_dir() -> Path:
+    """Directory CC downloads pending updates into before promoting them."""
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return base / "claude" / "staging"
+
+
+def reap_cc_update_staging(max_age_s: int = CC_STAGING_MAX_AGE_S) -> int:
+    """Delete CC update-staging entries left behind by a killed scrape session.
+
+    The bound on AI-CLI-131: the scrape kills its CC session while CC may still be
+    downloading an update, orphaning a partial binary that nothing else reaps. Running this
+    on every scrape caps the directory at roughly one ``max_age_s`` window of debris instead
+    of letting it grow without limit.
+
+    Deliberately conservative — only well-formed entry directories older than ``max_age_s``
+    are removed, so a download in flight for another CC session is never touched. Returns
+    the number of entries removed; never raises, since bounding disk is not worth failing a
+    scrape over.
+    """
+    staging = _cc_staging_dir()
+    cutoff = time.time() - max_age_s
+    removed = 0
+    try:
+        entries = list(staging.iterdir())
+    except OSError:
+        return 0
+
+    for entry in entries:
+        try:
+            if not _CC_STAGING_ENTRY_RE.match(entry.name) or not entry.is_dir():
+                continue
+            if entry.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(entry)
+            removed += 1
+        except OSError:
+            continue
+
+    if removed:
+        # Surfaced, not silent: the */10 cron redirects to ~/.local/log/quota-scrape.log, so
+        # a recurring leak shows up there rather than only as a full disk.
+        print(
+            f"ai quota: reaped {removed} orphaned CC update-staging entries from {staging}",
+            file=sys.stderr,
+        )
+    return removed
+
+
 def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     """Scrape /usage from a hidden tmux session running a bare CC session.
 
@@ -327,9 +387,25 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             timeout=2,
         )
 
-        # Start CC with no-op permissions (read-only scraping, never runs tools)
+        # Start CC with no-op permissions (read-only scraping, never runs tools).
+        #
+        # DISABLE_AUTOUPDATER=1 (AI-CLI-131): CC starts a background download of any newer
+        # version into ~/.cache/claude/staging/<ver>.<pid>.<ms>/ on startup. This session is
+        # killed unconditionally ~15s later by the finally block below, which truncates that
+        # download mid-write and orphans the partial file — nothing ever reaps it. Under the
+        # */10 cron that is ~144 partials/day (~8 GB/day; the Hetzner box reached 23 GB and
+        # 0 bytes free). An ephemeral read-only scrape has no business updating anything, so
+        # the download must never start. Shell-prefix form rather than `new-session -e` so it
+        # does not depend on tmux >= 3.2.
         subprocess.run(
-            ["tmux", "send-keys", "-t", target, "claude --dangerously-skip-permissions", "Enter"],
+            [
+                "tmux",
+                "send-keys",
+                "-t",
+                target,
+                "DISABLE_AUTOUPDATER=1 claude --dangerously-skip-permissions",
+                "Enter",
+            ],
             capture_output=True,
             timeout=2,
         )
@@ -432,6 +508,9 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             capture_output=True,
             timeout=3,
         )
+        # Second line of defence behind DISABLE_AUTOUPDATER=1 above: sweep anything a
+        # previous (or otherwise-configured) scrape orphaned, so staging stays bounded.
+        reap_cc_update_staging()
 
 
 def _get_usage_via_print_mode() -> QuotaSnapshot | None:
@@ -1313,7 +1392,7 @@ def quota_statusline_part() -> int:
         conn.row_factory = sqlite3.Row
         _init_db(conn)
         rows = conn.execute(
-            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct, weekly_model_name FROM quota_snapshots"
+            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
             (week_start_str,),
         ).fetchall()
@@ -1350,7 +1429,7 @@ def quota_statusline_part() -> int:
                         conn2.row_factory = sqlite3.Row
                         _init_db(conn2)
                         rows = conn2.execute(
-                            "SELECT usage_percent, snapshotted_at, weekly_sonnet_pct, weekly_model_name FROM quota_snapshots"
+                            "SELECT usage_percent, snapshotted_at FROM quota_snapshots"
                             " WHERE week_start = ? ORDER BY snapshotted_at DESC LIMIT 3",
                             (week_start_str,),
                         ).fetchall()
@@ -1367,36 +1446,13 @@ def quota_statusline_part() -> int:
             return 0
 
         usage_pct = rows[0]["usage_percent"]
-        # Last-good Fable (secondary per-model cap): the most recent non-null Fable snapshot this
-        # week, queried UNBOUNDED (AIH-164 T-06) so it survives even after T-02's fresh all-models
-        # env snapshots push it past the 3 rows read above (AI-CLI-83: a rate-limited scrape yields
-        # None and must not mask valid older data). model_name comes from the SAME row.
-        sonnet_pct, model_name, fable_ts = _get_last_fable_snapshot(week_start_str)
-        # Scrape scheduling (AIH-164 T-06): when all-models comes from the official rate_limits
-        # stdin (env vars present), the scrape's only job is refreshing the Fable cap — trigger it
-        # on a Fable-specific cadence with rate-limit backoff, NOT the (now always-fresh) all-models
-        # snapshot age. Without env vars (enterprise/no Pro-Max) the scrape still refreshes
-        # all-models, so keep the legacy snapshot-age trigger.
-        if os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT"):
-            _maybe_trigger_fable_scrape(now, fable_ts)
-        else:
+        # Without the official rate_limits input, retain the legacy all-models refresh cadence.
+        if not os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT"):
             _maybe_trigger_background_scrape(rows[0]["snapshotted_at"])
         snapshot_age_hours = (
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600
         stale = snapshot_age_hours > 2.0  # scrape has been failing for >2h
-        # Fable-specific staleness (AIH-164 T-06): the Fable cap comes from the rate-limited TUI
-        # scrape, so its last-good value can be much older than the (stdin-fresh) all-models line.
-        # Mark the secondary slot stale when its own source snapshot is > 2h old.
-        fable_stale = False
-        if fable_ts is not None:
-            try:
-                fable_stale = (
-                    now - datetime.fromisoformat(fable_ts.replace("Z", "+00:00"))
-                ).total_seconds() / 3600 > 2.0
-            except Exception:
-                fable_stale = False
-
         ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         elapsed_secs = (now - ws_dt).total_seconds()
         week_elapsed_pct = min(elapsed_secs / (7 * 24 * 3600) * 100.0, 100.0)
@@ -1424,51 +1480,9 @@ def quota_statusline_part() -> int:
         # short, so the width branch is gone and the env var is no longer read here.
         # Anthropic orange #D97757, 24-bit truecolor — verified via live web search against
         # Anthropic's actual brand-color page (2026-07-19, explicit request), not guessed
-        # from memory. Both "ccWk" and "ccF" are Claude-branded, so both use it (were
-        # BOLD_CYAN/BOLD_MAG — arbitrary ANSI colors with no brand meaning).
+        # from memory.
         BOLD_CYAN = "\033[1;38;2;217;119;87m"
-        BOLD_MAG = "\033[1;38;2;217;119;87m"
         week_label = "ccWk"
-        # Label the secondary line with the FIRST LETTER of its actual model name (AIH-120:
-        # was "Sonnet", now "Fable"). Single-letter keeps the statusline compact ("F" for
-        # Fable, "S" for Sonnet).
-        if model_name:
-            son_label = "cc" + model_name.strip()[:1].upper()  # "Fable"->"ccF", "Sonnet only"->"ccS"
-        else:
-            son_label = "ccS"
-
-        # Sonnet/Fable part. When absent, show the dim placeholder — the Fable scrape is scheduled
-        # by _maybe_trigger_fable_scrape above (rate-limit backoff-aware); do NOT fire an
-        # unconditional scrape here (it would hammer the rate-limited breakdown every render).
-        # No 🤖 glyph (dropped 2026-07-19, AIH-274 compaction pass — the label letter already
-        # marks it as the per-model line).
-        if sonnet_pct is None:
-            sonnet_part = f"{BOLD_MAG}{son_label}{RESET} {DIM}-% →-%{RESET}"
-        else:
-            if sonnet_pct < 50:
-                s_color = GREEN
-            elif sonnet_pct < 75:
-                s_color = YELLOW
-            else:
-                s_color = RED
-            sonnet_delta = sonnet_pct - week_elapsed_pct
-            # Pace status is conveyed by color + arrow direction alone (2026-07-19, AIH-274
-            # compaction pass) — no ✅/⚠️/🚨 icon. GREEN = ahead/on track, YELLOW = running
-            # hot, RED = significantly over pace.
-            if sonnet_delta > 25:
-                s_delta_color = RED
-            elif sonnet_delta > 10:
-                s_delta_color = YELLOW
-            else:
-                s_delta_color = GREEN
-            # ⏱ when the Fable value's own source snapshot is stale (>2h) — the rate-limited
-            # breakdown hasn't refreshed, so the shown last-good value is aging (AIH-164 T-06).
-            # This is a real signal (not decorative), so it stays even after the icon cleanup.
-            _fable_stale_suffix = " \033[2m⏱\033[0m" if fable_stale else ""
-            sonnet_part = (
-                f"{BOLD_MAG}{son_label}{RESET} {s_color}{sonnet_pct:.0f}%{RESET}"
-                f" {s_delta_color}→{abs(sonnet_delta):.0f}%{RESET}{_fable_stale_suffix}"
-            )
 
         # Arrow: acceleration direction (requires \u22653 snapshots)
         arrow_char = "\u2192"  # → steady (default / insufficient data)
@@ -1497,8 +1511,7 @@ def quota_statusline_part() -> int:
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
-                f" | {sonnet_part}"
-            )  # ccWk N% →X% 🌱 [⏱] | ccF M% →Y%
+            )  # ccWk N% →X% 🌱 [⏱]
         else:
             # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
             if delta <= 10:
@@ -1510,8 +1523,7 @@ def quota_statusline_part() -> int:
             print(
                 f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
                 f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
-                f" | {sonnet_part}"
-            )  # ccWk N% →X% [⏱] | ccF M% →Y%
+            )  # ccWk N% →X% [⏱]
     except Exception:
         pass
     return 0

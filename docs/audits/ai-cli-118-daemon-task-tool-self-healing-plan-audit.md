@@ -18,7 +18,7 @@ template_version: "audit-1.0.0"
 
 **Target commit:** `8bf0857d0ddb5f79ea27411bc03aad4fb8750d95`
 
-<!-- aido:region name="scope" kind="replaceable" -->
+<!-- doc:region name="scope" kind="replaceable" -->
 
 ## Scope
 
@@ -61,9 +61,9 @@ also independently corrected the upstream research doc
 (`claude-code-daemon-restart-task-tool-disconnect.md` §5), which had made the same wrong
 "restart via `ai c N`" claim DV-4 caught — see that doc's commit `e3823ac`.
 
-<!-- /aido:region name="scope" -->
+<!-- /doc:region name="scope" -->
 
-<!-- aido:region name="round_1_findings" kind="replaceable" -->
+<!-- doc:region name="round_1_findings" kind="replaceable" -->
 
 ## Round 1 — Main Audit
 
@@ -134,7 +134,7 @@ Sixteen findings reproduced: 2 CRITICAL, 13 MAJOR, and 1 MINOR. No inline change
 | F-1 | FAIL — MAJOR | Dedup state has no atomic claim, pending/sent state, retry policy, or corrupt-state behavior. The cited marker precedent is a non-atomic shell `touch`, unsuitable for multiple daemon/CLI writers. |
 | F-2 | FAIL — MAJOR | Three clocks/formats are compared: daemon ISO-UTC, transcript ISO-UTC, and session epoch milliseconds. No AC defines normalization, equality boundaries, clock skew, or invalid/naive timestamp behavior. |
 | F-3 | FAIL — MAJOR | The research explicitly leaves non-macOS applicability unknown. Missing daemon artifacts currently degrade to "all clear," so unsupported hosts would silently report health rather than "unsupported/unobservable." |
-| F-4 | FAIL — MAJOR | The target doc contains internal roadmap/task-ID conventions and a `Chosen (Sergei)` personal-name decision column, in a repo that publishes to PyPI (AI-CLI-100). Whether ai-cli-utils' own `docs/` are "outward-facing" in the sense the fleet's naming-hygiene rule means is itself unresolved — flagged as AD-4 rather than unilaterally scrubbed, since every other roadmap entry in this repo already uses the same convention. |
+| F-4 | FAIL — MAJOR | The target doc contains internal roadmap/task-ID conventions and a `Chosen (Maintainer)` personal-name decision column, in a repo that publishes to PyPI (AI-CLI-100). Whether ai-cli-utils' own `docs/` are "outward-facing" in the sense the fleet's naming-hygiene rule means is itself unresolved — flagged as AD-4 rather than unilaterally scrubbed, since every other roadmap entry in this repo already uses the same convention. |
 
 #### DV-1: D-4 is an activity heuristic, not a disconnect detector — `CRITICAL` / `P0`
 
@@ -192,7 +192,7 @@ below; summarized in the tables above.)*
 |---|---|---|
 | IC-1 | FIXED (plan revised) | Overview certainty language softened to `[INFERENCE]`-qualified (matches research doc); research doc's DV-4-adjacent claim already corrected by Claude (`e3823ac`). |
 | IC-2 | RESOLVED via AD-3 | Scope narrowed to library + on-demand CLI; sweep deferred (plan D-1 revised). |
-| JA-1 | FIXED (plan revised) | Decision Summary `Chosen (Sergei)`/`Diverged?` reset to `— (pending)`; Status → "Recommended (AI) — awaiting review"; column-semantics note added per the framework's own definition. |
+| JA-1 | FIXED (plan revised) | Decision Summary `Chosen (Maintainer)`/`Diverged?` reset to `— (pending)`; Status → "Recommended (AI) — awaiting review"; column-semantics note added per the framework's own definition. |
 | JA-2 | FIXED (plan revised) | Added `-j/--json`, `-n/--name` short forms + an explicit JSON-array object schema in T-02's CLI contract. |
 | JA-3 | FIXED (plan revised) | Expanded ACs: ID-correlated tool_use/tool_result, numeric-`startedAt`, `kind` filtering + `procStart` PID-reuse defense, duplicate names, JSON schema, `NotificationResult` combinations (deferred-sweep spec), UTC normalization; failure-path ACs per public function. |
 | JA-4 | FIXED (plan revised) | ACs moved inline per task; standalone "Acceptance Criteria" section removed; ToC now includes `Feedback Rounds` + every real heading. |
@@ -348,7 +348,7 @@ deferred).
 as sensitive and declined to reproduce exact private values, correctly, but the underlying
 question needs an explicit decision, not a silent scrub). `ai-cli-utils` publishes to PyPI
 (`AI-CLI-100`), and this plan doc (like the rest of the repo's `docs/roadmap/master-roadmap.md`)
-uses internal task IDs (`AI-CLI-118`, `AIH-*`) and the decision-framework's own `Chosen (Sergei)`
+uses internal task IDs (`AI-CLI-118`, `AIH-*`) and the decision-framework's own `Chosen (Maintainer)`
 personal-name column convention throughout.
 
 #### (a) No change — this is normal internal-repo documentation, not outward-facing content
@@ -375,10 +375,10 @@ rather than self-resolving since it touches a fleet-wide convention, not just th
 change.** Confidence: **high.** Criterion: **criterion 2 (consistency with the established repo-wide
 convention)** — trivial, reversible, contained (one-liner resolution, scorer skipped per the
 framework). Every other doc in this repo uses `AI-CLI-N` IDs and the decision-framework's own
-`Chosen (Sergei)` column; the projects-wide naming-hygiene rule targets outward-facing *writing*
+`Chosen (Maintainer)` column; the projects-wide naming-hygiene rule targets outward-facing *writing*
 (PRs, posts, emails), not a package's internal `docs/` planning tree. Changing one doc without a
 repo-wide policy would be inconsistent and would lose the AIH-148 divergence-tracking value the column
-exists for. No plan change required. (If Sergei wants a repo-wide scrub policy, that is a separate
+exists for. No plan change required. (If the maintainer wants a repo-wide scrub policy, that is a separate
 fleet decision, not an AI-CLI-118 blocker.)
 
 ## Outstanding Issues to Fix
@@ -559,14 +559,14 @@ regardless (implementation cannot start until then).
 
 Full verbatim Codex Round 1 output (all finding detail sections, the complete verification matrix
 with commands+expected+actual, Files Read, and Commands Run) preserved at:
-`/private/tmp/claude-501/-Users-sergeiwallace-projects-sergei--worktrees-sw-1/79e30993-e987-48ce-bd6b-342cc23032a4/scratchpad/ai-cli-118-round1-output.txt`
+`/private/tmp/claude-501/-Users-user-projects-myproject--worktrees-sw-1/79e30993-e987-48ce-bd6b-342cc23032a4/scratchpad/ai-cli-118-round1-output.txt`
 (session-scratch path, not repo-tracked — the summarized tables/sections above capture every
 finding's core evidence and recommendation; consult the raw file for the full quoted verification
 matrix output and the complete Appendix: Files Read / Appendix: Commands Run listings if needed).
 
-<!-- /aido:region name="round_1_findings" -->
+<!-- /doc:region name="round_1_findings" -->
 
-<!-- aido:region name="audit_log" kind="append_only" -->
+<!-- doc:region name="audit_log" kind="append_only" -->
 
 ## Audit Log
 
@@ -575,4 +575,4 @@ matrix output and the complete Appendix: Files Read / Appendix: Commands Run lis
 | 2026-07-22 | Round 1 | Codex `cx review --effort high`, read-only. 16 findings (2 CRITICAL, 13 MAJOR, 1 MINOR), 4 AD-N decisions (AD-4 added by Claude during incorporation). Verdict: not ready for implementation. Claude independently re-verified DV-4 against `main.py:1591` (confirmed) and corrected the upstream research doc's workaround claim (`ai-harness` `e3823ac`). |
 | 2026-07-22 | Round 1 incorporation | AD-1..AD-4 resolved (AI recommendations via the AIH-139 decision framework; awaiting human ratification). AD-1 → reason-coded confidence model; AD-2 → truthful exit-and-relaunch + defer confirmed restart command; AD-3 → narrow to library + CLI, defer sweep to a dedicated watcher; AD-4 → no doc-hygiene change. All 16 findings resolved or captured in the plan's Deferred section (sweep DV-3/F-1/F-2; confirmed restart command). Every DV-N re-verified directly against source (`main.py`, `notifications.py`, `quota.py`, `config.py`, `cc_usage.py`, a real `sessions/*.json`) before trusting the audit's quotes. |
 
-<!-- /aido:region name="audit_log" -->
+<!-- /doc:region name="audit_log" -->

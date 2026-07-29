@@ -3,12 +3,12 @@ title: "CC Memory & History Sync Phase 2 — Bidirectional `ai sync` CLI"
 category: infrastructure
 tags: [cc, sync, ai-cli, git]
 status: approved
-source: sergei
+source: myproject
 ---
 
-> **Migrated from `sergei` (SW-837, 2026-07-26).** This design doc followed its implementation
-> into this repo: the code it describes lives here, not in `sergei`, since the SW-907 repo-ownership
-> migration. `sergei/docs/designs/cc-sync-phase2.md` is now a `status: moved` stub pointing here.
+> **Migrated from `myproject` (SW-837, 2026-07-26).** This design doc followed its implementation
+> into this repo: the code it describes lives here, not in `myproject`, since the SW-907 repo-ownership
+> migration. `myproject/docs/designs/cc-sync-phase2.md` is now a `status: moved` stub pointing here.
 > Content is unchanged by the move — any drift between this doc and the current code predates it
 > and is not a migration artifact.
 
@@ -73,7 +73,7 @@ source: sergei
 
 ## Problem Statement
 
-Claude Code stores all session memory and conversation history under `~/.claude/projects/`, keyed by the absolute path of the project directory. Local Mac and the Hetzner dev server have different absolute paths (`/Users/sergeiwallace/projects/` vs `/home/sergei/projects/`), so Claude Code on each machine accumulates a completely isolated store. Memories learned on one machine are invisible on the other; conversation history diverges.
+Claude Code stores all session memory and conversation history under `~/.claude/projects/`, keyed by the absolute path of the project directory. Local Mac and the Hetzner dev server have different absolute paths (`/Users/user/projects/` vs `/home/user/projects/`), so Claude Code on each machine accumulates a completely isolated store. Memories learned on one machine are invisible on the other; conversation history diverges.
 
 Phase 1 ([cc-memory-history-sync-plan.md](../plans/cc-memory-history-sync-plan.md)) solves the immediate problem with a one-way rsync shell script triggered by a CC stop hook. This is sufficient for the common case (work on Mac, push to server) but has fundamental limitations:
 
@@ -101,8 +101,8 @@ All decisions below were made during Phase 2 planning in the implementation plan
 | 3 | CC active detection (Mac to server) | (a) SSH pgrep, (b) tmux session check, (c) Lock file | **(a) SSH pgrep** | `ssh root@server "pgrep -f claude"` is reliable and direct. tmux session check is indirect (session exists != CC active). Lock file on server requires CC hooks on server to manage, adding complexity. | Approved |
 | 4 | CC active detection (server to Mac) | (a) Lock file on Mac, (b) Port tunnel / reverse SSH, (c) Skip check | **(c) Skip check** | Mac is behind NAT — server cannot SSH back. Pull-only architecture makes this moot: server never writes directly to Mac's `~/.claude/projects/`. Mac always initiates its own pull. No detection code needed for Phase 2. Implementation detail: lightweight local `pgrep` warning in `ai sync pull` for manual pulls (no SSH needed, does not block). | Approved |
 | 5 | Sync trigger | (a) Hook-driven (stop/start hooks), (b) Cron, (c) Manual only | **(a) Hook-driven** | Aligns with event-driven platform philosophy. Stop hook calls `ai sync push` (session just ended, safe to sync). Start hook calls `ai sync pull` (session starting, want latest data). Cron is wasteful for sequential-machine usage. Manual-only defeats the purpose of automation. | Approved |
-| 6 | Path encoding in staging | (a) Keep machine-specific paths as-is, (b) Normalize to bare project name | **(b) Normalize to bare project name** | The staging repo is the canonical shared representation. Using bare names (`sergei/`, `aurion/`) means the staging structure is machine-independent. Each machine's push/pull logic handles its own path prefix. This avoids encoding machine identity into the repo structure and makes adding a third machine trivial. | Approved |
-| 7 | Project scope | (a) sergei only, (b) All projects with CC memory dirs | **(b) All projects** | User confirmed all projects should be synced. The sync command discovers projects dynamically by globbing `~/.claude/projects/`. No hardcoded project list. | Approved |
+| 6 | Path encoding in staging | (a) Keep machine-specific paths as-is, (b) Normalize to bare project name | **(b) Normalize to bare project name** | The staging repo is the canonical shared representation. Using bare names (`myproject/`, `aurion/`) means the staging structure is machine-independent. Each machine's push/pull logic handles its own path prefix. This avoids encoding machine identity into the repo structure and makes adding a third machine trivial. | Approved |
+| 7 | Project scope | (a) myproject only, (b) All projects with CC memory dirs | **(b) All projects** | User confirmed all projects should be synced. The sync command discovers projects dynamically by globbing `~/.claude/projects/`. No hardcoded project list. | Approved |
 
 ---
 
@@ -173,21 +173,21 @@ CC encodes project paths into directory names under `~/.claude/projects/`. The e
 
 | Machine | CC path prefix | Example |
 |---------|---------------|---------|
-| Mac | `-Users-sergeiwallace-projects-` | `-Users-sergeiwallace-projects-sergei/` |
-| Server | `-home-sergei-projects-` | `-home-sergei-projects-sergei/` |
-| Worktree (Mac) | `-Users-sergeiwallace-projects-sergei--worktrees-sw-1/` | Glob: `*--worktrees-*` |
-| Worktree (Server) | `-home-sergei-projects-sergei--worktrees-sw-1/` | Same glob pattern |
+| Mac | `-Users-user-projects-` | `-Users-user-projects-myproject/` |
+| Server | `-home-user-projects-` | `-home-user-projects-myproject/` |
+| Worktree (Mac) | `-Users-user-projects-myproject--worktrees-sw-1/` | Glob: `*--worktrees-*` |
+| Worktree (Server) | `-home-user-projects-myproject--worktrees-sw-1/` | Same glob pattern |
 
 **Normalization rules (push direction):**
 
-1. Strip the machine-specific prefix: `-Users-sergeiwallace-projects-` or `-home-sergei-projects-`
-2. The remainder is the bare project name, possibly with a worktree suffix: `sergei/`, `sergei--worktrees-sw-1/`, `aurion/`
+1. Strip the machine-specific prefix: `-Users-user-projects-` or `-home-user-projects-`
+2. The remainder is the bare project name, possibly with a worktree suffix: `myproject/`, `myproject--worktrees-sw-1/`, `aurion/`
 3. Commit under that bare name in the staging repo
 
 **Denormalization rules (pull direction):**
 
 1. Read the bare name from the staging repo
-2. Prepend the local machine's prefix: `-Users-sergeiwallace-projects-` (Mac) or `-home-sergei-projects-` (server)
+2. Prepend the local machine's prefix: `-Users-user-projects-` (Mac) or `-home-user-projects-` (server)
 3. Copy files into `~/.claude/projects/<denormalized-name>/`
 
 **Implementation detail:** The path prefix is determined at runtime by checking which machine the command is running on. The simplest heuristic: if `os.path.expanduser("~")` starts with `/Users/`, use the Mac prefix; otherwise use the server prefix. This is stored in `ai-cli` config as `[sync] local_prefix` for explicit override if needed.
@@ -213,7 +213,7 @@ Memory files (`memory/*.md` and `MEMORY.md`) are plain markdown, small, and infr
 **Conflict resolution for memory files:** If `git merge` leaves conflict markers:
 - The conflicted file is written to `~/.claude/projects/<project>/memory/<file>.md.conflict`
 - The original (pre-merge) file is left untouched
-- A summary is printed to stderr: `CONFLICT: sergei/memory/project_current_work.md — resolve manually or in next CC session`
+- A summary is printed to stderr: `CONFLICT: myproject/memory/project_current_work.md — resolve manually or in next CC session`
 - The user or CC can review the `.conflict` file and merge manually
 
 ### JSONL Merge (Keep-Both)
@@ -230,7 +230,7 @@ JSONL conversation files (`*.jsonl`) are append-only structured logs. Each line 
 4. **True divergence:** Both files grew independently. The pull side:
    - Keeps the local file as-is (it is the "current" file for this machine's CC)
    - Writes the remote version as `conflict-<ISO-timestamp>.jsonl` in the same directory
-   - Prints: `JSONL CONFLICT: sergei/conversations.jsonl — remote version saved as conflict-2026-03-23T14-30-00.jsonl`
+   - Prints: `JSONL CONFLICT: myproject/conversations.jsonl — remote version saved as conflict-2026-03-23T14-30-00.jsonl`
 
 **Why not attempt a merge:** JSONL lines have semantic dependencies. A conversation looks like:
 
@@ -307,8 +307,8 @@ The notification is visible immediately as a banner, even if the sync ran silent
 Each conflict appends a structured entry:
 
 ```text
-2026-03-23T14:30:00 CONFLICT memory sergei/memory/project_current_work.md — .conflict file written
-2026-03-23T14:30:00 CONFLICT jsonl  sergei/conversations.jsonl — remote saved as conflict-2026-03-23T14-30-00.jsonl
+2026-03-23T14:30:00 CONFLICT memory myproject/memory/project_current_work.md — .conflict file written
+2026-03-23T14:30:00 CONFLICT jsonl  myproject/conversations.jsonl — remote saved as conflict-2026-03-23T14-30-00.jsonl
 ```text
 
 Format: `<ISO-timestamp> CONFLICT <type> <bare-path> — <action taken>`
@@ -391,7 +391,7 @@ The staging repo mirrors the `~/.claude/projects/` structure but with normalized
 ```text
 ~/.claude-sync-staging/
 ├── .git/
-├── sergei/
+├── myproject/
 │   ├── memory/
 │   │   ├── MEMORY.md
 │   │   ├── project_current_work.md
@@ -401,11 +401,11 @@ The staging repo mirrors the `~/.claude/projects/` structure but with normalized
 │   └── tool-results/
 │       └── <uuid>/
 │           └── ...
-├── sergei--worktrees-sw-1/
+├── myproject--worktrees-sw-1/
 │   ├── memory/
 │   │   └── MEMORY.md
 │   └── conversations.jsonl
-├── sergei--worktrees-sw-2/
+├── myproject--worktrees-sw-2/
 │   ├── ...
 ├── aurion/
 │   ├── memory/
@@ -429,7 +429,7 @@ Every sync operation produces a commit in the staging repo. Commit messages foll
 ```text
 sync push from mac 2026-03-23T14:30:00
 
-projects: sergei, aurion
+projects: myproject, aurion
 files: 12 changed
 memories: 8 files
 jsonl: 4 files
@@ -452,15 +452,15 @@ i7j8k9l sync push from server 2026-03-22T22:00:00
 **Memory files (.md):** Conflicts are written with a `.conflict` extension alongside the original:
 
 ```text
-~/.claude/projects/-Users-sergeiwallace-projects-sergei/memory/project_current_work.md           # original, untouched
-~/.claude/projects/-Users-sergeiwallace-projects-sergei/memory/project_current_work.md.conflict  # conflicted version with markers
+~/.claude/projects/-Users-user-projects-myproject/memory/project_current_work.md           # original, untouched
+~/.claude/projects/-Users-user-projects-myproject/memory/project_current_work.md.conflict  # conflicted version with markers
 ```text
 
 **JSONL files:** Conflicts are written with a `conflict-<timestamp>` prefix:
 
 ```text
-~/.claude/projects/-Users-sergeiwallace-projects-sergei/conversations.jsonl                      # local version, untouched
-~/.claude/projects/-Users-sergeiwallace-projects-sergei/conflict-2026-03-23T14-30-00.jsonl       # remote version
+~/.claude/projects/-Users-user-projects-myproject/conversations.jsonl                      # local version, untouched
+~/.claude/projects/-Users-user-projects-myproject/conflict-2026-03-23T14-30-00.jsonl       # remote version
 ```text
 
 The timestamp uses a filesystem-safe ISO format (hyphens instead of colons). This ensures conflict files sort chronologically and are visually identifiable.
@@ -571,12 +571,12 @@ Both machines get identical hook configs. The `ai sync` command determines the c
   is AUTHORITATIVE (open it for the full/latest standard; this inline reminder is sync-checked
   against its canonical block by `aido validate-doc` and must not be edited independently): -->
 
-<!-- aido:ac-rules:mirror:begin -->
+<!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
 - At least one failure-path AC per public function changed.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
-<!-- aido:ac-rules:mirror:end -->
+<!-- doc:ac-rules:mirror:end -->
 
 <!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes this from the doc alone
   (task-spec best-practices research R-1780610095; full standard: docs/procedures/task-authoring-standards.md):
@@ -623,7 +623,7 @@ Phase 2 is split into two sub-phases to allow testing the core sync logic before
 - Updated `~/.claude/settings.json` on Mac (stop hook → `ai sync push`, start hook → `timeout 5 ai sync pull --memories-only`)
 - Updated `~/.claude/settings.json` on server (same hooks)
 - Delete `scripts/sync-cc-to-server.sh` (or archive to `scripts/archive/`)
-- Hook config reference checked into `sergei` repo for documentation
+- Hook config reference checked into `myproject` repo for documentation
 - Updated `CLAUDE.md` session startup checklist — add sync conflict check step
 - `ai sync conflicts` subcommand that prints unresolved `.conflict` files and recent log entries (for CC to call at startup)
 

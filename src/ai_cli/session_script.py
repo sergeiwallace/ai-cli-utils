@@ -99,7 +99,7 @@ def get_engine_script(
         # streaming to the terminal in real time. direnv's block state is
         # deterministic given .envrc + approval state, so this probe reflects
         # the same outcome the failed launch just hit, without touching its I/O.
-        if direnv exec "$direnv_root" true 2>&1 | grep -qE 'direnv: error.*\.envrc is blocked'; then
+        if direnv exec "$direnv_root" true 2>&1 | grep -qE 'direnv: error.*[.]envrc is blocked'; then
           agent_direnv_blocked=true
         fi
         echo "Error: agent command did not complete successfully under direnv for $direnv_root. If direnv denied or could not evaluate .envrc, run 'direnv allow $direnv_root' and correct the reported error." >&2
@@ -284,7 +284,12 @@ def get_engine_script(
           tmux send-keys -t "$tmux_session" C-u
           tmux send-keys -t "$tmux_session" "R"
         fi
-        read -t 1 -r < /dev/null 2>/dev/null || true
+        # One tick per second — every duration in this loop is counted in ticks
+        # ("counter >= 10" == 10s, "counter % 30" == every 30s). This must actually
+        # block: `read -t 1 < /dev/null` does not, because /dev/null returns EOF
+        # immediately, which turned this into a busy loop firing tmux/ai/sha256sum
+        # subprocesses at ~140 Hz for the life of every session (AI-CLI-129).
+        sleep 1
       done) &
       watcher_pid=$!
     }}
@@ -477,7 +482,11 @@ with open(path, 'w') as f:
           # Find the most recent conversation matching $ai_name by customTitle.
           # Touch it so --continue (which picks by mtime) resumes the right one.
           # --resume UUID opens a search picker instead of resuming directly, so avoid it.
-          cc_project_dir="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[/.]|-|g')"
+          # Claude Code slugifies the cwd by replacing every NON-ALPHANUMERIC
+          # character with '-'. A narrower 's|[/.]|-|g' left '_' untouched and so
+          # computed the wrong directory for any path containing an underscore,
+          # silently disabling session resume there.
+          cc_project_dir="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[^a-zA-Z0-9]|-|g')"
           matched_file=$(python3 -c "
 import json,os,sys
 d,t=sys.argv[1],sys.argv[2]

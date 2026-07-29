@@ -6,7 +6,7 @@ status: active
 source: claude-sonnet-4-6 2026-04-18
 template_version: "design-1.0.0"
 ---
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # ai-cli-utils — Architecture
 
@@ -45,7 +45,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | File | Description |
 |------|-------------|
 | `main.py` | CLI entrypoint (`ai` command); command dispatch, session-launch plumbing, update/deploy helpers. Thin after AI-CLI-39 refactor — most subsystems now live in dedicated modules below |
-| `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `sergei.toml`) |
+| `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `myproject.toml`) |
 | `session.py` | Session naming (`c-myproject-1` etc.), worktree creation/cleanup, Gemini UUID/checkpoint lookup |
 | `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
 | `handoff.py` | Handoff queue (`post`, `check`, `claim`, `complete`) + signal-watch helper `_claim_handoff_for_signal` |
@@ -193,7 +193,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 **Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without requiring a local scrape on every machine.
 
-**Git worktree isolation** — each `ai c N` session runs in `.worktrees/sw-N/` on branch `wt-sw-N` tracking `origin/main`. Created and destroyed by `main.py`. Commits ship directly to `origin/main` via `git push origin HEAD:main`.
+**Git worktree isolation** — each `ai c N` session runs in `.worktrees/sw-N/` on branch `wt-sw-N`, **created at `origin/main`** and tracking `origin/main`. Created and destroyed by `main.py`. Commits ship directly to `origin/main` via `git push origin HEAD:main`. Base and upstream are both pinned deliberately: `git worktree add -b` defaults its start-point to the main tree's current HEAD, which silently produces a branch that is not PR-clean whenever that tree is parked on something other than `main` (BUG-004). An unresolvable `origin/main` is a hard failure, never a fallback to HEAD.
 
 **CC session sync via bare git** — `sync.py` uses a bare git repo as the transport for CC JSONL + memory files between machines. Conflict detection is file-level mtime comparison logged to `~/.claude-sync-conflicts.log`.
 
@@ -221,22 +221,22 @@ The tool installs as a single `ai` command. There is no server component — all
 | `google-cloud-bigquery` | (optional) GCP billing for `ai spend gemini` |
 | `pydantic` | (optional) Layout file schema validation |
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="decisions" -->
-
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="feedback_rounds" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="feedback_rounds" -->
+
+<!-- doc:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="approval_log" -->

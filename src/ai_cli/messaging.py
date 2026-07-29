@@ -4,8 +4,9 @@ import os
 import socket
 import subprocess
 import time
+
 import nats
-from nats.errors import TimeoutError, NoServersError
+from nats.errors import NoServersError, TimeoutError
 
 # JetStream stream configs: stream_name -> list of subject patterns
 STREAM_CONFIG = {
@@ -52,7 +53,7 @@ class NATSClient:
             _host = _remote.get("host", "")
             _port = str(_remote.get("port", 22))
             _identity = _remote.get("identity_file", "")
-        except Exception:
+        except Exception:  # noqa: BLE001 — config load must never block the tunnel
             _user, _host, _port, _identity = "", "", "22", ""
         if not _user or not _host:
             return  # no remote configured — skip tunnel
@@ -62,13 +63,18 @@ class NATSClient:
             from .transport import _is_vpn_active as _vpn_check
 
             _tunnel_host = (_remote.get("vpn_host", "") or _host) if _vpn_check() else _host
-        except Exception:
+        except Exception:  # noqa: BLE001 — VPN-detection failure must not block the tunnel
             _tunnel_host = _host
         ssh_cmd = ["ssh", "-fNL", "4222:localhost:4222", "-o", "ConnectTimeout=5"]
         if _identity:
             ssh_cmd += ["-i", _identity]
         ssh_cmd += ["-p", _port, f"{_user}@{_tunnel_host}"]
-        self._tunnel_proc = subprocess.Popen(
+        # Deliberately synchronous subprocess.Popen: `ssh -f` forks itself to
+        # the background after auth and the foreground process we launch here
+        # exits on its own; nothing here needs to `await` it. Switching to
+        # asyncio.create_subprocess_exec would change the -f semantics this
+        # method (and TestSshTunnel) depends on.
+        self._tunnel_proc = subprocess.Popen(  # noqa: ASYNC220
             ssh_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -103,18 +109,38 @@ class NATSClient:
         try:
             if proc.poll() is None:
                 await asyncio.to_thread(proc.wait, 6)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — reap best-effort, TimeoutExpired included
             pass
+
+    # Bound on the whole connect() call, including the library's own retries. Nothing
+    # here is on a user-visible critical path -- every caller treats a null client as
+    # "messaging unavailable" -- so failing fast always beats blocking.
+    _CONNECT_DEADLINE_SECS = 10
 
     async def connect(self):
         """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts.
 
-        Passes max_reconnect_attempts=0 to the nats library to disable its own internal
-        retry loop (default 60 attempts × 2s = 2-minute hang when NATS is unavailable).
-        Our own retry loop handles backoff instead.
+        Passes max_reconnect_attempts=1 to the nats library to bound its own internal
+        initial-connect retry loop (AIDO-294). max_reconnect_attempts=0 looks like it
+        should mean "no retries" but does NOT: nats-py's _select_next_server() only
+        discards a server from its pool when `max_reconnect_attempts > 0` is true, so
+        0 is treated as unlimited (equivalent to a negative value) — the server is
+        never discarded, the pool never empties, NoServersError is never raised, and
+        connect() never returns. With a single configured server this produced a
+        genuine infinite loop (~2s busy-sleep cadence) rather than the documented
+        "60 attempts x 2s = 2-minute hang", and was the root cause of 3+ day old
+        orphaned `ai internal publish` processes (49 found in one census). A value of
+        1 lets the pool-discard condition (`reconnects > max_reconnect_attempts`) fire
+        after two failed attempts, so nats.connect() reliably raises NoServersError
+        and our own retry loop below handles backoff instead, as originally intended.
+
+        The call is additionally wrapped in a hard deadline, because relying on the
+        library to honour its own options is not itself a bound: a partially-reachable
+        server (accepts the TCP connection, never completes the NATS handshake) would
+        otherwise still hang a caller indefinitely.
 
         error_cb silences the nats library's verbose per-attempt tracebacks — connection
-        failures are expected when NATS is not running locally (e.g. on Mac).
+        failures are expected when NATS is not running locally.
         """
         await self._open_ssh_tunnel()
         retry_delay = 1
@@ -129,14 +155,17 @@ class NATSClient:
                     # Uncovered Lines.
                     pass
 
-                self.nc = await nats.connect(
-                    servers=self.servers,
-                    max_reconnect_attempts=0,
-                    error_cb=_noop_error_cb,
+                self.nc = await asyncio.wait_for(
+                    nats.connect(
+                        servers=self.servers,
+                        max_reconnect_attempts=1,
+                        error_cb=_noop_error_cb,
+                    ),
+                    timeout=self._CONNECT_DEADLINE_SECS,
                 )
                 self.js = self.nc.jetstream()
                 return
-            except (NoServersError, TimeoutError, OSError):
+            except (NoServersError, TimeoutError, asyncio.TimeoutError, OSError):
                 if attempt == max_retries - 1:
                     return  # self.nc remains None -- callers must check
                 await asyncio.sleep(retry_delay)
@@ -152,12 +181,12 @@ class NATSClient:
         try:
             await self.js.find_stream_name_by_subject(subject)
             self._streams_ensured.add(stream_name)
-        except Exception:
+        except Exception:  # noqa: BLE001 — lookup failure falls through to create-stream
             try:
                 subjects = STREAM_CONFIG.get(stream_name, [subject])
                 await self.js.add_stream(name=stream_name, subjects=subjects)
                 self._streams_ensured.add(stream_name)
-            except Exception:
+            except Exception:  # noqa: BLE001 — stream unavailable, caller falls back
                 return False
         return True
 
@@ -183,7 +212,7 @@ class NATSClient:
                 await self._ensure_stream(subject)
                 await self.js.publish(subject, data)
                 return True
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — JetStream publish failed, fall back to core NATS
                 pass
         # Fallback to core NATS
         await self.nc.publish(subject, data)
@@ -218,7 +247,7 @@ class NATSClient:
         async def _handler(msg):
             try:
                 data = json.loads(msg.data.decode())
-            except Exception:
+            except Exception:  # noqa: BLE001 — malformed payload becomes an empty dict
                 data = {}
             await callback(data)
 
@@ -244,20 +273,20 @@ class NATSClient:
 
         try:
             await self._ensure_stream(subject)
-        except Exception:
+        except Exception:  # noqa: BLE001 — stream setup failed, fall back to core subscribe
             return await self.subscribe(subject, callback)
 
         async def _handler(msg):
             try:
                 data = json.loads(msg.data.decode())
-            except Exception:
+            except Exception:  # noqa: BLE001 — malformed payload becomes an empty dict
                 data = {}
             await callback(data)
             await msg.ack()
 
         try:
             await self.js.subscribe(subject, durable=consumer_name, cb=_handler)
-        except Exception:
+        except Exception:  # noqa: BLE001 — durable subscribe failed, fall back to core subscribe
             return await self.subscribe(subject, callback)
 
         try:

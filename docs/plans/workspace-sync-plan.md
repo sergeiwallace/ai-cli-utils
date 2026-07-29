@@ -8,7 +8,7 @@ date: 2026-04-25
 linked_task: AI-CLI-64
 template_version: "plan-1.0.0"
 ---
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # ai ws — Workspace-wide git pull/rebase
 
@@ -51,8 +51,8 @@ Running `git pull --rebase` across all project repos and their worktrees is tedi
 
 **Workspace files:**
 
-- `~/projects/sergei/ai-core-local.code-workspace` — default, local repos (13 folders)
-- `~/projects/sergei/ai-core-remote.code-workspace` — optional, remote/server repos
+- `~/projects/myproject/ai-core-local.code-workspace` — default, local repos (13 folders)
+- `~/projects/myproject/ai-core-remote.code-workspace` — optional, remote/server repos
 
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing from the goal?
 > - <enter feedback here>
@@ -183,7 +183,7 @@ Parse the workspace file — it is already maintained as the authoritative list 
 ai ws pull [--workspace PATH] [--remote] [--dry-run / -d] [--verbose / -v]
 ```
 
-- `--workspace PATH` — explicit workspace file path (default: `~/projects/sergei/ai-core-local.code-workspace`)
+- `--workspace PATH` — explicit workspace file path (default: `~/projects/myproject/ai-core-local.code-workspace`)
 - `--remote` — use `ai-core-remote.code-workspace` instead of the default local one (mutually exclusive with `--workspace`)
 - `--dry-run` / `-d` — print what would be pulled, no git operations
 - `--verbose` / `-v` — show full git output per repo/worktree
@@ -227,9 +227,9 @@ For each workspace folder path:
 ### Output format
 
 ```text
-Workspace: ~/projects/sergei/ai-core-local.code-workspace (13 repos)
+Workspace: ~/projects/myproject/ai-core-local.code-workspace (13 repos)
 
-✓  sergei          main
+✓  myproject          main
 ✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
 ↷  ai-cli-utils    .worktrees/ai-cli-1  (dirty, skipped)
 ✓  ai-core         main
@@ -243,12 +243,12 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 ## Task Breakdown
 
 > **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
-<!-- aido:ac-rules:mirror:begin -->
+<!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
 - At least one failure-path AC per public function changed.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
-<!-- aido:ac-rules:mirror:end -->
+<!-- doc:ac-rules:mirror:end -->
 
 <!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes each task from the doc alone
   (task-spec best-practices research R-1780610095; full standard: docs/procedures/task-authoring-standards.md):
@@ -305,7 +305,7 @@ Implement `ws_pull(workspace_path, dry_run, verbose)` in `workspace.py`. Handles
 
 Wire `ws_pull` into `main.py` dispatch under `ai ws pull`. Add `--workspace`, `--remote`, `--dry-run`, `--verbose` options with both short and long forms.
 
-Default workspace path: configurable in `config.toml` under `[workspace]`, falling back to `~/projects/sergei/ai-core-local.code-workspace`. `--remote` resolves to the `[workspace] remote_path` config key. `--workspace PATH` overrides both.
+Default workspace path: configurable in `config.toml` under `[workspace]`, falling back to `~/projects/myproject/ai-core-local.code-workspace`. `--remote` resolves to the `[workspace] remote_path` config key. `--workspace PATH` overrides both.
 
 **Deliverables:**
 - `src/ai_cli/main.py` (updated)
@@ -412,28 +412,28 @@ Update `docs/tools/ai-cli-usage.md` with `ai ws pull` usage. Same commit as T-03
 | 2026-04-27 | D2: APPROVED (a) `ai ws pull` | Short, `ws` group, exact git verb |
 | 2026-04-27 | OQ2/OQ3: both yes | Default and remote workspace paths configurable in `config.toml [workspace]` |
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="decisions" -->
-
-<!-- aido:region name="task_breakdown" kind="replaceable" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="task_breakdown" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="feedback_rounds" -->
-
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="task_breakdown" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="task_breakdown" -->
+
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="feedback_rounds" -->
+
+<!-- doc:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="approval_log" -->

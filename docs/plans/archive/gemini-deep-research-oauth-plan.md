@@ -106,7 +106,7 @@ can authenticate via OAuth (free, using Developer Program credits) instead of AP
 - GCP Auth Platform configured for `gen-lang-client-0651020461`
 - OAuth 2.0 Desktop app client `ai-cli-gemini-desktop` created
 - `client_secret.json` saved to `~/.config/gcp/` on Mac and Hetzner (mode 600)
-- Test user `sergeipwallace@gmail.com` added to Audience
+- Test user `user@example.com` added to Audience
 - ADC login run on Mac, credentials SCP'd to Hetzner
 - OAuth token confirmed valid with `generative-language.retriever` scope
 

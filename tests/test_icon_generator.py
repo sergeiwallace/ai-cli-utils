@@ -16,7 +16,6 @@ from ai_cli.icon_generator import (
     generate_session_icon,
 )
 
-
 # ---------------------------------------------------------------------------
 # Color math
 # ---------------------------------------------------------------------------
@@ -242,6 +241,70 @@ class TestGenerateDynamicProfile:
         assert out1 == out2
         assert len(list(tmp_path.glob("*.json"))) == 1
 
+    def test_temp_write_never_visible_inside_the_watched_directory(self, tmp_path):
+        """iTerm2's `reallyReloadDynamicProfiles` (sources/Settings/Profiles/
+        iTermDynamicProfileManager.m) re-enumerates and re-parses EVERY non-dotfile,
+        non-tilde-suffixed entry in the watched DynamicProfiles dir on ANY
+        filesystem event — there is no ``.json``/``.tmp`` extension filter. AI-CLI-84's
+        "atomic write" fix wrote its temp file with ``dir=out_path.parent``, i.e.
+        inside this exact watched directory, so iTerm2 can still observe and attempt
+        to parse the ephemeral ``*.json.tmp`` artifact — producing "no such file"
+        (renamed away before iTerm2 opens it), "invalid JSON" (caught mid-write), or
+        "Two dynamic profiles have the same Guid" (both the temp file and the final
+        file it's about to replace are momentarily valid and share the deterministic
+        Guid). The watched directory must never show ANY filename other than the
+        final canonical one, even transiently.
+        """
+        import os
+        import threading
+        import time
+
+        watched_dir = tmp_path / "DynamicProfiles"
+        watched_dir.mkdir()
+        expected_name = "ai-cli-session-race-session.json"
+
+        stray_names: set = set()
+        stop = threading.Event()
+
+        def poll():
+            while not stop.is_set():
+                try:
+                    for name in os.listdir(watched_dir):
+                        if name != expected_name:
+                            stray_names.add(name)
+                except FileNotFoundError:
+                    pass
+                time.sleep(0.0005)
+
+        real_replace = os.replace
+
+        def slow_replace(src, dst, *a, **kw):
+            # Deterministically widen the real race window instead of relying on
+            # incidental machine speed to expose it.
+            time.sleep(0.05)
+            return real_replace(src, dst, *a, **kw)
+
+        poller = threading.Thread(target=poll, daemon=True)
+        poller.start()
+        try:
+            with (
+                patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=watched_dir),
+                patch("os.replace", side_effect=slow_replace),
+            ):
+                out = generate_dynamic_profile("race-session", "#5e35b1", "cc")
+        finally:
+            stop.set()
+            poller.join(timeout=2)
+
+        assert stray_names == set(), (
+            f"Watched DynamicProfiles dir showed stray file(s) {stray_names} during "
+            "generation — iTerm2's directory-wide reload has no .tmp/extension "
+            "filter, so any transient file here risks the 'invalid JSON' / 'no such "
+            "file' / duplicate-Guid errors."
+        )
+        assert out.name == expected_name
+        assert json.loads(out.read_text())["Profiles"][0]["Guid"] == "ai-cli-race-session"
+
 
 # ---------------------------------------------------------------------------
 # Icon generation (Pillow)
@@ -250,9 +313,11 @@ class TestGenerateDynamicProfile:
 
 class TestGenerateSessionIcon:
     def test_returns_none_when_pillow_unavailable(self, tmp_path):
-        with patch("ai_cli.icon_generator._PILLOW_AVAILABLE", False):
-            with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-                result = generate_session_icon("test-session", "#5e35b1", "cc")
+        with (
+            patch("ai_cli.icon_generator._PILLOW_AVAILABLE", False),
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+        ):
+            result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is None
 
     def test_generates_png_file(self, tmp_path):
@@ -261,18 +326,22 @@ class TestGenerateSessionIcon:
         logo_path = tmp_path / "claude-logo.png"
         img = Image.new("RGBA", (64, 64), (255, 255, 255, 200))
         img.save(logo_path)
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("test-session", "#5e35b1", "cc")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
+        ):
+            result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is not None
         assert result.exists()
         assert result.suffix == ".png"
         assert result.name == "test-session.png"
 
     def test_returns_none_when_no_source_logo(self, tmp_path):
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=None):
-                result = generate_session_icon("test-session", "#5e35b1", "cc")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=None),
+        ):
+            result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is None
 
     def test_uses_source_logo_when_available(self, tmp_path):
@@ -282,9 +351,11 @@ class TestGenerateSessionIcon:
         logo_path = tmp_path / "claude-logo.png"
         img = Image.new("RGBA", (64, 64), (255, 255, 255, 200))
         img.save(logo_path)
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("test-session", "#5e35b1", "cc")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
+        ):
+            result = generate_session_icon("test-session", "#5e35b1", "cc")
         assert result is not None and result.exists()
 
     def test_auto_derives_contrast_tint_from_tab_color(self, tmp_path):
@@ -301,10 +372,12 @@ class TestGenerateSessionIcon:
             tint_used.append(tint_hex)
             return original(img, tint_hex)
 
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                with patch("ai_cli.icon_generator._tint_image", side_effect=capture):
-                    generate_session_icon("test-session", "#5e35b1", "cc")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
+            patch("ai_cli.icon_generator._tint_image", side_effect=capture),
+        ):
+            generate_session_icon("test-session", "#5e35b1", "cc")
         assert tint_used and tint_used[0] == compute_contrast_tint("#5e35b1")
 
     def test_no_tab_color_uses_brand_orange(self, tmp_path):
@@ -319,10 +392,12 @@ class TestGenerateSessionIcon:
             tint_used.append(tint_hex)
             return original(img, tint_hex)
 
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                with patch("ai_cli.icon_generator._tint_image", side_effect=capture):
-                    generate_session_icon("test-session", None, "cc")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
+            patch("ai_cli.icon_generator._tint_image", side_effect=capture),
+        ):
+            generate_session_icon("test-session", None, "cc")
         assert tint_used and tint_used[0] == "#da7756"
 
     def test_explicit_icon_color_overrides_auto_tint(self, tmp_path):
@@ -337,10 +412,12 @@ class TestGenerateSessionIcon:
             tint_used.append(tint_hex)
             return original_tint(img, tint_hex)
 
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                with patch("ai_cli.icon_generator._tint_image", side_effect=capture_tint):
-                    generate_session_icon("test-session", "#5e35b1", "cc", icon_color="#ff0000")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
+            patch("ai_cli.icon_generator._tint_image", side_effect=capture_tint),
+        ):
+            generate_session_icon("test-session", "#5e35b1", "cc", icon_color="#ff0000")
         assert tint_used and tint_used[0] == "#ff0000"
 
     def test_output_is_valid_png(self, tmp_path):
@@ -348,9 +425,11 @@ class TestGenerateSessionIcon:
 
         logo_path = tmp_path / "claude-logo.png"
         Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("test-session", "#5e35b1", "cc")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
+        ):
+            result = generate_session_icon("test-session", "#5e35b1", "cc")
         img = Image.open(result)
         assert img.format == "PNG"
         assert img.mode == "RGBA"
@@ -360,9 +439,11 @@ class TestGenerateSessionIcon:
 
         logo_path = tmp_path / "claude-logo.png"
         Image.new("RGBA", (64, 64), (255, 255, 255, 200)).save(logo_path)
-        with patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path):
-            with patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path):
-                result = generate_session_icon("test-session", "#5e35b1", "cc")
+        with (
+            patch("ai_cli.icon_generator._icon_cache_dir", return_value=tmp_path),
+            patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
+        ):
+            result = generate_session_icon("test-session", "#5e35b1", "cc")
         img = Image.open(result)
         assert img.size == (128, 128)
 
@@ -433,9 +514,8 @@ class TestCleanupSessionFilesCommand:
     def test_cleanup_session_files_missing_arg_exits_1(self):
         from ai_cli.main import cli
 
-        with patch("sys.argv", ["ai", "internal", "cleanup-session-files"]):
-            with pytest.raises(SystemExit) as exc:
-                cli()
+        with patch("sys.argv", ["ai", "internal", "cleanup-session-files"]), pytest.raises(SystemExit) as exc:
+            cli()
         assert exc.value.code == 1
 
 

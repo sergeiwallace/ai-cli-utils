@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ai quota scrape` leaked Claude Code's update downloads to disk at roughly 8 GB/day
+  (`AI-CLI-131`). The scrape launches `claude` in a throwaway tmux session and kills
+  that session unconditionally about 15 seconds later; Claude Code had by then begun
+  downloading any newer version into `~/.cache/claude/staging/`, so the kill truncated
+  the download mid-write and orphaned the partial binary. Nothing reaped it — Claude
+  Code only removes a staging entry it successfully installs. Under the `*/10` cron
+  that is ~144 orphans a day: the Hetzner box held 402 entries totalling 23 GB, 400 of
+  them created exactly on cron minutes, and reached 0 bytes free. The scrape now runs
+  Claude Code with `DISABLE_AUTOUPDATER=1`, so an ephemeral read-only scrape never
+  starts a download it cannot finish, and sweeps staging entries left idle for over an
+  hour after each run. The sweep only removes well-formed entry directories past that
+  age, so a download in flight for a real session is never touched.
+
+- Session watcher busy-spun instead of polling once per second (`AI-CLI-129`). The
+  loop paced itself with `read -t 1 -r < /dev/null`, which never blocks: `/dev/null`
+  returns EOF immediately, so `read` returns before its timeout applies. Measured at
+  ~140 ticks/second against a specified 1, for the lifetime of every session — each
+  tick able to fire `tmux capture-pane`, `ai internal publish-heartbeat` and a
+  `sha256sum` pipeline. Every duration the loop derives from its tick counter
+  (`counter >= 10` as a 10-second startup grace period, `counter % 30` as a 30-second
+  heartbeat, `counter % 10` as a 10-second config-hash check) was wrong by the same
+  factor. Replaced with `sleep 1`.
+
+- `ai update`'s live-session template refresh rewrote every session's stable launch
+  script unconditionally, and had no bound on how often it could run (`AI-CLI-129`).
+  An unchanged script is now left alone, so its mtime — the hot-reload signal every
+  running wrapper polls — is no longer bumped for nothing, and a plain `ai c`
+  re-attach no longer makes the running wrapper `exec` a pointless reload. The
+  refresh now also refuses to run past 20 attempts in 60 seconds (tracked in-process
+  and in the state dir) and reports the runaway caller once per window on stderr,
+  rather than spawning a `tmux list-sessions` subprocess plus a write and a chmod per
+  live session for as long as the caller keeps asking.
+
 ## [0.7.0] - 2026-07-13
 
 ### Added

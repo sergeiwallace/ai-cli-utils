@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import time
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -418,7 +417,13 @@ class TestCliDispatchBranches:
 
 
 class TestCliSessionSetupBranches:
-    def test_given_missing_direnv_when_bare_agent_executes_then_exits_with_actionable_error(self, tmp_path, capsys):
+    def test_given_missing_engine_when_bare_agent_executes_then_exits_with_actionable_error(self, tmp_path, capsys):
+        """A missing *engine* is fatal; a missing direnv is not.
+
+        direnv only supplies the project environment, so it must never be a
+        precondition for starting a session — see
+        tests/test_session_launch_locality.py for that fallback behaviour.
+        """
         from ai_cli.main import _exec_with_direnv
 
         with patch("os.execvp", side_effect=FileNotFoundError):
@@ -426,15 +431,31 @@ class TestCliSessionSetupBranches:
                 _exec_with_direnv(tmp_path, ["claude"])
 
         assert exc_info.value.code == 1
-        assert "Install direnv" in capsys.readouterr().err
+        assert "claude not found" in capsys.readouterr().err
 
-    def test_given_stale_launch_environment_when_bare_claude_starts_then_execs_under_direnv(self):
-        """A direct Claude launch must delegate environment resolution to direnv."""
+    def test_given_stale_launch_environment_when_bare_claude_starts_then_execs_under_direnv(
+        self, tmp_path, monkeypatch
+    ):
+        """A direct Claude launch must delegate environment resolution to direnv.
+
+        Runs in a tmp cwd with its own ``.envrc``, and stubs the direnv probe:
+        against the real checkout this both created a worktree in the developer's
+        own repo and *executed* that repo's ``.envrc``, which can load
+        credentials — so the result depended on whether the developer had
+        approved it.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".envrc").write_text("export PROJECT_ENV=1\n")
+
         with (
             patch("sys.argv", ["ai", "c", "--bare"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.is_current_project_resolved", return_value=True),
+            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._direnv_env_usable", return_value=True),
             patch.dict(os.environ, {"STALE_PROJECT_OVERRIDE": "present"}),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
@@ -443,13 +464,21 @@ class TestCliSessionSetupBranches:
 
         executable, command = mock_exec.call_args[0]
         assert executable == "direnv"
-        assert command[:3] == ["direnv", "exec", str(Path.cwd())]
+        assert command[:3] == ["direnv", "exec", str(tmp_path)]
         assert command[3] == "claude"
 
-    def test_given_project_without_envrc_when_bare_gemini_starts_then_still_execs_direnv(self, tmp_path, monkeypatch):
-        """direnv owns the no-.envrc no-op instead of bypassing the launch wrapper."""
+    def test_given_project_without_envrc_when_bare_gemini_starts_then_execs_engine_directly(
+        self, tmp_path, monkeypatch
+    ):
+        """With no .envrc there is nothing to load, so don't route through direnv.
+
+        Requiring direnv here made the launch depend on a tool that has no work to
+        do, and broke sessions on hosts where direnv is not installed.
+        """
         monkeypatch.chdir(tmp_path)
         assert not (tmp_path / ".envrc").exists()
+        # tmp_path is under /tmp, which has no .envrc above it either.
+        assert not any((p / ".envrc").is_file() for p in tmp_path.parents)
 
         with (
             patch("sys.argv", ["ai", "g", "--bare"]),
@@ -463,27 +492,52 @@ class TestCliSessionSetupBranches:
                 cli()
 
         executable, command = mock_exec.call_args[0]
-        assert executable == "direnv"
-        assert command[:3] == ["direnv", "exec", str(tmp_path)]
-        assert command[3] == "gemini"
+        assert executable == "gemini"
+        assert command[0] == "gemini"
 
-    def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self):
-        with patch("sys.argv", ["ai", "c", "--bare"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("os.execvp", side_effect=SystemExit(0)):
-                            with pytest.raises(SystemExit):
-                                cli()
+    def test_cli_when_no_explicit_flag_then_sandbox_false_by_default(self, tmp_path, monkeypatch):
+        """Gemini must be launched with --no-sandbox unless -s is passed.
 
-    def test_cli_when_sandbox_flag_then_sandbox_true(self):
-        with patch("sys.argv", ["ai", "g", "--sandbox", "--bare"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("os.execvp", side_effect=SystemExit(0)):
-                            with pytest.raises(SystemExit):
-                                cli()
+        ``create_worktree`` is stubbed out: without it this test created a real
+        ``.worktrees/sw-1`` worktree (and branch) inside the developer's own
+        checkout, and it asserted nothing at all.
+        """
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("sys.argv", ["ai", "g", "--bare"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.is_current_project_resolved", return_value=True),
+            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        _, command = mock_exec.call_args[0]
+        assert "--no-sandbox" in command
+        assert "-s" not in command
+
+    def test_cli_when_sandbox_flag_then_sandbox_true(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch("sys.argv", ["ai", "g", "--sandbox", "--bare"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.is_current_project_resolved", return_value=True),
+            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        _, command = mock_exec.call_args[0]
+        assert "-s" in command
+        assert "--no-sandbox" not in command
 
     def test_cli_when_sandbox_and_session_exists_then_kills_and_recreates(self):
         killed = []
@@ -983,6 +1037,74 @@ class TestCliWorktreeGitPull:
                                                         with pytest.raises(SystemExit):
                                                             cli()
         return worktree_path
+
+    def test_when_worktree_conflict_predates_launch_then_resolution_is_not_discarded(self, tmp_path):
+        """`ai c N` must not wipe a conflict resolution the user is part-way
+        through. The pull fails (git refuses on an unmerged index), and the old
+        unconditional `git rebase --abort` + `git restore --staged .` cleanup
+        would clear the stages — destroying their work to "prevent corruption".
+
+        Real git throughout: the cleanup's damage is to real index state, which a
+        mocked subprocess cannot exhibit.
+        """
+
+        def git(repo, *args):
+            return subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        remote = tmp_path / "remote"
+        remote.mkdir()
+        git(remote, "init", "-q", "-b", "main")
+        (remote / "f.txt").write_text("line1\n")
+        git(remote, "add", "f.txt")
+        git(remote, "commit", "-q", "-m", "init")
+
+        worktree_path = tmp_path / ".worktrees" / "sw-1"
+        subprocess.run(["git", "clone", "-q", str(remote), str(worktree_path)], check=True)
+        # Strand it first, so the conflict genuinely predates the launch below.
+        (worktree_path / "f.txt").write_text("local-change\n")
+        (remote / "f.txt").write_text("remote-change\n")
+        git(remote, "commit", "-q", "-am", "remote edits same line")
+        git(worktree_path, "pull", "--rebase", "--autostash")
+        conflict_before = git(worktree_path, "ls-files", "--unmerged").stdout
+        assert conflict_before, "fixture must actually be conflicted"
+
+        restore_calls = []
+        real_run = subprocess.run
+
+        def spy_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "restore" in cmd:
+                restore_calls.append(list(cmd))
+            # Real git only; never reach a real tmux/agent boundary.
+            if isinstance(cmd, list) and cmd and cmd[0] == "git":
+                return real_run(cmd, *args, **kwargs)
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "c", "1"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")),
+            patch("ai_cli.session.create_worktree", return_value=worktree_path),
+            patch("ai_cli.config.get_session_map", return_value={}),
+            patch("ai_cli.session_script.get_engine_script", return_value="script"),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("subprocess.run", side_effect=spy_run),
+            patch("os.execvp", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        assert not restore_calls, "must not run git restore --staged on a pre-existing conflict"
+        assert git(worktree_path, "ls-files", "--unmerged").stdout == conflict_before, (
+            "the user's conflict stages must survive the launch untouched"
+        )
 
     def test_when_worktree_index_corrupted_then_heals_before_pull(self, tmp_path):
         """When the worktree has >50 staged deletions, git read-tree HEAD runs before git pull."""
@@ -1785,13 +1907,165 @@ class TestDeploy:
                 cli()
             assert exc.value.code == 0
 
-        cmds = [" ".join(c) for c in calls]
-        checkout_idx = next((i for i, c in enumerate(cmds) if "checkout" in c and "pyproject.toml" in c), None)
-        pull_idx = next((i for i, c in enumerate(cmds) if "git" in c and "pull" in c), None)
+        # Match on argv tokens, not on a joined string: tmp_path names contain
+        # this test's own name, so a substring search for "pull" also matches
+        # unrelated `git` calls whose only "pull" is inside the repo path.
+        checkout_idx = next((i for i, c in enumerate(calls) if "checkout" in c and "pyproject.toml" in c), None)
+        pull_idx = next((i for i, c in enumerate(calls) if c[:1] == ["git"] and "pull" in c), None)
         assert checkout_idx is not None, "git checkout -- pyproject.toml not called"
         assert pull_idx is not None, "git pull not called"
         assert checkout_idx < pull_idx, "checkout must run before pull"
-        assert "--autostash" in cmds[pull_idx], "pull must use --autostash"
+        assert "--autostash" in calls[pull_idx], "pull must use --autostash"
+
+    def test_deploy_when_autostash_pop_conflicts_then_aborts_instead_of_installing(self, tmp_path, capsys):
+        """AIH-443 Shape B, end to end through the real `ai update` path against
+        real git. The pull exits 0 while its autostash pop conflicts; `ai update`
+        must refuse rather than install from the half-applied checkout.
+
+        Deliberately NOT mocked: the defect IS git's exit code, so a fake
+        subprocess would only replay whatever the fake was told to return and
+        would pass against the broken code too.
+        """
+
+        def git(repo, *args):
+            return subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        remote = tmp_path / "remote"
+        remote.mkdir()
+        git(remote, "init", "-q", "-b", "main")
+        (remote / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "0.1.0"\n')
+        (remote / "shared.txt").write_text("line1\n")
+        git(remote, "add", "-A")
+        git(remote, "commit", "-q", "-m", "init")
+
+        project = tmp_path / "project"
+        subprocess.run(["git", "clone", "-q", str(remote), str(project)], check=True)
+        (project / "shared.txt").write_text("local-change\n")  # uncommitted
+        (remote / "shared.txt").write_text("remote-change\n")
+        git(remote, "commit", "-q", "-am", "remote edits same line")
+
+        uv_called = []
+        real_run = subprocess.run
+
+        def guarded_run(cmd, **kwargs):
+            # Let real git through; intercept only the install so the test never
+            # mutates the developer's toolchain.
+            if cmd and str(cmd[0]).endswith("uv"):
+                uv_called.append(list(cmd))
+                return MagicMock(returncode=0, stdout="")
+            return real_run(cmd, **kwargs)
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(project)}}),
+            patch("subprocess.run", side_effect=guarded_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 1
+        assert not uv_called, "must not install from a checkout whose index carries conflict stages"
+        assert "conflicted index" in capsys.readouterr().err
+        # And the repo really was left in the defect's state, not merely asserted to be.
+        assert git(project, "ls-files", "--unmerged").stdout.strip()
+
+    def test_deploy_when_branch_has_no_upstream_then_pulls_origin_explicitly(self, tmp_path):
+        """A source tree parked on an unpushed feature branch must still update.
+
+        A bare ``git pull --rebase`` there aborts with "There is no tracking
+        information for the current branch", and because the result was never
+        inspected the update reinstalled the unchanged tree while reporting a
+        successful version bump.
+        """
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            joined = " ".join(cmd)
+            if "@{u}" in joined:
+                return MagicMock(returncode=128, stdout="", stderr="fatal: no upstream configured")
+            if "--abbrev-ref HEAD" in joined:
+                return MagicMock(returncode=0, stdout="fix/some-branch\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        pull = next((c for c in calls if "pull" in c), None)
+        assert pull is not None, "git pull not called"
+        assert pull[-2:] == ["origin", "fix/some-branch"], f"pull must name the remote and branch, got {pull!r}"
+        assert "--autostash" in pull
+
+    def test_deploy_when_pull_fails_then_warns_with_git_reason_and_still_installs(self, tmp_path, capsys):
+        """A failed pull must be surfaced, not swallowed, and must not block install."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(cmd)
+            if "@{u}" in joined:
+                return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+            if "pull" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="fatal: could not read from remote repository")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0, "a failed pull must not abort the install"
+
+        err = capsys.readouterr().err
+        assert "installing the current checkout" in err
+        assert "could not read from remote repository" in err, f"git's reason must be shown; got {err!r}"
+
+    def test_deploy_when_detached_head_then_pulls_without_guessing_a_branch(self, tmp_path):
+        """In a detached HEAD there is no branch to name, so add no explicit refspec.
+
+        Guessing one would pull the wrong branch. git's own "You are not currently on a
+        branch" handling applies instead.
+        """
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            joined = " ".join(cmd)
+            if "@{u}" in joined:
+                return MagicMock(returncode=128, stdout="", stderr="fatal: no upstream configured")
+            if "--abbrev-ref HEAD" in joined:
+                return MagicMock(returncode=0, stdout="HEAD\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        pull = next((c for c in calls if "pull" in c), None)
+        assert pull is not None, "git pull not called"
+        assert "origin" not in pull, f"must not name a branch in detached HEAD, got {pull!r}"
 
     def test_deploy_when_conflict_markers_in_source_then_aborts(self, tmp_path, capsys):
         pyproject = tmp_path / "pyproject.toml"

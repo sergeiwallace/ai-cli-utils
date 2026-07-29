@@ -74,20 +74,6 @@ def colorize(img: Image.Image, target_rgb: tuple[int, int, int]) -> Image.Image:
     """Recolor all non-transparent pixels to target_rgb, preserving alpha and luminance."""
     r, g, b, a = img.split()
 
-    # Build grayscale luminance channel from source
-    gray = img.convert("L")
-
-    # Create a solid color image
-    color_img = Image.new("RGB", img.size, target_rgb)
-
-    # Multiply grayscale by target color (screen-blend luminance into target hue)
-    gray_rgb = gray.convert("RGB")
-    blended = Image.blend(
-        Image.new("RGB", img.size, (0, 0, 0)),
-        color_img,
-        1.0,
-    )
-
     # Use luminance from grayscale to modulate the color
     # Convert both to float arrays for per-pixel blend
     import numpy as np
@@ -119,10 +105,8 @@ def add_outline(img: Image.Image, outline_color: tuple[int, int, int], width: in
     dilated = a.filter(ImageFilter.MaxFilter(size=width * 2 + 1))
     # Create solid outline color image
     outline_img = Image.new("RGBA", img.size, (r, g, b, 0))
-    outline_alpha = Image.new("L", img.size, 0)
 
     # Outline pixels = dilated alpha mask minus original alpha
-    import ImageChops  # noqa: F401 — might not exist
     from PIL import ImageChops
 
     diff = ImageChops.subtract(dilated.convert("L"), a)

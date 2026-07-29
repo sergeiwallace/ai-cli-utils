@@ -74,7 +74,7 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
 **Option B: Foundation now, polish later.** This gives us CI, automated publishing, badges, CHANGELOG, and community files — the things that matter for a professional repo — without blocking on the GIF or README rewrite. The README rewrite is better done after CI is set up (need CI URLs for badges) and after the current feature burst stabilizes.
 
 **Now (this batch):**
-- **Generalize: remove all sergei/ai-core-specific references** (prerequisite — must be done first)
+- **Generalize: remove all <private-project-name>/ai-core-specific references** (prerequisite — must be done first)
 - CI workflow (lint + test)
 - Publish workflow (PyPI on tag via Trusted Publishers)
 - Shields.io badges in README
@@ -95,12 +95,12 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
 ## Task Breakdown
 
 > **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
-<!-- aido:ac-rules:mirror:begin -->
+<!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
 - At least one failure-path AC per public function changed.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
-<!-- aido:ac-rules:mirror:end -->
+<!-- doc:ac-rules:mirror:end -->
 
 <!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes each task from the doc alone
   (task-spec best-practices research R-1780610095; full standard: docs/procedures/task-authoring-standards.md):
@@ -112,33 +112,33 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
   • Exit gates are harness-enforced, runnable predicates (run the suite; fresh-context diff
   review against the ACs), never self-declared "done". -->
 
-### T-00: Generalize — remove sergei/ai-core-specific references
+### T-00: Generalize — remove <private-project-name>/ai-core-specific references
 
 **Size:** L
 **Batch:** 1 (DO THIS FIRST — other tasks depend on clean generic code)
 
-Remove all hardcoded references to `sergei`, `ai-core`, and personal paths so the package works for any user out of the box.
+Remove all hardcoded references to `<private-project-name>`, `ai-core`, and personal paths so the package works for any user out of the box.
 
 **Changes required:**
 
-1. **`SERGEI_TOML` → `PROJECT_REGISTRY`**: Rename the concept. The path is derived from config: `~/.config/ai-cli/projects.toml` (user-level) or `{main_project_dir}/{project_name}.toml` (project-level). Both should be checked, project-level first.
+1. **`PRIVATE_PROJECT_TOML` → `PROJECT_REGISTRY`**: Rename the concept. The path is derived from config: `~/.config/ai-cli/projects.toml` (user-level) or `{main_project_dir}/{project_name}.toml` (project-level). Both should be checked, project-level first.
 
-2. **`_get_main_project_name()` default**: Change from `"sergei"` to `None`. If no `main_project` is configured and no project TOML is found, features that depend on it (project aliases, cross-project sync) gracefully degrade — they just don't work until configured.
+2. **`_get_main_project_name()` default**: Change from `"<private-project-name>"` to `None`. If no `main_project` is configured and no project TOML is found, features that depend on it (project aliases, cross-project sync) gracefully degrade — they just don't work until configured.
 
-3. **`DEFAULT_SERVER_HOST`**: Remove hardcoded `"sergei@178.104.70.139"`. If `[sync] remote_host` is not set in config.toml, sync commands should print a helpful error message pointing to config setup.
+3. **`DEFAULT_SERVER_HOST`**: Remove the hardcoded personal `user@host` default. If `[sync] remote_host` is not set in config.toml, sync commands should print a helpful error message pointing to config setup.
 
 4. **`ai-core` section reference**: The code reads `config.get("ai-core", {}).get("task_prefix", "SW")` for the main project. Generalize: read `config.get("project", {}).get("task_prefix")` — or better, just look up the project name in the `[[projects]]` list like all other projects.
 
-5. **Comments/docstrings**: Replace `/home/sergei/...` and `/Users/sergeiwallace/...` path examples with generic `/home/user/...` and `/Users/username/...`.
+5. **Comments/docstrings**: Replace personal home-dir path examples with generic `/home/user/...` and `/Users/username/...`.
 
-6. **Help text**: Replace `sergei`, `aurion` examples with generic `myproject`, `webapp`.
+6. **Help text**: Replace `<private-project-name>`, `aurion` examples with generic `myproject`, `webapp`.
 
-7. **Default config template (`DEFAULT_CONFIG`)**: Already clean, verify no sergei references remain.
+7. **Default config template (`DEFAULT_CONFIG`)**: Already clean, verify no <private-project-name> references remain.
 
 8. **`sync.py`**: Remove hardcoded `DEFAULT_SERVER_HOST`. Replace path examples in docstrings. The `_MAC_HOME` and `_SERVER_HOME` constants for path translation need to be derived from config or auto-detected, not hardcoded.
 
 **Acceptance criteria:**
-- [ ] `grep -rn "sergei\|ai-core" src/ai_cli/` returns 0 results (excluding test fixtures if any)
+- [ ] `grep -rn "<private-project-name>\|ai-core" src/ai_cli/` returns 0 results (excluding test fixtures if any)
 - [ ] Package works with empty config (graceful degradation for unconfigured features)
 - [ ] Package works with a minimal config (`[remote] host = ...` + `[project] main_project = ...`)
 - [ ] All existing functionality preserved for configured users
@@ -273,7 +273,7 @@ T-00 must be done first. T-01 through T-07 are independent of each other.
 
 Autonomous review of the completed work:
 
-1. **Code review:** `grep -rn "sergei\|ai-core\|sergeiwallace" src/ai_cli/` — must return 0 results
+1. **Code review:** `grep -rn "<private-project-name>\|ai-core\|sergeiwallace" src/ai_cli/` — must return 0 results
 2. **Config review:** verify `~/.config/ai-cli/config.toml` on both Mac and server has `main_project = "myproject"` set (since that's what makes the generic code work for our installation)
 3. **Functional test:** verify `ai c 1 -R` still works (project aliases, session naming, auto-resume)
 4. **CI verification:** push a test commit and verify GitHub Actions runs

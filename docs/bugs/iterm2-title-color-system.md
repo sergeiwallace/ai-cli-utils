@@ -418,6 +418,97 @@ os.replace(tmp_path, out_path)
 
 **Shipped:** 2026-04-29 (AI-CLI-84)
 
+### Reopened (2026-07-27) — the same symptom class persisted for 3 months
+
+**Symptom:** the user's iTerm2 Script Console log (7/12–7/27) still showed all three
+error strings recurring, dozens of times, well after AI-CLI-84 shipped:
+
+```
+Could not read Dynamic Profile from file .../tmpXXXXXXXX.json.tmp: The file
+"tmpXXXXXXXX.json.tmp" couldn't be opened because there is no such file.
+Dynamic Profiles file .../tmpXXXXXXXX.json.tmp contains invalid JSON: The data
+couldn't be read because it isn't in the correct format.
+Two dynamic profiles have the same Guid: ai-cli-sw-1
+```
+
+**Root cause (Round 2 — confirmed against iTerm2's actual shipped source, not
+inferred):** Fetched `sources/Settings/Profiles/iTermDynamicProfileManager.m` from
+`gnachman/iTerm2` on GitHub. `reallyReloadDynamicProfiles` fires on **any** watched
+filesystem event ("Path watcher noticed a change") and, on every fire, re-enumerates
+**every file in the DynamicProfiles directory** via `[fileManager
+enumeratorAtPath:path]`, skipping only dotfiles (`hasPrefix:@"."`) and GNU-style
+backup files (`hasSuffix:@"~"`). **There is no `.json` extension filter and no
+`.tmp` exclusion** — every other file, regardless of suffix, is passed to
+`loadDynamicProfilesFromFile:intoArray:guids:` and parsed as a candidate profile.
+That method's `guids` set is shared across every file processed in one reload pass;
+a duplicate is reported the instant two files in the same pass share a `Guid`.
+
+AI-CLI-84's fix wrote the atomic-write temp file with
+`tempfile.NamedTemporaryFile(dir=out_path.parent, suffix=".json.tmp")` — i.e.
+**inside the exact directory iTerm2 enumerates**. It correctly eliminated
+partial-content reads of the *final* filename, but the temp file itself is a new,
+independent artifact in the watched directory that iTerm2's reload can now observe
+and attempt to parse:
+
+- **"no such file"** — the reload's directory listing captures the temp filename,
+  but by the time `dataWithContentsOfFile:` actually opens it (after processing
+  other alphabetically-earlier files in the same pass), `os.replace()` has already
+  renamed it away → `ENOENT`.
+- **"contains invalid JSON"** — `tempfile.NamedTemporaryFile()` creates the file
+  (0 bytes) at construction time, before `tmp.write()`'s buffered content is ever
+  flushed to disk at `close()`. A reload that fires in that window reads a 0-byte
+  file → `NSJSONSerialization` fails to parse empty data.
+- **"Two dynamic profiles have the same Guid"** — the temp file's JSON content
+  already carries the deterministic target `Guid` (`ai-cli-{session_name}`) before
+  the rename lands. If a reload fires while both the temp file and the final file
+  it's about to replace (e.g. during `ai color`'s cleanup-then-regenerate cycle, or
+  simply a stale file from a previous run not yet overwritten) are independently
+  readable and valid in the same pass, both get added to `newProfiles` under the
+  same `Guid` — the second one processed triggers the duplicate report.
+
+This is one causal mechanism explaining all three symptom strings — confirmed by
+matching each `reportError:` call site in the actual shipped source against the
+observed log lines character-for-character, not inferred from behavior alone.
+AI-CLI-84's underlying assumption — that atomicity requires the temp file to share
+the target's directory — is the reopening cause: POSIX rename atomicity requires
+only the same filesystem (`st_dev`), not the same parent directory.
+
+**Fix Round 2 (2026-07-27, AIH-478):** Stage the temp file in
+`_dynamic_profile_dir().parent` (`~/Library/Application Support/iTerm2/`) instead of
+inside `DynamicProfiles/` itself. Confirmed via the same source read that iTerm2's
+`pathsToWatch` only ever adds the `DynamicProfiles` directory (and any per-file
+symlink targets inside it) to its watched folder set — never its parent — so a
+temp file staged there can never be observed by the reload. The parent is
+guaranteed to be the same filesystem as `DynamicProfiles/` (it *is* the literal
+parent), so `os.replace()` remains a single atomic cross-directory rename.
+
+**Regression test:**
+`tests/test_icon_generator.py::TestGenerateDynamicProfile::test_temp_write_never_visible_inside_the_watched_directory`
+— a real background thread polls `os.listdir()` on the watched directory for the
+full duration of the call (no mock at the filesystem boundary), while a
+deterministic 50ms delay is injected into the real `os.replace()` call to make the
+race window reliably observable regardless of machine speed. Confirmed RED against
+the pre-fix code (observed the stray `tmpXXXXXXXX.json.tmp` inside the watched
+dir), confirmed GREEN after the fix, confirmed RED again after reverting only the
+production change (test left frozen).
+
+**Verification:** focused test passes; full `tests/test_icon_generator.py` (55
+tests) passes; full repo suite (1902 tests) passes; `ruff check` / `ruff format
+--check` clean on the changed files (pre-existing unrelated lint findings in this
+file were confirmed present on the unmodified code too, not introduced by this
+fix). Live end-to-end exercise against the real
+`~/Library/Application Support/iTerm2/DynamicProfiles/` directory (unmocked, no
+injected delay) confirmed the watched directory only ever showed the final
+canonical filename during a real `generate_dynamic_profile()` call, with correct
+cleanup after.
+
+**File changed:** `src/ai_cli/icon_generator.py` — `generate_dynamic_profile()`
+
+**Tracked:** `AIH-478` (ai-harness Beads store, per explicit user request — this is
+an ai-cli-utils defect, tracked cross-repo).
+
+**Shipped:** 2026-07-27 (AIH-478)
+
 ---
 
 ## Diagnosis Approach

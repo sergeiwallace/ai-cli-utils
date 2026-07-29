@@ -7,7 +7,7 @@ source: R-5 deep-think 2026-04-01, opus synthesis 2026-04-01
 citation_review: pending — review claims against citation validation reports as part of AI-CLI-53 doc audit
 template_version: "design-1.0.0"
 ---
-<!-- aido:region name="overview" kind="replaceable" -->
+<!-- doc:region name="overview" kind="replaceable" -->
 
 # Claude Usage Telemetry — Token Tracking and Quota Pacing
 
@@ -710,7 +710,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - **NATS JetStream**: `quota.snapshot` subject (stream: `quota`) — Hetzner publishes after each scrape; Mac durable consumer `quota-subscriber-mac` replays missed messages on reconnect
 - **NATS core**: `hw.events.usage.claude.snapshot` subject — Hetzner publishes alongside `quota.snapshot` so the ai-core `UsageConsumer` can ingest snapshots into Postgres for cross-provider usage reporting
 - **NATS KV (`hw_state`)**: `quota.claude.current` key — Hetzner writes after each scrape; other services (workers, dashboards) read without SSHing to Mac. (Renamed from the older `quota.claude.weekly` key — consumers now read the single canonical "latest snapshot" key.)
-- **hw-scheduling (sergei)**: `claude_quota_scrape` job (Hetzner, 10 min) triggers scrape; `claude_quota_sync` job (Mac, 10 min) SSH-pulls as fallback catch-up; `gemini_cost_sync` job (Hetzner, 4h) tracks Gemini API cost separately
+- **hw-scheduling (myproject)**: `claude_quota_scrape` job (Hetzner, 10 min) triggers scrape; `claude_quota_sync` job (Mac, 10 min) SSH-pulls as fallback catch-up; `gemini_cost_sync` job (Hetzner, 4h) tracks Gemini API cost separately
 - **`ai internal quota-subscriber`**: persistent Circus-managed daemon on Mac; JetStream durable consumer for `quota.snapshot`; survives CC session exits
 - **Platform MCP**: future integration for quota state in priority guidance
 - **Orchestrated sessions**: AI orchestrator-spawned CC sessions should be captured by the shared statusLine hook; validate in test harness
@@ -721,12 +721,12 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 <!-- Per-phase task ACs follow the canonical AC quality rules. `docs/procedures/task-authoring-standards.md`
   is AUTHORITATIVE (open it for the full/latest standard; this inline reminder is sync-checked
   against its canonical block by `aido validate-doc` and must not be edited independently): -->
-<!-- aido:ac-rules:mirror:begin -->
+<!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
 - At least one failure-path AC per public function changed.
 - Replacement/refactor tasks: inventory the existing behaviors, then a parity AC for each (preserved, or intentionally dropped + reason).
-<!-- aido:ac-rules:mirror:end -->
+<!-- doc:ac-rules:mirror:end -->
 
 <!-- SPEC RIGOR (implementation-readiness) — so a sub-agent executes this from the doc alone
   (task-spec best-practices research R-1780610095; full standard: docs/procedures/task-authoring-standards.md):
@@ -986,22 +986,22 @@ NEVER generate binary images.
 </grounding_instructions>
 ```
 
-<!-- /aido:region name="overview" -->
+<!-- /doc:region name="overview" -->
 
-<!-- aido:region name="decisions" kind="replaceable" -->
-
-(empty — populated as work progresses)
-
-<!-- /aido:region name="decisions" -->
-
-<!-- aido:region name="feedback_rounds" kind="append_only" -->
+<!-- doc:region name="decisions" kind="replaceable" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="feedback_rounds" -->
+<!-- /doc:region name="decisions" -->
 
-<!-- aido:region name="approval_log" kind="append_only" -->
+<!-- doc:region name="feedback_rounds" kind="append_only" -->
 
 (empty — populated as work progresses)
 
-<!-- /aido:region name="approval_log" -->
+<!-- /doc:region name="feedback_rounds" -->
+
+<!-- doc:region name="approval_log" kind="append_only" -->
+
+(empty — populated as work progresses)
+
+<!-- /doc:region name="approval_log" -->

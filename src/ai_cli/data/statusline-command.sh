@@ -520,7 +520,7 @@ fi
 #
 # Brand colors (2026-07-19, explicit request) — 24-bit truecolor, verified via live web
 # search against each company's actual brand-color pages, not guessed from memory:
-#   OpenAI  #10A37F (the ChatGPT teal-green — NOT blue; that was Sergei's initial guess,
+#   OpenAI  #10A37F (the ChatGPT teal-green — NOT blue; blue was the initial guess,
 #            corrected against the source) — labels every Codex segment ("cxWk").
 #   Anthropic #D97757 (Claude orange) — labels every Claude Code segment ("ccWk").
 # Requires a 24-bit-color-capable terminal (iTerm2/Terminal.app both are); no fallback to
@@ -534,10 +534,10 @@ _SLC_CYAN="\033[36m"
 _SLC_OPENAI="\033[1;38;2;16;163;127m"       # bold #10A37F — Codex/OpenAI-branded labels
 _SLC_ANTHROPIC="\033[1;38;2;217;119;87m"    # bold #D97757 — Claude/Anthropic-branded labels
 
-# $1=epoch seconds -> "%-m/%-d %-I %p" (e.g. "7/21 2 PM"), or empty. Compact per Sergei's
-# explicit ask (2026-07-19): date kept (a weekly reset is always days out — a bare "2 PM"
-# with no day was genuinely ambiguous, per his own follow-up correction), but no weekday
-# name, no minutes, no timezone. Rounds DOWN to the hour (a 2:47 PM reset shows as "2 PM").
+# $1=epoch seconds -> "%-m/%-d %-I %p" (e.g. "7/21 2 PM"), or empty. Compact by explicit
+# request (2026-07-19): date kept (a weekly reset is always days out — a bare "2 PM" with no
+# day was genuinely ambiguous), but no weekday name, no minutes, no timezone. Rounds DOWN to
+# the hour (a 2:47 PM reset shows as "2 PM").
 # Portable across macOS (`date -r`) and Linux/Hetzner (`date -d @`).
 _sl_fmt_epoch() {
   local ep="$1" out
@@ -549,7 +549,7 @@ _sl_fmt_epoch() {
 }
 
 # Same as _sl_fmt_epoch but keeps minutes (e.g. "7/24 11:24 PM") — used for cxWk's reset
-# only, per Sergei's explicit ask (2026-07-19): ccWk resets on the flat hour, cxWk does
+# only, by explicit request (2026-07-19): ccWk resets on the flat hour, cxWk does
 # not, so ccWk stays hour-only while cxWk needs the precision.
 _sl_fmt_epoch_min() {
   local ep="$1" out

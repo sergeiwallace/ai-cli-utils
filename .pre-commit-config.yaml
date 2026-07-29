@@ -1,12 +1,11 @@
 ---
-# Pre-commit framework config (SW-796 — adopted Option 1c Round 1, 2026-04-23).
+# Pre-commit framework config (adopted 2026-04-23).
 # Runs on every `git commit` (pre-commit stage) and `git push` (pre-push stage).
 #
 # Install: `pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push`
 # (Auto-run by copier `_tasks` on copy + update.)
 #
-# Update hook pins: `pre-commit autoupdate` (quarterly — see D-02 in
-# sergei/docs/plans/pre-commit-linting-expansion.md).
+# Update hook pins: `pre-commit autoupdate` (quarterly).
 #
 # Skip hooks: `SKIP=hook-id git commit` (specific hook) or `SKIP_TESTS=1 git push`
 # (test-gate.sh only — not a pre-commit-framework env var).
@@ -50,7 +49,7 @@ repos:
 
   # ── Python: ruff (check --fix + format) ──────────────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.21
+    rev: v0.16.0
     hooks:
       # Exclude .githooks/ — those .py files are vendored from project-template and
       # are re-linted at each repo's own line-length (88/100/120/150 vary across the
@@ -72,6 +71,18 @@ repos:
         args: [--severity=warning]
 
   # ── Local: worktree safety + hook-reference + test gates ─────────────────
+  # test-gate and validate-claude-settings are Tier-B shared hooks (AIH-393):
+  # the body lives once in ai-harness/hooks/, ai-harness's install.sh publishes
+  # a real executable wrapper to ~/.claude/bin/ (added to PATH), and every
+  # consumer repo's config just names the entrypoint — zero per-repo vendored
+  # body, zero copier-propagation cost when the body changes. Unlike
+  # ai-harness's OWN config (which points at its local .claude/bin/<name>
+  # copy, since it houses the canonical body), a consumer repo has no local
+  # copy to point at — PATH resolution via `language: system` IS the
+  # distribution mechanism here, not a shortcut around it. A workstation that
+  # never ran ai-harness's install.sh fails loudly (`Executable <name> not
+  # found`), never silently passes — see ai-harness's
+  # docs/designs/aih-393-shared-hook-distribution-model.md.
   - repo: local
     hooks:
       - id: corrupt-index-guard
@@ -79,14 +90,35 @@ repos:
         entry: .githooks/corrupt-index-guard.sh
         language: script
         stages: [pre-push]
+      # Reject publishing a canonical `wt-*` worktree branch to a same-named
+      # remote ref (e.g. `git push --set-upstream origin wt-X`). Worktree
+      # branches ship via `git push origin HEAD:main` only. AI-CLI-128.
+      - id: wt-branch-push-guard
+        name: wt-branch-push-guard (no publishing worktree branches)
+        entry: .githooks/wt-branch-push-guard.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
       # Fail if any .claude/settings.json hook command points at a script that
       # no longer exists (e.g. a copier _exclude removed it but the
       # _skip_if_exists settings.json still references it). Cheap; runs every
       # commit so it also catches script deletions that don't touch settings.json.
       - id: validate-claude-settings
         name: validate .claude/settings.json hook script refs exist
-        entry: .githooks/validate-claude-settings.py
-        language: script
+        entry: validate-claude-settings
+        language: system
+        pass_filenames: false
+        always_run: true
+      # ruff-unification sweep (AIH-473, 2026-07-27): the ruff-pre-commit rev
+      # above and pyproject.toml's ruff pin are two independent pins
+      # provisioning two separate binaries. Nothing else keeps them equal, so
+      # they drift silently. Fails loudly at commit time instead of being
+      # discovered months later as a green-gate/red-terminal mismatch.
+      - id: ruff-version-sync
+        name: ruff version sync (pre-commit rev == pyproject.toml pin)
+        entry: python3 scripts/check_ruff_version_sync.py
+        language: system
         pass_filenames: false
         always_run: true
       # docs-index-check REMOVED (CORE-55). The generated docs/README.md index had
@@ -97,18 +129,28 @@ repos:
       # gate-first: docs/README.md content is untouched by this change.
       - id: test-gate
         name: test gate (mise-aware, tech-stack auto-detect)
-        entry: .githooks/test-gate.sh
-        language: script
+        entry: test-gate
+        language: system
         stages: [pre-push]
         pass_filenames: false
         always_run: true
-      # Reject a push that introduces a duplicate PREFIX-N roadmap entry id
-      # (pre-existing dups on origin/main are grandfathered). AIH-89 T-02.
-      # Bypass: SKIP=roadmap-guard git push
-      - id: roadmap-guard
-        name: roadmap-guard (no new duplicate PREFIX-N ids)
-        entry: .githooks/roadmap-guard.sh
-        language: script
-        stages: [pre-push]
+      # D-10 Layer 2 (bypass-proof dual-ID backstop, AIH-387): reject a commit
+      # whose staged .beads/issues.jsonl has an entry missing external_ref, or
+      # a duplicate (id-prefix, external_ref) pair. Replaces roadmap-guard
+      # (below, retired SW-1025): that hook grepped docs/roadmap/master-roadmap.md
+      # for duplicate PREFIX-N entries, and has silently checked nothing in every
+      # repo since T-12 moved every roadmap to docs/roadmap/archive/ (Beads is
+      # now the sole task system of record, SW-841). This is a strictly
+      # stronger replacement for the same underlying invariant — commit-time,
+      # not push-time, and it reads the live store's dual-ID data instead of a
+      # retired roadmap. The checker (scripts/bd_precommit_validate.py) lives
+      # in ai-harness, resolved via PATH (ai-harness install.sh symlinks
+      # ai-harness/.claude/bin/bd-precommit-validate into ~/.claude/bin/,
+      # same pattern as bd-new/bdx) rather than vendored per repo.
+      # Bypass: SKIP=bd-precommit-validate git commit
+      - id: bd-precommit-validate
+        name: bd dual-ID invariant (staged .beads/issues.jsonl)
+        entry: bd-precommit-validate
+        language: system
         pass_filenames: false
         always_run: true
