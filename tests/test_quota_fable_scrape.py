@@ -136,4 +136,8 @@ def test_last_good_fable_survives_lookup_but_render_never_shows_it(monkeypatch, 
     with patch("ai_cli.quota._launch_background_scrape"):
         quota_statusline_part()
     out = capsys.readouterr().out
-    assert "ccF" not in out and "7%" not in out
+    # Check the Fable label specifically, not a raw "7%" substring -- the real (unmocked)
+    # ccWk pace-delta is computed from wall-clock time and can coincidentally contain "7%"
+    # on an unrelated run, which flaked this assertion under randomized test ordering.
+    assert "ccF" not in out
+    assert "ccS" not in out
