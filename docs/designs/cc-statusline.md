@@ -90,7 +90,6 @@ The final line ends with `\033[0m\033[K\n` — reset + erase-to-EOL to clear lef
 | Yellow | `\033[33m` | Context % 50–79% |
 | Red | `\033[31m` | Context % ≥80% |
 | Bold Cyan | `\033[1;36m` | Week/W label in quota segment |
-| Bold Magenta | `\033[1;35m` | Son/S label in quota segment |
 
 ### Branch Display Rules
 
@@ -114,29 +113,31 @@ Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()
 > env vars that `quota_statusline_part()` consumes as the authoritative source (recording a
 > *throttled* snapshot so the acceleration arrow keeps its cadence). The old `claude -p /usage`
 > print-mode capture is **retired** (emits no quota bars on 2.1.207). The hidden-pane `/usage`
-> scrape remains **only** for the single per-model **Fable** cap (`Current week (Fable)` — the
-> lone per-model datum `/usage` exposes; no multi-model breakdown exists), triggered on a
-> Fable-specific cadence with rate-limit **backoff**. See plan `ai-harness/docs/plans/aih-164-*`
-> + research `docs/research/claude-quota-statusline-rate-limits-2026.md`.
+> scrape formerly supplied the single per-model **Fable** cap (`Current week (Fable)`). On
+> 2026-07-29, Anthropic stopped exposing that datum. At the following quota-week rollover, the
+> missing Fable value was incorrectly rendered as blank `ccS` data; the immediate fix changed
+> that state to explicit `ccF UNAVAILABLE`. Because the upstream data has no realistic near-term
+> path to return, the `ccF` segment was then removed entirely. The statusline now renders only
+> the all-models weekly `ccWk` segment.
+>
+> The Fable parser, `weekly_sonnet_pct` and `weekly_model_name` database columns, and
+> Fable-specific backoff state remain in the codebase as retained dead code pending a separate
+> removal decision. They are not called from the statusline render path. See plan
+> `ai-harness/docs/plans/aih-164-*` + research
+> `docs/research/claude-quota-statusline-rate-limits-2026.md`.
 
 ### Output Format
 
 **Normal phase** (week elapsed ≥ 24h):
 
 ```
-📊 Week 42% →+8% ✅ | Son 87% →+5%
+📊 Week 42% →+8% ✅
 ```
 
 **Seedling phase** (week elapsed < 24h):
 
 ```
-📊 Week 12% →+3% 🌱 [⏱] | Son 8% →+1%
-```
-
-**When Sonnet data absent** (background scrape triggered):
-
-```
-📊 Week 42% →+8% ✅ | Son -% →-%
+📊 Week 12% →+3% 🌱 [⏱]
 ```
 
 **When scrape format changed** (DB mismatch counter raised):
@@ -149,10 +150,10 @@ Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()
 
 The `AI_CLI_STATUSLINE_COLS` env var (set from `${COLUMNS:-0}` in the shell) controls label width:
 
-| Terminal width | Week label | Son label |
-|---------------|------------|-----------|
-| ≥ 80 cols | `Week` | `Son` |
-| < 80 cols (or 0) | `W` | `S` |
+| Terminal width | Week label |
+|---------------|------------|
+| ≥ 80 cols | `Week` |
+| < 80 cols (or 0) | `W` |
 
 ### Pace Indicator Colors
 
@@ -160,11 +161,6 @@ The `AI_CLI_STATUSLINE_COLS` env var (set from `${COLUMNS:-0}` in the shell) con
 - delta ≤ 10% → green (on pace)
 - delta ≤ 25% → yellow (slightly ahead)
 - delta > 25% → red (burning fast)
-
-**Sonnet pace `→±X%`:**
-- delta ≤ 10% → green
-- delta ≤ 25% → yellow
-- delta > 25% → red
 
 Where `delta = usage_pct - week_elapsed_pct`.
 
@@ -247,6 +243,7 @@ The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup`
 - **`quota_statusline_part()`** in `quota.py` reads from `quota.db` (SQLite, `quota_snapshots` table) and the `quota_meta` table for format-change detection.
 - **`ai quota record`** writes to `quota_snapshots` via `QuotaDB.record()`.
 - **`ai quota scrape`** populates `quota_snapshots` via `_scrape_usage_hidden_pane()`. Format-change detection writes to `quota_meta`.
+- The retained Fable parser, `weekly_sonnet_pct` and `weekly_model_name` columns, and Fable backoff state are dead code: the statusline render path no longer schedules a Fable scrape or renders stored Fable values.
 - **CC statusLine hook** — configured in `.claude/settings.json`: `{"hooks": {"statusLine": [{"type": "command", "command": "~/.claude/statusline-command.sh"}]}}`.
 
 ## Open Questions
@@ -264,6 +261,7 @@ The shell script is installed to `~/.claude/statusline-command.sh` by `ai setup`
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-29 | Initial doc created | Documents current implementation as of AI-CLI-64 + AI-CLI-68 |
+| 2026-07-29 | Retired the `ccF` Fable segment | Upstream `/usage` stopped exposing Fable data; after the rollover mislabeling fix and explicit unavailable state, the permanently unavailable segment was removed. Retained scraper, database, and backoff machinery awaits a separate removal decision. |
 
 <!-- /doc:region name="overview" -->
 
