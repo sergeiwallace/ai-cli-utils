@@ -971,19 +971,30 @@ class TestDoSessionLaunchTmuxGuard:
             config={},
         )
 
-    def test_when_win32_and_tmux_not_found_then_exits_with_message(self, capsys):
+    def test_when_win32_and_tmux_not_found_then_falls_back_to_bare_mode(self, capsys):
+        """On Windows, missing tmux must NOT abort — fall back to bare mode silently.
+
+        Regression test for the bug where the tmux guard exited with code 1 on Windows
+        instead of continuing in bare mode.
+        """
         from ai_cli.main import _do_session_launch
 
         with (
             patch("sys.platform", "win32"),
             patch("shutil.which", return_value=None),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _do_session_launch(**self._base_kwargs())
-        assert exc_info.value.code == 1
+        # Must NOT be the tmux-not-found hard exit (code 1 with the error message).
         err = capsys.readouterr().err
-        assert "tmux" in err
-        assert "MSYS2" in err or "pacman" in err
+        assert "tmux not found" not in err
+        assert exc_info.value.code != 1, (
+            "Windows + no tmux should fall back to bare mode, not exit 1"
+        )
 
     def test_when_win32_and_tmux_found_then_does_not_exit_early(self, capsys):
         from ai_cli.main import _do_session_launch
