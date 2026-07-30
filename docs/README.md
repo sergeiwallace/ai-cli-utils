@@ -96,6 +96,7 @@ Testing templates and tracking.
 | [[BUG-004] Session worktrees branch from HEAD, not origin/main — not PR-clean, and the sync rebases the wrong commits](bugs/worktree-base-not-origin-main.md) | fix-deployed | ai-cli-utils | session, worktree, git, branch, upstream, credentials |
 | [[BUG-005] A private project name and two private repository names leak into this public package](bugs/public-repo-private-names.md) | fix-deployed | ai-cli-utils | hygiene, public-package, naming, privacy, regression-guard |
 | [[BUG-006] The hard gate inherited its ruleset from ruff's default, so a tool upgrade silently redefined what passing means](bugs/ruff-gate-inherited-ruleset.md) | fix-deployed | ai-cli-utils | ruff, lint, gate, tooling, pin, pre-commit, config, regression-guard |
+| [[BUG-007] Seven LLM-merge tests skipped on every machine and in CI — the module they need was never a declared dependency](bugs/genai-tests-skipped-everywhere.md) | fix-deployed | ai-cli-utils | tests, skip, dependency, sync, llm-merge, coverage |
 
 ## Designs
 

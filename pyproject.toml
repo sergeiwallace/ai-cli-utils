@@ -76,6 +76,10 @@ dev = [
     "pyright>=1.1.408",
     "freezegun>=1.5",
     "pytest-randomly>=4.1.0",
+    # Test-only: the LLM memory-merge tests mock google.genai.Client, and
+    # patch() needs the real module importable. Runtime keeps it optional —
+    # sync.py imports it lazily and degrades to a .conflict file without it.
+    "google-genai>=1.0",
 ]
 
 [tool.pytest.ini_options]

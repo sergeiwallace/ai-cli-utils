@@ -1662,8 +1662,6 @@ def test_load_sync_config_when_no_sync_host_then_derives_from_remote():
 def test_load_sync_config_when_no_host_at_all_then_exits():
     config = {"sync": {}, "remote": {}}
     with patch("ai_cli.config.load_config", return_value=config):
-        import pytest
-
         with pytest.raises(SystemExit):
             load_sync_config()
 
@@ -4430,7 +4428,6 @@ def test_llm_merge_memory_conflict_when_no_api_key_then_returns_none(monkeypatch
 
 
 def test_llm_merge_memory_conflict_when_api_exception_then_returns_none(monkeypatch):
-    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
@@ -4446,7 +4443,6 @@ def test_llm_merge_memory_conflict_when_api_exception_then_returns_none(monkeypa
 
 def test_llm_merge_memory_conflict_when_llm_leaves_markers_then_returns_none(monkeypatch):
     """If the LLM output still contains conflict markers, we must reject it — applying it would corrupt the file."""
-    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
@@ -4464,7 +4460,6 @@ def test_llm_merge_memory_conflict_when_llm_leaves_markers_then_returns_none(mon
 
 def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content(monkeypatch):
     """Successful merge: both sides preserved, no conflict markers in output."""
-    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "fake-key")
@@ -4490,7 +4485,6 @@ def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content
 
 def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
     """GOOGLE_API_KEY_TIER_1 should be preferred over GEMINI_API_KEY when both are set."""
-    pytest.importorskip("google.genai", reason="google-genai not installed")
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "tier1-key")
@@ -4521,7 +4515,6 @@ def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
 def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_then_file_written_no_conflict_file(tmp_path):
     """When LLM successfully merges conflict markers, the merged content goes to dst and staging is updated.
     No .conflict file should be created. applied_count should reflect the merge."""
-    pytest.importorskip("google.genai", reason="google-genai not installed")
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
     conflict_dir = tmp_path / "conflicts"
@@ -4566,7 +4559,6 @@ def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_then_file_writt
 
 def test_apply_pull_files_when_conflict_markers_and_llm_fails_then_conflict_file_written(tmp_path):
     """When LLM fails (no key), conflict file is written and local CC file is NOT modified."""
-    pytest.importorskip("google.genai", reason="google-genai not installed")
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
     conflict_dir = tmp_path / "conflicts"
@@ -4629,7 +4621,6 @@ def test_apply_pull_files_when_conflict_markers_and_dry_run_then_llm_not_called(
 
 
 def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_verbose_then_prints_auto_merged(tmp_path, capsys):
-    pytest.importorskip("google.genai", reason="google-genai not installed")
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
     conflict_dir = tmp_path / "conflicts"

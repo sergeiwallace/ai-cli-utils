@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Seven tests covering the LLM memory-merge path (`_llm_merge_memory_conflict` and
+  the `apply_pull_files` auto-merge branch) had never executed anywhere: they were
+  guarded by `pytest.importorskip("google.genai")`, but `google-genai` was not a
+  declared dependency in any group, so CI and every dev machine skipped them
+  unconditionally. `google-genai` is now a dev-group dependency (test-only — the
+  runtime import stays lazy and optional) and the skip guards are removed, so a
+  missing module fails the suite instead of silently skipping coverage.
+  (`AI-CLI-146`, BUG-007 in `docs/bugs/genai-tests-skipped-everywhere.md`)
+
 - `ai quota scrape` leaked Claude Code's update downloads to disk at roughly 8 GB/day
   (`AI-CLI-131`). The scrape launches `claude` in a throwaway tmux session and kills
   that session unconditionally about 15 seconds later; Claude Code had by then begun
