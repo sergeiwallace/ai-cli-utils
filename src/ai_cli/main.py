@@ -2483,6 +2483,65 @@ def cmd_color(color_arg):
     _do_color(color_arg)
 
 
+@_cli_group.command(
+    "cc-migrate",
+    help="Move a Claude Code session transcript from one project root to another (e.g. repo root -> worktree)",
+)
+@click.argument("dest", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("-t", "--title", default="", help="Select the source session by its customTitle (session name)")
+@click.option("-u", "--uuid", "session_id", default="", help="Select the source session by UUID (transcript filename)")
+@click.option(
+    "-s",
+    "--source",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Source project root the session ran in (default: current directory)",
+)
+@click.option("-k", "--keep-source", is_flag=True, help="Copy instead of move — leave the source transcript in place")
+@click.option("-p", "--preserve-cwd", is_flag=True, help="Do not rewrite recorded cwd fields to the destination root")
+@click.option("-d", "--dry-run", is_flag=True, help="Show what would happen without writing anything")
+@click.option("-f", "--force", is_flag=True, help="Overwrite an existing destination transcript")
+def cmd_cc_migrate(dest, title, session_id, source, keep_source, preserve_cwd, dry_run, force):
+    """Migrate a CC session so ``ai c <n>`` in DEST resumes it.
+
+    Typical use: a session was launched at the repo root (``claude --name
+    myproject-2``) instead of through ``ai c 2``, so its transcript lives in
+    the repo root's ~/.claude/projects directory where the worktree launch
+    cannot see it. From the repo root, run:
+
+        ai cc-migrate .worktrees/myproject-2 --title myproject-2
+
+    then ``ai c 2`` resumes the migrated conversation.
+    """
+    from .cc_migrate import migrate_session
+
+    source_root = (source or Path.cwd()).resolve()
+    try:
+        result = migrate_session(
+            source_root,
+            dest.resolve(),
+            title=title or None,
+            session_id=session_id or None,
+            keep_source=keep_source,
+            preserve_cwd=preserve_cwd,
+            dry_run=dry_run,
+            force=force,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    verb = "Would migrate" if result.dry_run else ("Copied" if not result.moved else "Migrated")
+    print(f"{verb} {result.source_jsonl}")
+    print(f"  -> {result.dest_jsonl}")
+    print(f"  {result.lines} lines, {result.rewritten} cwd rewrites")
+    if result.sidecar_moved is not None:
+        print(f"  sidecar dir -> {result.sidecar_moved}")
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+    sys.exit(0)
+
+
 # --- tunnel group ---
 
 
