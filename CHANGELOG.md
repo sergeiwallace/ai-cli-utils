@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every `ai update` and the auto-update at session launch printed a hardlink-fallback
+  warning to stderr when uv's cache and tool-install directories resided on different
+  filesystems (e.g., cache on EFS, tools on local NVMe). The install always succeeded,
+  but the warning fired on every update, training users to ignore update output. The
+  code now detects the `st_dev` mismatch via `os.stat()` and passes `--link-mode=copy`
+  only when cache and target are on different filesystems, suppressing the warning
+  without degrading the hardlink fast path on single-filesystem machines.
+  (`AI-CLI-148`, BUG-008 in `docs/bugs/uv-hardlink-fallback-warning.md`)
+
 - Seven tests covering the LLM memory-merge path (`_llm_merge_memory_conflict` and
   the `apply_pull_files` auto-merge branch) had never executed anywhere: they were
   guarded by `pytest.importorskip("google.genai")`, but `google-genai` was not a

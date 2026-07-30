@@ -111,7 +111,12 @@ class TestCliDispatch:
     def test_cli_when_upgrade_then_calls_execvp(self):
         with patch("sys.argv", ["ai", "upgrade"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                with (
+                    patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+                    patch(
+                        "subprocess.run", return_value=MagicMock(returncode=1)
+                    ),  # Make _should_use_uv_link_mode_copy return False
+                ):
                     with pytest.raises(SystemExit):
                         cli()
                     mock_exec.assert_called_once_with("uv", ["uv", "tool", "upgrade", "ai-cli-utils"])
@@ -1917,6 +1922,55 @@ class TestDeploy:
         assert checkout_idx < pull_idx, "checkout must run before pull"
         assert "--autostash" in calls[pull_idx], "pull must use --autostash"
 
+    def test_deploy_when_cache_on_other_filesystem_then_uv_install_gets_link_mode_copy(self, tmp_path):
+        """The detection must actually reach uv's argv — a correct helper wired up
+        wrong still leaves the warning on screen, which is the whole defect."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("ai_cli.main._should_use_uv_link_mode_copy", return_value=True),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        install = next((c for c in calls if "tool" in c and "install" in c), None)
+        assert install is not None, "uv tool install not called"
+        assert "--link-mode=copy" in install, f"--link-mode=copy missing from {install}"
+
+    def test_deploy_when_cache_on_same_filesystem_then_uv_install_omits_link_mode(self, tmp_path):
+        """The fast path must be preserved: no flag when both dirs share a filesystem."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nversion = "0.1.0"\n')
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sys.argv", ["ai", "update"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("ai_cli.main._should_use_uv_link_mode_copy", return_value=False),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+            assert exc.value.code == 0
+
+        install = next((c for c in calls if "tool" in c and "install" in c), None)
+        assert install is not None, "uv tool install not called"
+        assert not any(a.startswith("--link-mode") for a in install), f"unexpected --link-mode in {install}"
+
     def test_deploy_when_autostash_pop_conflicts_then_aborts_instead_of_installing(self, tmp_path, capsys):
         """AIH-443 Shape B, end to end through the real `ai update` path against
         real git. The pull exits 0 while its autostash pop conflicts; `ai update`
@@ -2187,7 +2241,12 @@ class TestTriggerBackgroundUpdate:
         state_file.write_text(json.dumps({"last_checked": 0}))
 
         with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
-            with patch("subprocess.Popen") as mock_popen:
+            with (
+                patch("subprocess.Popen") as mock_popen,
+                patch(
+                    "subprocess.run", return_value=MagicMock(returncode=1)
+                ),  # Make _should_use_uv_link_mode_copy return False
+            ):
                 trigger_background_update()
         mock_popen.assert_called_once()
         assert "uv" in mock_popen.call_args[0][0]
@@ -2203,7 +2262,12 @@ class TestTriggerBackgroundUpdate:
 
     def test_trigger_update_when_no_state_file_then_runs(self, tmp_path):
         with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
-            with patch("subprocess.Popen") as mock_popen:
+            with (
+                patch("subprocess.Popen") as mock_popen,
+                patch(
+                    "subprocess.run", return_value=MagicMock(returncode=1)
+                ),  # Make _should_use_uv_link_mode_copy return False
+            ):
                 trigger_background_update()
         mock_popen.assert_called_once()
 
@@ -2214,7 +2278,12 @@ class TestTriggerBackgroundUpdateBadJson:
         state_file.write_text("not valid json {{{")
 
         with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
-            with patch("subprocess.Popen") as mock_popen:
+            with (
+                patch("subprocess.Popen") as mock_popen,
+                patch(
+                    "subprocess.run", return_value=MagicMock(returncode=1)
+                ),  # Make _should_use_uv_link_mode_copy return False
+            ):
                 trigger_background_update()
         mock_popen.assert_called_once()
 

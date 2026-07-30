@@ -1161,3 +1161,132 @@ class TestDoSessionLaunchRegistryDiscovery:
 
         assert exc_info.value.code == 0
         validate.assert_not_called()
+
+
+# --- uv link-mode detection tests ---
+
+
+class TestUvLinkModeDetection:
+    """Test _should_use_uv_link_mode_copy behavior across filesystem boundaries."""
+
+    def test_given_same_filesystem_when_checked_then_returns_false(self, tmp_path):
+        """When cache and target are on the same filesystem, no --link-mode flag needed."""
+        from ai_cli.main import _should_use_uv_link_mode_copy
+
+        # Both directories on the same filesystem (tmp_path).
+        cache_dir = tmp_path / "cache"
+        tool_dir = tmp_path / "tools"
+        cache_dir.mkdir()
+        tool_dir.mkdir()
+
+        mock_uv = "uv"
+        with (
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    # First call: uv cache dir
+                    MagicMock(returncode=0, stdout=str(cache_dir) + "\n"),
+                    # Second call: uv tool dir
+                    MagicMock(returncode=0, stdout=str(tool_dir) + "\n"),
+                ],
+            ),
+        ):
+            result = _should_use_uv_link_mode_copy(mock_uv)
+
+        assert result is False
+
+    def test_given_different_filesystems_when_checked_then_returns_true(self, tmp_path, monkeypatch):
+        """When cache and target are on different filesystems, return True for --link-mode=copy."""
+        from ai_cli.main import _should_use_uv_link_mode_copy
+
+        cache_dir = tmp_path / "cache"
+        tool_dir = tmp_path / "tools"
+        cache_dir.mkdir()
+        tool_dir.mkdir()
+
+        # Create mock stat_result objects with different st_dev values.
+        cache_stat = os.stat_result((0o40755, 123, 100, 2, 1000, 1000, 4096, 0, 0, 0))
+        tool_stat = os.stat_result((0o40755, 456, 200, 2, 1000, 1000, 4096, 0, 0, 0))
+
+        original_stat = Path.stat
+
+        def mock_stat(self, **kwargs):
+            path_str = str(self)
+            if path_str == str(cache_dir):
+                return cache_stat
+            elif path_str == str(tool_dir):
+                return tool_stat
+            else:
+                # Use original for other paths (walking up to parents)
+                return original_stat(self, **kwargs)
+
+        mock_uv = "uv"
+        with (
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    MagicMock(returncode=0, stdout=str(cache_dir) + "\n"),
+                    MagicMock(returncode=0, stdout=str(tool_dir) + "\n"),
+                ],
+            ),
+        ):
+            monkeypatch.setattr(Path, "stat", mock_stat)
+            result = _should_use_uv_link_mode_copy(mock_uv)
+
+        assert result is True
+
+    def test_given_cache_dir_unresolvable_when_checked_then_returns_false(self):
+        """When uv cache dir command fails, preserve default behavior (return False)."""
+        from ai_cli.main import _should_use_uv_link_mode_copy
+
+        mock_uv = "uv"
+        with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+            result = _should_use_uv_link_mode_copy(mock_uv)
+
+        assert result is False
+
+    def test_given_target_dir_does_not_exist_when_checked_then_walks_up_to_ancestor(self, tmp_path):
+        """When target dir does not exist yet, walk up to nearest existing ancestor."""
+        from ai_cli.main import _should_use_uv_link_mode_copy
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        # Tool dir does not exist yet, but its parent does.
+        tool_parent = tmp_path / "tools-parent"
+        tool_parent.mkdir()
+        nonexistent_tool_dir = tool_parent / "subdir" / "tools"
+
+        mock_uv = "uv"
+        with patch(
+            "subprocess.run",
+            side_effect=[
+                MagicMock(returncode=0, stdout=str(cache_dir) + "\n"),
+                MagicMock(returncode=0, stdout=str(nonexistent_tool_dir) + "\n"),
+            ],
+        ):
+            result = _should_use_uv_link_mode_copy(mock_uv)
+
+        # Both are under tmp_path, so same filesystem → False.
+        assert result is False
+
+    def test_given_explicit_target_dir_when_checked_then_uses_it(self, tmp_path):
+        """When target_dir is explicitly provided, use it instead of uv tool dir."""
+        from ai_cli.main import _should_use_uv_link_mode_copy
+
+        cache_dir = tmp_path / "cache"
+        venv_dir = tmp_path / "venv"
+        cache_dir.mkdir()
+        venv_dir.mkdir()
+
+        mock_uv = "uv"
+        with patch(
+            "subprocess.run",
+            side_effect=[
+                # Only one call: uv cache dir (uv tool dir not called when target_dir provided).
+                MagicMock(returncode=0, stdout=str(cache_dir) + "\n"),
+            ],
+        ):
+            result = _should_use_uv_link_mode_copy(mock_uv, venv_dir)
+
+        # Same filesystem → False.
+        assert result is False

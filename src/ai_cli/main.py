@@ -446,8 +446,12 @@ def trigger_background_update():
             pass
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps({"last_checked": now}))
+    uv_bin = shutil.which("uv") or "uv"
+    upgrade_cmd = ["uv", "tool", "upgrade", "ai-cli-utils"]
+    if _should_use_uv_link_mode_copy(uv_bin):
+        upgrade_cmd.append("--link-mode=copy")
     subprocess.Popen(
-        ["uv", "tool", "upgrade", "ai-cli-utils"],
+        upgrade_cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
@@ -1147,6 +1151,83 @@ def _has_conflict_or_unknown(repo_root) -> bool:
         return True
 
 
+def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None) -> bool:
+    """Detect if uv's cache and install target dirs are on different filesystems.
+
+    When uv's cache directory and its install target directory reside on
+    different filesystems (e.g. cache on NFS/EFS, target on local disk), hardlinking
+    is physically impossible and uv falls back to copying with a warning. Detecting
+    this condition lets us pass --link-mode=copy explicitly to suppress the warning.
+
+    This decision is portable (os.stat().st_dev comparison works on Linux, macOS,
+    and Windows) and automatic — no user-facing flag needed.
+
+    Args:
+        uv_bin: Path to the uv executable.
+        target_dir: Optional target directory to check (e.g., a venv path for
+            `uv pip install`). If None, checks the tool install directory.
+
+    Returns True if the filesystems differ (use --link-mode=copy), False if they
+    match (let uv hardlink), or False on any error (preserve default behavior).
+
+    Implementation notes:
+    - Resolve uv's cache directory via `uv cache dir` rather than reading UV_CACHE_DIR
+      ourselves: this matches uv's own resolution (env var > platform default) and
+      stays correct if uv's fallback logic changes. Cheap subprocess (exits immediately).
+    - Resolve the tool install directory via `uv tool dir` if target_dir is None.
+      If that returns nothing (on some uv versions), fall back to the platform-appropriate
+      default.
+    - If the target directory does not exist yet (first install), walk up to the
+      nearest existing ancestor before stat'ing — st_dev is an inode property, so
+      any ancestor on the same filesystem carries the same value.
+    - On any failure (uv not found, command error, path stat error), return False
+      to preserve the current "no explicit --link-mode" behavior — never let this
+      detection break an update.
+    """
+    try:
+        # Resolve uv's cache directory the way uv itself does.
+        cache_result = subprocess.run([uv_bin, "cache", "dir"], capture_output=True, text=True, timeout=5)
+        if cache_result.returncode != 0:
+            return False
+        cache_dir = Path(cache_result.stdout.strip())
+        if not cache_dir or not cache_dir.exists():
+            return False
+
+        # Resolve the target directory.
+        if target_dir is None:
+            # Resolve the tool install directory. `uv tool dir` may print nothing on some
+            # versions; fall back to the platform-appropriate default if so.
+            tool_result = subprocess.run([uv_bin, "tool", "dir"], capture_output=True, text=True, timeout=5)
+            tool_dir_str = tool_result.stdout.strip() if tool_result.returncode == 0 else ""
+            if tool_dir_str:
+                install_dir = Path(tool_dir_str)
+            else:
+                # Platform-specific default tool install location (uv 0.1.x - 0.5.x behavior).
+                # Windows: %LOCALAPPDATA%\uv\tools or ~/.local/share/uv/tools
+                # Unix: ~/.local/share/uv/tools
+                install_dir = Path.home() / ".local" / "share" / "uv" / "tools"
+        else:
+            install_dir = target_dir
+
+        # The target directory may not exist yet on a first install. Walk up to the
+        # nearest existing ancestor — st_dev is the same for every path on that filesystem.
+        target = install_dir
+        while not target.exists():
+            parent = target.parent
+            if parent == target:
+                # Reached the root without finding an existing ancestor.
+                return False
+            target = parent
+
+        cache_dev = cache_dir.stat().st_dev
+        target_dev = target.stat().st_dev
+        return cache_dev != target_dev
+
+    except Exception:
+        # Preserve current behavior (no --link-mode flag) on any error.
+        return False
+
+
 # --- Command implementations (invoked by Click handlers below) ---
 
 
@@ -1241,6 +1322,8 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
         uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
         if force_reinstall:
             uv_cmd.append("--reinstall")
+        if _should_use_uv_link_mode_copy(uv_bin):
+            uv_cmd.append("--link-mode=copy")
         result = subprocess.run(uv_cmd, cwd=project_path)
         exit_code = result.returncode
     finally:
@@ -1254,6 +1337,8 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
                 pip_cmd = [uv_bin, "pip", "install", str(project_path)]
                 if force_reinstall:
                     pip_cmd.append("--force-reinstall")
+                if _should_use_uv_link_mode_copy(uv_bin, venv_path):
+                    pip_cmd.append("--link-mode=copy")
                 subprocess.run(
                     pip_cmd,
                     env={**os.environ, "VIRTUAL_ENV": str(venv_path)},
@@ -2147,7 +2232,11 @@ def cmd_g(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, p
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
 def cmd_upgrade():
     print("Upgrading ai-cli-utils...", file=sys.stderr)
-    os.execvp("uv", ["uv", "tool", "upgrade", "ai-cli-utils"])
+    uv_bin = shutil.which("uv") or "uv"
+    upgrade_args = ["uv", "tool", "upgrade", "ai-cli-utils"]
+    if _should_use_uv_link_mode_copy(uv_bin):
+        upgrade_args.append("--link-mode=copy")
+    os.execvp("uv", upgrade_args)
 
 
 @_cli_group.command("setup", help="Run interactive setup wizard")
