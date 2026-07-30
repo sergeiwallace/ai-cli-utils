@@ -992,9 +992,7 @@ class TestDoSessionLaunchTmuxGuard:
         # Must NOT be the tmux-not-found hard exit (code 1 with the error message).
         err = capsys.readouterr().err
         assert "tmux not found" not in err
-        assert exc_info.value.code != 1, (
-            "Windows + no tmux should fall back to bare mode, not exit 1"
-        )
+        assert exc_info.value.code != 1, "Windows + no tmux should fall back to bare mode, not exit 1"
 
     def test_when_win32_and_tmux_found_then_does_not_exit_early(self, capsys):
         from ai_cli.main import _do_session_launch
