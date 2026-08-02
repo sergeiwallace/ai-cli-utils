@@ -13,7 +13,7 @@ template_version: "research-1.2.0"
 
 **Created:** 2026-08-02
 
-**Task:** SW-996
+**Task:** AI-CLI-153..157 (design + implementation issues derived from this research)
 
 ## Table of Contents
 
@@ -295,12 +295,12 @@ Suggested evidence-gated acceptance criteria:
 
 ## Appendix: Research Prompt
 
-**Registry ID:** none — cx research delegation under SW-996
+**Registry ID:** none — cx research delegation under the originating handoff-reliability task
 **Model:** Codex flagship research, high effort
 **Date:** 2026-08-02
 
 ````text
-# Research brief — AI/CC cross-session handoff: survey of patterns, OSS, and native mechanisms (SW-996)
+# Research brief — AI/CC cross-session handoff: survey of patterns, OSS, and native mechanisms (the originating handoff-reliability task)
 
 You are a research worker (Codex, research profile). You are a LEAF worker: you cannot and must
 not spawn any sub-agents. Your ONLY deliverable is the write-target file
@@ -317,7 +317,7 @@ Contents → Context (primary period 2024–2026; source weighting: official doc
 primary, community reports secondary) → Temporal Scope → Executive Summary (3-5 numbered findings)
 → numbered topic sections → Comparison table (with a numbered `#` first column) → Recommendation →
 Open Questions → Sources (GFM footnote definitions, APA form, access stamps) → Appendix: Research
-Prompt (Registry ID: none — cx research delegation under SW-996; Model: Codex flagship research,
+Prompt (Registry ID: none — cx research delegation under the originating handoff-reliability task; Model: Codex flagship research,
 high effort; Date: 2026-08-02; full prompt = this brief in a fenced text block, 4-backtick outer
 fence) → Appendix: Provenance Ledger → Run History (one entry for this run).
 Diagrams Mermaid only; math LaTeX; never binary images.
@@ -409,18 +409,18 @@ where you did.
 ## Background — established; do NOT re-derive or re-research these
 Assume all Background points are established facts about the consuming fleet (verified locally
 2026-08-02); use them to judge fit, cite them as local context (not with web footnotes):
-- The fleet runs many parallel Claude Code CLI sessions in tmux (sw-1..sw-6 + per-repo sessions)
-  on two machines (macOS primary + a Linux/Hetzner box over SSH). NATS with JetStream runs on the
-  Linux box; Mac reaches it via an auto SSH tunnel.
+- The fleet runs many parallel Claude Code CLI sessions in tmux
+  on two machines (macOS primary + a remote Linux box over SSH). NATS with JetStream runs on the
+  remote Linux box; Mac reaches it via an auto SSH tunnel.
 - Current handoff system (this repo, ai-cli-utils): durable flat-file queue at
-  `~/projects/sergei/.handoff-queue/{pending,claimed,completed}/NNN-slug.md` (YAML frontmatter;
+  `the configured handoff-queue directory ({pending,claimed,completed}/NNN-slug.md)` (YAML frontmatter;
   claim = atomic rename), plus best-effort NATS JetStream push (`handoff.{project}` subjects), a
   pre-launch synchronous drain, a session-restart while-loop pickup, and a NATS signal-watch
   process per session. Two planned pickup layers (Claude Code Stop hook + UserPromptSubmit hook)
   were designed but never implemented. Delivery into a LIVE mid-conversation CC session relies on
   tmux send-keys, which is unreliable.
 - Separately, context handoff ACROSS compaction/restart of the SAME session is handled by a
-  `save-state` skill + a SessionStart `resume-inject.sh` hook (resume-message outbox/ack files).
+  session-state save/resume hook mechanism (resume-message outbox/ack files).
 - Claude Code's harness reaps `run_in_background` Bash tasks when the launching turn ends and the
   session idles (publicly reported: anthropics/claude-code#76249, #78046, #73332) — any design
   relying on CC background tasks must account for this.
@@ -536,5 +536,7 @@ build-vs-adopt decision is made by the coordinator, not you.
 ## Run History
 
 - **2026-08-02 — Run 1:** Codex flagship research, high effort. Used four distinct retrieval framings: (1) mainstream/official native Claude Code mechanisms, (2) contrarian community and open-issue failure reports, (3) adjacent durable queues/leases/checkpointing, and (4) recency-first 2026 OSS discovery. Live-fetched every cited URL and validated 28 cited sources. Chain-of-Verification removed claims that Channels acknowledge processing, that MCP Agent Mail is standard MIT OSS, that Beads remains SQLite-backed, and that Agent Teams coordinate arbitrary existing sessions. Five-angle adversarial pass outcomes: **conventional**—preserved queue/lease/ack fundamentals; **contrarian**—retained current native reaping and tmux-drop evidence; **historical**—kept atomic rename as valid at low scale; **adjacent**—added lease expiry, idempotency, and dead-letter semantics; **skeptic**—downgraded unbenchmarked comparative claims to inference/no-source. The missing canonical template paths were recorded under Temporal Scope; the supplied reference was used. No prior run-history entries existed.
+
+- **2026-08-02 — Sanitization pass (coordinator):** replaced internal tracking ids, personal paths, session names, and private tool/host names with generic placeholders per this repo's public open-source policy (AGENTS.md), including inside the verbatim research-prompt appendix (redactions are like-for-like placeholders, not content changes). No findings, citations, or ledger rows were altered.
 
 <!-- /doc:region name="run_history" -->
