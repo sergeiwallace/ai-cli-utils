@@ -1,7 +1,7 @@
-"""Coverage for the opt-in pre-launch settings override in the generated launch
-template: when a worktree carries a marker file, the template writes a specific
-`env` override into `.claude/settings.local.json` before the agent process
-starts, on every launch and every restart.
+"""Coverage for the pre-launch settings override in the generated launch
+template: every Claude Code worktree receives a specific `env` override in
+`.claude/settings.local.json` before the agent process starts, on every launch
+and every restart.
 
 Why this exists: some Claude Code feature checks resolve once, very early in
 process startup — before any same-process settings change (e.g. one written by
@@ -48,15 +48,14 @@ def _minimal_path_with_python3() -> str:
 
 
 def _extract_toggle_block(script: str) -> str:
-    """Pull the `if [[ "$engine" == "c" && -f ".claude/.ai-cli-growthbook-toggle" ...`
-    block out of the generated template so the test always exercises whatever
-    the template actually does, rather than a hand-copied duplicate that could
-    drift out of sync."""
+    """Extract the real GrowthBook override block from the generated template."""
     m = re.search(
-        r'if \[\[ "\$engine" == "c" && -f "\.claude/\.ai-cli-growthbook-toggle" \]\]; then\n(?:.*\n)*?      fi\n',
+        r'^ {6}if \[\[ "\$engine" == "c"(?: && -f "\.claude/\.ai-cli-growthbook-toggle")? \]\]; then\n'
+        r' {8}python3 -c "\n(?:.*\n)*? {6}fi\n',
         script,
+        re.MULTILINE,
     )
-    assert m, "generated template no longer defines the growthbook launch toggle — did it move or get renamed?"
+    assert m, "generated template no longer defines the GrowthBook launch override — did it move or get renamed?"
     return m.group(0)
 
 
@@ -74,7 +73,9 @@ def _run_toggle_block(tmp_path, engine: str, block: str) -> subprocess.Completed
 
 @pytest.fixture
 def toggle_block():
-    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="myproject")
+    script = get_engine_script(
+        "c", "session-1", "c-session-1", "c-session-", "myproject", worktree_dir="/tmp/wt", project_name="myproject"
+    )
     return _extract_toggle_block(script)
 
 
@@ -106,13 +107,16 @@ def test_given_existing_settings_local_json_when_toggle_runs_then_other_keys_are
     assert data["hooks"] == {"foo": "bar"}
 
 
-def test_given_no_marker_when_toggle_runs_then_settings_local_json_is_not_created(tmp_path, toggle_block):
+def test_given_no_marker_when_toggle_runs_then_settings_local_json_gets_the_override(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
 
     result = _run_toggle_block(tmp_path, "c", toggle_block)
 
     assert result.returncode == 0, result.stderr
-    assert not (tmp_path / SETTINGS_RELPATH).exists()
+    settings_path = tmp_path / SETTINGS_RELPATH
+    assert settings_path.exists()
+    data = json.loads(settings_path.read_text())
+    assert data["env"]["DISABLE_GROWTHBOOK"] == ""
 
 
 def test_given_gemini_engine_when_toggle_runs_even_with_marker_present_then_no_write_happens(tmp_path, toggle_block):
