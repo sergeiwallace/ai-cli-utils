@@ -263,13 +263,26 @@ claimed_at: "…Z"         # existing
 # v2 additions:
 lease_expires_at: "…Z"   # claim + 30 min default; renewed via `ai handoff renew`
 attempt: 1               # increments on each return-to-pending
+origin_machine: machine-a # set at post; qualifies the per-machine integer id globally
 schema_version: 2
 ```
 
+**Cross-machine identity.** Integer ids are assigned per machine, so `id` alone is not globally
+unique. v2 adds `origin_machine` (set at post from the local machine id); the global handoff
+identity and the deduplication key are the pair `(origin_machine, id)`. Replicated copies use a
+derived filename of `{origin}-{id:03d}-{slug}.md` so same-numbered posts from different origins
+never collide; locally-posted files keep the existing `{id:03d}-{slug}.md` form.
+
 Replicated-payload validation (AI-CLI-157): the local filename is **derived** from the payload's
-`id` + slugged `title` (`{id:03d}-{slug}.md` pattern), never taken from the payload; payload
+validated `origin_machine` + `id` + slugged `title`, never taken from the payload; payload
 fields are schema-validated (types, id integer, bounded sizes) and non-conforming messages are
 rejected with a `payload_rejected` event.
+
+**Producer trust boundary.** The broker is reachable only on localhost or over the
+machine-to-machine SSH tunnel; whoever can publish to it is already inside the trust boundary,
+so per-producer message authentication (signing) is deliberately not built. This holds only
+while the broker never binds publicly — recorded as an explicit AC (T-1.5) and a revisit
+trigger if the broker topology changes.
 
 Directory layout gains `dead-letter/` beside `pending/`, `claimed/`, `completed/`. The queue
 root remains the configured handoff-queue directory (derived from `[project] main_project` in
@@ -356,12 +369,25 @@ root remains the configured handoff-queue directory (derived from `[project] mai
       exit non-zero with a diagnostic (not print an empty healthy report).
   - **T-1.5 Replicated-payload validation (AI-CLI-157)**
     - [ ] When a NATS handoff payload is consumed, the system shall derive the local filename
-      from validated `id` + slugged `title`, ignoring any payload-supplied filename.
-    - [ ] If any payload field fails schema validation (missing id, non-integer id, oversized
-      content, non-string fields), then the system shall reject the message and log
-      `handoff.payload_rejected`.
+      from validated `origin_machine` + `id` + slugged `title`, ignoring any payload-supplied
+      filename.
+    - [ ] When two payloads share an id but differ in `origin_machine`, the system shall store
+      both (distinct derived filenames; dedupe key is the pair, never the bare id).
+    - [ ] If any payload field fails schema validation (missing id, non-integer id, missing
+      origin_machine, oversized content, non-string fields), then the system shall reject the
+      message and log `handoff.payload_rejected`.
     - [ ] If a payload's derived filename would resolve outside the pending directory, then the
       system shall reject it (regression test with a traversal-shaped title/id).
+    - [ ] If the configured broker URL is neither localhost nor the machine tunnel endpoint,
+      then connect shall refuse with a diagnostic (trust-boundary guard).
+  - **T-1.6 Started/failed lifecycle commands**
+    - [ ] When `ai handoff start`/`-s` runs on a claimed file, the system shall log
+      `handoff.started` (the pickup instruction directs the claiming session to run it).
+    - [ ] When `ai handoff fail`/`-f` runs on a claimed file with a message, the system shall
+      log `handoff.failed` and return the file to `pending/` (attempt+1) or `dead-letter/`
+      per the attempt rules.
+    - [ ] If `start` or `fail` targets a file not in `claimed/`, then it shall exit non-zero
+      with an error.
 - **Exit gate:** full suite green including new failure-path tests; `ruff check` +
   `ruff format --check` pass; fresh-context diff review against Phase-1 ACs.
 
@@ -390,12 +416,14 @@ root remains the configured handoff-queue directory (derived from `[project] mai
   - **T-2.3 SessionStart pickup ordering**
     - [ ] When a session starts or resumes with both a resume-injection payload and pending
       handoffs, the system shall deliver resume injection before handoff context.
-  - **T-2.4 Retire pre-claim + restart delivery (replacement inventory)**
-    - [ ] When signal-watch receives a valid handoff for this machine, it shall write the local
-      pending copy (validated per T-1.5), write the pending marker, and print the banner —
-      and shall NOT claim the file. (Parity: banner + local replication preserved; pre-claim
-      intentionally dropped — reason: claims-before-acceptance stranded work; exit-signal
-      restart intentionally dropped — reason: destroys in-flight conversation state.)
+  - **T-2.4 Retire pre-claim + restart delivery** (parity inventory: banner + local
+    replication preserved; pre-claim intentionally dropped — claims-before-acceptance stranded
+    work; exit-signal restart intentionally dropped — destroys in-flight conversation state)
+    - [ ] When signal-watch receives a valid handoff for this machine, it shall write the
+      validated local pending copy and the pending marker.
+    - [ ] When signal-watch processes a handoff, it shall print the terminal banner.
+    - [ ] When signal-watch processes a handoff, it shall NOT rename the file into `claimed/`
+      and shall NOT touch the session exit-signal file (grep + behavior test).
     - [ ] When a hook pickup instruction is acted on, the claiming session shall perform the
       claim (rename + lease) at pickup time and log `handoff.claimed` with `layer: hook`.
     - [ ] If the target session never picks up, then the file shall remain in `pending/`
@@ -427,7 +455,7 @@ root remains the configured handoff-queue directory (derived from `[project] mai
     - [ ] If the broker restarts mid-subscription, then the file-queue truth shall be preserved
       and the subscriber shall recover or degrade non-fatally.
     - [ ] If the same handoff is published twice, then at most one local pending copy shall
-      exist (dedupe by id).
+      exist (dedupe by `(origin_machine, id)`).
     - [ ] If a malformed payload arrives, then it shall be rejected per T-1.5 with no file
       written.
     - [ ] If the consuming process is killed after claim, then the reconciler shall recover the
@@ -441,9 +469,11 @@ root remains the configured handoff-queue directory (derived from `[project] mai
   pilot on one session pair only.
 - **Deliverables:** channel server script, launch wiring behind an opt-in flag.
 - **Tasks + acceptance criteria:**
-  - **T-4.1** — [ ] When a handoff is posted for a piloted session, the channel server shall
+  - **T-4.1a** — [ ] When a handoff is posted for a piloted session, the channel server shall
     emit a notification containing id, priority, and a sanitized summary only (never the raw
-    body), and the session shall claim via the CLI before acting.
+    body).
+  - **T-4.1b** — [ ] When a piloted session acts on a channel notification, it shall claim via
+    the CLI before acting (notification alone never transfers ownership).
   - **T-4.2** — [ ] If the channel is unregistered or blocked (events drop silently by
     design), then the hook path shall still deliver the handoff (Channel is wake-up only,
     never the sole copy).
@@ -782,6 +812,7 @@ orchestrators; §3 surveyed Agent Teams / Agent View.
 | 2026-08-02 | D-1..D-6 resolved by Fable | Coordinator run; technical scope per decision-authority framework; human ratification pending |
 | 2026-08-02 | Implementation deferred to AI-CLI-153..157 | Multi-machine + session-template blast radius → design-first; phases filed with dep edges |
 | 2026-08-02 | Cross-family review round 1 (Codex, flagship/high): FAIL → fixes applied | Accepted: NATS record-replication reality (D-4 reframed to (c)), payload validation (T-1.5 + AI-CLI-157), pre-claim/exit-restart parity inventory (T-2.4), lifecycle statuses + heartbeat + migration, AC splits, short+long CLI flags, public-repo sanitization. Declined: none. |
+| 2026-08-02 | Cross-family review round 2: 4 resolved, 4 partial, 1 new → fixes applied | Accepted: `(origin_machine, id)` global identity + derived replicated filenames (new MUST-FIX), `started`/`failed` emitting commands (T-1.6), T-2.4/T-4.1 AC splits, trust-boundary guard AC, remaining wrapper-name sanitization. Declined with rationale: per-producer message signing (broker is localhost/tunnel-only = the trust boundary; guard AC + revisit trigger recorded); `source:` model identifier in frontmatter retained (public model names, matches repo doc conventions). |
 
 <!-- /doc:region name="overview" -->
 

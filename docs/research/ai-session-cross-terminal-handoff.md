@@ -295,7 +295,7 @@ Suggested evidence-gated acceptance criteria:
 
 ## Appendix: Research Prompt
 
-**Registry ID:** none — cx research delegation under the originating handoff-reliability task
+**Registry ID:** none — Codex research delegation under the originating handoff-reliability task
 **Model:** Codex flagship research, high effort
 **Date:** 2026-08-02
 
@@ -317,7 +317,7 @@ Contents → Context (primary period 2024–2026; source weighting: official doc
 primary, community reports secondary) → Temporal Scope → Executive Summary (3-5 numbered findings)
 → numbered topic sections → Comparison table (with a numbered `#` first column) → Recommendation →
 Open Questions → Sources (GFM footnote definitions, APA form, access stamps) → Appendix: Research
-Prompt (Registry ID: none — cx research delegation under the originating handoff-reliability task; Model: Codex flagship research,
+Prompt (Registry ID: none — Codex research delegation under the originating handoff-reliability task; Model: Codex flagship research,
 high effort; Date: 2026-08-02; full prompt = this brief in a fenced text block, 4-backtick outer
 fence) → Appendix: Provenance Ledger → Run History (one entry for this run).
 Diagrams Mermaid only; math LaTeX; never binary images.
