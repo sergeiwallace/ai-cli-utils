@@ -135,9 +135,9 @@ depth_presets:
 
 | # | Provider | Cost | Notes |
 |---|----------|------|-------|
-| 1 | Tavily | ~$0.01/search | Purpose-built for LLM agents; clean Markdown |
-| 2 | Firecrawl | ~$0.01/page | Better for scraping known URLs |
-| 3 | Serper | ~$0.001/search | Cheapest; Google results; raw JSON |
+| 1 | Tavily | ~\$0.01/search | Purpose-built for LLM agents; clean Markdown |
+| 2 | Firecrawl | ~\$0.01/page | Better for scraping known URLs |
+| 3 | Serper | ~\$0.001/search | Cheapest; Google results; raw JSON |
 
 To override: `--search-provider tavily|firecrawl|serper` (or set in depth preset config).
 

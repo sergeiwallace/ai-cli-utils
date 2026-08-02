@@ -102,7 +102,7 @@ alongside the tier naming overhaul.
 
 **This is the most important open question in this plan.** The situation:
 
-- The Google AI Ultra subscription ($100/month credit) was previously not connected to
+- The Google AI Ultra subscription (\$100/month credit) was previously not connected to
   the billing account used for the `ai_studio_paid` API key. That's now fixed.
 - **Open question:** Does the Ultra subscription credit apply to Google AI Studio API
   keys (`AIzaSy...`, billing account `01AC33-5BE8AD-2F4E8A`)? Or only to Vertex AI keys?
@@ -111,7 +111,7 @@ alongside the tier naming overhaul.
   Vertex API keys at all, which would make a key switch impossible even if Vertex is
   the right answer.
 - **If the Ultra credit does NOT apply to `ai_studio_paid`:** every paid deep-research
-  run costs ~$2–5 out of pocket, unsubsidized. The current code silently falls back to
+  run costs ~\$2–5 out of pocket, unsubsidized. The current code silently falls back to
   this path when OAuth is unavailable — that's unacceptable.
 
 **Consequence for implementation:** T-02 must gate `ai_studio_paid` deep-research behind
@@ -221,7 +221,7 @@ free-tier run counts. `ai spend gemini` combines both sources. Graceful degradat
 BigQuery is not set up.
 
 **Pros:**
-- Ground truth for paid spend — resolves the credit uncertainty empirically (if $0 shows
+- Ground truth for paid spend — resolves the credit uncertainty empirically (if \$0 shows
   in billing after a paid run, the credit is being applied)
 - No paid-run cost calculation needed
 - OAuth and free-tier runs fully tracked via JSONL
@@ -533,7 +533,7 @@ billing export query (T-03) if token-count-based cost is unavailable.
 > 1. Billing project confirmed: `gen-lang-client-0651020461`, billing account `01AC33-5BE8AD-2F4E8A`.
 > 2. SKU mapping: understood, empirical on first query.
 > 3. Token counts: fine, mark null if unavailable.
-> 4. Daily limit: empirically unknown — we haven't been tracking effectively. More importantly: there's a critical open question about whether the AI Studio paid key (`GOOGLE_API_KEY_TIER_1`) has the Google AI Ultra subscription credits ($100/mo) applied. Situation: (a) the Ultra subscription wasn't connected to the billing account previously — that's now fixed. (b) there is mixed information online about whether Ultra credits apply to AI Studio API keys or only Vertex API keys. (c) the Interactions API (used for deep-research) may not work with Vertex API keys at all, so we can't just switch to Vertex. Result: we don't know if `ai_studio_paid` deep-research runs are ~free (subsidized by Ultra credit) or ~$2–5 out of pocket. The tool must NOT silently fall back to `ai_studio_paid` for deep-research. Need hard gates, explicit opt-in, and clear warnings before any paid deep-research run fires. This is the most important safety requirement for this feature.
+> 4. Daily limit: empirically unknown — we haven't been tracking effectively. More importantly: there's a critical open question about whether the AI Studio paid key (`GOOGLE_API_KEY_TIER_1`) has the Google AI Ultra subscription credits (\$100/mo) applied. Situation: (a) the Ultra subscription wasn't connected to the billing account previously — that's now fixed. (b) there is mixed information online about whether Ultra credits apply to AI Studio API keys or only Vertex API keys. (c) the Interactions API (used for deep-research) may not work with Vertex API keys at all, so we can't just switch to Vertex. Result: we don't know if `ai_studio_paid` deep-research runs are ~free (subsidized by Ultra credit) or ~\$2–5 out of pocket. The tool must NOT silently fall back to `ai_studio_paid` for deep-research. Need hard gates, explicit opt-in, and clear warnings before any paid deep-research run fires. This is the most important safety requirement for this feature.
 >
 > **AI Response Round 1:**
 > - Q1, Q2, Q3 resolved as noted above.

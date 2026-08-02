@@ -32,12 +32,12 @@ authenticates to `cloudcode-pa.googleapis.com` (Code Assist backend), not
 **Current deep-research auth reality:**
 - `GOOGLE_API_KEY_FREE_TIER` → no quota for Gemini 3.1 Pro, always skipped
 - `GOOGLE_API_KEY_TIER_1` → works, bills to GCP billing account `01AC33-5BE8AD-2F4E8A`
-- Google Developer Program Premium $100/mo credit IS confirmed linked to that billing account
+- Google Developer Program Premium \$100/mo credit IS confirmed linked to that billing account
 - Every deep-research run since AI-CLI-36 has been using the paid key (no free OAuth path existed)
 
 **Billing account:** `01AC33-5BE8AD-2F4E8A` — confirmed in GCP → Billing → Credits with
-Developer Program Premium credit applied. Cost per deep-research task is likely well under $1
-(total spend $7.61 for multiple runs this month).
+Developer Program Premium credit applied. Cost per deep-research task is likely well under \$1
+(total spend \$7.61 for multiple runs this month).
 
 ## Research Findings (Verified 2026-04-11)
 
@@ -160,7 +160,7 @@ will work — OAuth first, paid key fallback if OAuth hits limits.
 ## Acceptance Criteria
 
 - [x] `_run_deep_research()` uses paid key directly (OAuth path removed — `12e308d`)
-- [x] AI Studio prepayment balance added ($10); GCP credits absorb actual spend (case #70078827)
+- [x] AI Studio prepayment balance added (\$10); GCP credits absorb actual spend (case #70078827)
 - [x] `ai gemini -m deep-research` unblocked on Hetzner
 - [x] R-12 research run launched in tmux `r12-research` on Hetzner; c-r-art-1 handed off
 - [x] `agent-browser` fixed: `npm install -g agent-browser --ignore-scripts`
@@ -174,7 +174,7 @@ will work — OAuth first, paid key fallback if OAuth hits limits.
 - 2026-04-11 Round 2: Tracks A, B, C completed. agent-browser installed. OAuth client created in GCP.
   ADC credentials deployed to Hetzner. 403/429 fallthrough shipped (`322ea4d`, `2baa3ff`).
 - 2026-04-11 Round 3: Billing confirmed (GCP support #70078827) — prepay is anti-abuse floor, GCP
-  credits absorb actual spend. OAuth path removed (`12e308d`) — no benefit over paid key. $10 prepay
+  credits absorb actual spend. OAuth path removed (`12e308d`) — no benefit over paid key. \$10 prepay
   added. R-12 launched on Hetzner. ADC + client_secret.json cleaned up on Mac and Hetzner.
   Outstanding: AI Studio `gen-lang-client-0651020461` has no prepayment credits; both OAuth and paid
   key return 429. Client secret exposed in session JSONL — rotation recommended after billing resolved.

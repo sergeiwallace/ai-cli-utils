@@ -48,7 +48,7 @@ Supersedes the "no programmatic surface" finding in `claude-usage-telemetry.md` 
 **Yes — for the all-models weekly and 5-hour windows.** As of **CC v2.1.80**, the statusLine
 command receives a `rate_limits` object on **stdin** (`five_hour` + `seven_day`, each with
 `used_percentage` 0–100 and a `resets_at` unix epoch) [VERIFIABLE][^1]. This is the
-official, deterministic, $0, zero-latency source that replaces all `/usage` scraping for the
+ official, deterministic, \$0, zero-latency source that replaces all `/usage` scraping for the
 primary numbers. First-party empirical capture on 2.1.207 confirmed this directly
 (`seven_day.used_percentage=20`, `five_hour=23`, reset epochs matching the `/usage` TUI
 exactly — see Provenance Ledger).
@@ -111,7 +111,7 @@ the genuinely hard, brittle part — the all-models path (Option 1) has no such 
 |---|-----------|----------------------------------|------------------------------|
 | 1 | Official / supported | Yes (documented stdin field) | No (TUI scrape / internal endpoint) |
 | 2 | Determinism | Deterministic (structured JSON) | Flaky (async render; rate-limited) |
-| 3 | Cost / latency | $0, zero-latency (already on stdin) | subprocess + TUI render, or HTTP |
+| 3 | Cost / latency | \$0, zero-latency (already on stdin) | subprocess + TUI render, or HTTP |
 | 4 | Coverage | all-models weekly + 5-hour + resets | per-model weekly split |
 | 5 | Availability | after 1st API response; windows may be absent | frequently "rate limited" |
 

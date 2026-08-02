@@ -107,7 +107,7 @@ Quota output is produced by `ai quota statusline-part` (`quota_statusline_part()
 
 > **AIH-164 update (2026-07-13, CC 2.1.207):** the weekly **all-models %** and **5-hour** window
 > now come from CC's official `rate_limits` object on the statusLine **stdin** (`five_hour` +
-> `seven_day`, each `used_percentage` + `resets_at`) — deterministic, $0/zero-token. The
+> `seven_day`, each `used_percentage` + `resets_at`) — deterministic, \$0/zero-token. The
 > ai-harness `statusline-command.sh` extracts it, writes an account-global `~/.claude/state/quota.json`
 > (read by the new `quota-pct` ad-hoc tool, a `ctx-pct` sibling), and exports `AI_CLI_QUOTA_*`
 > env vars that `quota_statusline_part()` consumes as the authoritative source (recording a

@@ -360,7 +360,7 @@ Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `nu
 
 **AI Studio billing model:** The Interactions API requires an AI Studio project
 with a prepayment balance (mandatory as of March 2026 — all accounts are prepay-only;
-postpay unlocks at $1,000 cumulative spend). The prepay balance is a "financial
+postpay unlocks at \$1,000 cumulative spend). The prepay balance is a "financial
 handshake" anti-abuse mechanism, not the primary funding source: API spend deducts
 from any GCP credit balance first (e.g. monthly credits from a Google AI Ultra
 subscription), only drawing from the prepay balance once credits are exhausted.
