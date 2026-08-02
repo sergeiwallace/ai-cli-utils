@@ -7,8 +7,10 @@
 #
 # Update hook pins: `pre-commit autoupdate` (quarterly).
 #
-# Skip hooks: `SKIP=hook-id git commit` (specific hook) or `SKIP_TESTS=1 git push`
-# (test-gate.sh only — not a pre-commit-framework env var).
+# Skip a specific hook for one commit: `SKIP=hook-id git commit`
+# (the test gate's own SKIP_TESTS=1 bypass is FORBIDDEN by fleet rules outside
+# repo bootstrap — see hooks/test-gate.sh's header comment for that caveat;
+# it is not a general pre-commit-framework env var, AIH-469).
 
 default_stages: [pre-commit]
 

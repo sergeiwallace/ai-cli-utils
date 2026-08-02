@@ -47,8 +47,14 @@ fi
 # ── 2. Git hooks ───────────────────────────────────────────────────────────
 next_step "Git hooks"
 if [ -f .githooks/install.sh ]; then
-    bash .githooks/install.sh
-    ok "Git hooks installed."
+    # install.sh now fails non-zero when pre-commit isn't installed yet
+    # (AIH-393 loud-failure contract) — don't let that abort the rest of a
+    # fresh scaffold's setup; install.sh already printed the remediation.
+    if bash .githooks/install.sh; then
+        ok "Git hooks installed."
+    else
+        warn "Git hooks not installed — see the message above, then re-run bash .githooks/install.sh."
+    fi
 else
     warn "No .githooks/install.sh found — skipping."
 fi
@@ -193,8 +199,17 @@ open('README.md', 'w').write(readme)
 " 2>/dev/null
             if [ $? -eq 0 ]; then
                 git add README.md
-                git commit -m "docs: Expand project vision in README" --no-verify 2>/dev/null
-                ok "Project vision expanded in README.md."
+                # Never use --no-verify here (AIH-469): pre-commit's autofix hooks
+                # (markdownlint, trailing-whitespace, ...) can modify README.md and
+                # fail the first attempt on purpose — re-stage their fix and retry
+                # once before giving up, instead of bypassing the gate.
+                if git commit -m "docs: Expand project vision in README" 2>/dev/null; then
+                    ok "Project vision expanded in README.md."
+                elif git add README.md && git commit -m "docs: Expand project vision in README" 2>/dev/null; then
+                    ok "Project vision expanded in README.md (hooks auto-fixed formatting)."
+                else
+                    warn "Pre-commit hooks blocked the README commit — inspect and commit it manually."
+                fi
             else
                 warn "Failed to update README — you can expand it manually later."
             fi

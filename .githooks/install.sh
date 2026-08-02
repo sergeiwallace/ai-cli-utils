@@ -6,19 +6,23 @@
 # invocation should only be needed in clones that haven't run copier or
 # machines where `pre-commit` wasn't installed at copier-time.
 #
-# Graceful-degradation: exits 0 with a warning when pre-commit or the
-# config file isn't available yet, so `setup.sh` doesn't abort on fresh
-# scaffolds where the user hasn't installed pre-commit yet.
+# Fails non-zero (AIH-393) when pre-commit or the config file isn't
+# available: a bootstrap that cannot install hooks must not be allowed to
+# silently claim success, matching Tier-B's loud-failure contract in
+# ai-harness's docs/designs/aih-393-shared-hook-distribution-model.md.
+# setup.sh.jinja's hook-install step handles this exit non-zero itself
+# (warns and continues the rest of the scaffold) so a fresh scaffold
+# without pre-commit yet installed is still usable — this script's own
+# exit code stays truthful either way.
 set -uo pipefail
 
 echo "=== Git hooks setup (pre-commit framework) ==="
 
 if ! command -v pre-commit &>/dev/null; then
-    echo "WARNING: 'pre-commit' not installed."
-    echo "  Install with:  pipx install pre-commit   (or: uv tool install pre-commit)"
-    echo "  Then re-run:   bash .githooks/install.sh"
-    echo "  Skipping hook installation for now."
-    exit 0
+    echo "ERROR: 'pre-commit' not installed — hooks are NOT active." >&2
+    echo "  Install with:  pipx install pre-commit   (or: uv tool install pre-commit)" >&2
+    echo "  Then re-run:   bash .githooks/install.sh" >&2
+    exit 1
 fi
 
 if [ ! -f ".pre-commit-config.yaml" ]; then
@@ -35,6 +39,11 @@ pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push
 echo ""
 echo "Hooks active for pre-commit + pre-push stages."
 echo "  - Skip specific hook:   SKIP=hook-id git commit"
-echo "  - Skip test gate:       SKIP_TESTS=1 git push"
 echo "  - Update hook pins:     pre-commit autoupdate"
 echo "  - Full-repo audit:      pre-commit run --all-files"
+# Deliberately does NOT name the test-gate bypass var here (AIH-469, matching
+# AIH-452 AC-5's precedent in hooks/test-gate.sh): SKIP_TESTS=1 is FORBIDDEN by
+# fleet rules outside repo bootstrap, and this banner prints unconditionally on
+# every successful install — advertising it here teaches the escape hatch to
+# every user, not just the ones who legitimately need it. SKIP=hook-id above is
+# pre-commit's own standard single-hook mechanism, not fleet-forbidden.
