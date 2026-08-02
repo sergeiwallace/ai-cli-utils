@@ -42,6 +42,7 @@ dev.db
 
 # Claude Code workflow flags (transient, per-session)
 .claude/no_jira_required
+.claude/.rc-pair-state.json
 
 # Test artifacts
 test.db
