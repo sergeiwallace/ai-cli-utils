@@ -30,11 +30,15 @@ dependencies = [
     "libtmux>=0.30.0",
     "watchdog>=4.0.0",
     "pyyaml>=6.0",
-    "pillow>=10.0",
+    "pillow>=12.3.0",
     "portalocker>=2.0",
     "psutil>=5.9",
     "pydantic>=2.13.3",
 ]
+
+[tool.uv]
+# Tornado is supplied transitively by circus; retain a patched floor for that dependency.
+constraint-dependencies = ["tornado>=6.5.7"]
 
 [project.urls]
 Homepage = "https://github.com/sergeiwallace/ai-cli-utils"

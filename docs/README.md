@@ -99,6 +99,7 @@ Testing templates and tracking.
 | [[BUG-007] Seven LLM-merge tests skipped on every machine and in CI — the module they need was never a declared dependency](bugs/genai-tests-skipped-everywhere.md) | fix-deployed | ai-cli-utils | tests, skip, dependency, sync, llm-merge, coverage |
 | [[BUG-008] Every `ai update` and auto-update prints hardlink-fallback warning when cache and tool dirs are on different filesystems](bugs/uv-hardlink-fallback-warning.md) | fix-deployed | ai-cli-utils | uv, update, filesystem, hardlink, warning |
 | [[BUG-009] Remote Control startup override was still gated by an obsolete marker](bugs/remote-control-launch-override-marker.md) | fix-deployed | ai-cli-utils | session, remote-control, growthbook, launcher, regression |
+| [[BUG-010] Locked Pillow and Tornado versions were below Dependabot security fixes](bugs/dependabot-pillow-tornado-security-updates.md) | fix-deployed | ai-cli-utils | dependencies, security, dependabot, pillow, tornado, uv |
 
 ## Designs
 
