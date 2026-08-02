@@ -2834,11 +2834,18 @@ class TestStatuslineScript:
 class TestQuotaStatuslinePartAdaptiveLabels:
     """Statusline labels and primary weekly pace output."""
 
+    # AI-CLI-158: a fixed reference instant, NOT real wall-clock time. _capture() must establish
+    # week_start_str from a deterministic "now" — passing no `now` makes _get_current_week_start()
+    # fall back to datetime.now(timezone.utc), so the "fixed" hours_elapsed offset below was
+    # silently computed relative to whatever real moment the suite happened to run, making the
+    # scenario non-hermetic (a real regression: -79% expected became -76% as real time drifted).
+    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)  # arbitrary Monday noon UTC
+
     def _capture(self, usage_percent, hours_elapsed, tmp_path, capsys, cols=0):
         import ai_cli.quota_db as qdb
         import os
 
-        week_start_str = qdb._get_current_week_start()
+        week_start_str = qdb._get_current_week_start(now=self._FIXED_REFERENCE_NOW)
         week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         fixed_now = week_start_dt + timedelta(hours=hours_elapsed)
         qdb.set_db_path(tmp_path / "quota.db")
