@@ -446,16 +446,32 @@ def trigger_background_update():
             pass
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps({"last_checked": now}))
-    uv_bin = shutil.which("uv") or "uv"
-    upgrade_cmd = ["uv", "tool", "upgrade", "ai-cli-utils"]
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        # Warn but do not raise. This is an unrequested background check firing during
+        # some other command, so a hard failure here would kill the foreground command
+        # the user actually asked for (the AIH bug: bare "uv" + Popen without a shell
+        # -> Windows CreateProcess raises FileNotFoundError -> `ai c 1` traceback).
+        # Silent-skip would hide a permanently broken auto-updater, so warn on stderr.
+        print(
+            "Warning: 'uv' not found on PATH — skipping background update check.",
+            file=sys.stderr,
+        )
+        return
+    # Pass the resolved absolute path, not the bare name — see above.
+    upgrade_cmd = [uv_bin, "tool", "upgrade", "ai-cli-utils"]
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_cmd.append("--link-mode=copy")
-    subprocess.Popen(
-        upgrade_cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    try:
+        subprocess.Popen(
+            upgrade_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        # Same reasoning: report, never propagate, so the foreground command survives.
+        print(f"Warning: background update check failed to launch: {exc}", file=sys.stderr)
 
 
 def _pkg_version_string() -> str:
@@ -2232,11 +2248,20 @@ def cmd_g(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, p
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
 def cmd_upgrade():
     print("Upgrading ai-cli-utils...", file=sys.stderr)
-    uv_bin = shutil.which("uv") or "uv"
-    upgrade_args = ["uv", "tool", "upgrade", "ai-cli-utils"]
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        print(
+            "Cannot find 'uv' on PATH — unable to upgrade. Install uv, or add its\n"
+            "directory to PATH, then re-run 'ai upgrade'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # Pass the resolved absolute path, not the bare name: on Windows a bare name is
+    # not resolvable by CreateProcess/execvp and raises FileNotFoundError.
+    upgrade_args = [uv_bin, "tool", "upgrade", "ai-cli-utils"]
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_args.append("--link-mode=copy")
-    os.execvp("uv", upgrade_args)
+    os.execvp(uv_bin, upgrade_args)
 
 
 @_cli_group.command("setup", help="Run interactive setup wizard")
