@@ -475,11 +475,35 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
     return True
 
 
+# Project name to task prefix overrides — consulted before registry and fallback.
+# Exists to resolve collisions when multiple repos share the same 3-char truncation
+# (e.g. bms-semantic-knowledge-graph and bms-mdbase-knowledge-agent both → "bms").
+# Aligns with bd_fleet_prefixes.yaml where practical, but lowercase per ai-cli convention.
+_PROJECT_PREFIX_OVERRIDES: dict[str, str] = {
+    "bms-semantic-knowledge-graph": "kg",
+    "ai-harness": "aih",
+    "ai-core": "core",
+}
+
+
 def _get_project_prefix_by_name(project_name: str) -> str:
-    """Look up a project's task_prefix from the project registry by directory name."""
+    """Look up a project's task_prefix from the project registry by directory name.
+
+    Resolution order:
+    1. Explicit override map (for collision avoidance)
+    2. Project registry lookup
+    3. Fallback: first 3 chars of directory name, lowercased, trailing hyphens stripped
+    """
+    # Check override map first
+    if project_name in _PROJECT_PREFIX_OVERRIDES:
+        return _PROJECT_PREFIX_OVERRIDES[project_name]
+
+    # Check registry
     for p in load_project_registry():
         if p.get("name") == project_name:
             return p.get("task_prefix", project_name[:3]).lower().strip("-")
+
+    # Fallback
     return project_name[:3].lower().strip("-")
 
 

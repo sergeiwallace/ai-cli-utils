@@ -135,6 +135,34 @@ class TestProjectHelpers:
             result = _get_project_prefix_by_name("myproject")
         assert result == "myp"
 
+    def test_get_project_prefix_by_name_when_override_exists_then_uses_override(self):
+        with patch("ai_cli.config._get_project_registry_path", return_value=None):
+            result = _get_project_prefix_by_name("bms-semantic-knowledge-graph")
+        assert result == "kg"
+
+    def test_get_project_prefix_by_name_when_override_takes_precedence_over_registry(self, tmp_path):
+        toml_file = tmp_path / "registry.toml"
+        toml_content = b'[[projects]]\nname = "bms-semantic-knowledge-graph"\ntask_prefix = "WRONG"\n'
+        toml_file.write_bytes(toml_content)
+        with patch("ai_cli.config._get_project_registry_path", return_value=toml_file):
+            result = _get_project_prefix_by_name("bms-semantic-knowledge-graph")
+        assert result == "kg"
+
+    def test_get_project_prefix_by_name_when_ai_harness_then_uses_override(self):
+        with patch("ai_cli.config._get_project_registry_path", return_value=None):
+            result = _get_project_prefix_by_name("ai-harness")
+        assert result == "aih"
+
+    def test_get_project_prefix_by_name_when_ai_core_then_uses_override(self):
+        with patch("ai_cli.config._get_project_registry_path", return_value=None):
+            result = _get_project_prefix_by_name("ai-core")
+        assert result == "core"
+
+    def test_get_project_prefix_by_name_when_bms_mdbase_then_uses_fallback(self):
+        with patch("ai_cli.config._get_project_registry_path", return_value=None):
+            result = _get_project_prefix_by_name("bms-mdbase-knowledge-agent")
+        assert result == "bms"
+
     def test_get_project_aliases_when_registry_exists_then_builds_map(self, tmp_path):
         toml_file = tmp_path / "registry.toml"
         toml_content = b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n\n[[projects]]\nname = "ai-dojo"\ntask_prefix = "AD"\n'

@@ -235,11 +235,27 @@ def _prefix_from_session_name(session_name: str) -> str:
 
 
 def get_project_prefix() -> str:
+    """Resolve the task prefix for the current project.
+
+    Resolution order:
+    1. Check override map (for collision avoidance)
+    2. Check registry
+    3. Parse AI_TMUX_SESSION env var (reliable when cwd has drifted from project root)
+    4. Fallback: 3-char truncation
+    """
     project_name = get_current_project_name()
+
+    # Check override map first
+    from .config import _PROJECT_PREFIX_OVERRIDES
+    if project_name in _PROJECT_PREFIX_OVERRIDES:
+        return _PROJECT_PREFIX_OVERRIDES[project_name]
+
+    # Check registry
     for p in load_project_registry():
         if p.get("name") == project_name:
             return p.get("task_prefix", project_name[:3]).lower().strip("-")
-    # Fallback 1: parse AI_TMUX_SESSION set by the session script — reliable when
+
+    # Fallback: parse AI_TMUX_SESSION set by the session script — reliable when
     # the user runs `ai c -R` from a pane whose cwd has drifted away from the
     # project root.
     ai_session = os.environ.get("AI_TMUX_SESSION", "")
@@ -247,8 +263,8 @@ def get_project_prefix() -> str:
         prefix = _prefix_from_session_name(ai_session)
         if prefix:
             return prefix
-    # Fallback 2: derive from cwd name — strip trailing hyphens so e.g.
-    # "ai-cli-utils"[:3] → "ai-" doesn't produce a double-dash in session names.
+
+    # Final fallback: derive from cwd name
     return project_name[:3].lower().strip("-")
 
 

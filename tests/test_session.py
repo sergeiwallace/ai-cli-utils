@@ -1283,6 +1283,27 @@ class TestGetProjectPrefix:
                     result = get_project_prefix()
                     assert not result.endswith("-"), f"prefix has trailing hyphen: {result!r}"
 
+    def test_when_bms_semantic_knowledge_graph_then_uses_kg_override(self, tmp_path):
+        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "bms-semantic-knowledge-graph"):
+            with patch("ai_cli.session.load_project_registry", return_value=[]):
+                with patch.dict(os.environ, env_without_session, clear=True):
+                    assert get_project_prefix() == "kg"
+
+    def test_when_ai_harness_then_uses_aih_override(self, tmp_path):
+        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "ai-harness"):
+            with patch("ai_cli.session.load_project_registry", return_value=[]):
+                with patch.dict(os.environ, env_without_session, clear=True):
+                    assert get_project_prefix() == "aih"
+
+    def test_when_ai_core_then_uses_core_override(self, tmp_path):
+        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "ai-core"):
+            with patch("ai_cli.session.load_project_registry", return_value=[]):
+                with patch.dict(os.environ, env_without_session, clear=True):
+                    assert get_project_prefix() == "core"
+
 
 class TestIsCurrentProjectResolved:
     """Guard for the silent 'myproject'/cwd-derived session fallback (#10)."""
