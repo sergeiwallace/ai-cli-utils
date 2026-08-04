@@ -70,4 +70,4 @@ export:
     auto: true
     git-add: true
 sync:
-    remote: "git+https://github.com/sergeiwallace/ai-cli-utils.git"
+    remote: "git+ssh://git@gh-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
