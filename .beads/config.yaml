@@ -65,9 +65,9 @@
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
 
-# sync.remote: "git+ssh://git@github.com/sergeiwallace/ai-cli-utils.git"
+sync.remote: "git+ssh://git@gh-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
 export:
     auto: true
     git-add: true
 sync:
-    remote: "git+ssh://git@gh-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
+    # remote: "git+ssh://git@gh-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
