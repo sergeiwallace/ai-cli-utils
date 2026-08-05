@@ -2705,6 +2705,10 @@ class TestStatuslineScript:
             "TMUX": "",
             "COLUMNS": "200",
             "GIT_BRANCH_CACHE": "main",
+            # The quota block only runs on the subscription branch. Pin it rather than
+            # inheriting the developer's CC_BILLING_MODE, which routes the script down
+            # the api/cache-hit branch and skips the quota code these tests exercise.
+            "CC_BILLING_MODE": "subscription",
         }
         if extra_env:
             env.update(extra_env)

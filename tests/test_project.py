@@ -137,31 +137,38 @@ class TestProjectHelpers:
 
     def test_get_project_prefix_by_name_when_override_exists_then_uses_override(self):
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
-            result = _get_project_prefix_by_name("bms-semantic-knowledge-graph")
-        assert result == "kg"
+            with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"myapp-long-name": "mln"}}):
+                result = _get_project_prefix_by_name("myapp-long-name")
+        assert result == "mln"
 
     def test_get_project_prefix_by_name_when_override_takes_precedence_over_registry(self, tmp_path):
         toml_file = tmp_path / "registry.toml"
-        toml_content = b'[[projects]]\nname = "bms-semantic-knowledge-graph"\ntask_prefix = "WRONG"\n'
+        toml_content = b'[[projects]]\nname = "myapp-long-name"\ntask_prefix = "WRONG"\n'
         toml_file.write_bytes(toml_content)
         with patch("ai_cli.config._get_project_registry_path", return_value=toml_file):
-            result = _get_project_prefix_by_name("bms-semantic-knowledge-graph")
-        assert result == "kg"
+            with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"myapp-long-name": "mln"}}):
+                result = _get_project_prefix_by_name("myapp-long-name")
+        assert result == "mln"
 
-    def test_get_project_prefix_by_name_when_ai_harness_then_uses_override(self):
+    def test_get_project_prefix_by_name_when_no_override_configured_then_falls_back(self):
+        """An empty/absent [project_prefixes] table must not break resolution."""
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
-            result = _get_project_prefix_by_name("ai-harness")
-        assert result == "aih"
+            with patch("ai_cli.config.load_config", return_value={}):
+                result = _get_project_prefix_by_name("myapp-long-name")
+        assert result == "mya"
 
-    def test_get_project_prefix_by_name_when_ai_core_then_uses_override(self):
+    def test_get_project_prefix_by_name_when_override_is_longer_than_three_chars_then_kept(self):
+        """Overrides are used verbatim — they are not re-truncated to 3 chars."""
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
-            result = _get_project_prefix_by_name("ai-core")
-        assert result == "core"
+            with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"myservice": "msvc"}}):
+                result = _get_project_prefix_by_name("myservice")
+        assert result == "msvc"
 
-    def test_get_project_prefix_by_name_when_bms_mdbase_then_uses_fallback(self):
+    def test_get_project_prefix_by_name_when_project_not_in_override_map_then_uses_fallback(self):
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
-            result = _get_project_prefix_by_name("bms-mdbase-knowledge-agent")
-        assert result == "bms"
+            with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"other": "oth"}}):
+                result = _get_project_prefix_by_name("myproject-two")
+        assert result == "myp"
 
     def test_get_project_aliases_when_registry_exists_then_builds_map(self, tmp_path):
         toml_file = tmp_path / "registry.toml"

@@ -133,6 +133,14 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## (e.g. "npx @google/gemini-cli" for npx-only installs).
 # command = "gemini"
 
+[project_prefixes]
+## Task-prefix overrides, keyed by project directory name. Consulted before the
+## project registry and before the default 3-character truncation. Use these when
+## two repositories would otherwise collapse to the same prefix (for example
+## "myapp-frontend" and "myapp-backend" both truncate to "mya").
+# myapp-frontend = "mfe"
+# myapp-backend = "mbe"
+
 [behavior]
 ## Enable system notifications on task completion
 notify_on_exit = true
@@ -475,15 +483,19 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
     return True
 
 
-# Project name to task prefix overrides — consulted before registry and fallback.
-# Exists to resolve collisions when multiple repos share the same 3-char truncation
-# (e.g. bms-semantic-knowledge-graph and bms-mdbase-knowledge-agent both → "bms").
-# Aligns with bd_fleet_prefixes.yaml where practical, but lowercase per ai-cli convention.
-_PROJECT_PREFIX_OVERRIDES: dict[str, str] = {
-    "bms-semantic-knowledge-graph": "kg",
-    "ai-harness": "aih",
-    "ai-core": "core",
-}
+def get_project_prefix_overrides() -> dict[str, str]:
+    """Return the user's project-name → task-prefix override map.
+
+    Read from the ``[project_prefixes]`` table in ``config.toml``. Overrides exist
+    to resolve collisions when several repositories share the same 3-character
+    truncation (e.g. ``myapp-frontend`` and ``myapp-backend`` both → ``"mya"``).
+    Project names are inherently user-specific, so they belong in configuration
+    rather than in this package's source.
+    """
+    table = load_config().get("project_prefixes", {})
+    if not isinstance(table, dict):
+        return {}
+    return {str(name): str(prefix) for name, prefix in table.items()}
 
 
 def _get_project_prefix_by_name(project_name: str) -> str:
@@ -495,8 +507,9 @@ def _get_project_prefix_by_name(project_name: str) -> str:
     3. Fallback: first 3 chars of directory name, lowercased, trailing hyphens stripped
     """
     # Check override map first
-    if project_name in _PROJECT_PREFIX_OVERRIDES:
-        return _PROJECT_PREFIX_OVERRIDES[project_name]
+    overrides = get_project_prefix_overrides()
+    if project_name in overrides:
+        return overrides[project_name]
 
     # Check registry
     for p in load_project_registry():

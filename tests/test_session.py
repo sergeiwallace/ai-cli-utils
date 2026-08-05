@@ -1283,26 +1283,30 @@ class TestGetProjectPrefix:
                     result = get_project_prefix()
                     assert not result.endswith("-"), f"prefix has trailing hyphen: {result!r}"
 
-    def test_when_bms_semantic_knowledge_graph_then_uses_kg_override(self, tmp_path):
+    def test_when_project_has_configured_override_then_uses_override(self, tmp_path):
         env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "bms-semantic-knowledge-graph"):
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "myapp-frontend"):
             with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch.dict(os.environ, env_without_session, clear=True):
-                    assert get_project_prefix() == "kg"
+                with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"myapp-frontend": "mfe"}}):
+                    with patch.dict(os.environ, env_without_session, clear=True):
+                        assert get_project_prefix() == "mfe"
 
-    def test_when_ai_harness_then_uses_aih_override(self, tmp_path):
+    def test_when_project_has_no_configured_override_then_falls_back_to_truncation(self, tmp_path):
         env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "ai-harness"):
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "myapp-frontend"):
             with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch.dict(os.environ, env_without_session, clear=True):
-                    assert get_project_prefix() == "aih"
+                with patch("ai_cli.config.load_config", return_value={}):
+                    with patch.dict(os.environ, env_without_session, clear=True):
+                        assert get_project_prefix() == "mya"
 
-    def test_when_ai_core_then_uses_core_override(self, tmp_path):
+    def test_when_configured_override_is_longer_than_three_chars_then_kept(self, tmp_path):
+        """An override is used verbatim — it is not re-truncated to three characters."""
         env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "ai-core"):
+        with patch("pathlib.Path.cwd", return_value=tmp_path / "myservice"):
             with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch.dict(os.environ, env_without_session, clear=True):
-                    assert get_project_prefix() == "core"
+                with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"myservice": "msvc"}}):
+                    with patch.dict(os.environ, env_without_session, clear=True):
+                        assert get_project_prefix() == "msvc"
 
 
 class TestIsCurrentProjectResolved:

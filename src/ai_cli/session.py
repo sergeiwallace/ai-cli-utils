@@ -246,9 +246,11 @@ def get_project_prefix() -> str:
     project_name = get_current_project_name()
 
     # Check override map first
-    from .config import _PROJECT_PREFIX_OVERRIDES
-    if project_name in _PROJECT_PREFIX_OVERRIDES:
-        return _PROJECT_PREFIX_OVERRIDES[project_name]
+    from .config import get_project_prefix_overrides
+
+    overrides = get_project_prefix_overrides()
+    if project_name in overrides:
+        return overrides[project_name]
 
     # Check registry
     for p in load_project_registry():
