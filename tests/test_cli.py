@@ -109,17 +109,21 @@ class TestCliDispatch:
                 assert exc.value.code == 1
 
     def test_cli_when_upgrade_then_calls_execvp(self):
+        # uv is resolved to an absolute path (shutil.which) rather than relying on
+        # PATH resolution inside execvp, so assert on the resolved binary — pinning
+        # the bare name "uv" would fail on any host where uv is not first on PATH.
         with patch("sys.argv", ["ai", "upgrade"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with (
                     patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+                    patch("shutil.which", return_value="/usr/bin/uv"),
                     patch(
                         "subprocess.run", return_value=MagicMock(returncode=1)
                     ),  # Make _should_use_uv_link_mode_copy return False
                 ):
                     with pytest.raises(SystemExit):
                         cli()
-                    mock_exec.assert_called_once_with("uv", ["uv", "tool", "upgrade", "ai-cli-utils"])
+                    mock_exec.assert_called_once_with("/usr/bin/uv", ["/usr/bin/uv", "tool", "upgrade", "ai-cli-utils"])
 
     def test_cli_when_internal_no_action_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal"]):
@@ -2243,13 +2247,18 @@ class TestTriggerBackgroundUpdate:
         with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
             with (
                 patch("subprocess.Popen") as mock_popen,
+                patch("shutil.which", return_value="/usr/bin/uv"),
                 patch(
                     "subprocess.run", return_value=MagicMock(returncode=1)
                 ),  # Make _should_use_uv_link_mode_copy return False
             ):
                 trigger_background_update()
         mock_popen.assert_called_once()
-        assert "uv" in mock_popen.call_args[0][0]
+        # uv is invoked by resolved absolute path, so assert on argv shape rather
+        # than membership of the bare name (which is not a list element any more).
+        argv = mock_popen.call_args[0][0]
+        assert argv[0] == "/usr/bin/uv"
+        assert argv[1:] == ["tool", "upgrade", "ai-cli-utils"]
 
     def test_trigger_update_when_recent_then_skips(self, tmp_path):
         state_file = tmp_path / "update_check.json"
