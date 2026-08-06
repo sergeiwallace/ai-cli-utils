@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ran from that root, so moving it would strand them) and never overwritten (a
   worktree's own memory is about the work that happened there). Three refusals
   precede any write: a live session (checked by reading `/proc/<pid>`, since a
-  session record outlives the process that wrote it), a **duplicate title**, and
+  session record outlives the process that wrote it — matched by name or
+  transcript UUID, or by a session holding the destination worktree, but not
+  every session merely sharing the source root), a **duplicate title**, and
   insufficient free space (a copy-then-verify adoption transiently doubles a
   transcript, and an ENOSPC mid-write truncates it). Two transcripts claiming one
   title make resume nondeterministic, so that case is an unconditional human
