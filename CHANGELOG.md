@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ai session-adopt` adopts a Claude Code session that was started **without**
+  `ai c` — a plain `claude` in a repo root — so `ai c <n>` resumes it from the
+  right worktree, losing nothing. `ai cc-migrate` moves the transcript and
+  nothing else, which is not enough: some session state is keyed by the project
+  slug (the cwd, slugified) or by a task namespace derived from the session UUID,
+  and only those break. The new command ensures the worktree exists (reusing an
+  existing one as-is, never clobbering it), moves the transcript via the existing
+  `cc-migrate` machinery, merges the CC task namespace into the pinned one,
+  copies auto-memory, and then verifies with the launcher's own lookup that
+  `ai c` genuinely resolves the result — exiting non-zero if it does not. Task
+  ids are namespace-scoped, so the same `1.json` exists in both namespaces
+  holding unrelated work; colliding files are renumbered rather than overwritten,
+  with each file's `id` and inter-task references remapped to match. Auto-memory
+  is copied and never moved (the memory directory is shared by every session that
+  ran from that root, so moving it would strand them) and never overwritten (a
+  worktree's own memory is about the work that happened there). Three refusals
+  precede any write: a live session (checked by reading `/proc/<pid>`, since a
+  session record outlives the process that wrote it — matched by name or
+  transcript UUID, or by a session holding the destination worktree, but not
+  every session merely sharing the source root), a **duplicate title**, and
+  insufficient free space (a copy-then-verify adoption transiently doubles a
+  transcript, and an ENOSPC mid-write truncates it). Two transcripts claiming one
+  title make resume nondeterministic, so that case is an unconditional human
+  gate: the command stops, prints both candidates with the detail needed to tell
+  them apart, and proposes the lowest index claimed by neither a worktree nor a
+  title — it never picks by size or mtime, `-y/--yes` does not cover it, and
+  applying the remedy requires the human's title or index on a second
+  invocation. Bulk mode (`-a/--all`) pauses on a collision and continues with the
+  remaining sessions. Procedure, including the by-hand equivalent of every step:
+  `docs/tools/cc-session-adoption.md`. (`AI-CLI-168`)
+
 ### Fixed
 
 - Every `ai update` and the auto-update at session launch printed a hardlink-fallback
