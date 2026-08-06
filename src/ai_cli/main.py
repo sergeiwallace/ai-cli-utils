@@ -2656,6 +2656,183 @@ def cmd_cc_migrate(dest, title, session_id, source, keep_source, preserve_cwd, d
     sys.exit(0)
 
 
+def _print_adoption(result, out=None) -> None:
+    """Report one adoption outcome (or its dry-run plan) to stdout."""
+    stream = out or sys.stdout
+    if result.already_adopted:
+        print(f"{result.ai_name}: already adopted — {result.resolved} resolves in {result.dest_root}", file=stream)
+        return
+    verb = "Would adopt" if result.dry_run else "Adopted"
+    print(f"{verb} {result.ai_name} -> {result.dest_root}", file=stream)
+    if result.retitled_from:
+        print(f"  retitled {result.retitled_from!r} -> {result.dest_root.name!r}", file=stream)
+    if result.worktree_created:
+        print(f"  worktree {'to create' if result.dry_run else 'created'}: {result.dest_root}", file=stream)
+    if result.migration is not None:
+        print(f"  transcript: {result.migration.source_jsonl}", file=stream)
+        print(f"           -> {result.migration.dest_jsonl}", file=stream)
+        print(f"  {result.migration.lines} lines, {result.migration.rewritten} cwd rewrites", file=stream)
+    elif result.source_jsonl is not None:
+        print(f"  transcript: {result.source_jsonl} ({result.source_lines} lines)", file=stream)
+    renumbered = [m for m in result.tasks_moved if m.renumbered_from]
+    print(f"  tasks: {len(result.tasks_moved)} moved, {len(renumbered)} renumbered", file=stream)
+    for move in renumbered:
+        print(f"    task {move.renumbered_from} -> {move.dest.stem} ({move.dest.parent})", file=stream)
+    print(f"  memory: {len(result.memory_copied)} copied, {len(result.memory_conflicts)} left alone", file=stream)
+    for conflict in result.memory_conflicts:
+        print(f"    kept existing {conflict}", file=stream)
+    if result.resolved is not None:
+        print(f"  resolve probe: `ai c` finds {result.resolved}", file=stream)
+
+
+def _print_collision(exc, out=None) -> None:
+    """Print both collision candidates and the retitle remedy, for a human."""
+    stream = out or sys.stderr
+    print(f"Error: {exc}", file=stream)
+    print("", file=stream)
+    print("Candidates:", file=stream)
+    for candidate in exc.candidates:
+        print(f"  {candidate.describe()}", file=stream)
+    print("", file=stream)
+    if exc.prefix and exc.free_index:
+        proposed = f"{exc.prefix}-{exc.free_index}"
+        print(
+            f"Proposed remedy — retitle the session you are adopting to {proposed!r} "
+            f"(lowest index claimed by neither a worktree nor a transcript title) and adopt it there:",
+            file=stream,
+        )
+        print(f"  ai session-adopt {exc.title} -c retitle -T {proposed}", file=stream)
+        print(f"  ai session-adopt {exc.title} -c retitle -I {exc.free_index}", file=stream)
+    print("", file=stream)
+    print(
+        "This gate is unconditional: -y/--yes does not cover it, and there is no automatic mode. "
+        "Confirm the new index yourself before anything is written.",
+        file=stream,
+    )
+
+
+@_cli_group.command(
+    "session-adopt",
+    help="Adopt a Claude Code session started outside `ai c` so `ai c <n>` resumes it",
+)
+@click.argument("name", required=False, default="")
+@click.option(
+    "-s",
+    "--source",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Project root the session ran in (default: the repo root)",
+)
+@click.option(
+    "-r",
+    "--repo",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Repo root that owns .worktrees/ (default: detected from the current directory)",
+)
+@click.option(
+    "-c",
+    "--on-collision",
+    type=click.Choice(["gate", "retitle"]),
+    default="gate",
+    help="Duplicate-title handling: gate (stop for a human) or retitle (apply a human-supplied title)",
+)
+@click.option("-T", "--new-title", default="", help="With -c retitle: the confirmed new title")
+@click.option("-I", "--new-index", type=int, default=None, help="With -c retitle: the confirmed new index")
+@click.option("-N", "--task-namespace", default="", help="Source CC task namespace (default: derived from the UUID)")
+@click.option("-a", "--all", "adopt_every", is_flag=True, help="Bulk mode: adopt every titled session in the source")
+@click.option("-n", "--dry-run", is_flag=True, help="Show what would happen without writing anything")
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (never covers a title collision)")
+def cmd_session_adopt(
+    name, source, repo, on_collision, new_title, new_index, task_namespace, adopt_every, dry_run, yes
+):
+    """Adopt a session's transcript, tasks, memory and worktree in one pass.
+
+    A session started as a plain ``claude`` in a repo root is invisible to
+    ``ai c <n>``, which scans the *worktree's* project directory by title. This
+    command moves everything that is keyed by the project slug into the pinned
+    slot and then verifies that ``ai c`` really does resolve the result.
+    """
+    from .session_adopt import AdoptionError, TitleCollision, adopt_all, adopt_session, split_ai_name
+
+    repo_root = (repo or _session.detect_repo_root() or Path.cwd()).resolve()
+
+    if adopt_every:
+        outcomes = adopt_all(repo_root, source_root=source, dry_run=dry_run)
+        if not outcomes:
+            print("No titled sessions found — nothing to adopt.")
+            sys.exit(0)
+        failures = 0
+        for title, outcome in outcomes:
+            if isinstance(outcome, TitleCollision):
+                failures += 1
+                _print_collision(outcome)
+                print(f"Paused on {title} — continuing with the rest.", file=sys.stderr)
+            elif isinstance(outcome, AdoptionError):
+                failures += 1
+                print(f"Skipped {title}: {outcome}", file=sys.stderr)
+            else:
+                _print_adoption(outcome)
+        print(f"\n{len(outcomes) - failures} adopted, {failures} skipped.")
+        sys.exit(1 if failures else 0)
+
+    if not name:
+        print("Error: NAME is required (or use -a/--all)", file=sys.stderr)
+        sys.exit(1)
+
+    if new_index is not None and not new_title:
+        split = split_ai_name(name)
+        if not split:
+            print(f"Error: cannot derive a prefix from {name!r} — pass -T/--new-title instead", file=sys.stderr)
+            sys.exit(1)
+        new_title = f"{split[0]}-{new_index}"
+
+    if on_collision == "retitle" and not new_title:
+        print(
+            "Error: -c/--on-collision retitle needs the human-confirmed title (-T/--new-title) "
+            "or index (-I/--new-index). Run without -c first to see the candidates and the "
+            "proposed free index.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    def _run(preview: bool):
+        return adopt_session(
+            repo_root,
+            name,
+            source_root=source,
+            task_namespace=task_namespace or None,
+            new_title=new_title or None,
+            on_collision=on_collision,
+            dry_run=preview,
+        )
+
+    # Every refusal — collision, live session, insufficient space — is raised by
+    # the dry run too, so preflighting here means the human is never prompted to
+    # confirm an adoption that was going to be rejected anyway, and a collision
+    # is reported before a `-y`-less prompt can obscure it.
+    try:
+        result = _run(True)
+        if not dry_run:
+            if not yes and not result.already_adopted:
+                _print_adoption(result)
+                if not click.confirm(f"Adopt {name} into {result.dest_root}?", default=False):
+                    print("Aborted.", file=sys.stderr)
+                    sys.exit(1)
+            result = _run(False)
+    except TitleCollision as exc:
+        _print_collision(exc)
+        sys.exit(1)
+    except (AdoptionError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    _print_adoption(result)
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+    sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
+
+
 # --- tunnel group ---
 
 
