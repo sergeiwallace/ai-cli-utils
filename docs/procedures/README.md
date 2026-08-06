@@ -17,4 +17,4 @@ Repeatable workflows, operational how-tos, and development processes.
 
 | File | Description |
 |------|-------------|
-| (none yet) | |
+| [uv-disk-usage-troubleshooting.md](uv-disk-usage-troubleshooting.md) | Understanding uv's cache vs. tools directories and safe disk reclamation |

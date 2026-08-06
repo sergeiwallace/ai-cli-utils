@@ -110,4 +110,8 @@ add the flag to every call. The detection cost (two cheap subprocess calls for
 `uv cache dir` and `uv tool dir`, two stat calls) is negligible relative to an
 update, and the payoff is eliminating a standing false alarm.
 
+## See Also
+
+- [uv Disk Usage Troubleshooting](../procedures/uv-disk-usage-troubleshooting.md) — explains the cache vs. tools directory split, how to locate each, and safe disk reclamation
+
 <!-- /doc:region name="summary" -->
