@@ -211,10 +211,10 @@ def _reset_registry_cache():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_quota_state(request, tmp_path_factory):
+def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
     """Hermetic quota/statusline tests — never touch real user quota state (AI-CLI-97).
 
-    Two independent breaches this closes:
+    Three independent breaches this closes:
 
     1. **Real quota DB.** ``_get_quota_db_path()`` falls back to the real
        ``~/.local/state/ai-cli/quota.db`` when no override is set, so an unisolated
@@ -227,15 +227,27 @@ def _isolate_quota_state(request, tmp_path_factory):
        Under xdist these race across workers and inject real ``Fable`` data into a
        test expecting isolated state (the intermittent ``F 🤖`` vs ``S 🤖`` flake).
        No-op both spawners.
+    3. **Real reset-anchor file (AI-CLI-180).** ``_get_reset_anchor_path()`` was never
+       redirected, so any test reaching ``record_quota_snapshot(reset_at=...)`` wrote the
+       real ``~/.local/state/ai-cli/quota-reset-anchor.txt``. That file *defines* the quota
+       week boundary, and ``_get_current_week_start()`` re-reads it on every call — so one
+       xdist worker's write moved another worker's boundary mid-test. The row a test just
+       recorded then carried a different ``week_start`` than the one the statusline queried,
+       no rows came back, and the render fell through to its ``📊 -`` placeholder. Redirect
+       it to a per-test tmp path so the anchor resolves to the deterministic built-in default.
 
     Tests that exercise the scrape spawners themselves (they mock ``subprocess.Popen``
     locally and assert the real functions' behavior) opt out of the no-op via the
-    ``real_quota_scrape`` marker. ``set_db_path`` tests likewise re-set the path.
+    ``real_quota_scrape`` marker. ``set_db_path`` tests likewise re-set the path, and the
+    anchor-persistence tests patch ``_get_reset_anchor_path`` with their own path — an inner
+    patch that still wins over this one.
     """
     import ai_cli.quota_db as _qdb
 
     tmp_db = tmp_path_factory.mktemp("quota_state") / "quota.db"
     _qdb.set_db_path(tmp_db)
+    tmp_anchor = tmp_path_factory.mktemp("quota_anchor") / "quota-reset-anchor.txt"
+    monkeypatch.setattr(_qdb, "_get_reset_anchor_path", lambda: tmp_anchor)
     # AIH-164 T-06: redirect the Fable backoff-state file to a per-test tmp path so tests never
     # read/write the real ~/.local/state/ai-cli/fable-scrape-backoff.json (which would leak
     # scrape-scheduling state across tests / into the real user state).
