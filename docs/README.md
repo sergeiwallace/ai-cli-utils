@@ -155,3 +155,5 @@ Testing templates and tracking.
 |-----|--------|--------|------|
 | [ai CLI Design — Subcommands Reference](tools/ai-cli-usage.md) | current | internal | ai-cli, cli, tmux, session-management, reference |
 | [iTerm2 Setup & Shortcuts](tools/iterm2-setup.md) | active | internal | iterm2, terminal, shortcuts, configuration, fleet-management |
+| [Migrating a Claude Code session between project roots](tools/cc-session-migration.md) | current | internal | claude-code, sessions, worktrees, migration |
+| [Adopting a Claude Code session into a session slot](tools/cc-session-adoption.md) | current | internal | claude-code, sessions, worktrees, migration |

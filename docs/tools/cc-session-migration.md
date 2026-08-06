@@ -99,6 +99,14 @@ transcript into another directory while keeping it as a faithful record.
   `~/.claude/teams/session-<uuid>/`, statusline state): keyed by session UUID,
   which migration does not change — they keep working wherever the transcript
   lives.
+- **CC task namespaces** (`~/.claude/tasks/<namespace>/`): a session launched
+  without a pinned task list writes tasks under a namespace derived from its
+  UUID rather than its name, so `ai c` does not see them after a bare migration.
+
+For the full job — worktree creation, the task-namespace merge, auto-memory, the
+duplicate-title gate, and a post-move check that `ai c` really resolves the
+result — use `ai session-adopt`, which reuses this module for the transcript
+step: [cc-session-adoption.md](cc-session-adoption.md).
 
 ## Safety properties
 
