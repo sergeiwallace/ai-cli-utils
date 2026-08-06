@@ -379,9 +379,170 @@ def test_cli_given_a_failed_probe_when_invoked_then_exits_nonzero(world, existin
     assert "post-adopt check FAILED" in err
 
 
+def test_adopt_given_a_retitle_whose_original_stops_resolving_when_adopted_then_warned(
+    world, adopt, collision, monkeypatch
+):
+    """The both-directions check must also report the reverse failure.
+
+    Adopting under a new title must leave the original title still resolving; if
+    it does not, the transcript that kept it is not where it should be.
+    """
+    (world["repo"] / ".worktrees" / "myproject-1").mkdir(parents=True)
+
+    def _probe(dest_root, title, home=None):
+        return None if title == "myproject-2" else probe_resolves(dest_root, title, home)
+
+    monkeypatch.setattr("ai_cli.session_adopt.probe_resolves", _probe)
+    result = adopt(on_collision="retitle", new_title="myproject-1")
+    assert any("no longer resolves" in w for w in result.warnings)
+
+
 def test_adopt_given_move_semantics_when_adopted_then_source_transcript_is_gone(world, adopt, existing_worktree):
     adopt()
     assert not (world["src_dir"] / f"{UUID}.jsonl").exists()
+
+
+# ---- malformed and unreadable inputs ----------------------------------------
+
+
+def test_live_sessions_given_an_unparseable_record_when_scanned_then_skipped(world):
+    (world["home"] / "sessions" / "bad.json").write_text("not json at all")
+    _mark_live(world, 4242, "session-1", world["repo"])
+    assert [s.pid for s in live_sessions(world["home"], world["proc"])] == [4242]
+
+
+def test_live_sessions_given_a_record_that_is_not_an_object_when_scanned_then_skipped(world):
+    (world["home"] / "sessions" / "list.json").write_text("[1, 2, 3]")
+    assert live_sessions(world["home"], world["proc"]) == []
+
+
+def test_live_sessions_given_a_nonnumeric_pid_when_scanned_then_skipped(world):
+    (world["home"] / "sessions" / "weird.json").write_text(json.dumps({"pid": "not-a-pid", "name": "session-1"}))
+    assert live_sessions(world["home"], world["proc"]) == []
+
+
+def test_live_sessions_given_no_sessions_dir_when_scanned_then_empty(tmp_path):
+    assert live_sessions(tmp_path / "absent", tmp_path / "proc") == []
+
+
+def test_pid_live_given_a_nonpositive_pid_when_checked_then_not_live(world):
+    from ai_cli.session_adopt import _pid_is_live
+
+    assert _pid_is_live(0, world["proc"]) is False
+
+
+def test_pid_live_given_no_proc_filesystem_when_checked_then_psutil_answers(tmp_path, monkeypatch):
+    """macOS and Windows have no /proc, so the check falls through to psutil."""
+    import psutil
+
+    from ai_cli.session_adopt import _pid_is_live
+
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid == 777)
+    assert _pid_is_live(777, tmp_path / "no-proc-here") is True
+    assert _pid_is_live(778, tmp_path / "no-proc-here") is False
+
+
+def test_pid_live_given_psutil_unavailable_when_checked_then_assumed_live(tmp_path, monkeypatch):
+    """Unable to tell must mean "live" — the other guess moves files under a running session."""
+    import builtins
+
+    from ai_cli.session_adopt import _pid_is_live
+
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("no psutil")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_psutil)
+    assert _pid_is_live(778, tmp_path / "no-proc-here") is True
+
+
+def test_dir_size_given_a_file_that_vanishes_mid_scan_when_measured_then_skipped(tmp_path, monkeypatch):
+    from ai_cli.session_adopt import _dir_size
+
+    (tmp_path / "a.txt").write_text("12345")
+    real_stat = Path.stat
+
+    def _flaky_stat(self, *args, **kwargs):
+        if self.name == "a.txt":
+            raise OSError("vanished")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _flaky_stat)
+    assert _dir_size(tmp_path) == 0
+
+
+def test_describe_given_a_transcript_with_no_recorded_cwd_when_described_then_cwd_is_empty(world):
+    path = world["src_dir"] / "e0000000-0000-4000-8000-000000000000.jsonl"
+    path.write_text(_record(type="user", customTitle="myproject-8") + "\n")
+    from ai_cli.session_adopt import describe_candidate
+
+    candidate = describe_candidate(path)
+    assert candidate.cwd == "" and "<unrecorded>" in candidate.describe()
+
+
+def test_describe_given_a_transcript_with_unparseable_lines_when_described_then_they_are_skipped(world):
+    path = world["src_dir"] / "e1000000-0000-4000-8000-000000000000.jsonl"
+    path.write_text("not json\n\n" + _record(type="user", cwd="/somewhere", customTitle="myproject-8") + "\n")
+    from ai_cli.session_adopt import describe_candidate
+
+    assert describe_candidate(path).cwd == "/somewhere"
+
+
+def test_describe_given_a_missing_file_when_described_then_zeroed_rather_than_raising(tmp_path):
+    from ai_cli.session_adopt import describe_candidate
+
+    candidate = describe_candidate(tmp_path / "absent.jsonl")
+    assert candidate.size == 0 and candidate.lines == 0 and candidate.mtime == 0.0
+
+
+def test_retitle_given_unparseable_lines_when_retitled_then_they_are_byte_preserved(world):
+    path = world["src_dir"] / "e2000000-0000-4000-8000-000000000000.jsonl"
+    path.write_text("not json at all\n" + _record(type="user", customTitle="myproject-8") + "\n")
+    retitle_transcript(path, "myproject-8", "myproject-9")
+    assert path.read_text().splitlines()[0] == "not json at all"
+    assert transcript_title(path) == "myproject-9"
+
+
+def test_retitle_given_a_write_failure_when_retitled_then_the_temp_file_is_removed(world, monkeypatch):
+    path = world["src_dir"] / f"{UUID}.jsonl"
+    before = path.read_bytes()
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("ai_cli.session_adopt.os.replace", _boom)
+    with pytest.raises(OSError):
+        retitle_transcript(path, "myproject-2", "myproject-9")
+    assert path.read_bytes() == before
+    assert not list(world["src_dir"].glob("*.retitle-tmp"))
+
+
+def test_merge_tasks_given_a_source_with_no_numeric_task_files_when_merged_then_no_op(world):
+    source = world["home"] / "tasks" / "session-11111111"
+    source.mkdir(parents=True)
+    (source / "notes.txt").write_text("not a task")
+    dest = world["home"] / "tasks" / "myproject-2"
+    assert merge_task_namespace(source, dest) == []
+    assert not dest.exists()
+
+
+def test_merge_tasks_given_an_unparseable_task_file_when_merged_then_moved_verbatim(world):
+    source = world["home"] / "tasks" / "session-11111111"
+    source.mkdir(parents=True)
+    (source / "1.json").write_text("not json at all")
+    dest = _tasks(world["home"], "myproject-2", {"1": "dest one"})
+    merge_task_namespace(source, dest)
+    assert (dest / "2.json").read_text() == "not json at all"
+    assert not (source / "1.json").exists()
+
+
+def test_merge_tasks_given_the_same_namespace_for_source_and_dest_when_merged_then_no_op(world):
+    same = _tasks(world["home"], "myproject-2", {"1": "one"})
+    assert merge_task_namespace(same, same) == []
+    assert json.loads((same / "1.json").read_text())["subject"] == "one"
 
 
 def test_adopt_given_an_adoption_when_recorded_cwds_checked_then_they_point_at_the_worktree(
