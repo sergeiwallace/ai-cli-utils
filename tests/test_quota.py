@@ -1928,6 +1928,37 @@ class TestConftestQuotaHermeticity:
 
 
 class TestQuotaStatuslinePart:
+    """Statusline pace rendering, driven by an injected clock rather than the real one.
+
+    AI-CLI-180: every scenario here is "usage X% at Y hours into the quota week", which needs
+    a week_start and a `now` a fixed offset apart — nothing about it needs the real date. The
+    tests used to *derive* week_start from `_get_current_week_start()` with no argument, i.e.
+    from `datetime.now()`, and only then pin `now` to an offset from it. That made the fixture's
+    own timing premise a function of when the suite happened to run, so a run straddling the
+    real week boundary got a week_start from one week and rows recorded against another; the
+    query matched nothing and the render emitted its `📊 -` placeholder instead of a
+    percentage. Injecting a fixed reference instant removes the race at its source (same
+    approach as AI-CLI-158 for the adaptive-labels class).
+    """
+
+    # An arbitrary fixed instant, deliberately NOT the real clock. Any instant works: the
+    # week_start derived from it is exact, so `hours_elapsed` offsets below are exact too.
+    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)  # Monday noon UTC
+
+    @pytest.fixture
+    def frozen_week(self):
+        """The injected clock: the current quota week's start, as of a fixed reference instant.
+
+        Returns ``(week_start_str, week_start_dt)``. Tests add a `timedelta` to `week_start_dt`
+        to place `now` at a chosen point in the week, then patch `datetime.datetime` so the
+        production code sees exactly that instant.
+        """
+        import ai_cli.quota_db as qdb
+
+        week_start_str = qdb._get_current_week_start(now=self._FIXED_REFERENCE_NOW)
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return week_start_str, week_start_dt
+
     @pytest.mark.real_quota_scrape
     def test_when_no_snapshot_then_shows_placeholder_and_triggers_scrape(self, tmp_path, capsys):
         """No data for current week → shows '📊 -' placeholder and launches a background scrape."""
@@ -1956,16 +1987,15 @@ class TestQuotaStatuslinePart:
             qdb.set_db_path(None)  # type: ignore[arg-type]
             q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
-    def test_when_under_pace_then_shows_green_delta_and_steady_arrow(self, tmp_path, capsys):
+    def test_when_under_pace_then_shows_green_delta_and_steady_arrow(self, tmp_path, capsys, frozen_week):
         """delta < -5 with single snapshot → GREEN delta color, → arrow (insufficient data
         for acceleration). No ✅ icon (dropped 2026-07-19, AIH-274 compaction pass) — color
         alone conveys "on track" now."""
         import ai_cli.quota_db as qdb
 
         # Pin `now` to 50% through the billing week so week_elapsed_pct ≈ 50%
-        # and delta = 5 - 50 = -45 << -5 regardless of when the test actually runs.
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        # and delta = 5 - 50 = -45 << -5.
+        _, week_start_dt = frozen_week
         fixed_now = week_start_dt + timedelta(days=3, hours=12)  # 50% of 7 days
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -1984,15 +2014,14 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_over_pace_then_shows_red_delta(self, tmp_path, capsys):
+    def test_when_over_pace_then_shows_red_delta(self, tmp_path, capsys, frozen_week):
         """delta > +5 in normal phase (≥24h elapsed) → RED delta color. No 🚨 icon (dropped
         2026-07-19, AIH-274 compaction pass) — color alone conveys "running hot" now."""
         import ai_cli.quota_db as qdb
 
         # Pin `now` to 25h into the week (post-seedling) so normal-phase bands apply.
         # week_elapsed_pct ≈ 14.9%, delta = 95 - 14.9 ≈ 80 >> 5 → RED
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        _, week_start_dt = frozen_week
         fixed_now = week_start_dt + timedelta(hours=25)
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -2010,12 +2039,11 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_seedling_calm_then_shows_leaf_and_blue_delta(self, tmp_path, capsys):
+    def test_when_seedling_calm_then_shows_leaf_and_blue_delta(self, tmp_path, capsys, frozen_week):
         """First 24h, delta < 10% → 🌱 icon, no alert, delta shown (blue = no ANSI color assertion needed)."""
         import ai_cli.quota_db as qdb
 
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        _, week_start_dt = frozen_week
         fixed_now = week_start_dt + timedelta(hours=6)  # 6h in — seedling, delta = 5-3.6 = 1.4%
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -2035,12 +2063,11 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_seedling_elevated_then_shows_leaf_no_alarm(self, tmp_path, capsys):
+    def test_when_seedling_elevated_then_shows_leaf_no_alarm(self, tmp_path, capsys, frozen_week):
         """First 24h: 🌱 always shown regardless of delta — no alarms during seedling phase."""
         import ai_cli.quota_db as qdb
 
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        _, week_start_dt = frozen_week
         fixed_now = week_start_dt + timedelta(hours=6)  # elapsed ~3.6%, usage 18% → delta ≈ 14%
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -2059,12 +2086,11 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_seedling_high_delta_then_shows_leaf_no_alarm(self, tmp_path, capsys):
+    def test_when_seedling_high_delta_then_shows_leaf_no_alarm(self, tmp_path, capsys, frozen_week):
         """First 24h, even high delta → 🌱 with no alarm icon (informational only)."""
         import ai_cli.quota_db as qdb
 
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        _, week_start_dt = frozen_week
         fixed_now = week_start_dt + timedelta(hours=6)  # elapsed ~3.6%, usage 30% → delta ≈ 26%
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -2083,55 +2109,62 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_accelerating_then_shows_up_arrow(self, tmp_path, capsys):
+    def test_when_accelerating_then_shows_up_arrow(self, tmp_path, capsys, frozen_week):
         """Three snapshots with increasing burn rate → ↑ arrow."""
         import ai_cli.quota_db as qdb
-        from datetime import datetime, timezone, timedelta
 
+        week_start, week_start_dt = frozen_week
+        # 30h into the week, so all three snapshots sit inside it with room to spare.
+        fixed_now = week_start_dt + timedelta(hours=30)
         qdb.set_db_path(tmp_path / "quota.db")
         try:
             conn = qdb._get_conn()
-            now = datetime.now(timezone.utc)
-            week_start = qdb._get_current_week_start(now)
             # Snapshots spaced 30 min apart: slow burn then fast burn
             # t2 (oldest): 20% at -60min, t1: 21% at -30min (rate=2%/hr), t0: 23% at now (rate=4%/hr)
             # accel = 4 - 2 = 2 %/hr > 1.0 → ↑
             for mins_ago, pct in [(60, 20.0), (30, 21.0), (0, 23.0)]:
-                ts = (now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                ts = (fixed_now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 conn.execute(
                     "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
                     (week_start, pct, 40.0, ts),
                 )
             conn.commit()
             conn.close()
-            result = quota_statusline_part()
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
             assert "↑" in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_decelerating_then_shows_down_arrow(self, tmp_path, capsys):
+    def test_when_decelerating_then_shows_down_arrow(self, tmp_path, capsys, frozen_week):
         """Three snapshots with decreasing burn rate → ↓ arrow."""
         import ai_cli.quota_db as qdb
-        from datetime import datetime, timezone, timedelta
 
+        week_start, week_start_dt = frozen_week
+        fixed_now = week_start_dt + timedelta(hours=30)
         qdb.set_db_path(tmp_path / "quota.db")
         try:
             conn = qdb._get_conn()
-            now = datetime.now(timezone.utc)
-            week_start = qdb._get_current_week_start(now)
             # t2: 20% at -60min, t1: 23% at -30min (rate=6%/hr), t0: 24% at now (rate=2%/hr)
             # accel = 2 - 6 = -4 %/hr < -1.0 → ↓
             for mins_ago, pct in [(60, 20.0), (30, 23.0), (0, 24.0)]:
-                ts = (now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                ts = (fixed_now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 conn.execute(
                     "INSERT INTO quota_snapshots (week_start, usage_percent, weekly_sonnet_pct, snapshotted_at) VALUES (?,?,?,?)",
                     (week_start, pct, 40.0, ts),
                 )
             conn.commit()
             conn.close()
-            result = quota_statusline_part()
+            with patch("datetime.datetime") as MockDT:
+                MockDT.now.return_value = fixed_now
+                MockDT.strptime.side_effect = datetime.strptime
+                MockDT.fromisoformat.side_effect = datetime.fromisoformat
+                result = quota_statusline_part()
             assert result == 0
             out = capsys.readouterr().out
             assert "↓" in out
@@ -2149,12 +2182,11 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_snapshot_stale_then_shows_clock_indicator(self, tmp_path, capsys):
+    def test_when_snapshot_stale_then_shows_clock_indicator(self, tmp_path, capsys, frozen_week):
         """Snapshot >2h old → ⏱ stale indicator appended to output."""
         import ai_cli.quota_db as qdb
 
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        week_start_str, week_start_dt = frozen_week
         fixed_now = week_start_dt + timedelta(hours=30)  # post-seedling
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -2179,12 +2211,11 @@ class TestQuotaStatuslinePart:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_snapshot_fresh_then_no_clock_indicator(self, tmp_path, capsys):
+    def test_when_snapshot_fresh_then_no_clock_indicator(self, tmp_path, capsys, frozen_week):
         """Snapshot <2h old → no ⏱ indicator."""
         import ai_cli.quota_db as qdb
 
-        week_start_str = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        week_start_str, week_start_dt = frozen_week
         fixed_now = week_start_dt + timedelta(hours=30)
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -2222,6 +2253,44 @@ class TestQuotaStatuslinePart:
             assert isinstance(ts_arg, str) and len(ts_arg) > 0
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
+
+    # AI-CLI-180 AC-3: the guard on the injection above. Every scenario in this class is
+    # positioned relative to `frozen_week`, so if that fixture ever silently goes back to
+    # reading the real clock, the whole class becomes non-hermetic again and the failure
+    # resurfaces as a ~1-in-4 flake under xdist rather than as an honest red test. These two
+    # tests pin the property directly: move the *real* clock somewhere far away and the
+    # fixture's answer must not move with it.
+    #
+    # Both freeze dates are checked because a single one cannot distinguish "frozen" from
+    # "coincidentally equal" — they are six months apart and in different quota weeks, and
+    # each test carries its own positive control asserting the real-clock derivation really
+    # does differ there. Without that control the assertion could pass vacuously.
+    @staticmethod
+    def _assert_frozen_under(real_clock_iso, request):
+        import ai_cli.quota_db as qdb
+        from freezegun import freeze_time
+
+        expected_week_start = qdb._get_current_week_start(now=TestQuotaStatuslinePart._FIXED_REFERENCE_NOW)
+        with freeze_time(real_clock_iso):
+            # Positive control: at this real instant the wall-clock derivation gives a
+            # DIFFERENT week, so the assertion below can genuinely fail.
+            assert qdb._get_current_week_start() != expected_week_start, (
+                f"probe is vacuous — real clock at {real_clock_iso} already yields {expected_week_start}"
+            )
+            # Fixture is created lazily here, i.e. while the real clock is frozen far away.
+            week_start_str, week_start_dt = request.getfixturevalue("frozen_week")
+        assert week_start_str == expected_week_start
+        assert week_start_dt == datetime.strptime(expected_week_start, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+
+    def test_when_real_clock_is_far_in_the_past_then_frozen_week_is_unchanged(self, request):
+        """The injected clock ignores the real one — no wall-clock read survives in this class."""
+        self._assert_frozen_under("2026-03-01T00:00:00Z", request)
+
+    def test_when_real_clock_is_far_in_the_future_then_frozen_week_is_unchanged(self, request):
+        """Same property from the other side of the reference instant."""
+        self._assert_frozen_under("2026-09-01T00:00:00Z", request)
 
 
 class TestQuotaStatuslinePartLegacyDb:
