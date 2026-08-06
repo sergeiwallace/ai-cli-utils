@@ -2833,6 +2833,105 @@ def cmd_session_adopt(
     sys.exit(1 if any("FAILED" in w for w in result.warnings) else 0)
 
 
+def _print_audit(report, ready, skipped, out=None) -> None:
+    """Print the survey: collisions first, then every session, then the triage."""
+    stream = out or sys.stdout
+    print(
+        f"Scanned {report.scanned_transcripts} transcripts in {report.scanned_project_dirs} project "
+        f"directories — {len(report.sessions)} titled session(s) across {len(report.repos)} repo(s).",
+        file=stream,
+    )
+
+    if report.collisions:
+        print(f"\nTitle collisions ({len(report.collisions)}) — a human must choose:", file=stream)
+        for title, group in report.collisions.items():
+            print(f"  {title!r} claimed by {len(group)} transcripts:", file=stream)
+            for record in group:
+                print(
+                    f"    {record.transcript} ({record.lines} lines, cwd={record.cwd or '<unrecorded>'})", file=stream
+                )
+
+    if report.sessions:
+        print("\nSessions:", file=stream)
+        for record in report.sessions:
+            print(f"  {record.describe()}", file=stream)
+
+    if ready:
+        print(f"\nAdoptable ({len(ready)}):", file=stream)
+        for record in ready:
+            print(f"  {record.title} -> {record.slot}", file=stream)
+    if skipped:
+        print(f"\nSkipped ({len(skipped)}):", file=stream)
+        for record, reason in skipped:
+            print(f"  {record.title}: {reason}", file=stream)
+
+
+@_cli_group.command(
+    "session-audit",
+    help="Survey titled Claude Code sessions fleet-wide and report which `ai c <n>` cannot resume",
+)
+@click.option(
+    "-r",
+    "--repo",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Report only sessions owned by this repo root (default: every repo found)",
+)
+@click.option("-t", "--title", default="", help="Report only the session with this exact title")
+@click.option("-a", "--adopt", "run_adopt", is_flag=True, help="Adopt every session that is safe to adopt")
+@click.option("-n", "--dry-run", is_flag=True, help="With -a: show what would be adopted without writing anything")
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt (never covers a title collision)")
+def cmd_session_audit(repo, title, run_adopt, dry_run, yes):
+    """Survey every titled CC session, then optionally drive their adoption.
+
+    The survey scans outward from ``~/.claude/projects/`` rather than inward from
+    a list of repos, so a session that ran in an agent worktree under
+    ``<repo>/.claude/worktrees/<id>`` is found and attributed without anyone
+    supplying its path. Adoption itself is delegated to ``ai session-adopt``'s
+    module, so the duplicate-title and live-session gates apply unchanged.
+    """
+    from .session_adopt import AdoptionError, TitleCollision
+    from .session_audit import adopt_ready, survey, triage
+
+    report = survey(repo=repo, title=title or None)
+    ready, skipped = triage(report)
+
+    if not report.sessions:
+        scope = " matching the filters" if (repo or title) else ""
+        print(f"No titled sessions found{scope} — nothing to audit.")
+        sys.exit(0)
+
+    if not run_adopt:
+        _print_audit(report, ready, skipped)
+        sys.exit(0)
+
+    _print_audit(report, ready, skipped)
+    if not ready:
+        print("\nNothing safe to adopt.")
+        sys.exit(1 if skipped else 0)
+
+    if not dry_run and not yes:
+        if not click.confirm(f"\nAdopt {len(ready)} session(s)?", default=False):
+            print("Aborted.", file=sys.stderr)
+            sys.exit(1)
+
+    outcomes, _ = adopt_ready(report, dry_run=dry_run)
+    print("")
+    failures = 0
+    for record, outcome in outcomes:
+        if isinstance(outcome, TitleCollision):
+            failures += 1
+            _print_collision(outcome)
+            print(f"Paused on {record.title} — continuing with the rest.", file=sys.stderr)
+        elif isinstance(outcome, AdoptionError):
+            failures += 1
+            print(f"Skipped {record.title}: {outcome}", file=sys.stderr)
+        else:
+            _print_adoption(outcome)
+    print(f"\n{len(outcomes) - failures} adopted, {failures + len(skipped)} skipped.")
+    sys.exit(1 if (failures or skipped) else 0)
+
+
 # --- tunnel group ---
 
 
