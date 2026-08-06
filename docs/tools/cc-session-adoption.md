@@ -64,6 +64,17 @@ than up front, so all three are checked before the first write.
    Adoption reads `/proc/<pid>` directly. Do **not** check with
    `ps aux | grep <pattern>`: that pipeline matches the `grep` in its own
    pipeline and has produced a backwards live/dead answer on a real machine.
+
+   The refusal is **precise, not a blanket**: it fires when the live session is
+   the one being adopted (matched by name *or* by transcript UUID, so a
+   since-renamed session is still caught), or when a session is running in the
+   destination worktree. It deliberately does **not** reject every session that
+   merely shares the source root — memory is copied rather than moved and each
+   transcript is its own file, so a sibling session there is unaffected. That
+   distinction matters for diagnosis as much as for permissiveness: a
+   root-wide refusal reported "still running" for *every* failure, including an
+   unknown title, masking the real cause behind a plausible-looking message.
+
    Manually:
 
    ```bash

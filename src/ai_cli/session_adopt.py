@@ -131,6 +131,7 @@ class LiveSession:
     name: str
     cwd: str
     record: Path
+    session_id: str = ""
 
 
 @dataclass
@@ -215,7 +216,13 @@ def live_sessions(claude_home: Path | None = None, proc_dir: Path | None = None)
         if not _pid_is_live(pid, proc_dir):
             continue
         found.append(
-            LiveSession(pid=pid, name=str(data.get("name") or ""), cwd=str(data.get("cwd") or ""), record=record)
+            LiveSession(
+                pid=pid,
+                name=str(data.get("name") or ""),
+                cwd=str(data.get("cwd") or ""),
+                record=record,
+                session_id=str(data.get("sessionId") or ""),
+            )
         )
     return found
 
@@ -606,18 +613,30 @@ def adopt_session(
             raise AdoptionError("a new title is only meaningful with on_collision='retitle'")
         retitled_from, target_title = ai_name, new_title
 
-    for session in live_sessions(home, proc_dir):
-        if session.name in {ai_name, target_title} or session.cwd in {str(source_root), str(repo_root)}:
-            raise LiveSessionError(
-                f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) is still "
-                f"running — its transcript and task files are open and still being appended to. Exit it "
-                f"first, then adopt."
-            )
-
     source_dir = cc_project_dir(source_root, home)
     src_jsonl = find_transcript(source_dir, title=ai_name)
     dest_root_guess = repo_root / ".worktrees" / target_title
     already = probe_resolves(dest_root_guess, target_title, home)
+
+    # Locating the transcript first is read-only, and it makes this refusal
+    # *precise*: the session being adopted can be recognised by its UUID as well
+    # as by its name. The check deliberately does NOT reject every session
+    # sharing the source root — memory is copied rather than moved and each
+    # transcript is its own file, so a sibling session in that directory is
+    # unaffected. Rejecting those too would mask real errors behind a
+    # live-session message: an unknown title reported "still running".
+    live_uuid = src_jsonl.stem if src_jsonl is not None else None
+    for session in live_sessions(home, proc_dir):
+        adopting_this_one = bool(session.name) and session.name in {ai_name, target_title}
+        same_transcript = bool(live_uuid) and session.session_id == live_uuid
+        holds_destination = session.cwd == str(dest_root_guess)
+        if adopting_this_one or same_transcript or holds_destination:
+            reason = "is running in the destination worktree" if holds_destination else "is the session being adopted"
+            raise LiveSessionError(
+                f"session {session.name or '<unnamed>'} (pid {session.pid}, cwd {session.cwd}) {reason} "
+                f"and is still running — its transcript and task files are open and still being appended "
+                f"to. Exit it first, then adopt."
+            )
 
     if src_jsonl is None:
         if already is not None:

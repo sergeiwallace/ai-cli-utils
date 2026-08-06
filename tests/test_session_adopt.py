@@ -171,10 +171,53 @@ def test_adopt_given_the_named_session_is_live_when_adopted_then_refused_and_not
     assert not cc_project_dir(existing_worktree, world["home"]).exists()
 
 
-def test_adopt_given_a_live_session_in_the_source_root_when_adopted_then_refused(world, adopt, existing_worktree):
-    _mark_live(world, 4242, "some-other-name", world["repo"])
-    with pytest.raises(LiveSessionError):
+def test_adopt_given_a_live_session_holding_the_destination_worktree_when_adopted_then_refused(
+    world, adopt, existing_worktree
+):
+    _mark_live(world, 4242, "some-other-name", existing_worktree)
+    with pytest.raises(LiveSessionError, match="destination worktree"):
         adopt()
+
+
+def test_adopt_given_a_live_session_sharing_the_transcript_uuid_when_adopted_then_refused(
+    world, adopt, existing_worktree
+):
+    """A renamed live session is still the session being adopted — match on UUID too."""
+    (world["proc"] / "4242").mkdir()
+    (world["home"] / "sessions" / "4242.json").write_text(
+        json.dumps({"pid": 4242, "name": "renamed-since", "cwd": str(world["tmp"]), "sessionId": UUID})
+    )
+    with pytest.raises(LiveSessionError, match="being adopted"):
+        adopt()
+
+
+def test_adopt_given_an_unrelated_live_session_in_the_source_root_when_adopted_then_allowed(
+    world, adopt, existing_worktree
+):
+    """A sibling session sharing the source root must not block the adoption.
+
+    Memory is copied rather than moved and each transcript is its own file, so the
+    sibling is unaffected. Refusing here would report "still running" for every
+    error, including an unknown title — masking the real cause.
+    """
+    (world["proc"] / "4242").mkdir()
+    (world["home"] / "sessions" / "4242.json").write_text(
+        json.dumps({"pid": 4242, "name": "myproject-8", "cwd": str(world["repo"]), "sessionId": OTHER_UUID})
+    )
+    result = adopt()
+    assert result.resolved is not None
+
+
+def test_adopt_given_an_unknown_title_and_an_unrelated_live_session_when_adopted_then_the_real_error_surfaces(
+    world, adopt, existing_worktree
+):
+    """The refusal must not mask a different failure (probe-adequacy regression)."""
+    (world["proc"] / "4242").mkdir()
+    (world["home"] / "sessions" / "4242.json").write_text(
+        json.dumps({"pid": 4242, "name": "myproject-8", "cwd": str(world["repo"]), "sessionId": OTHER_UUID})
+    )
+    with pytest.raises(AdoptionError, match="no transcript titled"):
+        adopt(name="myproject-99")
 
 
 def test_adopt_given_a_dead_session_record_when_adopted_then_allowed(world, adopt, existing_worktree):
