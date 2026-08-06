@@ -4,7 +4,7 @@ category: bugs
 tags: [session, remote-control, growthbook, launcher, regression]
 status: fix-deployed
 severity: P1
-task: AI-CLI-146
+task: AI-CLI-165
 ---
 
 <!-- doc:region name="summary" kind="replaceable" -->
@@ -18,7 +18,7 @@ override required for their automatic Remote Control reconnect.
 
 **Created:** 2026-08-01
 
-**Task:** `AI-CLI-146` (AIH-352 follow-up)
+**Task:** `AI-CLI-165` (AIH-352 follow-up)
 
 ## Symptoms
 

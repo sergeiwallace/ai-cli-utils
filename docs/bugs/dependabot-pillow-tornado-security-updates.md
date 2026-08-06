@@ -4,7 +4,7 @@ category: bugs
 tags: [dependencies, security, dependabot, pillow, tornado, uv]
 status: fix-deployed
 severity: P1
-task: AI-CLI-147
+task: AI-CLI-166
 ---
 
 <!-- doc:region name="summary" kind="replaceable" -->
@@ -17,7 +17,7 @@ task: AI-CLI-147
 
 **Created:** 2026-08-01
 
-**Task:** AI-CLI-147
+**Task:** AI-CLI-166
 
 ## Symptoms
 
