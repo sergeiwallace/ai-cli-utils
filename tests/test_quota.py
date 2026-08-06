@@ -2696,10 +2696,14 @@ class TestQuotaStatuslinePartSingleLine:
     duplicate-boxes symptom (AI-CLI-56). These tests enforce the contract at the Python level.
     """
 
+    # AI-CLI-180: a fixed reference instant, not the real clock — `hours_elapsed` below is only
+    # meaningful relative to a week_start that does not move between the two derivations.
+    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)  # Monday noon UTC
+
     def _run_and_capture(self, usage_percent, hours_elapsed, tmp_path, capsys):
         import ai_cli.quota_db as qdb
 
-        week_start_str = qdb._get_current_week_start()
+        week_start_str = qdb._get_current_week_start(now=self._FIXED_REFERENCE_NOW)
         week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         fixed_now = week_start_dt + timedelta(hours=hours_elapsed)
         qdb.set_db_path(tmp_path / "quota.db")
