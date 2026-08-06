@@ -20,8 +20,14 @@ and its worktrees. No test touches the real user state or this repository's tree
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
@@ -112,6 +118,254 @@ def existing_worktree(world):
 def _mark_live(world, pid: int, name: str, cwd: Path) -> None:
     (world["proc"] / str(pid)).mkdir()
     (world["home"] / "sessions" / f"{pid}.json").write_text(json.dumps({"pid": pid, "name": name, "cwd": str(cwd)}))
+
+
+# ---- a real live process, and a real-shaped registry entry for it ------------
+#
+# The tests above prove the refusal against a *fake* /proc: a directory the test
+# creates by hand. That is enough to pin the parsing branches, but it cannot
+# distinguish "the registry lookup works" from "the registry lookup was bypassed
+# and something probed a pid directly" — both print the same PASS. The tests
+# below close that gap by driving the refusal through the production liveness
+# path (``proc_dir`` left unset, so the real ``/proc``/``psutil`` is consulted)
+# against a process the test itself spawns, owns and reaps.
+#
+# The discriminating shape is a *matched pair*: the same live process and the
+# same real registry file, differing only in the payload's ``name`` /
+# ``sessionId`` / ``cwd``. One must refuse and the other must succeed, so the
+# outcome can only be explained by the code having read that payload.
+
+#: Seconds the owned process sleeps for. It exits on its own well inside a test
+#: run, so a killed worker or a timeout that skips teardown entirely still
+#: cannot leave the process behind.
+_OWNED_PROCESS_LIFETIME = 30
+
+
+def _registry_payload(pid: int, name: str, cwd: Path, session_id: str) -> dict:
+    """A full-shaped ``~/.claude/sessions/<pid>.json`` payload.
+
+    Claude Code writes thirteen fields, not the three the fake-``/proc`` tests
+    above supply. The extras are inert to the refusal, which is the point: a
+    realistic entry proves the code picks the fields it needs out of a real
+    record rather than only parsing a minimal one hand-built to suit it.
+    """
+    now_ms = int(time.time() * 1000)
+    return {
+        "pid": pid,
+        "sessionId": session_id,
+        "cwd": str(cwd),
+        "startedAt": now_ms - 60_000,
+        "procStart": "142302",
+        "version": "2.1.223",
+        "peerProtocol": 1,
+        "kind": "interactive",
+        "entrypoint": "cli",
+        "name": name,
+        "updatedAt": now_ms,
+        "status": "busy",
+        "statusUpdatedAt": now_ms,
+    }
+
+
+def _register(world, pid: int, *, name: str, cwd: Path, session_id: str) -> Path:
+    """Write a realistic registry entry into the *redirected* sessions dir."""
+    record = world["home"] / "sessions" / f"{pid}.json"
+    record.write_text(json.dumps(_registry_payload(pid, name, cwd, session_id)), encoding="utf-8")
+    return record
+
+
+def _spawn_owned(*code: str) -> subprocess.Popen:
+    """Spawn a python child in its OWN session, so its group can be signalled safely.
+
+    ``start_new_session=True`` is not optional here. Without it the child shares
+    the pytest worker's process group, and the ``os.killpg`` in :func:`_reap`
+    then signals the test runner itself — observed live while writing these
+    tests: the suite died at SIGTERM part-way through the file.
+    """
+    return subprocess.Popen(
+        [sys.executable, "-c", *code],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    """Reap the process GROUP: SIGTERM, wait, then SIGKILL.
+
+    The group rather than the child, because killing only the direct child
+    orphans any grandchildren it started. Always ends in a ``wait()`` so the
+    child is not left a zombie — a zombie keeps its ``/proc/<pid>`` entry and
+    would therefore still read as *live*.
+    """
+    try:
+        group = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        group = None
+    # Refuse to signal our own group even if the spawn somehow did not detach:
+    # that would take down the test runner rather than the child.
+    if group == os.getpgrp():
+        group = None
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if proc.poll() is not None:
+            break
+        try:
+            if group is not None:
+                os.killpg(group, sig)
+            else:
+                proc.send_signal(sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            continue
+    proc.wait()
+
+
+@pytest.fixture
+def owned_process():
+    """A real process this test owns, spawned in its own session and reaped here.
+
+    ``start_new_session=True`` puts it in a fresh process group so the whole
+    group can be signalled, and it sleeps for a bounded time so that even a
+    teardown that never runs — a killed xdist worker, a suite-level timeout —
+    cannot leave it behind. Never a pattern-matched ``pkill``, which would also
+    match processes this suite does not own.
+    """
+    proc = _spawn_owned(f"import time; time.sleep({_OWNED_PROCESS_LIFETIME})")
+    # Assert liveness with psutil rather than with the code under test, so a
+    # process that failed to start cannot be mistaken for a passing refusal.
+    assert psutil.pid_exists(proc.pid), "the spawned process must really be running"
+    try:
+        yield proc
+    finally:
+        _reap(proc)
+
+
+@pytest.fixture
+def reaped_pid():
+    """The pid of a process this test spawned and then fully reaped — really dead.
+
+    Fully reaped matters: a killed-but-unwaited child is a zombie and still has
+    a ``/proc/<pid>`` entry, so an unreaped pid would read as live and the
+    negative control would pass for the wrong reason.
+    """
+    proc = _spawn_owned("")
+    pid = proc.pid
+    _reap(proc)
+    deadline = time.monotonic() + 5
+    while psutil.pid_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not psutil.pid_exists(pid), "the reaped pid must really be gone before it is used as a dead pid"
+    return pid
+
+
+@pytest.fixture
+def adopt_real_proc(world):
+    """``adopt_session`` with the redirected home but the REAL liveness path.
+
+    ``proc_dir`` is deliberately not passed: these tests exercise the same
+    ``/proc``/``psutil`` probe production uses. Only ``claude_home`` is
+    redirected, so no test here reads or writes the real registry.
+    """
+
+    def _adopt(name="myproject-2", **kw):
+        kw.setdefault("claude_home", world["home"])
+        return adopt_session(world["repo"], name, **kw)
+
+    return _adopt
+
+
+def test_adopt_given_a_real_live_process_named_in_the_registry_when_adopted_then_refused(
+    world, adopt_real_proc, existing_worktree, owned_process
+):
+    """AC-1/AC-2: a real-shaped registry entry for a real, test-owned process."""
+    _register(world, owned_process.pid, name="myproject-2", cwd=world["tmp"] / "elsewhere", session_id=UUID)
+
+    with pytest.raises(LiveSessionError, match=str(owned_process.pid)):
+        adopt_real_proc()
+
+    assert (world["src_dir"] / f"{UUID}.jsonl").is_file(), "source transcript must be untouched"
+    assert not cc_project_dir(existing_worktree, world["home"]).exists()
+
+
+def test_adopt_given_the_same_live_process_registered_under_an_unrelated_name_when_adopted_then_allowed(
+    world, adopt_real_proc, existing_worktree, owned_process
+):
+    """AC-3, the matched control for the refusal above.
+
+    Identical live process, identical real ``/proc`` state, identical registry
+    file — only ``name``/``sessionId``/``cwd`` differ. The refusal must not fire.
+    An implementation that ignored the registry and merely probed pids would give
+    the same answer to both halves of this pair, so the pair is what makes the
+    refusal falsifiable.
+    """
+    _register(world, owned_process.pid, name="myapp-7", cwd=world["tmp"] / "other-repo", session_id=OTHER_UUID)
+
+    result = adopt_real_proc()
+
+    assert result.resolved is not None, "an unrelated live session must not block the adoption"
+
+
+def test_adopt_given_a_real_live_process_with_no_registry_entry_when_adopted_then_allowed(
+    world, adopt_real_proc, existing_worktree, owned_process
+):
+    """AC-3: liveness alone is not the trigger — the registry entry is."""
+    assert not list((world["home"] / "sessions").glob("*.json")), "no entry for the live process"
+
+    result = adopt_real_proc()
+
+    assert result.resolved is not None
+
+
+def test_adopt_given_a_registry_entry_naming_a_reaped_pid_when_adopted_then_allowed(
+    world, adopt_real_proc, existing_worktree, reaped_pid
+):
+    """AC-3: a real-shaped entry for the session being adopted, but a dead pid.
+
+    Everything that makes the refusal fire is present except the liveness, so a
+    refusal here would mean the code stopped checking whether the pid still runs.
+    """
+    _register(world, reaped_pid, name="myproject-2", cwd=world["repo"], session_id=UUID)
+
+    result = adopt_real_proc()
+
+    assert result.resolved is not None
+
+
+def test_adopt_given_a_real_live_process_matched_only_by_session_id_when_adopted_then_refused(
+    world, adopt_real_proc, existing_worktree, owned_process
+):
+    """The ``sessionId`` field is load-bearing: a renamed session is still this one."""
+    _register(world, owned_process.pid, name="renamed-since", cwd=world["tmp"], session_id=UUID)
+
+    with pytest.raises(LiveSessionError, match="being adopted"):
+        adopt_real_proc()
+
+
+def test_adopt_given_a_real_live_process_matched_only_by_destination_cwd_when_adopted_then_refused(
+    world, adopt_real_proc, existing_worktree, owned_process
+):
+    """The ``cwd`` field is load-bearing: a stranger sitting in the destination blocks it."""
+    _register(world, owned_process.pid, name="myapp-7", cwd=existing_worktree, session_id=OTHER_UUID)
+
+    with pytest.raises(LiveSessionError, match="destination worktree"):
+        adopt_real_proc()
+
+
+def test_live_sessions_given_a_realistic_entry_for_a_real_process_when_scanned_then_every_field_is_read(
+    world, owned_process
+):
+    """The whole payload round-trips out of a real-shaped record, via the real /proc."""
+    _register(world, owned_process.pid, name="myproject-2", cwd=world["repo"], session_id=UUID)
+
+    found = live_sessions(world["home"])
+
+    assert [(s.pid, s.name, s.cwd, s.session_id) for s in found] == [
+        (owned_process.pid, "myproject-2", str(world["repo"]), UUID)
+    ]
 
 
 # ---- helpers: names and indexes ---------------------------------------------
