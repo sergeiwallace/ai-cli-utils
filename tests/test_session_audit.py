@@ -77,6 +77,28 @@ def _write_transcript(home: Path, uuid: str, title: str | None, cwd: Path) -> Pa
     return path
 
 
+def _write_transcript_at(
+    home: Path, uuid: str, title: str, project_cwd: Path, recorded_cwd: Path, records: int = 6
+) -> Path:
+    """Place a transcript in ``project_cwd``'s project dir while its records claim ``recorded_cwd``.
+
+    This is the real post-adoption shape: the transcript file has been moved into
+    the slot's project directory (which is what makes ``ai c`` resolve it), but the
+    bulk of its records still carry the working directory the session originally
+    ran in — an adoption rewrites the cwds it needs to and legitimately leaves
+    historical ones alone. Observed on real data at a ratio of 5062 old to 140
+    rewritten.
+    """
+    project_cwd.mkdir(parents=True, exist_ok=True)
+    project_dir = cc_project_dir(project_cwd, home)
+    project_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lines = [_record(type="user", sessionId=uuid, cwd=str(recorded_cwd), customTitle=title)]
+    lines += [_record(type="user", sessionId=uuid, cwd=str(recorded_cwd), n=i) for i in range(records)]
+    path = project_dir / f"{uuid}.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def _make_repo(tmp_path: Path, name: str) -> Path:
     repo = tmp_path / "projects" / name
     (repo / ".git").mkdir(parents=True, exist_ok=True)
@@ -404,6 +426,59 @@ def test_triage_given_an_already_adopted_session_when_triaged_then_skipped_as_do
     _, skipped = triage(audit())
     reason = next(reason for record, reason in skipped if record.title == "myapp-1")
     assert "already adopted" in reason
+
+
+def test_triage_given_a_slot_resident_session_whose_records_carry_the_old_cwd_when_triaged_then_already_adopted(
+    fleet, audit
+):
+    """Adoptedness is decided by WHERE THE TRANSCRIPT SITS, not by what a cwd says.
+
+    An adoption moves the transcript into the slot's project directory — that is
+    what makes ``ai c <n>`` resolve it — but it does not rewrite every historical
+    cwd in the file, and it should not. Deciding from the recorded cwd therefore
+    reports a fully working session as needing adoption, which is the exact wrong
+    answer: re-adopting it is at best a no-op and at worst disturbs a session that
+    currently resumes correctly.
+    """
+    slot = fleet["myproject"] / WORKTREES / "myproject-7"
+    adopted = _write_transcript_at(
+        fleet["home"],
+        "77777777-2222-4333-8444-555555555555",
+        "myproject-7",
+        project_cwd=slot,
+        recorded_cwd=fleet["myproject"],  # the pre-adopt location, still in most records
+    )
+
+    record = next(r for r in audit().sessions if r.title == "myproject-7")
+
+    assert record.transcript == adopted
+    assert record.transcript.parent == cc_project_dir(slot, fleet["home"])
+    assert record.resolves == adopted, "`ai c 7` already resolves it — it is adopted"
+    assert record.cwd == str(fleet["myproject"]), "its records still point at the old location"
+    assert record.in_correct_slot is True, "slot residency is a fact about the file, not about a cwd field"
+
+    ready, skipped = triage(audit())
+    assert "myproject-7" not in {r.title for r in ready}, "a working session must not be offered for re-adoption"
+    reason = next(reason for r, reason in skipped if r.title == "myproject-7")
+    assert "already adopted" in reason
+
+
+def test_triage_given_an_unadopted_session_when_triaged_then_still_adoptable(fleet, audit):
+    """The other direction: a transcript in the repo-root project dir IS adoptable.
+
+    Paired with the test above so the discriminator is visible: both sessions
+    record the repo root as their cwd, and the only difference is which project
+    directory the transcript file lives in. If a fix made adoptedness unconditional
+    this test goes red.
+    """
+    record = next(r for r in audit().sessions if r.title == "myproject-2")
+
+    assert record.transcript.parent == cc_project_dir(fleet["myproject"], fleet["home"])
+    assert record.resolves is None, "`ai c 2` cannot resolve it from the slot"
+    assert record.in_correct_slot is False
+
+    ready, _ = triage(audit())
+    assert "myproject-2" in {r.title for r in ready}, "a genuinely unadopted session must still be adoptable"
 
 
 def test_triage_given_a_title_without_an_index_when_triaged_then_skipped(fleet, audit):

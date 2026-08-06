@@ -71,6 +71,27 @@ that directory still exists — a cleaned-up worktree must still be attributed,
 because its transcript outlives it. Only when neither convention appears does it
 walk up looking for a repository marker.
 
+### What counts as "already adopted"
+
+Adoptedness is decided by **where the transcript file sits** — whether its project
+directory is the one the worktree slot slugifies to — and by whether `ai c` actually
+resolves it. It is deliberately *not* decided from the `cwd` recorded in the
+transcript's records.
+
+The distinction is not academic. An adoption moves the transcript into the slot's
+project directory, which is what makes `ai c <n>` resolve it, and rewrites the cwd
+fields it needs to — but a long transcript legitimately keeps thousands of
+historical cwds pointing at wherever the session originally ran, including
+sub-agent paths under `.claude/worktrees/agent-*`. One real session carried 5062
+records with the old repo-root cwd against 140 rewritten ones, and was resuming
+perfectly. Judging from the cwd majority reports such a session as still needing
+adoption, which is the wrong answer: re-adopting a working session is at best a
+no-op and at worst disturbs one that currently resumes.
+
+`slug-mismatch` still reports the cwd-versus-directory comparison, because "this
+transcript still carries pre-adopt cwds" is worth seeing. It is informational only
+and never drives the adoptable/skip decision.
+
 ### The slug is one-way
 
 A project directory name is the working directory with every non-alphanumeric

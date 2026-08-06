@@ -82,7 +82,18 @@ UNKNOWN = "unknown"
 
 @dataclass
 class SessionRecord:
-    """One titled transcript, described well enough to decide what to do with it."""
+    """One titled transcript, described well enough to decide what to do with it.
+
+    ``in_correct_slot`` is a fact about **where the transcript file sits** — whether
+    its project directory is the one the worktree slot slugifies to — and never
+    about what any record's ``cwd`` says. That distinction is the whole bug this
+    field once had: an adoption moves the transcript (which is what makes ``ai c``
+    resolve it) and rewrites the cwd fields it needs to, but a long transcript
+    legitimately keeps thousands of historical cwds pointing at the old location,
+    including sub-agent paths. Deciding residency from the recorded cwd therefore
+    reported fully-adopted sessions as still needing adoption. ``slug_matches``
+    keeps that cwd-vs-directory comparison, as information only.
+    """
 
     title: str
     transcript: Path
@@ -284,7 +295,7 @@ def _build_record(candidate, project_dir: Path, home: Path, live: list) -> Sessi
         cwd=cwd,
         repo_root=repo_root,
         location=location,
-        in_correct_slot=slot is not None and cwd == str(slot),
+        in_correct_slot=slot is not None and project_dir == cc_project_dir(slot, home),
         slug_matches=slug_matches,
         live_pid=_live_pid_for(candidate.path, candidate.title, cwd, live),
         resolves=probe_resolves(slot, candidate.title, home) if slot is not None else None,
