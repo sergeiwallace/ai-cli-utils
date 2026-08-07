@@ -5,7 +5,6 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from conftest import _cleanup_test_tmux_sessions
 
 

@@ -1,7 +1,7 @@
 """Tests for sync push dream safety guard."""
 
 from pathlib import Path
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from ai_cli.sync import _wait_for_dream_completion
 

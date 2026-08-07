@@ -15,7 +15,6 @@ from ai_cli.notifications import (
     _send_os_notification,
 )
 
-
 _ENV_KEYS = (
     "DISCORD_AI_NOTIFICATIONS_BOT_WEB_HOOK_URL",
     "NTFY_BASE_URL",

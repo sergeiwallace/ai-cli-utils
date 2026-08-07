@@ -22,9 +22,9 @@ import os
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
 
 import psutil
 

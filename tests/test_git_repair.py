@@ -8,8 +8,8 @@ import pytest
 
 from ai_cli.git_repair import (
     _GIT_TARGETING_VARS,
-    _git_env,
     GitProbeError,
+    _git_env,
     detect_missing_tracked_symlinks,
     detect_phantom_deleted_files,
     operation_in_progress,
@@ -18,7 +18,6 @@ from ai_cli.git_repair import (
     stash_entries,
     unmerged_paths,
 )
-
 
 # --- _git_env ---
 

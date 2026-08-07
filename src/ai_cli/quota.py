@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +99,8 @@ def _parse_reset_datetime(text: str) -> str | None:
     The full reset datetime is reconstructed using the system's local timezone:
     the next future occurrence of that time on a weekly boundary from now.
     """
-    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
 
     # Primary format: "week (all models) ... Resets {time}"
     # Handles: "6:59am", "6:59 AM", "11pm", "11 PM", "11:00 PM"
@@ -131,7 +132,7 @@ def _parse_reset_datetime(text: str) -> str | None:
             month = _MONTH_MAP.get(month_str.lower())
             if not month:
                 return None
-            now_utc = _dt.now(_tz.utc)
+            now_utc = _dt.now(UTC)
             day = int(day_str)
             hour = int(h)
             minute = int(mi) if mi else 0
@@ -145,8 +146,8 @@ def _parse_reset_datetime(text: str) -> str | None:
                 # Use current or next year so the date is always in the future.
                 for year in (now_utc.year, now_utc.year + 1):
                     candidate = _dt(year, month, day, hour, minute, 0, tzinfo=tz_info)
-                    if candidate.astimezone(_tz.utc) > now_utc:
-                        return candidate.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if candidate.astimezone(UTC) > now_utc:
+                        return candidate.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             except Exception:
                 pass
             return None
@@ -170,7 +171,7 @@ def _parse_reset_datetime(text: str) -> str | None:
         month = _MONTH_MAP.get(month_str.lower())
         if not month:
             return None
-        now_utc = _dt.now(_tz.utc)
+        now_utc = _dt.now(UTC)
         year = int(year_str) if year_str else now_utc.year
         hour, minute, second = int(h), int(mi), int(sec_s) if sec_s else 0
         if ampm:
@@ -200,12 +201,12 @@ def _parse_reset_datetime(text: str) -> str | None:
     # CC shows the next reset time, so we find the next future occurrence of
     # that time (weekly period). If the time has already passed today, advance
     # by one week (this only affects CC versions pre-dating the IANA format).
-    now_utc = _dt.now(_tz.utc)
+    now_utc = _dt.now(UTC)
     local_now = _dt.now().astimezone()
     candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if candidate.astimezone(_tz.utc) <= now_utc:
+    if candidate.astimezone(UTC) <= now_utc:
         candidate += _td(weeks=1)
-    return candidate.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return candidate.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_usage_output(output: str) -> QuotaSnapshot | None:
@@ -920,7 +921,8 @@ _SCRAPE_DEBUG_PATH = Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape
 
 def _record_scrape_format_mismatch(raw: str) -> None:
     """Write raw scrape output to debug file and increment the mismatch counter."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from .quota_db import _get_quota_meta, _set_quota_meta
 
     try:
@@ -929,7 +931,7 @@ def _record_scrape_format_mismatch(raw: str) -> None:
     except Exception:
         pass
     try:
-        _set_quota_meta("scrape_format_mismatch_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        _set_quota_meta("scrape_format_mismatch_at", datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
         current = _get_quota_meta("scrape_format_mismatch_count")
         count = int(current) + 1 if current and current.isdigit() else 1
         _set_quota_meta("scrape_format_mismatch_count", str(count))
@@ -953,10 +955,10 @@ def _launch_background_scrape() -> None:
     Must never raise — the statusline path must be silent on errors.
     """
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         if _SCRAPE_LOCK_PATH.exists():
-            lock_age_minutes = (datetime.now(timezone.utc).timestamp() - _SCRAPE_LOCK_PATH.stat().st_mtime) / 60
+            lock_age_minutes = (datetime.now(UTC).timestamp() - _SCRAPE_LOCK_PATH.stat().st_mtime) / 60
             if lock_age_minutes < _SCRAPE_LOCK_STALE_MINUTES:
                 return  # scrape already running
             _SCRAPE_LOCK_PATH.unlink(missing_ok=True)
@@ -978,9 +980,9 @@ def _maybe_trigger_background_scrape(snapshotted_at: str) -> None:
     Must never raise — the statusline path must be silent on errors.
     """
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         snapshot_dt = datetime.fromisoformat(snapshotted_at.replace("Z", "+00:00"))
         age_minutes = (now - snapshot_dt).total_seconds() / 60
 
@@ -1300,7 +1302,7 @@ def _record_rate_limits_env_snapshot(now) -> None:
     """
     import os
     import sqlite3
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
 
     pct_raw = os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_PCT")
     if not pct_raw:
@@ -1322,7 +1324,7 @@ def _record_rate_limits_env_snapshot(now) -> None:
     reset_raw = os.environ.get("AI_CLI_QUOTA_SEVEN_DAY_RESET")
     if reset_raw:
         try:
-            reset_iso = _dt.fromtimestamp(int(reset_raw), _tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            reset_iso = _dt.fromtimestamp(int(reset_raw), UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, OverflowError, OSError):
             reset_iso = None
 
@@ -1379,9 +1381,9 @@ def quota_statusline_part() -> int:
     _check_scrape_mismatch_prefix()
 
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # AIH-164 T-02: consume the official rate_limits env vars (throttled) BEFORE reading rows,
         # so the fresh all-models value is the newest snapshot the render below picks up.
         _record_rate_limits_env_snapshot(now)
@@ -1453,7 +1455,7 @@ def quota_statusline_part() -> int:
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600
         stale = snapshot_age_hours > 2.0  # scrape has been failing for >2h
-        ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         elapsed_secs = (now - ws_dt).total_seconds()
         week_elapsed_pct = min(elapsed_secs / (7 * 24 * 3600) * 100.0, 100.0)
 

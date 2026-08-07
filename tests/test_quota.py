@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,15 +21,14 @@ from ai_cli.quota import (
     _run_nats_quota_listener,
     _scrape_usage_hidden_pane,
     _try_read_kv_snapshot,
-    reap_cc_update_staging,
+    quota_history,
     quota_record,
     quota_scrape,
     quota_status,
-    quota_history,
     quota_statusline_part,
     quota_sync_from_remote,
+    reap_cc_update_staging,
 )
-
 
 # --- _parse_usage_output ---
 
@@ -203,9 +202,9 @@ class TestParseResetDatetime:
         # Minutes must be preserved regardless of local timezone
         assert ":59:00Z" in result
         # Must be in the future
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) > datetime.now(UTC)
 
     def test_when_real_cc_format_hour_only_pm_then_returns_future_utc(self):
         # "Resets 11pm" — no minutes, no date, no timezone
@@ -213,9 +212,9 @@ class TestParseResetDatetime:
         result = _parse_reset_datetime(text)
         assert result is not None
         # Local midnight → UTC time should be in the future
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+        assert datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) > datetime.now(UTC)
 
     def test_when_no_all_models_line_then_returns_none(self):
         # "Current week (Sonnet only) · Resets 11pm" — not the all-models row, skip it
@@ -252,7 +251,7 @@ class TestParseResetDatetime:
         # "Resets Apr 23 at 3pm (America/New_York)" — CC v2.1.112 format
         # Apr 23 is in EDT (UTC-4), so 3pm EDT = 19:00 UTC.
         text = "Resets Apr 23 at 3pm (America/New_York)            3% used"
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
         with patch("datetime.datetime") as MockDT:
             MockDT.now.return_value = _before_apr23
             MockDT.side_effect = datetime
@@ -263,7 +262,7 @@ class TestParseResetDatetime:
     def test_when_iana_format_with_minutes_then_converts_to_utc(self):
         # "Resets Apr 23 at 3:30pm (America/New_York)"
         text = "Resets Apr 23 at 3:30pm (America/New_York)"
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
         with patch("datetime.datetime") as MockDT:
             MockDT.now.return_value = _before_apr23
             MockDT.side_effect = datetime
@@ -273,7 +272,7 @@ class TestParseResetDatetime:
 
     def test_when_iana_format_utc_then_no_offset(self):
         text = "Resets Apr 23 at 7pm (UTC)"
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
         with patch("datetime.datetime") as MockDT:
             MockDT.now.return_value = _before_apr23
             MockDT.side_effect = datetime
@@ -294,10 +293,10 @@ class TestParseResetDatetime:
         assert snap is not None
         assert snap.reset_at is not None
         # Must be a valid UTC ISO string in the future
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        dt = datetime.strptime(snap.reset_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        assert dt > datetime.now(timezone.utc)
+        dt = datetime.strptime(snap.reset_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        assert dt > datetime.now(UTC)
 
     def test_parse_usage_output_reset_at_none_when_absent(self):
         output = "Current week (all models): 64% used\n"
@@ -313,7 +312,7 @@ class TestParseResetDatetime:
             "  Current week (Sonnet only)\n"
             "  Resets Apr 23 at 3pm (America/New_York)            5% used\n"
         )
-        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=timezone.utc)
+        _before_apr23 = datetime(2026, 4, 22, 0, 0, 0, tzinfo=UTC)
         with patch("datetime.datetime") as MockDT:
             MockDT.now.return_value = _before_apr23
             MockDT.side_effect = datetime
@@ -373,15 +372,16 @@ class TestResetAnchorPersistence:
         inline Python computed week_start = anchor - 7 days even when anchor was in the past,
         producing a week_start one week before the stored snapshots.
         """
+        from datetime import datetime
+
         import ai_cli.quota_db as qdb
-        from datetime import datetime, timezone
 
         # Anchor is April 11 10:59 UTC — the reset that ALREADY OCCURRED
         stale_anchor = "2026-04-11T10:59:00Z"
         anchor_file = tmp_path / "quota-reset-anchor.txt"
         anchor_file.write_text(stale_anchor)
         # Simulate "now" = April 13 02:00 UTC — two days after the reset
-        now = datetime(2026, 4, 13, 2, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 4, 13, 2, 0, 0, tzinfo=UTC)
         with patch.object(qdb, "_get_reset_anchor_path", return_value=anchor_file):
             week_start = qdb._get_current_week_start(now)
         # Week started AT the reset anchor, not one week before it
@@ -1943,7 +1943,7 @@ class TestQuotaStatuslinePart:
 
     # An arbitrary fixed instant, deliberately NOT the real clock. Any instant works: the
     # week_start derived from it is exact, so `hours_elapsed` offsets below are exact too.
-    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)  # Monday noon UTC
+    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=UTC)  # Monday noon UTC
 
     @pytest.fixture
     def frozen_week(self):
@@ -1956,14 +1956,14 @@ class TestQuotaStatuslinePart:
         import ai_cli.quota_db as qdb
 
         week_start_str = qdb._get_current_week_start(now=self._FIXED_REFERENCE_NOW)
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         return week_start_str, week_start_dt
 
     @pytest.mark.real_quota_scrape
     def test_when_no_snapshot_then_shows_placeholder_and_triggers_scrape(self, tmp_path, capsys):
         """No data for current week → shows '📊 -' placeholder and launches a background scrape."""
-        import ai_cli.quota_db as qdb
         import ai_cli.quota as q
+        import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
         # Initialize the DB schema without inserting any snapshots
@@ -2267,8 +2267,9 @@ class TestQuotaStatuslinePart:
     # does differ there. Without that control the assertion could pass vacuously.
     @staticmethod
     def _assert_frozen_under(real_clock_iso, request):
-        import ai_cli.quota_db as qdb
         from freezegun import freeze_time
+
+        import ai_cli.quota_db as qdb
 
         expected_week_start = qdb._get_current_week_start(now=TestQuotaStatuslinePart._FIXED_REFERENCE_NOW)
         with freeze_time(real_clock_iso):
@@ -2280,9 +2281,7 @@ class TestQuotaStatuslinePart:
             # Fixture is created lazily here, i.e. while the real clock is frozen far away.
             week_start_str, week_start_dt = request.getfixturevalue("frozen_week")
         assert week_start_str == expected_week_start
-        assert week_start_dt == datetime.strptime(expected_week_start, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        assert week_start_dt == datetime.strptime(expected_week_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
     def test_when_real_clock_is_far_in_the_past_then_frozen_week_is_unchanged(self, request):
         """The injected clock ignores the real one — no wall-clock read survives in this class."""
@@ -2305,6 +2304,7 @@ class TestQuotaStatuslinePartLegacyDb:
         overlapping blocking calls that produce duplicate prompt boxes in the scrollback buffer.
         """
         import sqlite3
+
         import ai_cli.quota_db as qdb
 
         db_path = tmp_path / "legacy.db"
@@ -2332,7 +2332,7 @@ class TestQuotaStatuslinePartLegacyDb:
             """
         )
         week_start = qdb._get_current_week_start()
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         conn.execute(
             "INSERT INTO quota_snapshots (usage_percent, session_pct, extra_pct, week_start, snapshotted_at)"
             " VALUES (?, ?, ?, ?, ?)",
@@ -2356,6 +2356,7 @@ class TestQuotaStatuslinePartLegacyDb:
     def test_when_legacy_db_and_empty_output_then_does_not_raise(self, tmp_path, capsys):
         """quota_statusline_part must return 0 even when the DB has no snapshots at all."""
         import sqlite3
+
         import ai_cli.quota_db as qdb
 
         db_path = tmp_path / "empty_legacy.db"
@@ -2417,14 +2418,15 @@ class TestQuotaStatuslinePartKvSync:
     def test_stale_local_data_uses_fresher_kv_value(self, tmp_path, capsys):
         """When local SQLite is stale and NATS KV has a fresher value, the KV value is used."""
         import time
-        import ai_cli.quota_db as qdb
+        from datetime import datetime, timedelta
+
         import ai_cli.quota as q
-        from datetime import datetime, timezone, timedelta
+        import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
         try:
             # Insert a stale local snapshot (older than TTL) using the real schema
-            stale_time = datetime.now(timezone.utc) - timedelta(minutes=q._SCRAPE_TTL_MINUTES + 10)
+            stale_time = datetime.now(UTC) - timedelta(minutes=q._SCRAPE_TTL_MINUTES + 10)
             stale_ts = stale_time.strftime("%Y-%m-%dT%H:%M:%SZ")
             week_start = qdb._get_current_week_start()
             # Use _get_conn() to initialise the full schema, then insert with all columns
@@ -2615,11 +2617,11 @@ class TestQuotaSyncFromRemote:
 @pytest.mark.real_quota_scrape
 class TestMaybeBackgroundScrape:
     def _stale_ts(self, minutes_ago: int = 35) -> str:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _fresh_ts(self, minutes_ago: int = 5) -> str:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def test_when_snapshot_fresh_then_no_scrape_triggered(self, tmp_path):
@@ -2698,13 +2700,13 @@ class TestQuotaStatuslinePartSingleLine:
 
     # AI-CLI-180: a fixed reference instant, not the real clock — `hours_elapsed` below is only
     # meaningful relative to a week_start that does not move between the two derivations.
-    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)  # Monday noon UTC
+    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=UTC)  # Monday noon UTC
 
     def _run_and_capture(self, usage_percent, hours_elapsed, tmp_path, capsys):
         import ai_cli.quota_db as qdb
 
         week_start_str = qdb._get_current_week_start(now=self._FIXED_REFERENCE_NOW)
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         fixed_now = week_start_dt + timedelta(hours=hours_elapsed)
         qdb.set_db_path(tmp_path / "quota.db")
         try:
@@ -2916,14 +2918,15 @@ class TestQuotaStatuslinePartAdaptiveLabels:
     # fall back to datetime.now(timezone.utc), so the "fixed" hours_elapsed offset below was
     # silently computed relative to whatever real moment the suite happened to run, making the
     # scenario non-hermetic (a real regression: -79% expected became -76% as real time drifted).
-    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)  # arbitrary Monday noon UTC
+    _FIXED_REFERENCE_NOW = datetime(2026, 1, 5, 12, 0, 0, tzinfo=UTC)  # arbitrary Monday noon UTC
 
     def _capture(self, usage_percent, hours_elapsed, tmp_path, capsys, cols=0):
-        import ai_cli.quota_db as qdb
         import os
 
+        import ai_cli.quota_db as qdb
+
         week_start_str = qdb._get_current_week_start(now=self._FIXED_REFERENCE_NOW)
-        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        week_start_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         fixed_now = week_start_dt + timedelta(hours=hours_elapsed)
         qdb.set_db_path(tmp_path / "quota.db")
         try:

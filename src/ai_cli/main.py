@@ -1,11 +1,11 @@
-import sys
-import os
 import json
-import shutil
-import time
-import subprocess
+import os
 import re
 import shlex
+import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import click
@@ -23,15 +23,6 @@ from . import session as _session
 from . import session_script as _session_script
 from . import transport as _transport
 from . import tunnel as _tunnel
-from .git_repair import (
-    GitProbeError,
-    _git_env,
-    detect_missing_tracked_symlinks,
-    detect_phantom_deleted_files,
-    pull_rebase_autostash,
-    repair_bare_worktree_config,
-    unmerged_paths,
-)
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
@@ -58,6 +49,26 @@ from .config import (  # noqa: E402,F401
     save_session_map,
     validate_registry_completeness,
 )
+from .git_repair import (
+    GitProbeError,
+    _git_env,
+    detect_missing_tracked_symlinks,
+    detect_phantom_deleted_files,
+    pull_rebase_autostash,
+    repair_bare_worktree_config,
+    unmerged_paths,
+)
+from .handoff import (  # noqa: E402,F401
+    _claim_handoff_for_signal,
+    _find_best_handoff,
+    _format_handoff_summary,
+    _log_handoff_event,
+    check_handoff,
+    check_handoff_project,
+    claim_handoff,
+    complete_handoff,
+    post_handoff,
+)
 from .iterm2 import (  # noqa: E402,F401
     _DEFAULT_ITERM2_CONFIG,
     _assign_iterm2_color_slot,
@@ -74,16 +85,14 @@ from .iterm2 import (  # noqa: E402,F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
-from .handoff import (  # noqa: E402,F401
-    _claim_handoff_for_signal,
-    _find_best_handoff,
-    _format_handoff_summary,
-    _log_handoff_event,
-    check_handoff,
-    check_handoff_project,
-    claim_handoff,
-    complete_handoff,
-    post_handoff,
+from .process_manager import (  # noqa: E402,F401
+    _cmd_quota_watch_start,
+    _cmd_quota_watch_status,
+    _cmd_quota_watch_stop,
+    _cmd_signal_watch_start,
+    _cmd_signal_watch_status,
+    _cmd_signal_watch_stop,
+    _ensure_circusd,
 )
 from .session import (  # noqa: E402,F401
     _AI_SESSION_RE,
@@ -104,6 +113,7 @@ from .session import (  # noqa: E402,F401
     get_project_prefix,
     resolve_session,
 )
+from .session_script import get_engine_script  # noqa: F401
 from .transport import (  # noqa: E402,F401
     _ensure_tailscale_up,
     _ensure_vpn_watcher,
@@ -113,16 +123,6 @@ from .transport import (  # noqa: E402,F401
     _run_transport_loop,
     _write_transport_state,
 )
-from .process_manager import (  # noqa: E402,F401
-    _cmd_quota_watch_start,
-    _cmd_quota_watch_status,
-    _cmd_quota_watch_stop,
-    _cmd_signal_watch_start,
-    _cmd_signal_watch_status,
-    _cmd_signal_watch_stop,
-    _ensure_circusd,
-)
-from .session_script import get_engine_script  # noqa: F401
 from .tunnel import (  # noqa: E402,F401
     _cmd_cdp_start,
     _cmd_cdp_status,
@@ -733,6 +733,7 @@ def _handle_internal(argv: list[str]) -> None:
             print("Usage: ai internal publish-event <session_id> <event_type>", file=sys.stderr)
             sys.exit(1)
         import asyncio
+
         from .messaging import NATSClient
 
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
@@ -747,6 +748,7 @@ def _handle_internal(argv: list[str]) -> None:
             print("Usage: ai internal publish-heartbeat <session_id> <data_json>", file=sys.stderr)
             sys.exit(1)
         import asyncio
+
         from .messaging import NATSClient
 
         try:
@@ -766,6 +768,7 @@ def _handle_internal(argv: list[str]) -> None:
             print("Usage: ai internal publish-session-event <session_id> <started|stopped>", file=sys.stderr)
             sys.exit(1)
         import asyncio
+
         from .messaging import NATSClient
 
         session_id = argv[1]
@@ -783,6 +786,7 @@ def _handle_internal(argv: list[str]) -> None:
             print("Usage: ai internal publish <subject> <json_payload>", file=sys.stderr)
             sys.exit(1)
         import asyncio
+
         from .messaging import NATSClient
 
         subject = argv[1]
@@ -958,6 +962,7 @@ async def _on_quota_snapshot_handler(data: dict) -> None:
 
 def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) -> None:
     import asyncio
+
     from .messaging import NATSClient
 
     sw_handoff_dir = _config._get_handoff_queue_dir()
@@ -1025,6 +1030,7 @@ def _internal_quota_subscriber(config: dict) -> None:
     # Runs as a Circus-managed process on Mac, independent of CC session lifecycle.
     # Missed messages during downtime are replayed on reconnect (JetStream durability).
     import asyncio
+
     from .messaging import NATSClient
 
     qs_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
@@ -1048,6 +1054,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
     # Synchronous: drain pending NATS messages + local file scan, then exit.
     # Called BEFORE CC launches so prompt_file is ready on first invocation.
     import asyncio
+
     from .messaging import NATSClient
 
     hd_handoff_dir = _config._get_handoff_queue_dir()
@@ -1143,7 +1150,7 @@ def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> N
         async def _drain_with_timeout():
             try:
                 await asyncio.wait_for(_drain(), timeout=6.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _handoff._log_handoff_event("handoff.drain.nats_timeout", session=hd_session)
 
         try:
@@ -3078,15 +3085,15 @@ def cmd_sync(action, args):
         )
         sys.exit(1)
     from .sync import (
-        sync_push,
-        sync_pull,
+        _cc_projects_dir,
+        clean_worktree_cc_dirs,
+        get_local_prefix,
+        repair_worktree_cc_dir,
         sync_conflicts,
+        sync_pull,
+        sync_push,
         sync_resolve,
         sync_watch,
-        repair_worktree_cc_dir,
-        clean_worktree_cc_dirs,
-        _cc_projects_dir,
-        get_local_prefix,
     )
 
     flags = list(args)

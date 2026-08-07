@@ -28,6 +28,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import run_cli
 
 from ai_cli.cc_migrate import cc_project_dir
 from ai_cli.session_audit import (
@@ -42,8 +43,6 @@ from ai_cli.session_audit import (
     survey,
     triage,
 )
-from conftest import run_cli
-
 
 UUID_A = "aaaaaaaa-2222-4333-8444-555555555555"
 UUID_B = "bbbbbbbb-2222-4333-8444-555555555555"
@@ -606,7 +605,8 @@ def test_adopt_ready_given_a_collision_when_run_then_it_is_skipped_and_the_batch
 def test_adopt_ready_given_an_adoption_error_when_run_then_recorded_and_the_batch_continues(fleet, audit, monkeypatch):
     """AC-7: an unexpected refusal from the adopter is recorded against its session."""
     import ai_cli.session_audit as module
-    from ai_cli.session_adopt import AdoptionError, adopt_session as real_adopt
+    from ai_cli.session_adopt import AdoptionError
+    from ai_cli.session_adopt import adopt_session as real_adopt
 
     def _flaky(repo_root, name, **kw):
         if name == "myproject-2":

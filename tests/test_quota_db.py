@@ -1,6 +1,6 @@
 """Tests for quota_db — SQLite storage layer for Claude usage telemetry."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,34 +23,26 @@ def isolated_db(tmp_path: Path):
 
 class TestGetCurrentWeekStart:
     def test_when_before_anchor_then_returns_prior_week_start(self):
-        now = datetime(2026, 4, 2, 12, 0, 0, tzinfo=timezone.utc)
-        with patch(
-            "ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        ):
+        now = datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)):
             result = quota_db._get_current_week_start(now)
         assert result == "2026-03-28T06:00:00Z"
 
     def test_when_after_anchor_then_returns_anchor(self):
-        now = datetime(2026, 4, 5, 12, 0, 0, tzinfo=timezone.utc)
-        with patch(
-            "ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        ):
+        now = datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)):
             result = quota_db._get_current_week_start(now)
         assert result == "2026-04-04T06:00:00Z"
 
     def test_when_exact_reset_boundary_then_returns_that_reset(self):
-        now = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        with patch(
-            "ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        ):
+        now = datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)):
             result = quota_db._get_current_week_start(now)
         assert result == "2026-04-04T06:00:00Z"
 
     def test_when_two_weeks_after_anchor_then_returns_correct_week(self):
-        now = datetime(2026, 4, 15, 12, 0, 0, tzinfo=timezone.utc)
-        with patch(
-            "ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        ):
+        now = datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)):
             result = quota_db._get_current_week_start(now)
         assert result == "2026-04-11T06:00:00Z"
 
@@ -60,18 +52,14 @@ class TestGetCurrentWeekStart:
 
 class TestGetResetAt:
     def test_when_before_anchor_then_returns_anchor(self):
-        now = datetime(2026, 4, 2, 12, 0, 0, tzinfo=timezone.utc)
-        with patch(
-            "ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        ):
+        now = datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)):
             result = quota_db._get_reset_at(now)
         assert result == "2026-04-04T06:00:00Z"
 
     def test_when_after_anchor_then_returns_next_reset(self):
-        now = datetime(2026, 4, 5, 12, 0, 0, tzinfo=timezone.utc)
-        with patch(
-            "ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        ):
+        now = datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC)
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)):
             result = quota_db._get_reset_at(now)
         assert result == "2026-04-11T06:00:00Z"
 
@@ -162,10 +150,8 @@ class TestRecordQuotaSnapshot:
 
 class TestComputeBurnRate:
     def _week_start(self):
-        with patch(
-            "ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
-        ):
-            return quota_db._get_current_week_start(datetime(2026, 4, 5, 0, 0, 0, tzinfo=timezone.utc))
+        with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)):
+            return quota_db._get_current_week_start(datetime(2026, 4, 5, 0, 0, 0, tzinfo=UTC))
 
     def test_when_no_snapshots_then_returns_zeros(self):
         result = quota_db.compute_burn_rate("2026-04-04T06:00:00Z")
@@ -287,7 +273,7 @@ class TestGetResetAnchorUtc:
         with patch.object(quota_db, "_get_reset_anchor_path", return_value=missing):
             with patch("ai_cli.config.load_config", side_effect=Exception("no config")):
                 result = quota_db._get_reset_anchor_utc()
-        assert result == datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+        assert result == datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)
 
 
 # --- _get_quota_db_path ---
@@ -311,7 +297,7 @@ class TestGetQuotaDbPath:
 class TestGetCurrentWeekStartNowNone:
     def test_when_now_is_none_then_returns_valid_iso_string(self):
         """Line 98: now=None path uses datetime.now(). Verifies the branch runs."""
-        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)
         with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
             result = quota_db._get_current_week_start()  # no now arg
         assert result.endswith("Z")
@@ -325,7 +311,7 @@ class TestGetCurrentWeekStartNowNone:
 class TestGetResetAtEdgeCases:
     def test_when_now_is_none_then_returns_valid_iso_string(self):
         """Line 114: now=None path uses datetime.now(). Verifies the branch runs."""
-        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)
         with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
             result = quota_db._get_reset_at()  # no now arg
         assert result.endswith("Z")
@@ -336,7 +322,7 @@ class TestGetResetAtEdgeCases:
         """Line 121: when computed reset == now, it must advance by one week."""
         from datetime import timedelta
 
-        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=timezone.utc)
+        anchor = datetime(2026, 4, 4, 6, 0, 0, tzinfo=UTC)
         # now is exactly one week before anchor:
         # diff = WEEK_SECONDS, periods = 1, reset = anchor - 1w = now → reset <= now
         now = anchor - timedelta(seconds=quota_db._WEEK_SECONDS)
@@ -481,13 +467,12 @@ class TestQueryNotificationLog:
     def test_when_since_relative_2h_then_filters_old_rows(self):
         from datetime import datetime as _dt
         from datetime import timedelta as _td
-        from datetime import timezone as _tz
 
         # Insert old row (3h ago)
-        old_ts = (_dt.now(_tz.utc) - _td(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        old_ts = (_dt.now(UTC) - _td(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self._insert(title="Old", fired_at=old_ts)
         # Insert recent row (30min ago)
-        recent_ts = (_dt.now(_tz.utc) - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent_ts = (_dt.now(UTC) - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self._insert(title="Recent", fired_at=recent_ts)
         rows = quota_db.query_notification_log(since="2h")
         titles = [r["title"] for r in rows]
@@ -504,8 +489,8 @@ class TestParseSinceDatetime:
 
         result = quota_db._parse_since_datetime("2h")
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        expected = datetime.now(timezone.utc) - timedelta(hours=2)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        expected = datetime.now(UTC) - timedelta(hours=2)
         assert abs((dt - expected).total_seconds()) < 5
 
     def test_when_30m_then_returns_30_minutes_ago(self):
@@ -513,8 +498,8 @@ class TestParseSinceDatetime:
 
         result = quota_db._parse_since_datetime("30m")
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        expected = datetime.now(timezone.utc) - timedelta(minutes=30)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        expected = datetime.now(UTC) - timedelta(minutes=30)
         assert abs((dt - expected).total_seconds()) < 5
 
     def test_when_1d_then_returns_1_day_ago(self):
@@ -522,8 +507,8 @@ class TestParseSinceDatetime:
 
         result = quota_db._parse_since_datetime("1d")
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        expected = datetime.now(timezone.utc) - timedelta(days=1)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        expected = datetime.now(UTC) - timedelta(days=1)
         assert abs((dt - expected).total_seconds()) < 5
 
     def test_when_yesterday_then_returns_start_of_yesterday(self):

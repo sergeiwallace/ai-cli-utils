@@ -13,10 +13,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 import yaml
-
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .icon_generator import (
@@ -36,8 +34,8 @@ class PaneSplit(BaseModel):
     direction: str  # "horizontal" | "vertical"
     ratio: float = Field(default=0.5, ge=0.0, le=1.0)
     # Populated by model_validator after init
-    right: Optional["Pane"] = None
-    bottom: Optional["Pane"] = None
+    right: Pane | None = None
+    bottom: Pane | None = None
 
     @field_validator("direction")
     @classmethod
@@ -47,7 +45,7 @@ class PaneSplit(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def child_required(self) -> "PaneSplit":
+    def child_required(self) -> PaneSplit:
         if self.direction == "vertical" and self.right is None:
             raise ValueError("vertical split requires 'right' child pane")
         if self.direction == "horizontal" and self.bottom is None:
@@ -57,8 +55,8 @@ class PaneSplit(BaseModel):
 
 class Pane(BaseModel):
     dir: str = "~"
-    command: Optional[str] = None
-    split: Optional[PaneSplit] = None
+    command: str | None = None
+    split: PaneSplit | None = None
 
 
 # Update forward refs
@@ -66,10 +64,10 @@ PaneSplit.model_rebuild()
 
 
 class TabColors(BaseModel):
-    background: Optional[str] = None
-    foreground: Optional[str] = None
-    tab_color: Optional[str] = None
-    icon_color: Optional[str] = None  # explicit icon tint override
+    background: str | None = None
+    foreground: str | None = None
+    tab_color: str | None = None
+    icon_color: str | None = None  # explicit icon tint override
 
 
 class Tab(BaseModel):

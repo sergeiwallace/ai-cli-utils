@@ -2,6 +2,7 @@ import json
 import os
 from unittest.mock import patch
 
+import pytest
 from conftest import make_iterm2_config
 
 from ai_cli.main import (
@@ -19,8 +20,6 @@ from ai_cli.main import (
     cli,
     get_engine_script,
 )
-
-import pytest
 
 
 class TestResolveIterm2Config:

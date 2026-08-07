@@ -1,12 +1,12 @@
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ai_cli.main import (
-    _find_project_dir,
     _find_aicli_project_path,
+    _find_project_dir,
     _get_handoff_queue_dir,
     _get_main_project_dir,
     _get_main_project_name,
@@ -19,7 +19,6 @@ from ai_cli.main import (
     load_project_registry,
     validate_registry_completeness,
 )
-
 
 # --- _find_project_dir tests ---
 

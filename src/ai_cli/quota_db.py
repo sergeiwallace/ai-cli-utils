@@ -8,7 +8,7 @@ quota tracking subsystem; quota.py owns the scraping and watching logic.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Default weekly quota reset anchor (fallback only — overridden by scraped value).
@@ -48,7 +48,7 @@ def _get_reset_anchor_utc() -> datetime:
         if anchor_file.exists():
             anchor_str = anchor_file.read_text().strip()
             if anchor_str:
-                return datetime.strptime(anchor_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                return datetime.strptime(anchor_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except Exception:
         pass
 
@@ -60,7 +60,7 @@ def _get_reset_anchor_utc() -> datetime:
     except Exception:
         anchor_str = _DEFAULT_RESET_ANCHOR
 
-    return datetime.strptime(anchor_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return datetime.strptime(anchor_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
 
 _DB_PATH_OVERRIDE: Path | None = None
@@ -167,10 +167,10 @@ def _migrate_snapshot_columns(conn: sqlite3.Connection) -> None:
 
 def _set_quota_meta(key: str, value: str) -> None:
     """Upsert a key/value pair in quota_meta."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     conn = _get_conn()
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
         """INSERT INTO quota_meta (key, value, updated_at) VALUES (?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
@@ -191,7 +191,7 @@ def _get_quota_meta(key: str) -> str | None:
 def _get_current_week_start(now: datetime | None = None) -> str:
     """Return ISO 8601 datetime string for the start of the current quota week."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     anchor = _get_reset_anchor_utc()
     diff = (anchor - now).total_seconds()
     if diff > 0:
@@ -207,7 +207,7 @@ def _get_current_week_start(now: datetime | None = None) -> str:
 def _get_reset_at(now: datetime | None = None) -> str:
     """Return ISO 8601 datetime string for the next quota reset."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     anchor = _get_reset_anchor_utc()
     diff = (anchor - now).total_seconds()
     if diff > 0:
@@ -232,7 +232,7 @@ def record_usage(
 ) -> None:
     """Insert a usage record and update weekly state."""
     conn = _get_conn()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     week_start = _get_current_week_start(now)
 
@@ -280,10 +280,10 @@ def record_quota_snapshot(
     if reset_at:
         _save_reset_anchor(reset_at)
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     conn = _get_conn()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     week_start = _get_current_week_start(now)
     derived_reset_at = _get_reset_at(now)
@@ -334,15 +334,15 @@ def compute_burn_rate(week_start: str, reset_at: str | None = None) -> dict:
     if len(snapshots) >= 2:
         first = snapshots[0]
         last = snapshots[-1]
-        t0 = datetime.strptime(first["snapshotted_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        t1 = datetime.strptime(last["snapshotted_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        t0 = datetime.strptime(first["snapshotted_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        t1 = datetime.strptime(last["snapshotted_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         elapsed_days = (t1 - t0).total_seconds() / 86400.0
         if elapsed_days > 0:
             pct_change = last["usage_percent"] - first["usage_percent"]
             result["actual_pct_per_day"] = pct_change / elapsed_days
     elif len(snapshots) == 1:
-        ws = datetime.strptime(week_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        snap_time = datetime.strptime(snapshots[0]["snapshotted_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        ws = datetime.strptime(week_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        snap_time = datetime.strptime(snapshots[0]["snapshotted_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         elapsed_days = (snap_time - ws).total_seconds() / 86400.0
         if elapsed_days > 0:
             result["actual_pct_per_day"] = latest_pct / elapsed_days
@@ -356,7 +356,7 @@ def compute_burn_rate(week_start: str, reset_at: str | None = None) -> dict:
 def get_current_status() -> dict:
     """Return current quota status with burn rate and alerts."""
     conn = _get_conn()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     week_start = _get_current_week_start(now)
     reset_at = _get_reset_at(now)
 
@@ -403,7 +403,7 @@ def get_current_status() -> dict:
 
     conn.close()
 
-    reset_dt = datetime.strptime(reset_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    reset_dt = datetime.strptime(reset_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     days_remaining = max((reset_dt - now).total_seconds() / 86400.0, 0.0)
 
     burn_rate = compute_burn_rate(week_start, reset_at)
@@ -478,7 +478,7 @@ def log_notification(
     import json as _json
 
     conn = _get_conn()
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
         """INSERT INTO notification_log
            (fired_at, source, title, body, priority, tags,
@@ -579,11 +579,11 @@ def _parse_since_datetime(since: str) -> str | None:
         n = int(m.group(1))
         unit = m.group(2)
         delta_secs = n * {"h": 3600, "m": 60, "d": 86400}[unit]
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=delta_secs)
+        cutoff = datetime.now(UTC) - timedelta(seconds=delta_secs)
         return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if since.lower() == "yesterday":
-        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+        cutoff = datetime.now(UTC) - timedelta(days=1)
         return cutoff.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ISO datetime (pass through)

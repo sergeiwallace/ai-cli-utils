@@ -8,7 +8,7 @@ must survive past the 3 rows the render reads.
 """
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import ai_cli.quota as q
@@ -27,7 +27,7 @@ def test_fresh_fable_resets_backoff_no_scrape(tmp_path, monkeypatch):
     state = tmp_path / "fb.json"
     state.write_text('{"last_attempt": 0.0, "misses": 3}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with patch("ai_cli.quota._launch_background_scrape") as scrape:
         _maybe_trigger_fable_scrape(now, _iso(now - timedelta(minutes=5)))  # 5 min old = fresh
     scrape.assert_not_called()
@@ -39,7 +39,7 @@ def test_fresh_fable_resets_backoff_no_scrape(tmp_path, monkeypatch):
 def test_stale_fable_no_prior_attempt_scrapes(tmp_path, monkeypatch):
     state = tmp_path / "fb.json"
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with patch("ai_cli.quota._launch_background_scrape") as scrape:
         _maybe_trigger_fable_scrape(now, _iso(now - timedelta(hours=2)))  # stale
     scrape.assert_called_once()
@@ -50,7 +50,7 @@ def test_stale_fable_no_prior_attempt_scrapes(tmp_path, monkeypatch):
 
 def test_stale_fable_within_backoff_does_not_scrape(tmp_path, monkeypatch):
     state = tmp_path / "fb.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # misses=1 → interval 20 min; last attempt 5 min ago → within backoff.
     state.write_text(f'{{"last_attempt": {(now - timedelta(minutes=5)).timestamp()}, "misses": 1}}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
@@ -61,7 +61,7 @@ def test_stale_fable_within_backoff_does_not_scrape(tmp_path, monkeypatch):
 
 def test_stale_fable_after_backoff_interval_scrapes_and_grows(tmp_path, monkeypatch):
     state = tmp_path / "fb.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # misses=1 → interval 20 min; last attempt 25 min ago → elapsed.
     state.write_text(f'{{"last_attempt": {(now - timedelta(minutes=25)).timestamp()}, "misses": 1}}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
@@ -75,7 +75,7 @@ def test_stale_fable_after_backoff_interval_scrapes_and_grows(tmp_path, monkeypa
 
 def test_backoff_caps_at_max_misses(tmp_path, monkeypatch):
     state = tmp_path / "fb.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     state.write_text(f'{{"last_attempt": {(now - timedelta(hours=5)).timestamp()}, "misses": 9}}')
     monkeypatch.setattr(q, "_FABLE_BACKOFF_STATE", state)
     with patch("ai_cli.quota._launch_background_scrape") as scrape:
@@ -100,7 +100,7 @@ def test_statusline_never_triggers_fable_scrape_even_with_no_fable_data(monkeypa
     """quota_statusline_part() no longer calls _maybe_trigger_fable_scrape at all -- confirms
     the removal is complete, not an oversight that happens to not fire in this particular case."""
     monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_PCT", "20")
-    monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_RESET", str(int(datetime.now(timezone.utc).timestamp()) + 86400))
+    monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_RESET", str(int(datetime.now(UTC).timestamp()) + 86400))
     qdb.record_quota_snapshot(usage_percent=20.0)  # fresh all-models, NO Fable
     with patch("ai_cli.quota._maybe_trigger_fable_scrape") as fable_scrape:
         quota_statusline_part()
@@ -114,7 +114,7 @@ def test_last_good_fable_survives_lookup_but_render_never_shows_it(monkeypatch, 
     week_start = qdb._get_current_week_start()
     conn = sqlite3.connect(str(qdb._get_quota_db_path()))
     qdb._init_db(conn)
-    base = datetime.now(timezone.utc) - timedelta(minutes=50)
+    base = datetime.now(UTC) - timedelta(minutes=50)
     # Oldest row carries the Fable value; four newer rows are all-models-only.
     conn.execute(
         "INSERT INTO quota_snapshots (usage_percent, weekly_sonnet_pct, weekly_model_name, week_start, snapshotted_at)"

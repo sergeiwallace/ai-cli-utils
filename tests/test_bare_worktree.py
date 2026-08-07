@@ -22,7 +22,6 @@ from ai_cli.main import (
 )
 from ai_cli.session import build_session_name, find_next_index
 
-
 # --- CC project-dir encoding ---------------------------------------------------
 
 

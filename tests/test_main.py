@@ -7,15 +7,16 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import make_iterm2_config, run_cli
 
 from ai_cli.main import (
     _assign_iterm2_color_slot,
     _auto_update_if_stale,
-    _cmd_tunnel_start,
-    _cmd_tunnel_stop,
-    _cmd_tunnel_status,
     _cmd_signal_watch_start,
     _cmd_signal_watch_status,
+    _cmd_tunnel_start,
+    _cmd_tunnel_status,
+    _cmd_tunnel_stop,
     _find_aicli_project_path,
     _load_iterm2_config,
     _log_handoff_event,
@@ -29,8 +30,6 @@ from ai_cli.main import (
     get_xdg_state_home,
     load_config,
 )
-from conftest import make_iterm2_config, run_cli
-
 
 # --- XDG helpers ---
 

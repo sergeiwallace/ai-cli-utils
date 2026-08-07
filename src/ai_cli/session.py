@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .config import (
@@ -61,7 +61,7 @@ def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
 
         # Build filename from checkpoint mtime so file sorts correctly vs. native sessions
         chk_mtime = checkpoint_path.stat().st_mtime
-        chk_dt = datetime.fromtimestamp(chk_mtime, tz=timezone.utc)
+        chk_dt = datetime.fromtimestamp(chk_mtime, tz=UTC)
         ts_str = chk_dt.strftime("%Y-%m-%dT%H-%M")
         chat_path = chats_dir / f"session-{ts_str}-{session_uuid[:8]}.json"
 

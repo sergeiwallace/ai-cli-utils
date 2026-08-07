@@ -17,7 +17,6 @@ import pytest
 
 from ai_cli.main import _do_session_launch
 
-
 pytestmark = [
     pytest.mark.skipif(
         shutil.which("tmux") is None,

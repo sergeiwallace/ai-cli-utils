@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-
 from ai_cli.process_hygiene import (
     ORPHAN_THRESHOLD,
     SUSPECT_THRESHOLD,
@@ -28,7 +27,6 @@ from ai_cli.process_hygiene import (
     score_signal_watch,
     score_watcher,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

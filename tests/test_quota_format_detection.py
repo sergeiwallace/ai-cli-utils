@@ -11,7 +11,7 @@ Covers:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -20,10 +20,10 @@ import pytest
 
 import ai_cli.quota_db as quota_db
 from ai_cli.quota import (
+    _SCRAPER_BROKEN_PREFIX,
     _clear_scrape_format_mismatch,
     _parse_reset_datetime,
     _record_scrape_format_mismatch,
-    _SCRAPER_BROKEN_PREFIX,
     quota_statusline_part,
 )
 from ai_cli.quota_db import _get_quota_meta, _set_quota_meta
@@ -170,8 +170,8 @@ class TestParseResetDatetimePastTime:
         text = "  Current week (all models) · Resets 6:59am \n  65% used\n"
         result = _parse_reset_datetime(text)
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        assert dt > datetime.now(timezone.utc)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        assert dt > datetime.now(UTC)
 
     def test_when_time_passed_result_is_approximately_one_week_out(self):
         """If 6:59am has passed today, the result should be 6–8 days from 6:59am today."""
@@ -185,8 +185,8 @@ class TestParseResetDatetimePastTime:
             result = _parse_reset_datetime(text)
 
         assert result is not None
-        result_dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        noon_utc = datetime(2026, 4, 28, 12, 0, 0, tzinfo=timezone.utc)
+        result_dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        noon_utc = datetime(2026, 4, 28, 12, 0, 0, tzinfo=UTC)
         diff = result_dt - noon_utc
         # One week minus the ~5h elapsed since 6:59am, so roughly 6.7–7.3 days ahead
         assert timedelta(days=6) <= diff <= timedelta(days=8)
@@ -204,8 +204,8 @@ class TestParseResetDatetimePastTime:
         text = "  Current week (all models) · Resets 11:59pm \n  10% used\n"
         result = _parse_reset_datetime(text)
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        now_utc = datetime.now(timezone.utc)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        now_utc = datetime.now(UTC)
         diff = dt - now_utc
         # Should be in the future and at most 7 days away (7 if just passed 11:59pm)
         assert timedelta(0) < diff <= timedelta(days=7, hours=1)

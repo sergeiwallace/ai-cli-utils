@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_cli.sync import _acquire_pid_file, _release_pid_file, _pid_file_path
+from ai_cli.sync import _acquire_pid_file, _pid_file_path, _release_pid_file
 
 
 class TestPidFileGuard:

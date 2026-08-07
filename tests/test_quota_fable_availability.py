@@ -1,7 +1,7 @@
 """Regression coverage for removing the Fable statusline segment."""
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import ai_cli.quota_db as qdb
@@ -17,7 +17,7 @@ def _render_statusline(monkeypatch, capsys, db_path, *, fable_percent: float | N
     qdb.set_db_path(db_path)
     try:
         week_start = qdb._get_current_week_start()
-        week_start_dt = datetime.strptime(week_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        week_start_dt = datetime.strptime(week_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         fixed_now = week_start_dt + timedelta(hours=30)
         conn = sqlite3.connect(str(db_path))
         try:

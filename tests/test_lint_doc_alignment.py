@@ -4,7 +4,6 @@ from pathlib import Path
 
 from scripts.lint_doc_alignment import check_alignment, extract_section
 
-
 SHARED_HEADINGS = [
     "## Public Open-Source Package Standards",
     "## CLI Conventions",

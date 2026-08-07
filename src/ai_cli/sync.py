@@ -19,17 +19,16 @@ Push flow: stage local ~/.claude/projects/ files → git commit → git push to 
 Pull flow: git fetch + merge from bare repo → apply merged files to ~/.claude/projects/
 """
 
-import os
-import re
-import sys
-import time
-import shutil
 import hashlib
 import json
+import os
+import re
+import shutil
 import subprocess
-from pathlib import Path
+import sys
+import time
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -169,7 +168,7 @@ def _parse_flags(flags: list[str]) -> tuple[bool, bool, bool, bool, bool]:
 # ---------------------------------------------------------------------------
 
 
-def normalize_project_path(cc_dir_name: str, local_prefix: str) -> Optional[str]:
+def normalize_project_path(cc_dir_name: str, local_prefix: str) -> str | None:
     """Convert a CC project dir name to a bare project name.
 
     E.g. '-Users-username-projects-myproject' -> 'myproject'
@@ -205,7 +204,7 @@ def is_jsonl_file(path: Path) -> bool:
     return path.suffix == ".jsonl"
 
 
-def _wt_name_from_bare_name(bare_name: str) -> Optional[str]:
+def _wt_name_from_bare_name(bare_name: str) -> str | None:
     """Return the worktree session name from a bare CC dir name, or None if not a worktree dir.
 
     E.g. "myproject--worktrees-session-5" → "session-5", "myproject" → None.
@@ -217,7 +216,7 @@ def _wt_name_from_bare_name(bare_name: str) -> Optional[str]:
     return bare_name[idx + len(marker) :]
 
 
-def _jsonl_custom_title(path: Path) -> Optional[str]:
+def _jsonl_custom_title(path: Path) -> str | None:
     """Return the customTitle field from a JSONL file, or None if absent or unreadable.
 
     Reads the full file line-by-line so compacted JSONL files (which start with
@@ -282,7 +281,7 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _detect_foreign_home(jsonl_path: Path) -> Optional[str]:
+def _detect_foreign_home(jsonl_path: Path) -> str | None:
     """Read the first cwd or project field in a JSONL file. Return the home prefix if it differs from local."""
     import json as _json
 
@@ -555,7 +554,7 @@ def _write_jsonl_translated(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def _detect_foreign_home_in_history(history_path: Path) -> Optional[str]:
+def _detect_foreign_home_in_history(history_path: Path) -> str | None:
     """Scan history.jsonl for a project field pointing to a foreign home directory."""
     import json as _json
 
@@ -1004,7 +1003,7 @@ def _git_stash_pull_pop(path: Path) -> tuple[bool, str]:
     return pull.returncode == 0 and pop.returncode == 0, "\n".join(part for part in output if part)
 
 
-def _cc_session_state_for_worktree(project_name: str, wt_dir: Path) -> Optional[str]:
+def _cc_session_state_for_worktree(project_name: str, wt_dir: Path) -> str | None:
     """Return an active/idle Claude Code state for a worktree, if one is known."""
     match = re.search(r"(\d+)$", wt_dir.name)
     if not match:
@@ -1388,7 +1387,7 @@ def is_cc_active_locally() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> Optional[str]:
+def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
     """Use Gemini Flash to resolve git conflict markers in a memory markdown file.
 
     Returns merged content without conflict markers, or None if merge fails
@@ -1430,7 +1429,7 @@ def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> Optional
 # ---------------------------------------------------------------------------
 
 
-def notify_conflicts(conflicts: list[str], events: Optional[list[dict[str, str]]] = None) -> None:
+def notify_conflicts(conflicts: list[str], events: list[dict[str, str]] | None = None) -> None:
     """Notify about conflicts and append structured, diagnosable event records.
 
     ``events`` is supplied by ``apply_pull_files`` at the point the conflict is
@@ -1697,6 +1696,7 @@ def _wait_for_dream_completion_legacy(verbose: bool) -> None:
     marker exists.
     """
     import asyncio
+
     from .messaging import NATSClient
 
     try:
@@ -1737,7 +1737,7 @@ def _wait_for_dream_completion_legacy(verbose: bool) -> None:
                 await asyncio.wait_for(completed.wait(), timeout=_DREAM_GUARD_TIMEOUT_SECONDS)
                 if verbose:
                     print("Dream completed — proceeding with sync push.")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if verbose:
                     print("Dream wait timed out after 30s — proceeding anyway.")
             finally:
@@ -1850,6 +1850,7 @@ def sync_push(flags: list[str]) -> int:
     # Notify server to pull — fire-and-forget, non-fatal if NATS unavailable
     try:
         import asyncio as _asyncio
+
         from .messaging import NATSClient as _NATSClient
 
         _client = _NATSClient()
@@ -2035,7 +2036,7 @@ def sync_resolve(flags: list[str]) -> int:
     mem_failed = 0
     artifacts_deleted = 0
 
-    def _resolve_memory_conflict_file(f: Path, local_cc_file: Optional[Path]) -> str:
+    def _resolve_memory_conflict_file(f: Path, local_cc_file: Path | None) -> str:
         """Attempt to resolve one .conflict file. Returns 'merged', 'failed', or 'no_markers'."""
         content = f.read_text(errors="replace")
         if "<<<<<<<" not in content or ">>>>>>>" not in content:
@@ -2193,6 +2194,7 @@ def sync_watch(flags: list[str]) -> int:
     Exit codes: 0 = clean stop, 1 = NATS unavailable, 2 = already running
     """
     import asyncio
+
     from .messaging import NATSClient
 
     verbose = "--verbose" in flags

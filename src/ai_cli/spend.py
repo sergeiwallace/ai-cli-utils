@@ -21,7 +21,6 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 LOG_DIR = Path.home() / ".local" / "state" / "ai-cli" / "gemini-logs"
 DR_DAILY_FILE = Path.home() / ".local" / "state" / "ai-cli" / "dr-daily.json"
@@ -43,9 +42,9 @@ class DailyStats:
     by_tier: dict = field(default_factory=dict)  # tier_name -> success count
     deep_research_oauth: int = 0
     deep_research_paid: int = 0
-    input_tokens: Optional[int] = None
-    output_tokens: Optional[int] = None
-    total_tokens: Optional[int] = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +68,7 @@ def _read_jsonl_file(log_file: Path) -> list[dict]:
     return entries
 
 
-def get_daily_stats(date_str: str, log_dir: Optional[Path] = None) -> DailyStats:
+def get_daily_stats(date_str: str, log_dir: Path | None = None) -> DailyStats:
     """Aggregate usage stats for a given date (YYYY-MM-DD) from the JSONL log."""
     stats = DailyStats(date=date_str)
     log_file = (log_dir or LOG_DIR) / f"{date_str}.jsonl"
@@ -104,7 +103,7 @@ def get_daily_stats(date_str: str, log_dir: Optional[Path] = None) -> DailyStats
     return stats
 
 
-def get_monthly_stats(year_month: str, log_dir: Optional[Path] = None) -> DailyStats:
+def get_monthly_stats(year_month: str, log_dir: Path | None = None) -> DailyStats:
     """Aggregate usage stats for a calendar month (YYYY-MM) across all daily log files."""
     combined = DailyStats(date=year_month)
     resolved_dir = log_dir or LOG_DIR
@@ -192,7 +191,7 @@ def query_bigquery_spend(
 
     by_sku: dict[str, float] = {}
     total_cost = 0.0
-    data_as_of: Optional[str] = None
+    data_as_of: str | None = None
     for row in rows:
         by_sku[row.sku_description] = float(row.total_cost)
         total_cost += float(row.total_cost)
@@ -214,7 +213,7 @@ def query_bigquery_spend(
 # ---------------------------------------------------------------------------
 
 
-def _read_dr_daily_counter(dr_file: Optional[Path] = None) -> dict:
+def _read_dr_daily_counter(dr_file: Path | None = None) -> dict:
     """Read today's DR run counter from dr-daily.json.
 
     Returns a zeroed dict if the file is absent or from a different day.
@@ -239,8 +238,8 @@ def _read_dr_daily_counter(dr_file: Optional[Path] = None) -> dict:
 def cmd_spend_gemini(
     config: dict,
     *,
-    log_dir: Optional[Path] = None,
-    dr_file: Optional[Path] = None,
+    log_dir: Path | None = None,
+    dr_file: Path | None = None,
 ) -> int:
     """Print Gemini usage and cost summary.
 

@@ -1,10 +1,10 @@
 """Tests for memory watch daemon."""
 
-from unittest.mock import patch, MagicMock
-
-from ai_cli.memory import MemoryFileHandler, _find_memory_dirs
+from unittest.mock import MagicMock, patch
 
 from watchdog.events import FileCreatedEvent, FileModifiedEvent
+
+from ai_cli.memory import MemoryFileHandler, _find_memory_dirs
 
 
 class TestMemoryFileHandler:

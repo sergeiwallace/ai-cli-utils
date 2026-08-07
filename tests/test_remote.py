@@ -1,11 +1,9 @@
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
-from ai_cli.main import cli
-
 from conftest import _run_cli_with_args
 
+from ai_cli.main import cli
 
 # --- --remote flag tests ---
 

@@ -2,12 +2,16 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from ai_cli.main import (
     _claim_handoff_for_signal,
+    _cmd_signal_watch_start,
+    _cmd_signal_watch_status,
+    _cmd_signal_watch_stop,
+    _ensure_circusd,
     _find_best_handoff,
     _log_handoff_event,
     check_handoff,
@@ -16,12 +20,7 @@ from ai_cli.main import (
     cli,
     complete_handoff,
     post_handoff,
-    _cmd_signal_watch_start,
-    _cmd_signal_watch_stop,
-    _cmd_signal_watch_status,
-    _ensure_circusd,
 )
-
 
 # --- Handoff subcommands ---
 

@@ -165,7 +165,7 @@ class NATSClient:
                 )
                 self.js = self.nc.jetstream()
                 return
-            except (NoServersError, TimeoutError, asyncio.TimeoutError, OSError):
+            except (NoServersError, TimeoutError, OSError):
                 if attempt == max_retries - 1:
                     return  # self.nc remains None -- callers must check
                 await asyncio.sleep(retry_delay)

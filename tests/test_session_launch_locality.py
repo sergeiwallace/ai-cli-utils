@@ -26,7 +26,6 @@ import pytest
 from ai_cli.main import _do_session_launch, _exec_with_direnv
 from ai_cli.session import _resolve_is_remote
 
-
 # --- _resolve_is_remote --------------------------------------------------------
 
 

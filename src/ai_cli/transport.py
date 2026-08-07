@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import get_xdg_state_home
@@ -71,7 +71,7 @@ def _write_transport_state(
         "child_pid": child_pid,
         "transport": transport,
         "session": session,
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
     }
     path.write_text(json.dumps(state))
 

@@ -2,22 +2,21 @@ import json
 import os
 import subprocess
 import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ai_cli.main import (
     _auto_update_if_stale,
     _cmd_tunnel_start,
-    _cmd_tunnel_stop,
     _cmd_tunnel_status,
+    _cmd_tunnel_stop,
     _configure_tmux_for_iterm2,
     _ensure_nats_tunnel,
     cli,
     get_engine_script,
     trigger_background_update,
 )
-
 
 # --- CLI dispatch tests ---
 

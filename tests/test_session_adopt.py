@@ -29,6 +29,7 @@ from pathlib import Path
 
 import psutil
 import pytest
+from conftest import run_cli
 
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
 from ai_cli.session_adopt import (
@@ -52,8 +53,6 @@ from ai_cli.session_adopt import (
     titled_sessions,
     used_indexes,
 )
-from conftest import run_cli
-
 
 UUID = "11111111-2222-4333-8444-555555555555"
 OTHER_UUID = "99999999-8888-4777-8666-555555555555"

@@ -7,7 +7,7 @@ All active transport loops subscribe to ``vpn.state.changed`` and switch transpo
 import asyncio
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .config import get_xdg_state_home
 from .messaging import NATSClient
@@ -51,7 +51,7 @@ async def _vpn_watch_loop(config: dict) -> None:
 
             last_vpn = confirmed_vpn
             state_str = "active" if confirmed_vpn else "inactive"
-            ts = datetime.now(timezone.utc).isoformat()
+            ts = datetime.now(UTC).isoformat()
             payload = {"vpn": confirmed_vpn, "ts": ts}
 
             # Log the transition

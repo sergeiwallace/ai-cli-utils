@@ -2,9 +2,9 @@
 
 import json
 import sqlite3
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from ai_cli.telemetry import init_db, write_event, record_event, _is_enabled
+from ai_cli.telemetry import _is_enabled, init_db, record_event, write_event
 
 
 class TestTelemetryDB:
@@ -101,8 +101,9 @@ class TestIsEnabled:
 class TestGetMachineId:
     def test_get_machine_id_when_called_then_returns_hostname(self):
         """Line 34: actual body of _get_machine_id."""
-        from ai_cli.telemetry import _get_machine_id
         import socket
+
+        from ai_cli.telemetry import _get_machine_id
 
         result = _get_machine_id()
         assert result == socket.gethostname()

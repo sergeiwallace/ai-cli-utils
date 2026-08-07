@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import click
 import pytest
+from conftest import run_cli
 
 from ai_cli.main import (
     _auto_update_if_stale,
@@ -31,8 +32,6 @@ from ai_cli.main import (
     cli,
     main,
 )
-from conftest import run_cli
-
 
 # --- `ai internal refresh-template` ---
 

@@ -115,7 +115,16 @@ line-length = 120
 # families (SIM, BLE, PLW, UP, S, I, …) the repo never opted into. Adopting any
 # of those is deliberate, reviewed work — tracked separately, see AI-CLI-141 —
 # not something a patch-level tool upgrade gets to decide.
-select = ["E4", "E7", "E9", "F"]
+select = [
+    # --- baseline (pre-0.16 default; keep) ---
+    "E4",  # pycodestyle: imports
+    "E7",  # pycodestyle: statement-level
+    "E9",  # pycodestyle: runtime/IO errors
+    "F",  # Pyflakes
+    # --- phase 1: mechanical hygiene, autofixable ---
+    "I",  # isort
+    "UP",  # pyupgrade
+]
 ignore = [
     "E701",  # multiple-statements-on-one-line (colon) — established compact style in main.py
     "E702",  # multiple-statements-on-one-line (semicolon) — established compact style in main.py

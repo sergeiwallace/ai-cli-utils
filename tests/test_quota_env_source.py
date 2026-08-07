@@ -9,7 +9,7 @@ the anchor, and that print-mode is retired from the capture fallback.
 """
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import ai_cli.quota_db as qdb
@@ -26,7 +26,7 @@ def _count_snapshots() -> int:
 
 
 def _set_env(monkeypatch, *, seven_day_pct="20", five_hour_pct="23"):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     seven_day_reset = int((now + timedelta(days=2)).timestamp())
     five_hour_reset = int((now + timedelta(hours=3)).timestamp())
     monkeypatch.setenv("AI_CLI_QUOTA_SEVEN_DAY_PCT", str(seven_day_pct))
@@ -69,7 +69,7 @@ def test_env_records_when_pct_changed(monkeypatch, capsys):
 def test_env_records_after_throttle_window(monkeypatch, capsys):
     """Same pct but the last snapshot is older than the throttle window → record (keeps
     the ~10-min history cadence going)."""
-    old = (datetime.now(timezone.utc) - timedelta(minutes=11)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    old = (datetime.now(UTC) - timedelta(minutes=11)).strftime("%Y-%m-%dT%H:%M:%SZ")
     week_start = qdb._get_current_week_start()
     conn = sqlite3.connect(str(qdb._get_quota_db_path()))
     qdb._init_db(conn)
@@ -91,11 +91,11 @@ def test_env_reset_routed_to_record_quota_snapshot(monkeypatch, capsys):
     so the anchor stays consistent (F-08). Strengthened per audit N-03: spy on the call and assert
     the reset_at kwarg IS the env epoch converted to ISO (the weak version passed even when the
     epoch was never routed, because record_quota_snapshot always writes a derived reset_at)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     from unittest.mock import patch
 
     epoch = _set_env(monkeypatch, seven_day_pct="20")
-    expected_iso = datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expected_iso = datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     with patch("ai_cli.quota_db.record_quota_snapshot") as spy:
         quota_statusline_part()
     capsys.readouterr()

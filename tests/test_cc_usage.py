@@ -1,10 +1,10 @@
 """Tests for cc_usage module — CC CLI per-call token tracking."""
 
 import json
-from datetime import timezone
+import urllib.error
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import urllib.error
 
 import pytest
 
@@ -21,7 +21,6 @@ from ai_cli.cc_usage import (
     scan_and_push,
     scan_new_events,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,7 +91,7 @@ class TestParseIso:
     def test_parse_iso_when_naive_then_attaches_utc(self):
         dt = _parse_iso("2026-04-17T10:00:00")
         assert dt is not None
-        assert dt.tzinfo == timezone.utc
+        assert dt.tzinfo == UTC
 
     def test_parse_iso_when_invalid_then_returns_none(self):
         assert _parse_iso("not-a-date") is None

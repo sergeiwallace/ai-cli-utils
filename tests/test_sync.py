@@ -1,51 +1,51 @@
+import json
 import re
 import subprocess
-import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from ai_cli.sync import (
-    normalize_project_path,
+    SyncConfig,
+    _default_remote_bare_url,
+    _detect_foreign_home,
+    _detect_foreign_home_in_history,
+    _find_project_worktrees,
+    _parse_flags,
+    _pre_pull_push_memories,
+    _push_to_remote,
+    _release_pid_file,
+    _remote_newer_files,
+    _replicate_to_worktrees,
+    _wait_for_dream_completion,
+    _write_jsonl_translated,
+    apply_pull_files,
+    clean_worktree_cc_dirs,
     denormalize_project_name,
+    detect_jsonl_divergence,
+    file_hash,
     get_local_prefix,
     get_source_machine,
-    _default_remote_bare_url,
-    _parse_flags,
-    load_sync_config,
-    detect_jsonl_divergence,
-    should_sync_file,
-    is_memory_file,
-    is_jsonl_file,
-    file_hash,
-    stage_project_files,
-    apply_pull_files,
     git_commit_staged,
-    is_cc_active_on_server,
-    is_cc_active_locally,
-    notify_conflicts,
-    _detect_foreign_home,
-    translate_cwd_paths,
     init_staging_repo,
-    _detect_foreign_home_in_history,
-    _write_jsonl_translated,
-    SyncConfig,
-    _find_project_worktrees,
-    _replicate_to_worktrees,
-    replicate_history_to_worktrees,
+    is_cc_active_locally,
+    is_cc_active_on_server,
+    is_jsonl_file,
+    is_memory_file,
+    load_sync_config,
+    normalize_project_path,
+    notify_conflicts,
     purge_phantom_history_entries,
-    retranslate_project_jsonls,
-    clean_worktree_cc_dirs,
     repair_worktree_cc_dir,
-    sync_watch,
-    sync_push,
+    replicate_history_to_worktrees,
+    retranslate_project_jsonls,
+    should_sync_file,
+    stage_project_files,
     sync_pull,
-    _push_to_remote,
-    _remote_newer_files,
-    _release_pid_file,
-    _wait_for_dream_completion,
-    _pre_pull_push_memories,
+    sync_push,
+    sync_watch,
+    translate_cwd_paths,
 )
 
 # Fixed prefix strings for tests — mirror what get_local_prefix() would return on each platform
@@ -1474,6 +1474,7 @@ def test_notify_conflicts_when_appends_multiple_entries_then_all_logged(tmp_path
 def test_push_to_remote_when_stale_rebase_merge_then_aborts_before_rebase(tmp_path):
     """_push_to_remote aborts stale rebase-merge dir before attempting pull --rebase."""
     from unittest.mock import patch
+
     from ai_cli.sync import _push_to_remote
 
     # Simulate stale rebase-merge directory
@@ -1504,6 +1505,7 @@ def test_push_to_remote_when_stale_rebase_merge_then_aborts_before_rebase(tmp_pa
 def test_push_to_remote_when_no_stale_rebase_then_skips_abort(tmp_path):
     """_push_to_remote does not run git rebase --abort when no stale state exists."""
     from unittest.mock import patch
+
     from ai_cli.sync import _push_to_remote
 
     git_dir = tmp_path / ".git"
@@ -1529,7 +1531,9 @@ def test_push_to_remote_when_no_stale_rebase_then_skips_abort(tmp_path):
 def test_sync_watch_when_nats_unavailable_returns_nonzero():
     """sync_watch exits 1 when NATS is not reachable."""
     from unittest.mock import AsyncMock, patch
+
     from nats.errors import NoServersError
+
     from ai_cli.sync import sync_watch
 
     with patch("ai_cli.sync._acquire_pid_file", return_value=True):
@@ -1546,6 +1550,7 @@ def test_sync_watch_when_nats_available_runs_pull_on_message(tmp_path):
     """sync_watch subscribes and calls sync_pull when a message arrives."""
     import asyncio
     from unittest.mock import AsyncMock, MagicMock, patch
+
     from ai_cli.sync import sync_watch
 
     mock_nc = MagicMock()
@@ -2381,6 +2386,7 @@ def test_replicate_history_to_worktrees_when_no_history_then_returns_zero():
 def test_replicate_history_to_worktrees_when_worktrees_exist_then_adds_entries(tmp_path):
     """Covers lines 577-637: full replicate path with worktrees."""
     import json as _json
+
     from ai_cli.sync import replicate_history_to_worktrees
 
     # Setup history
@@ -3943,7 +3949,6 @@ def test_wait_for_dream_completion_when_recent_write_and_completes_then_returns(
 
 def test_wait_for_dream_completion_when_recent_write_and_timeout_then_proceeds(tmp_path):
     """Covers lines 1314-1316: asyncio.TimeoutError path in dream guard."""
-    import asyncio
 
     pid_file = tmp_path / "memory-watch.pid"
     pid_file.write_text("12345")
@@ -3968,7 +3973,7 @@ def test_wait_for_dream_completion_when_recent_write_and_timeout_then_proceeds(t
     recent_mem.write_text("fresh")
 
     async def fake_wait_for_timeout(coro, timeout):
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     with (
         patch("ai_cli.sync._pid_file_path", return_value=pid_file),

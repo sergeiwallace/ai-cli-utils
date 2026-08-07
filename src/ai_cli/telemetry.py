@@ -13,7 +13,6 @@ import sys
 import time
 from pathlib import Path
 
-
 _DB_PATH = Path.home() / ".ai-cli" / "telemetry.db"
 
 _SCHEMA = """
@@ -133,8 +132,8 @@ def telemetry_writer() -> int:
     Intended to run as a long-lived daemon.
     Exit codes: 0 = clean stop, 1 = error
     """
-    from .sync import _acquire_pid_file, _release_pid_file
     from .messaging import NATSClient
+    from .sync import _acquire_pid_file, _release_pid_file
 
     if not _acquire_pid_file("telemetry-writer"):
         print("telemetry writer is already running.", file=sys.stderr)

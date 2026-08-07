@@ -31,7 +31,6 @@ import ai_cli.main as main
 from ai_cli.main import _refresh_live_session_scripts, _write_stable_session_script
 from ai_cli.session_script import get_engine_script
 
-
 # --- Watcher poll loop ---------------------------------------------------------
 
 _WATCH_WINDOW_SECONDS = 2

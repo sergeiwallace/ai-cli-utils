@@ -13,8 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+from watchdog.events import FileModifiedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 
 
 class MemoryFileHandler(FileSystemEventHandler):
@@ -75,8 +75,8 @@ def memory_watch() -> int:
     PID file guard prevents duplicate instances.
     Exit codes: 0 = clean stop, 1 = error
     """
-    from .sync import _acquire_pid_file, _dream_state_path, _release_pid_file
     from .messaging import NATSClient
+    from .sync import _acquire_pid_file, _dream_state_path, _release_pid_file
 
     if not _acquire_pid_file("memory-watch"):
         print("ai memory watch is already running.", file=sys.stderr)

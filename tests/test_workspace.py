@@ -8,7 +8,6 @@ import pytest
 
 from ai_cli.workspace import _parse_workspace_folders, _upstream_drift, ws_pull
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

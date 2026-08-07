@@ -34,8 +34,8 @@ import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 
 def _claude_json_path() -> Path:

@@ -7,7 +7,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-
 from .config import _pid_alive, get_xdg_state_home
 
 

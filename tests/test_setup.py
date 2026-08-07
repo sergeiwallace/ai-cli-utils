@@ -4,7 +4,6 @@ from unittest.mock import call, patch
 
 from ai_cli.setup import _is_managed_platform, _repo_root_from, run_setup
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

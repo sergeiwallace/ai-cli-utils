@@ -24,9 +24,8 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "ai-cli-utils"
@@ -44,15 +43,15 @@ class CCTokenEvent:
 
     id: str
     session_id: str
-    project_path: Optional[str]
+    project_path: str | None
     machine: str
     model: str
-    input_tokens: Optional[int]
-    cache_creation_tokens: Optional[int]
-    cache_read_tokens: Optional[int]
-    output_tokens: Optional[int]
-    cc_version: Optional[str]
-    git_branch: Optional[str]
+    input_tokens: int | None
+    cache_creation_tokens: int | None
+    cache_read_tokens: int | None
+    output_tokens: int | None
+    cc_version: str | None
+    git_branch: str | None
     occurred_at: str
 
 
@@ -64,7 +63,7 @@ class PushResult:
     new_events: int = 0
     inserted: int = 0
     skipped: int = 0
-    error: Optional[str] = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -72,18 +71,18 @@ class PushResult:
 # ---------------------------------------------------------------------------
 
 
-def _parse_iso(ts: str) -> Optional[datetime]:
+def _parse_iso(ts: str) -> datetime | None:
     """Parse an ISO 8601 timestamp string to a timezone-aware datetime."""
     try:
         dt = datetime.fromisoformat(ts.rstrip("Z"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except (ValueError, TypeError, AttributeError):
         return None
 
 
-def _extract_event(entry: dict, session_id: str, project_path: Optional[str], machine: str) -> Optional[CCTokenEvent]:
+def _extract_event(entry: dict, session_id: str, project_path: str | None, machine: str) -> CCTokenEvent | None:
     """Extract a CCTokenEvent from a CC JSONL entry, or return None if not applicable."""
     if entry.get("type") != "assistant":
         return None
@@ -166,9 +165,9 @@ def _save_cursor(cursor: dict[str, str]) -> None:
 
 
 def scan_new_events(
-    claude_dir: Optional[Path] = None,
-    machine: Optional[str] = None,
-    cursor: Optional[dict[str, str]] = None,
+    claude_dir: Path | None = None,
+    machine: str | None = None,
+    cursor: dict[str, str] | None = None,
 ) -> tuple[list[CCTokenEvent], dict[str, str]]:
     """Scan all CC session JSONL files and return events not yet pushed.
 
@@ -201,9 +200,9 @@ def scan_new_events(
                 continue
 
             cursor_ts_str = _cursor.get(session_id)
-            cursor_dt: Optional[datetime] = _parse_iso(cursor_ts_str) if cursor_ts_str else None
+            cursor_dt: datetime | None = _parse_iso(cursor_ts_str) if cursor_ts_str else None
 
-            session_max_dt: Optional[datetime] = None
+            session_max_dt: datetime | None = None
 
             for entry in _read_jsonl(jsonl_file):
                 event = _extract_event(entry, session_id, project_path, _machine)
@@ -282,8 +281,8 @@ _BATCH_SIZE = 500
 
 def scan_and_push(
     config: dict,
-    claude_dir: Optional[Path] = None,
-    machine: Optional[str] = None,
+    claude_dir: Path | None = None,
+    machine: str | None = None,
     dry_run: bool = False,
 ) -> PushResult:
     """Scan CC session files and push new events to ai-core.

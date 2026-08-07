@@ -9,12 +9,11 @@ import pytest
 from ai_cli import tunnel
 from ai_cli.main import (
     _cmd_cdp_start,
-    _cmd_cdp_stop,
     _cmd_cdp_status,
+    _cmd_cdp_stop,
     _find_chrome_binary,
     cli,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

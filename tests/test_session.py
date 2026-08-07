@@ -3,21 +3,21 @@ import json
 import os
 import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
+from conftest import _make_list_panes_output
 
 from ai_cli.main import (
+    _checkpoint_to_chat_uuid,
+    _convert_checkpoint_to_chat,
+    _find_latest_gemini_uuid,
+    _get_chat_last_message_timestamp,
     build_session_name,
     cleanup_stale_sessions,
     cleanup_worktree,
-    _checkpoint_to_chat_uuid,
-    _convert_checkpoint_to_chat,
     create_worktree,
     detect_repo_root,
-    _find_latest_gemini_uuid,
-    _get_chat_last_message_timestamp,
     find_next_index,
     find_recent_session,
     get_latest_gemini_session_id,
@@ -27,9 +27,6 @@ from ai_cli.main import (
     save_session_map,
 )
 from ai_cli.session import _prefix_from_session_name, get_project_prefix, is_current_project_resolved
-
-from conftest import _make_list_panes_output
-
 
 # --- build_session_name tests ---
 # Session name format: {c|g}[-r]-{project}-{index}

@@ -3,14 +3,13 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
 from ai_cli.git_repair import _GIT_TARGETING_VARS
-
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
 _PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv"})

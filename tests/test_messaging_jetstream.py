@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ai_cli.messaging import NATSClient, STREAM_CONFIG
+from ai_cli.messaging import STREAM_CONFIG, NATSClient
 
 
 class TestNATSClientJetStreamConnect:
