@@ -277,10 +277,10 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         # so the CDP port never opens. Use `open -na` to force a new app instance.
         _app_dir = next((p for p in Path(chrome).parts if p.endswith(".app")), None)
         _app_name = _app_dir[:-4] if _app_dir else "Google Chrome"
-        subprocess.run(["open", "-na", _app_name, "--args"] + chrome_args, check=False)
+        subprocess.run(["open", "-na", _app_name, "--args", *chrome_args], check=False)
     else:
         proc = subprocess.Popen(
-            [chrome] + chrome_args,
+            [chrome, *chrome_args],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -293,7 +293,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     ready = False
     while time.monotonic() < deadline:
         try:
-            urllib.request.urlopen(url, timeout=0.5)  # noqa: S310
+            urllib.request.urlopen(url, timeout=0.5)
             ready = True
             break
         except Exception:

@@ -53,7 +53,7 @@ class NATSClient:
             _host = _remote.get("host", "")
             _port = str(_remote.get("port", 22))
             _identity = _remote.get("identity_file", "")
-        except Exception:  # noqa: BLE001 — config load must never block the tunnel
+        except Exception:  # config load must never block the tunnel
             _user, _host, _port, _identity = "", "", "22", ""
         if not _user or not _host:
             return  # no remote configured — skip tunnel
@@ -63,7 +63,7 @@ class NATSClient:
             from .transport import _is_vpn_active as _vpn_check
 
             _tunnel_host = (_remote.get("vpn_host", "") or _host) if _vpn_check() else _host
-        except Exception:  # noqa: BLE001 — VPN-detection failure must not block the tunnel
+        except Exception:  # VPN-detection failure must not block the tunnel
             _tunnel_host = _host
         ssh_cmd = ["ssh", "-fNL", "4222:localhost:4222", "-o", "ConnectTimeout=5"]
         if _identity:
@@ -74,7 +74,7 @@ class NATSClient:
         # exits on its own; nothing here needs to `await` it. Switching to
         # asyncio.create_subprocess_exec would change the -f semantics this
         # method (and TestSshTunnel) depends on.
-        self._tunnel_proc = subprocess.Popen(  # noqa: ASYNC220
+        self._tunnel_proc = subprocess.Popen(
             ssh_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -109,7 +109,7 @@ class NATSClient:
         try:
             if proc.poll() is None:
                 await asyncio.to_thread(proc.wait, 6)
-        except Exception:  # noqa: BLE001, S110 — reap best-effort, TimeoutExpired included
+        except Exception:  # reap best-effort, TimeoutExpired included
             pass
 
     # Bound on the whole connect() call, including the library's own retries. Nothing
@@ -181,12 +181,12 @@ class NATSClient:
         try:
             await self.js.find_stream_name_by_subject(subject)
             self._streams_ensured.add(stream_name)
-        except Exception:  # noqa: BLE001 — lookup failure falls through to create-stream
+        except Exception:  # lookup failure falls through to create-stream
             try:
                 subjects = STREAM_CONFIG.get(stream_name, [subject])
                 await self.js.add_stream(name=stream_name, subjects=subjects)
                 self._streams_ensured.add(stream_name)
-            except Exception:  # noqa: BLE001 — stream unavailable, caller falls back
+            except Exception:  # stream unavailable, caller falls back
                 return False
         return True
 
@@ -212,7 +212,7 @@ class NATSClient:
                 await self._ensure_stream(subject)
                 await self.js.publish(subject, data)
                 return True
-            except Exception:  # noqa: BLE001, S110 — JetStream publish failed, fall back to core NATS
+            except Exception:  # JetStream publish failed, fall back to core NATS
                 pass
         # Fallback to core NATS
         await self.nc.publish(subject, data)
@@ -247,7 +247,7 @@ class NATSClient:
         async def _handler(msg):
             try:
                 data = json.loads(msg.data.decode())
-            except Exception:  # noqa: BLE001 — malformed payload becomes an empty dict
+            except Exception:  # malformed payload becomes an empty dict
                 data = {}
             await callback(data)
 
@@ -273,20 +273,20 @@ class NATSClient:
 
         try:
             await self._ensure_stream(subject)
-        except Exception:  # noqa: BLE001 — stream setup failed, fall back to core subscribe
+        except Exception:  # stream setup failed, fall back to core subscribe
             return await self.subscribe(subject, callback)
 
         async def _handler(msg):
             try:
                 data = json.loads(msg.data.decode())
-            except Exception:  # noqa: BLE001 — malformed payload becomes an empty dict
+            except Exception:  # malformed payload becomes an empty dict
                 data = {}
             await callback(data)
             await msg.ack()
 
         try:
             await self.js.subscribe(subject, durable=consumer_name, cb=_handler)
-        except Exception:  # noqa: BLE001 — durable subscribe failed, fall back to core subscribe
+        except Exception:  # durable subscribe failed, fall back to core subscribe
             return await self.subscribe(subject, callback)
 
         try:

@@ -182,7 +182,7 @@ def _parse_reset_datetime(text: str) -> str | None:
                 hour = 0
         tz_offset_h = _TZ_OFFSETS_H.get(tz_s.upper() if tz_s else "", 0)
         try:
-            naive = _dt(year, month, day_str and int(day_str) or 1, hour, minute, second)
+            naive = _dt(year, month, (day_str and int(day_str)) or 1, hour, minute, second)
             return (naive - _td(hours=tz_offset_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
         except ValueError:
             return None

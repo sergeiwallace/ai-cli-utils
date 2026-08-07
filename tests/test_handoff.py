@@ -77,7 +77,7 @@ class TestHandoff:
         queue_dir = tmp_path / ".handoff-queue"
         with patch("ai_cli.handoff._get_handoff_queue_dir", return_value=queue_dir):
             post_handoff("Task", "P1", "proj", "msg", for_machine="mac")
-        content = list((queue_dir / "pending").glob("*.md"))[0].read_text()
+        content = next(iter((queue_dir / "pending").glob("*.md"))).read_text()
         assert "for_machine: mac" in content
 
     def test_post_handoff_includes_for_machine_in_nats_payload(self, tmp_path):

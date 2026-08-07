@@ -130,9 +130,20 @@ select = [
     "PIE",  # flake8-pie
     "RET",  # flake8-return
     "PLE",  # Pylint errors (0 findings today; regression insurance)
+    # --- phase 3: Ruff-specific hygiene ---
+    "RUF",  # incl. RUF100 unused-noqa
 ]
 ignore = [
     "E701",  # multiple-statements-on-one-line (colon) — established compact style in main.py
     "E702",  # multiple-statements-on-one-line (semicolon) — established compact style in main.py
     "E741",  # ambiguous-variable-name — single-letter vars acceptable in comprehensions
+    "RUF001",  # ambiguous-unicode-string — box-drawing/symbols in CLI output are intentional
+    "RUF002",  # ambiguous-unicode-docstring — same
+    "RUF003",  # ambiguous-unicode-comment — same
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "RUF059",  # unused unpacked variables in test setup
+]
+"src/*/__init__.py" = ["F401"]  # re-exports

@@ -542,7 +542,7 @@ def query_notification_log(
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = conn.execute(
         f"SELECT * FROM notification_log {where} ORDER BY fired_at DESC LIMIT ?",
-        params + [last],
+        [*params, last],
     ).fetchall()
     conn.close()
 

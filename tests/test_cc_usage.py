@@ -4,6 +4,7 @@ import json
 import urllib.error
 from datetime import UTC
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -392,8 +393,8 @@ class TestPushToApi:
 
 
 class TestScanAndPush:
-    _CONFIG_MISSING = {"ai-core": {}}
-    _CONFIG_OK = {"ai-core": {"api_url": "https://example.com", "api_key": "ac-api-key"}}
+    _CONFIG_MISSING: ClassVar[dict] = {"ai-core": {}}
+    _CONFIG_OK: ClassVar[dict] = {"ai-core": {"api_url": "https://example.com", "api_key": "ac-api-key"}}
 
     def test_scan_and_push_when_config_missing_then_error(self):
         result = scan_and_push(config=self._CONFIG_MISSING)

@@ -271,9 +271,9 @@ def cleanup_session_files(session_name: str) -> None:
     """
     try:
         (_icon_cache_dir() / f"{session_name}.png").unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001, S110 — EXIT-trap cleanup must never block session exit
+    except Exception:  # EXIT-trap cleanup must never block session exit
         pass
     try:
         (_dynamic_profile_dir() / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json").unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001, S110 — EXIT-trap cleanup must never block session exit
+    except Exception:  # EXIT-trap cleanup must never block session exit
         pass

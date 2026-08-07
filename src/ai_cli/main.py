@@ -26,7 +26,7 @@ from . import tunnel as _tunnel
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
-from .config import (  # noqa: E402,F401
+from .config import (  # noqa: F401
     DEFAULT_CONFIG,
     WORKTREE_DIR,
     _find_project_dir,
@@ -58,7 +58,7 @@ from .git_repair import (
     repair_bare_worktree_config,
     unmerged_paths,
 )
-from .handoff import (  # noqa: E402,F401
+from .handoff import (  # noqa: F401
     _claim_handoff_for_signal,
     _find_best_handoff,
     _format_handoff_summary,
@@ -69,7 +69,7 @@ from .handoff import (  # noqa: E402,F401
     complete_handoff,
     post_handoff,
 )
-from .iterm2 import (  # noqa: E402,F401
+from .iterm2 import (  # noqa: F401
     _DEFAULT_ITERM2_CONFIG,
     _assign_iterm2_color_slot,
     _configure_tmux_for_iterm2,
@@ -85,7 +85,7 @@ from .iterm2 import (  # noqa: E402,F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
-from .process_manager import (  # noqa: E402,F401
+from .process_manager import (  # noqa: F401
     _cmd_quota_watch_start,
     _cmd_quota_watch_status,
     _cmd_quota_watch_stop,
@@ -94,7 +94,7 @@ from .process_manager import (  # noqa: E402,F401
     _cmd_signal_watch_stop,
     _ensure_circusd,
 )
-from .session import (  # noqa: E402,F401
+from .session import (  # noqa: F401
     _AI_SESSION_RE,
     _checkpoint_to_chat_uuid,
     _convert_checkpoint_to_chat,
@@ -114,7 +114,7 @@ from .session import (  # noqa: E402,F401
     resolve_session,
 )
 from .session_script import get_engine_script  # noqa: F401
-from .transport import (  # noqa: E402,F401
+from .transport import (  # noqa: F401
     _ensure_tailscale_up,
     _ensure_vpn_watcher,
     _is_vpn_active,
@@ -123,7 +123,7 @@ from .transport import (  # noqa: E402,F401
     _run_transport_loop,
     _write_transport_state,
 )
-from .tunnel import (  # noqa: E402,F401
+from .tunnel import (  # noqa: F401
     _cmd_cdp_start,
     _cmd_cdp_status,
     _cmd_cdp_stop,
@@ -303,7 +303,7 @@ def _bare_engine_command(
             command.append("--continue")
         return command + extra_args
 
-    command = shlex.split(gemini_cmd) + ["-y", sandbox_flag]
+    command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
     if uuid:
         command += ["-r", uuid]
     else:
@@ -2040,27 +2040,51 @@ def _do_session_launch(
             command += ["--name", ai_name]
             os.execvp(
                 "tmux",
-                ["tmux", "new-session", "-s", session_id]
-                + _iterm_env_flags
-                + ["--", "zsh", "-c", cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command])],
+                [
+                    "tmux",
+                    "new-session",
+                    "-s",
+                    session_id,
+                    *_iterm_env_flags,
+                    "--",
+                    "zsh",
+                    "-c",
+                    cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                ],
             )
         else:
-            command = shlex.split(gemini_cmd) + ["-y", sandbox_flag]
+            command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
             if uuid:
                 command += ["-r", uuid]
                 os.execvp(
                     "tmux",
-                    ["tmux", "new-session", "-s", session_id]
-                    + _iterm_env_flags
-                    + ["--", "zsh", "-c", cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command])],
+                    [
+                        "tmux",
+                        "new-session",
+                        "-s",
+                        session_id,
+                        *_iterm_env_flags,
+                        "--",
+                        "zsh",
+                        "-c",
+                        cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                    ],
                 )
             else:
                 command += ["-i", f"/resume load {ai_name}"]
                 os.execvp(
                     "tmux",
-                    ["tmux", "new-session", "-s", session_id]
-                    + _iterm_env_flags
-                    + ["--", "zsh", "-c", cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command])],
+                    [
+                        "tmux",
+                        "new-session",
+                        "-s",
+                        session_id,
+                        *_iterm_env_flags,
+                        "--",
+                        "zsh",
+                        "-c",
+                        cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                    ],
                 )
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
@@ -2119,7 +2143,7 @@ def _do_session_launch(
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["--", "zsh", _script_path],
+            ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", "zsh", _script_path],
             capture_output=True,
         )
         if result.returncode != 0:
@@ -2127,7 +2151,7 @@ def _do_session_launch(
             stderr = (raw.decode() if isinstance(raw, bytes) else raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_id] + _iterm_env_flags + ["zsh", _script_path],
+                ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "zsh", _script_path],
                 capture_output=True,
             )
             if result2.returncode != 0:

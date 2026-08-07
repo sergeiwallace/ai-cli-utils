@@ -199,7 +199,7 @@ def test_repair_when_real_repo_corrupted_then_fixes_it_end_to_end(tmp_path):
 
 
 def _git(repo, *args, **kwargs):
-    return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True, text=True, check=False, **kwargs)
+    return subprocess.run(["git", "-C", str(repo), *list(args)], capture_output=True, text=True, check=False, **kwargs)
 
 
 def _make_remote(path):

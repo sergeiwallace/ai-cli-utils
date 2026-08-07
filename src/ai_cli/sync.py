@@ -363,7 +363,7 @@ def detect_jsonl_divergence(local_path: Path, staging_path: Path) -> str:
 
 
 def _git(args: list[str], cwd: Path, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(["git"] + args, cwd=cwd, check=check, capture_output=True, env=_GIT_ENV, **kwargs)
+    return subprocess.run(["git", *args], cwd=cwd, check=check, capture_output=True, env=_GIT_ENV, **kwargs)
 
 
 def init_staging_repo(staging_dir: Path, remote_url: str) -> None:
