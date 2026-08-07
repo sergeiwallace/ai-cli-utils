@@ -51,7 +51,7 @@ def _is_vpn_active() -> bool:
         for i in range(1, len(iface_blocks) - 1, 2):
             name = iface_blocks[i]
             body = iface_blocks[i + 1]
-            if (name.startswith("utun") or name.startswith("tun")) and "inet " in body:
+            if name.startswith(("utun", "tun")) and "inet " in body:
                 return True
         return False
     except Exception:

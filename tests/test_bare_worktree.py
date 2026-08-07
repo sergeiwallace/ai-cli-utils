@@ -228,22 +228,22 @@ def real_repo(tmp_path):
 
 
 def _launch_kwargs(**over):
-    kwargs = dict(
-        engine="c",
-        name="1",
-        resume=False,
-        once=False,
-        bare=True,
-        notify=False,
-        sandbox=False,
-        no_worktree=False,
-        remote=False,
-        project="",
-        is_remote=False,
-        project_prefix_override="kg",
-        extra_args=[],
-        config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
-    )
+    kwargs = {
+        "engine": "c",
+        "name": "1",
+        "resume": False,
+        "once": False,
+        "bare": True,
+        "notify": False,
+        "sandbox": False,
+        "no_worktree": False,
+        "remote": False,
+        "project": "",
+        "is_remote": False,
+        "project_prefix_override": "kg",
+        "extra_args": [],
+        "config": {"worktree": {"enabled": True}, "session": {"use_tmux": False}},
+    }
     kwargs.update(over)
     return kwargs
 

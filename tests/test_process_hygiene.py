@@ -34,16 +34,16 @@ from ai_cli.process_hygiene import (
 
 
 def _proc(**kwargs) -> ProcessInfo:
-    defaults = dict(
-        pid=1234,
-        name="mosh-server",
-        age_seconds=3600.0,
-        score=0,
-        verdict="active",
-        detail="active",
-        machine="local",
-        args="mosh-server 60001",
-    )
+    defaults = {
+        "pid": 1234,
+        "name": "mosh-server",
+        "age_seconds": 3600.0,
+        "score": 0,
+        "verdict": "active",
+        "detail": "active",
+        "machine": "local",
+        "args": "mosh-server 60001",
+    }
     defaults.update(kwargs)
     return ProcessInfo(**defaults)
 
@@ -912,8 +912,7 @@ class TestCollectRemoteProcessesConnectTimeout:
 
         def fake_run(cmd, **kwargs):
             ssh_calls.append(cmd)
-            result = type("R", (), {"stdout": "", "returncode": 0})()
-            return result
+            return type("R", (), {"stdout": "", "returncode": 0})()
 
         with (
             patch("ai_cli.process_hygiene._cache_path", return_value=None.__class__.__new__(type(None))),

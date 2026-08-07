@@ -844,7 +844,7 @@ def apply_pull_files(
                 divergence = detect_jsonl_divergence(dst, src)
                 if divergence == "identical":
                     continue
-                elif divergence == "fast_forward_remote":
+                if divergence == "fast_forward_remote":
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         _write_jsonl_translated(src, dst)
@@ -1814,7 +1814,7 @@ def sync_push(flags: list[str]) -> int:
         staged = result["staged_files"]
         project_names = result["project_names"]
         print(f"Would sync {len(staged)} files across {len(project_names)} projects:")
-        for src, dst in staged:
+        for src, _dst in staged:
             print(f"  {src}")
         return 0
 

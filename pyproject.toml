@@ -124,6 +124,12 @@ select = [
     # --- phase 1: mechanical hygiene, autofixable ---
     "I",  # isort
     "UP",  # pyupgrade
+    # --- phase 2: defect detection, cheap ---
+    "B",  # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "PIE",  # flake8-pie
+    "RET",  # flake8-return
+    "PLE",  # Pylint errors (0 findings today; regression insurance)
 ]
 ignore = [
     "E701",  # multiple-statements-on-one-line (colon) — established compact style in main.py

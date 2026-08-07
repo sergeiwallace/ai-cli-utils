@@ -216,11 +216,10 @@ def _get_reset_at(now: datetime | None = None) -> str:
         if reset <= now:
             reset += timedelta(seconds=_WEEK_SECONDS)
         return reset.strftime("%Y-%m-%dT%H:%M:%SZ")
-    else:
-        elapsed = -diff
-        full_periods = int(elapsed / _WEEK_SECONDS)
-        reset = anchor + timedelta(seconds=(full_periods + 1) * _WEEK_SECONDS)
-        return reset.strftime("%Y-%m-%dT%H:%M:%SZ")
+    elapsed = -diff
+    full_periods = int(elapsed / _WEEK_SECONDS)
+    reset = anchor + timedelta(seconds=(full_periods + 1) * _WEEK_SECONDS)
+    return reset.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def record_usage(

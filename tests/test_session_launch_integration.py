@@ -135,22 +135,22 @@ def patched_subprocess(tmux_server, tmp_path):
 
 
 def _base_launch_kwargs(name: str = "1") -> dict:
-    return dict(
-        engine="c",
-        name=name,
-        resume=False,
-        once=False,
-        bare=False,
-        notify=False,
-        sandbox=False,
-        no_worktree=True,  # skip worktree creation to keep the test hermetic
-        remote=False,
-        project="",
-        is_remote=False,
-        project_prefix_override="myproject",
-        extra_args=[],
-        config={"worktree": {"enabled": False}},
-    )
+    return {
+        "engine": "c",
+        "name": name,
+        "resume": False,
+        "once": False,
+        "bare": False,
+        "notify": False,
+        "sandbox": False,
+        "no_worktree": True,  # skip worktree creation to keep the test hermetic
+        "remote": False,
+        "project": "",
+        "is_remote": False,
+        "project_prefix_override": "myproject",
+        "extra_args": [],
+        "config": {"worktree": {"enabled": False}},
+    }
 
 
 def test_given_new_session_when_launched_then_tmux_session_created(patched_subprocess):

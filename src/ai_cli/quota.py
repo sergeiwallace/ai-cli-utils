@@ -490,8 +490,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                                     break
                     _clear_scrape_format_mismatch()
                     break
-                else:
-                    _record_scrape_format_mismatch(cap.stdout)
+                _record_scrape_format_mismatch(cap.stdout)
 
         # Dismiss the dialog
         subprocess.run(

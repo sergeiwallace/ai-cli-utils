@@ -176,27 +176,24 @@ class TestRemoteSessionIterm2Emit:
                 with pytest.raises(SystemExit):
                     cli()
             return mock_slot, mock_emit, None, call_order
-        else:
-            mock_exec = MagicMock()
-            mock_emit = MagicMock()
-            mock_slot = MagicMock(return_value="#ff0000")
-            mock_emit.side_effect = lambda *a, **kw: call_order.append("emit")
-            mock_exec.side_effect = lambda *a, **kw: (call_order.append("exec"), (_ for _ in ()).throw(SystemExit(0)))[
-                1
-            ]
-            with (
-                patch("sys.argv", argv),
-                patch("ai_cli.config.load_config", return_value=config),
-                patch("ai_cli.session.get_project_prefix", return_value="sw"),
-                patch("ai_cli.config.get_project_aliases", return_value={}),
-                patch("ai_cli.main.trigger_background_update"),
-                patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
-                patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
-                patch("os.execvp", mock_exec),
-            ):
-                with pytest.raises(SystemExit):
-                    cli()
-            return mock_slot, mock_emit, mock_exec, call_order
+        mock_exec = MagicMock()
+        mock_emit = MagicMock()
+        mock_slot = MagicMock(return_value="#ff0000")
+        mock_emit.side_effect = lambda *a, **kw: call_order.append("emit")
+        mock_exec.side_effect = lambda *a, **kw: (call_order.append("exec"), (_ for _ in ()).throw(SystemExit(0)))[1]
+        with (
+            patch("sys.argv", argv),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
+            patch("os.execvp", mock_exec),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        return mock_slot, mock_emit, mock_exec, call_order
 
     def test_when_remote_mosh_then_emit_called_before_execvp(self):
         _, mock_emit, _, call_order = self._run_remote(["ai", "c", "4", "--remote"], transport="mosh")

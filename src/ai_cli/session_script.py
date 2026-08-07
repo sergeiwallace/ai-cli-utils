@@ -85,7 +85,7 @@ def get_engine_script(
         }
     )
 
-    script = f"""
+    return f"""
     {cd_cmd}
     direnv_root="$PWD"
     agent_direnv_blocked=false
@@ -595,4 +595,3 @@ if found: sys.stdout.write(found)
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
     {('echo "Session ended. Exit shell to close tmux session."; exec $SHELL') if is_remote else "exit 0"}
     """
-    return script

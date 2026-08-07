@@ -111,8 +111,7 @@ class TestNATSClientPublish:
 
         async def run():
             with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
-                result = await client.publish_heartbeat("sess-1", {"status": "WORKING"})
-            return result
+                return await client.publish_heartbeat("sess-1", {"status": "WORKING"})
 
         result = asyncio.run(run())
         assert result is True

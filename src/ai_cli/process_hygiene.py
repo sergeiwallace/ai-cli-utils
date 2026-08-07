@@ -76,7 +76,7 @@ def _clean_stale_transport_files() -> None:
 def _verdict_for(score: int) -> str:
     if score >= ORPHAN_THRESHOLD:
         return "orphaned"
-    elif score >= SUSPECT_THRESHOLD:
+    if score >= SUSPECT_THRESHOLD:
         return "suspect"
     return "active"
 
@@ -649,10 +649,9 @@ def auto_clean_orphans(
 def _fmt_age(seconds: float) -> str:
     if seconds < 3600:
         return f"{int(seconds // 60)}m"
-    elif seconds < 86400:
+    if seconds < 86400:
         return f"{int(seconds // 3600)}h"
-    else:
-        return f"{int(seconds // 86400)}d"
+    return f"{int(seconds // 86400)}d"
 
 
 def format_ps_table(
@@ -825,7 +824,7 @@ def cmd_ps(
         out(f"Killed {len(killed)} process(es).")
         return 0
 
-    elif action == "cron" or cron_mode:
+    if action == "cron" or cron_mode:
         # Silent auto-clean: orphaned local only, log, print summary if any
         killed = auto_clean_orphans(local, log_path=log_path)
         if killed:
@@ -837,7 +836,6 @@ def cmd_ps(
             collect_remote_processes(host=remote_host, user=remote_user, force_refresh=True)
         return 0
 
-    else:
-        # Default: list all processes
-        out(format_ps_table(local, remote, cache_age=cache_age, remote_label=remote_host.upper() or "REMOTE"))
-        return 0
+    # Default: list all processes
+    out(format_ps_table(local, remote, cache_age=cache_age, remote_label=remote_host.upper() or "REMOTE"))
+    return 0

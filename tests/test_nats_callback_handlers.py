@@ -25,12 +25,12 @@ def _drain_kwargs(tmp_path: Path, *, machine_id: str = "mac") -> dict:
     handoff_dir.mkdir()
     (handoff_dir / "pending").mkdir()
     (handoff_dir / "claimed").mkdir()
-    return dict(
-        handoff_dir=handoff_dir,
-        prompt_file=tmp_path / "resume.txt",
-        session="ses-1",
-        machine_id=machine_id,
-    )
+    return {
+        "handoff_dir": handoff_dir,
+        "prompt_file": tmp_path / "resume.txt",
+        "session": "ses-1",
+        "machine_id": machine_id,
+    }
 
 
 def _base_data(**overrides) -> dict:
@@ -122,12 +122,12 @@ def _sw_kwargs(tmp_path: Path, *, machine_id: str = "mac") -> dict:
     handoff_dir.mkdir()
     (handoff_dir / "pending").mkdir()
     (handoff_dir / "claimed").mkdir()
-    return dict(
-        handoff_dir=handoff_dir,
-        pending_file=tmp_path / "pending.txt",
-        session_id="sw-1",
-        machine_id=machine_id,
-    )
+    return {
+        "handoff_dir": handoff_dir,
+        "pending_file": tmp_path / "pending.txt",
+        "session_id": "sw-1",
+        "machine_id": machine_id,
+    }
 
 
 def test_given_wrong_machine_when_signal_watch_then_no_side_effects(tmp_path, capsys):
@@ -173,7 +173,7 @@ def test_given_successful_claim_when_signal_watch_then_writes_pending_and_signal
 def test_given_startup_scan_source_when_signal_watch_then_logs_startup_scan_layer(tmp_path):
     kw = _sw_kwargs(tmp_path)
     fake_claimed = tmp_path / "handoff" / "claimed" / "42.md"
-    data = _base_data(**{"_source": "startup_scan"})
+    data = _base_data(_source="startup_scan")
     log_calls = []
     with (
         patch("ai_cli.handoff._claim_handoff_for_signal", return_value=fake_claimed),

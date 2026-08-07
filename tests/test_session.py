@@ -1010,8 +1010,7 @@ class TestCreateWorktreeEdgeCases2:
         """Covers line 457: wt_dir.exists() is False after git commands."""
 
         def mock_run(cmd, **kwargs):
-            m = MagicMock(returncode=1, stdout="")
-            return m
+            return MagicMock(returncode=1, stdout="")
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):

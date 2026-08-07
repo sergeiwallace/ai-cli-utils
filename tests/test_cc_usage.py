@@ -220,8 +220,7 @@ class TestCursorManagement:
 class TestScanNewEvents:
     def _setup_claude_dir(self, tmp_path: Path) -> Path:
         """Create a mock ~/.claude/projects/ structure."""
-        projects_dir = tmp_path / "projects"
-        return projects_dir
+        return tmp_path / "projects"
 
     def test_scan_when_no_projects_dir_then_returns_empty(self, tmp_path):
         events, cursor = scan_new_events(claude_dir=tmp_path / "nonexistent", machine="testmachine")

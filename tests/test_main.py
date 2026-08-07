@@ -292,17 +292,17 @@ class TestGetEngineScript:
         assert "exec $SHELL" in script
 
     def _make_script(self, **kwargs):
-        defaults = dict(
-            engine="c",
-            ai_name="session-1",
-            session="c-session-1",
-            prefix="c-session-",
-            project_prefix="session",
-            session_id_uuid="",
-            sandbox=False,
-            notify=False,
-            project_name="myproject",
-        )
+        defaults = {
+            "engine": "c",
+            "ai_name": "session-1",
+            "session": "c-session-1",
+            "prefix": "c-session-",
+            "project_prefix": "session",
+            "session_id_uuid": "",
+            "sandbox": False,
+            "notify": False,
+            "project_name": "myproject",
+        }
         defaults.update(kwargs)
         return get_engine_script(**defaults)
 
@@ -953,22 +953,22 @@ class TestDoSessionLaunchTmuxGuard:
     """
 
     def _base_kwargs(self):
-        return dict(
-            engine="c",
-            name="1",
-            resume=False,
-            once=False,
-            bare=False,
-            notify=True,
-            sandbox=False,
-            no_worktree=False,
-            remote=False,
-            project="",
-            is_remote=False,
-            project_prefix_override="test",
-            extra_args=[],
-            config={},
-        )
+        return {
+            "engine": "c",
+            "name": "1",
+            "resume": False,
+            "once": False,
+            "bare": False,
+            "notify": True,
+            "sandbox": False,
+            "no_worktree": False,
+            "remote": False,
+            "project": "",
+            "is_remote": False,
+            "project_prefix_override": "test",
+            "extra_args": [],
+            "config": {},
+        }
 
     def test_when_win32_and_tmux_not_found_then_falls_back_to_bare_mode(self, capsys):
         """On Windows, missing tmux must NOT abort — fall back to bare mode silently.
@@ -1087,22 +1087,22 @@ class TestDoSessionLaunchRegistryDiscovery:
     def test_given_named_launch_and_unregistered_other_project_when_started_then_skips_registry_prompt(self):
         from ai_cli.main import _do_session_launch
 
-        kwargs = dict(
-            engine="c",
-            name="1",
-            resume=False,
-            once=False,
-            bare=False,
-            notify=False,
-            sandbox=False,
-            no_worktree=False,
-            remote=False,
-            project="",
-            is_remote=False,
-            project_prefix_override="",
-            extra_args=[],
-            config={"worktree": {"enabled": True}},
-        )
+        kwargs = {
+            "engine": "c",
+            "name": "1",
+            "resume": False,
+            "once": False,
+            "bare": False,
+            "notify": False,
+            "sandbox": False,
+            "no_worktree": False,
+            "remote": False,
+            "project": "",
+            "is_remote": False,
+            "project_prefix_override": "",
+            "extra_args": [],
+            "config": {"worktree": {"enabled": True}},
+        }
         with (
             patch("ai_cli.session._resolve_is_remote", return_value=False),
             patch("ai_cli.config.validate_registry_completeness", return_value=False) as validate,
@@ -1213,11 +1213,10 @@ class TestUvLinkModeDetection:
             path_str = str(self)
             if path_str == str(cache_dir):
                 return cache_stat
-            elif path_str == str(tool_dir):
+            if path_str == str(tool_dir):
                 return tool_stat
-            else:
-                # Use original for other paths (walking up to parents)
-                return original_stat(self, **kwargs)
+            # Use original for other paths (walking up to parents)
+            return original_stat(self, **kwargs)
 
         mock_uv = "uv"
         with (

@@ -286,12 +286,11 @@ class TestQueryBigquerySpend:
         mock_bq.Client.return_value = mock_client
         mock_google_cloud = MagicMock()
         mock_google_cloud.bigquery = mock_bq
-        modules = {
+        return {
             "google": MagicMock(),
             "google.cloud": mock_google_cloud,
             "google.cloud.bigquery": mock_bq,
         }
-        return modules
 
     def test_when_query_raises_then_not_available(self):
         modules = self._make_bq_mocks(side_effect=Exception("connection refused"))

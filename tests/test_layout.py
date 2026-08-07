@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from ai_cli.layout import (
     Layout,
@@ -84,15 +85,15 @@ class TestPaneSchema:
         assert p.command == "ai c 1"
 
     def test_vertical_split_requires_right(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             PaneSplit(direction="vertical", ratio=0.5)
 
     def test_horizontal_split_requires_bottom(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             PaneSplit(direction="horizontal", ratio=0.5)
 
     def test_invalid_direction_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             PaneSplit(direction="diagonal", ratio=0.5, right=Pane())
 
     def test_vertical_split_valid(self):
@@ -103,7 +104,7 @@ class TestPaneSchema:
 
 class TestTabSchema:
     def test_tab_name_required(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Tab(name="", session_type="cc", root=Pane())
 
     def test_tab_default_session_type(self):
@@ -117,7 +118,7 @@ class TestTabSchema:
 
 class TestLayoutSchema:
     def test_requires_at_least_one_tab(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Layout(name="empty", tabs=[])
 
     def test_valid_minimal(self):
@@ -197,17 +198,15 @@ class TestGenerateLayoutProfiles:
 
     def test_tab_color_set_in_profile(self, tmp_path):
         layout = Layout(
-            **{
-                "name": "t",
-                "tabs": [
-                    {
-                        "name": "x",
-                        "session_type": "cc",
-                        "colors": {"tab_color": "#ff0000"},
-                        "root": {"dir": "~"},
-                    }
-                ],
-            }
+            name="t",
+            tabs=[
+                {
+                    "name": "x",
+                    "session_type": "cc",
+                    "colors": {"tab_color": "#ff0000"},
+                    "root": {"dir": "~"},
+                }
+            ],
         )
         with (
             patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
@@ -253,14 +252,12 @@ class TestGenerateLayoutProfiles:
 
     def test_multiple_tabs_generate_multiple_profiles(self, tmp_path):
         layout = Layout(
-            **{
-                "name": "multi",
-                "tabs": [
-                    {"name": "a", "session_type": "cc", "root": {"dir": "~"}},
-                    {"name": "b", "session_type": "gemini", "root": {"dir": "~"}},
-                    {"name": "c", "session_type": "shell", "root": {"dir": "~"}},
-                ],
-            }
+            name="multi",
+            tabs=[
+                {"name": "a", "session_type": "cc", "root": {"dir": "~"}},
+                {"name": "b", "session_type": "gemini", "root": {"dir": "~"}},
+                {"name": "c", "session_type": "shell", "root": {"dir": "~"}},
+            ],
         )
         with (
             patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
@@ -555,7 +552,7 @@ class TestGenerateLayoutProfilesExtended:
         assert icon_mock.call_args.args[2] == "chrome"
 
     def test_invalid_session_type_rejected(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Layout(name="t", tabs=[{"name": "x", "session_type": "bogus", "root": {"dir": "~"}}])
 
     def test_background_color_included_when_set(self, tmp_path):

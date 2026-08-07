@@ -1317,7 +1317,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
         for py_file in src_dir.rglob("*.py"):
             try:
                 text = py_file.read_text(errors="replace")
-                if any(ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> ") for ln in text.splitlines()):
+                if any(ln.startswith(("<<<<<<< ", ">>>>>>> ")) for ln in text.splitlines()):
                     conflict_files.append(py_file.relative_to(project_path))
             except OSError:
                 pass
@@ -2232,8 +2232,7 @@ def _session_options(func):
         help="Project to open on remote server (directory name, e.g. 'myproject', 'webapp')",
     )(func)
     func = click.option("--is-remote", is_flag=True, hidden=True)(func)
-    func = click.option("--project-prefix", default="", hidden=True)(func)
-    return func
+    return click.option("--project-prefix", default="", hidden=True)(func)
 
 
 @_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")

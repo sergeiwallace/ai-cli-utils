@@ -2899,9 +2899,9 @@ def test_push_to_remote_when_rebase_push_fails_then_returns_false(tmp_path, caps
         if "push" in cmd and call_count == 1:
             # First push fails — triggers rebase
             return MagicMock(returncode=1, stderr="push rejected")
-        elif "rebase" in cmd or "pull" in cmd:
+        if "rebase" in cmd or "pull" in cmd:
             return MagicMock(returncode=0, stderr="")
-        elif "push" in cmd and call_count > 1:
+        if "push" in cmd and call_count > 1:
             # Second push (after rebase) fails
             return MagicMock(returncode=1, stderr="still rejected")
         return MagicMock(returncode=0, stderr="")

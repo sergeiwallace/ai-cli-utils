@@ -266,7 +266,7 @@ class NATSClient:
         if not self.nc:
             await self.connect()
         if not self.nc:
-            return
+            return None
 
         if not self.js:
             return await self.subscribe(subject, callback)

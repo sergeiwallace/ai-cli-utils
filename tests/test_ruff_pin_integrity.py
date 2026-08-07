@@ -249,7 +249,7 @@ def _precommit_hook_args(hook_id: str) -> list[str]:
         args: list[str] = []
         for following in lines[index + 1 :]:
             stripped = following.strip()
-            if stripped.startswith("- id:") or (stripped.startswith("- repo:")):
+            if stripped.startswith(("- id:", "- repo:")):
                 break
             if stripped.startswith("args:"):
                 args = stripped.removeprefix("args:").strip().strip("[]").split(",")

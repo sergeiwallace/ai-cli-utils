@@ -65,8 +65,7 @@ class TestNATSClientJetStreamPublish:
 
         async def run():
             with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
-                result = await client.publish("sync.pull.requested", {"machine": "mac"})
-            return result
+                return await client.publish("sync.pull.requested", {"machine": "mac"})
 
         result = asyncio.run(run())
         assert result is True
@@ -85,8 +84,7 @@ class TestNATSClientJetStreamPublish:
 
         async def run():
             with patch("nats.connect", new=AsyncMock(return_value=mock_nc)):
-                result = await client.publish("sync.pull.requested", {"machine": "mac"})
-            return result
+                return await client.publish("sync.pull.requested", {"machine": "mac"})
 
         result = asyncio.run(run())
         assert result is True
