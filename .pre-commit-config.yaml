@@ -49,7 +49,7 @@ repos:
         exclude: ^(\.claude/|\.githooks/|node_modules/|docs/research/)
 
 
-  # ── Python: ruff (check --fix + format) ──────────────────────────────────
+  # ── Python: ruff (check, report-only + format) ───────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.0
     hooks:
@@ -58,9 +58,21 @@ repos:
       # fleet), so a template that ships them at any single width churns on every
       # copier update. Vendored/template-managed files should not be linted by the
       # consuming repo; edit them upstream in project-template. (AIH-174)
+      #
+      # Deliberately NO --fix. Lint autofix is a rule-set-scoped mass rewrite, and
+      # this hook only ever sees the handful of files a commit happens to touch. So
+      # with --fix, widening `[tool.ruff.lint] select` does not surface the newly
+      # selected family as a reviewable list of findings — it silently rewrites
+      # those files one commit at a time, inside unrelated changes, attributed to
+      # whoever was working on something else. --fix does not prevent the mass
+      # autofix, it only removes the review. Apply a phase's fixes on purpose
+      # instead: `uv run ruff check --fix src/ tests/` as its own commit. The hook
+      # still FAILS on a violation, so nothing unlinted can land.
       - id: ruff-check
-        args: [--fix]
         exclude: ^\.githooks/
+      # ruff-format keeps its rewrite: formatting is not rule-set-scoped, so
+      # widening `select` cannot change what it does. Its diff is also whitespace
+      # only, which is why the same argument does not apply here.
       - id: ruff-format
         exclude: ^\.githooks/
 

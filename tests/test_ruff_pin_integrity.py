@@ -230,3 +230,98 @@ def test_given_repo_sources_when_pinned_ruff_runs_the_gate_then_it_passes(scope)
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- report-only lint hook: the "widening select mass-autofixes" guard --------
+
+
+def _precommit_hook_args(hook_id: str) -> list[str]:
+    """Return the ``args`` the repo's pre-commit config passes to ``hook_id``.
+
+    Parsed as text rather than with a YAML loader so the guard has no dependency
+    the hook itself does not already have.
+    """
+    config = (REPO_ROOT / ".pre-commit-config.yaml").read_text()
+    lines = config.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != f"- id: {hook_id}":
+            continue
+        args: list[str] = []
+        for following in lines[index + 1 :]:
+            stripped = following.strip()
+            if stripped.startswith("- id:") or (stripped.startswith("- repo:")):
+                break
+            if stripped.startswith("args:"):
+                args = stripped.removeprefix("args:").strip().strip("[]").split(",")
+        return [arg.strip() for arg in args if arg.strip()]
+    raise AssertionError(f"no {hook_id!r} hook in .pre-commit-config.yaml")
+
+
+def test_given_the_lint_hook_when_its_args_are_read_then_it_does_not_autofix():
+    """``ruff-check`` must report, never rewrite.
+
+    Lint autofix is rule-set-scoped, and the hook only ever sees the files one
+    commit happens to touch. So with ``--fix``, widening ``select`` does not
+    surface the new family as a reviewable list -- it rewrites those files
+    piecemeal, inside unrelated commits, unreviewed. ``--fix`` does not prevent
+    the mass autofix, it only removes the review.
+    """
+    assert "--fix" not in _precommit_hook_args("ruff-check")
+
+
+def test_given_the_format_hook_when_its_args_are_read_then_autofix_is_still_allowed():
+    """The guard above must not be read as "no hook may ever rewrite".
+
+    ``ruff-format`` legitimately rewrites: formatting is not rule-set-scoped, so
+    widening ``select`` cannot change what it does. Asserting that here keeps the
+    distinction explicit, so a later cleanup does not "consistently" strip the
+    formatter's rewrite too.
+    """
+    assert _precommit_hook_args("ruff-format") == []
+
+
+def test_given_a_widened_select_when_the_lint_hook_runs_then_the_file_is_not_rewritten(tmp_path):
+    """The end-to-end property, on a file that genuinely carries findings.
+
+    This is the probe that distinguishes the two configurations: on a clean tree
+    both look identical, so a clean-tree check proves nothing. The fixture module
+    is deliberately import-unsorted (an ``I001`` finding, autofixable), then
+    edited in an unrelated place -- the exact scenario where ``--fix`` would
+    silently rewrite the imports as a side effect of committing the edit.
+    """
+    module = tmp_path / "sample_module.py"
+    module.write_text('"""Fixture."""\n\nimport sys\n\nimport os\n\nVALUE = (os, sys)\n')
+    before = module.read_text()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select", "I", "--output-format", "concise", str(module)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0, "fixture must carry a finding, or this proves nothing"
+    assert "I001" in result.stdout
+    assert module.read_text() == before, "ruff check without --fix must not rewrite the file"
+
+
+def test_given_the_same_file_when_ruff_is_asked_to_fix_then_it_does_rewrite(tmp_path):
+    """Negative control for the test above.
+
+    Without this, a passing "not rewritten" assertion could just mean the fixture
+    had nothing to fix, or that the invocation silently did nothing. Showing the
+    same file IS rewritten under ``--fix`` is what makes the other probe able to
+    come out the other way.
+    """
+    module = tmp_path / "sample_module.py"
+    module.write_text('"""Fixture."""\n\nimport sys\n\nimport os\n\nVALUE = (os, sys)\n')
+    before = module.read_text()
+
+    subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select", "I", "--fix", str(module)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert module.read_text() != before, "--fix must rewrite, or the guard above is vacuous"

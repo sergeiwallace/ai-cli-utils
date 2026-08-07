@@ -62,6 +62,36 @@ uv run ruff format --check src/ tests/
 uv run ruff format src/ tests/
 ```text
 
+### Lint autofix is deliberate, never automatic
+
+The `ruff-check` pre-commit hook runs **without** `--fix`: it reports and fails, and never
+rewrites your files. `ruff-format` still formats, because formatting is not scoped to the
+rule set.
+
+That asymmetry exists because of what happens when the enabled rule set grows. Widening
+`[tool.ruff.lint] select` makes a whole family of findings appear across the codebase at
+once. The hook, though, only ever sees the few files a given commit happens to touch — so
+with `--fix` the new family would not surface as a reviewable list of findings. It would be
+rewritten a few files at a time, buried inside unrelated commits, attributed to whoever was
+working on something else. `--fix` does not prevent a mass autofix; it only removes the
+review.
+
+So when you enable a new rule family, apply its fixes on purpose, as their own commit:
+
+```bash
+# 1. See the full scope before changing anything
+uv run ruff check --statistics src/ tests/
+
+# 2. Apply the autofixable subset deliberately
+uv run ruff check --fix src/ tests/
+
+# 3. Review that diff on its own, then commit it separately from any feature work
+git diff
+```text
+
+One reviewable mechanical commit is strictly better than the same edits dribbling through
+unrelated ones.
+
 ## Hard Gate
 
 All contributions must pass this before merge:
