@@ -544,12 +544,20 @@ def _refresh_within_burst_budget() -> bool:
     """Record a refresh attempt; return False (loudly) once the burst budget is spent.
 
     Tracked both in-process and in the state dir, so a loop inside one process and a
-    loop that re-execs ``ai update`` are both caught. An unwritable state dir
-    degrades to the in-process counter rather than disabling the bound.
+    loop that re-execs ``ai update`` are both caught. A cooldown marker makes
+    rejected calls no-ops rather than another state-dir write storm.
     """
     global _REFRESH_CALL_TIMES, _REFRESH_BURST_REPORTED_AT
     now = time.time()
-    calls_path = _config.get_xdg_state_home() / "refresh-template-calls.json"
+    state_dir = _config.get_xdg_state_home()
+    cooldown_path = state_dir / "refresh-template-cooldown"
+    try:
+        if 0 <= now - cooldown_path.stat().st_mtime < _REFRESH_BURST_WINDOW_SECS:
+            return False
+    except OSError:
+        pass
+
+    calls_path = state_dir / "refresh-template-calls.json"
     try:
         persisted = [float(t) for t in json.loads(calls_path.read_text())]
     except (OSError, ValueError, TypeError):
@@ -560,15 +568,15 @@ def _refresh_within_burst_budget() -> bool:
     persisted.append(now)
     in_process.append(now)
     _REFRESH_CALL_TIMES = in_process[-_REFRESH_BURST_LIMIT * 2 :]
-    try:
-        calls_path.parent.mkdir(parents=True, exist_ok=True)
-        calls_path.write_text(json.dumps(persisted[-_REFRESH_BURST_LIMIT * 2 :]))
-    except OSError:
-        pass
-
     attempts = max(len(persisted), len(in_process))
     if attempts <= _REFRESH_BURST_LIMIT:
+        with contextlib.suppress(OSError):
+            calls_path.parent.mkdir(parents=True, exist_ok=True)
+            calls_path.write_text(json.dumps(persisted[-_REFRESH_BURST_LIMIT * 2 :]))
         return True
+
+    with contextlib.suppress(OSError):
+        cooldown_path.touch(exist_ok=True)
     # Report once per window: a caller spinning at kHz would otherwise turn the
     # complaint into the same kind of storm the bound exists to stop.
     if now - _REFRESH_BURST_REPORTED_AT >= _REFRESH_BURST_WINDOW_SECS:

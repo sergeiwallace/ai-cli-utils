@@ -221,6 +221,32 @@ def test_given_refresh_called_in_a_storm_then_it_stops_and_reports_the_caller(re
     assert err.lower().count("refusing to run") == 1
 
 
+def test_given_refresh_budget_is_spent_when_caller_keeps_spinning_then_rejections_do_not_rewrite_state(
+    refresh_env, monkeypatch
+):
+    """After the bound trips, a runaway must not merely move its writes to the counter."""
+    state, fake_tmux = refresh_env
+    for _ in range(main._REFRESH_BURST_LIMIT):
+        _refresh_live_session_scripts()
+
+    calls_path = state / "refresh-template-calls.json"
+    original_write_text = Path.write_text
+    counter_writes = 0
+
+    def count_counter_writes(path, *args, **kwargs):
+        nonlocal counter_writes
+        if path == calls_path:
+            counter_writes += 1
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", count_counter_writes)
+    for _ in range(main._REFRESH_BURST_LIMIT * 5):
+        _refresh_live_session_scripts()
+
+    assert fake_tmux.calls == main._REFRESH_BURST_LIMIT
+    assert counter_writes == 0
+
+
 def test_given_no_metadata_when_writing_stable_script_then_it_reports_failure(monkeypatch, tmp_path):
     """The unchanged-script short circuit must not mask a genuinely missing session."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
