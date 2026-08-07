@@ -30,6 +30,7 @@ from . import tunnel as _tunnel
 from .config import (  # noqa: F401
     DEFAULT_CONFIG,
     WORKTREE_DIR,
+    ProjectPrefixError,
     _find_project_dir,
     _get_handoff_queue_dir,
     _get_main_project_dir,
@@ -47,6 +48,8 @@ from .config import (  # noqa: F401
     get_xdg_state_home,
     load_config,
     load_project_registry,
+    register_project,
+    resolve_project_prefix_by_name,
     save_session_map,
     validate_registry_completeness,
 )
@@ -1701,11 +1704,19 @@ def _do_session_launch(
 
     if project_prefix_override:
         project_prefix = project_prefix_override
-    elif project and not remote:
-        # Local -p flag: derive prefix from the target project, not cwd
+    elif project:
+        # An explicit project always derives its prefix from that project's
+        # registered root, whether the session is local or remote.
+        if "/" in project or "\\" in project:
+            print("Error: --project name must not contain path separators", file=sys.stderr)
+            sys.exit(1)
         _lp_aliases = _config.get_project_aliases()
         _lp_name = _lp_aliases.get(project, project)
-        project_prefix = _config._get_project_prefix_by_name(_lp_name)
+        try:
+            project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
+        except _config.ProjectPrefixError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
     else:
         # No explicit project and no prefix override: the prefix would be derived
         # from cwd. If cwd isn't a resolvable project (not under ~/projects, not
@@ -1714,17 +1725,18 @@ def _do_session_launch(
         # "myproject"/cwd-derived fallback). Escape hatch: pass -p <project>.
         if not is_remote and not _session.is_current_project_resolved():
             print(
-                "Error: no project resolved for this session.\n"
+                "Error: no task prefix is registered for this repository.\n"
                 f"  cwd: {Path.cwd()}\n"
-                "  You're not inside a project under the projects directory, gave no "
-                "-p/--project,\n  and aren't in an existing ai session — ai-cli won't "
-                "fabricate a session name\n  from an unrelated directory.\n"
-                "  Fix: cd into a project, or name one explicitly:\n"
-                f"    ai {engine} -p <project> [name]",
+                "  Fix: register the repository once, then retry:\n"
+                f"    ai register -p {Path.cwd()} -x PREFIX",
                 file=sys.stderr,
             )
             sys.exit(1)
-        project_prefix = _session.get_project_prefix()
+        try:
+            project_prefix = _session.get_project_prefix()
+        except _config.ProjectPrefixError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
     engine_short = "c" if engine == "c" else "g"
     remote_seg = "-r" if is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
@@ -1754,7 +1766,14 @@ def _do_session_launch(
             sys.exit(1)
         remote_project = aliases.get(raw_project, raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
-        remote_prefix = _config._get_project_prefix_by_name(remote_project) if project else project_prefix
+        if project:
+            try:
+                remote_prefix = _config.resolve_project_prefix_by_name(remote_project)
+            except _config.ProjectPrefixError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            remote_prefix = project_prefix
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (zsh -l -c) that does
         # not source ~/.zshrc where the uv env PATH setup typically lives.
@@ -2314,6 +2333,19 @@ def cmd_upgrade():
     if _should_use_uv_link_mode_copy(uv_bin):
         upgrade_args.append("--link-mode=copy")
     os.execvp(uv_bin, upgrade_args)
+
+
+@_cli_group.command("register", help="Register a repository root and its task prefix")
+@click.option("-p", "--project", required=True, help="Repository path or project directory name")
+@click.option("-x", "--prefix", required=True, help="Task and session prefix")
+@click.option("-t", "--type", "project_type", default="tool", show_default=True, help="Project type")
+def cmd_register(project, prefix, project_type):
+    """Persist one repository-root prefix mapping in config.toml."""
+    try:
+        root = _config.register_project(project, prefix, project_type)
+    except _config.ProjectPrefixError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Registered {root} with prefix {prefix}")
 
 
 @_cli_group.command("setup", help="Run interactive setup wizard")

@@ -49,6 +49,10 @@ Issues = "https://github.com/sergeiwallace/ai-cli-utils/issues"
 [project.scripts]
 ai = "ai_cli.main:cli"
 
+[tool.ai-cli]
+task_prefix = "AI-CLI"
+project_type = "tool"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

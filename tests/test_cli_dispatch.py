@@ -521,3 +521,13 @@ class TestSessionLaunchExtraArgsName:
                 cli()
         # Exits 1 because [remote] host not set — but the name-promotion line ran first
         assert exc.value.code == 1
+
+
+class TestRegisterCommand:
+    def test_given_repository_and_prefix_when_register_then_persists_registry_entry(self, tmp_path):
+        repo = tmp_path / "myproject"
+        repo.mkdir()
+        with patch("ai_cli.config.get_xdg_config_home", return_value=tmp_path / "config"):
+            exit_code, stdout, _ = run_cli(["ai", "register", "-p", str(repo), "-x", "PROJECT", "-t", "tool"])
+        assert exit_code == 0
+        assert "Registered" in stdout

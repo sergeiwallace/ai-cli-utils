@@ -20,6 +20,7 @@ from .config import (
     _get_projects_dir,
     get_current_project_name,
     load_project_registry,
+    resolve_project_prefix,
 )
 from .git_repair import _git_env, repair_bare_worktree_config
 
@@ -233,49 +234,20 @@ def _prefix_from_session_name(session_name: str) -> str:
 
 
 def get_project_prefix() -> str:
-    """Resolve the task prefix for the current project.
+    """Resolve the current repository's registered task prefix.
 
-    Resolution order:
-    1. Check override map (for collision avoidance)
-    2. Check registry
-    3. Parse AI_TMUX_SESSION env var (reliable when cwd has drifted from project root)
-    4. Fallback: 3-char truncation
+    Worktree names and custom session titles are both built from this value, so
+    an unregistered repository must fail instead of inventing a directory-name
+    prefix.
     """
-    project_name = get_current_project_name()
-
-    # Check override map first
-    from .config import get_project_prefix_overrides
-
-    overrides = get_project_prefix_overrides()
-    if project_name in overrides:
-        return overrides[project_name]
-
-    # Check registry
-    for p in load_project_registry():
-        if p.get("name") == project_name:
-            return p.get("task_prefix", project_name[:3]).lower().strip("-")
-
-    # Fallback: parse AI_TMUX_SESSION set by the session script — reliable when
-    # the user runs `ai c -R` from a pane whose cwd has drifted away from the
-    # project root.
-    ai_session = os.environ.get("AI_TMUX_SESSION", "")
-    if ai_session:
-        prefix = _prefix_from_session_name(ai_session)
-        if prefix:
-            return prefix
-
-    # Final fallback: derive from cwd name
-    return project_name[:3].lower().strip("-")
+    return resolve_project_prefix()
 
 
 def is_current_project_resolved() -> bool:
     """True when the session can be tied to a real project.
 
-    Confident sources: running inside an existing ai session (``AI_TMUX_SESSION``
-    set), cwd is a registered project, or cwd is physically under the projects
-    directory (a real, possibly-unregistered project). ``False`` means the
-    launcher would otherwise fabricate a session prefix from an unrelated cwd —
-    the old silent "myproject"-style fallback — and should fail loudly instead.
+    This remains a launch-location guard. Prefix lookup is deliberately stricter:
+    ``get_project_prefix()`` requires a root registration and supplies the remedy.
     """
     if os.environ.get("AI_TMUX_SESSION"):
         return True

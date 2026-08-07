@@ -7,12 +7,15 @@ from unittest.mock import patch
 import pytest
 
 from ai_cli.config import (
+    ProjectPrefixError,
     _pid_alive,
     detect_machine_profile,
     ensure_machine_profile_registered,
     get_xdg_cache_home,
     get_xdg_config_home,
     get_xdg_state_home,
+    register_project,
+    resolve_project_prefix,
 )
 
 # ---------------------------------------------------------------------------
@@ -375,3 +378,53 @@ class TestEnsureMachineProfileRegistered:
         captured = capsys.readouterr()
         assert "acn-windows" in captured.err
         assert "windows" in captured.err
+
+
+class TestProjectPrefixRegistry:
+    def test_given_registered_repo_when_resolving_then_returns_same_prefix_for_worktree_and_titles(self, tmp_path):
+        repo = tmp_path / "myproject"
+        (repo / ".git").mkdir(parents=True)
+        config_dir = tmp_path / "config"
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
+            register_project(repo, "PROJECT", "tool")
+            assert resolve_project_prefix(repo / ".worktrees" / "session-1") == "PROJECT"
+
+    def test_given_registered_beads_repo_when_registering_then_projects_prefix_into_beads_config(self, tmp_path):
+        repo = tmp_path / "myproject"
+        (repo / ".git").mkdir(parents=True)
+        beads_config = repo / ".beads" / "config.yaml"
+        beads_config.parent.mkdir()
+        beads_config.write_text('# issue-prefix: ""\n')
+        with patch("ai_cli.config.get_xdg_config_home", return_value=tmp_path / "config"):
+            register_project(repo, "PROJECT")
+        assert beads_config.read_text().splitlines()[0] == 'issue-prefix: "PROJECT"'
+
+    def test_given_existing_registration_when_registering_again_then_updates_one_config_entry(self, tmp_path):
+        import tomllib
+
+        repo = tmp_path / "myproject"
+        repo.mkdir()
+        config_dir = tmp_path / "config"
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
+            register_project(repo, "OLD")
+            register_project(repo, "NEW")
+            with (config_dir / "config.toml").open("rb") as config_file:
+                registry = tomllib.load(config_file)["project_registry"]
+            assert registry[str(repo.resolve())]["prefix"] == "NEW"
+            assert len(registry) == 1
+
+    def test_given_self_describing_repo_when_resolving_then_auto_registers_metadata_prefix(self, tmp_path):
+        repo = tmp_path / "myproject"
+        repo.mkdir()
+        (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "PROJECT"\nproject_type = "app"\n')
+        config_dir = tmp_path / "config"
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
+            assert resolve_project_prefix(repo) == "PROJECT"
+            assert resolve_project_prefix(repo) == "PROJECT"
+
+    def test_given_unregistered_repo_when_resolving_then_raises_registration_remedy(self, tmp_path):
+        repo = tmp_path / "myproject"
+        repo.mkdir()
+        with patch("ai_cli.config.get_xdg_config_home", return_value=tmp_path / "config"):
+            with pytest.raises(ProjectPrefixError, match=r"ai register -p .* -x PREFIX"):
+                resolve_project_prefix(repo)

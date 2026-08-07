@@ -141,6 +141,11 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 # myapp-frontend = "mfe"
 # myapp-backend = "mbe"
 
+[project_registry]
+## Repository-root → task-prefix registry. Add entries with `ai register`;
+## do not derive prefixes from directory names. Example:
+## "/home/user/projects/myproject" = { prefix = "MYPROJECT", type = "tool" }
+
 [behavior]
 ## Enable system notifications on task completion
 notify_on_exit = true
@@ -264,6 +269,158 @@ def load_config():
             pass
 
     return cfg
+
+
+# --- Prefix registry ---
+
+
+class ProjectPrefixError(ValueError):
+    """Raised when a repository has no unambiguous registered task prefix."""
+
+
+def _config_path() -> Path:
+    return get_xdg_config_home() / "config.toml"
+
+
+def _project_root(path: Path) -> Path:
+    """Return the main repository root for ``path`` without importing session.py."""
+    resolved = path.expanduser().resolve()
+    if WORKTREE_DIR in resolved.parts:
+        return Path(*resolved.parts[: resolved.parts.index(WORKTREE_DIR)])
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return resolved
+
+
+def _registry_entries(config: dict | None = None) -> dict[str, dict[str, str]]:
+    """Return validated config-backed prefix entries keyed by normalized root."""
+    raw = (config if config is not None else load_config()).get("project_registry", {})
+    if not isinstance(raw, dict):
+        raise ProjectPrefixError("Invalid [project_registry] configuration. Run: ai register -p . -x PREFIX")
+
+    entries: dict[str, dict[str, str]] = {}
+    for root, value in raw.items():
+        if not isinstance(value, dict) or not isinstance(value.get("prefix"), str) or not value["prefix"].strip():
+            raise ProjectPrefixError(
+                f"Invalid prefix registry entry for {root!r}. Run: ai register -p {root!s} -x PREFIX"
+            )
+        normalized = os.path.normcase(str(_project_root(Path(root))))
+        if normalized in entries:
+            raise ProjectPrefixError(f"Ambiguous prefix registry entry for {root!s}. Remove the duplicate entry.")
+        entries[normalized] = {"prefix": value["prefix"].strip(), "type": str(value.get("type", "tool"))}
+    return entries
+
+
+def _read_local_project_metadata(root: Path) -> tuple[str, str] | None:
+    """Read optional task-prefix metadata from a repository's pyproject.toml."""
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+        metadata = data.get("tool", {}).get("ai-cli", {})
+        prefix = metadata.get("task_prefix")
+        if isinstance(prefix, str) and prefix.strip():
+            return prefix.strip(), str(metadata.get("project_type", "tool"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return None
+
+
+def _write_registry_entry(config_path: Path, root: Path, prefix: str, project_type: str) -> None:
+    """Upsert one inline-table entry in the config registry while preserving other settings."""
+    text = config_path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    header = "[project_registry]"
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == header)
+    except StopIteration:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.extend(["\n", f"{header}\n"])
+        start = len(lines) - 1
+
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    key = json.dumps(str(root))
+    replacement = f"{key} = {{ prefix = {json.dumps(prefix)}, type = {json.dumps(project_type)} }}\n"
+    for i in range(start + 1, end):
+        if lines[i].lstrip().startswith(f"{key} ="):
+            lines[i] = replacement
+            break
+    else:
+        lines.insert(end, replacement)
+    config_path.write_text("".join(lines), encoding="utf-8")
+
+
+def _set_beads_prefix(root: Path, prefix: str) -> None:
+    """Project the registered prefix into Beads when that project uses Beads."""
+    path = root / ".beads" / "config.yaml"
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    replacement = f'issue-prefix: "{prefix}"\n'
+    for i, line in enumerate(lines):
+        if line.lstrip("# ").startswith("issue-prefix:"):
+            lines[i] = replacement
+            break
+    else:
+        lines.insert(0, replacement)
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def register_project(project: str | Path, prefix: str, project_type: str = "tool") -> Path:
+    """Register a repository root and synchronize its optional Beads prefix."""
+    candidate = Path(project).expanduser()
+    if not candidate.exists() and not candidate.is_absolute():
+        candidate = _find_project_dir(str(project))
+    if not candidate.is_dir():
+        raise ProjectPrefixError(f"Project path does not exist: {project}")
+    if not prefix.strip():
+        raise ProjectPrefixError("Prefix must not be empty. Run: ai register -p . -x PREFIX")
+
+    root = _project_root(candidate)
+    config_path = _config_path()
+    if not config_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    _write_registry_entry(config_path, root, prefix.strip(), project_type.strip() or "tool")
+    _set_beads_prefix(root, prefix.strip())
+    return root
+
+
+def resolve_project_prefix(path: Path | None = None) -> str:
+    """Return the registered prefix for a repository root or explain how to register it."""
+    root = _project_root(path or Path.cwd())
+    key = os.path.normcase(str(root))
+    entries = _registry_entries()
+    entry = entries.get(key)
+    if entry:
+        return entry["prefix"]
+
+    metadata = _read_local_project_metadata(root)
+    if metadata:
+        prefix, project_type = metadata
+        register_project(root, prefix, project_type)
+        return prefix
+
+    raise ProjectPrefixError(
+        f"No task prefix is registered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
+    )
+
+
+def resolve_project_prefix_by_name(project_name: str) -> str:
+    """Return one registered prefix for a project directory name, rejecting ambiguity."""
+    matches = [entry["prefix"] for root, entry in _registry_entries().items() if Path(root).name == project_name]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ProjectPrefixError(
+            f"Project name {project_name!r} matches multiple registered roots. Use a unique repository name."
+        )
+    candidate = _find_project_dir(project_name)
+    return resolve_project_prefix(candidate)
 
 
 # --- State Management ---
@@ -499,25 +656,22 @@ def get_project_prefix_overrides() -> dict[str, str]:
 
 
 def _get_project_prefix_by_name(project_name: str) -> str:
-    """Look up a project's task_prefix from the project registry by directory name.
+    """Resolve an explicit legacy project name without fabricating a prefix.
 
-    Resolution order:
-    1. Explicit override map (for collision avoidance)
-    2. Project registry lookup
-    3. Fallback: first 3 chars of directory name, lowercased, trailing hyphens stripped
+    Session, worktree, and Beads prefix consumers use :func:`resolve_project_prefix`.
+    This compatibility helper remains for integrations that still use the older
+    name-only registry.
     """
-    # Check override map first
     overrides = get_project_prefix_overrides()
     if project_name in overrides:
         return overrides[project_name]
-
-    # Check registry
-    for p in load_project_registry():
-        if p.get("name") == project_name:
-            return p.get("task_prefix", project_name[:3]).lower().strip("-")
-
-    # Fallback
-    return project_name[:3].lower().strip("-")
+    for project in load_project_registry():
+        if project.get("name") == project_name and project.get("task_prefix"):
+            return str(project["task_prefix"])
+    raise ProjectPrefixError(
+        f"No task prefix is registered for project {project_name!r}. "
+        f"Register its repository with: ai register -p {project_name} -x PREFIX"
+    )
 
 
 def get_project_aliases() -> dict:

@@ -1257,50 +1257,33 @@ class TestPrefixFromSessionName:
 
 
 class TestGetProjectPrefix:
-    def test_when_in_registry_then_uses_task_prefix(self, tmp_path):
-        reg = [{"name": "myproject", "task_prefix": "MY-PROJ"}]
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "myproject"):
-            with patch("ai_cli.session.load_project_registry", return_value=reg):
-                assert get_project_prefix() == "my-proj"
+    def test_when_registered_worktree_then_uses_prefix_for_session_title_and_worktree_name(self, tmp_path):
+        from ai_cli.config import register_project
 
-    def test_when_not_in_registry_and_ai_tmux_session_set_then_uses_session_name(self, tmp_path):
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "unknown-project"):
-            with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch.dict(os.environ, {"AI_TMUX_SESSION": "c-ai-cli-2"}):
-                    assert get_project_prefix() == "ai-cli"
+        repo = tmp_path / "myproject"
+        (repo / ".git").mkdir(parents=True)
+        with patch("ai_cli.config.get_xdg_config_home", return_value=tmp_path / "config"):
+            register_project(repo, "PROJECT")
+            with patch("pathlib.Path.cwd", return_value=repo / ".worktrees" / "session-1"):
+                with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+                    prefix = get_project_prefix()
+                    session_id, ai_name = build_session_name("c", prefix, "")
+        assert session_id == "c-PROJECT-1"
+        assert ai_name == "PROJECT-1"
 
-    def test_when_not_in_registry_and_no_session_env_then_fallback_no_trailing_hyphen(self, tmp_path):
-        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "ai-cli-utils"):
-            with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch.dict(os.environ, env_without_session, clear=True):
-                    result = get_project_prefix()
-                    assert not result.endswith("-"), f"prefix has trailing hyphen: {result!r}"
+    def test_when_registry_resolves_then_uses_registered_prefix(self):
+        with patch("ai_cli.session.resolve_project_prefix", return_value="PROJECT"):
+            assert get_project_prefix() == "PROJECT"
 
-    def test_when_project_has_configured_override_then_uses_override(self, tmp_path):
-        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "myapp-frontend"):
-            with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"myapp-frontend": "mfe"}}):
-                    with patch.dict(os.environ, env_without_session, clear=True):
-                        assert get_project_prefix() == "mfe"
+    def test_when_registry_cannot_resolve_then_raises_registration_error(self):
+        from ai_cli.config import ProjectPrefixError
 
-    def test_when_project_has_no_configured_override_then_falls_back_to_truncation(self, tmp_path):
-        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "myapp-frontend"):
-            with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch("ai_cli.config.load_config", return_value={}):
-                    with patch.dict(os.environ, env_without_session, clear=True):
-                        assert get_project_prefix() == "mya"
-
-    def test_when_configured_override_is_longer_than_three_chars_then_kept(self, tmp_path):
-        """An override is used verbatim — it is not re-truncated to three characters."""
-        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("pathlib.Path.cwd", return_value=tmp_path / "myservice"):
-            with patch("ai_cli.session.load_project_registry", return_value=[]):
-                with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"myservice": "msvc"}}):
-                    with patch.dict(os.environ, env_without_session, clear=True):
-                        assert get_project_prefix() == "msvc"
+        with patch(
+            "ai_cli.session.resolve_project_prefix",
+            side_effect=ProjectPrefixError("register with ai register -p . -x PREFIX"),
+        ):
+            with pytest.raises(ProjectPrefixError, match="ai register"):
+                get_project_prefix()
 
 
 class TestIsCurrentProjectResolved:

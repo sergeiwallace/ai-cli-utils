@@ -1146,6 +1146,7 @@ class TestDoSessionLaunchRegistryDiscovery:
             patch("ai_cli.main._auto_update_if_stale"),
             patch("ai_cli.tunnel._ensure_nats_tunnel"),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.session.get_project_prefix", return_value="MYPROJECT"),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.session.build_session_name", return_value=("c-myproject-2", "myproject-2")),
             patch("ai_cli.trust.ensure_workspace_trusted"),

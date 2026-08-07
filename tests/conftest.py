@@ -297,6 +297,8 @@ def _run_cli_with_args(argv, config_override=None):
     with (
         patch("sys.argv", argv),
         patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.session.is_current_project_resolved", return_value=True),
+        patch("ai_cli.session.get_project_prefix", return_value="test-project"),
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main._auto_update_if_stale"),

@@ -127,12 +127,12 @@ class TestProjectHelpers:
         toml_file.write_bytes(toml_content)
         with patch("ai_cli.config._get_project_registry_path", return_value=toml_file):
             result = _get_project_prefix_by_name("myapp")
-        assert result == "ma"
+        assert result == "MA"
 
-    def test_get_project_prefix_by_name_when_not_found_then_truncates(self):
+    def test_get_project_prefix_by_name_when_not_found_then_raises_registration_remedy(self):
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
-            result = _get_project_prefix_by_name("myproject")
-        assert result == "myp"
+            with pytest.raises(ValueError, match="ai register"):
+                _get_project_prefix_by_name("myproject")
 
     def test_get_project_prefix_by_name_when_override_exists_then_uses_override(self):
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
@@ -149,12 +149,11 @@ class TestProjectHelpers:
                 result = _get_project_prefix_by_name("myapp-long-name")
         assert result == "mln"
 
-    def test_get_project_prefix_by_name_when_no_override_configured_then_falls_back(self):
-        """An empty/absent [project_prefixes] table must not break resolution."""
+    def test_get_project_prefix_by_name_when_no_override_configured_then_raises_registration_remedy(self):
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
             with patch("ai_cli.config.load_config", return_value={}):
-                result = _get_project_prefix_by_name("myapp-long-name")
-        assert result == "mya"
+                with pytest.raises(ValueError, match="ai register"):
+                    _get_project_prefix_by_name("myapp-long-name")
 
     def test_get_project_prefix_by_name_when_override_is_longer_than_three_chars_then_kept(self):
         """Overrides are used verbatim — they are not re-truncated to 3 chars."""
@@ -163,11 +162,11 @@ class TestProjectHelpers:
                 result = _get_project_prefix_by_name("myservice")
         assert result == "msvc"
 
-    def test_get_project_prefix_by_name_when_project_not_in_override_map_then_uses_fallback(self):
+    def test_get_project_prefix_by_name_when_project_not_in_override_map_then_raises_registration_remedy(self):
         with patch("ai_cli.config._get_project_registry_path", return_value=None):
             with patch("ai_cli.config.load_config", return_value={"project_prefixes": {"other": "oth"}}):
-                result = _get_project_prefix_by_name("myproject-two")
-        assert result == "myp"
+                with pytest.raises(ValueError, match="ai register"):
+                    _get_project_prefix_by_name("myproject-two")
 
     def test_get_project_aliases_when_registry_exists_then_builds_map(self, tmp_path):
         toml_file = tmp_path / "registry.toml"
@@ -440,17 +439,8 @@ class TestValidateRegistryCompleteness:
 
 class TestGetProjectPrefixRegistryMatch:
     def test_get_project_prefix_when_project_matches_registry_then_returns_prefix(self, tmp_path):
-        """Covers lines 253-255: project name found in registry, returns task_prefix."""
-        registry_file = tmp_path / "registry.toml"
-        registry_file.write_bytes(b'[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n')
-
-        with patch("ai_cli.session.get_current_project_name", return_value="myproject"):
-            with patch("ai_cli.config._get_project_registry_path", return_value=registry_file):
-                from ai_cli.config import load_project_registry
-
-                load_project_registry(_force=True)
-                result = get_project_prefix()
-        assert result == "mp"
+        with patch("ai_cli.session.resolve_project_prefix", return_value="PROJECT"):
+            assert get_project_prefix() == "PROJECT"
 
 
 # --- Project path separator validation ---
@@ -479,7 +469,7 @@ class TestProjectPathSeparatorValidation:
             with patch("ai_cli.config.load_config", return_value={"remote": {"host": "h", "user": "u"}}):
                 with patch("ai_cli.config.get_project_aliases", return_value={}):
                     with patch("ai_cli.config.get_current_project_name", return_value=""):
-                        with patch("ai_cli.config._get_project_prefix_by_name", return_value="my"):
+                        with patch("ai_cli.config.resolve_project_prefix_by_name", return_value="my"):
                             with patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop):
                                 with patch("ai_cli.transport._ensure_vpn_watcher"):
                                     with patch("ai_cli.transport._maybe_stop_vpn_watcher"):
@@ -494,13 +484,12 @@ class TestProjectPathSeparatorValidation:
 
 
 class TestProjectRegistryExceptionBranches:
-    def test_get_project_prefix_by_name_when_registry_read_fails_then_returns_fallback(self, tmp_path):
-        """Covers lines 198-199: exception in _get_project_prefix_by_name."""
+    def test_get_project_prefix_by_name_when_registry_read_fails_then_raises_registration_remedy(self, tmp_path):
         registry = tmp_path / "broken.toml"
         registry.write_text("not valid toml {{{")
         with patch("ai_cli.config._get_project_registry_path", return_value=registry):
-            result = _get_project_prefix_by_name("myproject")
-        assert result == "myp"
+            with pytest.raises(ValueError, match="ai register"):
+                _get_project_prefix_by_name("myproject")
 
     def test_get_project_aliases_when_registry_read_fails_then_returns_empty(self, tmp_path):
         """Covers lines 216-217: exception in get_project_aliases."""
@@ -510,8 +499,7 @@ class TestProjectRegistryExceptionBranches:
             result = get_project_aliases()
         assert result == {}
 
-    def test_get_project_prefix_when_registry_read_fails_then_returns_fallback(self, tmp_path):
-        """Covers lines 250-257: exception in get_project_prefix."""
+    def test_get_project_prefix_when_registry_read_fails_then_raises_registration_remedy(self, tmp_path):
         import os
 
         registry = tmp_path / "broken.toml"
@@ -523,8 +511,8 @@ class TestProjectRegistryExceptionBranches:
                     from ai_cli.config import load_project_registry
 
                     load_project_registry(_force=True)
-                    result = get_project_prefix()
-        assert result == "myp"
+                    with pytest.raises(ValueError, match="ai register"):
+                        get_project_prefix()
 
 
 class TestProjectsDirEdgeCases:

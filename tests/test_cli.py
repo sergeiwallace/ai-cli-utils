@@ -976,20 +976,23 @@ class TestCliIsRemotePath:
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.config.get_project_aliases", return_value={}):
                             with patch("ai_cli.config._find_project_dir", return_value=project_dir):
-                                with patch("ai_cli.session.cleanup_stale_sessions"):
-                                    with patch("ai_cli.session.build_session_name", return_value=("cr-sw-1", "sw-1")):
-                                        with patch("ai_cli.session.create_worktree", return_value=None):
-                                            with patch("ai_cli.config.get_session_map", return_value={}):
-                                                with patch(
-                                                    "ai_cli.session_script.get_engine_script", return_value="script"
-                                                ):
-                                                    not_existing = MagicMock(returncode=1)
-                                                    with patch("subprocess.run", return_value=not_existing):
-                                                        with patch("os.chdir") as mock_chdir:
-                                                            with patch("os.execvp", side_effect=SystemExit(0)):
-                                                                with pytest.raises(SystemExit):
-                                                                    cli()
-                                                        mock_chdir.assert_called_once_with(project_dir)
+                                with patch("ai_cli.config.resolve_project_prefix_by_name", return_value="myproj"):
+                                    with patch("ai_cli.session.cleanup_stale_sessions"):
+                                        with patch(
+                                            "ai_cli.session.build_session_name", return_value=("cr-sw-1", "sw-1")
+                                        ):
+                                            with patch("ai_cli.session.create_worktree", return_value=None):
+                                                with patch("ai_cli.config.get_session_map", return_value={}):
+                                                    with patch(
+                                                        "ai_cli.session_script.get_engine_script", return_value="script"
+                                                    ):
+                                                        not_existing = MagicMock(returncode=1)
+                                                        with patch("subprocess.run", return_value=not_existing):
+                                                            with patch("os.chdir") as mock_chdir:
+                                                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                                                    with pytest.raises(SystemExit):
+                                                                        cli()
+                                                            mock_chdir.assert_called_once_with(project_dir)
 
 
 class TestCliWorktreeGitPull:
@@ -2682,6 +2685,7 @@ class TestLocalProjectChdir:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.config._find_project_dir", return_value=project_dir),
+            patch("ai_cli.config.resolve_project_prefix_by_name", return_value="myproject"),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.config.get_current_project_name", return_value="myproject"),
@@ -2731,37 +2735,23 @@ class TestLocalProjectChdir:
                 cli()
         mock_chdir.assert_not_called()
 
-    def test_when_local_project_flag_then_prefix_derived_from_target_project(self, tmp_path):
+    def test_given_unregistered_local_project_when_project_flag_then_exits_with_registration_remedy(
+        self, tmp_path, capsys
+    ):
         project_dir = tmp_path / "projects" / "myapp-mobile"
         project_dir.mkdir(parents=True)
-        captured = {}
-
-        def capture_build(engine, prefix, name, config, **kwargs):
-            captured["prefix"] = prefix
-            return ("pytest-leak-guard-c-hm-1", "pytest-leak-guard-hm-1")
 
         with (
             patch("sys.argv", ["ai", "c", "1", "-p", "myapp-mobile"]),
-            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.config.load_config", return_value={"session": {"use_tmux": False}}),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.config._find_project_dir", return_value=project_dir),
-            patch("ai_cli.config._get_project_prefix_by_name", return_value="hm"),
-            patch("ai_cli.config.validate_registry_completeness", return_value=True),
-            patch("ai_cli.session.cleanup_stale_sessions"),
-            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
-            patch("ai_cli.session.build_session_name", side_effect=capture_build),
-            patch("ai_cli.config.get_session_map", return_value={}),
-            patch("ai_cli.session.create_worktree", return_value=None),
-            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.trust.ensure_workspace_trusted"),
-            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
-            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
-            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
-            patch("subprocess.run", return_value=MagicMock(returncode=1)),
-            patch("os.execvp", side_effect=SystemExit(0)),
-            patch("os.chdir"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._auto_update_if_stale"),
+            patch("os.chdir") as mock_chdir,
         ):
-            with pytest.raises(SystemExit):
+            with pytest.raises(SystemExit) as exc_info:
                 cli()
-        assert captured.get("prefix") == "hm", f"Expected 'hm' prefix but got '{captured.get('prefix')}'"
+        assert exc_info.value.code == 1
+        assert f"ai register -p {project_dir} -x PREFIX" in capsys.readouterr().err
+        mock_chdir.assert_not_called()
