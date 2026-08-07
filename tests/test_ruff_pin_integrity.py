@@ -206,6 +206,7 @@ def test_given_the_gate_runs_when_the_binary_is_asked_its_version_then_it_report
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
 
     assert result.returncode == 0, result.stderr
@@ -227,6 +228,7 @@ def test_given_repo_sources_when_pinned_ruff_runs_the_gate_then_it_passes(scope)
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -298,6 +300,7 @@ def test_given_a_widened_select_when_the_lint_hook_runs_then_the_file_is_not_rew
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
 
     assert result.returncode != 0, "fixture must carry a finding, or this proves nothing"
@@ -322,6 +325,7 @@ def test_given_the_same_file_when_ruff_is_asked_to_fix_then_it_does_rewrite(tmp_
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
 
     assert module.read_text() != before, "--fix must rewrite, or the guard above is vacuous"

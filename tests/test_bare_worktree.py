@@ -273,12 +273,20 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
     assert worktree.is_dir(), "bare launch must create the worktree"
 
     listed = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"], cwd=real_repo, capture_output=True, text=True
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=real_repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert str(worktree) in listed, "worktree must be registered with git"
 
     branches = subprocess.run(
-        ["git", "branch", "--list", "wt-kg-1"], cwd=real_repo, capture_output=True, text=True
+        ["git", "branch", "--list", "wt-kg-1"],
+        cwd=real_repo,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert "wt-kg-1" in branches, "worktree branch must be created"
 

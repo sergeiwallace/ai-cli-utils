@@ -49,6 +49,7 @@ def _hash_via_bash(home: str, cwd: str, watch_files_line: str) -> str:
         capture_output=True,
         text=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()

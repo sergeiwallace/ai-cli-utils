@@ -102,6 +102,7 @@ echo "TICKS=$ticks"
         text=True,
         env=env,
         timeout=_WATCH_WINDOW_SECONDS + 60,
+        check=False,
     )
     ticks_line = [ln for ln in result.stdout.splitlines() if ln.startswith("TICKS=")]
     assert ticks_line, f"harness produced no tick count: {result.stdout!r} {result.stderr!r}"

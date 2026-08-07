@@ -299,7 +299,7 @@ def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
     end repeat
     return "miss"
 end tell"""
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5, text=True)
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5, text=True, check=False)
     return "ok" in (result.stdout or "")
 
 
@@ -318,6 +318,7 @@ def _iterm_pane_tty_for_tmux_session(tmux_session: str) -> str:
         ["tmux", "list-clients", "-t", tmux_session, "-F", "#{client_tty}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         return ""
@@ -358,10 +359,12 @@ def _configure_tmux_for_iterm2(session_id: str) -> None:
     subprocess.run(
         ["tmux", "set-option", "-p", "-t", session_id, "allow-passthrough", "all"],
         capture_output=True,
+        check=False,
     )
     subprocess.run(
         ["tmux", "set-window-option", "-t", session_id, "automatic-rename", "off"],
         capture_output=True,
+        check=False,
     )
 
 

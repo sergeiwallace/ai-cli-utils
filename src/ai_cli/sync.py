@@ -387,6 +387,7 @@ def init_staging_repo(staging_dir: Path, remote_url: str) -> None:
         text=True,
         timeout=120,
         env=_GIT_ENV,
+        check=False,
     )
     if res.returncode == 0:
         return  # Successfully cloned — shared history established
@@ -406,6 +407,7 @@ def init_server_bare_repo(remote_host: str) -> None:
         ["ssh", remote_host, "git init --bare ~/.claude-sync-staging.git 2>/dev/null || true"],
         capture_output=True,
         timeout=30,
+        check=False,
     )
 
 
@@ -975,13 +977,15 @@ def _find_project_worktrees(project_path: Path) -> list[Path]:
 
 def _git_is_clean(path: Path) -> bool:
     """Return whether a repository working tree has no uncommitted changes."""
-    result = subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True, check=False
+    )
     return result.returncode == 0 and not result.stdout.strip()
 
 
 def _git_pull_rebase(path: Path) -> tuple[bool, str]:
     """Run git pull --rebase at path. Retained for direct library callers only."""
-    result = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True)
+    result = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, check=False)
     return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 
@@ -992,13 +996,14 @@ def _git_stash_pull_pop(path: Path) -> tuple[bool, str]:
         ["git", "-C", str(path), "stash", "push", "-m", "ai-sync auto-stash"],
         capture_output=True,
         text=True,
+        check=False,
     )
     output.append(stash.stdout.strip())
     if stash.returncode != 0:
         return False, "\n".join(output)
-    pull = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True)
+    pull = subprocess.run(["git", "-C", str(path), "pull", "--rebase"], capture_output=True, text=True, check=False)
     output.append(pull.stdout.strip())
-    pop = subprocess.run(["git", "-C", str(path), "stash", "pop"], capture_output=True, text=True)
+    pop = subprocess.run(["git", "-C", str(path), "stash", "pop"], capture_output=True, text=True, check=False)
     output.append(pop.stdout.strip())
     return pull.returncode == 0 and pop.returncode == 0, "\n".join(part for part in output if part)
 
@@ -1009,20 +1014,26 @@ def _cc_session_state_for_worktree(project_name: str, wt_dir: Path) -> str | Non
     if not match:
         return None
     session_name = f"c-{project_name}-{match.group(1)}"
-    has_session = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True)
+    has_session = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=False)
     if has_session.returncode != 0:
         return None
     pane = subprocess.run(
-        ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"], capture_output=True, text=True
+        ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if pane.returncode != 0 or not pane.stdout.strip():
         return "idle"
     pane_pid = pane.stdout.strip().split()[0]
-    claude = subprocess.run(["pgrep", "-P", pane_pid, "claude"], capture_output=True, text=True)
+    claude = subprocess.run(["pgrep", "-P", pane_pid, "claude"], capture_output=True, text=True, check=False)
     if claude.returncode != 0 or not claude.stdout.strip():
         return "idle"
     state = subprocess.run(
-        ["ps", "-o", "state=", "-p", claude.stdout.strip().split()[0]], capture_output=True, text=True
+        ["ps", "-o", "state=", "-p", claude.stdout.strip().split()[0]],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return "active" if state.stdout.strip().startswith("R") else "idle"
 
@@ -1040,7 +1051,9 @@ def sync_repos(updated_bare_names: set[str], projects_dir: Path, verbose: bool) 
         if (
             not project_path.is_dir()
             or subprocess.run(
-                ["git", "-C", str(project_path), "rev-parse", "--git-dir"], capture_output=True
+                ["git", "-C", str(project_path), "rev-parse", "--git-dir"],
+                capture_output=True,
+                check=False,
             ).returncode
         ):
             continue
@@ -1368,6 +1381,7 @@ def is_cc_active_on_server(remote_host: str) -> bool:
         ["ssh", remote_host, "pgrep", "-f", "claude"],
         capture_output=True,
         timeout=10,
+        check=False,
     )
     return result.returncode == 0
 
@@ -1378,7 +1392,7 @@ def is_cc_active_locally() -> bool:
         import psutil
 
         return any("claude" in (p.info.get("name") or "").lower() for p in psutil.process_iter(["name"]))
-    result = subprocess.run(["pgrep", "-f", "claude"], capture_output=True)
+    result = subprocess.run(["pgrep", "-f", "claude"], capture_output=True, check=False)
     return result.returncode == 0
 
 
@@ -1449,6 +1463,7 @@ def notify_conflicts(conflicts: list[str], events: list[dict[str, str]] | None =
                 f'subtitle "Review .conflict files or check ~/.claude-sync-conflicts.log"',
             ],
             capture_output=True,
+            check=False,
         )
 
     if events is None:
@@ -1491,6 +1506,7 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
         text=True,
         timeout=_PUSH_TIMEOUT,
         env=_GIT_ENV,
+        check=False,
     )
     if res.returncode == 0:
         return True
@@ -1506,6 +1522,7 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
                 cwd=staging_dir,
                 capture_output=True,
                 env=_GIT_ENV,
+                check=False,
             )
 
         rebase = subprocess.run(
@@ -1515,6 +1532,7 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
             text=True,
             timeout=60,
             env=_GIT_ENV,
+            check=False,
         )
         if rebase.returncode != 0:
             print(f"Error: git pull --rebase failed: {rebase.stderr}", file=sys.stderr)
@@ -1526,6 +1544,7 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
             text=True,
             timeout=_PUSH_TIMEOUT,
             env=_GIT_ENV,
+            check=False,
         )
         if res2.returncode == 0:
             return True
@@ -1904,6 +1923,7 @@ def sync_pull(flags: list[str]) -> int:
             text=True,
             timeout=60,
             env=_GIT_ENV,
+            check=False,
         )
         if fetch.returncode != 0:
             print(f"Error fetching from remote: {fetch.stderr}", file=sys.stderr)
@@ -1916,6 +1936,7 @@ def sync_pull(flags: list[str]) -> int:
             capture_output=True,
             text=True,
             env=_GIT_ENV,
+            check=False,
         )
 
     cc_projects_dir = _cc_projects_dir()
@@ -1954,6 +1975,7 @@ def sync_pull(flags: list[str]) -> int:
                 cwd=cfg.staging_dir,
                 capture_output=True,
                 env=_GIT_ENV,
+                check=False,
             )
             if git_add.returncode == 0:
                 commit = subprocess.run(
@@ -1961,6 +1983,7 @@ def sync_pull(flags: list[str]) -> int:
                     cwd=cfg.staging_dir,
                     capture_output=True,
                     env=_GIT_ENV,
+                    check=False,
                 )
                 if commit.returncode == 0:
                     _push_to_remote(cfg.staging_dir, verbose=False)

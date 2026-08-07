@@ -403,7 +403,7 @@ def _auto_update_if_stale(config: dict) -> None:
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
         return
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True, check=False)
     if head.returncode != 0:
         return
     current_hash = head.stdout.strip()
@@ -427,7 +427,7 @@ def _auto_update_if_stale(config: dict) -> None:
         stamp_file.write_text(current_hash)
         print("ai-cli-utils has new commits — running ai update --force...")
         ai_bin = shutil.which("ai") or "ai"
-        result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path)
+        result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path, check=False)
         if result.returncode != 0:
             print("Warning: auto-update failed, continuing with current version", file=sys.stderr)
     finally:
@@ -624,7 +624,9 @@ def _refresh_live_session_scripts() -> int:
     if not _refresh_within_burst_budget():
         return 0
     try:
-        ls = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True)
+        ls = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True, check=False
+        )
     except Exception:
         return 0
     if ls.returncode != 0:
@@ -1209,7 +1211,7 @@ def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None)
     """
     try:
         # Resolve uv's cache directory the way uv itself does.
-        cache_result = subprocess.run([uv_bin, "cache", "dir"], capture_output=True, text=True, timeout=5)
+        cache_result = subprocess.run([uv_bin, "cache", "dir"], capture_output=True, text=True, timeout=5, check=False)
         if cache_result.returncode != 0:
             return False
         cache_dir = Path(cache_result.stdout.strip())
@@ -1220,7 +1222,9 @@ def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None)
         if target_dir is None:
             # Resolve the tool install directory. `uv tool dir` may print nothing on some
             # versions; fall back to the platform-appropriate default if so.
-            tool_result = subprocess.run([uv_bin, "tool", "dir"], capture_output=True, text=True, timeout=5)
+            tool_result = subprocess.run(
+                [uv_bin, "tool", "dir"], capture_output=True, text=True, timeout=5, check=False
+            )
             tool_dir_str = tool_result.stdout.strip() if tool_result.returncode == 0 else ""
             if tool_dir_str:
                 install_dir = Path(tool_dir_str)
@@ -1347,7 +1351,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
             uv_cmd.append("--reinstall")
         if _should_use_uv_link_mode_copy(uv_bin):
             uv_cmd.append("--link-mode=copy")
-        result = subprocess.run(uv_cmd, cwd=project_path)
+        result = subprocess.run(uv_cmd, cwd=project_path, check=False)
         exit_code = result.returncode
     finally:
         pyproject.write_text(original)
@@ -1374,7 +1378,9 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
         # Record HEAD hash so session start (and each running wrapper's self-update)
         # can detect staleness. This is the monotonic update signal — it changes on
         # every update, unlike the package version which is restored to base above.
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True, check=False
+        )
         if head.returncode == 0:
             stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
             stamp_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1406,6 +1412,7 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
         ["ssh", f"{user}@{host}", "tmux", "list-sessions", "-F", "#{session_name}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if probe.returncode != 0:
         print("Error: could not list remote tmux sessions", file=sys.stderr)
@@ -1457,7 +1464,7 @@ def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
 
 
 def _do_attach(session_name: str) -> None:
-    check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True)
+    check = subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=False)
     if check.returncode != 0:
         print(f"No tmux session named '{session_name}'", file=sys.stderr)
         sys.exit(1)
@@ -1469,6 +1476,7 @@ def _do_ls(show_all: bool) -> None:
         ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if res.returncode != 0:
         print("No tmux sessions found (is tmux running?)", file=sys.stderr)
@@ -1542,6 +1550,7 @@ def _do_ls(show_all: bool) -> None:
             input="\n".join(lines),
             capture_output=True,
             text=True,
+            check=False,
         )
         if result.returncode != 0 or not result.stdout.strip():
             sys.exit(0)
@@ -1897,11 +1906,18 @@ def _do_session_launch(
                 text=True,
                 cwd=worktree_path,
                 env=_git_env(),
+                check=False,
             )
             if len(_deleted.stdout.strip().splitlines()) > 50:
-                subprocess.run(["git", "read-tree", "HEAD"], capture_output=True, cwd=worktree_path, env=_git_env())
                 subprocess.run(
-                    ["git", "update-index", "--refresh"], capture_output=True, cwd=worktree_path, env=_git_env()
+                    ["git", "read-tree", "HEAD"], capture_output=True, cwd=worktree_path, env=_git_env(), check=False
+                )
+                subprocess.run(
+                    ["git", "update-index", "--refresh"],
+                    capture_output=True,
+                    cwd=worktree_path,
+                    env=_git_env(),
+                    check=False,
                 )
                 print(
                     f"Info: index corruption auto-healed in {worktree_path.name} "
@@ -1919,9 +1935,15 @@ def _do_session_launch(
                 # only ever undo work THIS launch started. Doing it unconditionally
                 # would abort a rebase the user is part-way through and wipe their
                 # conflict resolution — the opposite of the intent.
-                subprocess.run(["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path, env=_git_env())
                 subprocess.run(
-                    ["git", "restore", "--staged", "."], capture_output=True, cwd=worktree_path, env=_git_env()
+                    ["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path, env=_git_env(), check=False
+                )
+                subprocess.run(
+                    ["git", "restore", "--staged", "."],
+                    capture_output=True,
+                    cwd=worktree_path,
+                    env=_git_env(),
+                    check=False,
                 )
                 # Quote git's own last line. An exit code alone does not say whether
                 # this was no network, missing credentials for the remote, or something
@@ -2118,11 +2140,11 @@ def _do_session_launch(
     )
 
     # Check if session already exists (e.g., re-attaching after disconnect)
-    existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
+    existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     if existing.returncode == 0 and sandbox:
         # Explicit sandbox flag — kill old session so it recreates with new settings
-        subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True)
-        existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+        existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
@@ -2145,6 +2167,7 @@ def _do_session_launch(
         result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", "zsh", _script_path],
             capture_output=True,
+            check=False,
         )
         if result.returncode != 0:
             raw = result.stderr
@@ -2153,6 +2176,7 @@ def _do_session_launch(
             result2 = subprocess.run(
                 ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "zsh", _script_path],
                 capture_output=True,
+                check=False,
             )
             if result2.returncode != 0:
                 raw2 = result2.stderr

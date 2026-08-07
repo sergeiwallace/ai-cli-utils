@@ -528,7 +528,7 @@ class TestRunTransportLoop:
                 return mock_run
 
         mock_run = asyncio.run(run())
-        mock_run.assert_called_once_with(CLEANUP_CMD, capture_output=True)
+        mock_run.assert_called_once_with(CLEANUP_CMD, capture_output=True, check=False)
 
     def test_when_nats_unavailable_then_transport_still_starts(self, tmp_path):
         proc = _make_proc(returncode=0, poll_sequence=[None, 0])

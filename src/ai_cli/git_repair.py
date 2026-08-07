@@ -122,12 +122,14 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if bare.returncode == 0 and bare.stdout.strip() == "true":
         subprocess.run(
             ["git", "-C", str(repo_root), "config", "--local", "core.bare", "false"],
             capture_output=True,
             env=_git_env(),
+            check=False,
         )
         print(
             f"WARNING: repaired core.bare=true corruption on {repo_root} (reset to false)",
@@ -140,12 +142,14 @@ def repair_bare_worktree_config(repo_root: Path) -> bool:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if worktree_cfg.returncode == 0 and worktree_cfg.stdout.strip():
         subprocess.run(
             ["git", "-C", str(repo_root), "config", "--local", "--unset", "core.worktree"],
             capture_output=True,
             env=_git_env(),
+            check=False,
         )
         print(
             f"WARNING: repaired stale core.worktree={worktree_cfg.stdout.strip()!r} on {repo_root} (unset)",
@@ -180,6 +184,7 @@ def _probe(repo_root: Path, *args: str) -> str:
         encoding=sys.getfilesystemencoding(),
         errors="surrogateescape",
         env=_git_env(),
+        check=False,
     )
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -255,6 +260,7 @@ def _pull_refspec(repo_root: Path) -> list[str]:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if upstream.returncode == 0:
         return []
@@ -263,6 +269,7 @@ def _pull_refspec(repo_root: Path) -> list[str]:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     current = branch.stdout.strip()
     if branch.returncode != 0 or not current or current == "HEAD":
@@ -316,6 +323,7 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
 
     if probe_failure:
@@ -358,6 +366,7 @@ def detect_missing_tracked_symlinks(repo_root: Path) -> list[str]:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if result.returncode != 0:
         return []
@@ -391,6 +400,7 @@ def detect_phantom_deleted_files(repo_root: Path) -> list[str]:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if result.returncode != 0:
         return []
@@ -407,6 +417,7 @@ def detect_phantom_deleted_files(repo_root: Path) -> list[str]:
             capture_output=True,
             text=True,
             env=_git_env(),
+            check=False,
         )
         fields = entry.stdout.split()
         if entry.returncode != 0 or not fields:

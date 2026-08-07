@@ -363,6 +363,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             ["tmux", "kill-session", "-t", window_name],
             capture_output=True,
             timeout=3,
+            check=False,
         )
         # Always use a standalone detached session — never new-window inside the user's
         # session, which would cause `:N` targeting to hit the wrong session.
@@ -371,6 +372,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode != 0:
             return None
@@ -385,11 +387,13 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             ["tmux", "resize-window", "-t", target, "-x", "220", "-y", "60"],
             capture_output=True,
             timeout=2,
+            check=False,
         )
         subprocess.run(
             ["tmux", "set-option", "-t", target, "window-size", "latest"],
             capture_output=True,
             timeout=2,
+            check=False,
         )
 
         # Start CC with no-op permissions (read-only scraping, never runs tools).
@@ -413,6 +417,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             ],
             capture_output=True,
             timeout=2,
+            check=False,
         )
 
         # Poll for the CC prompt indicator (❯) — startup takes ~4s.
@@ -428,6 +433,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                 capture_output=True,
                 text=True,
                 timeout=3,
+                check=False,
             )
             if cap.returncode != 0:
                 continue
@@ -443,6 +449,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                         ["tmux", "send-keys", "-t", target, "Enter"],
                         capture_output=True,
                         timeout=2,
+                        check=False,
                     )
                     trust_dismissed = True
                     continue
@@ -457,6 +464,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             ["tmux", "send-keys", "-t", target, "/usage", "Enter"],
             capture_output=True,
             timeout=2,
+            check=False,
         )
 
         # Poll for usage output, max 40s. Accept as soon as "Current week (all models)"
@@ -472,6 +480,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                 capture_output=True,
                 text=True,
                 timeout=3,
+                check=False,
             )
             if cap.returncode == 0 and "% used" in cap.stdout:
                 snapshot = _parse_usage_output(cap.stdout)
@@ -486,6 +495,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                                 capture_output=True,
                                 text=True,
                                 timeout=3,
+                                check=False,
                             )
                             if extra_cap.returncode == 0:
                                 extra_snap = _parse_usage_output(extra_cap.stdout)
@@ -501,6 +511,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             ["tmux", "send-keys", "-t", target, "Escape", ""],
             capture_output=True,
             timeout=2,
+            check=False,
         )
         return snapshot
 
@@ -511,6 +522,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
             ["tmux", "kill-session", "-t", window_name],
             capture_output=True,
             timeout=3,
+            check=False,
         )
         # Second line of defence behind DISABLE_AUTOUPDATER=1 above: sweep anything a
         # previous (or otherwise-configured) scrape orphaned, so staging stays bounded.
@@ -538,6 +550,7 @@ def _get_usage_via_print_mode() -> QuotaSnapshot | None:
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
     except Exception:
         return None
@@ -1079,7 +1092,7 @@ def quota_sync_from_remote() -> int:
     ]
 
     try:
-        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15, check=False)
     except Exception as exc:
         print(f"quota sync: SSH failed: {exc}", file=sys.stderr)
         return 1

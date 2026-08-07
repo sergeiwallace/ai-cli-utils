@@ -317,7 +317,7 @@ def test_repo_root_real_git(tmp_path):
     """_repo_root returns the git top-level for a real repo."""
     import subprocess as sp
 
-    sp.run(["git", "init"], cwd=tmp_path, capture_output=True)
+    sp.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
     root = _repo_root(tmp_path)
     assert root is not None
     assert root.resolve() == tmp_path.resolve()

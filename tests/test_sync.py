@@ -1259,7 +1259,9 @@ def test_git_commit_staged_when_changes_then_creates_commit(tmp_path):
     )
 
     assert committed is True
-    res = subprocess.run(["git", "log", "--oneline", "-1"], cwd=staging_dir, capture_output=True, text=True)
+    res = subprocess.run(
+        ["git", "log", "--oneline", "-1"], cwd=staging_dir, capture_output=True, text=True, check=False
+    )
     assert "sync push from mac" in res.stdout
 
 
@@ -1330,7 +1332,9 @@ def test_git_commit_staged_commit_message_contains_metadata(tmp_path):
         total_count=2,
     )
 
-    res = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=staging_dir, capture_output=True, text=True)
+    res = subprocess.run(
+        ["git", "log", "-1", "--format=%B"], cwd=staging_dir, capture_output=True, text=True, check=False
+    )
     msg = res.stdout
     assert "sync push from server" in msg
     assert "myproject" in msg
@@ -5144,13 +5148,14 @@ def _make_git_repo(path: Path) -> None:
     """Create a minimal real git repo at path."""
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", str(path)], capture_output=True, check=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t.com"], capture_output=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.name", "T"], capture_output=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t.com"], capture_output=True, check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "T"], capture_output=True, check=True)
     (path / "README.md").write_text("hi")
-    subprocess.run(["git", "-C", str(path), "add", "."], capture_output=True)
+    subprocess.run(["git", "-C", str(path), "add", "."], capture_output=True, check=True)
     subprocess.run(
         ["git", "-C", str(path), "commit", "-m", "init", "--allow-empty-message"],
         capture_output=True,
+        check=True,
     )
 
 

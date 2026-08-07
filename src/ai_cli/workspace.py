@@ -20,7 +20,7 @@ def _parse_workspace_folders(workspace_path: Path) -> list[Path]:
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     return result.returncode, result.stdout, result.stderr
 
 

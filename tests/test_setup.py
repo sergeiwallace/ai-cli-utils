@@ -12,13 +12,13 @@ from ai_cli.setup import _is_managed_platform, _repo_root_from, run_setup
 def _make_repo(tmp_path: Path) -> Path:
     """Create a minimal git repo with CLAUDE.md and CLAUDE-full.md committed."""
     tmp_path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True, check=True)
     (tmp_path / "CLAUDE.md").write_text("# lean config")
     (tmp_path / "CLAUDE-full.md").write_text("# full standalone config")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
     return tmp_path
 
 
@@ -67,7 +67,7 @@ class TestIsManagedPlatform:
 
 class TestRepoRootFrom:
     def test_when_inside_git_repo_then_returns_root_path(self, tmp_path):
-        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
         result = _repo_root_from(tmp_path)
         assert result is not None
         assert result.exists()
@@ -78,7 +78,7 @@ class TestRepoRootFrom:
         assert result is None
 
     def test_when_called_from_subdirectory_returns_repo_root(self, tmp_path):
-        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
         subdir = tmp_path / "deep" / "subdir"
         subdir.mkdir(parents=True)
         result = _repo_root_from(subdir)
@@ -192,6 +192,7 @@ class TestRunSetupExternal:
                 ["git", "update-index", "--assume-unchanged", "CLAUDE.md"],
                 cwd=repo,
                 capture_output=True,
+                check=False,
             )
         ]
         assert len(assume_unchanged_calls) == 1

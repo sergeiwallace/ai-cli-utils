@@ -76,7 +76,7 @@ def _conflict_files(project_dir: Path, paths: list[str] | None = None) -> list[s
         if not existing:
             return []
         cmd = ["grep", "-l", "--binary-files=without-match", "<<<<<<<", *existing]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().splitlines()
         return []
@@ -90,7 +90,7 @@ def _conflict_files(project_dir: Path, paths: list[str] | None = None) -> list[s
     ]
     for d in _EXCLUDE_DIRS:
         cmd += ["--exclude-dir", d]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip().splitlines()
     return []
@@ -114,6 +114,7 @@ def _repo_root(path: Path) -> Path | None:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if r.returncode != 0 or not r.stdout.strip():
         return None
@@ -130,9 +131,10 @@ def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
         ["git", "-C", str(root), "worktree", "remove", "--force", str(wt_dir)],
         capture_output=True,
         env=_git_env(),
+        check=False,
     )
-    subprocess.run(["git", "-C", str(root), "worktree", "prune"], capture_output=True, env=_git_env())
-    subprocess.run(["git", "-C", str(root), "branch", "-D", branch], capture_output=True, env=_git_env())
+    subprocess.run(["git", "-C", str(root), "worktree", "prune"], capture_output=True, env=_git_env(), check=False)
+    subprocess.run(["git", "-C", str(root), "branch", "-D", branch], capture_output=True, env=_git_env(), check=False)
     repair_bare_worktree_config(root)
 
 
@@ -151,6 +153,7 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
         cwd=wt_dir,
         capture_output=True,
         text=True,
+        check=False,
     )
     if cu.returncode != 0:
         return "failed", (cu.stderr.strip() or "copier update failed")
@@ -160,6 +163,7 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if not status.stdout.strip():
         return "nochange", ""
@@ -171,12 +175,13 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
         rels = [str(Path(c).relative_to(wt_dir)) for c in conflicts]
         return "conflict", rels
 
-    subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True, env=_git_env())
+    subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True, env=_git_env(), check=False)
     commit = subprocess.run(
         ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if commit.returncode != 0:
         return "failed", (commit.stderr.strip() or "commit failed")
@@ -187,11 +192,12 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
             capture_output=True,
             text=True,
             env=_git_env(),
+            check=False,
         )
         if pr.returncode != 0:
             return "pushfail", (pr.stderr.strip() or "push failed")
         # Keep the repo's main working tree in sync with what we just shipped.
-        subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env())
+        subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False)
         repair_bare_worktree_config(root)
 
     return "ok", ""
@@ -215,11 +221,14 @@ def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) 
 
     # Base the worktree on fresh origin/main so we propagate onto the shipped tip,
     # not whatever the local main tree happens to be at. Fall back to HEAD offline.
-    subprocess.run(["git", "-C", str(root), "fetch", "origin", "main"], capture_output=True, env=_git_env())
+    subprocess.run(
+        ["git", "-C", str(root), "fetch", "origin", "main"], capture_output=True, env=_git_env(), check=False
+    )
     probe = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "origin/main"],
         capture_output=True,
         env=_git_env(),
+        check=False,
     )
     base = "origin/main" if probe.returncode == 0 else "HEAD"
 
@@ -230,6 +239,7 @@ def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) 
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     repair_bare_worktree_config(root)
     if add.returncode != 0:
@@ -354,6 +364,7 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
             cwd=project_dir,
             capture_output=True,
             text=True,
+            check=False,
         )
         if result.returncode != 0:
             print("✗ FAILED")
@@ -368,6 +379,7 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
             capture_output=True,
             text=True,
             env=_git_env(),
+            check=False,
         )
         conflicts = _conflict_files(project_dir, _changed_paths(porcelain.stdout, project_dir))
         if conflicts:

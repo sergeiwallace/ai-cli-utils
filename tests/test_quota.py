@@ -2794,6 +2794,7 @@ class TestStatuslineScript:
             text=True,
             env=env,
             timeout=15,
+            check=False,
         )
 
     def test_given_valid_input_when_run_then_exits_zero(self):

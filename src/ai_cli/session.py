@@ -302,7 +302,7 @@ def find_next_index(prefix: str, use_tmux: bool = True) -> int:
         return _find_next_index_from_worktrees(prefix)
     i = 1
     while True:
-        res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{i}"], capture_output=True)
+        res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{i}"], capture_output=True, check=False)
         if res.returncode != 0:
             return i
         i += 1
@@ -364,7 +364,10 @@ def _worktree_has_live_session(worktree_dir: Path) -> bool:
 
 def find_recent_session(prefix: str) -> str:
     res = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"], capture_output=True, text=True
+        ["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if res.returncode != 0:
         return ""
@@ -411,6 +414,7 @@ def cleanup_stale_sessions(config: dict) -> None:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if res.returncode != 0:
         return
@@ -447,7 +451,7 @@ def cleanup_stale_sessions(config: dict) -> None:
         # starting up (CC not yet launched) aren't killed by a concurrent session launch.
         dead_shell = all_shells and last_attached > 0 and (now - last_attached) > dead_shell_grace
         if dead_shell or abandoned:
-            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True, check=False)
 
     _sweep_stale_iterm2_profiles()
 
@@ -471,6 +475,7 @@ def _sweep_stale_iterm2_profiles() -> None:
             ["tmux", "list-sessions", "-F", "#{session_name}"],
             capture_output=True,
             text=True,
+            check=False,
         )
         active_sessions = set(res.stdout.strip().splitlines()) if res.returncode == 0 else set()
 
@@ -490,12 +495,14 @@ def _sweep_stale_iterm2_profiles() -> None:
 
 def resolve_session(prefix: str, name: str) -> str:
     if not name:
-        res = subprocess.run(["tmux", "display-message", "-p", "#{session_name}"], capture_output=True, text=True)
+        res = subprocess.run(
+            ["tmux", "display-message", "-p", "#{session_name}"], capture_output=True, text=True, check=False
+        )
         current_session = res.stdout.strip() if res.returncode == 0 else ""
         if current_session and current_session.startswith(prefix):
             return current_session
         return find_recent_session(prefix)
-    res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{name}"], capture_output=True)
+    res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{name}"], capture_output=True, check=False)
     if res.returncode == 0:
         return f"{prefix}{name}"
     return find_recent_session(f"{prefix}{name}-")
@@ -580,7 +587,9 @@ def detect_repo_root():
     # Use --git-common-dir so we get the main repo root even when called from
     # inside a git worktree (--show-toplevel would return the worktree path instead,
     # causing create_worktree to nest worktrees and create circular .direnv symlinks).
-    res = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, env=_git_env())
+    res = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, env=_git_env(), check=False
+    )
     if res.returncode != 0:
         return None
     git_common = Path(res.stdout.strip())
@@ -625,6 +634,7 @@ def _resolve_worktree_base(repo_root: Path) -> str:
         capture_output=True,
         text=True,
         env=_git_env(),
+        check=False,
     )
     if res.returncode != 0 or not (res.stdout or "").strip():
         raise RuntimeError(
@@ -649,13 +659,14 @@ def create_worktree(ai_name: str) -> Path | None:
     wt_dir = repo_root / WORKTREE_DIR / ai_name
     if wt_dir.exists():
         # Verify it's still registered as a valid worktree; prune stale ones first
-        subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env())
+        subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env(), check=False)
         res = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
             capture_output=True,
             text=True,
             cwd=repo_root,
             env=_git_env(),
+            check=False,
         )
         if str(wt_dir) in res.stdout:
             _allow_trusted_worktree_envrc(repo_root, wt_dir)
@@ -676,10 +687,15 @@ def create_worktree(ai_name: str) -> Path | None:
     # a `wt-<name>` that already exists carries a previous session's commits, and
     # forcing it back to origin/main would discard them.
     res = subprocess.run(
-        ["git", "worktree", "add", str(wt_dir), "-b", branch, base], capture_output=True, env=_git_env()
+        ["git", "worktree", "add", str(wt_dir), "-b", branch, base],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
     )
     if res.returncode != 0:
-        subprocess.run(["git", "worktree", "add", str(wt_dir), branch], capture_output=True, env=_git_env())
+        subprocess.run(
+            ["git", "worktree", "add", str(wt_dir), branch], capture_output=True, env=_git_env(), check=False
+        )
 
     # Repair again after the add — the backstop for whatever just ran (defense
     # in depth alongside the env scrub above).
@@ -699,6 +715,7 @@ def create_worktree(ai_name: str) -> Path | None:
             capture_output=True,
             cwd=repo_root,
             env=_git_env(),
+            check=False,
         )
         if upstream_res.returncode != 0:
             upstream_res = subprocess.run(
@@ -706,6 +723,7 @@ def create_worktree(ai_name: str) -> Path | None:
                 capture_output=True,
                 cwd=repo_root,
                 env=_git_env(),
+                check=False,
             )
         if upstream_res.returncode != 0:
             stderr = upstream_res.stderr.decode(errors="replace").strip()
@@ -802,10 +820,10 @@ def cleanup_worktree(ai_name: str):
         return
 
     # Only remove if clean
-    diff = subprocess.run(["git", "-C", str(wt_dir), "diff", "--quiet"], env=_git_env())
-    cached = subprocess.run(["git", "-C", str(wt_dir), "diff", "--cached", "--quiet"], env=_git_env())
+    diff = subprocess.run(["git", "-C", str(wt_dir), "diff", "--quiet"], env=_git_env(), check=False)
+    cached = subprocess.run(["git", "-C", str(wt_dir), "diff", "--cached", "--quiet"], env=_git_env(), check=False)
     if diff.returncode == 0 and cached.returncode == 0:
-        subprocess.run(["git", "worktree", "remove", str(wt_dir)], capture_output=True, env=_git_env())
+        subprocess.run(["git", "worktree", "remove", str(wt_dir)], capture_output=True, env=_git_env(), check=False)
         # Backstop repair after teardown — worktree remove is the other
         # documented trigger for the core.bare/core.worktree corruption class.
         repair_bare_worktree_config(repo_root)

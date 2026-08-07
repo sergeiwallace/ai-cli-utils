@@ -285,6 +285,7 @@ def cmd_layout_apply(name: str) -> int:
     result = subprocess.run(
         [sys.executable, str(script_path)],
         capture_output=False,
+        check=False,
     )
     return result.returncode
 

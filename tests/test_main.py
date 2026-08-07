@@ -463,6 +463,7 @@ class TestGetEngineScript:
             [sys.executable, "-c", python_code, str(tmp_path), session_name],
             capture_output=True,
             text=True,
+            check=False,
         )
         output = result.stdout
 

@@ -239,6 +239,7 @@ def _send_os_notification(title: str, body: str) -> NotificationResult:
                 ["osascript", "-e", f'display notification "{body}" with title "{title}"'],
                 capture_output=True,
                 timeout=5,
+                check=False,
             )
         elif sys.platform == "win32":
             try:
@@ -248,7 +249,7 @@ def _send_os_notification(title: str, body: str) -> NotificationResult:
             except ImportError:
                 pass  # [notify-win] extra not installed — silently degrade
         else:
-            subprocess.run(["notify-send", title, body], capture_output=True, timeout=5)
+            subprocess.run(["notify-send", title, body], capture_output=True, timeout=5, check=False)
         return NotificationResult(channel="os", success=True)
     except Exception as exc:
         return NotificationResult(channel="os", success=False, error=str(exc))

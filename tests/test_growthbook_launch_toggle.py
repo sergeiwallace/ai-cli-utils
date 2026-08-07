@@ -68,6 +68,7 @@ def _run_toggle_block(tmp_path, engine: str, block: str) -> subprocess.Completed
         capture_output=True,
         text=True,
         timeout=10,
+        check=False,
     )
 
 

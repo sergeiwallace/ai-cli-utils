@@ -47,7 +47,7 @@ def tmux_server():
         pass
     # Final cleanup: kill the server process if still alive
     try:
-        subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True)
+        subprocess.run(["tmux", "-S", sock, "kill-server"], capture_output=True, check=False)
     except Exception:
         pass
     shutil.rmtree(sock_dir, ignore_errors=True)
@@ -118,7 +118,7 @@ def patched_subprocess(tmux_server, tmp_path):
         if head == "git":
             return _OK()
 
-        return subprocess.run(cmd, *args, **kwargs)
+        return subprocess.run(cmd, *args, **kwargs, check=False)
 
     def fake_execvp(file, args):
         # tmux attach-session is the final exec — raise SystemExit so the

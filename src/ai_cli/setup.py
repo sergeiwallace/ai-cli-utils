@@ -23,6 +23,7 @@ def _repo_root_from(cwd: Path) -> Path | None:
         capture_output=True,
         text=True,
         cwd=cwd,
+        check=False,
     )
     return Path(res.stdout.strip()) if res.returncode == 0 else None
 
@@ -64,6 +65,7 @@ def run_setup(cwd: Path | None = None) -> int:
         ["git", "update-index", "--assume-unchanged", "CLAUDE.md"],
         cwd=repo_root,
         capture_output=True,
+        check=False,
     )
 
     print("No managed platform detected (~/projects/CLAUDE.md not found)")

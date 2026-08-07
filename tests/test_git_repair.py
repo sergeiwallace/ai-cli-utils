@@ -182,11 +182,16 @@ def test_repair_when_real_repo_corrupted_then_fixes_it_end_to_end(tmp_path):
 
     assert result is True
     bare = subprocess.run(
-        ["git", "-C", str(repo), "config", "--local", "--get", "core.bare"], capture_output=True, text=True
+        ["git", "-C", str(repo), "config", "--local", "--get", "core.bare"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert bare.stdout.strip() == "false"
     worktree_cfg = subprocess.run(
-        ["git", "-C", str(repo), "config", "--local", "--get", "core.worktree"], capture_output=True
+        ["git", "-C", str(repo), "config", "--local", "--get", "core.worktree"],
+        capture_output=True,
+        check=False,
     )
     assert worktree_cfg.returncode != 0  # unset
 

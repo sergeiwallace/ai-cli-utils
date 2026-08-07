@@ -35,6 +35,7 @@ def _is_vpn_active() -> bool:
                 capture_output=True,
                 text=True,
                 timeout=2,
+                check=False,
             )
             return "Connected" in result.stdout
         # Fallback: check for active tunnel interfaces via ifconfig
@@ -43,6 +44,7 @@ def _is_vpn_active() -> bool:
             capture_output=True,
             text=True,
             timeout=2,
+            check=False,
         )
         import re as _re
 
@@ -153,7 +155,7 @@ async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
             return False
 
     def _tailscale_running() -> bool:
-        result = subprocess.run(["pgrep", "-f", "Tailscale.app"], capture_output=True)
+        result = subprocess.run(["pgrep", "-f", "Tailscale.app"], capture_output=True, check=False)
         return result.returncode == 0
 
     if await asyncio.to_thread(_reachable):
@@ -336,4 +338,4 @@ async def _run_transport_loop(
             await nc.close()
         except Exception:
             pass  # Not covered: requires NATS close to raise after connect succeeds
-        subprocess.run(cleanup_cmd, capture_output=True)
+        subprocess.run(cleanup_cmd, capture_output=True, check=False)

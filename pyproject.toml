@@ -136,6 +136,8 @@ select = [
     "PTH",  # flake8-use-pathlib (cross-platform paths)
     "DTZ",  # flake8-datetimez (naive datetimes)
     "LOG",  # flake8-logging
+    # --- phase 5a: one named rule, not its family ---
+    "PLW1510",  # subprocess.run without explicit check= (real silent-failure class)
 ]
 ignore = [
     "E701",  # multiple-statements-on-one-line (colon) — established compact style in main.py

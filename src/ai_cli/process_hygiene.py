@@ -148,6 +148,7 @@ def _run_ps(
             ["ps", "-ax", "-o", "pid=,comm=,etime=,args="],
             capture_output=True,
             text=True,
+            check=False,
         )
         stdout, rc = result.stdout, result.returncode
     if rc != 0:
@@ -182,6 +183,7 @@ def _run_lsof_udp(
             ["lsof", "-i", "UDP", "-n", "-P"],
             capture_output=True,
             text=True,
+            check=False,
         )
         stdout, rc = result.stdout, result.returncode
     if rc != 0:
@@ -209,6 +211,7 @@ def _list_tmux_sessions(
             ["tmux", "list-sessions", "-F", "#{session_name}:#{session_attached}"],
             capture_output=True,
             text=True,
+            check=False,
         )
         stdout, rc = result.stdout, result.returncode
     if rc != 0:
@@ -528,6 +531,7 @@ def collect_remote_processes(
                 capture_output=True,
                 text=True,
                 timeout=15,
+                check=False,
             )
             stdout, rc = result.stdout, result.returncode
         except (subprocess.TimeoutExpired, OSError):
@@ -725,7 +729,7 @@ def cmd_ps(
     vpn_host = remote_cfg.get("vpn_host", "") or remote_host
     if vpn_host and vpn_host != remote_host and remote_host:
         try:
-            _vpn_result = subprocess.run(["mullvad", "status"], capture_output=True, text=True, timeout=2)
+            _vpn_result = subprocess.run(["mullvad", "status"], capture_output=True, text=True, timeout=2, check=False)
             if "Connected" in _vpn_result.stdout:
                 remote_host = vpn_host
         except Exception:

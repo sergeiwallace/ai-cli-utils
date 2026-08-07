@@ -74,6 +74,7 @@ def _git_root(path: Path) -> str | None:
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
+            check=False,
         )
         if res.returncode == 0 and res.stdout.strip():
             return str(Path(res.stdout.strip()).resolve())
@@ -158,6 +159,7 @@ def backfill_projects_trust(root: os.PathLike | str) -> list[str]:
             ["git", "-C", str(child), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
+            check=False,
         )
         if top.returncode != 0 or not top.stdout.strip():
             continue
@@ -168,6 +170,7 @@ def backfill_projects_trust(root: os.PathLike | str) -> list[str]:
             ["git", "-C", str(child), "worktree", "list", "--porcelain"],
             capture_output=True,
             text=True,
+            check=False,
         )
         for line in wts.stdout.splitlines():
             if line.startswith("worktree "):
