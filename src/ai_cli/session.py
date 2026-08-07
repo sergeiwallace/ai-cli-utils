@@ -19,6 +19,7 @@ from .config import (
     _get_main_project_name,
     _get_projects_dir,
     get_current_project_name,
+    get_worktree_upstream_branches,
     load_project_registry,
     resolve_project_prefix,
 )
@@ -574,44 +575,174 @@ def detect_repo_root():
     return root
 
 
-def _resolve_worktree_base(repo_root: Path) -> str:
-    """Return the commit a NEW session worktree branch must start at.
-
-    Always ``origin/main``. ``git worktree add -b <branch> <dir>`` with no
-    start-point branches from whatever the main working tree currently has checked
-    out, which is only ``main`` by coincidence. In a repo parked on a long-running
-    workspace branch the new branch silently inherits that branch's commits while
-    ``--set-upstream-to=origin/main`` still claims it tracks ``main`` — so it is not
-    PR-clean (promoting it opens a pull request full of unrelated commits) and its
-    first ``git pull --rebase`` tries to replay those commits onto ``main``.
-
-    The remote-tracking ref is used as-is rather than fetched here: the launch
-    already runs ``git pull --rebase`` inside the new worktree, which is what makes
-    it current. Resolving the base must not itself depend on the network, or an
-    unreachable remote would stop the launch outright instead of merely leaving the
-    worktree a little behind.
-
-    Raises ``RuntimeError`` when ``origin/main`` cannot be resolved. There is
-    deliberately no fallback to ``HEAD``: that silent fallback is the defect, and an
-    unanchored worktree branch fails later and more confusingly, at push or PR time
-    (the same reasoning as AI-CLI-128's upstream hard-fail, which would reject this
-    repo moments later anyway).
-    """
+def _current_branch(repo_root: Path) -> str | None:
+    """Return the branch the main working tree has checked out, or None if detached."""
     res = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"],
+        ["git", "-C", str(repo_root), "symbolic-ref", "--quiet", "--short", "HEAD"],
         capture_output=True,
         text=True,
         env=_git_env(),
         check=False,
     )
-    if res.returncode != 0 or not (res.stdout or "").strip():
+    branch = (res.stdout or "").strip()
+    return branch if res.returncode == 0 and branch else None
+
+
+def _remote_branch_exists(repo_root: Path, branch: str) -> bool:
+    res = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    return res.returncode == 0 and bool((res.stdout or "").strip())
+
+
+def _has_origin_remote(repo_root: Path) -> bool:
+    res = subprocess.run(
+        ["git", "-C", str(repo_root), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    return res.returncode == 0
+
+
+def _local_branch_exists(repo_root: Path, branch: str) -> bool:
+    res = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    return res.returncode == 0 and bool((res.stdout or "").strip())
+
+
+def _resolve_worktree_target(repo_root: Path) -> tuple[str, str | None]:
+    """Return ``(base_ref, upstream_branch)`` for a NEW session worktree branch.
+
+    ``base_ref`` is the start-point the branch is created at; ``upstream_branch`` is
+    the branch on ``origin`` it should track, or ``None`` for "attach no upstream".
+
+    The integration branch — the branch this repository's work actually lands on —
+    resolves in this order, first match wins:
+
+    1. The ``[worktree_upstream]`` config table, keyed by repository directory name
+       (AI-CLI-193 AC-5). A repository declares its own integration branch; no
+       repository name is ever special-cased in this package's source.
+    2. The branch the main working tree currently has checked out. A session should
+       work on what the repository itself is working on. For a repository parked on
+       ``main`` this resolves to ``main`` — the historical behaviour, unchanged.
+
+    Once resolved, the *remote-tracking* ref is preferred as the base: the local tip
+    of that branch may carry unpushed commits, and starting there would make the new
+    worktree not review-clean (promoting it would open a pull request full of
+    unrelated commits). The remote-tracking ref is used as-is rather than fetched
+    here — the launch already runs ``git pull --rebase`` inside the new worktree,
+    and resolving the base must not depend on the network, or an unreachable remote
+    would stop the launch outright instead of merely leaving the worktree behind.
+
+    When the integration branch exists locally but not on ``origin`` — a workspace
+    branch that has not been pushed yet — the local branch is the only honest base,
+    and the upstream is ``None``. Falling back to ``origin/main`` there is precisely
+    the defect (AC-3): it points routine session work at a branch this repository
+    does not integrate through, which in a shared repository on a pull-request
+    workflow is the branch nobody may push directly. A missing upstream makes the
+    first ``git push`` stop and ask, which is the safe direction.
+
+    Raises ``RuntimeError`` when the repository has no ``origin`` remote or is in a
+    detached HEAD, so nothing anchors a session branch at all. There is deliberately
+    no fallback to ``HEAD`` for the unanchored case: it fails later and far more
+    confusingly, at push or review time.
+    """
+    if not _has_origin_remote(repo_root):
         raise RuntimeError(
-            f"create_worktree: cannot resolve origin/main in {repo_root} — refusing to create a "
-            f"session worktree based on the current HEAD instead. A worktree branch must start at "
-            f"origin/main so it stays PR-clean and its sync rebases onto main. Fix the repo first: "
-            f"ensure it has an `origin` remote with a `main` branch and run `git fetch origin main`."
+            f"create_worktree: {repo_root} has no `origin` remote — refusing to create a session "
+            f"worktree based on the current HEAD instead. A worktree branch must be anchored to a "
+            f"branch that exists on a remote so it stays review-clean and its sync rebases onto "
+            f"that branch. Fix the repo first: add an `origin` remote and run `git fetch origin`."
         )
-    return "refs/remotes/origin/main"
+
+    configured = get_worktree_upstream_branches().get(repo_root.name)
+    branch = configured or _current_branch(repo_root)
+    if not branch:
+        raise RuntimeError(
+            f"create_worktree: cannot resolve an integration branch in {repo_root} — its HEAD is "
+            f"detached, so there is no branch a session could be said to be working on, and "
+            f"refusing to guess one. Check out the branch this repository integrates through, or "
+            f"declare it under [worktree_upstream] in config.toml."
+        )
+
+    if _remote_branch_exists(repo_root, branch):
+        return f"refs/remotes/origin/{branch}", branch
+    if _local_branch_exists(repo_root, branch):
+        return f"refs/heads/{branch}", None
+    raise RuntimeError(
+        f"create_worktree: integration branch {branch!r} for {repo_root.name} exists neither on "
+        f"`origin` nor locally, so there is nothing to base a session worktree on — refusing to "
+        f"fall back to the current HEAD. Either correct the [worktree_upstream] entry in "
+        f"config.toml, or create and push that branch and run `git fetch origin`."
+    )
+
+
+def _resolve_worktree_base(repo_root: Path) -> str:
+    """Return the commit a NEW session worktree branch must start at.
+
+    Thin accessor over :func:`_resolve_worktree_target`; see it for the resolution
+    order and the reasoning.
+    """
+    return _resolve_worktree_target(repo_root)[0]
+
+
+def _set_upstream_or_raise(repo_root: Path, branch: str, upstream_branch: str) -> None:
+    """Point ``branch`` at ``origin/<upstream_branch>``, retrying once, then raising.
+
+    Must not fail silently (AI-CLI-128): a worktree branch left without an upstream
+    is one ``git push`` away from git suggesting ``--set-upstream origin wt-X``,
+    which publishes a same-named remote branch instead of shipping to the
+    integration branch — the drift that stranded one session 46 commits behind for
+    months.
+    """
+    target = f"--set-upstream-to=origin/{upstream_branch}"
+    for _ in range(2):
+        res = subprocess.run(
+            ["git", "branch", target, branch],
+            capture_output=True,
+            cwd=repo_root,
+            env=_git_env(),
+            check=False,
+        )
+        if res.returncode == 0:
+            return
+    stderr = res.stderr.decode(errors="replace").strip()
+    raise RuntimeError(
+        f"create_worktree: failed to set upstream=origin/{upstream_branch} on branch "
+        f"{branch!r} after retry (AI-CLI-128 — a worktree branch with no upstream is "
+        f"one `git push` away from publishing a same-named remote branch). "
+        f"git stderr: {stderr}"
+    )
+
+
+def _unset_upstream(repo_root: Path, branch: str) -> None:
+    """Ensure ``branch`` tracks nothing (AI-CLI-193 AC-3).
+
+    ``git worktree add -b <branch> <start-point>`` sets an upstream *by itself* when
+    the start-point is a remote-tracking ref, via git's default
+    ``branch.autoSetupMerge``. That implicit write is the second upstream writer in
+    this path, so "do not attach an upstream" has to actively clear one rather than
+    merely skip the explicit call. ``--unset-upstream`` exits non-zero when there is
+    nothing to unset, which is the desired end state, so its status is ignored.
+    """
+    subprocess.run(
+        ["git", "branch", "--unset-upstream", branch],
+        capture_output=True,
+        cwd=repo_root,
+        env=_git_env(),
+        check=False,
+    )
 
 
 def create_worktree(ai_name: str) -> Path | None:
@@ -645,15 +776,16 @@ def create_worktree(ai_name: str) -> Path | None:
         shutil.rmtree(wt_dir, ignore_errors=True)
 
     branch = f"wt-{ai_name}"
-    # Resolve the base BEFORE creating anything, so an unresolvable one leaves no
-    # half-made worktree directory behind.
-    base = _resolve_worktree_base(repo_root)
+    # Resolve base AND upstream in one call BEFORE creating anything: an unresolvable
+    # one leaves no half-made worktree directory behind, and a single resolution means
+    # the two can never disagree about which branch the session integrates through.
+    base, upstream = _resolve_worktree_target(repo_root)
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Try creating the branch at the resolved base; fall back to checking out an
     # existing branch of that name. The fallback deliberately passes no start-point:
     # a `wt-<name>` that already exists carries a previous session's commits, and
-    # forcing it back to origin/main would discard them.
+    # forcing it back to the integration branch would discard them.
     res = subprocess.run(
         ["git", "worktree", "add", str(wt_dir), "-b", branch, base],
         capture_output=True,
@@ -670,37 +802,33 @@ def create_worktree(ai_name: str) -> Path | None:
     repair_bare_worktree_config(repo_root)
 
     if wt_dir.exists():
-        # Track origin/main so git push ships to main, git pull --rebase syncs
-        # from main. This must not fail silently (AI-CLI-128): a worktree
-        # branch left without an upstream is one `git push` away from git
-        # suggesting `--set-upstream origin wt-X`, which publishes a
-        # same-named remote branch instead of shipping to main — the exact
-        # drift that stranded ai-ide-mobile/mobile-1 46 commits behind main
-        # for months. Retry once, then raise loudly rather than returning a
-        # worktree that looks fine but is one push away from that state.
-        upstream_res = subprocess.run(
-            ["git", "branch", "--set-upstream-to=origin/main", branch],
-            capture_output=True,
-            cwd=repo_root,
-            env=_git_env(),
-            check=False,
-        )
-        if upstream_res.returncode != 0:
-            upstream_res = subprocess.run(
-                ["git", "branch", "--set-upstream-to=origin/main", branch],
-                capture_output=True,
-                cwd=repo_root,
-                env=_git_env(),
-                check=False,
+        # Track the repository's integration branch so `git push` ships where the
+        # repository actually integrates and `git pull --rebase` syncs from there
+        # (AI-CLI-193). For a repository on `main` that is `origin/main`, unchanged.
+        #
+        # This must not fail silently (AI-CLI-128): a worktree branch left without
+        # an upstream is one `git push` away from git suggesting
+        # `--set-upstream origin wt-X`, which publishes a same-named remote branch
+        # instead of shipping to the integration branch — the drift that stranded a
+        # session 46 commits behind for months. Retry once, then raise loudly
+        # rather than returning a worktree that looks fine but is one push away
+        # from that state.
+        #
+        # When no integration branch resolves, the worktree is deliberately left
+        # with NO upstream rather than pointed at `origin/main` (AC-3): a wrong
+        # upstream sends routine work at a branch that may be protected by
+        # convention, while a missing one makes the first push stop and ask.
+        if upstream is None:
+            print(
+                f"Warning: worktree branch {branch!r} was created with NO upstream — no integration "
+                f"branch could be resolved for {repo_root.name}. `git push` will stop and ask rather "
+                f"than guess. Declare the branch under [worktree_upstream] in config.toml, or push "
+                f"the branch this repository is on and run `git fetch origin`.",
+                file=sys.stderr,
             )
-        if upstream_res.returncode != 0:
-            stderr = upstream_res.stderr.decode(errors="replace").strip()
-            raise RuntimeError(
-                f"create_worktree: failed to set upstream=origin/main on branch "
-                f"{branch!r} after retry (AI-CLI-128 — a worktree branch with no "
-                f"upstream is one `git push` away from publishing a same-named "
-                f"remote branch). git stderr: {stderr}"
-            )
+            _unset_upstream(repo_root, branch)
+        else:
+            _set_upstream_or_raise(repo_root, branch, upstream)
 
         # Symlink critical environment files
         for item in [".venv", ".claude", ".gemini", ".direnv"]:

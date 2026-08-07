@@ -343,10 +343,71 @@ class TestUpstreamDrift:
                 return (0, "origin/wt-sw-1\n", "")
             return (0, "", "")
 
-        with patch("ai_cli.workspace._run", side_effect=run):
+        with (
+            patch("ai_cli.workspace._run", side_effect=run),
+            patch("ai_cli.workspace._expected_upstream", return_value="origin/main"),
+        ):
             result = _upstream_drift(tmp_path)
         assert result is not None
         assert "origin/wt-sw-1" in result
+
+    def test_wt_branch_tracking_repo_integration_branch_returns_none(self, tmp_path):
+        """A worktree tracking a non-main integration branch is NOT drift (AI-CLI-193).
+
+        Hardcoding ``origin/main`` as the expectation made this the reported-drift case
+        in exactly the repositories the fix targets.
+        """
+
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined:
+                return (0, "wt-sw-1\n", "")
+            if "@{u}" in joined:
+                return (0, "origin/workspace\n", "")
+            return (0, "", "")
+
+        with (
+            patch("ai_cli.workspace._run", side_effect=run),
+            patch("ai_cli.workspace._expected_upstream", return_value="origin/workspace"),
+        ):
+            assert _upstream_drift(tmp_path) is None
+
+    def test_wt_branch_tracking_main_when_integration_branch_differs_returns_warning(self, tmp_path):
+        """origin/main is itself the drifted state in a repo that integrates elsewhere."""
+
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined:
+                return (0, "wt-sw-1\n", "")
+            if "@{u}" in joined:
+                return (0, "origin/main\n", "")
+            return (0, "", "")
+
+        with (
+            patch("ai_cli.workspace._run", side_effect=run),
+            patch("ai_cli.workspace._expected_upstream", return_value="origin/workspace"),
+        ):
+            result = _upstream_drift(tmp_path)
+        assert result is not None
+        assert "origin/main" in result
+        assert "origin/workspace" in result
+
+    def test_wt_branch_when_expected_upstream_unresolvable_returns_none(self, tmp_path):
+        """An unresolvable expectation must not be reported as drift — do not guess."""
+
+        def run(cmd):
+            joined = " ".join(cmd)
+            if "--abbrev-ref" in joined and "HEAD" in joined:
+                return (0, "wt-sw-1\n", "")
+            if "@{u}" in joined:
+                return (0, "origin/anything\n", "")
+            return (0, "", "")
+
+        with (
+            patch("ai_cli.workspace._run", side_effect=run),
+            patch("ai_cli.workspace._expected_upstream", return_value=None),
+        ):
+            assert _upstream_drift(tmp_path) is None
 
     def test_wt_branch_correct_upstream_returns_none(self, tmp_path):
         def run(cmd):
@@ -357,7 +418,10 @@ class TestUpstreamDrift:
                 return (0, "origin/main\n", "")
             return (0, "", "")
 
-        with patch("ai_cli.workspace._run", side_effect=run):
+        with (
+            patch("ai_cli.workspace._run", side_effect=run),
+            patch("ai_cli.workspace._expected_upstream", return_value="origin/main"),
+        ):
             assert _upstream_drift(tmp_path) is None
 
 

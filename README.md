@@ -114,6 +114,32 @@ ai c -s/--sandbox      # Explicitly enable sandboxing
 ai c -W/--no-worktree  # Disable git worktree isolation
 ```text
 
+#### What a new worktree tracks
+
+A new session worktree is based on, and tracks, the branch its repository
+integrates through — **not** `main` unconditionally. That branch is resolved
+config first, then from the repository's own checkout:
+
+1. the `[worktree_upstream]` entry for the repository, if it has one;
+2. otherwise the branch the repository's main checkout is currently on.
+
+So a repository sitting on `main` behaves exactly as before, and one parked on a
+long-running workspace branch gets worktrees that track that branch. This matters
+for a shared repository on a pull-request workflow, where `main` is the branch
+nobody pushes to directly.
+
+```toml
+[worktree_upstream]
+myproject = "workspace"
+```
+
+If the resolved branch does not exist on `origin` — a workspace branch that has
+not been pushed yet — the worktree is created with **no upstream** and a warning,
+rather than quietly falling back to `origin/main`. A missing upstream makes the
+first `git push` stop and ask, which is the safe direction. If the branch exists
+nowhere at all, or the repository has no `origin` remote, worktree creation fails
+loudly instead of guessing.
+
 When a worktree's `.envrc` is byte-for-byte identical to a repository-root
 `.envrc` that `direnv` can successfully execute, `ai` approves that new
 worktree path automatically.
@@ -252,6 +278,11 @@ transport = "mosh"             # "mosh" (default) or "ssh"
 
 [worktree]
 enabled = true                 # git worktree isolation per session
+
+[worktree_upstream]
+# Integration branch for session worktrees, keyed by repository directory name.
+# Omit a repository to use the branch its own checkout is on.
+# myproject = "workspace"
 
 [session]
 stale_session_timeout = 15     # minutes before cleanup considers a session stale

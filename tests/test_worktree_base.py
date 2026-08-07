@@ -1,19 +1,23 @@
-"""A session worktree must be based on ``origin/main``, not on whatever HEAD holds.
+"""A session worktree must be based on a remote-tracking ref, not on whatever HEAD holds.
 
-``create_worktree`` sets every worktree branch's upstream to ``origin/main``
-(AI-CLI-128) but used to create the branch with no start-point, so git branched it
-from the main tree's current HEAD. In a repo whose main tree sits on a long-running
-workspace branch, base and upstream then disagree: the new branch inherits every
-commit on that workspace branch while claiming to track ``origin/main``.
+``create_worktree`` attaches every worktree branch an upstream (AI-CLI-128) but used to
+create the branch with no start-point, so git branched it from the main tree's current
+HEAD. Base and upstream could then disagree: the new branch inherited commits that were
+never pushed while claiming to track a remote branch.
+
+Which branch is resolved is AI-CLI-193's concern (the repository's integration branch,
+no longer always ``main``) and is covered in ``tests/test_worktree_upstream.py``. This
+file pins the orthogonal property: whichever branch resolves, the base is its
+*remote-tracking* ref, never the local tip.
 
 Two consequences, both invisible at launch time:
 
-* The branch is not PR-clean. Promoting it opens a pull request containing unrelated
+* The branch is not review-clean. Promoting it opens a pull request containing unrelated
   commits — the exact scope leak per-session worktrees exist to prevent.
-* ``git pull --rebase`` in the worktree tries to replay those inherited commits onto
-  ``origin/main``. An unreachable or unauthenticated remote masks this: the pull fails
-  before the rebase, so the only symptom is a sync warning. Repair the remote without
-  repairing the base and the warning is replaced by a surprising rebase.
+* ``git pull --rebase`` in the worktree tries to replay those inherited commits onto the
+  upstream. An unreachable or unauthenticated remote masks this: the pull fails before
+  the rebase, so the only symptom is a sync warning. Repair the remote without repairing
+  the base and the warning is replaced by a surprising rebase.
 
 See ``docs/bugs/worktree-base-not-origin-main.md``.
 """
@@ -78,36 +82,53 @@ def repo_on_workspace_branch(tmp_path):
     return repo
 
 
-def test_given_main_tree_on_workspace_branch_when_worktree_created_then_based_on_origin_main(
+def test_given_main_tree_on_workspace_branch_when_worktree_created_then_based_on_remote_tracking_ref(
     repo_on_workspace_branch, monkeypatch, tmp_path
 ):
-    """The regression: the new branch must start at ``origin/main``, not at HEAD."""
+    """The new branch must start at a REMOTE-TRACKING ref, never at the local tip.
+
+    This is the property that survives AI-CLI-193, which changed *which* branch is
+    resolved (the repository's integration branch, no longer always ``main``) but not
+    this: a base of local ``HEAD`` picks up commits that exist only on this machine,
+    so promoting the worktree would open a review full of unrelated commits.
+
+    The fixture's checkout is deliberately AHEAD of its own remote-tracking ref, so
+    basing on HEAD and basing on ``origin/<branch>`` give different answers and the
+    assertion can fail.
+    """
     repo = repo_on_workspace_branch
     monkeypatch.chdir(repo)
     assert _out("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "user/dev-workspace"
+
+    # Give the checkout a local-only commit, so HEAD != origin/user/dev-workspace.
+    (repo / "unpushed.md").write_text("local only, never pushed\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "unpushed local commit", cwd=repo)
+    assert _out("rev-parse", "HEAD", cwd=repo) != _out("rev-parse", "origin/user/dev-workspace", cwd=repo)
 
     with patch("ai_cli.trust.ensure_workspace_trusted"):
         worktree = create_worktree("session-1")
 
     assert worktree is not None and worktree.is_dir()
 
-    # Positive: the branch carries nothing that origin/main does not already have.
-    ahead = _out("rev-list", "--count", "origin/main..wt-session-1", cwd=repo)
-    assert ahead == "0", f"wt-session-1 must add no commits to origin/main, but is {ahead} ahead"
-    assert _out("rev-parse", "wt-session-1", cwd=repo) == _out("rev-parse", "origin/main", cwd=repo)
+    # Positive: the branch is exactly the remote-tracking ref of the integration branch.
+    assert _out("rev-parse", "wt-session-1", cwd=repo) == _out("rev-parse", "origin/user/dev-workspace", cwd=repo)
+    ahead = _out("rev-list", "--count", "origin/user/dev-workspace..wt-session-1", cwd=repo)
+    assert ahead == "0", f"wt-session-1 must add no commits to its integration branch, but is {ahead} ahead"
 
-    # Negative: nothing from the workspace branch leaked in. A base of HEAD would
-    # have brought this commit — and its file — along.
+    # Negative: the local-only commit did NOT leak in. A base of HEAD would have
+    # brought this commit — and its file — along.
     subjects = _out("log", "--format=%s", "wt-session-1", cwd=repo).splitlines()
-    assert "workspace only commit" not in subjects, f"workspace-branch history leaked in: {subjects}"
-    assert not (worktree / "workspace-notes.md").exists(), "workspace-only file leaked into the worktree"
+    assert "unpushed local commit" not in subjects, f"unpushed local history leaked in: {subjects}"
+    assert not (worktree / "unpushed.md").exists(), "unpushed local file leaked into the worktree"
 
     # And the checked-out worktree really is at that base, not merely the ref.
-    assert _out("rev-parse", "HEAD", cwd=worktree) == _out("rev-parse", "origin/main", cwd=repo)
-    assert (worktree / "shipped.md").exists(), "the worktree must contain what landed on main"
+    assert _out("rev-parse", "HEAD", cwd=worktree) == _out("rev-parse", "origin/user/dev-workspace", cwd=repo)
 
-    # Upstream tracking (AI-CLI-128) is unchanged by this.
-    assert _out("rev-parse", "--abbrev-ref", "--symbolic-full-name", "wt-session-1@{u}", cwd=repo) == "origin/main"
+    # Upstream tracking (AI-CLI-128) still attaches, now to the integration branch
+    # rather than to main (AI-CLI-193).
+    upstream = _out("rev-parse", "--abbrev-ref", "--symbolic-full-name", "wt-session-1@{u}", cwd=repo)
+    assert upstream == "origin/user/dev-workspace"
 
 
 def test_given_main_tree_on_workspace_branch_when_worktree_created_then_that_branch_is_untouched(
@@ -125,12 +146,12 @@ def test_given_main_tree_on_workspace_branch_when_worktree_created_then_that_bra
     assert _out("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "user/dev-workspace"
 
 
-def test_given_no_origin_main_when_worktree_created_then_raises_instead_of_basing_on_head(tmp_path, monkeypatch):
-    """No ``origin/main`` is a hard failure, never a silent fallback to HEAD.
+def test_given_no_origin_remote_when_worktree_created_then_raises_instead_of_basing_on_head(tmp_path, monkeypatch):
+    """No remote at all is a hard failure, never a silent fallback to HEAD.
 
     Consistent with AI-CLI-128's upstream hard-fail: a worktree branch that cannot be
-    anchored to ``main`` is worse than no worktree, because the drift only shows up at
-    push or PR time.
+    anchored to any remote branch is worse than no worktree, because the drift only
+    shows up at push or review time.
     """
     repo = tmp_path / "myproject"
     repo.mkdir()
@@ -142,7 +163,7 @@ def test_given_no_origin_main_when_worktree_created_then_raises_instead_of_basin
     _git("commit", "-q", "-m", "init", cwd=repo)
     monkeypatch.chdir(repo)
 
-    with patch("ai_cli.trust.ensure_workspace_trusted"), pytest.raises(RuntimeError, match="origin/main"):
+    with patch("ai_cli.trust.ensure_workspace_trusted"), pytest.raises(RuntimeError, match="no `origin` remote"):
         create_worktree("session-1")
 
     assert not (repo / ".worktrees" / "session-1").exists(), "no worktree may be left behind on an unresolvable base"

@@ -800,17 +800,20 @@ class TestDetectRepoRoot:
 # --- create_worktree ---
 
 
-def _stub_worktree_base():
-    """Stub the ``origin/main`` base lookup for tests that mock ``subprocess.run`` wholesale.
+def _stub_worktree_base(upstream="main"):
+    """Stub base+upstream resolution for tests that mock ``subprocess.run`` wholesale.
 
-    ``create_worktree`` resolves the new branch's start-point by asking git for
-    ``refs/remotes/origin/main``, which a blanket ``subprocess.run`` mock cannot
+    ``create_worktree`` resolves the new branch's start-point and the branch it should
+    track by asking git several questions a blanket ``subprocess.run`` mock cannot
     answer.  These tests assert unrelated behaviour (symlinking, upstream retry,
-    stale-directory recreation), so the base lookup is stubbed rather than faked.
-    The start-point behaviour itself is covered against real git repositories in
-    ``tests/test_worktree_base.py``.
+    stale-directory recreation), so resolution is stubbed rather than faked.  The
+    resolution behaviour itself is covered against real git repositories in
+    ``tests/test_worktree_base.py`` and ``tests/test_worktree_upstream.py``.
+
+    Pass ``upstream=None`` for the no-upstream case (AI-CLI-193 AC-3).
     """
-    return patch("ai_cli.session._resolve_worktree_base", return_value="refs/remotes/origin/main")
+    base = f"refs/remotes/origin/{upstream}" if upstream else "refs/heads/workspace"
+    return patch("ai_cli.session._resolve_worktree_target", return_value=(base, upstream))
 
 
 class TestCreateWorktree:

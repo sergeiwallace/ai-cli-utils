@@ -391,18 +391,25 @@ $ printf 'protocol=https\nhost=example.com\n\n' | git -c credential.helper='!/no
 exit=0    # ...and exit=0 for a WORKING helper too. Cannot discriminate.
 ```
 
-### Open question for the maintainer — repos whose default branch is not `main`
+### Resolved — repos whose default branch is not `main`
 
-`main` is hardcoded here, matching the existing `--set-upstream-to=origin/main` call and the
-project's documented worktree model (`docs/designs/architecture.md`: "each `ai c N` session
-runs in `.worktrees/sw-N/` on branch `wt-sw-N` tracking `origin/main`"). A repo whose default
-branch is `master` or `trunk` therefore cannot create a session worktree at all — it now
-fails at base resolution instead of failing at the upstream guard one step later, so the
-behaviour is not newly broken, only reported earlier and more clearly.
+This section recorded `main` being hardcoded, and the resulting inability of a repository on
+`master` or `trunk` to create a session worktree at all, as an open question. **It is now
+resolved.**
 
-Discovering the default branch from `origin/HEAD` instead (case C above shows it resolves
-correctly to `origin/trunk`) would support such repos, but it changes a documented contract
-in two places and affects push semantics as well as the base. Recorded here rather than
-decided in a bug fix.
+Both the base and the upstream resolve to the repository's *integration branch*: the
+`[worktree_upstream]` config entry for the repository if it has one, otherwise the branch the
+repository's main checkout is on. A repository on `main` is unaffected. Neither the base nor
+the upstream is hardcoded any longer, so no repository name is special-cased in source.
+
+Resolution deliberately does **not** read `origin/HEAD`, which was the option floated here.
+`origin/HEAD` records the remote's *default* branch, which answers a different question than
+"what does this repository integrate through" — it is a cached local ref that can be stale or
+absent, and in the reported case it pointed at `main` while the work integrated elsewhere, so
+it would have reproduced the bug.
+
+Where resolution fails, the worktree is created with **no upstream** and a warning rather
+than falling back to `origin/main`; a branch that exists nowhere, or a missing `origin`
+remote, fails loudly. Details and rationale: `tests/test_worktree_upstream.py`.
 
 <!-- /doc:region name="appendix_evidence" -->

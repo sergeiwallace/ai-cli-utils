@@ -193,7 +193,15 @@ The tool installs as a single `ai` command. There is no server component — all
 
 **Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without requiring a local scrape on every machine.
 
-**Git worktree isolation** — each `ai c N` session runs in `.worktrees/sw-N/` on branch `wt-sw-N`, **created at `origin/main`** and tracking `origin/main`. Created and destroyed by `main.py`. Commits ship directly to `origin/main` via `git push origin HEAD:main`. Base and upstream are both pinned deliberately: `git worktree add -b` defaults its start-point to the main tree's current HEAD, which silently produces a branch that is not PR-clean whenever that tree is parked on something other than `main` (BUG-004). An unresolvable `origin/main` is a hard failure, never a fallback to HEAD.
+**Git worktree isolation** — each `ai c N` session runs in `.worktrees/sw-N/` on branch `wt-sw-N`, **created at, and tracking, the repository's integration branch**. That branch resolves from the `[worktree_upstream]` config table if the repository declares one, otherwise from the branch the repository's own main checkout is on — so a repository on `main` is created at and tracks `origin/main`, unchanged. Created and destroyed by `main.py`.
+
+Base and upstream are resolved together, from one call, so they can never disagree. Three properties are deliberate:
+
+- The base is the *remote-tracking* ref of that branch, never the local tip. `git worktree add -b` defaults its start-point to the main tree's current HEAD, which silently produces a branch that is not review-clean (BUG-004).
+- Neither base nor upstream is hardcoded to `main`, and no repository name is special-cased in source. Pointing every worktree at `origin/main` aims routine session work at the branch a pull-request-workflow repository forbids pushing to.
+- Where the branch cannot be resolved on `origin`, the worktree gets **no upstream** plus a warning — never a fallback to `origin/main`. A missing upstream makes `git push` stop and ask. A branch that exists nowhere, a detached HEAD, or a missing `origin` remote is a hard failure, never a fallback to HEAD.
+
+Note that `git worktree add -b <branch> <remote-tracking-ref>` attaches an upstream *by itself* via git's default `branch.autoSetupMerge`, so it is a second upstream writer in this path: declining to attach one has to actively clear it.
 
 **CC session sync via bare git** — `sync.py` uses a bare git repo as the transport for CC JSONL + memory files between machines. Conflict detection is file-level mtime comparison logged to `~/.claude-sync-conflicts.log`.
 

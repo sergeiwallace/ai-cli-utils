@@ -40,14 +40,20 @@ def _pull_rebase(path: Path) -> tuple[int, str]:
 
 
 def _upstream_drift(wt: Path) -> str | None:
-    """Return a warning string if a canonical worktree branch isn't tracking
-    origin/main, else None (AI-CLI-128).
+    """Return a warning string if a canonical worktree branch isn't tracking its
+    repository's integration branch, else None (AI-CLI-128).
 
-    A worktree branch left without upstream — or tracking anything other than
-    origin/main — is the precursor state that let ai-ide-mobile/mobile-1 sit
-    46 commits behind main for months while reporting "0 ahead, 0 behind"
-    against its own dead upstream. This surfaces drift instead of letting it
-    accumulate silently; it does not fail the pull.
+    A worktree branch left without upstream — or tracking a branch the repository
+    does not integrate through — is the precursor state that let one session sit
+    46 commits behind for months while reporting "0 ahead, 0 behind" against its
+    own dead upstream. This surfaces drift instead of letting it accumulate
+    silently; it does not fail the pull.
+
+    The expected upstream is resolved per repository rather than fixed at
+    ``origin/main`` (AI-CLI-193): in a repository whose work integrates through a
+    workspace branch, ``origin/main`` is itself the drifted state, so hardcoding it
+    here would report every correctly-tracking worktree as drifted and stay silent
+    about the one case that matters.
     """
     rc, branch, _ = _run(["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch.strip()
@@ -58,9 +64,33 @@ def _upstream_drift(wt: Path) -> str | None:
     upstream = upstream.strip()
     if rc != 0:
         return f"{branch}: no upstream configured"
-    if upstream != "origin/main":
-        return f"{branch}: upstream is {upstream}, not origin/main"
+
+    expected = _expected_upstream(wt)
+    if expected is None:
+        return None  # cannot resolve the repository's integration branch — do not guess
+    if upstream != expected:
+        return f"{branch}: upstream is {upstream}, not {expected}"
     return None
+
+
+def _expected_upstream(wt: Path) -> str | None:
+    """Return the ``origin/<branch>`` a worktree under ``wt`` should track, or None.
+
+    Resolves the owning repository's integration branch through the same path
+    ``create_worktree`` uses, so the check and the creation cannot disagree.
+    """
+    from .config import WORKTREE_DIR
+    from .session import _resolve_worktree_target
+
+    resolved = wt.resolve()
+    if WORKTREE_DIR not in resolved.parts:
+        return None
+    repo_root = Path(*resolved.parts[: resolved.parts.index(WORKTREE_DIR)])
+    try:
+        _, upstream_branch = _resolve_worktree_target(repo_root)
+    except RuntimeError:
+        return None
+    return None if upstream_branch is None else f"origin/{upstream_branch}"
 
 
 def _get_worktrees(path: Path) -> list[Path]:

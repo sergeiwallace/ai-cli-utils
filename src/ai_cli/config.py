@@ -163,6 +163,15 @@ notify_on_exit = true
 ## Enable automatic git worktree isolation for new sessions
 enabled = true
 
+[worktree_upstream]
+## Integration branch for session worktrees, keyed by repository directory name.
+## A new worktree is based on, and tracks, this branch instead of "main". Set it
+## for any repository whose routine work does not land on main directly -- for
+## example a shared repository on a pull-request workflow, where main is the
+## branch nobody pushes to. When a repository is absent from this table, the
+## branch its own checkout is on is used, and "main" only when that is main.
+# myproject = "workspace"
+
 [session]
 ## Session names: c-{project}-{n} or c-r-{project}-{n} for remote sessions
 stale_session_timeout = 15
@@ -638,6 +647,23 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
     _registry_cache = None
     load_project_registry(_force=True)
     return True
+
+
+def get_worktree_upstream_branches() -> dict[str, str]:
+    """Return the project-name → integration-branch map for session worktrees.
+
+    Read from the ``[worktree_upstream]`` table in ``config.toml``. A repository
+    whose routine work does not land on ``main`` declares its integration branch
+    here, and every session worktree created in it tracks that branch instead.
+
+    Repository names and branch layouts are inherently user-specific, so they
+    belong in configuration rather than in this package's source: no repository
+    name is ever special-cased in code.
+    """
+    table = load_config().get("worktree_upstream", {})
+    if not isinstance(table, dict):
+        return {}
+    return {str(name): str(branch) for name, branch in table.items() if str(branch).strip()}
 
 
 def get_project_prefix_overrides() -> dict[str, str]:
