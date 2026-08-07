@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import colorsys
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -244,10 +243,10 @@ def generate_dynamic_profile(
     # ANY filesystem event, with no .json/.tmp extension filter (confirmed by reading
     # iTerm2's shipped sources/Settings/Profiles/iTermDynamicProfileManager.m). A temp
     # file staged inside that directory — even briefly, even after AI-CLI-84's
-    # os.replace()-based atomic rename — is itself a candidate profile iTerm2 may try
+    # Path.replace()-based atomic rename — is itself a candidate profile iTerm2 may try
     # (and fail) to parse, or successfully parse as a short-lived duplicate of the
     # Guid it's about to replace. Stage the temp file in the DynamicProfiles dir's
-    # PARENT instead: guaranteed same filesystem (required for os.replace() atomicity)
+    # PARENT instead: guaranteed same filesystem (required for Path.replace() atomicity)
     # and confirmed outside iTerm2's watched folder set, which covers only
     # DynamicProfiles/ itself, never its parent (AIH-478).
     staging_dir = profile_dir.parent
@@ -259,8 +258,8 @@ def generate_dynamic_profile(
         delete=False,
     ) as tmp:
         tmp.write(json.dumps(data, indent=2))
-        tmp_path = tmp.name
-    os.replace(tmp_path, out_path)
+        tmp_path = Path(tmp.name)
+    tmp_path.replace(out_path)
     return out_path
 
 

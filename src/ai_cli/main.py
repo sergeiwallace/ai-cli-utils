@@ -525,7 +525,7 @@ def _write_launch_script_if_changed(script_path: Path, script: str) -> bool:
     except OSError:
         pass
     script_path.write_text(script)
-    os.chmod(script_path, 0o700)
+    script_path.chmod(0o700)
     return True
 
 
@@ -1771,7 +1771,7 @@ def _do_session_launch(
         vpn_host = remote_cfg.get("vpn_host", "") or host
         ssh_args = ["ssh", "-t", "-p", port]
         if id_file:
-            ssh_args += ["-i", os.path.expanduser(id_file)]
+            ssh_args += ["-i", str(Path(id_file).expanduser())]
         ssh_args.append(f"{user}@{vpn_host}")
         ssh_args.append(f"zsh -l -c {shlex.quote(remote_cmd)}")
 
@@ -1785,7 +1785,7 @@ def _do_session_launch(
         if port != "22":
             _mosh_ssh += f" -p {port}"
         if id_file:
-            _mosh_ssh += f" -i {shlex.quote(os.path.expanduser(id_file))}"
+            _mosh_ssh += f" -i {shlex.quote(str(Path(id_file).expanduser()))}"
         mosh_args += ["--ssh", _mosh_ssh]
         mosh_args.append(f"{user}@{host}")
         mosh_args += ["--", "zsh", "-l", "-c", remote_cmd]
@@ -2157,7 +2157,7 @@ def _do_session_launch(
             if result2.returncode != 0:
                 raw2 = result2.stderr
                 stderr2 = (raw2.decode() if isinstance(raw2, bytes) else raw2).strip()
-                os.unlink(_script_path)
+                Path(_script_path).unlink()
                 print(f"Error: failed to create tmux session '{session_id}'", file=sys.stderr)
                 print(f"  (with --): {stderr}", file=sys.stderr)
                 print(f"  (without --): {stderr2}", file=sys.stderr)

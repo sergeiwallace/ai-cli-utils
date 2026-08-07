@@ -631,8 +631,10 @@ def auto_clean_orphans(
             import datetime
 
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_path, "a") as f:
-                ts = datetime.datetime.now().isoformat(timespec="seconds")
+            with log_path.open("a") as f:
+                # UTC, not local: this log is read alongside logs from other
+                # machines, where a bare local timestamp is ambiguous.
+                ts = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
                 for proc in killed:
                     f.write(f"{ts} killed {proc.name} pid={proc.pid} score={proc.score} ({proc.detail})\n")
         except OSError:

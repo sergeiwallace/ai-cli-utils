@@ -25,7 +25,7 @@ def _write_log(log_dir: Path, date: str, entries: list[dict]) -> None:
     """Write a JSONL log file for the given date."""
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{date}.jsonl"
-    with open(log_file, "w") as f:
+    with log_file.open("w") as f:
         for entry in entries:
             f.write(json.dumps(entry) + "\n")
 

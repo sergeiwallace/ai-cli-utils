@@ -204,7 +204,7 @@ def get_latest_gemini_session_id(ai_name: str | None = None) -> str | None:
     for p in paths:
         if p.exists():
             try:
-                with open(p, "rb") as f:
+                with p.open("rb") as f:
                     size = p.stat().st_size
                     if size > 4096:
                         f.seek(-4096, 2)
@@ -721,7 +721,7 @@ def create_worktree(ai_name: str) -> Path | None:
             src = repo_root / item
             dst = wt_dir / item
             if src.exists() and not dst.exists():
-                os.symlink(src, dst)
+                dst.symlink_to(src)
         # Register workspace trust so Claude Code loads the symlinked
         # .claude/settings.json permissions instead of dropping them with a
         # "workspace has not been trusted" warning (GH #72896). Worktrees

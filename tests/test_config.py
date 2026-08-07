@@ -359,7 +359,7 @@ class TestEnsureMachineProfileRegistered:
             patch("sys.platform", "linux"),
         ):
             ensure_machine_profile_registered(cfg_file, {})
-        with open(cfg_file, "rb") as f:
+        with cfg_file.open("rb") as f:
             parsed = tomllib.load(f)
         assert parsed["machine"]["host_id"] == "testhost"
         assert parsed["machine"]["os_type"] == "linux"

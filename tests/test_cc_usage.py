@@ -67,7 +67,7 @@ def _make_human_entry(uuid="h-1", timestamp="2026-04-17T10:00:00Z") -> dict:
 
 def _write_jsonl(path: Path, entries: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    with path.open("w") as f:
         for e in entries:
             f.write(json.dumps(e) + "\n")
 

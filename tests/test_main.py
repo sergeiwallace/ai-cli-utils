@@ -469,7 +469,7 @@ class TestGetEngineScript:
         # Must be exactly one path (no concatenation, no newline-separated list).
         assert output.count(str(tmp_path)) == 1, f"Expected one path in output, got: {output!r}"
         # Must be a valid file path that actually exists.
-        assert os.path.isfile(output), f"Output is not a valid file path: {output!r}"
+        assert Path(output).is_file(), f"Output is not a valid file path: {output!r}"
 
 
 # --- Group 8: _log_handoff_event OSError ---

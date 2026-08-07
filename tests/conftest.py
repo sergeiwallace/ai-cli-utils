@@ -23,7 +23,14 @@ def _command_program(command):
         command = shlex.split(command)[0] if command else None
     if not command:
         return None
-    return os.path.basename(os.fspath(command))
+    # PTH119 is suppressed below deliberately: this extracts a program name from
+    # an arbitrary subprocess argument, not from a filesystem path, and the two
+    # are not interchangeable here. os.fspath may yield bytes, which Path()
+    # rejects with TypeError, and this helper backstops every subprocess call in
+    # the suite -- raising there would be worse than the lint finding.
+    # os.path.basename also returns "" for a trailing-slash argument, where
+    # Path().name returns the parent directory name instead.
+    return os.path.basename(os.fspath(command))  # noqa: PTH119
 
 
 def _reject_real_agent_process(command, allowed_binaries=frozenset()):

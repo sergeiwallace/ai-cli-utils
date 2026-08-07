@@ -255,7 +255,7 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
     execs: list[tuple] = []
 
     def fake_execvp(file, args):
-        execs.append((file, list(args), os.getcwd()))
+        execs.append((file, list(args), str(Path.cwd())))
         raise SystemExit(0)
 
     with (
@@ -303,7 +303,7 @@ def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo
     execs: list[tuple] = []
 
     def fake_execvp(file, args):
-        execs.append((file, list(args), os.getcwd()))
+        execs.append((file, list(args), str(Path.cwd())))
         raise SystemExit(0)
 
     with (
@@ -333,7 +333,7 @@ def test_given_bare_launch_when_no_worktree_flag_then_runs_in_repo_root(real_rep
     execs: list[tuple] = []
 
     def fake_execvp(file, args):
-        execs.append((file, list(args), os.getcwd()))
+        execs.append((file, list(args), str(Path.cwd())))
         raise SystemExit(0)
 
     with (

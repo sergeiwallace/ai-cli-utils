@@ -250,7 +250,7 @@ def load_config():
         config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
 
     try:
-        with open(config_path, "rb") as f:
+        with config_path.open("rb") as f:
             cfg = tomllib.load(f)
     except Exception as e:
         print(f"Warning: Failed to load config from {config_path}: {e}", file=sys.stderr)
@@ -258,7 +258,7 @@ def load_config():
 
     if ensure_machine_profile_registered(config_path, cfg):
         try:
-            with open(config_path, "rb") as f:
+            with config_path.open("rb") as f:
                 cfg = tomllib.load(f)
         except Exception:
             pass
@@ -379,7 +379,7 @@ def load_project_registry(*, _force: bool = False) -> list[dict]:
         return _registry_cache
 
     try:
-        with open(registry_path, "rb") as f:
+        with registry_path.open("rb") as f:
             data = tomllib.load(f)
     except Exception:
         _registry_cache = []
@@ -470,7 +470,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
 
     # Commit all prompted registrations at once so cancellation or rejection
     # cannot leave a partially updated registry behind.
-    with open(registry_path, "a") as f:
+    with registry_path.open("a") as f:
         for name, prefix in entries:
             f.write(f'\n[[projects]]\nname = "{name}"\ntask_prefix = "{prefix}"\ntype = "tool"\nactive = true\n')
     for name, prefix in entries:

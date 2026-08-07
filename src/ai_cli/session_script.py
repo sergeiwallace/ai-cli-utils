@@ -4,8 +4,8 @@ Depends on: nothing (self-contained).
 """
 
 import json
-import os
 import re
+from pathlib import Path
 
 
 def _current_update_commit() -> str:
@@ -19,8 +19,8 @@ def _current_update_commit() -> str:
     value after install and can therefore read identical across updates.
     """
     try:
-        stamp = os.path.join(os.path.expanduser("~"), ".local", "state", "ai-cli-utils", "last_update_commit.txt")
-        with open(stamp) as fh:
+        stamp = Path.home() / ".local" / "state" / "ai-cli-utils" / "last_update_commit.txt"
+        with stamp.open() as fh:
             return fh.read().strip()
     except Exception:
         return ""

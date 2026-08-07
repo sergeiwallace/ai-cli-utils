@@ -32,7 +32,7 @@ def _find_copier_projects(projects_dir: Path) -> list[Path]:
     result = []
     for answers_file in sorted(projects_dir.glob("*/.copier-answers.yml")):
         try:
-            with open(answers_file) as f:
+            with answers_file.open() as f:
                 data = yaml.safe_load(f) or {}
         except Exception:
             continue

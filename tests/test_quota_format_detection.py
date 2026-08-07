@@ -80,7 +80,7 @@ class TestRecordScrapeMismatch:
         at = _get_quota_meta("scrape_format_mismatch_at")
         assert at is not None
         # Should be a valid ISO UTC timestamp
-        dt = datetime.strptime(at, "%Y-%m-%dT%H:%M:%SZ")
+        dt = datetime.strptime(at, "%Y-%m-%dT%H:%M:%S%z")
         assert dt.year >= 2026
 
 

@@ -56,7 +56,7 @@ async def _vpn_watch_loop(config: dict) -> None:
 
             # Log the transition
             try:
-                with open(log_file, "a") as f:
+                with log_file.open("a") as f:
                     f.write(json.dumps(payload) + "\n")
             except OSError:
                 pass  # Not covered: requires filesystem write failure

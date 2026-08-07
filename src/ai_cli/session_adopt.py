@@ -400,7 +400,7 @@ def retitle_transcript(path: Path, old_title: str, new_title: str) -> int:
     first titled record, but a later record still claiming the old title would
     make the file answer to both names and reintroduce the ambiguity.
 
-    Written to a sibling temp file and ``os.replace``d, so an interrupted retitle
+    Written to a sibling temp file and atomically replaced, so an interrupted retitle
     leaves the original transcript intact rather than a half-rewritten one.
     Returns the number of records changed.
     """
@@ -422,7 +422,7 @@ def retitle_transcript(path: Path, old_title: str, new_title: str) -> int:
                 out.write(raw)
         stat = path.stat()
         os.utime(temp, (stat.st_atime, stat.st_mtime))
-        os.replace(temp, path)
+        temp.replace(path)
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
@@ -459,7 +459,7 @@ def neutralise_worktree_state(path: Path, dest_root: Path) -> int:
     file now sits. Conversation content is untouched: these are session-metadata
     records, and the worktree they referred to is transient anyway.
 
-    Written to a sibling temp file and ``os.replace``d, so an interrupted call
+    Written to a sibling temp file and atomically replaced, so an interrupted call
     leaves the original transcript intact. Returns the number of records changed.
     """
     dest = str(dest_root)
@@ -487,7 +487,7 @@ def neutralise_worktree_state(path: Path, dest_root: Path) -> int:
                 out.write(raw)
         stat = path.stat()
         os.utime(temp, (stat.st_atime, stat.st_mtime))
-        os.replace(temp, path)
+        temp.replace(path)
     except BaseException:
         temp.unlink(missing_ok=True)
         raise

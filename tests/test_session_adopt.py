@@ -1336,7 +1336,7 @@ def _cc_relocation_on_exit(transcript: Path, home: Path) -> Path:
     dest_dir = cc_project_dir(Path(target), home)
     dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     dest = dest_dir / transcript.name
-    os.replace(transcript, dest)
+    transcript.replace(dest)
     return dest
 
 

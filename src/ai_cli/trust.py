@@ -30,6 +30,7 @@ All functions are best-effort: they never raise into the launch path. If
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -50,17 +51,18 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     Matches Claude Code's own formatting (2-space indent, trailing newline) so
     an external edit doesn't reflow the whole 140 KB file.
     """
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".claude.json.", suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".claude.json.", suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
-        os.replace(tmp, path)
+        tmp.replace(path)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        # Suppress OSError, not just FileNotFoundError: cleanup must never mask
+        # the original failure being re-raised below.
+        with contextlib.suppress(OSError):
+            tmp.unlink()
         raise
 
 

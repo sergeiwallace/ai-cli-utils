@@ -132,6 +132,10 @@ select = [
     "PLE",  # Pylint errors (0 findings today; regression insurance)
     # --- phase 3: Ruff-specific hygiene ---
     "RUF",  # incl. RUF100 unused-noqa
+    # --- phase 4: correctness-adjacent, small ---
+    "PTH",  # flake8-use-pathlib (cross-platform paths)
+    "DTZ",  # flake8-datetimez (naive datetimes)
+    "LOG",  # flake8-logging
 ]
 ignore = [
     "E701",  # multiple-statements-on-one-line (colon) — established compact style in main.py

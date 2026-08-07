@@ -269,7 +269,8 @@ class TestGenerateDynamicProfile:
         def poll():
             while not stop.is_set():
                 try:
-                    for name in os.listdir(watched_dir):
+                    for entry in watched_dir.iterdir():
+                        name = entry.name
                         if name != expected_name:
                             stray_names.add(name)
                 except FileNotFoundError:

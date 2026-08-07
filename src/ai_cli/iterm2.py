@@ -124,7 +124,7 @@ def _load_iterm2_config() -> dict:
         get_xdg_config_home().mkdir(parents=True, exist_ok=True)
         config_path.write_text(_DEFAULT_ITERM2_CONFIG)
     try:
-        with open(config_path, "rb") as f:
+        with config_path.open("rb") as f:
             return tomllib.load(f)
     except Exception:
         try:
@@ -190,7 +190,7 @@ def _assign_iterm2_color_slot(ai_name: str, engine: str, project_name: str = "")
     lease_file = _iterm2_state_dir() / "color-leases.json"
     lock_path = _iterm2_state_dir() / "color-leases.lock"
 
-    with open(lock_path, "w") as lock_fd:
+    with lock_path.open("w") as lock_fd:
         portalocker.lock(lock_fd, portalocker.LOCK_EX)
         try:
             leases: dict = {}
@@ -249,7 +249,7 @@ def _release_iterm2_color_slot(ai_name: str) -> None:
     if not lease_file.exists():
         return
     lock_path = _iterm2_state_dir() / "color-leases.lock"
-    with open(lock_path, "w") as lock_fd:
+    with lock_path.open("w") as lock_fd:
         portalocker.lock(lock_fd, portalocker.LOCK_EX)
         try:
             leases: dict = {}

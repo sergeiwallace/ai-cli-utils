@@ -678,24 +678,22 @@ class TestGetLatestGeminiEdgeCases:
 class TestGetLatestGeminiSessionIdException:
     def test_get_latest_gemini_session_id_when_open_raises_then_returns_none(self, tmp_path):
         """Covers lines 241-242: exception in open() inside get_latest_gemini_session_id."""
-        import builtins as _builtins
-
         log_dir = tmp_path / ".gemini" / "tmp" / "testproj"
         log_dir.mkdir(parents=True)
         log_file = log_dir / "logs.json"
         log_file.write_bytes(b'{"sessionId": "abc"}')
 
-        real_open = _builtins.open
+        real_path_open = Path.open
 
-        def fail_on_log(path, *args, **kwargs):
-            if str(path).endswith("logs.json"):
+        def fail_on_log(self, *args, **kwargs):
+            if str(self).endswith("logs.json"):
                 raise OSError("permission denied")
-            return real_open(path, *args, **kwargs)
+            return real_path_open(self, *args, **kwargs)
 
         with patch("pathlib.Path.home", return_value=tmp_path):
             with patch("pathlib.Path.cwd", return_value=tmp_path / "projects" / "testproj"):
                 with patch("ai_cli.config._get_main_project_name", return_value=None):
-                    with patch("builtins.open", side_effect=fail_on_log):
+                    with patch("pathlib.Path.open", new=fail_on_log):
                         result = get_latest_gemini_session_id()
         assert result is None
 

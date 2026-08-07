@@ -2485,7 +2485,7 @@ def test_detect_foreign_home_in_history_when_file_unreadable_then_returns_none(t
     """Covers lines 524-525: outer exception (cannot open file) returns None."""
     history = tmp_path / "history.jsonl"
     history.write_bytes(b'{"project":"/home/remote/projects/x"}')
-    with patch("builtins.open", side_effect=OSError("permission denied")):
+    with patch("pathlib.Path.open", side_effect=OSError("permission denied")):
         result = _detect_foreign_home_in_history(history)
     assert result is None
 

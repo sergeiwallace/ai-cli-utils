@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import UTC, date
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -182,8 +182,12 @@ def _parse_reset_datetime(text: str) -> str | None:
                 hour = 0
         tz_offset_h = _TZ_OFFSETS_H.get(tz_s.upper() if tz_s else "", 0)
         try:
-            naive = _dt(year, month, (day_str and int(day_str)) or 1, hour, minute, second)
-            return (naive - _td(hours=tz_offset_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            # The parsed wall-clock time belongs to the tz named in the text, whose
+            # offset is tz_offset_h. Attaching UTC up front and then subtracting
+            # that offset yields the same instant as building a naive datetime and
+            # subtracting, without an intermediate naive value.
+            local = _dt(year, month, (day_str and int(day_str)) or 1, hour, minute, second, tzinfo=UTC)
+            return (local - _td(hours=tz_offset_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
         except ValueError:
             return None
 
@@ -619,7 +623,10 @@ def quota_watch(poll_interval: int = 300) -> int:
             snapshot = _get_claude_usage_snapshot()
             if snapshot is not None:
                 usage = snapshot.weekly_all_models_pct
-                today = date.today().isoformat()
+                # UTC day, not local: this is only ever compared against itself as
+                # a once-per-day dedupe key, and the quota window it tracks is
+                # itself UTC-based.
+                today = datetime.now(UTC).date().isoformat()
                 for threshold in thresholds:
                     if usage >= threshold and alerted_today.get(threshold) != today:
                         subject = f"quota.threshold.{threshold}"
@@ -1065,9 +1072,7 @@ def quota_sync_from_remote() -> int:
     )
     ssh_cmd = ["ssh", "-p", port, "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
     if identity:
-        import os
-
-        ssh_cmd += ["-i", os.path.expanduser(identity)]
+        ssh_cmd += ["-i", str(Path(identity).expanduser())]
     ssh_cmd += [
         f"{user}@{host}",
         f'sqlite3 ~/.local/state/ai-cli/quota.db "{sql}"',

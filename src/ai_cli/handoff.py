@@ -18,7 +18,7 @@ def _log_handoff_event(event_type: str, **fields) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {"event": event_type, "ts": time.time(), **fields}
     try:
-        with open(log_path, "a") as f:
+        with log_path.open("a") as f:
             f.write(json.dumps(entry) + "\n")
     except OSError:
         pass

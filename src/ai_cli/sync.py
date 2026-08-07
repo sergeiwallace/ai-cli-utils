@@ -275,7 +275,7 @@ def should_sync_file(path: Path, memories_only: bool) -> bool:
 def file_hash(path: Path) -> str:
     """Return SHA-256 hex digest of file content."""
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with path.open("rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -287,7 +287,7 @@ def _detect_foreign_home(jsonl_path: Path) -> str | None:
 
     local_home = str(Path.home())
     try:
-        with open(jsonl_path, "rb") as f:
+        with jsonl_path.open("rb") as f:
             for raw in f:
                 if b'"cwd"' not in raw and b'"project"' not in raw:
                     continue
@@ -560,7 +560,7 @@ def _detect_foreign_home_in_history(history_path: Path) -> str | None:
 
     local_home = str(Path.home())
     try:
-        with open(history_path, "rb") as f:
+        with history_path.open("rb") as f:
             for raw in f:
                 if b'"project"' not in raw:
                     continue
@@ -680,7 +680,7 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
             existing_projects.add(wt_cwd)  # Prevent duplicates across iterations
 
     if new_entries:
-        with open(history_path, "a") as f:
+        with history_path.open("a") as f:
             for entry in new_entries:
                 f.write(entry + "\n")
         if verbose:

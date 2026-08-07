@@ -301,7 +301,7 @@ class TestGetCurrentWeekStartNowNone:
         with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
             result = quota_db._get_current_week_start()  # no now arg
         assert result.endswith("Z")
-        parsed = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ")
+        parsed = datetime.strptime(result, "%Y-%m-%dT%H:%M:%S%z")
         assert parsed is not None
 
 
@@ -315,7 +315,7 @@ class TestGetResetAtEdgeCases:
         with patch("ai_cli.quota_db._get_reset_anchor_utc", return_value=anchor):
             result = quota_db._get_reset_at()  # no now arg
         assert result.endswith("Z")
-        parsed = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ")
+        parsed = datetime.strptime(result, "%Y-%m-%dT%H:%M:%S%z")
         assert parsed is not None
 
     def test_when_reset_equals_now_then_advances_by_one_week(self):
@@ -489,7 +489,7 @@ class TestParseSinceDatetime:
 
         result = quota_db._parse_since_datetime("2h")
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=UTC)
         expected = datetime.now(UTC) - timedelta(hours=2)
         assert abs((dt - expected).total_seconds()) < 5
 
@@ -498,7 +498,7 @@ class TestParseSinceDatetime:
 
         result = quota_db._parse_since_datetime("30m")
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=UTC)
         expected = datetime.now(UTC) - timedelta(minutes=30)
         assert abs((dt - expected).total_seconds()) < 5
 
@@ -507,7 +507,7 @@ class TestParseSinceDatetime:
 
         result = quota_db._parse_since_datetime("1d")
         assert result is not None
-        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        dt = datetime.strptime(result, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=UTC)
         expected = datetime.now(UTC) - timedelta(days=1)
         assert abs((dt - expected).total_seconds()) < 5
 
