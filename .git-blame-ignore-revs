@@ -1,0 +1,16 @@
+# Commits listed here are skipped by `git blame`, so that bulk mechanical
+# rewrites do not obscure who last touched a line for a substantive reason.
+#
+# Enable locally (once per clone):
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub honours this file automatically in its blame view.
+#
+# Only genuinely mechanical, behaviour-preserving commits belong here — a
+# tool-applied lint autofix or formatter sweep. Never add a commit that changes
+# runtime behaviour, even slightly.
+
+# style(ruff): adopt phase 1 of the rule-set plan — isort + pyupgrade
+# 228 autofixed findings: import ordering (I001) plus pyupgrade annotation and
+# import rewrites (UP017/UP045/UP035/UP037) across 62 files.
+8df9e16fc9e7c1b3379980beb23a36d0ad6a5b24
