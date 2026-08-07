@@ -4,6 +4,7 @@ Depends on: config.py, messaging.py, process_manager.py (lazy).
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -213,10 +214,9 @@ async def _run_transport_loop(
         vpn_changed.set()
 
     if nc.nc:
-        try:
+        # Not covered: requires NATS subscribe to raise after connect succeeds
+        with contextlib.suppress(Exception):
             await nc.nc.subscribe("vpn.state.changed", cb=_on_vpn_change)
-        except Exception:
-            pass  # Not covered: requires NATS subscribe to raise after connect succeeds
 
     force_ssh = False
     try:
@@ -254,17 +254,16 @@ async def _run_transport_loop(
                         proc.wait()
                     break
                 _vpn_poll_ticks += 1
-                if transport_type == "mosh" and _vpn_poll_ticks % _vpn_poll_every == 0:
-                    if _is_vpn_active():
-                        print("\nVPN detected — switching from mosh to SSH...", file=sys.stderr)
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=2)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait()
-                        vpn_changed.set()
-                        break
+                if transport_type == "mosh" and _vpn_poll_ticks % _vpn_poll_every == 0 and _is_vpn_active():
+                    print("\nVPN detected — switching from mosh to SSH...", file=sys.stderr)
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    vpn_changed.set()
+                    break
                 await asyncio.sleep(0.5)
             else:
                 proc.wait()
@@ -334,8 +333,7 @@ async def _run_transport_loop(
             break  # Normal exit (user detached or session ended)
     finally:
         transport_file.unlink(missing_ok=True)
-        try:
+        # Not covered: requires NATS close to raise after connect succeeds
+        with contextlib.suppress(Exception):
             await nc.close()
-        except Exception:
-            pass  # Not covered: requires NATS close to raise after connect succeeds
         subprocess.run(cleanup_cmd, capture_output=True, check=False)

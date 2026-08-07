@@ -12,6 +12,7 @@ the same pipeline. There are no pre-baked icon variants.
 from __future__ import annotations
 
 import colorsys
+import contextlib
 import json
 import tempfile
 from pathlib import Path
@@ -116,7 +117,9 @@ def compute_contrast_tint(tab_hex: str) -> str:
 
     h_tint = (h + 0.5) % 1.0  # complementary hue
 
-    if l < 0.5:  # dark background → bright tint
+    # Kept as if/else rather than a ternary (SIM108): the per-branch comments are
+    # what make the colour maths readable, and a ternary has nowhere to put them.
+    if l < 0.5:  # dark background → bright tint  # noqa: SIM108
         l_tint = min(0.90, 0.70 + s * 0.20)
     else:  # light background → dark tint
         l_tint = max(0.10, 0.25 - s * 0.10)
@@ -268,11 +271,8 @@ def cleanup_session_files(session_name: str) -> None:
 
     Called from the EXIT trap. Silently ignores missing files.
     """
-    try:
+    # EXIT-trap cleanup must never block session exit
+    with contextlib.suppress(Exception):
         (_icon_cache_dir() / f"{session_name}.png").unlink(missing_ok=True)
-    except Exception:  # EXIT-trap cleanup must never block session exit
-        pass
-    try:
+    with contextlib.suppress(Exception):
         (_dynamic_profile_dir() / f"{_DYNAMIC_PROFILE_PREFIX}{session_name}.json").unlink(missing_ok=True)
-    except Exception:  # EXIT-trap cleanup must never block session exit
-        pass

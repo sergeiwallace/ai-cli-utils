@@ -8,6 +8,7 @@ at ~/.local/state/ai-cli/quota.db (no external server dependency).
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -608,10 +609,8 @@ def quota_watch(poll_interval: int = 300) -> int:
 
     client = NATSClient()
     loop = asyncio.new_event_loop()
-    try:
+    with contextlib.suppress(Exception):
         loop.run_until_complete(client.connect())
-    except Exception:
-        pass
 
     notifier = Notifier()
     thresholds = [50, 75, 90]
@@ -706,10 +705,8 @@ def _run_nats_quota_listener(machine: str, *, stop_event: "Any | None" = None) -
                 _launch_background_scrape()
 
         sub = None
-        try:
+        with contextlib.suppress(Exception):
             sub = await client.nc.subscribe(f"quota.scrape.request.{machine}", cb=_on_scrape_request)
-        except Exception:
-            pass
 
         heartbeat_interval = 60.0
         last_heartbeat = 0.0
@@ -730,14 +727,10 @@ def _run_nats_quota_listener(machine: str, *, stop_event: "Any | None" = None) -
                 await asyncio.sleep(2.0)
         finally:
             if sub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     await sub.unsubscribe()
-                except Exception:
-                    pass
-            try:
+            with contextlib.suppress(Exception):
                 await client.close()
-            except Exception:
-                pass
 
     event_loop = asyncio.new_event_loop()
     try:
@@ -879,10 +872,8 @@ def _maybe_trigger_fable_scrape(now, fable_ts: str | None) -> None:
 
         state = {"last_attempt": 0.0, "misses": 0}
         if _FABLE_BACKOFF_STATE.exists():
-            try:
+            with contextlib.suppress(Exception):
                 state.update(json.loads(_FABLE_BACKOFF_STATE.read_text()))
-            except Exception:
-                pass
 
         fable_age_min = float("inf")
         if fable_ts is not None:
@@ -962,10 +953,8 @@ def _clear_scrape_format_mismatch() -> None:
     """Reset the mismatch counter to 0 after a successful parse."""
     from .quota_db import _set_quota_meta
 
-    try:
+    with contextlib.suppress(Exception):
         _set_quota_meta("scrape_format_mismatch_count", "0")
-    except Exception:
-        pass
 
 
 def _launch_background_scrape() -> None:
@@ -1105,7 +1094,7 @@ def quota_sync_from_remote() -> int:
     for line in result.stdout.strip().splitlines():
         parts = line.split("|")
         if len(parts) == 6:
-            try:
+            with contextlib.suppress(ValueError):
                 rows.append(
                     {
                         "usage_percent": float(parts[0]),
@@ -1116,8 +1105,6 @@ def quota_sync_from_remote() -> int:
                         "snapshotted_at": parts[5],
                     }
                 )
-            except ValueError:
-                pass
 
     if not rows:
         print("quota sync: no snapshots on remote (or remote DB empty).")
@@ -1224,10 +1211,8 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
         finally:
             await client.close()
 
-    try:
+    with contextlib.suppress(Exception):
         asyncio.run(_do_publish())
-    except Exception:
-        pass
 
 
 def _try_read_kv_snapshot() -> dict | None:
@@ -1272,15 +1257,11 @@ def _try_read_kv_snapshot() -> dict | None:
             except Exception:
                 pass
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     await client.close()
-                except Exception:
-                    pass
 
-        try:
+        with contextlib.suppress(Exception):
             asyncio.run(_do())
-        except Exception:
-            pass
 
     t = threading.Thread(target=_read, daemon=True)
     t.start()

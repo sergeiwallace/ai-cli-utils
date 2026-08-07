@@ -264,7 +264,7 @@ class TestDetectMachineProfile:
         assert result["host_id"] == "my-box"
 
     @pytest.mark.parametrize(
-        "platform,expected",
+        ("platform", "expected"),
         [("win32", "windows"), ("darwin", "macos"), ("linux", "linux")],
     )
     def test_os_type_mapped_from_platform(self, platform, expected):

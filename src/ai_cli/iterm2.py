@@ -3,6 +3,7 @@
 Depends on: config.py
 """
 
+import contextlib
 import json
 import os
 import re
@@ -253,10 +254,8 @@ def _release_iterm2_color_slot(ai_name: str) -> None:
         portalocker.lock(lock_fd, portalocker.LOCK_EX)
         try:
             leases: dict = {}
-            try:
+            with contextlib.suppress(Exception):
                 leases = json.loads(lease_file.read_text()).get("leases", {})
-            except Exception:
-                pass
             leases.pop(ai_name, None)
             lease_file.write_text(json.dumps({"leases": leases}, indent=2))
         finally:

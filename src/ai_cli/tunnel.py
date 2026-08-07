@@ -3,6 +3,7 @@
 Depends on: config.py, transport.py.
 """
 
+import contextlib
 import shutil
 import socket
 import subprocess
@@ -106,10 +107,8 @@ def _cmd_tunnel_stop(local_port: int) -> None:
     if not pid_file.exists():
         return
     pid = int(pid_file.read_text().strip())
-    try:
+    with contextlib.suppress(psutil.NoSuchProcess):
         psutil.Process(pid).terminate()
-    except psutil.NoSuchProcess:
-        pass
     pid_file.unlink(missing_ok=True)
     print(f"Tunnel stopped: port {local_port}")
 
@@ -321,10 +320,8 @@ def _cmd_cdp_stop(port: int, tunnel: bool = False) -> None:
         print(f"No CDP process registered on port {port}.")
         return
     pid = int(pid_file.read_text().strip())
-    try:
+    with contextlib.suppress(psutil.NoSuchProcess):
         psutil.Process(pid).terminate()
-    except psutil.NoSuchProcess:
-        pass
     pid_file.unlink(missing_ok=True)
     print(f"CDP stopped: port {port}")
     if tunnel:

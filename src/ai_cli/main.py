@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import re
@@ -164,10 +165,9 @@ def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
     """
     envrc = _find_envrc(project_root)
     if envrc is not None and _direnv_env_usable(project_root):
-        try:
+        # FileNotFoundError falls through to a direct exec below
+        with contextlib.suppress(FileNotFoundError):
             os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
-        except FileNotFoundError:
-            pass  # fall through to a direct exec below
     elif envrc is not None:
         print(
             f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
@@ -633,10 +633,11 @@ def _refresh_live_session_scripts() -> int:
         return 0
     refreshed = 0
     for sname in ls.stdout.split():
-        if (_config.get_xdg_state_home() / f"session-meta-{sname}.json").exists():
-            if _sync_stable_session_script(sname):
-                print(f"  refreshed session template: {sname}")
-                refreshed += 1
+        if (_config.get_xdg_state_home() / f"session-meta-{sname}.json").exists() and _sync_stable_session_script(
+            sname
+        ):
+            print(f"  refreshed session template: {sname}")
+            refreshed += 1
     return refreshed
 
 
@@ -740,10 +741,9 @@ def _handle_internal(argv: list[str]) -> None:
 
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
         client = NATSClient(servers=nats_servers)
-        try:
+        # NATS unavailable — non-fatal
+        with contextlib.suppress(Exception):
             asyncio.run(client.publish_event(argv[1], argv[2]))
-        except Exception:
-            pass  # NATS unavailable — non-fatal
         sys.exit(0)
     elif action == "publish-heartbeat":
         if len(argv) < 3:
@@ -760,10 +760,9 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
         client = NATSClient(servers=nats_servers)
-        try:
+        # NATS unavailable — non-fatal
+        with contextlib.suppress(Exception):
             asyncio.run(client.publish_heartbeat(argv[1], data))
-        except Exception:
-            pass  # NATS unavailable — non-fatal
         sys.exit(0)
     elif action == "publish-session-event":
         if len(argv) < 3:
@@ -778,10 +777,9 @@ def _handle_internal(argv: list[str]) -> None:
         subject = f"session.{session_id}.{event_verb}"
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
         client = NATSClient(servers=nats_servers)
-        try:
+        # NATS unavailable — non-fatal
+        with contextlib.suppress(Exception):
             asyncio.run(client.publish(subject, {"session_id": session_id, "event": event_verb, "ts": time.time()}))
-        except Exception:
-            pass  # NATS unavailable — non-fatal
         sys.exit(0)
     elif action == "publish":
         if len(argv) < 3:
@@ -798,10 +796,9 @@ def _handle_internal(argv: list[str]) -> None:
             payload = {}
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
         client = NATSClient(servers=nats_servers)
-        try:
+        # NATS unavailable — non-fatal
+        with contextlib.suppress(Exception):
             asyncio.run(client.publish(subject, payload))
-        except Exception:
-            pass  # NATS unavailable — non-fatal
         sys.exit(0)
     elif action == "signal-watch":
         if len(argv) < 3:
@@ -866,10 +863,8 @@ async def _on_handoff_signal_watch(
             return
         if not local_file.exists():
             pending_dir.mkdir(parents=True, exist_ok=True)
-            try:
+            with contextlib.suppress(OSError):
                 local_file.write_text(content)
-            except OSError:
-                pass
     claimed = _handoff._claim_handoff_for_signal(handoff_dir, int(handoff_id), session_id)
     if claimed is None:
         return
@@ -883,10 +878,8 @@ async def _on_handoff_signal_watch(
     pending_file.parent.mkdir(parents=True, exist_ok=True)
     pending_file.write_text(resume_msg)
     signal_file = _config.get_xdg_state_home() / f"cc-exit-{session_id}"
-    try:
+    with contextlib.suppress(OSError):
         signal_file.touch()
-    except OSError:
-        pass
 
 
 def _write_pending_if_claimed_drain(
@@ -949,7 +942,7 @@ async def _on_quota_snapshot_handler(data: dict) -> None:
     """
     from .quota_db import record_quota_snapshot
 
-    try:
+    with contextlib.suppress(Exception):
         record_quota_snapshot(
             usage_percent=data["usage_percent"],
             session_pct=data.get("session_pct"),
@@ -958,8 +951,6 @@ async def _on_quota_snapshot_handler(data: dict) -> None:
             extra_pct=data.get("extra_pct"),
             reset_at=data.get("reset_at"),
         )
-    except Exception:
-        pass
 
 
 def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) -> None:
@@ -1019,12 +1010,10 @@ def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) ->
     async def _run_subscriptions() -> None:
         await sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff)
 
-    try:
+    # Not covered: _run_subscriptions blocks indefinitely on success; exception
+    # path requires a live NATS server to fail mid-subscription.
+    with contextlib.suppress(Exception):
         asyncio.run(_run_subscriptions())
-    except Exception:
-        # Not covered: _run_subscriptions blocks indefinitely on success; exception
-        # path requires a live NATS server to fail mid-subscription.
-        pass
 
 
 def _internal_quota_subscriber(config: dict) -> None:
@@ -1038,7 +1027,9 @@ def _internal_quota_subscriber(config: dict) -> None:
     qs_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
     qs_client = NATSClient(servers=qs_servers)
 
-    try:
+    # Not covered: subscribe_durable blocks indefinitely on success; exception
+    # path requires a live NATS server to fail mid-subscription.
+    with contextlib.suppress(Exception):
         asyncio.run(
             qs_client.subscribe_durable(
                 "quota.snapshot",
@@ -1046,10 +1037,6 @@ def _internal_quota_subscriber(config: dict) -> None:
                 _on_quota_snapshot_handler,
             )
         )
-    except Exception:
-        # Not covered: subscribe_durable blocks indefinitely on success; exception
-        # path requires a live NATS server to fail mid-subscription.
-        pass
 
 
 def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> None:
@@ -1226,7 +1213,9 @@ def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None)
                 [uv_bin, "tool", "dir"], capture_output=True, text=True, timeout=5, check=False
             )
             tool_dir_str = tool_result.stdout.strip() if tool_result.returncode == 0 else ""
-            if tool_dir_str:
+            # Kept as if/else rather than a ternary (SIM108) to preserve the
+            # else-branch comment documenting the platform defaults.
+            if tool_dir_str:  # noqa: SIM108
                 install_dir = Path(tool_dir_str)
             else:
                 # Platform-specific default tool install location (uv 0.1.x - 0.5.x behavior).
@@ -1694,9 +1683,13 @@ def _do_session_launch(
     # Discovery is useful when creating an unqualified session, but a named
     # session or explicit project already identifies the launch target.  Do not
     # make that targeted launch wait for unrelated project-registration input.
-    if not project_prefix_override and not name and not project:
-        if not _config.validate_registry_completeness(interactive=sys.stdin.isatty()):
-            sys.exit(1)
+    if (
+        not project_prefix_override
+        and not name
+        and not project
+        and not _config.validate_registry_completeness(interactive=sys.stdin.isatty())
+    ):
+        sys.exit(1)
 
     if project_prefix_override:
         project_prefix = project_prefix_override
@@ -1753,10 +1746,7 @@ def _do_session_launch(
             sys.exit(1)
         remote_project = aliases.get(raw_project, raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
-        if project:
-            remote_prefix = _config._get_project_prefix_by_name(remote_project)
-        else:
-            remote_prefix = project_prefix
+        remote_prefix = _config._get_project_prefix_by_name(remote_project) if project else project_prefix
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (zsh -l -c) that does
         # not source ~/.zshrc where the uv env PATH setup typically lives.
@@ -2970,10 +2960,9 @@ def cmd_session_audit(repo, title, run_adopt, dry_run, yes):
         print("\nNothing safe to adopt.")
         sys.exit(1 if skipped else 0)
 
-    if not dry_run and not yes:
-        if not click.confirm(f"\nAdopt {len(ready)} session(s)?", default=False):
-            print("Aborted.", file=sys.stderr)
-            sys.exit(1)
+    if not dry_run and not yes and not click.confirm(f"\nAdopt {len(ready)} session(s)?", default=False):
+        print("Aborted.", file=sys.stderr)
+        sys.exit(1)
 
     outcomes, _ = adopt_ready(report, dry_run=dry_run)
     print("")

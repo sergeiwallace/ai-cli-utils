@@ -17,6 +17,7 @@ Usage::
     ai spend gemini
 """
 
+import contextlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -59,10 +60,8 @@ def _read_jsonl_file(log_file: Path) -> list[dict]:
         for line in log_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line:
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
     except Exception:
         pass
     return entries

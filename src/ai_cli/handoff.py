@@ -3,6 +3,7 @@
 Depends on: config.py, messaging.py (lazy).
 """
 
+import contextlib
 import json
 import os
 import sys
@@ -101,10 +102,8 @@ def _find_best_handoff(queue_dir: Path, project_filter: str | None = None) -> "P
         prio = 9
         for line in text.splitlines():
             if line.startswith("priority:"):
-                try:
+                with contextlib.suppress(ValueError):
                     prio = int(line.split(":", 1)[1].strip().replace("P", ""))
-                except ValueError:
-                    pass
                 break
         if prio < best_prio:
             best_prio, best_file = prio, f

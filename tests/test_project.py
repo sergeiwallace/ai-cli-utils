@@ -464,9 +464,9 @@ class TestProjectPathSeparatorValidation:
             with patch("ai_cli.config.load_config", return_value={"remote": {"host": "h", "user": "u"}}):
                 with patch("ai_cli.config.get_project_aliases", return_value={}):
                     with patch("ai_cli.config.get_current_project_name", return_value=""):
-                        with pytest.raises(SystemExit) as exc:
-                            from ai_cli.main import cli
+                        from ai_cli.main import cli
 
+                        with pytest.raises(SystemExit) as exc:
                             cli()
         assert exc.value.code == 1
         assert "path separator" in capsys.readouterr().err
@@ -483,9 +483,9 @@ class TestProjectPathSeparatorValidation:
                             with patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop):
                                 with patch("ai_cli.transport._ensure_vpn_watcher"):
                                     with patch("ai_cli.transport._maybe_stop_vpn_watcher"):
-                                        with pytest.raises(SystemExit) as exc:
-                                            from ai_cli.main import cli
+                                        from ai_cli.main import cli
 
+                                        with pytest.raises(SystemExit) as exc:
                                             cli()
         assert exc.value.code == 0
 

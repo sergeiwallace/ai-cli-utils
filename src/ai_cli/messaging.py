@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import socket
@@ -302,8 +303,6 @@ class NATSClient:
         if self._tunnel_proc:
             # The ssh -f foreground parent may already be reaped (see
             # _reap_tunnel_parent); terminating a dead process must not raise.
-            try:
+            with contextlib.suppress(ProcessLookupError, OSError):
                 self._tunnel_proc.terminate()
-            except (ProcessLookupError, OSError):
-                pass
             self._tunnel_proc = None

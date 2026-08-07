@@ -45,10 +45,9 @@ class MemoryFileHandler(FileSystemEventHandler):
 
     def check_settle(self):
         """Call periodically. If dreaming and no write for debounce_s, emit settle."""
-        if self._dreaming and self._last_write > 0:
-            if time.time() - self._last_write >= self._debounce_s:
-                self._dreaming = False
-                self._on_write_settle()
+        if self._dreaming and self._last_write > 0 and time.time() - self._last_write >= self._debounce_s:
+            self._dreaming = False
+            self._on_write_settle()
 
 
 def _find_memory_dirs() -> list[Path]:

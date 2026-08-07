@@ -138,6 +138,9 @@ select = [
     "LOG",  # flake8-logging
     # --- phase 5a: one named rule, not its family ---
     "PLW1510",  # subprocess.run without explicit check= (real silent-failure class)
+    # --- phase 5b: named rules only, NOT their families ---
+    "SIM",  # flake8-simplify (SIM117 excluded below)
+    "PT",  # flake8-pytest-style
 ]
 ignore = [
     "E701",  # multiple-statements-on-one-line (colon) — established compact style in main.py
@@ -146,10 +149,14 @@ ignore = [
     "RUF001",  # ambiguous-unicode-string — box-drawing/symbols in CLI output are intentional
     "RUF002",  # ambiguous-unicode-docstring — same
     "RUF003",  # ambiguous-unicode-comment — same
+    "SIM117",  # multiple-with-statements — 375 findings, all stacked patch() in tests
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
     "RUF059",  # unused unpacked variables in test setup
+    "SIM105",  # contextlib.suppress rewrite adds no value in tests
+    "PT018",  # composite assertions are readable here
+    "PT011",  # broad pytest.raises accepted
 ]
 "src/*/__init__.py" = ["F401"]  # re-exports

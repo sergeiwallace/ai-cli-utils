@@ -379,8 +379,8 @@ class TestCliDispatch:
             with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe_result):
                     with patch("ai_cli.config.get_project_aliases", return_value={"mp": "myproject"}):
+                        probe_result.stdout = "c-r-mp-1\n"  # prefix mp matches alias key mp
                         with pytest.raises(SystemExit) as exc:
-                            probe_result.stdout = "c-r-mp-1\n"  # prefix mp matches alias key mp
                             cli()
                         assert exc.value.code == 0
         output = capsys.readouterr().out

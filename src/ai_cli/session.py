@@ -3,6 +3,7 @@
 Depends on: config.py
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -71,10 +72,7 @@ def _convert_checkpoint_to_chat(ai_name: str, gemini_tmp: Path) -> str | None:
 
         # Compute projectHash = sha256(projectRoot)
         project_root_file = gemini_tmp / ".project_root"
-        if project_root_file.exists():
-            project_root = project_root_file.read_text().strip()
-        else:
-            project_root = str(Path.cwd())
+        project_root = project_root_file.read_text().strip() if project_root_file.exists() else str(Path.cwd())
         project_hash = hashlib.sha256(project_root.encode()).hexdigest()
 
         # Convert history entries to chat messages
@@ -377,10 +375,8 @@ def find_recent_session(prefix: str) -> str:
             continue
         parts = line.split()
         if len(parts) >= 2 and parts[0].startswith(prefix):
-            try:
+            with contextlib.suppress(ValueError):
                 sessions.append((parts[0], int(parts[1])))
-            except ValueError:
-                pass
     if not sessions:
         return ""
     sessions.sort(key=lambda x: x[1], reverse=True)

@@ -3,6 +3,7 @@
 Depends on: config.py.
 """
 
+import contextlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -83,10 +84,8 @@ def _cmd_signal_watch_start(project: str, session: str) -> None:
     cmd = f"{ai_bin} internal signal-watch {project} {session}"
 
     # Remove existing watcher idempotently
-    try:
+    with contextlib.suppress(Exception):
         client.send_message("rm", name=watcher_name)
-    except Exception:
-        pass
 
     client.send_message(
         "add",
@@ -155,10 +154,8 @@ def _cmd_quota_watch_start(auto: bool = False) -> None:
     log_path = str(state_dir / "quota-watch.log")
 
     client = CircusClient(endpoint=endpoint, timeout=5.0)
-    try:
+    with contextlib.suppress(Exception):
         client.send_message("rm", name="quota-watch")
-    except Exception:
-        pass
 
     client.send_message(
         "add",

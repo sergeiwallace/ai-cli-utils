@@ -7,6 +7,7 @@ quota tracking subsystem; quota.py owns the scraping and watching logic.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,10 +29,8 @@ def _get_reset_anchor_path() -> Path:
 
 def _save_reset_anchor(reset_utc_str: str) -> None:
     """Persist a reset anchor observed from a /usage scrape."""
-    try:
+    with contextlib.suppress(Exception):
         _get_reset_anchor_path().write_text(reset_utc_str.strip())
-    except Exception:
-        pass
 
 
 def _get_reset_anchor_utc() -> datetime:
@@ -555,10 +554,8 @@ def query_notification_log(
             except Exception:
                 d[col] = []
         if d.get("tags"):
-            try:
+            with contextlib.suppress(Exception):
                 d["tags"] = _json.loads(d["tags"])
-            except Exception:
-                pass
         result.append(d)
     return result
 

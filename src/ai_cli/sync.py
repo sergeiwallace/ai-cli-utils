@@ -19,6 +19,7 @@ Push flow: stage local ~/.claude/projects/ files → git commit → git push to 
 Pull flow: git fetch + merge from bare repo → apply merged files to ~/.claude/projects/
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1787,10 +1788,9 @@ def sync_push(flags: list[str]) -> int:
         return 1
 
     if not dry_run:
-        try:
+        # Non-fatal — bare repo may already exist
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
             init_server_bare_repo(cfg.remote_host)
-        except (subprocess.TimeoutExpired, OSError):
-            pass  # Non-fatal — bare repo may already exist
         try:
             init_staging_repo(cfg.staging_dir, cfg.remote_url)
         except Exception as e:
@@ -2150,10 +2150,8 @@ def sync_resolve(flags: list[str]) -> int:
     if not dry_run and CONFLICT_DIR.exists():
         for d in sorted(CONFLICT_DIR.iterdir(), reverse=True):
             if d.is_dir():
-                try:
+                with contextlib.suppress(OSError):
                     d.rmdir()
-                except OSError:
-                    pass
 
     prefix = "[dry-run] " if dry_run else ""
     total = jsonl_deleted + artifacts_deleted + mem_merged + mem_failed
@@ -2203,10 +2201,8 @@ def _acquire_pid_file(name: str) -> bool:
 def _release_pid_file(name: str) -> None:
     """Remove PID file."""
     pid_path = _pid_file_path(name)
-    try:
+    with contextlib.suppress(Exception):
         pid_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def sync_watch(flags: list[str]) -> int:

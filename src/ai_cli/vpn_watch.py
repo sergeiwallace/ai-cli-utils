@@ -5,6 +5,7 @@ All active transport loops subscribe to ``vpn.state.changed`` and switch transpo
 """
 
 import asyncio
+import contextlib
 import json
 import sys
 from datetime import UTC, datetime
@@ -16,10 +17,8 @@ from .transport import _is_vpn_active
 
 def run_vpn_watch(config: dict) -> None:
     """Entry point for ``ai vpn-watch``. Runs the watcher loop until interrupted."""
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(_vpn_watch_loop(config))
-    except KeyboardInterrupt:
-        pass
 
 
 async def _vpn_watch_loop(config: dict) -> None:
@@ -65,12 +64,10 @@ async def _vpn_watch_loop(config: dict) -> None:
 
             # Publish to NATS (core publish — ephemeral notification, no durability needed)
             if nc.nc:
-                try:
+                # Not covered: requires NATS publish to raise after subscribe
+                with contextlib.suppress(Exception):
                     await nc.nc.publish("vpn.state.changed", json.dumps(payload).encode())
-                except Exception:
-                    pass  # Not covered: requires NATS publish to raise after subscribe
     finally:
-        try:
+        # Not covered: requires NATS close to raise after connect
+        with contextlib.suppress(Exception):
             await nc.close()
-        except Exception:
-            pass  # Not covered: requires NATS close to raise after connect

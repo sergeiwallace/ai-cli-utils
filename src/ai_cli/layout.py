@@ -385,10 +385,12 @@ def _write_launch_script(layout: Layout) -> Path:
     ]
 
     script_content = "\n".join(lines) + "\n"
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="ai-layout-", delete=False)
-    tmp.write(script_content)
-    tmp.close()
-    return Path(tmp.name)
+    # delete=False is deliberate: the caller runs this script by path after we
+    # return, so the file must outlive this function. The context manager only
+    # scopes the write and close, not the file's lifetime.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="ai-layout-", delete=False) as tmp:
+        tmp.write(script_content)
+        return Path(tmp.name)
 
 
 def run_layout_command(args: list[str]) -> int:
