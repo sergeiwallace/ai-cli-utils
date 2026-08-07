@@ -43,6 +43,7 @@ from ai_cli.session_adopt import (
     find_title_candidates,
     live_sessions,
     merge_task_namespace,
+    neutralise_worktree_state,
     next_free_index,
     probe_resolves,
     retitle_transcript,
@@ -1251,3 +1252,222 @@ def test_cli_given_every_option_when_help_requested_then_each_has_a_short_and_lo
         shorts = [o for o in param.opts if len(o) == 2 and o.startswith("-") and not o.startswith("--")]
         longs = [o for o in param.opts if o.startswith("--")]
         assert shorts and longs, f"{param.name} needs both a short and a long form, has {param.opts}"
+
+
+# --- the worktree binding: adoption must SURVIVE a resume ---------------------
+#
+# The bug these cover: adoption moved the transcript into the slot, every
+# adoption test passed, and yet the session came back un-adopted hours later. A
+# transcript that ever entered a worktree mid-session carries a ``worktree-state``
+# record holding an absolute ``originalCwd``. Claude Code restores that binding on
+# resume and, when the worktree is left, returns the session to ``originalCwd``
+# and renames the transcript into *that* directory's project directory — undoing
+# the move. So these exercise the resume-AFTER-adopt transition, not adoption
+# alone; adoption-only coverage is precisely what let the defect ship.
+
+
+def _worktree_state_record(uuid: str, original_cwd: Path, worktree_path: Path) -> str:
+    """A ``worktree-state`` record shaped as Claude Code writes one."""
+    return _record(
+        type="worktree-state",
+        worktreeSession={
+            "originalCwd": str(original_cwd),
+            "preEnterOriginalCwd": str(original_cwd),
+            "worktreePath": str(worktree_path),
+            "worktreeName": worktree_path.name,
+            "worktreeBranch": f"worktree-{worktree_path.name}",
+            "originalBranch": "main",
+            "originalHeadCommit": "0" * 40,
+            "sessionId": uuid,
+        },
+        sessionId=uuid,
+    )
+
+
+def _write_worktree_transcript(project_dir: Path, uuid: str, title: str, cwd: Path) -> Path:
+    """A transcript that entered a since-deleted agent worktree mid-session.
+
+    The tail has the shape the real defect had: an entry into an agent worktree,
+    then a relocation back to ``cwd``, leaving a stale binding that points at a
+    directory which is not the adopted slot.
+    """
+    project_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stale_worktree = cwd / ".claude" / "worktrees" / "agent-deleted"
+    lines = [
+        _record(type="user", sessionId=uuid, cwd=str(cwd), customTitle=title),
+        _record(type="assistant", sessionId=uuid, cwd=str(cwd), customTitle=title),
+        _worktree_state_record(uuid, cwd, stale_worktree),
+        _record(type="relocated", relocatedCwd=str(stale_worktree), sessionId=uuid),
+        _record(type="assistant", sessionId=uuid, cwd=str(stale_worktree)),
+        _record(type="relocated", relocatedCwd=str(cwd), sessionId=uuid),
+    ]
+    path = project_dir / f"{uuid}.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _cc_relocation_on_exit(transcript: Path, home: Path) -> Path:
+    """Replay Claude Code's relocate-on-worktree-exit against a transcript.
+
+    Faithful to the real client's observed behaviour, confirmed empirically
+    against it before this was written: the *last* ``worktree-state`` record
+    decides. A non-null ``worktreeSession`` means a binding is restored on
+    resume, and leaving that worktree renames the transcript into the project
+    directory of the recorded original cwd. A null one means no worktree session
+    is active, so nothing is renamed.
+
+    Returns the transcript's path afterwards — unchanged when no relocation is
+    due, which is what the fix must produce.
+    """
+    binding = None
+    for raw in transcript.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("type") == "worktree-state":
+            binding = record.get("worktreeSession")
+    if not isinstance(binding, dict):
+        return transcript
+    target = binding.get("preEnterOriginalCwd") or binding.get("originalCwd")
+    if not target:
+        return transcript
+    dest_dir = cc_project_dir(Path(target), home)
+    dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dest = dest_dir / transcript.name
+    os.replace(transcript, dest)
+    return dest
+
+
+@pytest.fixture
+def worktree_world(world):
+    """``world``, but the adoptable session carries a stale worktree binding."""
+    (world["src_dir"] / f"{UUID}.jsonl").unlink()
+    _write_worktree_transcript(world["src_dir"], UUID, "myproject-2", world["repo"])
+    return world
+
+
+def test_relocation_replay_given_an_unadopted_worktree_transcript_when_resumed_then_it_leaves_the_slot(
+    worktree_world, existing_worktree
+):
+    """Positive control for the probe: on an un-neutralised file the replay DOES move it.
+
+    Without this the passing tests below prove nothing — a replay that never
+    relocates anything would 'pass' against any implementation at all.
+    """
+    home = worktree_world["home"]
+    slot_dir = cc_project_dir(existing_worktree, home)
+    planted = _write_worktree_transcript(slot_dir, UUID, "myproject-2", worktree_world["repo"])
+
+    after = _cc_relocation_on_exit(planted, home)
+
+    assert after != planted
+    assert after.parent == cc_project_dir(worktree_world["repo"], home)
+    assert not planted.exists()
+
+
+def test_adopt_given_a_transcript_carrying_worktree_state_when_adopted_then_the_binding_is_cleared(
+    worktree_world, adopt, existing_worktree
+):
+    result = adopt()
+
+    assert result.worktree_records_cleared > 0
+    records = [
+        json.loads(line)
+        for line in result.migration.dest_jsonl.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    bindings = [r for r in records if r.get("type") == "worktree-state"]
+    assert bindings, "the worktree-state records are kept, only neutralised"
+    assert all(r["worktreeSession"] is None for r in bindings)
+    stamps = [r for r in records if r.get("type") == "relocated"]
+    assert stamps and all(r["relocatedCwd"] == str(existing_worktree) for r in stamps)
+
+
+def test_adopt_given_a_worktree_state_session_when_resumed_after_adoption_then_the_transcript_stays_in_the_slot(
+    worktree_world, adopt, existing_worktree
+):
+    """The adopted state survives the resume that used to undo it."""
+    home = worktree_world["home"]
+    adopted = adopt().migration.dest_jsonl
+
+    after = _cc_relocation_on_exit(adopted, home)
+
+    assert after == adopted
+    assert adopted.is_file()
+    assert adopted.parent == cc_project_dir(existing_worktree, home)
+    assert probe_resolves(existing_worktree, "myproject-2", home) == adopted
+
+
+def test_adopt_given_a_worktree_state_session_when_resumed_twice_then_it_stays_in_the_slot_both_times(
+    worktree_world, adopt, existing_worktree
+):
+    """Stability across repeated resumes — one clean resume is not enough."""
+    home = worktree_world["home"]
+    adopted = adopt().migration.dest_jsonl
+
+    for _ in range(2):
+        assert _cc_relocation_on_exit(adopted, home) == adopted
+        assert probe_resolves(existing_worktree, "myproject-2", home) == adopted
+
+
+def test_adopt_given_a_worktree_state_session_when_adopted_then_the_conversation_is_preserved(
+    worktree_world, adopt, existing_worktree
+):
+    """No data loss: only session-metadata records change, never conversation records."""
+    source = worktree_world["src_dir"] / f"{UUID}.jsonl"
+    metadata = ("worktree-state", "relocated")
+    before = [json.loads(line) for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    adopted = adopt().migration.dest_jsonl
+
+    after = [json.loads(line) for line in adopted.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(after) == len(before)
+    assert [r.get("type") for r in after] == [r.get("type") for r in before]
+    assert [r for r in after if r.get("type") in metadata] != [r for r in before if r.get("type") in metadata]
+    assert transcript_title(adopted) == "myproject-2"
+
+
+def test_neutralise_given_a_transcript_without_worktree_state_when_called_then_nothing_changes(world):
+    """A session that never entered a worktree is left byte-identical."""
+    path = world["src_dir"] / f"{UUID}.jsonl"
+    before = path.read_bytes()
+
+    assert neutralise_worktree_state(path, world["repo"] / ".worktrees" / "myproject-2") == 0
+    assert path.read_bytes() == before
+
+
+def test_neutralise_given_an_unparseable_line_when_called_then_it_survives_byte_identical(world):
+    """A malformed line is never rewritten or dropped."""
+    slot = world["repo"] / ".worktrees" / "myproject-2"
+    path = world["src_dir"] / "broken.jsonl"
+    path.write_text(
+        "not json at all\n" + _worktree_state_record(UUID, world["repo"], world["repo"] / "wt") + "\n",
+        encoding="utf-8",
+    )
+
+    assert neutralise_worktree_state(path, slot) == 1
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "not json at all"
+    assert json.loads(lines[1])["worktreeSession"] is None
+
+
+def test_neutralise_given_the_replace_failing_when_called_then_the_original_survives_with_no_debris(world, monkeypatch):
+    """Failure path: an interrupted rewrite leaves the original intact and no temp file."""
+    from ai_cli import session_adopt
+
+    _write_worktree_transcript(world["src_dir"], UUID, "myproject-2", world["repo"])
+    path = world["src_dir"] / f"{UUID}.jsonl"
+    before = path.read_bytes()
+
+    def boom(*a, **k):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(session_adopt.os, "replace", boom)
+    with pytest.raises(OSError):
+        neutralise_worktree_state(path, world["repo"] / ".worktrees" / "myproject-2")
+
+    assert path.read_bytes() == before
+    assert not list(world["src_dir"].glob("*.worktree-tmp"))

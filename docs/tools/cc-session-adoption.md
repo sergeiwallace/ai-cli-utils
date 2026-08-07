@@ -206,6 +206,40 @@ is preserved so newest-first resume ordering stays honest.
 ai cc-migrate .worktrees/myproject-2 --title myproject-2
 ```
 
+### 2b. Clear the stale worktree binding
+
+**Moving the transcript is necessary but not sufficient.** A session that ever
+entered a worktree mid-conversation carries a `worktree-state` record holding an
+absolute `originalCwd` — for an un-adopted session, the repo root:
+
+```json
+{"type":"worktree-state","worktreeSession":{
+   "originalCwd":"<repo>","preEnterOriginalCwd":"<repo>",
+   "worktreePath":"<repo>/.claude/worktrees/agent-abc123","worktreeBranch":"..."}}
+```
+
+Claude Code treats that record as authoritative. On resume it restores the
+binding and moves the session into the recorded `worktreePath`; when that
+worktree is later left — explicitly, or simply by exiting the session — it
+returns the session to `originalCwd` **and renames the transcript into that
+directory's project directory**. A transcript's location is a function of the
+session's working directory, so the rename carries the file straight back out of
+the slot, hours after a successful-looking adoption.
+
+Adoption therefore cannot win a fight over the file's location — Claude Code
+writes last. Instead the binding is neutralised: every `worktree-state` record is
+rewritten to `worktreeSession: null` (exactly what Claude Code itself writes on a
+clean exit, so resume reads it as "no worktree session active" and relocates
+nothing), and every `relocated` stamp is repointed at the slot. Conversation
+records are untouched, and the referenced worktree is transient anyway.
+
+Rewriting `cwd` fields does *not* cover this: the binding lives inside
+`worktreeSession`, which is not a top-level cwd field, so step 2's rewrite never
+reached it. Reported as `worktree binding: N stale record(s) cleared`.
+
+Sessions that never entered a worktree carry no such record and are left
+byte-identical.
+
 ### 3. Merge the CC task namespace
 
 A session launched without a pinned task list writes its tasks under a namespace

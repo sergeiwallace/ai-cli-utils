@@ -23,6 +23,12 @@ Adoption is the whole job, in one pass:
 3. **Transcript** — delegated to :func:`ai_cli.cc_migrate.migrate_session`, which
    rewrites recorded cwd fields and verifies the destination before removing the
    source.
+3b. **Worktree binding** — :func:`neutralise_worktree_state` clears any stale
+   ``worktree-state`` record left by an earlier mid-session worktree entry.
+   Without this the transcript does not *stay* adopted: Claude Code restores the
+   recorded binding on resume and renames the transcript back to the recorded
+   original directory when the worktree is left. Moving the file is necessary but
+   not sufficient.
 4. **Task namespace** — ``~/.claude/tasks/<namespace>/<n>.json``. Task ids are
    *namespace-scoped* small integers, so merging two namespaces must renumber
    rather than overwrite; references between tasks are remapped with the ids.
@@ -158,6 +164,7 @@ class AdoptionResult:
     memory_copied: list[Path] = field(default_factory=list)
     memory_conflicts: list[Path] = field(default_factory=list)
     retitled_from: str | None = None
+    worktree_records_cleared: int = 0
     resolved: Path | None = None
     dry_run: bool = False
     already_adopted: bool = False
@@ -422,6 +429,71 @@ def retitle_transcript(path: Path, old_title: str, new_title: str) -> int:
     return changed
 
 
+def neutralise_worktree_state(path: Path, dest_root: Path) -> int:
+    """Clear a transcript's stale worktree binding so Claude Code stops relocating it.
+
+    Why this is necessary, and why nothing weaker works
+    --------------------------------------------------
+    A session that ever entered a worktree mid-conversation records a
+    ``worktree-state`` entry holding an *absolute* ``originalCwd`` — the
+    directory the session started in, which for an un-adopted session is the
+    repo root. Claude Code treats that record as authoritative: on resume it
+    restores the binding and moves the session into the recorded
+    ``worktreePath``, and when that worktree is later left (explicitly, or by
+    exiting the session) it returns the session to ``originalCwd`` **and renames
+    the transcript into that directory's project directory**. A transcript's
+    location is a function of the session's working directory, so the rename
+    carries the file straight back out of the adopted slot.
+
+    Moving the transcript therefore cannot hold on its own: adoption and Claude
+    Code are both asserting where the session lives, and Claude Code asserts it
+    last. Rewriting the recorded working directories does not help either — the
+    binding lives *inside* ``worktreeSession``, which is not a top-level cwd
+    field, so the migration's rewrite never reached it.
+
+    So the binding is neutralised rather than fought. Every ``worktree-state``
+    record is rewritten to ``worktreeSession: null`` — byte-for-byte what Claude
+    Code itself writes on a clean exit, so resume reads it as "no worktree
+    session active" and relocates nothing — and every ``relocated`` stamp is
+    repointed at ``dest_root`` so the recorded location agrees with where the
+    file now sits. Conversation content is untouched: these are session-metadata
+    records, and the worktree they referred to is transient anyway.
+
+    Written to a sibling temp file and ``os.replace``d, so an interrupted call
+    leaves the original transcript intact. Returns the number of records changed.
+    """
+    dest = str(dest_root)
+    temp = path.with_name(path.name + ".worktree-tmp")
+    changed = 0
+    try:
+        with path.open("r", encoding="utf-8") as src, temp.open("w", encoding="utf-8") as out:
+            for raw in src:
+                stripped = raw.strip()
+                if stripped:
+                    try:
+                        record = json.loads(stripped)
+                    except (json.JSONDecodeError, ValueError):
+                        record = None
+                    if isinstance(record, dict):
+                        kind = record.get("type")
+                        if kind == "worktree-state" and record.get("worktreeSession") is not None:
+                            record["worktreeSession"] = None
+                            raw = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+                            changed += 1
+                        elif kind == "relocated" and record.get("relocatedCwd") not in (None, dest):
+                            record["relocatedCwd"] = dest
+                            raw = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+                            changed += 1
+                out.write(raw)
+        stat = path.stat()
+        os.utime(temp, (stat.st_atime, stat.st_mtime))
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    return changed
+
+
 # --- task namespaces --------------------------------------------------------
 
 
@@ -673,6 +745,7 @@ def adopt_session(
     dest_root, worktree_created = _ensure_worktree(repo_root, target_title, dry_run)
 
     migration: MigrationResult | None
+    worktree_records_cleared = 0
     if dry_run:
         # A dry run must not create the worktree, and ``migrate_session`` refuses
         # to plan into a destination root that does not exist yet — so when the
@@ -686,6 +759,10 @@ def adopt_session(
         migration = migrate_session(source_root, dest_root, title=ai_name, claude_home=home)
         if retitled_from:
             retitle_transcript(migration.dest_jsonl, retitled_from, target_title)
+        # Moving the file is not enough on its own: a stale worktree binding makes
+        # Claude Code rename it back out of the slot the next time the session is
+        # resumed and left. See :func:`neutralise_worktree_state`.
+        worktree_records_cleared = neutralise_worktree_state(migration.dest_jsonl, dest_root)
 
     dest_project_dir = cc_project_dir(dest_root, home)
     tasks_moved: list[TaskMove] = []
@@ -729,6 +806,7 @@ def adopt_session(
         memory_copied=memory_copied,
         memory_conflicts=memory_conflicts,
         retitled_from=retitled_from,
+        worktree_records_cleared=worktree_records_cleared,
         resolved=resolved,
         dry_run=dry_run,
         warnings=warnings,

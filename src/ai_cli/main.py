@@ -2674,6 +2674,12 @@ def _print_adoption(result, out=None) -> None:
         print(f"  {result.migration.lines} lines, {result.migration.rewritten} cwd rewrites", file=stream)
     elif result.source_jsonl is not None:
         print(f"  transcript: {result.source_jsonl} ({result.source_lines} lines)", file=stream)
+    if result.worktree_records_cleared:
+        print(
+            f"  worktree binding: {result.worktree_records_cleared} stale record(s) cleared "
+            f"(Claude Code would otherwise move the transcript back out)",
+            file=stream,
+        )
     renumbered = [m for m in result.tasks_moved if m.renumbered_from]
     print(f"  tasks: {len(result.tasks_moved)} moved, {len(renumbered)} renumbered", file=stream)
     for move in renumbered:
