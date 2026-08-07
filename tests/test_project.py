@@ -499,20 +499,62 @@ class TestProjectRegistryExceptionBranches:
             result = get_project_aliases()
         assert result == {}
 
-    def test_get_project_prefix_when_registry_read_fails_then_raises_registration_remedy(self, tmp_path):
-        import os
+    def test_get_project_prefix_when_repo_unregistered_then_raises_registration_remedy(self, tmp_path, monkeypatch):
+        """An unregistered repository must name the remedy, never invent a prefix.
 
-        registry = tmp_path / "broken.toml"
-        registry.write_text("not valid toml {{{")
-        env_without_session = {k: v for k, v in os.environ.items() if k != "AI_TMUX_SESSION"}
-        with patch("ai_cli.config._get_project_registry_path", return_value=registry):
-            with patch("ai_cli.session.get_current_project_name", return_value="myproject"):
-                with patch.dict(os.environ, env_without_session, clear=True):
-                    from ai_cli.config import load_project_registry
+        AI-CLI-192: this replaces a test that corrupted the *legacy* name-keyed
+        registry TOML and expected that to break prefix resolution. Since AI-CLI-160
+        made the config-backed ``[project_registry]`` the single source of truth,
+        that file no longer participates: ``resolve_project_prefix`` consults the
+        config table and then ``pyproject.toml``, so the old test asserted a
+        dependency the code deliberately no longer has.
 
-                    load_project_registry(_force=True)
-                    with pytest.raises(ValueError, match="ai register"):
-                        get_project_prefix()
+        The contract asserted here is the one AI-CLI-160 actually promises and is
+        the reason the original test existed -- an unresolvable prefix fails loudly
+        with an actionable remedy rather than silently degrading to a truncated,
+        default, or empty prefix. ``tmp_path`` is registered nowhere and carries no
+        ``pyproject.toml``, so resolution genuinely has no answer.
+        """
+        monkeypatch.chdir(tmp_path)
+        with patch("ai_cli.config.load_config", return_value={}):
+            with pytest.raises(ValueError, match="ai register") as exc:
+                get_project_prefix()
+
+        # The remedy must be actionable: it names the flags, not just the tool.
+        message = str(exc.value)
+        assert "-x PREFIX" in message
+        # And it must not have quietly produced a prefix from the directory name.
+        assert tmp_path.name[:3] not in message.replace(str(tmp_path), "")
+
+    def test_get_project_prefix_when_registry_table_is_corrupt_then_raises_remedy(self, tmp_path, monkeypatch):
+        """A corrupt ``[project_registry]`` must raise, never yield a wrong prefix.
+
+        The failure mode that matters (AI-CLI-192 AC-2): if a malformed registry
+        silently degraded to a default, display ids could be minted against the
+        wrong project. Each case below is a distinct way the table can be wrong.
+        """
+        monkeypatch.chdir(tmp_path)
+        corrupt_tables = [
+            "not-a-table",
+            {str(tmp_path): "not-an-entry"},
+            {str(tmp_path): {"prefix": ""}},
+            {str(tmp_path): {"type": "tool"}},
+        ]
+        for table in corrupt_tables:
+            with patch("ai_cli.config.load_config", return_value={"project_registry": table}):
+                with pytest.raises(ValueError, match="ai register"):
+                    get_project_prefix()
+
+    def test_get_project_prefix_when_registered_then_returns_that_prefix(self, tmp_path, monkeypatch):
+        """Positive control: the same call really can succeed.
+
+        Without this, the two tests above would pass equally well against a
+        function that raised unconditionally.
+        """
+        monkeypatch.chdir(tmp_path)
+        table = {str(tmp_path): {"prefix": "MYPROJECT", "type": "tool"}}
+        with patch("ai_cli.config.load_config", return_value={"project_registry": table}):
+            assert get_project_prefix() == "MYPROJECT"
 
 
 class TestProjectsDirEdgeCases:
