@@ -17,7 +17,7 @@ def _unreachable_local_port() -> int:
 
 
 class TestNATSClientConnectRealBoundary:
-    """AIDO-294: connect() must return in bounded time against a live-but-
+    """connect() must return in bounded time against a live-but-
     unreachable server. Exercises the REAL nats-py connect() (unmocked) —
     the defect lives inside nats-py's own initial-connect retry loop
     (`_select_next_server`), which every other test in this file mocks
@@ -41,7 +41,7 @@ class TestNATSClientConnectRealBoundary:
         except TimeoutError:
             raise AssertionError(
                 "NATSClient.connect() did not return within 20s against an "
-                "unreachable server — this is the AIDO-294 hang: nats-py's "
+                "unreachable server — this is the unbounded-retry hang: nats-py's "
                 "max_reconnect_attempts=0 does not disable its internal "
                 "retry loop (it is treated as unlimited), so "
                 "_select_next_server() retries forever and connect() never "

@@ -3,7 +3,7 @@
 Two layers:
 - Symbol/import checks: verify __all__ declarations and basic instantiation.
 - Contract enforcement: catch parameter renames, field removals, default changes,
-  and version drift that would silently break downstream callers (e.g. aido).
+  and version drift that would silently break downstream callers.
 """
 
 from __future__ import annotations

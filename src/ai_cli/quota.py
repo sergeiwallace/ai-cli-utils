@@ -1192,7 +1192,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
                     "raw": json.dumps(payload),
                 }
                 await client.publish("hw.events.usage.claude.snapshot", hw_payload)
-                # Write latest snapshot to NATS KV so aido and other services can read
+                # Write latest snapshot to NATS KV so downstream services can read
                 # current quota without SSHing to the local DB. Key is
                 # machine-suffixed (AI_HOST) for multi-machine disambiguation.
                 if client.js:
@@ -1200,7 +1200,7 @@ def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
                         kv = await client.js.key_value("hw_state")
                         kv_key = f"quota.claude.current.{machine}" if machine else "quota.claude.current"
                         await kv.put(kv_key, json.dumps(payload).encode())
-                        # Ack for aido mid-run quota monitor (AI-CLI-57 / AIDO-48 T-04).
+                        # Ack for a downstream mid-run quota monitor.
                         if machine:
                             await kv.put(
                                 f"quota.scrape.ack.{machine}",

@@ -60,7 +60,7 @@ status`` reports a tracked path as deleted, with no error anywhere:
    file again. pre-commit therefore runs the exact command that would heal the
    worktree and then faithfully undoes it, leaving the tree byte-identical to
    how it started and raising nothing. Directly observed on
-   ``aido/.worktrees/aido-1``: the index's cached stat for the missing path was
+   ``myproject/.worktrees/myproject-1``: the index's cached stat for the missing path was
    rewritten with the real size/inode at 19:11:45 (the ``git checkout -- .``)
    and the containing directory's mtime moved again at 19:11:47 (the re-apply).
 

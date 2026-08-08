@@ -618,7 +618,7 @@ def test_detect_phantom_deleted_files_when_precommit_cycle_runs_then_deletion_su
     `git checkout -- .` (which RESTORES the file — the very fix), then re-applies the
     patch, deleting it again. The tree ends byte-identical to how it started and
     nothing errors, which is why this shape survived every pull and every hook run on
-    `aido/.worktrees/aido-1` for over 24 hours.
+    `myproject/.worktrees/myproject-1` for over 24 hours.
     """
     repo = _init_repo(tmp_path)
     (repo / "docs" / "plan.md").unlink()

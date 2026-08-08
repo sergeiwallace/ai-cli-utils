@@ -2620,9 +2620,7 @@ def cmd_spend_group():
     pass
 
 
-@cmd_spend_group.command(
-    "gemini", help="Report historical Gemini CLI spend from local logs (use `aido spend gemini` for current spend)"
-)
+@cmd_spend_group.command("gemini", help="Report historical Gemini CLI spend from local logs")
 def cmd_spend_gemini_cli():
     from .spend import cmd_spend_gemini
 

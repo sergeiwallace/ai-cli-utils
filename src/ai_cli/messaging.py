@@ -122,7 +122,7 @@ class NATSClient:
         """Connects to NATS with bounded exponential backoff. Gives up after 3 attempts.
 
         Passes max_reconnect_attempts=1 to the nats library to bound its own internal
-        initial-connect retry loop (AIDO-294). max_reconnect_attempts=0 looks like it
+        initial-connect retry loop. max_reconnect_attempts=0 looks like it
         should mean "no retries" but does NOT: nats-py's _select_next_server() only
         discards a server from its pool when `max_reconnect_attempts > 0` is true, so
         0 is treated as unlimited (equivalent to a negative value) — the server is
