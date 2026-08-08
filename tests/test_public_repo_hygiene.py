@@ -39,12 +39,11 @@ _PRIVATE_REPO_NAMES = ("bms-" + "semantic-knowledge-graph", "sw-" + "bms" + "-wo
 # half — so 19 platform-name uses sat in ``src/`` and ``tests/`` while all 12
 # guards passed, honestly answering a narrower question than readers assumed.
 #
-# Only the tool name is listed here. The other platform name is also a shipped
-# config-section key (``[<name>]`` in the default template, read by that key), so
-# forbidding it is a public-API rename rather than a scrub and is tracked
-# separately. Listing a token whose violations still exist would just force an
-# exemption list, and an exemption in this guard is the hole it exists to close.
-_PRIVATE_PLATFORM_NAMES = ("ai" + "do",)
+# The second name was also a shipped config-section key, read by that key, so
+# forbidding it required a rename of the section rather than a scrub. That rename
+# has shipped, so the token is listed unconditionally here — no exemption list,
+# which would have been the hole this guard exists to close.
+_PRIVATE_PLATFORM_NAMES = ("ai" + "do", "ai-" + "core")
 
 _FORBIDDEN = re.compile(
     "|".join(
@@ -141,7 +140,9 @@ def test_given_a_private_platform_name_when_scanned_then_it_is_flagged(tmp_path)
 
     Parametrising over ``_PRIVATE_PLATFORM_NAMES`` rather than hardcoding one
     token means adding a name to that tuple without a working pattern fails here
-    instead of passing silently.
+    instead of passing silently. Each token gets its own file and its own
+    assertion, so a token whose pattern never matches names itself in the failure
+    rather than hiding inside an aggregate count.
     """
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
@@ -151,6 +152,8 @@ def test_given_a_private_platform_name_when_scanned_then_it_is_flagged(tmp_path)
     findings = scan_for_private_names(tmp_path)
 
     assert len(findings) == len(_PRIVATE_PLATFORM_NAMES)
+    for index, name in enumerate(_PRIVATE_PLATFORM_NAMES):
+        assert any(f.startswith(f"src/leak_{index}.py:1:") for f in findings), f"scan did not flag {name!r}"
 
 
 def test_given_a_longer_identifier_containing_a_platform_name_when_scanned_then_it_is_not_flagged(tmp_path):
