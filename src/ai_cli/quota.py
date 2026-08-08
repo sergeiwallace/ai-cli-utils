@@ -18,6 +18,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,114 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 
 __all__ = ["QuotaSnapshot", "read_latest_snapshot"]
+
+
+_STATUSLINE_RESET = "\033[0m"
+
+
+@dataclass(frozen=True)
+class QuotaProviderAdapter:
+    """Provider-specific statusline identity and quota-window configuration."""
+
+    label: str
+    identity_rgb: tuple[int, int, int]
+    window_seconds: int
+
+    @property
+    def identity_color(self) -> str:
+        red, green, blue = self.identity_rgb
+        return f"\033[1;38;2;{red};{green};{blue}m"
+
+
+class ClaudeQuotaAdapter(QuotaProviderAdapter):
+    """Claude Code quota windows use Anthropic's established statusline identity."""
+
+    def __init__(self, label: str, window_seconds: int) -> None:
+        super().__init__(label, (217, 119, 87), window_seconds)
+
+
+class CodexQuotaAdapter(QuotaProviderAdapter):
+    """Codex quota windows use OpenAI's established statusline identity."""
+
+    def __init__(self, label: str, window_seconds: int) -> None:
+        super().__init__(label, (16, 163, 127), window_seconds)
+
+
+CLAUDE_FIVE_HOUR_QUOTA = ClaudeQuotaAdapter("cc5h", 5 * 60 * 60)
+CLAUDE_WEEKLY_QUOTA = ClaudeQuotaAdapter("ccWk", 7 * 24 * 60 * 60)
+CODEX_WEEKLY_QUOTA = CodexQuotaAdapter("cxWk", 7 * 24 * 60 * 60)
+
+
+class QuotaStatuslineSegment:
+    """Render one quota segment using a shared pace calculation and truecolor gradient."""
+
+    # Green well behind pace, blue just behind, yellow at pace, then orange and red.
+    _PACE_COLOR_ANCHORS = (
+        (-10.0, (34, 197, 94)),
+        (-1.0, (59, 130, 246)),
+        (0.0, (234, 179, 8)),
+        (5.0, (249, 115, 22)),
+        (10.0, (220, 38, 38)),
+    )
+
+    def __init__(self, adapter: QuotaProviderAdapter) -> None:
+        self.adapter = adapter
+
+    def pace_delta(self, usage_pct: float, reset_epoch: float, now_epoch: float) -> float:
+        """Return usage minus elapsed-cycle percentage points, clamped to the cycle."""
+        window_start = reset_epoch - self.adapter.window_seconds
+        elapsed_seconds = min(max(now_epoch - window_start, 0.0), self.adapter.window_seconds)
+        elapsed_pct = elapsed_seconds / self.adapter.window_seconds * 100.0
+        return usage_pct - elapsed_pct
+
+    def color_for_delta(self, delta: float) -> str:
+        """Interpolate the pace palette into a 24-bit foreground escape sequence."""
+        anchors = self._PACE_COLOR_ANCHORS
+        if delta <= anchors[0][0]:
+            rgb = anchors[0][1]
+        elif delta >= anchors[-1][0]:
+            rgb = anchors[-1][1]
+        else:
+            for (left_delta, left_rgb), (right_delta, right_rgb) in pairwise(anchors):
+                if left_delta <= delta <= right_delta:
+                    fraction = (delta - left_delta) / (right_delta - left_delta)
+                    rgb = tuple(
+                        round(start + (end - start) * fraction) for start, end in zip(left_rgb, right_rgb, strict=True)
+                    )
+                    break
+            else:  # The bounded branches above make this unreachable, but keep type checkers satisfied.
+                rgb = anchors[-1][1]
+        red, green, blue = rgb
+        return f"\033[38;2;{red};{green};{blue}m"
+
+    @staticmethod
+    def format_signed_delta(delta: float) -> str:
+        """Format a pace difference in percentage points without hiding sub-1pp direction."""
+        if delta == 0:
+            return "±0pp"
+        sign = "+" if delta > 0 else "-"
+        magnitude = abs(delta)
+        if magnitude < 1:
+            return f"{sign}<1pp"
+        return f"{sign}{magnitude:.0f}pp"
+
+    def render(self, usage_pct: float, reset_epoch: float, now_epoch: float, arrow: str = "→") -> str:
+        """Render provider label, pace-colored usage, and signed pace beside the acceleration arrow."""
+        delta = self.pace_delta(usage_pct, reset_epoch, now_epoch)
+        pace_color = self.color_for_delta(delta)
+        return (
+            f"{self.adapter.identity_color}{self.adapter.label}{_STATUSLINE_RESET} "
+            f"{pace_color}{usage_pct:.0f}%{_STATUSLINE_RESET} "
+            f"{arrow} {pace_color}pace{self.format_signed_delta(delta)}{_STATUSLINE_RESET}"
+        )
+
+    def render_without_pace(self, usage_pct: float) -> str:
+        """Render the neutral fallback used when an upstream source omits a reset time."""
+        neutral_color = self.color_for_delta(0.0)
+        return (
+            f"{self.adapter.identity_color}{self.adapter.label}{_STATUSLINE_RESET} "
+            f"{neutral_color}{usage_pct:.0f}%{_STATUSLINE_RESET}"
+        )
 
 
 @dataclass
@@ -1358,23 +1467,63 @@ def _record_rate_limits_env_snapshot(now) -> None:
         record_quota_snapshot(usage_percent=seven_day_pct, session_pct=five_hour_pct, reset_at=reset_iso)
 
 
+def _render_env_statusline_segment(segment_name: str) -> str:
+    """Render a non-database quota segment supplied by the shell statusline."""
+    if segment_name == "claude-five-hour":
+        adapter = CLAUDE_FIVE_HOUR_QUOTA
+        pct_name = "AI_CLI_QUOTA_FIVE_HOUR_PCT"
+        reset_name = "AI_CLI_QUOTA_FIVE_HOUR_RESET"
+    elif segment_name == "codex-weekly":
+        try:
+            window_seconds = int(os.environ["AI_CLI_QUOTA_STATUSLINE_WINDOW_SECONDS"])
+        except (KeyError, ValueError):
+            return ""
+        if window_seconds <= 0:
+            return ""
+        adapter = CodexQuotaAdapter("cxWk", window_seconds)
+        pct_name = "AI_CLI_QUOTA_STATUSLINE_PCT"
+        reset_name = "AI_CLI_QUOTA_STATUSLINE_RESET"
+    else:
+        return ""
+
+    try:
+        usage_pct = float(os.environ[pct_name])
+    except (KeyError, ValueError):
+        return ""
+    renderer = QuotaStatuslineSegment(adapter)
+    try:
+        reset_epoch = float(os.environ[reset_name])
+    except (KeyError, ValueError):
+        return renderer.render_without_pace(usage_pct) if segment_name == "claude-five-hour" else ""
+    arrow = os.environ.get("AI_CLI_QUOTA_STATUSLINE_ARROW", "→")
+    return renderer.render(usage_pct, reset_epoch, time.time(), arrow)
+
+
 def quota_statusline_part() -> int:
     """Print a compact quota indicator for use in the statusline.
 
     Authoritative source (AIH-164): CC's official ``rate_limits`` stdin, exported by the
     statusline as ``AI_CLI_QUOTA_*`` env vars and persisted here as a throttled snapshot.
     Then: NATS KV (shared across machines) when local data is stale; local SQLite fast path
-    when fresh. Outputs: {pace_icon} {usage_pct:.0f}% {direction}{delta:.0f}%
-    where delta = usage_pct - week_elapsed_pct.
+    when fresh. The three provider windows share ``QuotaStatuslineSegment`` for their
+    pace calculation, signed display, and truecolor gradient.
     """
     import sqlite3
 
     from .quota_db import (
         _get_current_week_start,
         _get_quota_db_path,
+        _get_reset_at,
         _init_db,
         record_quota_snapshot,
     )
+
+    segment_name = os.environ.get("AI_CLI_QUOTA_STATUSLINE_SEGMENT")
+    if segment_name:
+        rendered = _render_env_statusline_segment(segment_name)
+        if rendered:
+            print(rendered)
+        return 0
 
     _check_scrape_mismatch_prefix()
 
@@ -1453,37 +1602,6 @@ def quota_statusline_part() -> int:
             now - datetime.fromisoformat(rows[0]["snapshotted_at"].replace("Z", "+00:00"))
         ).total_seconds() / 3600
         stale = snapshot_age_hours > 2.0  # scrape has been failing for >2h
-        ws_dt = datetime.strptime(week_start_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-        elapsed_secs = (now - ws_dt).total_seconds()
-        week_elapsed_pct = min(elapsed_secs / (7 * 24 * 3600) * 100.0, 100.0)
-
-        delta = usage_pct - week_elapsed_pct
-
-        GREEN = "\033[32m"
-        YELLOW = "\033[33m"
-        RED = "\033[31m"
-        BLUE = "\033[34m"
-        DIM = "\033[2m"
-        RESET = "\033[0m"
-
-        # Quota % color: absolute level
-        if usage_pct < 50:
-            pct_color = GREEN
-        elif usage_pct < 75:
-            pct_color = YELLOW
-        else:
-            pct_color = RED
-
-        # AI_CLI_STATUSLINE_COLS (passed by statusline-command.sh) used to pick "Week" (wide)
-        # vs "W" (narrow); superseded by a fixed "ccWk" (Claude Code Weekly) label
-        # (2026-07-19) so it pairs visually with Codex's "cxWk" — already narrow-terminal-
-        # short, so the width branch is gone and the env var is no longer read here.
-        # Anthropic orange #D97757, 24-bit truecolor — verified via live web search against
-        # Anthropic's actual brand-color page (2026-07-19, explicit request), not guessed
-        # from memory.
-        BOLD_CYAN = "\033[1;38;2;217;119;87m"
-        week_label = "ccWk"
-
         # Arrow: acceleration direction (requires \u22653 snapshots)
         arrow_char = "\u2192"  # → steady (default / insufficient data)
         if len(rows) >= 3:
@@ -1501,29 +1619,12 @@ def quota_statusline_part() -> int:
                 arrow_char = "\u2193"  # ↓ decelerating
 
         stale_suffix = " \033[2m\u23f1\033[0m" if stale else ""  # ⏱ dimmed
-        # No 📊 glyph and no ✅/⚠️/🚨 pace-status icon (dropped 2026-07-19, AIH-274
-        # compaction pass, explicit request) — arrow direction + color alone convey pace.
-        # 🌱 (seedling, first-24h-only) and ⏱ (stale, a real signal) are unrelated
-        # decorations kept as-is.
-        if elapsed_secs < 24 * 3600:
-            # Seedling phase (first 24h): 🌱 always shown; informational only, no alarms.
-            delta_color = BLUE
-            print(
-                f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
-                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET} \U0001f331{stale_suffix}"
-            )  # ccWk N% →X% 🌱 [⏱]
-        else:
-            # Normal phase: ≤10% over = on track, 10-25% = running hot, >25% = significantly over
-            if delta <= 10:
-                delta_color = GREEN
-            elif delta <= 25:
-                delta_color = YELLOW
-            else:
-                delta_color = RED
-            print(
-                f"{BOLD_CYAN}{week_label}{RESET} {pct_color}{usage_pct:.0f}%{RESET}"
-                f" {delta_color}{arrow_char}{abs(delta):.0f}%{RESET}{stale_suffix}"
-            )  # ccWk N% →X% [⏱]
+        reset_at = _get_reset_at(now)
+        reset_epoch = datetime.fromisoformat(reset_at.replace("Z", "+00:00")).timestamp()
+        segment = QuotaStatuslineSegment(CLAUDE_WEEKLY_QUOTA)
+        elapsed_secs = max(now.timestamp() - (reset_epoch - CLAUDE_WEEKLY_QUOTA.window_seconds), 0.0)
+        seedling_suffix = " \U0001f331" if elapsed_secs < 24 * 3600 else ""
+        print(segment.render(usage_pct, reset_epoch, now.timestamp(), arrow_char) + seedling_suffix + stale_suffix)
     except Exception:
         pass
     return 0

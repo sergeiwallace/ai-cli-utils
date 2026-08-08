@@ -1987,10 +1987,8 @@ class TestQuotaStatuslinePart:
             qdb.set_db_path(None)  # type: ignore[arg-type]
             q._SCRAPE_LOCK_PATH.unlink(missing_ok=True)
 
-    def test_when_under_pace_then_shows_green_delta_and_steady_arrow(self, tmp_path, capsys, frozen_week):
-        """delta < -5 with single snapshot → GREEN delta color, → arrow (insufficient data
-        for acceleration). No ✅ icon (dropped 2026-07-19, AIH-274 compaction pass) — color
-        alone conveys "on track" now."""
+    def test_when_under_pace_then_shows_green_signed_delta_and_steady_arrow(self, tmp_path, capsys, frozen_week):
+        """delta < -5 uses the green truecolor anchor and preserves its negative sign."""
         import ai_cli.quota_db as qdb
 
         # Pin `now` to 50% through the billing week so week_elapsed_pct ≈ 50%
@@ -2009,14 +2007,14 @@ class TestQuotaStatuslinePart:
             assert result == 0
             out = capsys.readouterr().out
             assert "5%" in out
-            assert "\033[32m" in out  # GREEN delta color = on track
+            assert "\033[38;2;34;197;94m" in out  # green truecolor anchor = on track
+            assert "pace-" in out
             assert "→" in out  # steady: only 1 snapshot, no acceleration data
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_over_pace_then_shows_red_delta(self, tmp_path, capsys, frozen_week):
-        """delta > +5 in normal phase (≥24h elapsed) → RED delta color. No 🚨 icon (dropped
-        2026-07-19, AIH-274 compaction pass) — color alone conveys "running hot" now."""
+    def test_when_over_pace_then_shows_red_signed_delta(self, tmp_path, capsys, frozen_week):
+        """delta > +10 uses the red truecolor anchor and preserves its positive sign."""
         import ai_cli.quota_db as qdb
 
         # Pin `now` to 25h into the week (post-seedling) so normal-phase bands apply.
@@ -2035,7 +2033,8 @@ class TestQuotaStatuslinePart:
             assert result == 0
             out = capsys.readouterr().out
             assert "95%" in out
-            assert "\033[31m" in out  # RED delta color = significantly over pace
+            assert "\033[38;2;220;38;38m" in out  # red truecolor anchor = significantly over pace
+            assert "pace+" in out
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2957,19 +2956,15 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         assert "Week" not in out
         assert "ccF" not in out and "ccS" not in out
 
-    def test_weekly_pace_shown_as_magnitude_color_encodes_direction(self, tmp_path, capsys):
-        """AI-CLI-96: the pace is shown as a bare MAGNITUDE (no +/- sign) — the COLOR conveys
-        direction (green = ahead / on track, yellow/red = behind). Under pace → green and NO
-        sign in the number (the earlier abs()-with-no-minus bug and the interim signed form
-        are both superseded). No ✅ icon (dropped 2026-07-19, AIH-274 compaction pass)."""
+    def test_weekly_pace_shows_signed_percentage_points(self, tmp_path, capsys):
+        """Under pace keeps the negative sign; color remains a supporting signal."""
         # ~161h elapsed = ~96% of week; usage 17% → delta = 17 - 96 ≈ -79% (way under pace)
         out = self._capture(17.0, hours_elapsed=161, tmp_path=tmp_path, capsys=capsys, cols=120)
         import re
 
         clean = re.sub(r"\033\[[0-9;]*m", "", out)
-        assert "→79%" in clean  # magnitude only
-        assert "→-" not in clean and "→+" not in clean  # no sign on the number
-        assert "\033[32m" in out  # green delta color encodes "ahead / on track"
+        assert "→ pace-79pp" in clean
+        assert "\033[38;2;34;197;94m" in out  # green truecolor anchor = on track
 
     def test_zero_cols_still_uses_ccwk_label(self, tmp_path, capsys):
         """An unset width does not change the primary label."""
