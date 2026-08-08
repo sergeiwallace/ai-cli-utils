@@ -75,16 +75,55 @@ def _write_transcript(project_dir: Path, uuid: str, title: str, cwd: Path, extra
     return path
 
 
+def _git(*args, cwd):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _init_repo(path: Path) -> Path:
+    """A real clone of a bare remote at ``path``, so worktrees can be registered.
+
+    Adoption verifies that its destination really is a worktree of the repository
+    rather than merely a directory of that name, so the fixture repo has to be a
+    genuine one. A plain ``mkdir`` destination is exactly the collision case, and
+    it now has its own tests.
+    """
+    remote = path.parent / f"{path.name}-origin.git"
+    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=path.parent)
+
+    seed = path.parent / f"{path.name}-seed"
+    seed.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=seed)
+    _git("config", "user.email", "t@example.com", cwd=seed)
+    _git("config", "user.name", "T", cwd=seed)
+    (seed / "README.md").write_text("base\n")
+    _git("add", "-A", cwd=seed)
+    _git("commit", "-q", "-m", "init", cwd=seed)
+    _git("push", "-q", str(remote), "main", cwd=seed)
+
+    _git("clone", "-q", str(remote), str(path), cwd=path.parent)
+    _git("config", "user.email", "t@example.com", cwd=path)
+    _git("config", "user.name", "T", cwd=path)
+    return path
+
+
+def _add_worktree(repo: Path, ai_name: str) -> Path:
+    """Register ``<repo>/.worktrees/<ai_name>`` as a real worktree of ``repo``."""
+    path = repo / ".worktrees" / ai_name
+    _git("worktree", "add", "-q", "--detach", str(path), cwd=repo)
+    return path
+
+
 @pytest.fixture
 def world(tmp_path):
-    """A fake repo with .worktrees/, a fake ~/.claude, and one adoptable session.
+    """A real repo with .worktrees/, a fake ~/.claude, and one adoptable session.
 
     The session ``myproject-2`` was started at the repo root (the mistake this
     command exists to correct), so its transcript sits in the *root's* project
     directory. Nothing is live: ``proc`` is an empty fake /proc.
     """
-    repo = tmp_path / "projects" / "myproject"
-    (repo / ".worktrees").mkdir(parents=True)
+    (tmp_path / "projects").mkdir()
+    repo = _init_repo(tmp_path / "projects" / "myproject")
+    (repo / ".worktrees").mkdir(parents=True, exist_ok=True)
     home = tmp_path / "claude-home"
     (home / "sessions").mkdir(parents=True)
     proc = tmp_path / "proc"
@@ -109,10 +148,8 @@ def adopt(world):
 
 @pytest.fixture
 def existing_worktree(world):
-    """Pre-create .worktrees/myproject-2 so no git call is ever needed."""
-    wt = world["repo"] / ".worktrees" / "myproject-2"
-    wt.mkdir(parents=True, exist_ok=True)
-    return wt
+    """Pre-register .worktrees/myproject-2 so no worktree ever has to be created."""
+    return _add_worktree(world["repo"], "myproject-2")
 
 
 def _mark_live(world, pid: int, name: str, cwd: Path) -> None:
@@ -510,8 +547,7 @@ def test_adopt_given_insufficient_space_when_adopted_then_fails_before_writing(
 @pytest.fixture
 def collision(world):
     """A second transcript in an existing worktree claiming the same title."""
-    wt = world["repo"] / ".worktrees" / "myproject-2"
-    wt.mkdir(parents=True, exist_ok=True)
+    wt = _add_worktree(world["repo"], "myproject-2")
     other_dir = cc_project_dir(wt, world["home"])
     other = _write_transcript(other_dir, OTHER_UUID, "myproject-2", wt, extra_lines=40)
     return {"worktree": wt, "path": other, "project_dir": other_dir}
@@ -599,8 +635,7 @@ def test_retitle_given_an_unrelated_title_when_retitled_then_nothing_changes(wor
 
 
 def test_adopt_given_a_confirmed_new_title_when_retitled_then_new_index_resolves(world, adopt, collision):
-    target = world["repo"] / ".worktrees" / "myproject-1"
-    target.mkdir(parents=True)
+    target = _add_worktree(world["repo"], "myproject-1")
     result = adopt(on_collision="retitle", new_title="myproject-1")
     assert result.retitled_from == "myproject-2"
     assert result.dest_root == target
@@ -608,7 +643,7 @@ def test_adopt_given_a_confirmed_new_title_when_retitled_then_new_index_resolves
 
 
 def test_adopt_given_a_retitle_when_done_then_the_original_title_still_resolves(world, adopt, collision):
-    (world["repo"] / ".worktrees" / "myproject-1").mkdir(parents=True)
+    _add_worktree(world["repo"], "myproject-1")
     adopt(on_collision="retitle", new_title="myproject-1")
     still = probe_resolves(collision["worktree"], "myproject-2", world["home"])
     assert still == collision["path"], "the transcript that kept the original title must still resolve"
@@ -684,7 +719,7 @@ def test_adopt_given_a_retitle_whose_original_stops_resolving_when_adopted_then_
     Adopting under a new title must leave the original title still resolving; if
     it does not, the transcript that kept it is not where it should be.
     """
-    (world["repo"] / ".worktrees" / "myproject-1").mkdir(parents=True)
+    _add_worktree(world["repo"], "myproject-1")
 
     def _probe(dest_root, title, home=None):
         return None if title == "myproject-2" else probe_resolves(dest_root, title, home)
@@ -872,9 +907,7 @@ def test_adopt_given_a_missing_worktree_when_adopted_then_it_is_created(world, a
     target = world["repo"] / ".worktrees" / "myproject-2"
 
     def _create(ai_name):
-        path = world["repo"] / ".worktrees" / ai_name
-        path.mkdir(parents=True)
-        return path
+        return _add_worktree(world["repo"], ai_name)
 
     monkeypatch.setattr("ai_cli.session.create_worktree", _create)
     result = adopt()
@@ -886,6 +919,89 @@ def test_adopt_given_worktree_creation_fails_when_adopted_then_raises_without_mo
     with pytest.raises(AdoptionError, match="could not create"):
         adopt()
     assert (world["src_dir"] / f"{UUID}.jsonl").is_file()
+
+
+# ---- the destination must BE a worktree, not merely a directory of that name --
+#
+# ``.worktrees/<name>`` carries two incompatible meanings. This launcher wants it
+# to be the session's own checkout; per-task agent worktrees are nested INSIDE it
+# as ``<name>/<task>/<leaf>``. A session started from a repository ROOT — exactly
+# the population this command exists to migrate — therefore finds its agent
+# container sitting where its own checkout must go.
+#
+# The old check was ``wt_dir.is_dir()``, which cannot tell a checkout from any
+# other directory. Adoption reported success into a destination holding no
+# repository content at all, and the only signal in the dry run was the ABSENCE
+# of a "worktree to create" line.
+
+
+def test_adopt_given_a_destination_that_is_not_a_worktree_when_adopted_then_refused(world, adopt):
+    """A plain directory in the slot must stop adoption, not be adopted into.
+
+    Discriminating: the destination exists and ``is_dir()`` is true, so the old
+    check passed it. Only a registration lookup can tell it apart. If the
+    directory *were* a real worktree this would not raise, which is the control
+    immediately below.
+    """
+    plain = world["repo"] / ".worktrees" / "myproject-2"
+    plain.mkdir(parents=True)
+
+    with pytest.raises(AdoptionError, match="not a worktree"):
+        adopt()
+
+    assert (world["src_dir"] / f"{UUID}.jsonl").is_file(), "the source transcript must be untouched"
+    assert not cc_project_dir(plain, world["home"]).exists(), "nothing may be written into the collided slot"
+
+
+def test_adopt_given_a_destination_holding_nested_agent_worktrees_when_adopted_then_refused(world, adopt):
+    """The real shape: the slot is a CONTAINER of per-task agent worktrees."""
+    nested = world["repo"] / ".worktrees" / "myproject-2" / "task-1" / "leaf"
+    _git("worktree", "add", "-q", "--detach", str(nested), cwd=world["repo"])
+    (nested / "agent-work.md").write_text("only here\n")
+    _git("add", "-A", cwd=nested)
+    _git("commit", "-q", "-m", "unpushed agent work", cwd=nested)
+
+    with pytest.raises(AdoptionError, match="not a worktree"):
+        adopt()
+
+    assert (nested / "agent-work.md").read_text() == "only here\n", "nested work must be untouched"
+    assert (world["src_dir"] / f"{UUID}.jsonl").is_file()
+
+
+def test_adopt_given_a_collided_destination_when_refused_then_the_error_says_what_to_do(world, adopt):
+    """The refusal must be actionable — which path, and the relocation to run."""
+    nested = world["repo"] / ".worktrees" / "myproject-2" / "task-1" / "leaf"
+    _git("worktree", "add", "-q", "--detach", str(nested), cwd=world["repo"])
+
+    with pytest.raises(AdoptionError) as caught:
+        adopt()
+
+    message = str(caught.value)
+    assert str(world["repo"] / ".worktrees" / "myproject-2") in message
+    assert "git worktree move" in message
+
+
+def test_adopt_given_a_collided_destination_when_previewed_then_the_dry_run_also_refuses(world, adopt):
+    """The dry run must refuse too, or the collision is discovered only after writing.
+
+    A preview that reports success is how this defect stayed invisible: the only
+    difference in the output was a line that did *not* appear.
+    """
+    (world["repo"] / ".worktrees" / "myproject-2").mkdir(parents=True)
+
+    with pytest.raises(AdoptionError, match="not a worktree"):
+        adopt(dry_run=True)
+
+
+def test_adopt_given_a_registered_destination_worktree_when_adopted_then_it_proceeds(world, adopt, existing_worktree):
+    """Positive control: a genuine worktree in the slot must still be adopted into.
+
+    Without this the refusals above would pass just as well against an
+    implementation that refuses every destination.
+    """
+    result = adopt()
+    assert result.dest_root == existing_worktree
+    assert result.resolved == result.migration.dest_jsonl
 
 
 # ---- CC task namespaces ------------------------------------------------------
@@ -1087,10 +1203,9 @@ def test_titled_sessions_given_several_transcripts_when_listed_then_each_title_o
 def test_adopt_all_given_one_collision_when_run_then_the_batch_continues(world, monkeypatch):
     _write_transcript(world["src_dir"], OTHER_UUID, "myproject-3", world["repo"])
     # myproject-2 collides with a transcript already in its worktree.
-    wt2 = world["repo"] / ".worktrees" / "myproject-2"
-    wt2.mkdir(parents=True)
+    wt2 = _add_worktree(world["repo"], "myproject-2")
     _write_transcript(cc_project_dir(wt2, world["home"]), "33333333-2222-4333-8444-555555555555", "myproject-2", wt2)
-    (world["repo"] / ".worktrees" / "myproject-3").mkdir(parents=True)
+    _add_worktree(world["repo"], "myproject-3")
 
     outcomes = dict(adopt_all(world["repo"], claude_home=world["home"], proc_dir=world["proc"]))
     assert isinstance(outcomes["myproject-2"], TitleCollision)
@@ -1172,7 +1287,7 @@ def test_cli_given_retitle_without_a_title_or_index_when_invoked_then_refused(cl
 def test_cli_given_retitle_with_a_confirmed_index_when_invoked_then_the_new_title_is_derived(cli_world):
     wt = cli_world["repo"] / ".worktrees" / "myproject-2"
     _write_transcript(cc_project_dir(wt, cli_world["home"]), OTHER_UUID, "myproject-2", wt)
-    (cli_world["repo"] / ".worktrees" / "myproject-4").mkdir()
+    _add_worktree(cli_world["repo"], "myproject-4")
     code, out, err = run_cli(["ai", "session-adopt", "myproject-2", "-c", "retitle", "-I", "4", "-y"])
     assert code == 0, err
     assert "retitled 'myproject-2' -> 'myproject-4'" in out
@@ -1194,7 +1309,7 @@ def test_cli_given_a_live_session_when_invoked_then_exits_nonzero(cli_world):
 
 def test_cli_given_bulk_mode_when_invoked_then_each_session_is_reported(cli_world):
     _write_transcript(cli_world["src_dir"], OTHER_UUID, "myproject-3", cli_world["repo"])
-    (cli_world["repo"] / ".worktrees" / "myproject-3").mkdir()
+    _add_worktree(cli_world["repo"], "myproject-3")
     code, out, err = run_cli(["ai", "session-adopt", "-a", "-n"])
     assert code == 0
     assert "myproject-2" in out and "myproject-3" in out
@@ -1203,7 +1318,7 @@ def test_cli_given_bulk_mode_when_invoked_then_each_session_is_reported(cli_worl
 
 def test_cli_given_bulk_mode_with_a_collision_when_invoked_then_the_rest_still_adopt(cli_world):
     _write_transcript(cli_world["src_dir"], OTHER_UUID, "myproject-3", cli_world["repo"])
-    (cli_world["repo"] / ".worktrees" / "myproject-3").mkdir()
+    _add_worktree(cli_world["repo"], "myproject-3")
     wt = cli_world["repo"] / ".worktrees" / "myproject-2"
     _write_transcript(cc_project_dir(wt, cli_world["home"]), "33333333-2222-4333-8444-555555555555", "myproject-2", wt)
     code, out, err = run_cli(["ai", "session-adopt", "-a", "-y"])

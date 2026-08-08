@@ -800,6 +800,19 @@ class TestDetectRepoRoot:
 # --- create_worktree ---
 
 
+def _porcelain(*worktree_paths):
+    """``git worktree list --porcelain`` output for the given worktree paths.
+
+    Faithful to git's real format — a ``worktree <path>`` line per block — because
+    the registration check reads those lines exactly. A stub returning a bare path
+    would let a *substring* check pass where the real command's output makes it
+    ambiguous: a container of nested worktrees is a substring of its children's
+    lines. See ``tests/test_worktree_container_collision.py``.
+    """
+    blocks = [f"worktree {path}\nHEAD {'a' * 40}\nbranch refs/heads/wt-{Path(path).name}" for path in worktree_paths]
+    return "\n\n".join(blocks) + "\n\n"
+
+
 def _stub_worktree_base(upstream="main"):
     """Stub base+upstream resolution for tests that mock ``subprocess.run`` wholesale.
 
@@ -827,7 +840,7 @@ class TestCreateWorktree:
         wt_dir.mkdir(parents=True)
 
         mock_prune = MagicMock(returncode=0)
-        mock_list = MagicMock(returncode=0, stdout=str(wt_dir))
+        mock_list = MagicMock(returncode=0, stdout=_porcelain(wt_dir))
 
         def mock_run(cmd, **kwargs):
             if "prune" in cmd:
@@ -903,7 +916,7 @@ class TestCreateWorktree:
             if cmd == ["direnv", "exec", str(repo_root), "true"]:
                 return MagicMock(returncode=1, stdout="")
             if cmd[:3] == ["git", "worktree", "list"]:
-                return MagicMock(returncode=0, stdout=str(wt_dir))
+                return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
             return MagicMock(returncode=0, stdout="")
 
         with (
@@ -928,7 +941,7 @@ class TestCreateWorktree:
             if cmd == ["direnv", "exec", str(wt_dir), "true"]:
                 return MagicMock(returncode=0, stdout="")
             if cmd[:3] == ["git", "worktree", "list"]:
-                return MagicMock(returncode=0, stdout=str(wt_dir))
+                return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
             return MagicMock(returncode=0, stdout="")
 
         with (

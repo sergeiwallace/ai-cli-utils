@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -98,11 +99,36 @@ def _write_transcript_at(
     return path
 
 
+def _git(*args, cwd):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
 def _make_repo(tmp_path: Path, name: str) -> Path:
+    """A real git repository, because adoption verifies its destination with git.
+
+    A hand-made ``.git`` directory is enough for the *discovery* these tests were
+    written for — ``owning_repo`` only asks whether ``.git`` exists — but adoption
+    now checks that its destination is a registered worktree of the repository, a
+    question only a real repository can answer. Building one here keeps the survey
+    coverage and lets the adoption tests exercise the real check.
+    """
     repo = tmp_path / "projects" / name
-    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    repo.parent.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", "-b", "main", str(repo), cwd=repo.parent)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "T", cwd=repo)
+    (repo / "README.md").write_text("base\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "init", cwd=repo)
     (repo / WORKTREES).mkdir(parents=True, exist_ok=True)
     return repo
+
+
+def _add_worktree(repo: Path, ai_name: str) -> Path:
+    """Register ``<repo>/.worktrees/<ai_name>`` as a real worktree of ``repo``."""
+    path = repo / WORKTREES / ai_name
+    _git("worktree", "add", "-q", "--detach", str(path), cwd=repo)
+    return path
 
 
 def _snapshot(*roots: Path) -> dict[str, str]:
@@ -144,8 +170,7 @@ def fleet(tmp_path):
 
     agent_dir = myproject / ".claude" / "worktrees" / "agent-1234"
     agent_dir.mkdir(parents=True)
-    adopted_slot = myapp / ".worktrees" / "myapp-1"
-    adopted_slot.mkdir(parents=True)
+    adopted_slot = _add_worktree(myapp, "myapp-1")
 
     root_session = _write_transcript(home, UUID_A, "myproject-2", myproject)
     agent_session = _write_transcript(home, UUID_B, "myproject-5", agent_dir)
@@ -185,7 +210,12 @@ def _no_real_worktrees(tmp_path, monkeypatch):
         if not repo.is_dir():
             raise AssertionError(f"unexpected worktree request for {ai_name!r} — no fake repo at {repo}")
         path = repo / WORKTREES / ai_name
-        path.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            # Registered, not merely created: adoption verifies its destination
+            # against `git worktree list`, so a bare mkdir here would make every
+            # adoption test fail on the collision refusal rather than on what it
+            # is asserting.
+            _add_worktree(repo, ai_name)
         return str(path)
 
     monkeypatch.setattr("ai_cli.session.create_worktree", _fake_create_worktree)
@@ -410,7 +440,7 @@ def test_adopt_ready_given_an_adoptable_session_when_adopted_then_session_adopt_
 
 def test_adopt_ready_given_an_agent_worktree_session_when_adopted_then_it_resolves(fleet, audit, monkeypatch):
     """AC-2 + AC-4: motivating case 1 adopts end to end with no path supplied."""
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myproject-5")
     outcomes, skipped = adopt_ready(report, claude_home=fleet["home"], proc_dir=fleet["proc"])
     assert skipped == []
@@ -518,7 +548,7 @@ def test_adopt_ready_given_a_dry_run_when_run_then_the_filesystem_is_byte_identi
     A dry run that wrongly wrote would print exactly the same plan, so the printed
     output cannot distinguish the two. The snapshot can.
     """
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     roots = (fleet["home"], fleet["myproject"], fleet["myapp"])
     before = _snapshot(*roots)
 
@@ -535,7 +565,7 @@ def test_adopt_ready_given_a_dry_run_when_run_then_the_filesystem_is_byte_identi
 
 def test_adopt_ready_given_a_real_run_when_run_then_the_filesystem_does_change(fleet, audit):
     """AC-5 negative control: the snapshot probe can fail, so its silence means something."""
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     roots = (fleet["home"], fleet["myproject"], fleet["myapp"])
     before = _snapshot(*roots)
 
@@ -579,7 +609,7 @@ def test_survey_given_a_repo_filter_matching_nothing_when_surveyed_then_empty(au
 def test_adopt_ready_given_a_live_session_when_run_then_it_is_skipped_and_the_batch_continues(fleet, audit):
     """AC-7: the live one is reported with its reason; the rest still adopt."""
     _mark_live(fleet, 5151, "myproject-2", fleet["myproject"], session_id=UUID_A)
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
 
     outcomes, skipped = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
 
@@ -593,7 +623,7 @@ def test_adopt_ready_given_a_live_session_when_run_then_it_is_skipped_and_the_ba
 def test_adopt_ready_given_a_collision_when_run_then_it_is_skipped_and_the_batch_continues(fleet, audit):
     """AC-7: same for a collision — reported, skipped, batch proceeds."""
     _write_transcript(fleet["home"], UUID_C, "myproject-2", fleet["myproject"] / ".worktrees" / "myproject-2")
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
 
     outcomes, skipped = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
 
@@ -614,7 +644,7 @@ def test_adopt_ready_given_an_adoption_error_when_run_then_recorded_and_the_batc
         return real_adopt(repo_root, name, **kw)
 
     monkeypatch.setattr(module, "adopt_session", _flaky)
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
 
     outcomes, _ = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
 
@@ -635,7 +665,7 @@ def test_adopt_ready_given_a_live_session_bypassing_triage_when_adopted_then_the
     """
     from ai_cli.session_adopt import LiveSessionError
 
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     _mark_live(fleet, 5252, "myproject-5", fleet["agent_dir"], session_id=UUID_B)
     report = survey(claude_home=fleet["home"], proc_dir=fleet["proc"], title="myproject-5")
     record = report.sessions[0]
@@ -748,7 +778,7 @@ def test_cli_given_a_collision_when_invoked_then_it_is_reported_before_any_adopt
 
 def test_cli_given_the_adopt_flag_and_a_dry_run_when_invoked_then_nothing_is_written(cli_audit, fleet):
     """AC-5 via the CLI, proved against a filesystem snapshot."""
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     roots = (fleet["home"], fleet["myproject"], fleet["myapp"])
     before = _snapshot(*roots)
 
@@ -760,7 +790,7 @@ def test_cli_given_the_adopt_flag_and_a_dry_run_when_invoked_then_nothing_is_wri
 
 def test_cli_given_the_adopt_flag_when_confirmed_then_sessions_are_adopted(cli_audit, fleet):
     """AC-4 via the CLI: real adoption reports the resolve probe."""
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     code, out, err = run_cli(["ai", "session-audit", "-a", "-y"])
     assert "Adopted myproject-5" in out
     assert "resolve probe" in out
@@ -768,7 +798,7 @@ def test_cli_given_the_adopt_flag_when_confirmed_then_sessions_are_adopted(cli_a
 
 def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted(cli_audit, fleet, monkeypatch):
     """AC-4: the confirmation prompt is honoured."""
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     monkeypatch.setattr("click.confirm", lambda *a, **k: False)
     before = _snapshot(fleet["home"])
 
@@ -781,7 +811,7 @@ def test_cli_given_a_declined_confirmation_when_prompted_then_nothing_is_adopted
 
 def test_cli_given_an_accepted_confirmation_when_prompted_then_sessions_are_adopted(cli_audit, fleet, monkeypatch):
     """AC-4: accepting the prompt adopts."""
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
     monkeypatch.setattr("click.confirm", lambda *a, **k: True)
     code, out, err = run_cli(["ai", "session-audit", "-a"])
     assert "Adopted myproject-5" in out
@@ -798,7 +828,7 @@ def test_cli_given_nothing_safe_to_adopt_when_invoked_then_reports_and_exits_non
 def test_cli_given_a_bulk_adopt_with_one_refusal_when_invoked_then_the_rest_adopt(cli_audit, fleet):
     """AC-7 via the CLI: the summary carries both counts."""
     _mark_live(fleet, 5454, "myproject-2", fleet["myproject"], session_id=UUID_A)
-    (fleet["myproject"] / ".worktrees" / "myproject-5").mkdir()
+    _add_worktree(fleet["myproject"], "myproject-5")
 
     code, out, err = run_cli(["ai", "session-audit", "-a", "-y"])
 
