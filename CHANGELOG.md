@@ -40,6 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining sessions. Procedure, including the by-hand equivalent of every step:
   `docs/tools/cc-session-adoption.md`. (`AI-CLI-168`)
 
+### Changed
+
+- **BREAKING (config):** the `cc-usage push` config section is renamed from
+  `[ai-core]` to `[usage_api]`. The old name was a private platform name that did
+  not belong in a public package, and it did not describe what the section
+  configures: a REST endpoint that CC token-usage events are POSTed to. The keys
+  inside it are unchanged (`api_url`, `api_key`), and there is no fallback to the
+  old name — a populated `[ai-core]` section is now simply ignored. **If your own
+  `config.toml` has `[ai-core]` filled in, rename that one header to
+  `[usage_api]`**; nothing else in your config needs to change. If you miss it,
+  `ai cc-usage push` fails with `usage_api.api_url and usage_api.api_key must be
+  set in config.toml under [usage_api]` rather than pushing. A commented-out
+  `[ai-core]` block (the untouched template default) needs no action; the new
+  template ships `[usage_api]`. (`AI-CLI-189`)
+
 ### Fixed
 
 - Every `ai update` and the auto-update at session launch printed a hardlink-fallback

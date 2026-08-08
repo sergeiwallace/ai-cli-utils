@@ -393,13 +393,21 @@ class TestPushToApi:
 
 
 class TestScanAndPush:
-    _CONFIG_MISSING: ClassVar[dict] = {"ai-core": {}}
-    _CONFIG_OK: ClassVar[dict] = {"ai-core": {"api_url": "https://example.com", "api_key": "ac-api-key"}}
+    _CONFIG_MISSING: ClassVar[dict] = {"usage_api": {}}
+    _CONFIG_OK: ClassVar[dict] = {"usage_api": {"api_url": "https://example.com", "api_key": "ua-api-key"}}
 
-    def test_scan_and_push_when_config_missing_then_error(self):
+    def test_scan_and_push_when_config_missing_then_error_names_the_section_read(self):
+        """The error must name the section the code actually reads.
+
+        A message pointing at a section the template no longer declares is
+        unactionable, so the asserted name is derived from the key
+        ``scan_and_push`` looks up rather than written out twice.
+        """
+        section = next(iter(self._CONFIG_MISSING))
         result = scan_and_push(config=self._CONFIG_MISSING)
         assert result.error is not None
         assert "api_url" in result.error or "api_key" in result.error
+        assert f"[{section}]" in result.error
 
     def test_scan_and_push_when_no_new_events_then_returns_zero_counts(self, tmp_path):
         with patch("ai_cli.cc_usage._load_cursor", return_value={}):

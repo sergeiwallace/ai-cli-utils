@@ -257,11 +257,13 @@ nats_servers = ["nats://localhost:4222"]
 # local_path = "~/projects/myorg/local.code-workspace"
 # remote_path = "~/projects/myorg/remote.code-workspace"
 
-[ai-core]
+[usage_api]
 ## REST API base URL and key for pushing CC usage events.
-## Obtain from your ai-core backend instance.
-# api_url = "https://your-ai-core-host"
-# api_key = "ac-api-..."
+## Obtain from your usage-tracking backend instance.
+## This section was renamed; if your own config.toml has a filled-in predecessor
+## section for it, see the CHANGELOG [Unreleased] entry for the old header name.
+# api_url = "https://usage.example.com"
+# api_key = "ua-api-..."
 """
 
 
