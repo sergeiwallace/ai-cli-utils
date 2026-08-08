@@ -635,10 +635,39 @@ def probe_resolves(dest_root: Path, title: str, claude_home: Path | None = None)
 
 
 def _ensure_worktree(repo_root: Path, ai_name: str, dry_run: bool) -> tuple[Path, bool]:
-    """Return ``(worktree_path, created)``, creating it off ``origin/main`` if absent."""
+    """Return ``(worktree_path, created)``, creating it off ``origin/main`` if absent.
+
+    An existing destination is only reused when it really is a worktree *of this
+    repository*, checked against ``git worktree list``. Existence alone is not
+    enough, and the distinction is not academic: ``.worktrees/<name>`` carries two
+    incompatible meanings. This launcher wants it to *be* the session's checkout,
+    while per-task agent worktrees are nested *inside* it as
+    ``<name>/<task>/<leaf>``. A session started from a repository root — precisely
+    the population this command migrates — therefore finds that container sitting
+    where its own checkout must go.
+
+    Reusing it would adopt a transcript into a directory holding none of the
+    repository's content and rewrite every recorded cwd to point there. The
+    refusal is raised in the dry run too: the only symptom of the reuse was a line
+    that failed to appear in the preview.
+    """
     wt_dir = repo_root / ".worktrees" / ai_name
-    if wt_dir.is_dir():
-        return wt_dir, False
+    if wt_dir.exists():
+        from .session import registered_worktrees
+
+        if wt_dir.resolve() in registered_worktrees(repo_root):
+            return wt_dir, False
+        raise AdoptionError(
+            f"{wt_dir} exists but is not a worktree of {repo_root} — refusing to adopt into it. "
+            f"This path has two meanings: `ai c {ai_name}` wants it to BE the session's checkout, "
+            f"while per-task agent worktrees are nested INSIDE it as `{ai_name}/<task>/<leaf>`. "
+            f"Adopting here would rewrite the transcript's recorded directories to a path holding "
+            f"none of the repository's content. Move anything nested there to a sibling container "
+            f"and re-run — `git worktree move <nested> "
+            f"{wt_dir.parent / (ai_name + '-agents')}/<leaf>` for each registered worktree (a plain "
+            f"`mv` leaves git's registration pointing at the old path), or remove the directory if "
+            f"it only holds debris."
+        )
     if dry_run:
         return wt_dir, True
     from .session import create_worktree

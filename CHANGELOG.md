@@ -57,6 +57,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Data loss:** creating a session worktree could delete nested git worktrees,
+  including commits that existed nowhere else (`AI-CLI-200`). `.worktrees/<name>`
+  carries two incompatible meanings: `ai c <name>` wants that path to *be* the
+  session's own checkout, while per-task agent worktrees are nested *inside* it as
+  `<name>/<task>/<leaf>`. A session launched from a repository root therefore finds
+  that container sitting exactly where its own checkout must go. Two defects met
+  there and masked each other. First, `create_worktree` decided whether the
+  directory was a registered worktree with a **substring** test against
+  `git worktree list --porcelain`, and `…/.worktrees/name` is a substring of the
+  line `worktree …/.worktrees/name/leaf` — so a container with no checkout of its
+  own reported as registered. Second, the branch taken when that test fails is an
+  unconditional `shutil.rmtree`, which reached with a container in place deletes
+  every nested worktree and any unpushed commit in it. The safe outcome was luck,
+  not correctness: the substring happened to match, so the deletion was never
+  reached, and fixing only the substring test would have armed it. Registration is
+  now matched line-exactly, and the deletion refuses to run on any directory
+  holding a git checkout — registered or not, since an unregistered clone is
+  invisible to `git worktree list` yet still holds commits. The refusal names the
+  colliding paths and the `git worktree move` that relocates them; nothing is moved
+  automatically, because relocating a human's unpushed work is a human decision. A
+  stale directory git knows nothing about is still replaced, so a leftover from an
+  interrupted run cannot block a session forever.
+
+- `ai session-adopt` reported success into a destination that held none of the
+  repository's content (`AI-CLI-200`). `_ensure_worktree` accepted any existing
+  directory (`is_dir()`), which cannot distinguish a git checkout from an unrelated
+  directory of the same name — so the collision above also made adoption rewrite
+  every recorded working directory in a transcript to a path with no repository in
+  it. Adoption now verifies that its destination is a worktree *of that
+  repository* and otherwise refuses with the collision and the remedy named. The
+  refusal fires in `-n/--dry-run` too: previously the only signal in a preview was
+  the *absence* of a "worktree to create" line, which is how this stayed invisible.
+
 - Every `ai update` and the auto-update at session launch printed a hardlink-fallback
   warning to stderr when uv's cache and tool-install directories resided on different
   filesystems (e.g., cache on EFS, tools on local NVMe). The install always succeeded,

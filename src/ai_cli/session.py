@@ -745,6 +745,51 @@ def _unset_upstream(repo_root: Path, branch: str) -> None:
     )
 
 
+def registered_worktrees(repo_root: Path) -> list[Path]:
+    """Every path ``git worktree list --porcelain`` reports for ``repo_root``.
+
+    Parsed line-exactly rather than searched as text. A substring test cannot
+    distinguish a worktree from a *parent directory* of one: ``.worktrees/name``
+    occurs inside the line ``worktree /…/.worktrees/name/leaf``, so a directory
+    that merely contains worktrees answers "registered" and is then treated as a
+    checkout it does not have.
+
+    Paths are resolved so the comparison survives a symlinked or otherwise
+    non-canonical spelling of the same directory — git prints its own canonical
+    form, which need not match the one the caller built.
+    """
+    res = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+        env=_git_env(),
+        check=False,
+    )
+    if res.returncode != 0:
+        return []
+    return [
+        Path(line[len("worktree ") :].strip()).resolve()
+        for line in (res.stdout or "").splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+def _contains_git_checkout(directory: Path) -> Path | None:
+    """Return the first git checkout at or under ``directory``, or None.
+
+    A ``.git`` entry is a file in a linked worktree and a directory in a normal
+    clone, so both forms count. This is the guard on deleting a directory: an
+    unregistered clone is invisible to ``git worktree list`` yet still holds
+    commits that exist nowhere else.
+    """
+    if (directory / ".git").exists():
+        return directory
+    for candidate in sorted(directory.rglob(".git")):
+        return candidate.parent
+    return None
+
+
 def create_worktree(ai_name: str) -> Path | None:
     repo_root = detect_repo_root()
     if not repo_root:
@@ -759,18 +804,30 @@ def create_worktree(ai_name: str) -> Path | None:
     if wt_dir.exists():
         # Verify it's still registered as a valid worktree; prune stale ones first
         subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env(), check=False)
-        res = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
-            capture_output=True,
-            text=True,
-            cwd=repo_root,
-            env=_git_env(),
-            check=False,
-        )
-        if str(wt_dir) in res.stdout:
+        if wt_dir.resolve() in registered_worktrees(repo_root):
             _allow_trusted_worktree_envrc(repo_root, wt_dir)
             return wt_dir
-        # Stale directory not in git's index — remove and recreate
+
+        # Not a worktree of this repository — so the directory is about to be
+        # deleted and recreated. That is only safe for debris. `.worktrees/<name>`
+        # is also used elsewhere as a *container* of per-task agent worktrees
+        # (`<name>/<task>/<leaf>`), and a session launched from a repository root
+        # finds that container exactly where its own checkout goes. Deleting it
+        # takes every nested worktree with it, including commits that were never
+        # pushed anywhere. Relocating them moves a human's work, so it stays a
+        # human decision: refuse and name what collided.
+        holder = _contains_git_checkout(wt_dir)
+        if holder is not None:
+            raise RuntimeError(
+                f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root}, and it "
+                f"contains a git checkout at {holder} — refusing to delete it. This path has two "
+                f"meanings: this launcher wants it to BE the session's checkout, while per-task "
+                f"agent worktrees are nested INSIDE it as `<name>/<task>/<leaf>`. Move the nested "
+                f"checkout(s) out to a sibling container and re-run, e.g. "
+                f"`git worktree move {holder} {wt_dir.parent / (wt_dir.name + '-agents')}/{holder.name}` "
+                f"for each one (a plain `mv` would leave git's registration pointing at the old path)."
+            )
+
         import shutil
 
         shutil.rmtree(wt_dir, ignore_errors=True)

@@ -193,6 +193,31 @@ git -C <repo> worktree add <repo>/.worktrees/myproject-2 -b wt-myproject-2 origi
 git -C <repo> branch --set-upstream-to=origin/main wt-myproject-2
 ```
 
+The destination must **be** a worktree of that repository, not merely a directory
+of the right name, and this is checked rather than assumed (`AI-CLI-200`).
+`.worktrees/<name>` carries two incompatible meanings: `ai c <name>` wants that
+path to be the session's own checkout, while per-task agent worktrees are nested
+*inside* it as `<name>/<task>/<leaf>`. A session started from a repository root —
+exactly what this command migrates — therefore finds that container sitting where
+its own checkout must go, and adopting into it would rewrite the transcript's
+recorded directories to a path holding none of the repository's content.
+
+Adoption refuses in that case, in `-n/--dry-run` too, naming the collision.
+Resolve it by hand, since relocating someone's unpushed work is not a decision a
+tool should take:
+
+```bash
+# check what is actually there
+git -C <repo> worktree list --porcelain | grep -Fx "worktree <repo>/.worktrees/myproject-2"
+
+# move each nested worktree to a sibling container, then re-run the adoption
+git -C <repo> worktree move <repo>/.worktrees/myproject-2/<task>/<leaf> \
+    <repo>/.worktrees/myproject-2-agents/<leaf>
+```
+
+Use `git worktree move`, not `mv`: a plain move leaves git's registration pointing
+at the old path.
+
 ### 2. Move the transcript
 
 Delegated to `ai cc-migrate` — see
