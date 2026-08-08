@@ -333,3 +333,98 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 
     assert os.environ.get("CLAUDE_CODE_TASK_LIST_ID") == "kg-1"
     assert (repo / ".worktrees" / "kg-1").is_dir()
+
+
+# --- worktree isolation is announced, not silent (AI-CLI-195 AC-7) --------------
+
+
+def _launch_in(monkeypatch, tmp_path, *, no_worktree=False):
+    """Run one bare launch from the current directory, up to the engine exec."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    monkeypatch.setenv("AI_HOST", "my-linux-box")
+
+    with (
+        patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(
+                engine="c",
+                name="1",
+                resume=False,
+                once=False,
+                bare=True,
+                notify=False,
+                sandbox=False,
+                no_worktree=no_worktree,
+                remote=False,
+                project="",
+                is_remote=False,
+                project_prefix_override="kg",
+                extra_args=[],
+                config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
+            )
+
+
+def test_given_a_launch_from_a_repo_root_when_started_then_the_worktree_creation_is_announced(
+    tmp_path, monkeypatch, capsys
+):
+    """AC-7: creating a worktree per session is intended, but it must not be silent.
+
+    The reported surprise was a ``.worktrees/<name>`` directory appearing with
+    nothing in the output to say it would.
+    """
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+
+    _launch_in(monkeypatch, tmp_path)
+
+    err = capsys.readouterr().err
+    assert "isolated worktree" in err
+    # The message must name WHERE, or it does not remove the surprise.
+    assert str(repo / ".worktrees" / "kg-1") in err
+    assert (repo / ".worktrees" / "kg-1").is_dir()
+
+
+def test_given_a_launch_from_a_repo_root_when_announced_then_the_opt_out_is_named(tmp_path, monkeypatch, capsys):
+    """An announcement the reader cannot act on still leaves them stuck."""
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+
+    _launch_in(monkeypatch, tmp_path)
+
+    assert "--no-worktree" in capsys.readouterr().err
+
+
+def test_given_worktree_isolation_disabled_when_launched_then_nothing_is_announced(tmp_path, monkeypatch, capsys):
+    """Negative control: the announcement must be tied to actually doing it.
+
+    Without this, a message printed unconditionally would satisfy the assertions
+    above while telling the reader something untrue.
+    """
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+
+    _launch_in(monkeypatch, tmp_path, no_worktree=True)
+
+    err = capsys.readouterr().err
+    assert "isolated worktree" not in err
+    assert not (repo / ".worktrees").exists()
+
+
+def test_given_a_launch_from_inside_an_existing_worktree_when_started_then_nothing_is_announced(
+    tmp_path, monkeypatch, capsys
+):
+    """Re-entering a session's own worktree creates nothing new to announce."""
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+    _launch_in(monkeypatch, tmp_path)
+    capsys.readouterr()
+
+    monkeypatch.chdir(repo / ".worktrees" / "kg-1")
+    _launch_in(monkeypatch, tmp_path)
+
+    assert "isolated worktree" not in capsys.readouterr().err

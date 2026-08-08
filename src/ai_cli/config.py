@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 _OS_TYPE_MAP = {
@@ -205,6 +206,15 @@ stale_session_timeout = 15
 # main_project = "myproject"
 ## Base directory for all projects (default: ~/projects)
 # projects_dir = "~/projects"
+## Path to a persistent, version-controlled project registry shared by every
+## machine. Prefix resolution prefers it over the main-project registry and over
+## [project_registry] below, and it is read wherever you happen to be -- the
+## repository holding it does not have to be the working directory. Use the same
+## [[projects]] schema as the main-project registry:
+##     [[projects]]
+##     name = "myproject"
+##     task_prefix = "MYPROJECT"
+# fleet_registry = "~/projects/myconfig-repo/config.toml"
 
 [messaging]
 # NATS server URLs for fleet messaging (heartbeats, events)
@@ -291,11 +301,31 @@ def _config_path() -> Path:
     return get_xdg_config_home() / "config.toml"
 
 
+def _strip_worktree_segments(resolved: Path) -> Path | None:
+    """Return the owning repository root when ``resolved`` sits inside a worktree.
+
+    Two worktree layouts are in play and both must resolve to the repository that
+    owns them.  ``<root>/.worktrees/<name>`` is the one this package creates, and
+    ``<root>/.claude/worktrees/<name>`` is the one the agent tooling creates.  A
+    worktree's ``.git`` is a *file* rather than a directory, so the ancestor walk
+    below stops at the worktree itself and would otherwise treat it as a distinct
+    repository -- which is how per-worktree paths accumulated in the registry.
+    """
+    parts = resolved.parts
+    if WORKTREE_DIR in parts:
+        return Path(*parts[: parts.index(WORKTREE_DIR)])
+    for index in range(len(parts) - 1):
+        if parts[index] == ".claude" and parts[index + 1] == "worktrees":
+            return Path(*parts[:index])
+    return None
+
+
 def _project_root(path: Path) -> Path:
     """Return the main repository root for ``path`` without importing session.py."""
     resolved = path.expanduser().resolve()
-    if WORKTREE_DIR in resolved.parts:
-        return Path(*resolved.parts[: resolved.parts.index(WORKTREE_DIR)])
+    owning_root = _strip_worktree_segments(resolved)
+    if owning_root is not None:
+        return owning_root
     for candidate in (resolved, *resolved.parents):
         if (candidate / ".git").exists():
             return candidate
@@ -315,9 +345,22 @@ def _registry_entries(config: dict | None = None) -> dict[str, dict[str, str]]:
                 f"Invalid prefix registry entry for {root!r}. Run: ai register -p {root!s} -x PREFIX"
             )
         normalized = os.path.normcase(str(_project_root(Path(root))))
-        if normalized in entries:
-            raise ProjectPrefixError(f"Ambiguous prefix registry entry for {root!s}. Remove the duplicate entry.")
-        entries[normalized] = {"prefix": value["prefix"].strip(), "type": str(value.get("type", "tool"))}
+        entry = {"prefix": value["prefix"].strip(), "type": str(value.get("type", "tool"))}
+        existing = entries.get(normalized)
+        # Several keys legitimately collapse onto one root: every worktree path
+        # under a repository normalizes to the repository itself. Those duplicates
+        # are redundant, not ambiguous, so long as they agree on the prefix -- and
+        # ignoring them is what lets stale per-worktree keys accumulate in a user's
+        # config without breaking resolution. Only a genuine disagreement about
+        # which prefix a root has is ambiguous, because there the registry cannot
+        # say what the answer is.
+        if existing is not None and existing["prefix"] != entry["prefix"]:
+            raise ProjectPrefixError(
+                f"Ambiguous prefix registry entry for {root!s}: it resolves to the same repository "
+                f"as another entry but declares prefix {entry['prefix']!r} instead of "
+                f"{existing['prefix']!r}. Remove whichever entry is wrong."
+            )
+        entries[normalized] = entry
     return entries
 
 
@@ -399,14 +442,230 @@ def register_project(project: str | Path, prefix: str, project_type: str = "tool
     return root
 
 
+FLEET_REGISTRY_FILENAME = "fleet-projects.toml"
+FLEET_REGISTRY_MARKER = Path("config") / FLEET_REGISTRY_FILENAME
+
+
+def _configured_fleet_registry_path() -> Path | None:
+    """Return the explicitly configured persistent registry path, if any."""
+    try:
+        configured = load_config().get("project", {}).get("fleet_registry")
+    except Exception:
+        return None
+    if not isinstance(configured, str) or not configured.strip():
+        return None
+    return Path(configured.strip()).expanduser()
+
+
+def _discover_fleet_registry_path() -> Path | None:
+    """Find the persistent registry by shape, so no repository name lives in code.
+
+    The registry is a version-controlled file inside one of the sibling
+    repositories under ``projects_dir``, at ``<repo>/config/fleet-projects.toml``.
+    Discovering it by that shape means prefix resolution works from any directory
+    without the holding repository being the working directory, and without this
+    package naming anyone's repository. Two candidates is a genuine ambiguity --
+    nothing here can say which one the user meant -- so it is reported rather than
+    silently resolved from the first hit.
+    """
+    projects_dir = _get_projects_dir()
+    if not projects_dir.is_dir():
+        return None
+    candidates = sorted(
+        candidate
+        for candidate in (repo / FLEET_REGISTRY_MARKER for repo in projects_dir.iterdir() if repo.is_dir())
+        if candidate.is_file()
+    )
+    if len(candidates) > 1:
+        listed = ", ".join(str(candidate) for candidate in candidates)
+        raise ProjectPrefixError(
+            f"Multiple persistent project registries found: {listed}. Keep one, or name the one to use "
+            f'under [project] as fleet_registry = "<path>" in config.toml.'
+        )
+    return candidates[0] if candidates else None
+
+
+def get_fleet_registry_path() -> Path | None:
+    """Return the persistent project registry path, explicit configuration first."""
+    configured = _configured_fleet_registry_path()
+    if configured is not None:
+        return configured
+    return _discover_fleet_registry_path()
+
+
+def _projects_table_entries(path: Path) -> dict[str, dict[str, str]]:
+    """Return ``name`` → prefix/type for a ``[[projects]]`` registry file.
+
+    Names are matched case-insensitively because they are directory names, which
+    are case-insensitive on Windows and macOS. A duplicate name or prefix is
+    reported: a registry that gives one repository two prefixes cannot say what
+    the answer is, and guessing is how a session gets minted against the wrong
+    project.
+    """
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ProjectPrefixError(f"Could not read the project registry {path}: {exc}") from exc
+
+    entries: dict[str, dict[str, str]] = {}
+    prefixes_seen: dict[str, str] = {}
+    for project in data.get("projects", []):
+        if not isinstance(project, dict):
+            raise ProjectPrefixError(f"Invalid [[projects]] entry in {path}: {project!r}")
+        name = project.get("name")
+        prefix = project.get("task_prefix")
+        if not isinstance(name, str) or not name.strip() or not isinstance(prefix, str) or not prefix.strip():
+            raise ProjectPrefixError(f"Project registry entry in {path} is missing name or task_prefix: {project!r}")
+        key = name.strip().lower()
+        if key in entries:
+            raise ProjectPrefixError(f"Duplicate project name {name!r} in the project registry {path}.")
+        if prefix.strip().lower() in prefixes_seen:
+            raise ProjectPrefixError(
+                f"Duplicate task_prefix {prefix.strip()!r} in the project registry {path}: already used by "
+                f"{prefixes_seen[prefix.strip().lower()]!r}."
+            )
+        prefixes_seen[prefix.strip().lower()] = name.strip()
+        entries[key] = {"prefix": prefix.strip(), "type": str(project.get("type", "tool"))}
+    return entries
+
+
+def _fleet_registry_prefix(name: str) -> str | None:
+    """Tier 1 — the persistent, version-controlled registry."""
+    path = get_fleet_registry_path()
+    if path is None or not path.is_file():
+        return None
+    entry = _projects_table_entries(path).get(name.lower())
+    return entry["prefix"] if entry else None
+
+
+def _local_registry_prefix(name: str) -> str | None:
+    """Tier 2 — the registry named by ``[project] main_project`` in config.toml."""
+    for project in load_project_registry():
+        if str(project.get("name", "")).lower() == name.lower() and project.get("task_prefix"):
+            return str(project["task_prefix"])
+    return None
+
+
+def _xdg_registry_prefix(root: Path) -> str | None:
+    """Tier 3 — the repository-root keyed ``[project_registry]`` table."""
+    entry = _registry_entries().get(os.path.normcase(str(root)))
+    return entry["prefix"] if entry else None
+
+
+def _require_existing_repository(root: Path, prefix: str, source: str) -> str:
+    """Report a registry entry that names a directory which is not there.
+
+    A prefix answered from an entry whose repository is absent looks like a
+    successful resolution and is not one: the session, worktree and task ids
+    derived from it all name a repository the caller cannot be working in. Saying
+    so is the only way the stale entry ever gets noticed.
+    """
+    if not root.is_dir():
+        raise ProjectPrefixError(
+            f"The project registry ({source}) resolves {root.name!r} to prefix {prefix!r}, but its "
+            f"repository directory does not exist: {root}. Remove the stale entry, or check out the "
+            f"repository at that path."
+        )
+    return prefix
+
+
+def _append_projects_entry(path: Path, root: Path, prefix: str) -> None:
+    """Append one ``[[projects]]`` entry, creating the registry file if absent."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    separator = "" if not existing or existing.endswith("\n\n") else "\n" if existing.endswith("\n") else "\n\n"
+    entry = f'[[projects]]\nname = "{root.name}"\ntask_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
+    path.write_text(existing + separator + entry, encoding="utf-8")
+
+
+def _write_xdg_registry_entry(path: Path, root: Path, prefix: str) -> None:
+    """Persist one repository-root keyed entry in the user's ``config.toml``."""
+    register_project(root, prefix)
+
+
+def _registry_write_target() -> tuple[Path, Callable[[Path, Path, str], None]]:
+    """Return the first writable registry tier and the writer that appends to it.
+
+    Preference follows the read order, so a prefix is persisted where it will be
+    found first and, for the persistent registry, where every machine will see
+    it. The XDG config is the final target because it always exists (or can be
+    created) on any machine, which is what makes create-and-prompt able to
+    complete rather than leaving the caller with nowhere to write.
+    """
+    for candidate in (get_fleet_registry_path(), _get_project_registry_path()):
+        if candidate is not None and _is_writable_target(candidate):
+            return candidate, _append_projects_entry
+    return _config_path(), _write_xdg_registry_entry
+
+
+def _is_writable_target(path: Path) -> bool:
+    """Whether ``path`` can be written, creating it and its parent if needed."""
+    if path.is_file():
+        return os.access(path, os.W_OK)
+    for parent in (path.parent, *path.parent.parents):
+        if parent.is_dir():
+            return os.access(parent, os.W_OK)
+    return False
+
+
+def _can_prompt() -> bool:
+    """Whether a human is attached and can answer a registration prompt.
+
+    ``ai c`` runs non-interactively in plenty of contexts -- git hooks, agent
+    shells, ``ai update`` -- where a blocking prompt hangs the caller forever with
+    no way to answer it. A hang is strictly worse than an error, so with no
+    terminal the create-and-prompt tier is skipped in favour of the loud,
+    actionable failure.
+    """
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        # A closed or replaced stdin is not a terminal.
+        return False
+
+
+def _prompt_and_persist_prefix(root: Path) -> str:
+    """Last tier — ask for the missing prefix, persist it, and continue."""
+    target, writer = _registry_write_target()
+    answer = input(
+        f"No task prefix is registered for {root.name} ({root}).\nTask prefix to register in {target}: "
+    ).strip()
+    if not answer:
+        raise ProjectPrefixError(
+            f"No task prefix was entered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
+        )
+    writer(target, root, answer)
+    print(f'Registered "{root.name}" with prefix "{answer}" in {target}')
+    return answer
+
+
 def resolve_project_prefix(path: Path | None = None) -> str:
-    """Return the registered prefix for a repository root or explain how to register it."""
+    """Return the registered prefix for a repository root, or acquire one.
+
+    Tiers, in order, each falling through to the next only when it has no answer:
+    the persistent version-controlled registry, the registry named by
+    ``[project] main_project``, the repository-root keyed ``[project_registry]``
+    table, the repository's own ``[tool.ai-cli]`` metadata, and finally an
+    interactive prompt that persists what it is told. An unresolvable prefix is
+    still a loud failure naming the remedy -- no tier derives a prefix from the
+    directory name, because a truncated guess mints task ids against the wrong
+    project (AI-CLI-88, AI-CLI-160).
+    """
     root = _project_root(path or Path.cwd())
-    key = os.path.normcase(str(root))
-    entries = _registry_entries()
-    entry = entries.get(key)
-    if entry:
-        return entry["prefix"]
+    name = root.name
+
+    fleet_prefix = _fleet_registry_prefix(name)
+    if fleet_prefix:
+        return _require_existing_repository(root, fleet_prefix, str(get_fleet_registry_path()))
+
+    local_prefix = _local_registry_prefix(name)
+    if local_prefix:
+        return _require_existing_repository(root, local_prefix, str(_get_project_registry_path()))
+
+    xdg_prefix = _xdg_registry_prefix(root)
+    if xdg_prefix:
+        return _require_existing_repository(root, xdg_prefix, str(_config_path()))
 
     metadata = _read_local_project_metadata(root)
     if metadata:
@@ -414,16 +673,27 @@ def resolve_project_prefix(path: Path | None = None) -> str:
         register_project(root, prefix, project_type)
         return prefix
 
-    raise ProjectPrefixError(
-        f"No task prefix is registered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
-    )
+    if not _can_prompt():
+        raise ProjectPrefixError(
+            f"No task prefix is registered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
+        )
+    return _prompt_and_persist_prefix(root)
 
 
 def resolve_project_prefix_by_name(project_name: str) -> str:
     """Return one registered prefix for a project directory name, rejecting ambiguity."""
-    matches = [entry["prefix"] for root, entry in _registry_entries().items() if Path(root).name == project_name]
+    for tier in (_fleet_registry_prefix, _local_registry_prefix):
+        prefix = tier(project_name)
+        if prefix:
+            return prefix
+
+    matches = {
+        entry["prefix"]
+        for root, entry in _registry_entries().items()
+        if Path(root).name.lower() == project_name.lower()
+    }
     if len(matches) == 1:
-        return matches[0]
+        return matches.pop()
     if len(matches) > 1:
         raise ProjectPrefixError(
             f"Project name {project_name!r} matches multiple registered roots. Use a unique repository name."
