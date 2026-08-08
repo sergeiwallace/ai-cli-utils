@@ -91,6 +91,12 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+# CORE-196: discard a passing test's tmp_path directory immediately, keeping only
+# a failing one's -- the only case the directory is evidence. Complements (never
+# substitutes for) conftest.py's `_make_tmp_path_deletable`: this policy controls
+# WHETHER a delete is attempted, the fixture is what makes it succeed against
+# git's read-only loose objects.
+tmp_path_retention_policy = "failed"
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-n auto"

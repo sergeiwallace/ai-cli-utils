@@ -397,3 +397,32 @@ def _make_list_panes_output(*entries):
     mock.returncode = 0
     mock.stdout = lines
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _make_tmp_path_deletable(tmp_path: Path):
+    """Clear read-only bits under ``tmp_path`` so pytest can actually delete it.
+
+    Tests here build real git repos in ``tmp_path``. Git writes loose objects
+    mode 0444, and on Windows ``shutil.rmtree`` cannot unlink a read-only file
+    (``DeleteFile`` returns ACCESS_DENIED). pytest's tmp_path cleanup passes no
+    ``onexc`` handler, so the failure is swallowed and the directory survives as
+    a live git repo named after the test function -- which any editor that adopts
+    nearby repositories then lists as a project.
+
+    Eighty such repos accumulated on bms-windows-sem-kg before the mechanism was
+    traced (CORE-196; same defect as ai-harness AIH-612).
+
+    Deliberately unconditional rather than a ``sys.platform`` branch -- POSIX
+    ``rmtree`` only needs write on the parent directory, so this is a no-op cost
+    on Linux and macOS instead of a platform special case (AIH-824).
+    """
+    yield
+    if not tmp_path.exists():
+        return
+    for path in tmp_path.rglob("*"):
+        try:
+            if path.is_file() or path.is_dir():
+                path.chmod(0o700)
+        except OSError:
+            continue
