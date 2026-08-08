@@ -17,13 +17,39 @@ import pytest
 
 from ai_cli.main import _do_session_launch
 
-pytestmark = [
-    pytest.mark.skipif(
-        shutil.which("tmux") is None,
-        reason="tmux binary not available on PATH",
-    ),
-    pytest.mark.real_tmux,
-]
+
+def _tmux_runnable() -> tuple[bool, str]:
+    """Can ``tmux`` actually be executed here? Returns ``(runnable, reason)``.
+
+    Presence on ``PATH`` is not the same question. A ``tmux`` that resolves but
+    cannot start — an extracted bundle whose shared libraries are not on the
+    loader path, a binary built against a different libc — makes every test in
+    this file fail on an empty session list, which reads as a defect in the launch
+    path rather than as a broken tool. ``shutil.which`` cannot see that: it stats
+    the file and checks the executable bit, and the failure happens later, in the
+    dynamic loader.
+
+    So the probe is to run the thing: ``tmux -V`` exits 0 only when the binary
+    really starts. Deliberately not a library-path check, which would be
+    guessing at one cause of many.
+    """
+    if shutil.which("tmux") is None:
+        return False, "tmux binary not available on PATH"
+    try:
+        probe = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=30, check=False)
+    except OSError as exc:
+        return False, f"tmux could not be executed: {exc}"
+    except subprocess.TimeoutExpired:
+        return False, "tmux -V timed out"
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout or "").strip().splitlines()
+        return False, f"tmux is on PATH but does not run: {detail[0] if detail else f'exit {probe.returncode}'}"
+    return True, ""
+
+
+_TMUX_RUNNABLE, _TMUX_SKIP_REASON = _tmux_runnable()
+
+pytestmark = [pytest.mark.real_tmux]
 
 
 @pytest.fixture
@@ -32,7 +58,14 @@ def tmux_server():
 
     Each test gets its own socket path so sessions created in one test do not
     leak into another.
+
+    The skip lives here rather than on the module, so it covers exactly the tests
+    that drive a live server. The last test in this file mocks every tmux call and
+    needs no server at all; skipping it alongside these would drop real coverage
+    for an unrelated reason.
     """
+    if not _TMUX_RUNNABLE:
+        pytest.skip(_TMUX_SKIP_REASON)
     sock_dir = tempfile.mkdtemp(prefix="ai-cli-test-")
     sock = f"{sock_dir}/tmux.sock"
     server = libtmux.Server(socket_path=sock)

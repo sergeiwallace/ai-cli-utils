@@ -90,6 +90,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refusal fires in `-n/--dry-run` too: previously the only signal in a preview was
   the *absence* of a "worktree to create" line, which is how this stayed invisible.
 
+- Four real-tmux launch integration tests failed on any machine with a `tmux` that
+  is on `PATH` but cannot execute — an extracted bundle whose shared libraries are
+  not on the loader path, for instance (`AI-CLI-201`). The guard asked
+  `shutil.which("tmux") is None`, which only stats the file and checks the
+  executable bit; the failure happens later, in the dynamic loader, so every test
+  ran and failed on an empty session list, reading as a defect in the launch path
+  rather than as a broken tool. The guard now runs `tmux -V` and skips with the
+  loader's own message when it does not exit 0. No assertion was weakened: with a
+  working `tmux` all five tests run and pass exactly as before, and the skip is
+  scoped to the fixture that needs a live server rather than to the module, so the
+  fully-mocked test in the same file keeps running either way.
+
 - Every `ai update` and the auto-update at session launch printed a hardlink-fallback
   warning to stderr when uv's cache and tool-install directories resided on different
   filesystems (e.g., cache on EFS, tools on local NVMe). The install always succeeded,
