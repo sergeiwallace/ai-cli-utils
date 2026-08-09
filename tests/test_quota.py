@@ -1,6 +1,7 @@
 """Tests for quota tracking — hidden pane scraper, notification, quota_watch, quota_record."""
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -2008,7 +2009,7 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "5%" in out
             assert "\033[38;2;34;197;94m" in out  # green truecolor anchor = on track
-            assert "pace-" in out
+            assert re.search(r"-\d+%", out)  # signed negative delta, plain percent (AIH-784)
             assert "→" in out  # steady: only 1 snapshot, no acceleration data
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
@@ -2034,7 +2035,7 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "95%" in out
             assert "\033[38;2;220;38;38m" in out  # red truecolor anchor = significantly over pace
-            assert "pace+" in out
+            assert re.search(r"\+\d+%", out)  # signed positive delta, plain percent (AIH-784)
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
@@ -2963,7 +2964,7 @@ class TestQuotaStatuslinePartAdaptiveLabels:
         import re
 
         clean = re.sub(r"\033\[[0-9;]*m", "", out)
-        assert "→ pace-79pp" in clean
+        assert "→ -79%" in clean
         assert "\033[38;2;34;197;94m" in out  # green truecolor anchor = on track
 
     def test_zero_cols_still_uses_ccwk_label(self, tmp_path, capsys):
