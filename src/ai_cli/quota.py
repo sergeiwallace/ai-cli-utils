@@ -110,14 +110,14 @@ class QuotaStatuslineSegment:
 
     @staticmethod
     def format_signed_delta(delta: float) -> str:
-        """Format a pace difference in percentage points without hiding sub-1pp direction."""
+        """Format a signed pace difference without hiding sub-1% direction."""
         if delta == 0:
-            return "±0pp"
+            return "±0%"
         sign = "+" if delta > 0 else "-"
         magnitude = abs(delta)
         if magnitude < 1:
-            return f"{sign}<1pp"
-        return f"{sign}{magnitude:.0f}pp"
+            return f"{sign}<1%"
+        return f"{sign}{magnitude:.0f}%"
 
     def render(self, usage_pct: float, reset_epoch: float, now_epoch: float, arrow: str = "→") -> str:
         """Render provider label, pace-colored usage, and signed pace beside the acceleration arrow."""
@@ -126,7 +126,7 @@ class QuotaStatuslineSegment:
         return (
             f"{self.adapter.identity_color}{self.adapter.label}{_STATUSLINE_RESET} "
             f"{pace_color}{usage_pct:.0f}%{_STATUSLINE_RESET} "
-            f"{arrow} {pace_color}pace{self.format_signed_delta(delta)}{_STATUSLINE_RESET}"
+            f"{arrow} {pace_color}{self.format_signed_delta(delta)}{_STATUSLINE_RESET}"
         )
 
     def render_without_pace(self, usage_pct: float) -> str:
