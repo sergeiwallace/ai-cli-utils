@@ -329,23 +329,16 @@ def _is_root() -> bool:
     return os.getuid() == 0
 
 
-def _announce_worktree_isolation(repo_root: Path, ai_name: str) -> None:
-    """Say that an isolated worktree is being created, and where (AI-CLI-195).
-
-    Only announced when the launch directory IS the repository root, which is the
-    case that creates a directory the caller did not ask for. Launching from
-    inside an existing session worktree re-enters it and creates nothing.
-    """
-    try:
-        if Path.cwd().resolve() != repo_root.resolve():
-            return
-    except OSError:
-        return
-    print(
-        f"Creating isolated worktree for this session: {repo_root / _config.WORKTREE_DIR / ai_name}\n"
-        f"  (disable with -W/--no-worktree, or [worktree] enabled = false in config.toml)",
-        file=sys.stderr,
-    )
+def _announce_worktree_isolation(worktree_path: Path, created: bool) -> None:
+    """Report the actual worktree outcome before entering the session."""
+    if created:
+        print(
+            f"Creating isolated worktree for this session: {worktree_path}\n"
+            f"  (disable with -W/--no-worktree, or [worktree] enabled = false in config.toml)",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Using existing worktree: {worktree_path}", file=sys.stderr)
 
 
 def _find_aicli_project_path(config: dict) -> "Path | None":
@@ -1928,17 +1921,14 @@ def _do_session_launch(
         _repair_root = _session.detect_repo_root()
         if _repair_root:
             repair_bare_worktree_config(_repair_root)
-            # Announce the isolation before doing it (AI-CLI-195). Creating a
-            # worktree per session is this launcher's intended design, but it was
-            # undiscoverable from the output: launching from a repository root
-            # silently produced a new `.worktrees/<name>` directory, and the first
-            # anyone knew of it was finding it on disk. Only the root launch is
-            # announced -- re-entering an existing session's own worktree creates
-            # nothing new, so there is nothing there to be surprised by.
-            _announce_worktree_isolation(_repair_root, ai_name)
-
-        worktree_path = _session.create_worktree(ai_name)
+        worktree_result = _session.create_worktree(ai_name, with_status=True)
+        if isinstance(worktree_result, tuple):
+            worktree_path, worktree_created = worktree_result
+        else:
+            # Compatibility for callers that replace create_worktree in-process.
+            worktree_path, worktree_created = worktree_result, False
         if worktree_path:
+            _announce_worktree_isolation(worktree_path, worktree_created)
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
             # --autostash saves the corrupt index, rebase runs cleanly, then pops the corrupt

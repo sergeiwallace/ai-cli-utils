@@ -790,7 +790,28 @@ def _contains_git_checkout(directory: Path) -> Path | None:
     return None
 
 
-def create_worktree(ai_name: str) -> Path | None:
+def _same_worktree_path(first: Path, second: Path) -> bool:
+    """Return whether two existing paths identify the same filesystem object."""
+    try:
+        return first.samefile(second)
+    except OSError:
+        return False
+
+
+def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | None:
+    """Return the registered worktree physically located at ``candidate``."""
+    for worktree in registered:
+        if candidate == worktree or _same_worktree_path(candidate, worktree):
+            return worktree
+    return None
+
+
+def create_worktree(ai_name: str, *, with_status: bool = False) -> Path | tuple[Path, bool] | None:
+    """Create or reuse a session worktree.
+
+    With ``with_status=True``, return ``(path, created)`` so launch output can
+    describe the operation that actually occurred.
+    """
     repo_root = detect_repo_root()
     if not repo_root:
         return None
@@ -801,21 +822,19 @@ def create_worktree(ai_name: str) -> Path | None:
     repair_bare_worktree_config(repo_root)
 
     wt_dir = repo_root / WORKTREE_DIR / ai_name
-    if wt_dir.exists():
-        # Verify it's still registered as a valid worktree; prune stale ones first
-        subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env(), check=False)
-        if wt_dir.resolve() in registered_worktrees(repo_root):
-            _allow_trusted_worktree_envrc(repo_root, wt_dir)
-            return wt_dir
+    # Verify it is still registered as a valid worktree; prune stale entries first.
+    # Compare filesystem identity too: on a case-insensitive filesystem, a
+    # differently-cased prefix can spell the same live checkout.
+    subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env(), check=False)
+    registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
+    if registered is not None:
+        _allow_trusted_worktree_envrc(repo_root, registered)
+        result = (registered, False)
+        return result if with_status else registered
 
-        # Not a worktree of this repository — so the directory is about to be
-        # deleted and recreated. That is only safe for debris. `.worktrees/<name>`
-        # is also used elsewhere as a *container* of per-task agent worktrees
-        # (`<name>/<task>/<leaf>`), and a session launched from a repository root
-        # finds that container exactly where its own checkout goes. Deleting it
-        # takes every nested worktree with it, including commits that were never
-        # pushed anywhere. Relocating them moves a human's work, so it stays a
-        # human decision: refuse and name what collided.
+    if wt_dir.exists():
+        # A non-registered directory might hold files or git data that the
+        # launcher cannot safely evaluate. Never recycle it automatically.
         holder = _contains_git_checkout(wt_dir)
         if holder is not None:
             raise RuntimeError(
@@ -827,10 +846,11 @@ def create_worktree(ai_name: str) -> Path | None:
                 f"`git worktree move {holder} {wt_dir.parent / (wt_dir.name + '-agents')}/{holder.name}` "
                 f"for each one (a plain `mv` would leave git's registration pointing at the old path)."
             )
-
-        import shutil
-
-        shutil.rmtree(wt_dir, ignore_errors=True)
+        raise RuntimeError(
+            f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root} — refusing to delete it. "
+            f"Remove or relocate it only after verifying it contains no needed files; if it is empty, run "
+            f"`rmdir {wt_dir}` and re-run."
+        )
 
     branch = f"wt-{ai_name}"
     # Resolve base AND upstream in one call BEFORE creating anything: an unresolvable
@@ -901,7 +921,8 @@ def create_worktree(ai_name: str) -> Path | None:
 
         ensure_workspace_trusted([repo_root, wt_dir])
         _allow_trusted_worktree_envrc(repo_root, wt_dir)
-        return wt_dir
+        result = (wt_dir, True)
+        return result if with_status else wt_dir
     return None
 
 

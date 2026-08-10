@@ -338,7 +338,7 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 # --- worktree isolation is announced, not silent (AI-CLI-195 AC-7) --------------
 
 
-def _launch_in(monkeypatch, tmp_path, *, no_worktree=False):
+def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False):
     """Run one bare launch from the current directory, up to the engine exec."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
     monkeypatch.setenv("AI_HOST", "my-linux-box")
@@ -352,7 +352,7 @@ def _launch_in(monkeypatch, tmp_path, *, no_worktree=False):
     ):
         with pytest.raises(SystemExit):
             _do_session_launch(
-                engine="c",
+                engine=engine,
                 name="1",
                 resume=False,
                 once=False,
@@ -369,9 +369,8 @@ def _launch_in(monkeypatch, tmp_path, *, no_worktree=False):
             )
 
 
-def test_given_a_launch_from_a_repo_root_when_started_then_the_worktree_creation_is_announced(
-    tmp_path, monkeypatch, capsys
-):
+@pytest.mark.parametrize("engine", ["c", "g"])
+def test_given_a_new_worktree_when_launched_then_its_creation_is_announced(tmp_path, monkeypatch, capsys, engine):
     """AC-7: creating a worktree per session is intended, but it must not be silent.
 
     The reported surprise was a ``.worktrees/<name>`` directory appearing with
@@ -380,10 +379,10 @@ def test_given_a_launch_from_a_repo_root_when_started_then_the_worktree_creation
     repo = _make_repo(tmp_path / "projects" / "myproject")
     monkeypatch.chdir(repo)
 
-    _launch_in(monkeypatch, tmp_path)
+    _launch_in(monkeypatch, tmp_path, engine=engine)
 
     err = capsys.readouterr().err
-    assert "isolated worktree" in err
+    assert "Creating isolated worktree for this session" in err
     # The message must name WHERE, or it does not remove the surprise.
     assert str(repo / ".worktrees" / "kg-1") in err
     assert (repo / ".worktrees" / "kg-1").is_dir()
@@ -397,6 +396,19 @@ def test_given_a_launch_from_a_repo_root_when_announced_then_the_opt_out_is_name
     _launch_in(monkeypatch, tmp_path)
 
     assert "--no-worktree" in capsys.readouterr().err
+
+
+def test_given_an_existing_worktree_when_announced_then_no_opt_out_hint_is_repeated(tmp_path, monkeypatch, capsys):
+    """The opt-out hint only applies to creation; reuse has nothing to opt out of."""
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+    _launch_in(monkeypatch, tmp_path)
+    capsys.readouterr()
+
+    monkeypatch.chdir(repo / ".worktrees" / "kg-1")
+    _launch_in(monkeypatch, tmp_path)
+
+    assert "--no-worktree" not in capsys.readouterr().err
 
 
 def test_given_worktree_isolation_disabled_when_launched_then_nothing_is_announced(tmp_path, monkeypatch, capsys):
@@ -415,16 +427,16 @@ def test_given_worktree_isolation_disabled_when_launched_then_nothing_is_announc
     assert not (repo / ".worktrees").exists()
 
 
-def test_given_a_launch_from_inside_an_existing_worktree_when_started_then_nothing_is_announced(
-    tmp_path, monkeypatch, capsys
-):
-    """Re-entering a session's own worktree creates nothing new to announce."""
+@pytest.mark.parametrize("engine", ["c", "g"])
+def test_given_an_existing_worktree_when_launched_then_its_reuse_is_announced(tmp_path, monkeypatch, capsys, engine):
+    """Both engines report reuse after create_worktree makes that decision."""
     repo = _make_repo(tmp_path / "projects" / "myproject")
     monkeypatch.chdir(repo)
-    _launch_in(monkeypatch, tmp_path)
+    _launch_in(monkeypatch, tmp_path, engine=engine)
     capsys.readouterr()
 
     monkeypatch.chdir(repo / ".worktrees" / "kg-1")
-    _launch_in(monkeypatch, tmp_path)
+    _launch_in(monkeypatch, tmp_path, engine=engine)
 
-    assert "isolated worktree" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"Using existing worktree: {repo / '.worktrees' / 'kg-1'}" in err

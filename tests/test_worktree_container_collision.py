@@ -197,25 +197,45 @@ def test_given_a_directory_holding_an_unregistered_checkout_when_a_session_workt
     assert (inner / "notes.md").read_text() == "independent history\n"
 
 
-def test_given_a_stale_directory_with_no_checkout_when_a_session_worktree_is_created_then_it_is_replaced(
-    repo, monkeypatch
-):
-    """Positive control: the deletion branch must still fire where it is safe.
-
-    Without this, the three refusals above would pass equally well against an
-    implementation that simply never deletes anything — and a leftover directory
-    git knows nothing about would then block the session forever.
-    """
+def test_given_an_unregistered_directory_when_a_session_worktree_is_created_then_it_is_refused(repo, monkeypatch):
+    """A non-empty unregistered slot is never automatically recycled."""
     monkeypatch.chdir(repo)
     stale = repo / ".worktrees" / "session-3"
     stale.mkdir(parents=True)
     (stale / "leftover.txt").write_text("debris from an interrupted run\n")
 
-    created = create_worktree("session-3")
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        create_worktree("session-3")
 
-    assert created == stale
-    assert (stale / ".git").exists(), "the slot now holds a real checkout"
-    assert not (stale / "leftover.txt").exists(), "the stale debris was replaced"
+    assert (stale / "leftover.txt").read_text() == "debris from an interrupted run\n"
+
+
+@pytest.mark.parametrize("state", ["uncommitted", "unpushed", "absent-from-integration"])
+def test_given_case_differing_registered_worktree_with_work_when_created_then_it_is_reused(repo, monkeypatch, state):
+    """A case-insensitive spelling of a live worktree must never be recycled.
+
+    The identity probe is mocked because CI filesystems may be case-sensitive;
+    the lower-case on-disk worktree and upper-case requested prefix reproduce the
+    casing mismatch that case-insensitive filesystems collapse to one directory.
+    """
+    monkeypatch.chdir(repo)
+    lower = create_worktree("session-6")
+    assert lower is not None
+    marker = lower / "in-progress.md"
+    marker.write_text(f"{state}\n")
+    if state != "uncommitted":
+        _git("add", "in-progress.md", cwd=lower)
+        _git("commit", "-q", "-m", state, cwd=lower)
+
+    monkeypatch.setattr(
+        "ai_cli.session._same_worktree_path",
+        lambda requested, registered: requested.name.casefold() == registered.name.casefold(),
+    )
+
+    reused = create_worktree("SESSION-6")
+
+    assert reused == lower
+    assert marker.read_text() == f"{state}\n"
 
 
 def test_given_a_registered_session_worktree_when_created_again_then_it_is_returned_untouched(repo, monkeypatch):

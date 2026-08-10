@@ -956,27 +956,15 @@ class TestCreateWorktree:
 
 
 class TestCreateWorktreeEdgeCases:
-    def test_create_worktree_when_stale_dir_then_recreates(self, tmp_path):
+    def test_create_worktree_when_unregistered_dir_then_refuses_to_delete(self, tmp_path):
         wt_dir = tmp_path / ".worktrees" / "sw-3"
         wt_dir.mkdir(parents=True)
+        (wt_dir / "leftover.txt").write_text("do not remove\n")
 
-        call_log = []
-
-        def mock_run(cmd, **kwargs):
-            call_log.append(cmd)
-            m = MagicMock(returncode=0)
-            if "list" in cmd and "--porcelain" in cmd:
-                m.stdout = ""
-            elif "worktree" in cmd and "add" in cmd:
-                wt_dir.mkdir(parents=True, exist_ok=True)
-            else:
-                m.stdout = ""
-            return m
-
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
-            with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("sw-3")
-        assert result == wt_dir
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+            with pytest.raises(RuntimeError, match="refusing to delete"):
+                create_worktree("sw-3")
+        assert (wt_dir / "leftover.txt").read_text() == "do not remove\n"
 
 
 class TestCreateWorktreeEdgeCases2:
