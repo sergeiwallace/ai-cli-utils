@@ -14,8 +14,6 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import portalocker
-
 from .config import (
     WORKTREE_DIR,
     _get_main_project_name,
@@ -769,12 +767,27 @@ def registered_worktrees(repo_root: Path) -> list[Path]:
         check=False,
     )
     if res.returncode != 0:
-        return []
+        stderr = _git_stderr(res)
+        if "not a git repository" in stderr:
+            # Not an anomaly: callers probe arbitrary paths, and "no repo here"
+            # degrades to "no worktrees here" so the checkout guard downstream
+            # still gets a chance to run rather than the caller erroring out
+            # before it can check whether there's real content to protect.
+            return []
+        raise RuntimeError(f"could not list registered git worktrees for {repo_root}: {stderr}")
     return [
         Path(line[len("worktree ") :].strip()).resolve()
         for line in (res.stdout or "").splitlines()
         if line.startswith("worktree ")
     ]
+
+
+def _git_stderr(res: subprocess.CompletedProcess) -> str:
+    """Return command stderr as safe, single-line diagnostic text."""
+    stderr = res.stderr or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    return " ".join(stderr.split()) or "(no stderr output)"
 
 
 def _contains_git_checkout(directory: Path) -> Path | None:
@@ -832,12 +845,12 @@ def create_worktree(
     wt_dir = repo_root / WORKTREE_DIR / ai_name
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
     lock_path = wt_dir.parent / f".{ai_name}.lock"
+    import portalocker
 
     # Worktree creation is a repository/slot-wide decision. Serializing it means
     # a launcher can report "created" only for the git command it actually won.
-    with lock_path.open("w") as lock_fd:
-        portalocker.lock(lock_fd, portalocker.LOCK_EX)
-        try:
+    try:
+        with portalocker.Lock(str(lock_path), mode="a", timeout=20):
             # Verify it is still registered as a valid worktree; prune stale entries first.
             # Compare filesystem identity too: on a case-insensitive filesystem, a
             # differently-cased prefix can spell the same live checkout.
@@ -888,6 +901,7 @@ def create_worktree(
             )
             created = res.returncode == 0
             if not created:
+                first_add = res
                 res = subprocess.run(
                     ["git", "worktree", "add", str(wt_dir), branch],
                     capture_output=True,
@@ -904,61 +918,68 @@ def create_worktree(
                     _allow_trusted_worktree_envrc(repo_root, registered)
                     result = (registered, False)
                     return result if with_status else registered
-                return None
+                raise RuntimeError(
+                    f"git worktree add failed for {wt_dir}. First attempt: {_git_stderr(first_add)}. "
+                    f"Retry with existing branch: {_git_stderr(res)}"
+                )
             worktree_path = registered or wt_dir
-        finally:
-            portalocker.unlock(lock_fd)
+            # Repair again after the add — the backstop for whatever just ran (defense
+            # in depth alongside the env scrub above).
+            repair_bare_worktree_config(repo_root)
 
-    # Repair again after the add — the backstop for whatever just ran (defense
-    # in depth alongside the env scrub above).
-    repair_bare_worktree_config(repo_root)
+            if worktree_path.is_dir():
+                # Track the repository's integration branch so `git push` ships where the
+                # repository actually integrates and `git pull --rebase` syncs from there
+                # (AI-CLI-193). For a repository on `main` that is `origin/main`, unchanged.
+                #
+                # This must not fail silently (AI-CLI-128): a worktree branch left without
+                # an upstream is one `git push` away from git suggesting
+                # `--set-upstream origin wt-X`, which publishes a same-named remote branch
+                # instead of shipping to the integration branch — the drift that stranded a
+                # session 46 commits behind for months. Retry once, then raise loudly
+                # rather than returning a worktree that looks fine but is one push away
+                # from that state.
+                #
+                # When no integration branch resolves, the worktree is deliberately left
+                # with NO upstream rather than pointed at `origin/main` (AC-3): a wrong
+                # upstream sends routine work at a branch that may be protected by
+                # convention, while a missing one makes the first push stop and ask.
+                if upstream is None:
+                    print(
+                        f"Warning: worktree branch {branch!r} was created with NO upstream — no integration "
+                        f"branch could be resolved for {repo_root.name}. `git push` will stop and ask rather "
+                        f"than guess. Declare the branch under [worktree_upstream] in config.toml, or push "
+                        f"the branch this repository is on and run `git fetch origin`.",
+                        file=sys.stderr,
+                    )
+                    _unset_upstream(repo_root, branch)
+                else:
+                    _set_upstream_or_raise(repo_root, branch, upstream)
 
-    if worktree_path.is_dir():
-        # Track the repository's integration branch so `git push` ships where the
-        # repository actually integrates and `git pull --rebase` syncs from there
-        # (AI-CLI-193). For a repository on `main` that is `origin/main`, unchanged.
-        #
-        # This must not fail silently (AI-CLI-128): a worktree branch left without
-        # an upstream is one `git push` away from git suggesting
-        # `--set-upstream origin wt-X`, which publishes a same-named remote branch
-        # instead of shipping to the integration branch — the drift that stranded a
-        # session 46 commits behind for months. Retry once, then raise loudly
-        # rather than returning a worktree that looks fine but is one push away
-        # from that state.
-        #
-        # When no integration branch resolves, the worktree is deliberately left
-        # with NO upstream rather than pointed at `origin/main` (AC-3): a wrong
-        # upstream sends routine work at a branch that may be protected by
-        # convention, while a missing one makes the first push stop and ask.
-        if upstream is None:
-            print(
-                f"Warning: worktree branch {branch!r} was created with NO upstream — no integration "
-                f"branch could be resolved for {repo_root.name}. `git push` will stop and ask rather "
-                f"than guess. Declare the branch under [worktree_upstream] in config.toml, or push "
-                f"the branch this repository is on and run `git fetch origin`.",
-                file=sys.stderr,
+                # Symlink critical environment files
+                for item in [".venv", ".claude", ".gemini", ".direnv"]:
+                    src = repo_root / item
+                    dst = worktree_path / item
+                    if src.exists() and not dst.exists():
+                        dst.symlink_to(src)
+                # Register workspace trust so Claude Code loads the symlinked
+                # .claude/settings.json permissions instead of dropping them with a
+                # "workspace has not been trusted" warning (GH #72896). Worktrees
+                # resolve to the main gitRoot, but register both for safety.
+                from .trust import ensure_workspace_trusted
+
+                ensure_workspace_trusted([repo_root, worktree_path])
+                _allow_trusted_worktree_envrc(repo_root, worktree_path)
+                result = (worktree_path, True)
+                return result if with_status else worktree_path
+            raise RuntimeError(
+                f"git worktree add succeeded but did not create the expected worktree at {worktree_path}"
             )
-            _unset_upstream(repo_root, branch)
-        else:
-            _set_upstream_or_raise(repo_root, branch, upstream)
-
-        # Symlink critical environment files
-        for item in [".venv", ".claude", ".gemini", ".direnv"]:
-            src = repo_root / item
-            dst = worktree_path / item
-            if src.exists() and not dst.exists():
-                dst.symlink_to(src)
-        # Register workspace trust so Claude Code loads the symlinked
-        # .claude/settings.json permissions instead of dropping them with a
-        # "workspace has not been trusted" warning (GH #72896). Worktrees
-        # resolve to the main gitRoot, but register both for safety.
-        from .trust import ensure_workspace_trusted
-
-        ensure_workspace_trusted([repo_root, worktree_path])
-        _allow_trusted_worktree_envrc(repo_root, worktree_path)
-        result = (worktree_path, True)
-        return result if with_status else worktree_path
-    raise RuntimeError(f"git worktree add succeeded but did not create the expected worktree at {worktree_path}")
+    except portalocker.exceptions.LockException as exc:
+        raise RuntimeError(
+            f"timed out waiting for worktree launch lock {lock_path}; another launch may be stuck. "
+            f"If no ai c or ai g process is running for this slot, remove {lock_path} and retry."
+        ) from exc
 
 
 def _allow_trusted_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:

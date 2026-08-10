@@ -1,6 +1,9 @@
 import hashlib
 import json
 import os
+import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -830,6 +833,23 @@ def _stub_worktree_base(upstream="main"):
 
 
 class TestCreateWorktree:
+    def test_given_worktree_listing_fails_when_registered_worktrees_called_then_it_raises_with_stderr(self, tmp_path):
+        """A genuine listing failure (not the ordinary "no repo here" case) must raise.
+
+        "not a git repository" is deliberately excluded from this — callers probe
+        arbitrary paths, and that specific message degrades to "no worktrees here"
+        so a downstream checkout guard still gets a chance to run (see
+        test_given_a_path_that_is_not_a_repository_when_worktrees_are_listed_then_none_are_reported
+        in test_worktree_container_collision.py). This test covers a different,
+        genuinely anomalous failure.
+        """
+        from ai_cli.session import registered_worktrees
+
+        result = MagicMock(returncode=128, stderr="fatal: unable to read current working directory: Permission denied")
+        with patch("subprocess.run", return_value=result):
+            with pytest.raises(RuntimeError, match="Permission denied"):
+                registered_worktrees(tmp_path)
+
     def test_create_worktree_when_no_repo_then_returns_none(self):
         with patch("ai_cli.session.detect_repo_root", return_value=None):
             result = create_worktree("sw-1")
@@ -961,7 +981,10 @@ class TestCreateWorktreeEdgeCases:
         wt_dir.mkdir(parents=True)
         (wt_dir / "leftover.txt").write_text("do not remove\n")
 
-        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        with (
+            patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
+            patch("ai_cli.session.registered_worktrees", return_value=[]),
+        ):
             with pytest.raises(RuntimeError, match="refusing to delete"):
                 create_worktree("sw-3")
         assert (wt_dir / "leftover.txt").read_text() == "do not remove\n"
@@ -1008,16 +1031,19 @@ class TestCreateWorktreeEdgeCases2:
         assert result == wt_dir
         assert not (wt_dir / ".venv").exists()
 
-    def test_create_worktree_when_wt_dir_not_created_then_returns_none(self, tmp_path):
-        """Covers line 457: wt_dir.exists() is False after git commands."""
+    def test_create_worktree_when_adds_fail_then_raises_with_both_diagnostics(self, tmp_path):
+        """A failed add must tell the caller why both creation paths failed."""
 
         def mock_run(cmd, **kwargs):
-            return MagicMock(returncode=1, stdout="")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            stderr = "branch already exists" if "-b" in cmd else "permission denied"
+            return MagicMock(returncode=1, stdout="", stderr=stderr)
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("sw-6")
-        assert result is None
+                with pytest.raises(RuntimeError, match=r"branch already exists.*permission denied"):
+                    create_worktree("sw-6")
 
     def test_create_worktree_when_adds_fail_after_another_process_creates_slot_then_does_not_claim_creation(
         self, tmp_path
@@ -1033,7 +1059,82 @@ class TestCreateWorktreeEdgeCases2:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                assert create_worktree("sw-7", with_status=True) is None
+                with pytest.raises(RuntimeError, match="slot already exists"):
+                    create_worktree("sw-7", with_status=True)
+
+    def test_given_initialization_is_blocked_when_second_launch_starts_then_it_waits_for_reuse(self, tmp_path):
+        """A second launcher cannot return a worktree before its creator initializes it."""
+        wt_dir = tmp_path / ".worktrees" / "session-1"
+        slot_lock = threading.Lock()
+        initialization_started = threading.Event()
+        release_initialization = threading.Event()
+        second_finished = threading.Event()
+        results = {}
+
+        class SlotLock:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                slot_lock.acquire()
+                return self
+
+            def __exit__(self, *_args):
+                slot_lock.release()
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return MagicMock(returncode=0, stdout=_porcelain(wt_dir) if wt_dir.exists() else "")
+            if cmd[:3] == ["git", "worktree", "add"]:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def block_upstream(*_args):
+            initialization_started.set()
+            assert release_initialization.wait(timeout=2)
+
+        def launch(name):
+            results[name] = create_worktree("session-1", with_status=True)
+            if name == "second":
+                second_finished.set()
+
+        with (
+            patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
+            _stub_worktree_base(),
+            patch("ai_cli.session._set_upstream_or_raise", side_effect=block_upstream),
+            patch("portalocker.Lock", SlotLock),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            first = threading.Thread(target=launch, args=("first",))
+            first.start()
+            assert initialization_started.wait(timeout=2)
+            second = threading.Thread(target=launch, args=("second",))
+            second.start()
+            assert not second_finished.wait(timeout=0.1)
+            release_initialization.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        assert results == {"first": (wt_dir, True), "second": (wt_dir, False)}
+
+    def test_given_tempdir_probe_fails_when_session_imported_then_it_succeeds(self):
+        script = """
+import tempfile
+tempfile.gettempdir = lambda: (_ for _ in ()).throw(RuntimeError('unexpected tempdir probe'))
+import ai_cli.session
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPATH": str(Path(__file__).parent.parent / "src"),
+            },
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
     def test_same_worktree_path_when_identity_probe_is_indeterminate_then_raises(self, tmp_path, monkeypatch):
         first = tmp_path / "first"

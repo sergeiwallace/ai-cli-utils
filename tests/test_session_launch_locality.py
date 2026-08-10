@@ -338,7 +338,7 @@ def test_given_local_launch_on_named_host_when_named_then_session_has_no_remote_
 # --- worktree isolation is announced, not silent (AI-CLI-195 AC-7) --------------
 
 
-def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False):
+def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False, expected_exception=SystemExit):
     """Run one bare launch from the current directory, up to the engine exec."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
     monkeypatch.setenv("AI_HOST", "my-linux-box")
@@ -350,7 +350,7 @@ def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False):
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.trust.ensure_workspace_trusted"),
     ):
-        with pytest.raises(SystemExit):
+        with pytest.raises(expected_exception) as exc_info:
             _do_session_launch(
                 engine=engine,
                 name="1",
@@ -367,6 +367,7 @@ def _launch_in(monkeypatch, tmp_path, *, engine="c", no_worktree=False):
                 extra_args=[],
                 config={"worktree": {"enabled": True}, "session": {"use_tmux": False}},
             )
+    return exc_info.value
 
 
 @pytest.mark.parametrize("engine", ["c", "g"])
@@ -430,12 +431,21 @@ def test_given_worktree_isolation_disabled_when_launched_then_nothing_is_announc
 def test_given_worktree_creation_fails_when_launched_then_it_refuses_to_use_the_repository_root(
     tmp_path, monkeypatch, capsys
 ):
+    """A RuntimeError from create_worktree() must become a clean refusal, not a raw traceback."""
     repo = _make_repo(tmp_path / "projects" / "myproject")
     monkeypatch.chdir(repo)
-    monkeypatch.setattr("ai_cli.session.create_worktree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "ai_cli.session.create_worktree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("git worktree add failed for slot. First attempt: branch exists. Retry: permissions denied")
+        ),
+    )
 
     _launch_in(monkeypatch, tmp_path)
-    assert "refusing to launch in the repository root" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "refusing to launch in the repository root" in err
+    assert "branch exists" in err
+    assert "permissions denied" in err
 
 
 @pytest.mark.parametrize("engine", ["c", "g"])

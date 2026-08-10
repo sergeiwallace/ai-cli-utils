@@ -1921,7 +1921,16 @@ def _do_session_launch(
         _repair_root = _session.detect_repo_root()
         if _repair_root:
             repair_bare_worktree_config(_repair_root)
-        worktree_result = _session.create_worktree(ai_name, with_status=True)
+        try:
+            worktree_result = _session.create_worktree(ai_name, with_status=True)
+        except RuntimeError as exc:
+            print(
+                f"Error: could not create or reuse the isolated session worktree; refusing to launch in the "
+                f"repository root. {exc} Re-run after resolving the git worktree error, or explicitly use "
+                f"--no-worktree.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if isinstance(worktree_result, tuple):
             worktree_path, worktree_created = worktree_result
         else:
