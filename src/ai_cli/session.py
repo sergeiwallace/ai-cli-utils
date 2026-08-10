@@ -261,20 +261,88 @@ def is_current_project_resolved() -> bool:
         return False
 
 
+class SessionSlotAmbiguityError(RuntimeError):
+    """Raised when more than one live session could satisfy an explicit slot."""
+
+
+def _tmux_session_names() -> list[str]:
+    """Return the live tmux session names, or no names when tmux is unavailable."""
+    res = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True, check=False
+    )
+    if res.returncode != 0:
+        return []
+    return [name for name in (res.stdout or "").splitlines() if name]
+
+
+def _matching_tmux_sessions(engine_short: str, project_prefix: str, index: str | int) -> list[str]:
+    """Find local and remote tmux names for a slot, ignoring prefix casing."""
+    targets = {
+        f"{engine_short}-{project_prefix}-{index}".casefold(),
+        f"{engine_short}-r-{project_prefix}-{index}".casefold(),
+    }
+    return [name for name in _tmux_session_names() if name.casefold() in targets]
+
+
+def _session_slot_name(engine_short: str, session_name: str) -> str:
+    remote_prefix = f"{engine_short}-r-"
+    prefix_length = len(remote_prefix) if session_name.casefold().startswith(remote_prefix) else len(engine_short) + 1
+    return session_name[prefix_length:]
+
+
+def _resolve_explicit_tmux_slot(engine_short: str, project_prefix: str, index: str) -> tuple[str, str] | None:
+    candidates = _matching_tmux_sessions(engine_short, project_prefix, index)
+    if len(candidates) > 1:
+        joined = ", ".join(candidates)
+        raise SessionSlotAmbiguityError(f"ambiguous existing sessions for slot {project_prefix}-{index}: {joined}")
+    if candidates:
+        session_name = candidates[0]
+        return session_name, _session_slot_name(engine_short, session_name)
+    return None
+
+
+def _matching_worktrees(worktree_base: Path, ai_name: str) -> list[Path]:
+    """Find existing worktrees whose name differs only by prefix casing."""
+    try:
+        return [path for path in worktree_base.iterdir() if path.name.casefold() == ai_name.casefold()]
+    except OSError:
+        return []
+
+
+def _resolve_explicit_bare_slot(engine_short: str, project_prefix: str, index: str) -> tuple[str, str] | None:
+    try:
+        repo_root = detect_repo_root()
+    except RuntimeError:
+        repo_root = None
+    if not repo_root:
+        return None
+    candidates = _matching_worktrees(repo_root / WORKTREE_DIR, f"{project_prefix}-{index}")
+    if len(candidates) > 1:
+        joined = ", ".join(str(path) for path in candidates)
+        raise SessionSlotAmbiguityError(f"ambiguous existing worktrees for slot {project_prefix}-{index}: {joined}")
+    if candidates:
+        ai_name = candidates[0].name
+        return f"{engine_short}-{ai_name}", ai_name
+    return None
+
+
 def find_next_index(prefix: str, use_tmux: bool = True) -> int:
     """Return the lowest unused session index for ``prefix``.
 
-    With tmux, occupancy is authoritative: a live ``tmux has-session`` means the
-    slot is taken.  In bare mode there is no server to ask (and tmux may not be
+    With tmux, occupancy is authoritative: a live tmux session using either
+    local or remote naming for the slot means it is taken. In bare mode there is no server to ask (and tmux may not be
     installed at all), so fall back to the on-disk worktree directories, which
     are the only durable record a bare session leaves behind.
     """
     if not use_tmux:
         return _find_next_index_from_worktrees(prefix)
+    match = re.fullmatch(r"([cg])(?:-r)?-(.+)-", prefix)
+    if not match:
+        return 1
+    engine_short, project_prefix = match.groups()
     i = 1
     while True:
-        res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{i}"], capture_output=True, check=False)
-        if res.returncode != 0:
+        if not _matching_tmux_sessions(engine_short, project_prefix, i):
             return i
         i += 1
 
@@ -299,8 +367,8 @@ def _find_next_index_from_worktrees(prefix: str) -> int:
     wt_base = repo_root / WORKTREE_DIR
     i = 1
     while True:
-        candidate = wt_base / f"{ai_prefix}{i}"
-        if not candidate.exists() or not _worktree_has_live_session(candidate):
+        candidates = _matching_worktrees(wt_base, f"{ai_prefix}{i}")
+        if not candidates or not any(_worktree_has_live_session(candidate) for candidate in candidates):
             return i
         i += 1
 
@@ -539,6 +607,13 @@ def build_session_name(
     clean_name = clean_name.strip("-")
 
     if clean_name.isdigit():
+        existing = (
+            _resolve_explicit_tmux_slot(engine_short, project_prefix, clean_name)
+            if use_tmux
+            else _resolve_explicit_bare_slot(engine_short, project_prefix, clean_name)
+        )
+        if existing:
+            return existing
         return f"{tmux_base}{clean_name}", f"{ai_base}{clean_name}"
     if not clean_name:
         idx = find_next_index(tmux_base, use_tmux=use_tmux)

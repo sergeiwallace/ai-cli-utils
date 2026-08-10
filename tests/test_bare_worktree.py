@@ -191,6 +191,15 @@ def test_given_explicit_index_when_bare_then_index_respected_verbatim():
     assert (session_id, ai_name) == ("c-kg-1", "kg-1")
 
 
+def test_given_legacy_case_worktree_when_bare_explicit_index_then_reuses_legacy_slot(tmp_path):
+    (tmp_path / ".worktrees" / "app-7").mkdir(parents=True)
+
+    with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        session_id, ai_name = build_session_name("c", "APP", "7", use_tmux=False)
+
+    assert (session_id, ai_name) == ("c-app-7", "app-7")
+
+
 # --- end-to-end launch ordering ------------------------------------------------
 
 

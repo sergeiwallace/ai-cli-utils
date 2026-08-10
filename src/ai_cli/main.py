@@ -1906,9 +1906,13 @@ def _do_session_launch(
     if not bare:
         _session.cleanup_stale_sessions(config)
     current_project_name = _config.get_current_project_name()
-    session_id, ai_name = _session.build_session_name(
-        engine, project_prefix, name, config, is_remote=is_remote, use_tmux=not bare
-    )
+    try:
+        session_id, ai_name = _session.build_session_name(
+            engine, project_prefix, name, config, is_remote=is_remote, use_tmux=not bare
+        )
+    except _session.SessionSlotAmbiguityError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Worktree setup
     worktree_path = None

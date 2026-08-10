@@ -236,7 +236,7 @@ def test_given_an_uppercase_fleet_prefix_and_lowercase_registered_worktree_when_
 
     prefix = resolve_project_prefix(repo)
     _session_id, ai_name = build_session_name("c", prefix, "1", use_tmux=False)
-    assert ai_name == "APP-1"
+    assert ai_name == "app-1"
 
     reused = create_worktree(ai_name)
 

@@ -129,6 +129,32 @@ def test_build_session_name_with_index_when_called_then_respects_index():
     assert ai_name == "sw-3"
 
 
+@pytest.mark.parametrize("engine", ["c", "g"])
+def test_given_legacy_remote_session_when_explicit_index_then_reuses_legacy_slot(engine):
+    """A prefix case or remote-mode change must not fork an occupied slot."""
+    with patch(
+        "subprocess.run",
+        return_value=MagicMock(returncode=0, stdout=f"{engine}-r-app-7\n"),
+    ):
+        session_id, ai_name = build_session_name(
+            engine,
+            "APP",
+            "7",
+            is_remote=False,
+        )
+
+    assert (session_id, ai_name) == (f"{engine}-r-app-7", "app-7")
+
+
+def test_given_legacy_variants_when_explicit_index_then_reports_ambiguity():
+    with patch(
+        "subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="c-app-7\nc-r-APP-7\n"),
+    ):
+        with pytest.raises(RuntimeError, match=r"ambiguous existing sessions.*c-app-7, c-r-APP-7"):
+            build_session_name("c", "APP", "7", is_remote=False)
+
+
 def test_build_session_name_never_produces_double_hyphen():
     """Final assembled session name must never contain --."""
     with patch("subprocess.run") as mock_run:
@@ -1350,19 +1376,24 @@ class TestCleanupWorktree:
 class TestFindNextIndex:
     def test_find_next_index_when_first_slot_taken_then_returns_second(self):
         """Covers line 267: i += 1 (second iteration of the while loop)."""
-        call_count = {"n": 0}
 
         def mock_run(cmd, **kwargs):
-            call_count["n"] += 1
-            m = MagicMock()
-            if call_count["n"] == 1:
-                m.returncode = 0  # prefix1 exists
-            else:
-                m.returncode = 1  # prefix2 does not exist
-            return m
+            assert cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]
+            return MagicMock(returncode=0, stdout="c-sw-1\n")
 
         with patch("subprocess.run", side_effect=mock_run):
             result = find_next_index("c-sw-")
+        assert result == 2
+
+    def test_given_legacy_remote_session_when_finding_index_then_skips_occupied_slot(self):
+        def mock_run(cmd, **kwargs):
+            if cmd[1] == "list-sessions":
+                return MagicMock(returncode=0, stdout="c-r-app-1\n")
+            return MagicMock(returncode=1)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = find_next_index("c-APP-")
+
         assert result == 2
 
 

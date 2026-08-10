@@ -1085,6 +1085,44 @@ class TestDoSessionLaunchTmuxGuard:
 
 
 class TestDoSessionLaunchRegistryDiscovery:
+    def test_given_legacy_remote_session_when_local_index_launch_then_reuses_legacy_worktree(self):
+        from ai_cli.main import _do_session_launch
+
+        kwargs = {
+            "engine": "c",
+            "name": "7",
+            "resume": False,
+            "once": False,
+            "bare": False,
+            "notify": False,
+            "sandbox": False,
+            "no_worktree": False,
+            "remote": False,
+            "project": "",
+            "is_remote": False,
+            "project_prefix_override": "APP",
+            "extra_args": [],
+            "config": {"worktree": {"enabled": True}},
+        }
+        with (
+            patch("shutil.which", return_value="/usr/bin/tmux"),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.session.cleanup_stale_sessions"),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("ai_cli.trust.ensure_workspace_trusted"),
+            patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+            patch(
+                "subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="c-r-app-7\n"),
+            ),
+            patch("ai_cli.session.create_worktree", return_value=None) as create_worktree,
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _do_session_launch(**kwargs)
+
+        assert exc_info.value.code == 1
+        create_worktree.assert_called_once_with("app-7", with_status=True)
+
     def test_given_named_launch_and_unregistered_other_project_when_started_then_skips_registry_prompt(self):
         from ai_cli.main import _do_session_launch
 
