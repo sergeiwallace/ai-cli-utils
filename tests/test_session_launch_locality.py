@@ -427,6 +427,17 @@ def test_given_worktree_isolation_disabled_when_launched_then_nothing_is_announc
     assert not (repo / ".worktrees").exists()
 
 
+def test_given_worktree_creation_fails_when_launched_then_it_refuses_to_use_the_repository_root(
+    tmp_path, monkeypatch, capsys
+):
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("ai_cli.session.create_worktree", lambda *args, **kwargs: None)
+
+    _launch_in(monkeypatch, tmp_path)
+    assert "refusing to launch in the repository root" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("engine", ["c", "g"])
 def test_given_an_existing_worktree_when_launched_then_its_reuse_is_announced(tmp_path, monkeypatch, capsys, engine):
     """Both engines report reuse after create_worktree makes that decision."""

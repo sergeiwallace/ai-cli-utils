@@ -14,6 +14,8 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import portalocker
+
 from .config import (
     WORKTREE_DIR,
     _get_main_project_name,
@@ -794,8 +796,12 @@ def _same_worktree_path(first: Path, second: Path) -> bool:
     """Return whether two existing paths identify the same filesystem object."""
     try:
         return first.samefile(second)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not determine whether worktree paths {first} and {second} identify the same directory: {exc}"
+        ) from exc
 
 
 def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | None:
@@ -806,13 +812,15 @@ def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | N
     return None
 
 
-def create_worktree(ai_name: str, *, with_status: bool = False) -> Path | tuple[Path, bool] | None:
+def create_worktree(
+    ai_name: str, *, with_status: bool = False, repo_root: Path | None = None
+) -> Path | tuple[Path, bool] | None:
     """Create or reuse a session worktree.
 
     With ``with_status=True``, return ``(path, created)`` so launch output can
     describe the operation that actually occurred.
     """
-    repo_root = detect_repo_root()
+    repo_root = repo_root or detect_repo_root()
     if not repo_root:
         return None
 
@@ -822,63 +830,90 @@ def create_worktree(ai_name: str, *, with_status: bool = False) -> Path | tuple[
     repair_bare_worktree_config(repo_root)
 
     wt_dir = repo_root / WORKTREE_DIR / ai_name
-    # Verify it is still registered as a valid worktree; prune stale entries first.
-    # Compare filesystem identity too: on a case-insensitive filesystem, a
-    # differently-cased prefix can spell the same live checkout.
-    subprocess.run(["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env(), check=False)
-    registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
-    if registered is not None:
-        _allow_trusted_worktree_envrc(repo_root, registered)
-        result = (registered, False)
-        return result if with_status else registered
-
-    if wt_dir.exists():
-        # A non-registered directory might hold files or git data that the
-        # launcher cannot safely evaluate. Never recycle it automatically.
-        holder = _contains_git_checkout(wt_dir)
-        if holder is not None:
-            raise RuntimeError(
-                f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root}, and it "
-                f"contains a git checkout at {holder} — refusing to delete it. This path has two "
-                f"meanings: this launcher wants it to BE the session's checkout, while per-task "
-                f"agent worktrees are nested INSIDE it as `<name>/<task>/<leaf>`. Move the nested "
-                f"checkout(s) out to a sibling container and re-run, e.g. "
-                f"`git worktree move {holder} {wt_dir.parent / (wt_dir.name + '-agents')}/{holder.name}` "
-                f"for each one (a plain `mv` would leave git's registration pointing at the old path)."
-            )
-        raise RuntimeError(
-            f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root} — refusing to delete it. "
-            f"Remove or relocate it only after verifying it contains no needed files; if it is empty, run "
-            f"`rmdir {wt_dir}` and re-run."
-        )
-
-    branch = f"wt-{ai_name}"
-    # Resolve base AND upstream in one call BEFORE creating anything: an unresolvable
-    # one leaves no half-made worktree directory behind, and a single resolution means
-    # the two can never disagree about which branch the session integrates through.
-    base, upstream = _resolve_worktree_target(repo_root)
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = wt_dir.parent / f".{ai_name}.lock"
 
-    # Try creating the branch at the resolved base; fall back to checking out an
-    # existing branch of that name. The fallback deliberately passes no start-point:
-    # a `wt-<name>` that already exists carries a previous session's commits, and
-    # forcing it back to the integration branch would discard them.
-    res = subprocess.run(
-        ["git", "worktree", "add", str(wt_dir), "-b", branch, base],
-        capture_output=True,
-        env=_git_env(),
-        check=False,
-    )
-    if res.returncode != 0:
-        subprocess.run(
-            ["git", "worktree", "add", str(wt_dir), branch], capture_output=True, env=_git_env(), check=False
-        )
+    # Worktree creation is a repository/slot-wide decision. Serializing it means
+    # a launcher can report "created" only for the git command it actually won.
+    with lock_path.open("w") as lock_fd:
+        portalocker.lock(lock_fd, portalocker.LOCK_EX)
+        try:
+            # Verify it is still registered as a valid worktree; prune stale entries first.
+            # Compare filesystem identity too: on a case-insensitive filesystem, a
+            # differently-cased prefix can spell the same live checkout.
+            subprocess.run(
+                ["git", "worktree", "prune"], capture_output=True, cwd=repo_root, env=_git_env(), check=False
+            )
+            registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
+            if registered is not None:
+                _allow_trusted_worktree_envrc(repo_root, registered)
+                result = (registered, False)
+                return result if with_status else registered
+
+            if wt_dir.exists():
+                # A non-registered directory might hold files or git data that the
+                # launcher cannot safely evaluate. Never recycle it automatically.
+                holder = _contains_git_checkout(wt_dir)
+                if holder is not None:
+                    raise RuntimeError(
+                        f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root}, and it "
+                        f"contains a git checkout at {holder} — refusing to delete it. This path has two "
+                        f"meanings: this launcher wants it to BE the session's checkout, while per-task "
+                        f"agent worktrees are nested INSIDE it as `<name>/<task>/<leaf>`. Move the nested "
+                        f"checkout(s) out to a sibling container and re-run, e.g. "
+                        f"`git worktree move {holder} {wt_dir.parent / (wt_dir.name + '-agents')}/{holder.name}` "
+                        f"for each one (a plain `mv` would leave git's registration pointing at the old path)."
+                    )
+                raise RuntimeError(
+                    f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root} — refusing to delete it. "
+                    f"Remove or relocate it only after verifying it contains no needed files; if it is empty, run "
+                    f"`rmdir {wt_dir}` and re-run."
+                )
+
+            branch = f"wt-{ai_name}"
+            # Resolve base AND upstream in one call BEFORE creating anything: an unresolvable
+            # one leaves no half-made worktree directory behind, and a single resolution means
+            # the two can never disagree about which branch the session integrates through.
+            base, upstream = _resolve_worktree_target(repo_root)
+
+            # Try creating the branch at the resolved base; fall back to checking out an
+            # existing branch of that name. The fallback deliberately passes no start-point:
+            # a `wt-<name>` that already exists carries a previous session's commits, and
+            # forcing it back to the integration branch would discard them.
+            res = subprocess.run(
+                ["git", "worktree", "add", str(wt_dir), "-b", branch, base],
+                capture_output=True,
+                env=_git_env(),
+                check=False,
+            )
+            created = res.returncode == 0
+            if not created:
+                res = subprocess.run(
+                    ["git", "worktree", "add", str(wt_dir), branch],
+                    capture_output=True,
+                    env=_git_env(),
+                    check=False,
+                )
+                created = res.returncode == 0
+
+            # A second probe is required even after a failed add: a non-cooperating
+            # process may have created a valid worktree while this process was waiting.
+            registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
+            if not created:
+                if registered is not None:
+                    _allow_trusted_worktree_envrc(repo_root, registered)
+                    result = (registered, False)
+                    return result if with_status else registered
+                return None
+            worktree_path = registered or wt_dir
+        finally:
+            portalocker.unlock(lock_fd)
 
     # Repair again after the add — the backstop for whatever just ran (defense
     # in depth alongside the env scrub above).
     repair_bare_worktree_config(repo_root)
 
-    if wt_dir.exists():
+    if worktree_path.is_dir():
         # Track the repository's integration branch so `git push` ships where the
         # repository actually integrates and `git pull --rebase` syncs from there
         # (AI-CLI-193). For a repository on `main` that is `origin/main`, unchanged.
@@ -910,7 +945,7 @@ def create_worktree(ai_name: str, *, with_status: bool = False) -> Path | tuple[
         # Symlink critical environment files
         for item in [".venv", ".claude", ".gemini", ".direnv"]:
             src = repo_root / item
-            dst = wt_dir / item
+            dst = worktree_path / item
             if src.exists() and not dst.exists():
                 dst.symlink_to(src)
         # Register workspace trust so Claude Code loads the symlinked
@@ -919,11 +954,11 @@ def create_worktree(ai_name: str, *, with_status: bool = False) -> Path | tuple[
         # resolve to the main gitRoot, but register both for safety.
         from .trust import ensure_workspace_trusted
 
-        ensure_workspace_trusted([repo_root, wt_dir])
-        _allow_trusted_worktree_envrc(repo_root, wt_dir)
-        result = (wt_dir, True)
-        return result if with_status else wt_dir
-    return None
+        ensure_workspace_trusted([repo_root, worktree_path])
+        _allow_trusted_worktree_envrc(repo_root, worktree_path)
+        result = (worktree_path, True)
+        return result if with_status else worktree_path
+    raise RuntimeError(f"git worktree add succeeded but did not create the expected worktree at {worktree_path}")
 
 
 def _allow_trusted_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:

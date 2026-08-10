@@ -1,4 +1,4 @@
-"""``.worktrees/<name>`` means two incompatible things, and one of them deletes work.
+"""``.worktrees/<name>`` means two incompatible things, and used to delete work.
 
 ``ai c <name>`` treats ``.worktrees/<name>`` as that session's own git checkout.
 Other tooling — anything that gives an agent its own worktree per task — uses the
@@ -12,8 +12,8 @@ Two defects met there, and masked each other:
   ``git worktree list --porcelain``, and ``…/.worktrees/session-1`` is a substring
   of the line ``worktree …/.worktrees/session-1/agent-a`` — so a container with no
   checkout of its own reported as a registered worktree;
-* the branch taken when that test fails is an unconditional
-  ``shutil.rmtree`` — which, reached with a container in place, deletes every
+* the branch taken when that test failed used an unconditional
+  ``shutil.rmtree`` — which, reached with a container in place, deleted every
   nested worktree and any commit in it that was never pushed.
 
 The safe outcome was luck: the substring matched, so the deletion was never
@@ -27,7 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from ai_cli.session import create_worktree, registered_worktrees
+from ai_cli.config import FLEET_REGISTRY_MARKER, resolve_project_prefix
+from ai_cli.session import build_session_name, create_worktree, registered_worktrees
 
 
 def _git(*args, cwd, check=True):
@@ -210,32 +211,98 @@ def test_given_an_unregistered_directory_when_a_session_worktree_is_created_then
     assert (stale / "leftover.txt").read_text() == "debris from an interrupted run\n"
 
 
-@pytest.mark.parametrize("state", ["uncommitted", "unpushed", "absent-from-integration"])
-def test_given_case_differing_registered_worktree_with_work_when_created_then_it_is_reused(repo, monkeypatch, state):
-    """A case-insensitive spelling of a live worktree must never be recycled.
+@pytest.fixture
+def uppercase_fleet_prefix(repo, monkeypatch):
+    """Register an uppercase prefix through the production fleet-registry tier."""
+    registry = repo.parent / "myconfig" / FLEET_REGISTRY_MARKER
+    registry.parent.mkdir(parents=True)
+    registry.write_text('[[projects]]\nname = "myproject"\ntask_prefix = "APP"\ntype = "tool"\nactive = true\n')
+    monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: repo.parent)
+    monkeypatch.setattr("ai_cli.config._get_project_registry_path", lambda: None)
+    monkeypatch.setattr("ai_cli.config.load_config", dict)
+    return "APP"
 
-    The identity probe is mocked because CI filesystems may be case-sensitive;
-    the lower-case on-disk worktree and upper-case requested prefix reproduce the
-    casing mismatch that case-insensitive filesystems collapse to one directory.
-    """
+
+def test_given_an_uppercase_fleet_prefix_and_lowercase_registered_worktree_when_created_then_it_is_reused(
+    repo, monkeypatch, uppercase_fleet_prefix
+):
+    """The production prefix-to-name chain reuses a case-alias worktree."""
     monkeypatch.chdir(repo)
-    lower = create_worktree("session-6")
+    lower = create_worktree("app-1")
     assert lower is not None
-    marker = lower / "in-progress.md"
-    marker.write_text(f"{state}\n")
-    if state != "uncommitted":
-        _git("add", "in-progress.md", cwd=lower)
-        _git("commit", "-q", "-m", state, cwd=lower)
+    requested = lower.parent / "APP-1"
+    if not requested.exists():
+        pytest.skip("filesystem does not support case-alias paths")
 
-    monkeypatch.setattr(
-        "ai_cli.session._same_worktree_path",
-        lambda requested, registered: requested.name.casefold() == registered.name.casefold(),
-    )
+    prefix = resolve_project_prefix(repo)
+    _session_id, ai_name = build_session_name("c", prefix, "1", use_tmux=False)
+    assert ai_name == "APP-1"
 
-    reused = create_worktree("SESSION-6")
+    reused = create_worktree(ai_name)
 
     assert reused == lower
-    assert marker.read_text() == f"{state}\n"
+
+
+def _unregistered_checkout(repo: Path, name: str) -> Path:
+    slot = repo / ".worktrees" / name
+    slot.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", cwd=slot)
+    _git("config", "user.email", "t@example.com", cwd=slot)
+    _git("config", "user.name", "T", cwd=slot)
+    (slot / "README.md").write_text("base\n")
+    _git("add", "-A", cwd=slot)
+    _git("commit", "-q", "-m", "initial", cwd=slot)
+    return slot
+
+
+def test_given_unregistered_slot_with_uncommitted_work_when_created_then_it_is_refused_and_preserved(repo, monkeypatch):
+    monkeypatch.chdir(repo)
+    slot = _unregistered_checkout(repo, "session-uncommitted")
+    marker = slot / "work.md"
+    marker.write_text("uncommitted work\n")
+
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        create_worktree("session-uncommitted")
+
+    assert marker.read_text() == "uncommitted work\n"
+    assert _git("status", "--porcelain", cwd=slot).stdout == "?? work.md\n"
+
+
+def test_given_unregistered_slot_with_an_unpushed_commit_when_created_then_it_is_refused_and_preserved(
+    repo, monkeypatch
+):
+    monkeypatch.chdir(repo)
+    slot = _unregistered_checkout(repo, "session-unpushed")
+    (slot / "work.md").write_text("unpushed work\n")
+    _git("add", "-A", cwd=slot)
+    _git("commit", "-q", "-m", "unpushed work", cwd=slot)
+    before = _git("rev-parse", "HEAD", cwd=slot).stdout.strip()
+
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        create_worktree("session-unpushed")
+
+    assert _git("rev-parse", "HEAD", cwd=slot).stdout.strip() == before
+    assert _git("remote", cwd=slot).stdout == ""
+
+
+def test_given_unregistered_slot_with_commit_outside_integration_when_created_then_it_is_refused_and_preserved(
+    repo, monkeypatch
+):
+    monkeypatch.chdir(repo)
+    slot = repo / ".worktrees" / "session-off-main"
+    _git("clone", "-q", str(repo / ".git"), str(slot), cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=slot)
+    _git("config", "user.name", "T", cwd=slot)
+    (slot / "work.md").write_text("off integration\n")
+    _git("add", "-A", cwd=slot)
+    _git("commit", "-q", "-m", "off integration", cwd=slot)
+    before = _git("rev-parse", "HEAD", cwd=slot).stdout.strip()
+
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        create_worktree("session-off-main")
+
+    assert _git("rev-parse", "HEAD", cwd=slot).stdout.strip() == before
+    assert _git("merge-base", "--is-ancestor", "HEAD", "origin/main", cwd=slot, check=False).returncode == 1
 
 
 def test_given_a_registered_session_worktree_when_created_again_then_it_is_returned_untouched(repo, monkeypatch):

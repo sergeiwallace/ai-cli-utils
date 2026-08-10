@@ -18,6 +18,13 @@ from ai_cli.main import (
     trigger_background_update,
 )
 
+
+def _successful_worktree(tmp_path, ai_name):
+    path = tmp_path / ".worktrees" / ai_name
+    path.mkdir(parents=True)
+    return path, False
+
+
 # --- CLI dispatch tests ---
 
 
@@ -462,10 +469,11 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
-            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.session.create_worktree", return_value=(tmp_path, False)),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main._direnv_env_usable", return_value=True),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch.dict(os.environ, {"STALE_PROJECT_OVERRIDE": "present"}),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
@@ -495,7 +503,9 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
+            patch("ai_cli.session.create_worktree", return_value=(tmp_path, False)),
             patch("ai_cli.main.trigger_background_update"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
@@ -518,9 +528,10 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
-            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
@@ -537,9 +548,10 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
-            patch("ai_cli.session.create_worktree", return_value=None),
+            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         ):
             with pytest.raises(SystemExit):
@@ -549,7 +561,7 @@ class TestCliSessionSetupBranches:
         assert "-s" in command
         assert "--no-sandbox" not in command
 
-    def test_cli_when_sandbox_and_session_exists_then_kills_and_recreates(self):
+    def test_cli_when_sandbox_and_session_exists_then_kills_and_recreates(self, tmp_path):
         killed = []
 
         def _run(cmd, **kwargs):
@@ -565,15 +577,18 @@ class TestCliSessionSetupBranches:
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
-                            # See _run_c_with_fake_subprocess's comment: the blanket
-                            # subprocess.run mock's generic success default incidentally
-                            # answers AI-CLI-99's unrelated detect_repo_root() repair-backstop
-                            # call, tripping its worktree-nesting guard when run from a worktree.
-                            with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                with patch("subprocess.run", side_effect=_run):
-                                    with patch("os.execvp", side_effect=SystemExit(0)):
-                                        with pytest.raises(SystemExit):
-                                            cli()
+                            with patch(
+                                "ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")
+                            ):
+                                # See _run_c_with_fake_subprocess's comment: the blanket
+                                # subprocess.run mock's generic success default incidentally
+                                # answers AI-CLI-99's unrelated detect_repo_root() repair-backstop
+                                # call, tripping its worktree-nesting guard when run from a worktree.
+                                with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                    with patch("subprocess.run", side_effect=_run):
+                                        with patch("os.execvp", side_effect=SystemExit(0)):
+                                            with pytest.raises(SystemExit):
+                                                cli()
         assert len(killed) == 1
 
     def test_cli_when_no_explicit_sandbox_and_session_exists_then_attaches_without_kill(self):
@@ -603,7 +618,7 @@ class TestCliSessionSetupBranches:
                                             cli()
         assert len(killed) == 0
 
-    def test_cli_when_iterm2_env_set_then_passes_terminal_flags_to_tmux_new_session(self):
+    def test_cli_when_iterm2_env_set_then_passes_terminal_flags_to_tmux_new_session(self, tmp_path):
         # Env vars are passed to `new-session` (subprocess.run), not `attach-session` (execvp).
         # Only the terminal-type flags are propagated — ITERM_SESSION_ID is NOT, since the
         # pane is renamed by live client tty, not a stored GUID (AI-CLI-59 final).
@@ -611,26 +626,34 @@ class TestCliSessionSetupBranches:
 
         def fake_run(cmd, *args, **kwargs):
             run_calls.append(list(cmd))
-            return MagicMock(returncode=1, stdout="", stderr="")
+            if cmd[0] == "git":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "has-session" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "g", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
-                            with patch("subprocess.run", side_effect=fake_run):
-                                with patch.dict(
-                                    os.environ,
-                                    {
-                                        "ITERM_SESSION_ID": "w0t1p0:abc",
-                                        "LC_TERMINAL": "iTerm2",
-                                        "TERM_PROGRAM": "iTerm.app",
-                                    },
-                                    clear=False,
-                                ):
-                                    with patch("os.execvp", side_effect=SystemExit(0)):
-                                        with pytest.raises(SystemExit):
-                                            cli()
+                            with patch(
+                                "ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")
+                            ):
+                                with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                    with patch("subprocess.run", side_effect=fake_run):
+                                        with patch.dict(
+                                            os.environ,
+                                            {
+                                                "ITERM_SESSION_ID": "w0t1p0:abc",
+                                                "LC_TERMINAL": "iTerm2",
+                                                "TERM_PROGRAM": "iTerm.app",
+                                            },
+                                            clear=False,
+                                        ):
+                                            with patch("os.execvp", side_effect=SystemExit(0)):
+                                                with pytest.raises(SystemExit):
+                                                    cli()
 
         new_session_cmd = next((c for c in run_calls if "new-session" in c), None)
         assert new_session_cmd is not None, "tmux new-session was not called"
@@ -651,7 +674,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.config.load_config", return_value=config),
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
-            patch("ai_cli.config._get_project_prefix_by_name", return_value="mp"),
+            patch("ai_cli.config.resolve_project_prefix_by_name", return_value="mp"),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
@@ -824,42 +847,58 @@ class TestCliResumePath:
 
 
 class TestCliOncePath:
-    def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self):
+    def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("os.getuid", return_value=1000):
-                                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                with pytest.raises(SystemExit):
-                                                    cli()
-                                            assert mock_exec.call_args[0][0] == "tmux"
-                                            bash_cmd = mock_exec.call_args[0][1][-1]
-                                            assert "direnv exec" in bash_cmd
-                                            assert "--dangerously-skip-permissions" in bash_cmd
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch(
+                                                "subprocess.run",
+                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
+                                            ):
+                                                with patch("os.getuid", return_value=1000):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+                                                    assert mock_exec.call_args[0][0] == "tmux"
+                                                    bash_cmd = mock_exec.call_args[0][1][-1]
+                                                    assert "direnv exec" in bash_cmd
+                                                    assert "--dangerously-skip-permissions" in bash_cmd
 
-    def test_cli_when_once_and_claude_root_then_execvp_without_perms(self):
+    def test_cli_when_once_and_claude_root_then_execvp_without_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("os.getuid", return_value=0):
-                                            with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                with pytest.raises(SystemExit):
-                                                    cli()
-                                            bash_cmd = mock_exec.call_args[0][1][-1]
-                                            assert "direnv exec" in bash_cmd
-                                            assert "--dangerously-skip-permissions" not in bash_cmd
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch(
+                                                "subprocess.run",
+                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
+                                            ):
+                                                with patch("os.getuid", return_value=0):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+                                                    bash_cmd = mock_exec.call_args[0][1][-1]
+                                                    assert "direnv exec" in bash_cmd
+                                                    assert "--dangerously-skip-permissions" not in bash_cmd
 
-    def test_cli_when_once_and_gemini_with_uuid_then_resumes(self):
+    def test_cli_when_once_and_gemini_with_uuid_then_resumes(self, tmp_path):
         with patch("sys.argv", ["ai", "g", "-o", "research"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
@@ -868,18 +907,26 @@ class TestCliOncePath:
                             with patch(
                                 "ai_cli.session.build_session_name", return_value=("g-sw-research", "sw-research")
                             ):
-                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-research"),
+                                ):
                                     with patch(
                                         "ai_cli.config.get_session_map", return_value={"sw-research": "uuid123"}
                                     ):
-                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                            with pytest.raises(SystemExit):
-                                                cli()
-                                        bash_cmd = mock_exec.call_args[0][1][-1]
-                                        assert "direnv exec" in bash_cmd
-                                        assert "uuid123" in bash_cmd
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch(
+                                                "subprocess.run",
+                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
+                                            ):
+                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
+                                                bash_cmd = mock_exec.call_args[0][1][-1]
+                                                assert "direnv exec" in bash_cmd
+                                                assert "uuid123" in bash_cmd
 
-    def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self):
+    def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self, tmp_path):
         with patch("sys.argv", ["ai", "g", "-o", "research"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
@@ -888,14 +935,22 @@ class TestCliOncePath:
                             with patch(
                                 "ai_cli.session.build_session_name", return_value=("g-sw-research", "sw-research")
                             ):
-                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-research"),
+                                ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
-                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                            with pytest.raises(SystemExit):
-                                                cli()
-                                        bash_cmd = mock_exec.call_args[0][1][-1]
-                                        assert "direnv exec" in bash_cmd
-                                        assert "resume load" in bash_cmd
+                                        with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                            with patch(
+                                                "subprocess.run",
+                                                return_value=MagicMock(returncode=0, stdout="", stderr=""),
+                                            ):
+                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
+                                                bash_cmd = mock_exec.call_args[0][1][-1]
+                                                assert "direnv exec" in bash_cmd
+                                                assert "resume load" in bash_cmd
 
 
 class TestConfigureTmuxForIterm2:
@@ -913,17 +968,20 @@ class TestConfigureTmuxForIterm2:
 
 
 class TestCliSessionExecvp:
-    def test_cli_when_existing_session_then_attaches_with_detach(self):
+    def test_cli_when_existing_session_then_attaches_with_detach(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.session.get_project_prefix", return_value="sw"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
-                                            existing = MagicMock(returncode=0)
+                                            existing = MagicMock(returncode=0, stdout="", stderr="")
                                             # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
                                             # comment: the blanket subprocess.run mock incidentally
                                             # answers AI-CLI-99's unrelated detect_repo_root()
@@ -937,15 +995,19 @@ class TestCliSessionExecvp:
                                                     assert "attach-session" in mock_exec.call_args[0][1]
                                                     assert "-d" in mock_exec.call_args[0][1]
 
-    def test_cli_when_no_existing_session_then_creates_new(self):
+    def test_cli_when_no_existing_session_then_creates_new(self, tmp_path):
         run_calls = []
 
         def fake_run(cmd, *args, **kwargs):
             run_calls.append(list(cmd))
             # has-session returns 1 (no existing session); new-session returns 0 (success)
             if "new-session" in cmd:
-                return MagicMock(returncode=0)
-            return MagicMock(returncode=1)
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "--git-common-dir" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if cmd[0] == "git":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -953,7 +1015,10 @@ class TestCliSessionExecvp:
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
                                             with patch("subprocess.run", side_effect=fake_run):
@@ -981,7 +1046,10 @@ class TestCliIsRemotePath:
                                         with patch(
                                             "ai_cli.session.build_session_name", return_value=("cr-sw-1", "sw-1")
                                         ):
-                                            with patch("ai_cli.session.create_worktree", return_value=None):
+                                            with patch(
+                                                "ai_cli.session.create_worktree",
+                                                return_value=_successful_worktree(tmp_path, "sw-1"),
+                                            ):
                                                 with patch("ai_cli.config.get_session_map", return_value={}):
                                                     with patch(
                                                         "ai_cli.session_script.get_engine_script", return_value="script"
@@ -1719,10 +1787,14 @@ class TestCliSessionStablePath:
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list):
+                if "--git-common-dir" in cmd:
+                    return MagicMock(returncode=1, stdout="", stderr="")
+                if cmd[0] == "git":
+                    return MagicMock(returncode=0, stdout="", stderr="")
                 for key, code in run_returncode_map.items():
                     if key in cmd:
-                        return MagicMock(returncode=code)
-            return MagicMock(returncode=1)
+                        return MagicMock(returncode=code, stdout="", stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1730,7 +1802,10 @@ class TestCliSessionStablePath:
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
-                                with patch("ai_cli.session.create_worktree", return_value=None):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="# script"):
                                             with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
@@ -2684,6 +2759,7 @@ class TestLocalProjectChdir:
             patch("sys.argv", ["ai", "g", "1", "-p", "myproject"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.config._find_project_dir", return_value=project_dir),
             patch("ai_cli.config.resolve_project_prefix_by_name", return_value="myproject"),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
@@ -2695,12 +2771,14 @@ class TestLocalProjectChdir:
             ),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
-            patch("ai_cli.session.create_worktree", return_value=None),
+            patch(
+                "ai_cli.session.create_worktree",
+                return_value=_successful_worktree(tmp_path, "pytest-leak-guard-myproject-1"),
+            ),
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
-            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
-            patch("subprocess.run", return_value=MagicMock(returncode=1)),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir") as mock_chdir,
         ):
@@ -2713,6 +2791,7 @@ class TestLocalProjectChdir:
             patch("sys.argv", ["ai", "g", "1"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
             patch("ai_cli.config.get_current_project_name", return_value="sw"),
@@ -2722,12 +2801,14 @@ class TestLocalProjectChdir:
             ),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
-            patch("ai_cli.session.create_worktree", return_value=None),
+            patch(
+                "ai_cli.session.create_worktree",
+                return_value=_successful_worktree(tmp_path, "pytest-leak-guard-sw-1"),
+            ),
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
-            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
-            patch("subprocess.run", return_value=MagicMock(returncode=1)),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
             patch("os.execvp", side_effect=SystemExit(0)),
             patch("os.chdir") as mock_chdir,
         ):

@@ -1927,8 +1927,15 @@ def _do_session_launch(
         else:
             # Compatibility for callers that replace create_worktree in-process.
             worktree_path, worktree_created = worktree_result, False
+        if not worktree_path:
+            print(
+                "Error: could not create or reuse the isolated session worktree; refusing to launch in the "
+                "repository root. Re-run after resolving the git worktree error, or explicitly use --no-worktree.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _announce_worktree_isolation(worktree_path, worktree_created)
         if worktree_path:
-            _announce_worktree_isolation(worktree_path, worktree_created)
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
             # --autostash saves the corrupt index, rebase runs cleanly, then pops the corrupt

@@ -205,17 +205,20 @@ def _no_real_worktrees(tmp_path, monkeypatch):
     writes.
     """
 
-    def _fake_create_worktree(ai_name):
-        repo = tmp_path / "projects" / ai_name.rsplit("-", 1)[0]
+    def _fake_create_worktree(ai_name, *, with_status=False, repo_root=None):
+        repo = repo_root or tmp_path / "projects" / ai_name.rsplit("-", 1)[0]
         if not repo.is_dir():
             raise AssertionError(f"unexpected worktree request for {ai_name!r} — no fake repo at {repo}")
         path = repo / WORKTREES / ai_name
-        if not path.exists():
+        created = not path.exists()
+        if created:
             # Registered, not merely created: adoption verifies its destination
             # against `git worktree list`, so a bare mkdir here would make every
             # adoption test fail on the collision refusal rather than on what it
             # is asserting.
             _add_worktree(repo, ai_name)
+        if with_status:
+            return path, created
         return str(path)
 
     monkeypatch.setattr("ai_cli.session.create_worktree", _fake_create_worktree)

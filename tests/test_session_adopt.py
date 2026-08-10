@@ -893,21 +893,24 @@ def test_adopt_given_an_existing_worktree_when_adopted_then_it_is_reused_not_rec
 ):
     sentinel = existing_worktree / "uncommitted.txt"
     sentinel.write_text("work in progress\n")
+    calls = []
 
-    def _fail(*args, **kwargs):
-        raise AssertionError("create_worktree must not be called for an existing worktree")
+    def _reuse(*args, **kwargs):
+        calls.append((args, kwargs))
+        return existing_worktree, False
 
-    monkeypatch.setattr("ai_cli.session.create_worktree", _fail)
+    monkeypatch.setattr("ai_cli.session.create_worktree", _reuse)
     result = adopt()
     assert not result.worktree_created
     assert sentinel.read_text() == "work in progress\n"
+    assert calls == [(("myproject-2",), {"with_status": True, "repo_root": world["repo"]})]
 
 
 def test_adopt_given_a_missing_worktree_when_adopted_then_it_is_created(world, adopt, monkeypatch):
     target = world["repo"] / ".worktrees" / "myproject-2"
 
-    def _create(ai_name):
-        return _add_worktree(world["repo"], ai_name)
+    def _create(ai_name, *, with_status, repo_root):
+        return _add_worktree(world["repo"], ai_name), True
 
     monkeypatch.setattr("ai_cli.session.create_worktree", _create)
     result = adopt()
@@ -915,7 +918,7 @@ def test_adopt_given_a_missing_worktree_when_adopted_then_it_is_created(world, a
 
 
 def test_adopt_given_worktree_creation_fails_when_adopted_then_raises_without_moving(world, adopt, monkeypatch):
-    monkeypatch.setattr("ai_cli.session.create_worktree", lambda ai_name: None)
+    monkeypatch.setattr("ai_cli.session.create_worktree", lambda *args, **kwargs: None)
     with pytest.raises(AdoptionError, match="could not create"):
         adopt()
     assert (world["src_dir"] / f"{UUID}.jsonl").is_file()

@@ -635,7 +635,7 @@ def probe_resolves(dest_root: Path, title: str, claude_home: Path | None = None)
 
 
 def _ensure_worktree(repo_root: Path, ai_name: str, dry_run: bool) -> tuple[Path, bool]:
-    """Return ``(worktree_path, created)``, creating it off ``origin/main`` if absent.
+    """Return ``(worktree_path, created)``, creating it from the resolved worktree base if absent.
 
     An existing destination is only reused when it really is a worktree *of this
     repository*, checked against ``git worktree list``. Existence alone is not
@@ -652,32 +652,36 @@ def _ensure_worktree(repo_root: Path, ai_name: str, dry_run: bool) -> tuple[Path
     that failed to appear in the preview.
     """
     wt_dir = repo_root / ".worktrees" / ai_name
-    if wt_dir.exists():
-        from .session import registered_worktrees
-
-        if wt_dir.resolve() in registered_worktrees(repo_root):
-            return wt_dir, False
-        raise AdoptionError(
-            f"{wt_dir} exists but is not a worktree of {repo_root} — refusing to adopt into it. "
-            f"This path has two meanings: `ai c {ai_name}` wants it to BE the session's checkout, "
-            f"while per-task agent worktrees are nested INSIDE it as `{ai_name}/<task>/<leaf>`. "
-            f"Adopting here would rewrite the transcript's recorded directories to a path holding "
-            f"none of the repository's content. Move anything nested there to a sibling container "
-            f"and re-run — `git worktree move <nested> "
-            f"{wt_dir.parent / (ai_name + '-agents')}/<leaf>` for each registered worktree (a plain "
-            f"`mv` leaves git's registration pointing at the old path), or remove the directory if "
-            f"it only holds debris."
-        )
     if dry_run:
+        from .session import _registered_worktree_at, registered_worktrees
+
+        registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
+        if registered is not None:
+            return registered, False
+        if wt_dir.exists():
+            raise AdoptionError(
+                f"{wt_dir} exists but is not a worktree of {repo_root} — refusing to adopt into it. "
+                f"This path has two meanings: `ai c {ai_name}` wants it to BE the session's checkout, "
+                f"while per-task agent worktrees are nested INSIDE it as `{ai_name}/<task>/<leaf>`. "
+                f"Adopting here would rewrite the transcript's recorded directories to a path holding "
+                f"none of the repository's content. Move anything nested there to a sibling container "
+                f"and re-run — `git worktree move <nested> "
+                f"{wt_dir.parent / (ai_name + '-agents')}/<leaf>` for each registered worktree (a plain "
+                f"`mv` leaves git's registration pointing at the old path), or remove the directory if "
+                f"it only holds debris."
+            )
         return wt_dir, True
     from .session import create_worktree
 
-    created = create_worktree(ai_name)
-    if created is None or not Path(created).is_dir():
+    try:
+        result = create_worktree(ai_name, with_status=True, repo_root=repo_root)
+    except RuntimeError as exc:
+        raise AdoptionError(str(exc)) from exc
+    if not isinstance(result, tuple) or not result[0].is_dir():
         raise AdoptionError(
             f"could not create the session worktree {wt_dir} — create it by hand (git worktree add) and re-run"
         )
-    return Path(created), True
+    return result
 
 
 def adopt_session(

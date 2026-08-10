@@ -1019,6 +1019,32 @@ class TestCreateWorktreeEdgeCases2:
                 result = create_worktree("sw-6")
         assert result is None
 
+    def test_create_worktree_when_adds_fail_after_another_process_creates_slot_then_does_not_claim_creation(
+        self, tmp_path
+    ):
+        """A directory appearing after failed adds is not this launch's creation."""
+        wt_dir = tmp_path / ".worktrees" / "sw-7"
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "worktree", "add"]:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+                return MagicMock(returncode=1, stdout="", stderr="slot already exists")
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
+            with patch("subprocess.run", side_effect=mock_run):
+                assert create_worktree("sw-7", with_status=True) is None
+
+    def test_same_worktree_path_when_identity_probe_is_indeterminate_then_raises(self, tmp_path, monkeypatch):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        monkeypatch.setattr(Path, "samefile", lambda *_: (_ for _ in ()).throw(PermissionError("denied")))
+
+        from ai_cli.session import _same_worktree_path
+
+        with pytest.raises(RuntimeError, match="could not determine"):
+            _same_worktree_path(first, second)
+
 
 class TestCreateWorktreeSymlink:
     def test_create_worktree_when_venv_exists_then_symlinks(self, tmp_path):
