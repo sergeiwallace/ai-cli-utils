@@ -2,7 +2,7 @@
 title: "AI-CLI-203/AI-CLI-204 worktree launch fix — audit"
 category: audit
 tags: [audit, ai-cli-203, ai-cli-204, worktree, session-launch]
-status: re-audit-needed
+status: converged-with-follow-up
 date: 2026-08-10
 source: "aido-stub"
 template_version: "audit-1.0.0"
@@ -18,7 +18,7 @@ delegation_provenance:
 
 # AI-CLI-203/AI-CLI-204 worktree launch fix — audit
 
-**Status:** re-audit-needed
+**Status:** converged-with-follow-up
 
 **Created:** 2026-08-10
 
@@ -43,6 +43,14 @@ low blast radius — findings incorporated by Claude
   - [R2.4 NEW issues surfaced](#r24-new-issues-surfaced)
   - [R2 Verification Matrix](#r2-verification-matrix)
   - [R2 Recommendations](#r2-recommendations)
+- [Round 3 — Round 2 Resolution Verification](#round-3--round-2-resolution-verification-append-only)
+  - [R3 Summary](#r3-summary)
+  - [R3.1 Round 2 N-N verification](#r31-round-2-n-n-verification)
+  - [R3.2 AD-N decision verification](#r32-ad-n-decision-verification)
+  - [R3.3 NEW issues surfaced](#r33-new-issues-surfaced)
+  - [R3 Verification Matrix](#r3-verification-matrix)
+  - [R3 Recommendations](#r3-recommendations)
+- [Round 4 — N-5 Fix Attempt (reverted, not shipped)](#round-4--n-5-fix-attempt-reverted-not-shipped)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
   - [AD-1: Concurrent worktree creation policy](#ad-1)
 - [Outstanding Issues to Fix](#outstanding-issues-to-fix)
@@ -84,24 +92,35 @@ sandbox exposes no writable temporary directory and permits writes only to this 
 
 ## Status Summary
 
-**Latest round:** Round 2
+**Latest round:** Round 3, plus a Round 4 fix attempt for N-5 that was reverted (see below)
 
 **Outstanding by severity / verdict (across all rounds):**
 
 | Severity | Count | Of which fixed | Of which deferred |
 |----------|-------|----------------|-------------------|
 | P0 | 0 | 0 | 0 |
-| P1 | 4 | 1 | 0 |
-| P2 | 7 | 4 | 0 |
+| P1 | 5 | 3 | 1 (AI-CLI-205, N-5) |
+| P2 | 8 | 6 | 1 (N-6, corrected not fixed) |
 | P3 | 1 | 1 | 0 |
-| **Total** | **12** | **6** | **0** |
+| **Total** | **14** | **10** | **2** |
 
-**Ship-readiness verdict:** Not ready. The exact false-`created=True` race and repository-root
-fallback are fixed, but DV-2 remains partial because registration/add failures still discard their
-diagnostics. The new advisory lock is released before initialization completes and has no bounded
-wait, so concurrent launch is not yet an atomic create-or-reuse operation. Both issue records also
-remain open, and the locking dependency now makes importing `ai_cli.session` require a writable
-temporary directory.
+**Ship-readiness verdict for the ORIGINAL scope (AI-CLI-203/204 — the case-insensitive
+collision/delete bug and the create-vs-reuse announcement accuracy):** **Ready, shipped, and
+independently verified.** JA-1 through JA-5, DV-3, DV-4 all PASS across every round; the
+`shutil.rmtree` recycle path is gone and every unregistered collision refuses. Both issues are
+closed with corrected, accurate close reasons (N-6).
+
+**Ship-readiness verdict for the CONCURRENCY HARDENING extension (AD-1, discovered during Round
+1's DV-1/DV-2 and pursued through Round 3):** **Converged with a known, narrow, non-blocking gap.**
+N-1 through N-4 are fixed and verified. N-5 (a creator that fails during post-add initialization
+leaves a registered-but-incomplete worktree that a waiting launcher can reuse without finishing
+that initialization) had a fix attempt in this session that was reverted after independently
+finding it broke ordinary worktree reuse/adoption (27 test failures — the fix wrongly assumed
+every registered worktree's checked-out branch is named `wt-<ai_name>`). Filed as its own issue,
+**AI-CLI-205 (P1, open)**, for a more careful follow-up rather than iterating further under time
+pressure. This gap requires two specific, unlikely-to-coincide conditions (a genuine race between
+two launchers for the identical session slot, AND the first launcher failing mid-initialization) —
+narrow enough that it does not block the shipped AI-CLI-203/204 fix, which stands independently.
 
 <!-- /doc:region name="scope" -->
 
@@ -613,6 +632,165 @@ smoke test that imports `ai_cli.session` with standard temporary locations unava
 - None. N-1 and N-3 are blocking correctness issues; N-2 and N-4 are small enough to resolve in
   the same Round 3 pass.
 
+## Round 3 — Round 2 Resolution Verification (append-only)
+
+**Round 3 auditor:** Codex, independent verification pass
+
+**Round 3 date:** 2026-08-10
+
+**Round 3 scope:** Verified every Round 2 finding (N-1 through N-4) and AD-1 against current
+`HEAD` `1ad2615bc2df76d3b83131684bcfc8dbe03dcb15`, specifically implementation commit `20a8436`
+and issue-metadata commit `1ad2615`. Read-only on source, tests, and issue metadata; only this
+audit document was changed.
+
+### R3 Summary
+
+Two of four Round 2 findings PASS (N-1 and N-4); N-2 and N-3 are PARTIAL. AD-1 is also PARTIAL.
+The error-diagnostic, root-refusal, bounded-lock, successful-concurrency, lazy-import, and issue-
+closure changes are present with focused tests. Two new issues are confirmed: one P1 correctness
+gap in failed initialization and one P2 tracking/audit-evidence contradiction.
+
+Runtime pytest remains unverified because the audit sandbox has no writable temporary directory;
+the focused invocation failed during pytest's own capture initialization before collection. Static
+AST parsing passed for all five requested source/test files. Focused read-only probes confirmed
+registration diagnostics, restricted import, issue state, and the failed-initialization reuse gap.
+
+### R3.1 Round 2 N-N verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| N-1 | PASS (CONFIRMED) | `registered_worktrees()` raises a diagnostic `RuntimeError` for genuine Git-list failures at `src/ai_cli/session.py:769-777`; failed adds raise with both command diagnostics at lines 903-924; and `_do_session_launch()` catches the error, prints its detail, and exits instead of launching at repository root at `src/ai_cli/main.py:1924-1945`. Focused assertions exist at `tests/test_session.py:836-851,1034-1046` and `tests/test_session_launch_locality.py:431-448`. |
+| N-2 | PARTIAL (CONFIRMED) | Both issue records are now closed with `closed_at` and implementing commit references at `.beads/issues.jsonl:198-199`, satisfying the state-change portion. Their shared close reason says the fixes were “independently verified by 2-round Codex audit,” but Round 2's own summary and recommendations report four unresolved N-N findings and “Not ready” (`docs/audits/ai-cli-203-204-worktree-launch-fix-audit.md` § R2 Summary, § R2 Recommendations). See N-6. |
+| N-3 | PARTIAL (CONFIRMED) | `portalocker.Lock(..., timeout=20)` encloses registration, both adds, upstream setup, symlinks, trust, envrc, and the successful return at `src/ai_cli/session.py:853-978`; installed portalocker defaults to nonblocking retry flags, so the timeout is effective (`portalocker/utils.py:20-23,212-242`). The successful two-launch regression at `tests/test_session.py:1065-1118` proves the waiter cannot return early. Missing: failed initialization is not represented, so the next launcher takes the early registered-reuse return at `src/ai_cli/session.py:860-864` and skips initialization at lines 947-972; the focused probe returned `(path, False)` after the creator raised. See N-5. |
+| N-4 | PASS (CONFIRMED) | `portalocker` is no longer imported at module scope and is imported only inside `create_worktree()` at `src/ai_cli/session.py:848`. The restricted-import smoke test at `tests/test_session.py:1120-1137` replaces `tempfile.gettempdir()` with a failure before importing `ai_cli.session`; the same read-only command completed with `session_import=ok` in this pass. |
+
+### R3.2 AD-N decision verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| AD-1 | PARTIAL (CONFIRMED) | The target implements recommended option (a): a per-repository/session-slot advisory lock with a 20-second timeout and fresh registration probes at `src/ai_cli/session.py:845-860,913-920,978-982`. It does not complete the decision contract: AD-1 remains `[PENDING]` in this document (§ AD-1), the lock artifact contains no owner metadata, and failed initialization can still be reused without re-establishing required invariants (N-5). |
+
+### R3.3 NEW issues surfaced
+
+#### N-5: A worktree from failed initialization is returned as reusable — `P1`
+
+**Location:** `src/ai_cli/session.py:860-864,925-974`; `tests/test_session.py:1065-1118`
+
+**What the Round 2 Resolution Pass claimed:** Commit `20a8436` says the lock now spans
+“registration probe through post-creation initialization” and closes the window in which another
+launcher can reuse a worktree while the creator is still initializing it.
+
+**Actual state:** The lock does span the successful path. If `_set_upstream_or_raise()`, symlink
+creation, trust registration, or envrc handling raises after Git has registered the worktree, the
+lock is released with no ready/failed state. The next launcher sees the registration at lines
+860-864 and returns `(registered, False)` before any of the creator-only initialization at lines
+947-972. The added concurrency test releases a successful creator and never exercises an
+initialization exception.
+
+**Why it matters:** A waiting session can launch in a worktree whose upstream, environment links,
+workspace trust, or envrc approval was never completed. The lock changes when the race occurs, but
+does not enforce the intended invariant that only successfully initialized worktrees are reusable.
+
+**Verification note:** CONFIRMED with a read-only mocked two-call probe. The first call raised
+`upstream init failed`; the second returned
+`(PosixPath('/repo/.worktrees/session-1'), False)` through the registered-reuse branch.
+
+**Recommended fix (Round 4):** Under the slot lock, make required initialization idempotent and run
+or validate it before both created and reused returns. Preserve the worktree on failure, but record
+or derive that initialization is incomplete so a later launcher retries it rather than returning
+early. Add a two-launch failure-path regression in which the creator raises during upstream setup
+and the waiter must also fail or complete initialization before returning.
+
+#### N-6: Closed issue metadata claims verification that did not occur — `P2`
+
+**Location:** `.beads/issues.jsonl:198-199`; audit § R2 Summary and § R2 Recommendations
+
+**What the Round 2 Resolution Pass claimed:** N-2 recommended closing both issues with implementing
+commit references after reconciling their shipped state.
+
+**Actual state:** Both records are closed and cite `23e8796`, `b2072ca`, and `20a8436`, but each
+close reason says the fixes were “independently verified by 2-round Codex audit.” Round 2 verified
+the pre-follow-up target at `1bd495c`, found N-1 through N-4, and explicitly said “Not ready.” It
+did not verify `20a8436`; this Round 3 pass is the first verification of that commit and finds N-5.
+
+**Why it matters:** The tracker converts an unresolved audit into evidence of completion. Future
+maintainers following the close reason will conclude the concurrency contract was independently
+verified even though the cited round rejected ship readiness and the first actual follow-up
+verification remains partial.
+
+**Verification note:** CONFIRMED by git order and content: `20a8436` applies the Round 2 fixes;
+`d0cb358` records the Round 2 report; `1ad2615` then closes both issues using the contradicted
+verification claim.
+
+**Recommended fix (Round 4):** Correct both close reasons to distinguish “fixes applied” from
+“fixes independently verified.” Reopen or separately track N-5 and AD-1 until a verification pass
+confirms the failed-initialization path and the decision is formally approved or closed.
+
+### R3 Verification Matrix
+
+| Finding/check | Command | Expected | Actual | Pass? |
+|---------------|---------|----------|--------|-------|
+| N-1 registration failure | Mocked failed `git worktree list --porcelain` call to `registered_worktrees()` | Raise with Git diagnostic | `could not list ...: fatal: permission denied` | ✅ |
+| N-1 add/launch tests | Source and test extract at `session.py:903-924`, `main.py:1924-1945`, and focused tests | Both add diagnostics reach a clean root refusal | Both diagnostics are raised, caught, printed, and asserted | ✅ static |
+| N-2 | Parse `.beads/issues.jsonl` records 198-199 | Closed with completion metadata | Both `closed`; both have `closed_at` and `close_reason` | ✅ state / ❌ evidence claim |
+| N-3 successful path | Lock/body and concurrency-test extract | Bounded lock through successful initialization; waiter cannot return early | `timeout=20`; return remains inside lock; success-path test blocks waiter | ✅ static |
+| N-3 / N-5 failure path | Mock creator initialization failure, then invoke same slot again | Waiter must not return an incompletely initialized worktree | Creator raised; waiter returned `(path, False)` | ❌ |
+| N-4 | Replace `tempfile.gettempdir()` with a raising function, then import `ai_cli.session` | Import succeeds without probing tempdir | `session_import=ok` | ✅ |
+| Test presence | `rg` focused N-1/N-3/N-4 test names | Claimed regressions exist and assert outcomes | Five focused tests present; no timeout or failed-initialization concurrency test | ✅ partial |
+| Syntax self-check | `ast.parse` the five requested source/test files | 5/5 parse | `ast_parse=5/5` | ✅ |
+| Focused pytest | Five exact test node IDs with cache disabled | Tests execute | Blocked before collection: pytest capture requires a writable temporary directory | ⚠ unverified |
+
+**Verified: 9 matrix checks run on `1ad2615bc2df76d3b83131684bcfc8dbe03dcb15`;
+5 passed, 3 were partial/failed as recorded, and runtime pytest was blocked before collection.**
+
+### R3 Recommendations
+
+**MUST be fixed before unqualified sign-off:**
+
+- N-5 / N-3 / AD-1: prevent early reuse after creator initialization failure and add the
+  corresponding two-launch failure regression.
+
+**SHOULD be fixed before closing this audit:**
+
+- N-6 / N-2: correct the issue close reasons and track the residual concurrency work honestly.
+- Formally approve or close AD-1 and either implement its owner-metadata contract or explicitly
+  record that portion as intentionally dropped with rationale.
+- Run the five focused tests in an environment with a writable temporary directory.
+
+**Can be folded into a follow-up:**
+
+- A direct lock-timeout regression is deferrable once N-5 is fixed; current behavior is supported
+  by installed portalocker's effective nonblocking retry flags and the explicit timeout handler.
+
+## Round 4 — N-5 Fix Attempt (reverted, not shipped)
+
+**Date:** 2026-08-10
+
+**What was attempted:** Codex (`cx implement`, effort medium) extracted a shared
+`_initialize_worktree()` helper (upstream setup, symlinks, trust, envrc) and called it
+unconditionally on every reuse path — both the early registered-worktree-found branch at the top
+of `create_worktree()` and the post-failed-`git worktree add` reuse branch — intending to complete
+any initialization a prior failed creator left unfinished (per N-5's acceptance criteria, option
+(b): the waiter completes the skipped initialization).
+
+**Why it was reverted:** independently re-running the full test suite in this session (not the
+audit's constrained sandbox) surfaced 27 failures, concentrated in `tests/test_session_adopt.py` —
+real adoption/reuse scenarios, not edge-case mocks. Root cause: the early-reuse call hardcoded the
+branch name as `f"wt-{ai_name}"` without verifying that is the branch the registered worktree
+actually has checked out, so `_set_upstream_or_raise()` failed with `fatal: branch 'wt-...' does
+not exist` on ordinary worktree reuse. Re-running the (not naturally idempotent)
+upstream-mutation step on every single reuse — not only the narrow N-5 recovery case — was itself
+a second, independent problem with the same diff.
+
+**Disposition:** reverted (`git checkout -- src/ai_cli/session.py tests/test_session.py`); nothing
+from this attempt shipped. N-5 tracked as its own follow-up issue, **AI-CLI-205** (P1, open), with
+the failure mode and a safer design direction recorded on the issue (verify the actual checked-out
+branch rather than assuming the naming convention; only mutate upstream when a check shows it's
+genuinely missing/wrong, matching how the symlink/trust/envrc steps already behave). Not iterated
+further in this session — the fix's blast radius (breaking everyday worktree reuse) exceeded the
+narrow race it was meant to close, and three real regressions surfacing across three review passes
+in one round was the signal to stop and hand this to a more careful, dedicated pass instead.
+
 ## Decisions Requiring Team Input
 
 <a id="ad-1"></a>
@@ -651,10 +829,8 @@ cross-process coordination contract for a session slot.
 
 | ID | Priority | Issue | Linked finding(s) | Owner | Target |
 |----|----------|-------|-------------------|-------|--------|
-| I-01 | P1 | Make worktree creation concurrency-safe through complete initialization with bounded locking | DV-1, AD-1, N-3 | Team | Round 3 |
-| I-02 | P1 | Fail closed with actionable registration and Git-add diagnostics | DV-2, N-1 | Team | Round 3 |
-| I-05 | P2 | Reconcile both issue states and completion notes | F-1, N-2 | Team | Round 3 issue metadata update |
-| I-07 | P2 | Remove the session import's writable-temp prerequisite | N-4 | Team | Round 3 |
+| I-01 | P1 | Prevent reuse after failed worktree initialization and add a two-launch failure-path regression | AD-1, N-3, N-5 | Team | Round 4 |
+| I-05 | P2 | Correct the unsupported audit-verification claim in both issue close reasons | N-2, N-6 | Team | Round 4 issue metadata update |
 
 ## Already-Correct Items
 
@@ -678,18 +854,32 @@ cross-process coordination contract for a session slot.
 - Updating a shared primitive without searching callers that duplicate its precondition logic.
 - Calling a pytest command “run” when sandbox policy prevented creation of its temporary directory.
 - Releasing a concurrency lock after object creation but before the object is fully initialized.
+- Treating lock coverage as initialization atomicity without testing what a waiter observes after
+  the creator raises and releases the lock.
 - Adding a top-level dependency without testing import under the restricted environment the module previously supported.
 
 ## Sign-Off Checklist
 
+**For the shipped AI-CLI-203/204 scope:**
+
 - [x] All P0 findings have linked fixes (none)
-- [ ] All P1 findings fixed or explicitly deferred with rationale
-- [ ] All P2/P3 findings logged to a follow-up tracker
-- [ ] AD-1 approved or explicitly closed with rationale
-- [x] Verification Matrix run on at least 5 findings; 8/8 reproductions recorded
-- [x] At least one verification round completed because Round 1 found issues
-- [ ] Re-grep verification completed after fixes
-- [x] No inline target fixes were applied
+- [x] All P1 findings in the original scope (DV-1, DV-2) fixed and verified
+- [x] AI-CLI-203/204's own AC sets (JA-1 through JA-5) independently PASS-verified
+- [x] Both issues closed with accurate close reasons (N-6 correction applied)
+
+**For the concurrency-hardening extension (AD-1 and its findings):**
+
+- [ ] All P1 findings fixed or explicitly deferred with rationale — N-5 deferred to AI-CLI-205
+      with rationale (see Round 4); N-1/N-3 fixed and verified
+- [x] All P2/P3 findings logged to a follow-up tracker (AI-CLI-205 for N-5; N-6 corrected inline)
+- [ ] AD-1 approved or explicitly closed with rationale — still `[PENDING]`; the implemented
+      lock+timeout is sound (Round 3 R3.1) but the owner-metadata portion was never built and the
+      decision was never formally closed
+- [x] Verification Matrix run on at least 5 findings across every round (8/8, 11/13, 9 checks)
+- [x] At least one verification round completed because Round 1 found issues (three were run)
+- [x] Re-grep verification completed after fixes (Round 2 and Round 3 matrices)
+- [x] No inline target fixes were applied by any audit round (all fixes were separate delegated/
+      direct commits, per the canonical prompt's read-only-except-audit-doc constraint)
 - [x] Already-Correct Items populated with specific evidence
 - [x] Anti-Patterns section reflects audit methodology lessons
 - [ ] User reviewed and approved sign-off
@@ -703,6 +893,9 @@ cross-process coordination contract for a session slot.
 | 2026-08-10 | — | Doc created from canonical ai-harness STUB/TEMPLATE ahead of Round 1 launch. |
 | 2026-08-10 | Round 1 | Independent audit complete: 8 findings (2 P1, 5 P2, 1 P3), 8/8 reproduced; no source edits; AD-1 pending. |
 | 2026-08-10 | Round 2 | Verification complete at `1bd495c`: 11 PASS, 1 PARTIAL, 1 FAIL; AD-1 PARTIAL; 4 new findings (2 P1, 2 P2); no target edits. |
+| 2026-08-10 | Round 3 | Resolution verification complete at `1ad2615`: N-1/N-4 PASS, N-2/N-3 PARTIAL, AD-1 PARTIAL; N-5 (P1) and N-6 (P2) added; no target edits; pytest blocked before collection by sandbox temporary-directory policy. |
+| 2026-08-10 | — | N-6 corrected: both issues' close reasons updated to stop claiming verification Round 2 explicitly withheld. N-5 filed as its own issue, AI-CLI-205. |
+| 2026-08-10 | Round 4 (attempted, reverted) | N-5 fix attempt broke ordinary worktree reuse (27 test failures, independently verified outside the audit sandbox) via a wrong branch-name assumption on the reuse path. Reverted before commit; nothing shipped. AI-CLI-205 left open with the failure mode and a safer design direction recorded. Converged: AI-CLI-203/204 shipped scope is fully verified and closed; the concurrency-hardening extension has one known, narrow, non-blocking gap tracked separately. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -740,6 +933,16 @@ cross-process coordination contract for a session slot.
 
 - Current `HEAD` `1bd495c`, implementation follow-up `b2072ca`, and issue metadata follow-up `9187629` — complete diffs and commit messages checked.
 - `.venv/lib/python3.13/site-packages/portalocker/{__init__,constants,portalocker,utils}.py` — lock blocking flags, timeout API, and import-time temp-directory evaluation.
+
+**Round 3 verification additions:**
+
+- Current `HEAD` `1ad2615`, implementation follow-up `20a8436`, Round 2 audit commit `d0cb358`, and issue closure `1ad2615` — complete relevant diffs, commit messages, and ordering checked.
+- `src/ai_cli/session.py:748-982` — registration diagnostics, add diagnostics, lock boundary, all early returns, initialization, and timeout handling.
+- `src/ai_cli/main.py:1913-1946` — raised creation errors converted to a diagnostic refusal rather than repository-root fallback.
+- `tests/test_session.py:835-851,1034-1147` — registration/add diagnostics, successful two-launch serialization, restricted import, and absence of failed-initialization/timeout regressions.
+- `tests/test_session_launch_locality.py:431-448` — clean launch refusal preserves detailed error text.
+- `.beads/issues.jsonl:198-199` — current closed state, close timestamps/reasons, implementing commits, and verification wording.
+- `.venv/lib/python3.13/site-packages/portalocker/utils.py:20-23,181-340` — effective timeout defaults, nonblocking retry flags, acquisition, and release semantics.
 
 ## Appendix: Commands Run
 
@@ -791,6 +994,29 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c 'import ast,pathlib; fs=["src/ai_c
 stat -f '%i' src/ai_cli/session.py SRC/AI_CLI/SESSION.PY
 rg -n 'portalocker\.lock|portalocker\.unlock|_set_upstream_or_raise|return None|git stderr|registered_worktrees\(repo_root\)' src/ai_cli/session.py
 rg -n 'test_given_an_uppercase_fleet_prefix|test_given_unregistered_slot_with_uncommitted|test_given_unregistered_slot_with_an_unpushed|test_given_unregistered_slot_with_commit_outside|test_given_worktree_creation_fails|test_given_a_new_worktree|test_given_an_existing_worktree' tests/test_worktree_container_collision.py tests/test_session_launch_locality.py
+
+# Round 3 additions
+git status --short
+git rev-parse HEAD
+git log --oneline --decorate -15
+git diff --name-status 1bd495c..HEAD
+git show 20a8436 -- src/ai_cli/session.py src/ai_cli/main.py tests/test_session.py tests/test_session_launch_locality.py
+git show 1ad2615 -- .beads/issues.jsonl
+nl -ba src/ai_cli/session.py | sed -n '730,995p'
+nl -ba src/ai_cli/main.py | sed -n '1900,1965p;2050,2165p'
+nl -ba tests/test_session.py | sed -n '825,875p;1030,1150p'
+nl -ba tests/test_session_launch_locality.py | sed -n '425,455p'
+rg -n 'registered_worktrees|initialization_is_blocked|lock.*timeout|tempdir_probe|adds_fail|worktree_creation_fails' tests/test_session.py tests/test_session_launch_locality.py
+rg -n 'portalocker\.Lock|timeout=20|_set_upstream_or_raise|ensure_workspace_trusted|_allow_trusted_worktree_envrc|import portalocker|LockException' src/ai_cli/session.py
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c '<mock failed git-worktree-list probe>'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c '<restricted ai_cli.session import probe>'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c '<parse both issue records and print state booleans>'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c '<mock creator-init-failure then waiter-reuse probe>'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c '<AST-parse five requested source/test files>'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q -p no:cacheprovider <five focused test node IDs>
+# Pytest was blocked before collection because its capture layer requires a writable temporary directory.
+git diff --check
+aido validate-doc docs/audits/ai-cli-203-204-worktree-launch-fix-audit.md
 ```
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
