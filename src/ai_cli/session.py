@@ -726,6 +726,19 @@ def _set_upstream_or_raise(repo_root: Path, branch: str, upstream_branch: str) -
     )
 
 
+def _branch_upstream(worktree_path: Path, branch: str) -> str | None:
+    """Return ``branch``'s configured upstream, if any."""
+    res = subprocess.run(
+        ["git", "-C", str(worktree_path), "for-each-ref", "--format=%(upstream:short)", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    upstream = (res.stdout or "").strip()
+    return upstream if res.returncode == 0 and upstream else None
+
+
 def _unset_upstream(repo_root: Path, branch: str) -> None:
     """Ensure ``branch`` tracks nothing (AI-CLI-193 AC-3).
 
@@ -825,6 +838,51 @@ def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | N
     return None
 
 
+def _initialize_worktree(
+    repo_root: Path,
+    worktree_path: Path,
+    branch: str | None,
+    upstream: str | None,
+    *,
+    reused: bool,
+) -> None:
+    """Finish the idempotent setup required before returning a worktree."""
+    if branch is not None:
+        if reused:
+            configured_upstream = _branch_upstream(worktree_path, branch)
+            if upstream is None:
+                if configured_upstream is not None:
+                    _unset_upstream(repo_root, branch)
+            elif configured_upstream != f"origin/{upstream}":
+                _set_upstream_or_raise(repo_root, branch, upstream)
+        elif upstream is None:
+            print(
+                f"Warning: worktree branch {branch!r} was created with NO upstream — no integration "
+                f"branch could be resolved for {repo_root.name}. `git push` will stop and ask rather "
+                f"than guess. Declare the branch under [worktree_upstream] in config.toml, or push "
+                f"the branch this repository is on and run `git fetch origin`.",
+                file=sys.stderr,
+            )
+            _unset_upstream(repo_root, branch)
+        else:
+            _set_upstream_or_raise(repo_root, branch, upstream)
+
+    # Symlink critical environment files
+    for item in [".venv", ".claude", ".gemini", ".direnv"]:
+        src = repo_root / item
+        dst = worktree_path / item
+        if src.exists() and not dst.exists():
+            dst.symlink_to(src)
+    # Register workspace trust so Claude Code loads the symlinked
+    # .claude/settings.json permissions instead of dropping them with a
+    # "workspace has not been trusted" warning (GH #72896). Worktrees
+    # resolve to the main gitRoot, but register both for safety.
+    from .trust import ensure_workspace_trusted
+
+    ensure_workspace_trusted([repo_root, worktree_path])
+    _allow_trusted_worktree_envrc(repo_root, worktree_path)
+
+
 def create_worktree(
     ai_name: str, *, with_status: bool = False, repo_root: Path | None = None
 ) -> Path | tuple[Path, bool] | None:
@@ -859,7 +917,9 @@ def create_worktree(
             )
             registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
             if registered is not None:
-                _allow_trusted_worktree_envrc(repo_root, registered)
+                branch = _current_branch(registered)
+                _, upstream = _resolve_worktree_target(repo_root) if branch is not None else (None, None)
+                _initialize_worktree(repo_root, registered, branch, upstream, reused=True)
                 result = (registered, False)
                 return result if with_status else registered
 
@@ -915,7 +975,9 @@ def create_worktree(
             registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
             if not created:
                 if registered is not None:
-                    _allow_trusted_worktree_envrc(repo_root, registered)
+                    branch = _current_branch(registered)
+                    _, upstream = _resolve_worktree_target(repo_root) if branch is not None else (None, None)
+                    _initialize_worktree(repo_root, registered, branch, upstream, reused=True)
                     result = (registered, False)
                     return result if with_status else registered
                 raise RuntimeError(
@@ -928,48 +990,7 @@ def create_worktree(
             repair_bare_worktree_config(repo_root)
 
             if worktree_path.is_dir():
-                # Track the repository's integration branch so `git push` ships where the
-                # repository actually integrates and `git pull --rebase` syncs from there
-                # (AI-CLI-193). For a repository on `main` that is `origin/main`, unchanged.
-                #
-                # This must not fail silently (AI-CLI-128): a worktree branch left without
-                # an upstream is one `git push` away from git suggesting
-                # `--set-upstream origin wt-X`, which publishes a same-named remote branch
-                # instead of shipping to the integration branch — the drift that stranded a
-                # session 46 commits behind for months. Retry once, then raise loudly
-                # rather than returning a worktree that looks fine but is one push away
-                # from that state.
-                #
-                # When no integration branch resolves, the worktree is deliberately left
-                # with NO upstream rather than pointed at `origin/main` (AC-3): a wrong
-                # upstream sends routine work at a branch that may be protected by
-                # convention, while a missing one makes the first push stop and ask.
-                if upstream is None:
-                    print(
-                        f"Warning: worktree branch {branch!r} was created with NO upstream — no integration "
-                        f"branch could be resolved for {repo_root.name}. `git push` will stop and ask rather "
-                        f"than guess. Declare the branch under [worktree_upstream] in config.toml, or push "
-                        f"the branch this repository is on and run `git fetch origin`.",
-                        file=sys.stderr,
-                    )
-                    _unset_upstream(repo_root, branch)
-                else:
-                    _set_upstream_or_raise(repo_root, branch, upstream)
-
-                # Symlink critical environment files
-                for item in [".venv", ".claude", ".gemini", ".direnv"]:
-                    src = repo_root / item
-                    dst = worktree_path / item
-                    if src.exists() and not dst.exists():
-                        dst.symlink_to(src)
-                # Register workspace trust so Claude Code loads the symlinked
-                # .claude/settings.json permissions instead of dropping them with a
-                # "workspace has not been trusted" warning (GH #72896). Worktrees
-                # resolve to the main gitRoot, but register both for safety.
-                from .trust import ensure_workspace_trusted
-
-                ensure_workspace_trusted([repo_root, worktree_path])
-                _allow_trusted_worktree_envrc(repo_root, worktree_path)
+                _initialize_worktree(repo_root, worktree_path, branch, upstream, reused=False)
                 result = (worktree_path, True)
                 return result if with_status else worktree_path
             raise RuntimeError(

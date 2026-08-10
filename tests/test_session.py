@@ -1117,6 +1117,88 @@ class TestCreateWorktreeEdgeCases2:
 
         assert results == {"first": (wt_dir, True), "second": (wt_dir, False)}
 
+    def test_given_creator_initialization_failure_when_waiter_reuses_then_it_completes_setup(self, tmp_path):
+        """A registered worktree is initialized by the waiter after its creator fails."""
+        wt_dir = tmp_path / ".worktrees" / "session-1"
+        (tmp_path / ".venv").mkdir()
+        slot_lock = threading.Lock()
+        creator_initializing = threading.Event()
+        release_creator_failure = threading.Event()
+        waiter_finished = threading.Event()
+        results = {}
+        calls = []
+
+        class SlotLock:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                slot_lock.acquire()
+                return self
+
+            def __exit__(self, *_args):
+                slot_lock.release()
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return MagicMock(returncode=0, stdout=_porcelain(wt_dir) if wt_dir.exists() else "")
+            if cmd[:3] == ["git", "worktree", "add"]:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            if cmd[:5] == ["git", "-C", str(wt_dir), "symbolic-ref", "--quiet"]:
+                return MagicMock(returncode=0, stdout="recovered-branch\n", stderr="")
+            if cmd[:5] == ["git", "-C", str(wt_dir), "for-each-ref", "--format=%(upstream:short)"]:
+                return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def fail_creator_upstream(_repo_root, branch, _upstream):
+            assert branch == "wt-session-1"
+            creator_initializing.set()
+            assert release_creator_failure.wait(timeout=2)
+            raise RuntimeError("creator initialization failed")
+
+        def launch(name):
+            try:
+                results[name] = create_worktree("session-1", with_status=True)
+            except RuntimeError as exc:
+                results[name] = str(exc)
+            if name == "waiter":
+                waiter_finished.set()
+
+        with (
+            patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
+            _stub_worktree_base(),
+            patch("ai_cli.session._set_upstream_or_raise", side_effect=fail_creator_upstream) as set_upstream,
+            patch("ai_cli.session._allow_trusted_worktree_envrc") as allow_envrc,
+            patch("ai_cli.trust.ensure_workspace_trusted") as ensure_trusted,
+            patch("portalocker.Lock", SlotLock),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            creator = threading.Thread(target=launch, args=("creator",))
+            creator.start()
+            assert creator_initializing.wait(timeout=2)
+            waiter = threading.Thread(target=launch, args=("waiter",))
+            waiter.start()
+            assert not waiter_finished.wait(timeout=0.1)
+            release_creator_failure.set()
+            creator.join(timeout=2)
+            waiter.join(timeout=2)
+
+        assert results["creator"] == "creator initialization failed"
+        assert results["waiter"] == (wt_dir, False)
+        assert (wt_dir / ".venv").is_symlink()
+        ensure_trusted.assert_called_once_with([tmp_path, wt_dir])
+        allow_envrc.assert_called_once_with(tmp_path, wt_dir)
+        assert set_upstream.call_count == 1
+        assert [
+            "git",
+            "-C",
+            str(wt_dir),
+            "for-each-ref",
+            "--format=%(upstream:short)",
+            "refs/heads/recovered-branch",
+        ] in calls
+
     def test_given_tempdir_probe_fails_when_session_imported_then_it_succeeds(self):
         script = """
 import tempfile
