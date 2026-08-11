@@ -96,6 +96,15 @@ def test_build_session_name_with_new_full_name_and_index_when_called_then_strips
         assert ai_name == "sw-1"
 
 
+@pytest.mark.parametrize("name", ["c-app-1", "c-r-app-1", "app-1"])
+def test_given_uppercase_prefix_when_canonical_full_name_is_reused_then_it_round_trips(name):
+    with patch("ai_cli.session._matching_tmux_sessions", return_value=[]):
+        session_id, ai_name = build_session_name("c", "APP", name)
+
+    assert session_id == "c-app-1"
+    assert ai_name == "app-1"
+
+
 def test_build_session_name_with_name_when_no_sessions_then_uses_name_index_1():
     with patch("subprocess.run") as mock_run:
         mock_res = MagicMock()
@@ -106,6 +115,14 @@ def test_build_session_name_with_name_when_no_sessions_then_uses_name_index_1():
 
         assert session_id == "c-sw-planning-1"
         assert ai_name == "sw-planning-1"
+
+
+def test_given_uppercase_prefix_and_requested_name_when_new_session_is_built_then_outputs_are_lowercase():
+    with patch("ai_cli.session._matching_tmux_sessions", return_value=[]):
+        session_id, ai_name = build_session_name("c", "APP", "Planning")
+
+    assert session_id == "c-app-planning-1"
+    assert ai_name == "app-planning-1"
 
 
 def test_build_session_name_with_double_hyphens_when_called_then_cleans_up():
@@ -755,6 +772,14 @@ class TestResolveSession:
             result = resolve_session("c-sw-", "99")
         assert result == ""
 
+    def test_given_lowercase_existing_session_when_prefix_is_uppercase_then_returns_actual_session_name(self):
+        has_session = MagicMock(returncode=1, stdout="")
+        list_sessions = MagicMock(returncode=0, stdout="c-app-1\n")
+        with patch("subprocess.run", side_effect=[has_session, list_sessions]):
+            result = resolve_session("c-APP-", "1")
+
+        assert result == "c-app-1"
+
 
 class TestResolveSessionEdgeCases:
     def test_resolve_session_when_no_name_and_current_session_matches_then_returns_it(self):
@@ -771,6 +796,13 @@ class TestResolveSessionEdgeCases:
         with patch("subprocess.run", side_effect=mock_run):
             result = resolve_session("c-sw-", "")
         assert result == "c-sw-5"
+
+    def test_given_lowercase_current_session_when_prefix_is_uppercase_then_returns_actual_session_name(self):
+        current_session = MagicMock(returncode=0, stdout="c-app-5")
+        with patch("subprocess.run", return_value=current_session):
+            result = resolve_session("c-APP-", "")
+
+        assert result == "c-app-5"
 
 
 class TestResolveSessionFallback:
@@ -1414,6 +1446,13 @@ class TestFindRecentSession:
         with patch("subprocess.run", return_value=m):
             result = find_recent_session("c-sw-")
         assert result == "c-sw-2"
+
+    def test_given_lowercase_session_when_prefix_is_uppercase_then_returns_actual_session_name(self):
+        m = MagicMock(returncode=0, stdout="c-app-1 100\n")
+        with patch("subprocess.run", return_value=m):
+            result = find_recent_session("c-APP-")
+
+        assert result == "c-app-1"
 
     def test_find_recent_session_when_bad_timestamp_then_skips(self):
         """Covers lines 284-285: ValueError parsing timestamp."""

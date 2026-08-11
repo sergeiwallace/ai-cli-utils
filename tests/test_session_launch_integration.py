@@ -3,10 +3,12 @@
 These tests run against a real ``tmux`` server on an isolated socket so we
 exercise actual tmux ``new-session`` / ``has-session`` / ``kill-session``
 behavior — not a mock. Everything downstream of tmux (the engine binary,
-worktree creation, registry checks, etc.) is still mocked.
+is still mocked except where a test explicitly exercises production worktree
+creation or registry resolution.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -186,6 +188,37 @@ def _base_launch_kwargs(name: str = "1") -> dict:
     }
 
 
+@pytest.fixture
+def fleet_registered_repo(tmp_path, monkeypatch):
+    """Create a clone and resolve its raw uppercase prefix through the fleet registry."""
+
+    def git(*args, cwd):
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True, text=True)
+
+    remote = tmp_path / "origin.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git("init", "-q", "-b", "main", cwd=seed)
+    git("config", "user.email", "test@example.com", cwd=seed)
+    git("config", "user.name", "user", cwd=seed)
+    (seed / "README.md").write_text("base\n")
+    git("add", "README.md", cwd=seed)
+    git("commit", "-q", "-m", "initial", cwd=seed)
+    git("push", "-q", str(remote), "main", cwd=seed)
+
+    repo = tmp_path / "myproject"
+    git("clone", "-q", str(remote), str(repo), cwd=tmp_path)
+    registry = tmp_path / "registry" / "config" / "fleet-projects.toml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text('[[projects]]\nname = "myproject"\ntask_prefix = "APP"\ntype = "tool"\nactive = true\n')
+    monkeypatch.setattr("ai_cli.config._get_projects_dir", lambda: tmp_path)
+    monkeypatch.setattr("ai_cli.config._get_project_registry_path", lambda: None)
+    monkeypatch.setattr("ai_cli.config.load_config", dict)
+    monkeypatch.setattr("ai_cli.session._get_projects_dir", lambda: tmp_path)
+    return repo
+
+
 def test_given_new_session_when_launched_then_tmux_session_created(patched_subprocess):
     """A call to ``_do_session_launch`` must create a tmux session on the server."""
     server = patched_subprocess
@@ -309,6 +342,109 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
     assert emit_profile.call_args.args[:3] == ("myproject-1", "c", "c-myproject-1")
     session_names = [s.name for s in server.sessions]
     assert "c-myproject-1" in session_names
+
+
+def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifacts_are_lowercase(
+    tmux_server, fleet_registered_repo, monkeypatch, tmp_path
+):
+    """Exercise production registry resolution and worktree creation for an empty slot."""
+    repo = fleet_registered_repo
+    monkeypatch.chdir(repo)
+    real_run = subprocess.run
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "tmux":
+            subcommand = cmd[1]
+            if subcommand == "list-sessions":
+                names = [session.name for session in tmux_server.sessions]
+                formatter = cmd[cmd.index("-F") + 1]
+                output = "\n".join(f"{name} 0" if "session_activity" in formatter else name for name in names)
+                return type("TmuxResult", (), {"returncode": 0, "stdout": output, "stderr": ""})()
+            if subcommand == "has-session":
+                target = cmd[cmd.index("-t") + 1]
+                exists = any(session.name == target for session in tmux_server.sessions)
+                return type("TmuxResult", (), {"returncode": 0 if exists else 1, "stdout": "", "stderr": ""})()
+            if subcommand == "new-session":
+                name = cmd[cmd.index("-s") + 1]
+                tmux_server.new_session(session_name=name, detach=True, window_command="sleep 30")
+            return _Result()
+        return real_run(cmd, *args, **kwargs)
+
+    with (
+        patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+        patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+        patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path / "state"),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.main.repair_bare_worktree_config"),
+        patch("ai_cli.session.repair_bare_worktree_config"),
+        patch("ai_cli.main._has_conflict_or_unknown", return_value=False),
+        patch("ai_cli.main.pull_rebase_autostash", return_value=(MagicMock(returncode=0), None)),
+        patch("ai_cli.main.detect_missing_tracked_symlinks", return_value=[]),
+        patch("ai_cli.main.detect_phantom_deleted_files", return_value=[]),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup") as emit_profile,
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        kwargs = _base_launch_kwargs(name="1")
+        kwargs.update(
+            project_prefix_override="",
+            no_worktree=False,
+            config={"worktree": {"enabled": True}},
+        )
+        with pytest.raises(SystemExit):
+            _do_session_launch(**kwargs)
+
+    assert (repo / ".worktrees" / "app-1").is_dir()
+    assert [session.name for session in tmux_server.sessions] == ["c-app-1"]
+    assert emit_profile.call_args.args[:3] == ("app-1", "c", "c-app-1")
+
+
+def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profile_name_is_lowercase_and_prefix_is_quoted():
+    cfg = {"remote": {"host": "example.com", "transport": "ssh"}}
+    with (
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
+        patch("ai_cli.main._session._resolve_is_remote", return_value=False),
+        patch("ai_cli.main._config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.main._config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.main._iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.main._iterm2._emit_iterm2_profile_setup") as emit_profile,
+        patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as execute,
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(
+                engine="c",
+                name="Planning",
+                resume=False,
+                once=False,
+                bare=False,
+                notify=False,
+                sandbox=True,
+                no_worktree=False,
+                remote=True,
+                project="",
+                is_remote=False,
+                project_prefix_override="APP; printf INJECTED",
+                extra_args=[],
+                config=cfg,
+            )
+
+    assert emit_profile.call_args.args[:3] == (
+        "c-r-app; printf injected-planning",
+        "c",
+        "c-r-app; printf injected-planning",
+    )
+    remote_exec = execute.call_args.args[1][-1]
+    assert shlex.quote("APP; printf INJECTED") in remote_exec
 
 
 def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propagated(

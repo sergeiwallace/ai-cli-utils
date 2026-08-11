@@ -416,7 +416,7 @@ def find_recent_session(prefix: str) -> str:
         if not line:
             continue
         parts = line.split()
-        if len(parts) >= 2 and parts[0].startswith(prefix):
+        if len(parts) >= 2 and parts[0].casefold().startswith(prefix.casefold()):
             with contextlib.suppress(ValueError):
                 sessions.append((parts[0], int(parts[1])))
     if not sessions:
@@ -537,12 +537,24 @@ def resolve_session(prefix: str, name: str) -> str:
             ["tmux", "display-message", "-p", "#{session_name}"], capture_output=True, text=True, check=False
         )
         current_session = res.stdout.strip() if res.returncode == 0 else ""
-        if current_session and current_session.startswith(prefix):
+        if current_session and current_session.casefold().startswith(prefix.casefold()):
             return current_session
         return find_recent_session(prefix)
     res = subprocess.run(["tmux", "has-session", "-t", f"{prefix}{name}"], capture_output=True, check=False)
     if res.returncode == 0:
         return f"{prefix}{name}"
+    if name.isdigit():
+        match = re.fullmatch(r"([cg])(?:-r)?-(.+)-", prefix)
+        if match:
+            engine_short, project_prefix = match.groups()
+            expected_prefix = prefix.casefold()
+            candidates = [
+                session_name
+                for session_name in _matching_tmux_sessions(engine_short, project_prefix, name)
+                if session_name.casefold().startswith(expected_prefix)
+            ]
+            if len(candidates) == 1:
+                return candidates[0]
     return find_recent_session(f"{prefix}{name}-")
 
 
@@ -562,6 +574,12 @@ def _resolve_is_remote(is_remote_flag: bool) -> bool:
     name says nothing about who initiated the session.
     """
     return is_remote_flag
+
+
+def _new_session_display_name(engine_short: str, project_prefix: str, name: str, is_remote: bool) -> str:
+    """Build a lowercase tmux name for a newly allocated session."""
+    remote_seg = "-r" if is_remote else ""
+    return f"{engine_short}{remote_seg}-{project_prefix.lower()}-{name.lower()}"
 
 
 def build_session_name(
@@ -585,9 +603,8 @@ def build_session_name(
     though no tmux session will exist.
     """
     engine_short = "c" if engine_type == "c" else "g"
-    remote_seg = "-r" if is_remote else ""
     naming_prefix = project_prefix.lower()
-    tmux_base = f"{engine_short}{remote_seg}-{naming_prefix}-"
+    tmux_base = f"{engine_short}{'-r' if is_remote else ''}-{naming_prefix}-"
     ai_base = f"{naming_prefix}-"
 
     clean_name = name
@@ -601,12 +618,12 @@ def build_session_name(
         f"{project_prefix}-",
     ]
     for p in sorted(prefixes_to_strip, key=len, reverse=True):
-        if clean_name.startswith(p):
+        if clean_name.casefold().startswith(p.casefold()):
             clean_name = clean_name[len(p) :]
             break
     clean_name = re.sub(r"[^a-zA-Z0-9_-]", "-", clean_name)
     clean_name = re.sub(r"-+", "-", clean_name)
-    clean_name = clean_name.strip("-")
+    clean_name = clean_name.strip("-").lower()
 
     if clean_name.isdigit():
         existing = (
@@ -616,14 +633,14 @@ def build_session_name(
         )
         if existing:
             return existing
-        return f"{tmux_base}{clean_name}", f"{ai_base}{clean_name}"
+        return _new_session_display_name(engine_short, project_prefix, clean_name, is_remote), f"{ai_base}{clean_name}"
     if not clean_name:
         idx = find_next_index(tmux_base, use_tmux=use_tmux)
-        return f"{tmux_base}{idx}", f"{ai_base}{idx}"
+        return _new_session_display_name(engine_short, project_prefix, str(idx), is_remote), f"{ai_base}{idx}"
     tmux_named = f"{tmux_base}{clean_name}-"
     ai_named = f"{ai_base}{clean_name}-"
     idx = find_next_index(tmux_named, use_tmux=use_tmux)
-    return f"{tmux_named}{idx}", f"{ai_named}{idx}"
+    return _new_session_display_name(engine_short, project_prefix, f"{clean_name}-{idx}", is_remote), f"{ai_named}{idx}"
 
 
 # --- Git Worktree Logic ---

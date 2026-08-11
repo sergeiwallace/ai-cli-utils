@@ -381,7 +381,7 @@ class TestEnsureMachineProfileRegistered:
 
 
 class TestProjectPrefixRegistry:
-    def test_given_registered_repo_when_resolving_then_returns_same_prefix_for_worktree_and_titles(self, tmp_path):
+    def test_given_registered_repo_when_resolving_then_returns_raw_registered_prefix(self, tmp_path):
         repo = tmp_path / "myproject"
         (repo / ".git").mkdir(parents=True)
         config_dir = tmp_path / "config"

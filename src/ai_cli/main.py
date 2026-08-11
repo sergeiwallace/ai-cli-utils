@@ -1789,7 +1789,7 @@ def _do_session_launch(
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (zsh -l -c) that does
         # not source ~/.zshrc where the uv env PATH setup typically lives.
-        remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {remote_prefix} --project {shlex.quote(remote_project)}'
+        remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
         if resume:
             remote_cmd += " --resume"
         if name:
@@ -1798,7 +1798,7 @@ def _do_session_launch(
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
         _r_engine_short = "c" if engine == "c" else "g"
-        _r_ai_name = f"{_r_engine_short}-r-{remote_prefix}-{name or '1'}"
+        _r_ai_name = _session._new_session_display_name(_r_engine_short, remote_prefix, name or "1", True)
         _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
         _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 

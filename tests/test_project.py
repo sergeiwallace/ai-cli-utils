@@ -78,7 +78,7 @@ def test_get_current_project_name_when_in_worktree_then_returns_project_name():
 
 
 def test_get_current_project_name_when_worktree_nested_then_returns_project_name():
-    with patch("pathlib.Path.cwd", return_value=Path("/Users/bob/Projects/myapp/.worktrees/feature-1")):
+    with patch("pathlib.Path.cwd", return_value=Path("/home/user/projects/myapp/.worktrees/feature-1")):
         assert get_current_project_name() == "myapp"
 
 
