@@ -1501,7 +1501,7 @@ class TestPrefixFromSessionName:
 
 
 class TestGetProjectPrefix:
-    def test_when_registered_worktree_then_uses_prefix_for_session_title_and_worktree_name(self, tmp_path):
+    def test_given_uppercase_registered_prefix_when_naming_new_session_then_outputs_are_lowercase(self, tmp_path):
         from ai_cli.config import register_project
 
         repo = tmp_path / "myproject"
@@ -1512,8 +1512,9 @@ class TestGetProjectPrefix:
                 with patch("subprocess.run", return_value=MagicMock(returncode=1)):
                     prefix = get_project_prefix()
                     session_id, ai_name = build_session_name("c", prefix, "")
-        assert session_id == "c-PROJECT-1"
-        assert ai_name == "PROJECT-1"
+        assert prefix == "PROJECT"
+        assert session_id == "c-project-1"
+        assert ai_name == "project-1"
 
     def test_when_registry_resolves_then_uses_registered_prefix(self):
         with patch("ai_cli.session.resolve_project_prefix", return_value="PROJECT"):

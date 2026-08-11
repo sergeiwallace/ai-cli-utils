@@ -237,9 +237,10 @@ def _prefix_from_session_name(session_name: str) -> str:
 def get_project_prefix() -> str:
     """Resolve the current repository's registered task prefix.
 
-    Worktree names and custom session titles are both built from this value, so
-    an unregistered repository must fail instead of inventing a directory-name
-    prefix.
+    This preserves the registry's canonical casing for task-ID consumers.
+    Worktree names and custom session titles are normalized when session names
+    are built, while an unregistered repository must still fail instead of
+    inventing a directory-name prefix.
     """
     return resolve_project_prefix()
 
@@ -585,8 +586,9 @@ def build_session_name(
     """
     engine_short = "c" if engine_type == "c" else "g"
     remote_seg = "-r" if is_remote else ""
-    tmux_base = f"{engine_short}{remote_seg}-{project_prefix}-"
-    ai_base = f"{project_prefix}-"
+    naming_prefix = project_prefix.lower()
+    tmux_base = f"{engine_short}{remote_seg}-{naming_prefix}-"
+    ai_base = f"{naming_prefix}-"
 
     clean_name = name
     prefixes_to_strip = [

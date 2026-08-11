@@ -10,7 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import libtmux
 import pytest
@@ -272,30 +272,43 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
     )
 
 
-def test_given_registered_prefix_when_session_started_then_session_uses_new_prefix(
-    patched_subprocess,
+def test_given_uppercase_registered_prefix_when_new_session_launched_then_outputs_are_lowercase(
+    patched_subprocess, tmp_path
 ):
-    """A resolved registry prefix must be used verbatim in the session name."""
+    """A new session uses lowercase names while retaining the registry's raw prefix."""
     server = patched_subprocess
+    worktree = tmp_path / ".worktrees" / "myproject-1"
 
     with (
         patch("ai_cli.session.cleanup_stale_sessions"),
-        patch("ai_cli.session.resolve_project_prefix", return_value="newpfx"),
+        patch("ai_cli.session.resolve_project_prefix", return_value="MYPROJECT"),
         patch("ai_cli.config.get_session_map", return_value={}),
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
-        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup") as emit_profile,
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
         patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
+        patch("ai_cli.session.create_worktree", return_value=(worktree, True)) as create_worktree,
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.main.repair_bare_worktree_config"),
+        patch("ai_cli.main._has_conflict_or_unknown", return_value=False),
+        patch("ai_cli.main.pull_rebase_autostash", return_value=(MagicMock(returncode=0), None)),
+        patch("ai_cli.main.detect_missing_tracked_symlinks", return_value=[]),
+        patch("ai_cli.main.detect_phantom_deleted_files", return_value=[]),
     ):
         kwargs = _base_launch_kwargs(name="1")
         kwargs["project_prefix_override"] = ""
+        kwargs["no_worktree"] = False
+        kwargs["config"] = {"worktree": {"enabled": True}}
         with pytest.raises(SystemExit):
             _do_session_launch(**kwargs)
 
+    create_worktree.assert_called_once_with("myproject-1", with_status=True)
+    assert emit_profile.call_args.args[:3] == ("myproject-1", "c", "c-myproject-1")
     session_names = [s.name for s in server.sessions]
-    assert any(n.startswith("c-newpfx-") for n in session_names), f"expected c-newpfx-* session in {session_names}"
+    assert "c-myproject-1" in session_names
 
 
 def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propagated(
