@@ -3,8 +3,9 @@
 These tests run against a real ``tmux`` server on an isolated socket so we
 exercise actual tmux ``new-session`` / ``has-session`` / ``kill-session``
 behavior — not a mock. Everything downstream of tmux (the engine binary,
-is still mocked except where a test explicitly exercises production worktree
-creation or registry resolution.
+worktree creation, registry checks, etc.) is still mocked, except where a
+test explicitly exercises production worktree creation or registry
+resolution.
 """
 
 import os

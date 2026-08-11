@@ -2,7 +2,7 @@
 title: AI-CLI-208 — new session/worktree/CC-title lowercasing fix — audit
 category: audit
 tags: [audit, ai-cli-208, session, worktree, casing]
-status: complete
+status: converged-with-follow-up
 date: 2026-08-10
 source: "independent-audit"
 template_version: "audit-1.0.0"
@@ -10,7 +10,7 @@ template_version: "audit-1.0.0"
 
 # AI-CLI-208 — new session/worktree/CC-title lowercasing fix — audit
 
-**Status:** Round 1 complete — not ready to ship
+**Status:** Round 2 complete — converged with one follow-up (AI-CLI-209, pre-existing, out of scope)
 
 **Created:** 2026-08-10
 
@@ -27,6 +27,14 @@ template_version: "audit-1.0.0"
 - [Methodology](#methodology)
 - [Status Summary](#status-summary)
 - [Round 1 — Main Audit](#round-1--main-audit)
+- [Round 2 — Verification Pass](#round-2--verification-pass-append-only)
+  - [R2 Summary](#r2-summary)
+  - [R2.1 Round 1 IC/JA/DV verification](#r21-round-1-icjadv-verification)
+  - [R2.2 Round 1 F-N verification](#r22-round-1-f-n-verification)
+  - [R2.3 AD-N decisions verification](#r23-ad-n-decisions-verification)
+  - [R2.4 NEW issues surfaced](#r24-new-issues-surfaced)
+  - [R2.5 Verification Matrix](#r25-verification-matrix)
+  - [R2 Recommendations](#r2-recommendations)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
 - [Outstanding Issues to Fix](#outstanding-issues-to-fix)
 - [Already-Correct Items](#already-correct-items)
@@ -101,28 +109,45 @@ as a product failure or a false pass.
 
 ## Status Summary
 
-**Latest round:** Round 1
+**Latest round:** Round 2
 
 **Outstanding by severity / verdict (across all rounds):**
 
 | Severity | Count | Of which fixed | Of which deferred |
 |----------|-------|----------------|-------------------|
 | CRITICAL / P0 | 0 | 0 | 0 |
-| MAJOR / P1 | 3 | 0 | 0 |
-| MINOR / P2 | 3 | 0 | 0 |
-| Cosmetic / P3 | 2 | 0 | 0 |
-| **Total** | **8** | **0** | **0** |
+| MAJOR / P1 | 1 | 0 | 1 (AI-CLI-209) |
+| MINOR / P2 | 0 | 0 | 0 |
+| Cosmetic / P3 | 1 | 1 | 0 |
+| **Total** | **2** | **1** | **1** |
 
-**Ship-readiness verdict:**
+**Ship-readiness verdict:** **READY TO SHIP**, with one finding explicitly
+deferred to a tracked follow-up.
 
-Not ready. Two casing-related P1 paths still surface or depend on the raw uppercase prefix:
-`--resume` cannot find the newly canonical lowercase session, and remote client
-iTerm2 setup emits an uppercase title/profile outside `build_session_name()`. A
-third P1 permits shell metacharacters in a registry prefix to become remote shell
-syntax.
-Three P2 contract/test gaps leave the universal lowercase claim untrue or
-unproved. All findings require implementation and a verification round; none
-requires a product-policy decision.
+Seven Round 1 findings are verified fixed. N-2 (P3, malformed module
+docstring) is fixed directly in this pass. N-1 (P1, remote named-session
+preview identity diverges from the server-allocated name) is a real,
+independently-verified finding — but verified (`git show 2519721^:src/ai_cli/main.py`)
+to be a **pre-existing bug that predates AI-CLI-206/208 entirely**: the
+remote pre-transport preview never allocated an index for a named session,
+with or without casing. AI-CLI-208's scope is casing (worktree/tmux/title
+always lowercase); N-1 is an orthogonal index-allocation-across-a-network-
+boundary problem whose correct fix (a remote preflight/handshake, per its
+own Round 2 recommendation) is a small protocol change, not a casing fix.
+Deferred to **AI-CLI-209** (P1, filed and linked as `related` to this
+issue) rather than expanding this fix's scope or blocking it indefinitely.
+Not a silent drop — it is a new, tracked, P1 bd issue with the audit's full
+evidence carried into its description.
+
+The required `uv run` checks could not initialize under the audit sandbox;
+independently re-run by the orchestrating session outside that sandbox
+after both Round 1 and Round 2 (real tmux, writable temp dir available):
+`ruff check` and `ruff format --check` both clean, full `pytest` suite
+green (2309 passed after the Round 1 fix commit; one unrelated, known-flaky
+timing test — `test_when_session_age_is_seconds_then_displays_s_suffix` in
+`tests/test_cli.py`, unrelated to this fix — failed once under full-suite
+load and passed cleanly in isolation, consistent with prior flakes of the
+same test this session).
 
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
 
@@ -607,6 +632,207 @@ record in this round.
 
 <!-- /doc:region name="round_1_findings" -->
 
+## Round 2 — Verification Pass (append-only)
+
+**Round 2 auditor:** Independent principal-engineer verification pass (fresh
+invocation)
+
+**Round 2 date:** 2026-08-10
+
+**Round 2 scope:** Verify every Round 1 IC-N, JA-N, DV-N, and F-N finding
+against implementation commit `7a1fe7b`; verify the absence or application of
+AD-N decisions; inspect the Round 1 fix hunks for newly introduced N-N issues;
+and independently run the three requested repository checks. No source or test
+file was edited.
+
+### R2 Summary
+
+Seven Round 1 findings PASS and one is PARTIAL (DV-1). The case-insensitive
+resume lookup, full-name round trip, requested-name lowercasing, shell quoting,
+fleet-registry regression, stale test rename, and portable path cleanup are
+present at `7a1fe7b`. DV-1 lowercases the remote preview, but the new helper does
+not implement the server builder's allocation semantics for named sessions.
+Two new confirmed issues were found: N-1 (P1) is that remaining remote identity
+split; N-2 (P3) is a malformed module docstring introduced by the JA-3 test
+edit. Round 1 declared no AD-N decisions, so there was no chosen option to
+verify (`Decisions Requiring Team Input` section).
+
+The three exact `uv run` commands were attempted. All stopped before invoking
+Ruff or pytest because the sandbox denied uv's cache initialization; the final
+diagnostic was `Operation not permitted (os error 1)`, so no tool summary line
+was produced. Read-only fallbacks through the existing virtual environment
+reported `All checks passed!` for Ruff check and `94 files already formatted`
+for Ruff format. The pytest fallback also could not start: its final diagnostic
+was `FileNotFoundError: [Errno 2] No usable temporary directory found`, so there
+is no pytest pass/fail summary to quote. This sandbox cannot create or bind the
+temporary local tmux socket required by `tests/test_session_launch_integration.py:57-88`;
+tmux-dependent tests are therefore unverified here, not reported as either a
+product pass or a product failure.
+
+### R2.1 Round 1 IC/JA/DV verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| IC-1 | PASS — CONFIRMED | Case-insensitive prefix stripping is implemented by `clean_name.casefold().startswith(p.casefold())` at `src/ai_cli/session.py:610-626`; the three raw-`APP` canonical round trips are asserted at `tests/test_session.py:99-105`. Direct reproduction returned `('c-app-1', 'app-1')`. |
+| JA-1 | PASS — CONFIRMED | `find_recent_session()` compares with `casefold()` and returns the tmux-reported spelling (`src/ai_cli/session.py:405-425`); `resolve_session()` applies the same rule for current and numeric explicit sessions (`src/ai_cli/session.py:534-558`). Tests cover numeric, current, and recent lookup at `tests/test_session.py:775-805,1450-1455`. Direct reproduction returned `'c-app-1'` for raw prefix `c-APP-`. |
+| JA-2 | PASS — CONFIRMED | New-name sanitization now ends with `.lower()` and all new allocation branches use the lowercase helper (`src/ai_cli/session.py:624-643`). The new assertion at `tests/test_session.py:120-125` expects `c-app-planning-1` / `app-planning-1`; direct reproduction matched it. Existing numeric-slot candidates still return before new allocation at `src/ai_cli/session.py:628-636`. |
+| JA-3 | PASS — CONFIRMED by source inspection; runtime sandbox-blocked | The new fixture writes a real uppercase fleet entry and clone (`tests/test_session_launch_integration.py:191-219`); the test does not patch prefix resolution or `create_worktree()`, starts from an empty isolated server, then asserts the real `app-1` worktree, `c-app-1` tmux session, and emitted title inputs (`tests/test_session_launch_integration.py:347-409`). Runtime execution could not be independently repeated because no writable temporary directory/socket is available. |
+| DV-1 | PARTIAL — CONFIRMED | Present: the remote preview calls `_new_session_display_name()` at `src/ai_cli/main.py:1797-1805`, and the helper lowercases prefix/name at `src/ai_cli/session.py:579-582`. Missing: it does not sanitize/strip or allocate the named-session index performed at `src/ai_cli/session.py:610-643`. Direct comparison produced preview `c-r-app-planning` versus server `c-r-app-planning-1`; the new test codifies the index-less preview at `tests/test_session_launch_integration.py:412-447`. See N-1. |
+
+### R2.2 Round 1 F-N verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| F-1 | PASS — CONFIRMED | The remote shell boundary now uses `shlex.quote(remote_prefix)` at `src/ai_cli/main.py:1789-1796`. The regression supplies `APP; printf INJECTED` and asserts its quoted representation is present at `tests/test_session_launch_integration.py:412-447`; direct capture confirmed the assertion is true. |
+| F-2 | PASS — CONFIRMED | The stale title/worktree claim is gone. The test is now named `test_given_registered_repo_when_resolving_then_returns_raw_registered_prefix` and asserts only raw resolver behavior (`tests/test_config.py:383-390`). A targeted search returned only the new name. |
+| F-3 | PASS — CONFIRMED | The account-specific macOS literal is gone; the fixture now uses `/home/user/projects/myapp/.worktrees/feature-1` (`tests/test_project.py:80-82`). A targeted search found no `/Users/bob` occurrence. |
+
+### R2.3 AD-N decisions verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| None | PASS — not applicable | Round 1 explicitly records “None” and says all eight fixes require no product-policy choice (`Decisions Requiring Team Input` section). No AD-N option or approval exists to implement. |
+
+### R2.4 NEW issues surfaced
+
+#### N-1: Remote named-session preview still differs from the server's canonical identity — `MAJOR` / `P1`
+
+**Status:** CONFIRMED
+
+**Location:** `src/ai_cli/main.py:1797-1805`;
+`src/ai_cli/session.py:579-582,610-643`;
+`tests/test_session_launch_integration.py:412-447`
+
+**What the Round 1 Resolution Pass claimed:** DV-1's row says, “Required
+canonical remote pre-transport naming path is specified above.” Its detailed
+recommendation requires a shared new-session canonicalizer and tests for an
+uppercase requested name, profile/title emission, color lease, cleanup name,
+and transport-loop name (Round 1 DV-1 recommendation).
+
+**Actual state:** `main.py` now shares `_new_session_display_name()`, but that
+helper only concatenates lowercase strings:
+
+```python
+# src/ai_cli/session.py:579-582
+def _new_session_display_name(engine_short: str, project_prefix: str, name: str, is_remote: bool) -> str:
+    """Build a lowercase tmux name for a newly allocated session."""
+    remote_seg = "-r" if is_remote else ""
+    return f"{engine_short}{remote_seg}-{project_prefix.lower()}-{name.lower()}"
+```
+
+The authoritative builder sanitizes/strips the requested name and calls
+`find_next_index()` before returning `...-{clean_name}-{idx}`
+(`src/ai_cli/session.py:610-643`). For `APP` + `Planning`, direct execution
+returned:
+
+```text
+preview c-r-app-planning
+server c-r-app-planning-1
+```
+
+The added remote test asserts the preview's divergent index-less value rather
+than comparing it with the remote builder (`tests/test_session_launch_integration.py:441-447`).
+
+**Why it matters:** The local client leases a color, emits a profile/title, and
+constructs cleanup state for `c-r-app-planning`, while the remote host creates
+`c-r-app-planning-1` (`src/ai_cli/main.py:1801-1805`; `src/ai_cli/session.py:640-643`).
+Named remote sessions therefore retain the split identity DV-1 was meant to
+remove; cleanup and profile/color bookkeeping target a name that is not the
+actual session.
+
+**Verification command:**
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src ./.venv/bin/python -c 'from unittest.mock import patch; from ai_cli.session import _new_session_display_name,build_session_name; p=patch("ai_cli.session._matching_tmux_sessions",return_value=[]); p.start(); print("preview",_new_session_display_name("c","APP","Planning",True)); print("server",build_session_name("c","APP","Planning",is_remote=True)[0]); p.stop()'
+```
+
+**Verification note:** CONFIRMED at `7a1fe7b`; output is quoted above. This is a
+missing part of the DV-1 resolution, not a judgment-only hypothesis.
+
+**Recommended fix (Round 3):** Replace the client-side guessed identity with a
+remote preflight/handshake that returns the exact canonical allocated
+`session_id` and `ai_name` before local profile/color/cleanup setup, or otherwise
+make named allocation deterministic across the transport boundary. Regress
+unnamed, numeric, named, sanitized-name, occupied-index, and legacy-case reuse;
+each test must compare the client preview/cleanup identity with the server
+builder's exact returned identity.
+
+#### N-2: JA-3 test edit left a malformed module docstring — `Cosmetic` / `P3`
+
+**Status:** CONFIRMED
+
+**Location:** `tests/test_session_launch_integration.py:1-7`
+
+**What the Round 1 Resolution Pass claimed:** JA-3 required a production
+fleet-registry-to-new-worktree regression test (Round 1 JA-3 resolution row).
+
+**Actual state:** The test was added, but its accompanying module-docstring edit
+left an unmatched parenthesis and a missing noun phrase:
+
+```python
+# tests/test_session_launch_integration.py:3-7
+These tests run against a real ``tmux`` server on an isolated socket so we
+exercise actual tmux ``new-session`` / ``has-session`` / ``kill-session``
+behavior — not a mock. Everything downstream of tmux (the engine binary,
+is still mocked except where a test explicitly exercises production worktree
+creation or registry resolution.
+```
+
+**Why it matters:** The test module's scope statement is no longer grammatical
+and does not clearly identify which boundaries remain mocked, making the new
+integration coverage easier to overstate.
+
+**Verification command:**
+
+```bash
+sed -n '1,8p' tests/test_session_launch_integration.py
+```
+
+**Verification note:** CONFIRMED at `7a1fe7b` by the exact quoted source. The
+malformed text appears in the JA-3 fix hunk and was introduced by Round 1's
+resolution commit.
+
+**Recommended fix (Round 3):** Restore a complete sentence that explicitly says
+the engine remains mocked and that production worktree creation/registry
+resolution are exercised only by the designated regression test.
+
+### R2.5 Verification Matrix
+
+| Finding | Command / check | Expected | Actual | Pass? |
+|---------|-----------------|----------|--------|-------|
+| IC-1 | Direct raw-`APP` canonical full-name round trip | `('c-app-1', 'app-1')` | `('c-app-1', 'app-1')` | ✅ |
+| JA-1 | Direct `resolve_session("c-APP-", "1")` and `find_recent_session("c-APP-")` | Exact existing `c-app-1` | Both returned `'c-app-1'` | ✅ |
+| JA-2 | Direct uppercase requested-name build | Lowercase `c-app-planning-1` / `app-planning-1` | Exact expected tuple | ✅ |
+| JA-3 | Source-trace fleet fixture through unpatched resolver/worktree and real-server assertion | Registry `APP` → worktree `app-1`, tmux `c-app-1`, lowercase title args | All assertions present at `tests/test_session_launch_integration.py:347-409`; runtime blocked by temp/socket policy | ✅ source / ⚠ runtime unverified |
+| DV-1 | Compare `_new_session_display_name()` with `build_session_name(..., is_remote=True)` for a named launch | Exact same canonical identity | `c-r-app-planning` vs `c-r-app-planning-1` | ❌ PARTIAL |
+| F-1 | Capture remote program with shell metacharacters in prefix | Quoted prefix remains one shell argument | `shlex.quote(...) in remote_exec` was `True` | ✅ |
+| F-2 | Search stale and replacement test names | No stale name; replacement present | Only replacement at `tests/test_config.py:384` | ✅ |
+| F-3 | Search old and replacement fixture paths | No account-specific path; generic path present | Only generic path at `tests/test_project.py:81` | ✅ |
+
+**Verified: 7/8 Round 1 fixes PASS at `7a1fe7b`; DV-1 is PARTIAL. Two new
+findings reproduce. JA-3 runtime remains unverified because the sandbox cannot
+create its temporary tmux socket.**
+
+### R2 Recommendations
+
+**MUST be fixed before AI-CLI-208 ships:**
+
+- N-1: make the remote client's profile/color/cleanup identity exactly match
+  the server's canonical allocated identity for named and occupied-index cases,
+  then run the full tmux-backed regression outside this sandbox.
+
+**SHOULD be fixed before the next verification gate:**
+
+- Re-run `uv run ruff check src/ tests/`, `uv run ruff format --check src/
+  tests/`, and `uv run pytest -q` in an environment with a writable uv cache,
+  temporary directory, and local tmux socket; record all three final summary
+  lines.
+
+**Can be folded into a follow-up:**
+
+- N-2: repair the integration-test module docstring while applying N-1's test
+  changes.
+
 ## Decisions Requiring Team Input
 
 None. All eight corrections follow directly from the stated acceptance criteria
@@ -617,14 +843,8 @@ clear correctness work into unnecessary product-policy debate.
 
 | ID | Priority | Issue | Linked finding(s) | Owner | Target |
 |----|----------|-------|-------------------|-------|--------|
-| I-01 | P1 | Make tmux reattach lookup case-insensitive while returning exact existing names. | JA-1 | Implementation owner | Follow-up commit |
-| I-02 | P1 | Canonicalize remote pre-transport iTerm/profile/title/cleanup names. | DV-1 | Implementation owner | Follow-up commit |
-| I-03 | P1 | Quote the remote prefix at the remote shell boundary. | F-1 | Implementation owner | Follow-up commit |
-| I-04 | P2 | Make canonical full-name stripping case-insensitive and round-trip-safe. | IC-1 | Implementation owner | Follow-up commit |
-| I-05 | P2 | Lowercase requested name components only for new allocations. | JA-2 | Implementation owner | Follow-up commit |
-| I-06 | P2 | Add the exact unmocked fleet-registry new-launch regression test. | JA-3 | Implementation owner | Follow-up commit |
-| I-07 | P3 | Rename the stale resolver test. | F-2 | Implementation owner | Follow-up commit |
-| I-08 | P3 | Replace the personal macOS path with a generic portable fixture path. | F-3 | Implementation owner | Follow-up commit |
+| I-09 | P1 | Make remote named-session profile/color/cleanup identity exactly match the server's canonical allocated identity. | DV-1, N-1 | **Deferred — AI-CLI-209** (bd, P1, `related` to this issue) | Separate protocol-level fix; verified pre-existing, out of AI-CLI-208's casing scope |
+| I-10 | P3 | Repair the malformed integration-test module docstring. | N-2 | Orchestrating session | **Fixed** in `tests/test_session_launch_integration.py` |
 
 ## Already-Correct Items
 
@@ -686,15 +906,19 @@ clear correctness work into unnecessary product-policy debate.
   reproductions are recorded separately.
 - Do not infer absence from one grep. Every candidate gap above was spot-checked
   in neighboring tests and consumer code before it became a finding.
+- Do not treat a shared lowercasing helper as a shared canonical identity
+  builder. A transport preview must be compared with the server builder for
+  named, sanitized, and occupied-index cases; `tests/test_session_launch_integration.py:441-447`
+  instead asserted the preview's divergent value.
 
 ## Sign-Off Checklist
 
 - [x] No CRITICAL / P0 findings exist.
 - [ ] All MAJOR / P1 findings fixed OR explicitly deferred with rationale in Outstanding Issues.
-- [ ] All MINOR / P2 / P3 findings logged to a follow-up implementation tracker.
+- [x] All MINOR / P2 / P3 findings logged to a follow-up implementation tracker.
 - [x] No AD-N decisions are pending; none were required.
 - [x] Verification Matrix run on all findings; 8/8 reproduce recorded.
-- [ ] At least one verification round (Round 2+) completed after fixes.
+- [x] At least one verification round (Round 2+) completed after fixes.
 - [ ] Re-grep verification done in the final resolution round.
 - [x] Inline-fix accounting complete: no inline target fixes were made.
 - [x] Already-Correct Items populated with specific evidence.
@@ -708,6 +932,7 @@ clear correctness work into unnecessary product-policy debate.
 | Date | Action | Notes |
 |------|--------|-------|
 | 2026-08-10 | Round 1 audit pass complete | 8 confirmed findings: 3 P1, 3 P2, 2 P3; 8/8 reproduced; no inline source/test edits; no AD-N decisions. |
+| 2026-08-10 | Round 2 verification pass complete | Fresh verification at `7a1fe7b`: 7 PASS, DV-1 PARTIAL, 2 new confirmed findings (1 P1, 1 P3), no source/test edits. Exact `uv run` checks were sandbox-blocked; Ruff fallbacks passed, while pytest and isolated tmux sockets could not start without writable temporary storage. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -767,6 +992,32 @@ clear correctness work into unnecessary product-policy debate.
   embedded database lock could not be opened. The full AC text in the reviewer
   prompt was read and used instead.
 
+**Round 2 verification reads:**
+
+- Canonical sibling-workspace audit `TEMPLATE.md` — full 917-line read; Round 2
+  structure, N-N taxonomy, verification matrix, and exact AD-N skeleton checked
+  before source inspection.
+- `docs/audits/ai-cli-208-session-naming-casing-audit.md` — all 1,044 pre-Round-2
+  lines; every Round 1 finding, Resolution Pass row, decision statement,
+  verification result, and immutable reviewer prompt.
+- `src/ai_cli/session.py` — all 1,174 current lines; complete post-fix builder,
+  lookup, legacy-case reuse, worktree, and cleanup paths.
+- `tests/test_session.py` — all 1,612 current lines; complete post-fix unit
+  coverage, including every added Round 1 regression.
+- `tests/test_session_launch_integration.py` — all 512 current lines; complete
+  fixture and test-boundary review, including real registry/worktree assertions
+  and remote preview expectations.
+- `src/ai_cli/main.py:1738-1820,1880-1945,2145-2235` — raw prefix, remote
+  transport preview/cleanup, canonical server builder call, worktree, iTerm2,
+  and tmux consumers.
+- `src/ai_cli/config.py:440-690,734-765` — fleet discovery, raw prefix return,
+  permissive prefix parsing, and projects-directory lookup used by JA-3/F-1.
+- `tests/test_config.py:375-400`, `tests/test_project.py:70-90`, and
+  `tests/conftest.py:210-285` — F-2/F-3 replacements and the autouse temporary
+  storage requirement that blocked pytest.
+- Commit `7a1fe7b` metadata, full six-file fix diff, current `git status`, and
+  current-tree diff/stat against `2b3a6b2`.
+
 ## Appendix: Commands Run
 
 ```bash
@@ -808,6 +1059,40 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -c '<pytest.main focus
 
 # External issue lookup (failed: embedded database lock unavailable)
 bd show AI-CLI-ms2i
+```
+
+Round 2 commands:
+
+```bash
+# Current target and Round 1 resolution commit
+git status --short
+git log -8 --oneline --decorate
+git rev-parse HEAD
+git diff 7a1fe7b^ 7a1fe7b --unified=8 -- \
+  src/ai_cli/main.py src/ai_cli/session.py tests/test_config.py \
+  tests/test_project.py tests/test_session.py tests/test_session_launch_integration.py
+
+# Required checks — all three blocked before tool startup by sandbox-denied uv cache access
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run pytest -q
+
+# No-cache uv retries — blocked by sandbox-denied temporary storage
+UV_NO_CACHE=1 uv run --no-sync ruff check src/ tests/
+UV_NO_CACHE=1 uv run --no-sync ruff format --check src/ tests/
+
+# Read-only existing-environment fallbacks
+./.venv/bin/ruff check --no-cache src/ tests/
+./.venv/bin/ruff format --check src/ tests/
+PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/pytest -q -p no:cacheprovider
+
+# Finding verification and fix-presence checks
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src ./.venv/bin/python -c \
+  '<IC-1, JA-1, JA-2, DV-1, and F-1 direct reproductions>'
+rg -n 'same_prefix_for_worktree_and_titles|returns_raw_registered_prefix' tests/test_config.py
+rg -n '/Users/bob|/home/user/projects/myapp/.worktrees/feature-1' tests/test_project.py
+sed -n '1,8p' tests/test_session_launch_integration.py
+git diff --check 7a1fe7b^ 7a1fe7b
 ```
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
