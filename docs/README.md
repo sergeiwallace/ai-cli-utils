@@ -83,6 +83,7 @@ Testing templates and tracking.
 | Doc | Status | Source | Tags |
 |-----|--------|--------|------|
 | [AI-CLI-118 daemon-restart Task* tool self-healing plan — audit](audits/ai-cli-118-daemon-task-tool-self-healing-plan-audit.md) | draft | aido-stub | audit, ai-cli-118, daemon, task-tools |
+| [AI-CLI-208 new session/worktree/CC-title lowercasing fix — audit](audits/ai-cli-208-session-naming-casing-audit.md) | draft | aido-stub | audit, ai-cli-208, session, worktree, casing |
 
 ## Bugs
 
