@@ -111,6 +111,7 @@ Two separable problems:
 
 | Date | Commit | Notes |
 |------|--------|-------|
+| 2026-08-12 | Pending | Added a Claude Code session-registry (`~/.claude/sessions/*.json`) `sessionId` guard before touching a title-matched transcript or passing `--continue`. When the match is live, `ai c` prints the title and pid (when present), directs the user to `claude agents` or `--fork-session`, and launches a fresh named session without `--continue`; this preserves a usable launcher flow while preventing Claude Code's unsafe silent fallback. The tmux template now delegates to the same Python resolver as bare mode, eliminating the duplicate lookup. The registry is a local Claude Code implementation detail, so missing, unreadable, or malformed registry data intentionally degrades to the prior behavior rather than blocking launches. |
 
 <!-- /doc:region name="fix_log" -->
 

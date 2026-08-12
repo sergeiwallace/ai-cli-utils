@@ -1,8 +1,5 @@
 import json
 import os
-import re
-import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -247,7 +244,8 @@ class TestGetEngineScript:
 
         assert 'direnv_root="$PWD"' in script
         assert 'direnv exec "$direnv_root" "$@"' in script
-        assert script.count("run_agent claude") == 4
+        # The fifth branch starts fresh when the matched transcript is live.
+        assert script.count("run_agent claude") == 5
         assert "--continue" in script
         assert 'exec zsh "$_script_stable_path"' in script
         assert "direnv denied or could not evaluate .envrc" in script
@@ -432,45 +430,12 @@ class TestGetEngineScript:
         config_block = script[config_block_start : config_block_start + 200]
         assert "counter >= 10" in config_block
 
-    def test_resume_match_returns_single_path_when_multiple_files_share_session_name(self, tmp_path):
-        """The inline Python that finds the most-recent JSONL matching a session
-        name must output exactly one path, even when multiple files share the same
-        customTitle.
-
-        Root cause of the original bug: sys.exit(0) was called inside a bare
-        ``except: pass`` block.  SystemExit is a BaseException, so the bare
-        except swallowed it and the loop continued — producing all matching
-        paths concatenated without separators, causing ``touch`` to treat the
-        concatenation as a single (invalid) path.
-        """
-        session_name = "test-session"
-        # Create 5 JSONL files, all with customTitle == session_name.
-        # Stagger their mtimes so the sort order is deterministic.
-        paths = []
-        for i in range(5):
-            f = tmp_path / f"{i:02d}-fake-uuid.jsonl"
-            f.write_text(json.dumps({"customTitle": session_name}) + "\n")
-            os.utime(f, (1_000_000 + i, 1_000_000 + i))
-            paths.append(f)
-
-        # Extract the inline Python from the generated bash script.
+    def test_given_claude_script_when_generated_then_uses_shared_continue_target_resolver(self):
+        """The tmux path must use the same live-session guard as bare mode."""
         script = self._make_script()
-        m = re.search(r'matched_file=\$\(python3 -c "(.*?)" "\$cc_project_dir"', script, re.DOTALL)
-        assert m, "Could not find inline Python block in engine script"
-        python_code = m.group(1)
-
-        result = subprocess.run(
-            [sys.executable, "-c", python_code, str(tmp_path), session_name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        output = result.stdout
-
-        # Must be exactly one path (no concatenation, no newline-separated list).
-        assert output.count(str(tmp_path)) == 1, f"Expected one path in output, got: {output!r}"
-        # Must be a valid file path that actually exists.
-        assert Path(output).is_file(), f"Output is not a valid file path: {output!r}"
+        assert 'ai internal resolve-continue-target "$PWD" "$ai_name"' in script
+        assert "resolve_status=$?" in script
+        assert "[[ $resolve_status -eq 2 ]]" in script
 
 
 # --- Group 8: _log_handoff_event OSError ---

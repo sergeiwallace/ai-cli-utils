@@ -480,35 +480,17 @@ with open(path, 'w') as f:
       else
         if [[ "$engine" == "c" ]]; then
           # Find the most recent conversation matching $ai_name by customTitle.
-          # Touch it so --continue (which picks by mtime) resumes the right one.
-          # --resume UUID opens a search picker instead of resuming directly, so avoid it.
-          # Claude Code slugifies the cwd by replacing every NON-ALPHANUMERIC
-          # character with '-'. A narrower 's|[/.]|-|g' left '_' untouched and so
-          # computed the wrong directory for any path containing an underscore,
-          # silently disabling session resume there.
-          cc_project_dir="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[^a-zA-Z0-9]|-|g')"
-          matched_file=$(python3 -c "
-import json,os,sys
-d,t=sys.argv[1],sys.argv[2]
-if not os.path.isdir(d): sys.exit(0)
-files=sorted([x for x in os.listdir(d) if x.endswith('.jsonl')],key=lambda x:os.path.getmtime(os.path.join(d,x)),reverse=True)
-found=None
-for fname in files:
-    try:
-        with open(os.path.join(d,fname)) as fh:
-            for line in fh:
-                r=json.loads(line);ct=r.get('customTitle','')
-                if ct:
-                    if ct==t: found=os.path.join(d,fname)
-                    break
-    except Exception: pass
-    if found: break
-if found: sys.stdout.write(found)
-" "$cc_project_dir" "$ai_name" 2>/dev/null)
-          if [[ -n "$matched_file" ]]; then
+          # The shared resolver checks the session registry before allowing a
+          # touch + --continue.  A live transcript cannot be resumed safely:
+          # Claude Code may silently continue an unrelated older transcript.
+          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
+          resolve_status=$?
+          if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
             touch "$matched_file" 2>/dev/null
             run_agent claude $claude_perms_flag --continue --name "$ai_name"
-          elif [[ -d "$cc_project_dir" ]] && [[ -n "$(find "$cc_project_dir" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null)" ]]; then
+          elif [[ $resolve_status -eq 2 ]]; then
+            run_agent claude $claude_perms_flag --name "$ai_name"
+          elif [[ -d "$HOME/.claude/projects/$(echo "$PWD" | sed 's|[^a-zA-Z0-9]|-|g')" ]] && [[ -n "$(find "$HOME/.claude/projects/$(echo "$PWD" | sed 's|[^a-zA-Z0-9]|-|g')" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null)" ]]; then
             run_agent claude $claude_perms_flag --continue --name "$ai_name"
           else
             run_agent claude $claude_perms_flag --name "$ai_name"

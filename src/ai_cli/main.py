@@ -270,6 +270,42 @@ def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
     return None
 
 
+def _cc_session_is_live(transcript: Path) -> tuple[bool, int | str | None]:
+    """Return whether Claude Code currently has ``transcript``'s UUID registered.
+
+    Claude Code records each running local session in
+    ``~/.claude/sessions/<pid>.json``.  The registry is best-effort: a missing,
+    unreadable, or malformed directory must preserve the historical launch
+    behavior rather than block a session launch.
+    """
+    sessions_dir = Path.home() / ".claude" / "sessions"
+    if not sessions_dir.is_dir():
+        return False, None
+    try:
+        entries = sessions_dir.glob("*.json")
+        for entry in entries:
+            try:
+                with entry.open(encoding="utf-8") as fh:
+                    record = json.load(fh)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                continue
+            if record.get("sessionId") == transcript.stem:
+                return True, record.get("pid")
+    except OSError:
+        pass
+    return False, None
+
+
+def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
+    """Explain why a named Claude Code transcript cannot be continued safely."""
+    pid_detail = f" (pid {pid})" if pid is not None else ""
+    return (
+        f"Cannot continue session '{title}': its Claude Code session is still running{pid_detail}.\n"
+        "Run `claude agents` to find and attach to it, or use `--fork-session` to branch a copy.\n"
+        "Starting a fresh session instead to avoid resuming an unrelated transcript."
+    )
+
+
 def _bare_engine_command(
     engine: str,
     ai_name: str,
@@ -297,11 +333,15 @@ def _bare_engine_command(
         # picks by mtime, so touch the matching transcript to make it the newest.
         matched = _find_cc_session_by_title(target_root, ai_name)
         if matched is not None:
-            try:
-                os.utime(matched, None)
-                command.append("--continue")
-            except OSError:
-                pass
+            is_live, pid = _cc_session_is_live(matched)
+            if is_live:
+                print(_cc_live_session_warning(ai_name, pid), file=sys.stderr)
+            else:
+                try:
+                    os.utime(matched, None)
+                    command.append("--continue")
+                except OSError:
+                    pass
         elif _cc_project_dir(target_root).is_dir() and any(_cc_project_dir(target_root).glob("*.jsonl")):
             command.append("--continue")
         return command + extra_args
@@ -684,6 +724,18 @@ def _handle_internal(argv: list[str]) -> None:
         res = _session.get_latest_gemini_session_id(_ai_name_arg)
         if res:
             print(res)
+        sys.exit(0)
+    elif action == "resolve-continue-target":
+        if len(argv) < 3:
+            print("Usage: ai internal resolve-continue-target <cwd> <ai_name>", file=sys.stderr)
+            sys.exit(1)
+        matched = _find_cc_session_by_title(Path(argv[1]), argv[2])
+        if matched is not None:
+            is_live, pid = _cc_session_is_live(matched)
+            if is_live:
+                print(_cc_live_session_warning(argv[2], pid), file=sys.stderr)
+                sys.exit(2)
+            print(matched)
         sys.exit(0)
     elif action == "update-session-map":
         if len(argv) < 4:

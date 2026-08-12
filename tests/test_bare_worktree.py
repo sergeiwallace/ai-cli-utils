@@ -54,6 +54,15 @@ def _write_transcript(project_dir: Path, uuid: str, title: str | None) -> Path:
     return path
 
 
+def _write_session_registry(home: Path, pid: int, session_id: str) -> Path:
+    """Write the Claude Code session-registry entry used to mark a live session."""
+    sessions_dir = home / ".claude" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    registry_entry = sessions_dir / f"{pid}.json"
+    registry_entry.write_text(json.dumps({"pid": pid, "sessionId": session_id, "kind": "background"}))
+    return registry_entry
+
+
 def test_given_matching_title_when_searched_then_returns_that_transcript(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     cwd = Path("/repo/wt")
@@ -101,12 +110,33 @@ def test_given_bare_claude_when_no_prior_session_then_passes_name_without_contin
 def test_given_bare_claude_when_prior_session_exists_then_adds_continue(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
-    _write_transcript(_cc_project_dir(target), "eeeeeeee-0000-4000-8000-000000000005", "kg-1")
+    transcript = _write_transcript(_cc_project_dir(target), "eeeeeeee-0000-4000-8000-000000000005", "kg-1")
+    os.utime(transcript, (1, 1))
 
     argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
     assert "--continue" in argv
     assert "--name" in argv
+    assert transcript.stat().st_mtime > 1
+
+
+def test_given_live_title_matched_session_when_bare_claude_then_warns_without_touching_or_continuing(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    session_id = "ffffffff-0000-4000-8000-000000000006"
+    transcript = _write_transcript(_cc_project_dir(target), session_id, "kg-1")
+    os.utime(transcript, (1, 1))
+    _write_session_registry(tmp_path, 12345, session_id)
+
+    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--continue" not in argv
+    assert transcript.stat().st_mtime == 1
+    stderr = capsys.readouterr().err
+    assert "kg-1" in stderr
+    assert "pid 12345" in stderr
 
 
 def test_given_bare_claude_when_extra_args_then_appended_last(tmp_path, monkeypatch):
