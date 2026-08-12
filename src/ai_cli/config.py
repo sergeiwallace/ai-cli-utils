@@ -574,11 +574,35 @@ def _require_existing_repository(root: Path, prefix: str, source: str) -> str:
 
 def _append_projects_entry(path: Path, root: Path, prefix: str) -> None:
     """Append one ``[[projects]]`` entry, creating the registry file if absent."""
+    project_path = _normalized_registry_project_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.is_file() else ""
     separator = "" if not existing or existing.endswith("\n\n") else "\n" if existing.endswith("\n") else "\n\n"
-    entry = f'[[projects]]\nname = "{root.name}"\ntask_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
+    entry = (
+        f'[[projects]]\nname = "{root.name}"\npath = {json.dumps(project_path)}\n'
+        f'task_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
+    )
     path.write_text(existing + separator + entry, encoding="utf-8")
+
+
+def _normalized_registry_project_path(root: Path) -> str:
+    """Return a usable project path in the registry's home-relative convention."""
+    try:
+        resolved = root.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ProjectPrefixError(
+            f"Project path {root} does not resolve to an existing directory. "
+            f"Register it with: ai register -p {root} -x PREFIX"
+        ) from exc
+    if not resolved.is_dir():
+        raise ProjectPrefixError(
+            f"Project path {root} does not resolve to an existing directory. "
+            f"Register it with: ai register -p {root} -x PREFIX"
+        )
+    try:
+        return f"~/{resolved.relative_to(Path.home()).as_posix()}"
+    except ValueError:
+        return str(resolved)
 
 
 def _write_xdg_registry_entry(path: Path, root: Path, prefix: str) -> None:
@@ -869,24 +893,25 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
     registered_names = {p.get("name", "").lower() for p in registry}
 
     # Scan for project directories (skip hidden dirs, .worktrees, bare git repos, etc.)
-    unregistered = []
+    unregistered: list[Path] = []
     for d in sorted(projects_dir.iterdir()):
         if not d.is_dir() or d.name.startswith(".") or d.name.endswith(".git"):
             continue
         if d.name.lower() not in registered_names:
-            unregistered.append(d.name)
+            unregistered.append(d)
 
     if not unregistered:
         return True
 
     if not interactive:
-        print(f"Error: unregistered project directories: {', '.join(unregistered)}", file=sys.stderr)
+        print(f"Error: unregistered project directories: {', '.join(d.name for d in unregistered)}", file=sys.stderr)
         return False
 
     registry_path = _get_project_registry_path()
     assert registry_path is not None
-    entries: list[tuple[str, str]] = []
-    for name in unregistered:
+    entries: list[tuple[str, str, str]] = []
+    for project_path in unregistered:
+        name = project_path.name
         suggested_prefix = name.upper().replace("-", "_")[:8]
         try:
             answer = input(
@@ -904,14 +929,17 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
 
         prefix = answer if answer and answer.lower() != "y" else suggested_prefix
 
-        entries.append((name, prefix))
+        entries.append((name, _normalized_registry_project_path(project_path), prefix))
 
     # Commit all prompted registrations at once so cancellation or rejection
     # cannot leave a partially updated registry behind.
     with registry_path.open("a") as f:
-        for name, prefix in entries:
-            f.write(f'\n[[projects]]\nname = "{name}"\ntask_prefix = "{prefix}"\ntype = "tool"\nactive = true\n')
-    for name, prefix in entries:
+        for name, project_path, prefix in entries:
+            f.write(
+                f'\n[[projects]]\nname = "{name}"\npath = {json.dumps(project_path)}\n'
+                f'task_prefix = "{prefix}"\ntype = "tool"\nactive = true\n'
+            )
+    for name, _project_path, prefix in entries:
         print(f'Registered "{name}" with prefix "{prefix}"')
 
     # Force reload after registration

@@ -338,20 +338,26 @@ class TestValidateRegistryCompleteness:
         ):
             assert validate_registry_completeness(interactive=False) is False
 
-    def test_validate_when_user_registers_then_returns_true(self, tmp_path):
+    def test_validate_when_user_registers_then_returns_true(self, tmp_path, monkeypatch):
+        import tomllib
+
         registry = tmp_path / "registry.toml"
         registry.write_bytes(b'[[projects]]\nname = "app"\ntask_prefix = "APP"\n')
-        projects_dir = tmp_path / "projects"
+        home = tmp_path / "home"
+        projects_dir = home / "projects"
         (projects_dir / "app").mkdir(parents=True)
         (projects_dir / "newapp").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
         with (
             patch("ai_cli.config._get_project_registry_path", return_value=registry),
             patch("ai_cli.config._get_projects_dir", return_value=projects_dir),
             patch("builtins.input", return_value="y"),
         ):
             assert validate_registry_completeness(interactive=True) is True
-        content = registry.read_text()
-        assert "newapp" in content
+        with registry.open("rb") as handle:
+            new_project = tomllib.load(handle)["projects"][1]
+        assert new_project["name"] == "newapp"
+        assert new_project["path"] == "~/projects/newapp"
 
     def test_validate_when_user_declines_then_returns_false(self, tmp_path):
         registry = tmp_path / "registry.toml"

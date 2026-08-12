@@ -26,6 +26,7 @@ import pytest
 from ai_cli.config import (
     FLEET_REGISTRY_MARKER,
     ProjectPrefixError,
+    _append_projects_entry,
     get_fleet_registry_path,
     register_project,
     resolve_project_prefix,
@@ -87,6 +88,31 @@ def _write_projects_registry(path: Path, entries: dict[str, str]) -> None:
 
 
 # --- AC-1 / AC-2: the persistent registry resolves, and wins ---
+
+
+def test_given_a_project_under_home_when_appending_then_it_writes_a_home_relative_path(tmp_path, monkeypatch):
+    import tomllib
+
+    home = tmp_path / "home"
+    root = home / "projects" / "myproject"
+    root.mkdir(parents=True)
+    registry = tmp_path / "registry.toml"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
+    _append_projects_entry(registry, root, "MYPROJECT")
+
+    with registry.open("rb") as handle:
+        project = tomllib.load(handle)["projects"][0]
+    assert project["path"] == "~/projects/myproject"
+
+
+def test_given_a_missing_project_when_appending_then_it_fails_without_writing(tmp_path):
+    registry = tmp_path / "registry.toml"
+
+    with pytest.raises(ProjectPrefixError, match="does not resolve to an existing directory"):
+        _append_projects_entry(registry, tmp_path / "missing", "MISSING")
+
+    assert not registry.exists()
 
 
 def test_given_a_repo_in_the_persistent_registry_when_resolving_then_returns_its_prefix(fleet):
