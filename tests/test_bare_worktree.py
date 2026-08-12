@@ -9,6 +9,7 @@ a plain ``claude`` in the repo root -- no worktree, no ``--name``, no resume.
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,10 +18,13 @@ import pytest
 from ai_cli.main import (
     _bare_engine_command,
     _cc_project_dir,
+    _cc_session_is_live,
     _do_session_launch,
     _find_cc_session_by_title,
 )
 from ai_cli.session import build_session_name, find_next_index
+
+_HAS_PROC = Path("/proc/self/stat").exists()
 
 # --- CC project-dir encoding ---------------------------------------------------
 
@@ -54,13 +58,38 @@ def _write_transcript(project_dir: Path, uuid: str, title: str | None) -> Path:
     return path
 
 
-def _write_session_registry(home: Path, pid: int, session_id: str) -> Path:
+def _write_session_registry(home: Path, pid: int, session_id: str, proc_start: int | None = None) -> Path:
     """Write the Claude Code session-registry entry used to mark a live session."""
     sessions_dir = home / ".claude" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     registry_entry = sessions_dir / f"{pid}.json"
-    registry_entry.write_text(json.dumps({"pid": pid, "sessionId": session_id, "kind": "background"}))
+    record = {"pid": pid, "sessionId": session_id, "kind": "background"}
+    if proc_start is not None:
+        record["procStart"] = proc_start
+    registry_entry.write_text(json.dumps(record))
     return registry_entry
+
+
+def _self_proc_start() -> int:
+    """Field 22 (starttime) of this test process, as Claude Code records it."""
+    line = Path("/proc/self/stat").read_text(encoding="utf-8")
+    return int(line.rpartition(")")[2].split()[19])
+
+
+def _write_proc_stat(proc_dir: Path, pid: int, starttime: int, comm: str = "claude (node) x") -> Path:
+    """Write a fake ``/proc/<pid>/stat`` whose comm contains spaces and parens."""
+    (proc_dir / str(pid)).mkdir(parents=True, exist_ok=True)
+    fields = ["S"] + [str(n) for n in range(4, 22)] + [str(starttime)]
+    stat = proc_dir / str(pid) / "stat"
+    stat.write_text(f"{pid} ({comm}) " + " ".join(fields) + "\n")
+    return stat
+
+
+def _reaped_pid() -> int:
+    """A pid that has exited and been reaped -- i.e. one that is provably dead."""
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    return proc.pid
 
 
 def test_given_matching_title_when_searched_then_returns_that_transcript(tmp_path, monkeypatch):
@@ -120,6 +149,7 @@ def test_given_bare_claude_when_prior_session_exists_then_adds_continue(tmp_path
     assert transcript.stat().st_mtime > 1
 
 
+@pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to register a genuinely live pid")
 def test_given_live_title_matched_session_when_bare_claude_then_warns_without_touching_or_continuing(
     tmp_path, monkeypatch, capsys
 ):
@@ -128,7 +158,8 @@ def test_given_live_title_matched_session_when_bare_claude_then_warns_without_to
     session_id = "ffffffff-0000-4000-8000-000000000006"
     transcript = _write_transcript(_cc_project_dir(target), session_id, "kg-1")
     os.utime(transcript, (1, 1))
-    _write_session_registry(tmp_path, 12345, session_id)
+    pid = os.getpid()
+    _write_session_registry(tmp_path, pid, session_id, proc_start=_self_proc_start())
 
     argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
@@ -136,7 +167,149 @@ def test_given_live_title_matched_session_when_bare_claude_then_warns_without_to
     assert transcript.stat().st_mtime == 1
     stderr = capsys.readouterr().err
     assert "kg-1" in stderr
-    assert "pid 12345" in stderr
+    assert f"pid {pid}" in stderr
+
+
+# --- session-registry liveness (AI-CLI-cc-session-live-mvht) --------------------
+
+
+def test_given_registry_record_for_dead_pid_when_checked_then_not_live(tmp_path, monkeypatch):
+    """The reported bug: an abandoned record blocked its session name forever.
+
+    Claude Code does not reliably remove ``~/.claude/sessions/<pid>.json`` when a
+    session is killed or crashes, so matching on ``sessionId`` alone refused
+    ``ai c kg-1`` against a pid that no longer existed.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "11111111-0000-4000-8000-00000000000a"
+    dead_pid = _reaped_pid()
+    _write_session_registry(tmp_path, dead_pid, session_id, proc_start=12345)
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl")) == (False, None)
+
+
+def test_given_stale_registry_record_when_bare_claude_then_still_continues(tmp_path, monkeypatch, capsys):
+    """End-to-end shape of the bug: the refusal must not reach the launch argv."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    session_id = "22222222-0000-4000-8000-00000000000b"
+    transcript = _write_transcript(_cc_project_dir(target), session_id, "kg-1")
+    os.utime(transcript, (1, 1))
+    _write_session_registry(tmp_path, _reaped_pid(), session_id, proc_start=12345)
+
+    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--continue" in argv
+    assert "still running" not in capsys.readouterr().err
+
+
+@pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to read a real starttime")
+def test_given_running_pid_with_matching_proc_start_when_checked_then_live(tmp_path, monkeypatch):
+    """The fix must not degrade into "always False" -- a real session still blocks."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "33333333-0000-4000-8000-00000000000c"
+    pid = os.getpid()
+    _write_session_registry(tmp_path, pid, session_id, proc_start=_self_proc_start())
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl")) == (True, pid)
+
+
+def test_given_recycled_pid_when_checked_then_not_live(tmp_path, monkeypatch):
+    """A running pid whose starttime differs is a different process, not this session."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "44444444-0000-4000-8000-00000000000d"
+    proc_dir = tmp_path / "proc"
+    _write_proc_stat(proc_dir, 4242, starttime=999)
+    _write_session_registry(tmp_path, 4242, session_id, proc_start=111)
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (False, None)
+
+
+def test_given_matching_starttime_in_stat_when_checked_then_live(tmp_path, monkeypatch):
+    """Field 22 is read from after the *last* ')' -- a comm with parens must parse."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "55555555-0000-4000-8000-00000000000e"
+    proc_dir = tmp_path / "proc"
+    _write_proc_stat(proc_dir, 4242, starttime=777, comm="claude (worker) 1")
+    _write_session_registry(tmp_path, 4242, session_id, proc_start=777)
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (True, 4242)
+
+
+def test_given_unreadable_proc_stat_when_checked_then_not_live(tmp_path, monkeypatch):
+    """Fail open: an unverifiable record must not block a launch."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "66666666-0000-4000-8000-00000000000f"
+    proc_dir = tmp_path / "proc"
+    (proc_dir / "4242").mkdir(parents=True)  # pid dir present, stat missing
+    _write_session_registry(tmp_path, 4242, session_id, proc_start=777)
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (False, None)
+
+
+@pytest.mark.parametrize("stat_body", ["", "4242 (claude) S", "4242 claude S 1 2 3", "no-parens-at-all"])
+def test_given_malformed_proc_stat_when_checked_then_not_live(tmp_path, monkeypatch, stat_body):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "77777777-0000-4000-8000-000000000010"
+    proc_dir = tmp_path / "proc"
+    (proc_dir / "4242").mkdir(parents=True)
+    (proc_dir / "4242" / "stat").write_text(stat_body)
+    _write_session_registry(tmp_path, 4242, session_id, proc_start=777)
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (False, None)
+
+
+def test_given_dead_record_when_checked_then_record_is_pruned(tmp_path, monkeypatch):
+    """Self-healing: the sweep that used to need a human happens on every check."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+    stale = _write_session_registry(tmp_path, 4242, "88888888-0000-4000-8000-000000000011", proc_start=777)
+    unrelated = _write_session_registry(tmp_path, 4243, "99999999-0000-4000-8000-000000000012", proc_start=778)
+
+    _cc_session_is_live(Path("/x/aaaaaaaa-0000-4000-8000-000000000013.jsonl"), proc_dir=proc_dir)
+
+    assert not stale.exists()
+    assert not unrelated.exists()
+
+
+def test_given_live_record_when_checked_then_record_is_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc_dir = tmp_path / "proc"
+    _write_proc_stat(proc_dir, 4242, starttime=777)
+    kept = _write_session_registry(tmp_path, 4242, "bbbbbbbb-0000-4000-8000-000000000014", proc_start=777)
+
+    _cc_session_is_live(Path("/x/cccccccc-0000-4000-8000-000000000015.jsonl"), proc_dir=proc_dir)
+
+    assert kept.exists()
+
+
+def test_given_unverifiable_record_when_checked_then_record_is_kept(tmp_path, monkeypatch):
+    """Only a positively dead pid is pruned -- an unreadable one is left alone."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc_dir = tmp_path / "proc"
+    (proc_dir / "4242").mkdir(parents=True)
+    kept = _write_session_registry(tmp_path, 4242, "dddddddd-0000-4000-8000-000000000016", proc_start=777)
+
+    _cc_session_is_live(Path("/x/eeeeeeee-0000-4000-8000-000000000017.jsonl"), proc_dir=proc_dir)
+
+    assert kept.exists()
+
+
+def test_given_unlinkable_dead_record_when_checked_then_answer_survives(tmp_path, monkeypatch):
+    """A failed prune (race, read-only file) must never raise to the caller."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+    session_id = "ffffffff-0000-4000-8000-000000000018"
+    _write_session_registry(tmp_path, 4242, session_id, proc_start=777)
+
+    def _boom(self, missing_ok=False):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(Path, "unlink", _boom)
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (False, None)
 
 
 def test_given_bare_claude_when_extra_args_then_appended_last(tmp_path, monkeypatch):
