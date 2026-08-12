@@ -45,9 +45,10 @@ is a problem, because it changes when the session's working directory changes.
   convenience feature. Consequence to expect: after adoption, up-arrow recall in
   the worktree does not show prompts typed at the old root. Nothing else is
   affected.
-- **`~/.claude/sessions/<pid>.json`.** Written by a *running* process and removed
-  by it. Adoption refuses to run against a live session, so any record it sees is
-  stale and harmless.
+- **`~/.claude/sessions/<pid>.json`.** Written by a *running* process, but **not
+  reliably removed by it** on kill or crash (see the pid check below). Adoption
+  refuses to run against a live session, so any record it sees is stale and
+  harmless.
 - **`~/.claude/shell-snapshots/`, `~/.claude/paste-cache/`.** Content-addressed
   or timestamp-named, not keyed by session or project at all.
 - **The source project directory itself.** Left in place even when empty: other

@@ -296,20 +296,52 @@ def test_given_unverifiable_record_when_checked_then_record_is_kept(tmp_path, mo
     assert kept.exists()
 
 
-def test_given_unlinkable_dead_record_when_checked_then_answer_survives(tmp_path, monkeypatch):
-    """A failed prune (race, read-only file) must never raise to the caller."""
+def test_given_recycled_pid_when_checked_then_record_is_kept(tmp_path, monkeypatch):
+    """A starttime mismatch is not proof enough to delete: only a gone pid is.
+
+    ``procStart`` in a unit this code does not expect would mismatch too, and
+    deleting a live session's record misleads every other reader of the registry.
+    """
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     proc_dir = tmp_path / "proc"
-    proc_dir.mkdir()
+    _write_proc_stat(proc_dir, 4242, starttime=999)
+    kept = _write_session_registry(tmp_path, 4242, "aaaabbbb-0000-4000-8000-000000000019", proc_start=111)
+
+    _cc_session_is_live(Path("/x/ccccdddd-0000-4000-8000-00000000001a.jsonl"), proc_dir=proc_dir)
+
+    assert kept.exists()
+
+
+def test_given_record_without_proc_start_when_pid_runs_then_live(tmp_path, monkeypatch):
+    """No recorded starttime cannot refute ownership, so the refusal is preserved."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "eeeeffff-0000-4000-8000-00000000001b"
+    proc_dir = tmp_path / "proc"
+    _write_proc_stat(proc_dir, 4242, starttime=777)
+    _write_session_registry(tmp_path, 4242, session_id)
+
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (True, 4242)
+
+
+def test_given_unlinkable_dead_record_when_checked_then_walk_continues(tmp_path, monkeypatch):
+    """A failed prune (race, read-only file) must not abort the liveness answer.
+
+    The record that cannot be unlinked sorts before the live one, so an escaping
+    ``OSError`` would silently answer "not live" for a session that is running.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    proc_dir = tmp_path / "proc"
+    _write_proc_stat(proc_dir, 4243, starttime=777)
     session_id = "ffffffff-0000-4000-8000-000000000018"
-    _write_session_registry(tmp_path, 4242, session_id, proc_start=777)
+    _write_session_registry(tmp_path, 4242, "00001111-0000-4000-8000-00000000001c", proc_start=555)
+    _write_session_registry(tmp_path, 4243, session_id, proc_start=777)
 
     def _boom(self, missing_ok=False):
         raise OSError("read-only")
 
     monkeypatch.setattr(Path, "unlink", _boom)
 
-    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (False, None)
+    assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl"), proc_dir=proc_dir) == (True, 4243)
 
 
 def test_given_bare_claude_when_extra_args_then_appended_last(tmp_path, monkeypatch):
