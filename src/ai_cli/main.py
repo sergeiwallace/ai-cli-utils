@@ -270,30 +270,113 @@ def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
     return None
 
 
-def _cc_session_is_live(transcript: Path) -> tuple[bool, int | str | None]:
+def _proc_start_ticks(pid: int, proc_dir: Path) -> int | None:
+    """Return field 22 (``starttime``) of ``/proc/<pid>/stat``, or None if unreadable.
+
+    Field 2 is the executable name, parenthesized, and may itself contain spaces
+    and parens -- so the fields are counted from after the *last* ``)``.  Splitting
+    the whole line instead shifts every field for a process named e.g.
+    ``claude (worker) 1`` and silently compares the wrong number.
+    """
+    try:
+        line = (proc_dir / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if ")" not in line:
+        return None
+    fields = line.rpartition(")")[2].split()
+    if len(fields) < 20:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
+    """Classify a session record as ``"live"``, ``"gone"`` (prunable), or ``"unproven"``.
+
+    Deliberately fails OPEN: a pid that cannot be verified counts as ``"unproven"``
+    and does not block a launch, matching this registry's best-effort contract
+    (see :func:`_cc_session_is_live`) -- a dead or unverifiable process is the same
+    class of unreliability as a missing or malformed directory.  Note the
+    asymmetry with the fleet's *worktree* liveness probe, which fails CLOSED
+    (unreadable => live) because it guards a deletion; this one only decides
+    whether a transcript may be reused, so the safe default is the opposite.  Do
+    not "harmonize" the two.
+    """
+    from .session_adopt import _pid_is_live
+
+    try:
+        pid = int(record.get("pid"))
+    except (TypeError, ValueError):
+        return "unproven"
+    if pid <= 0:
+        return "unproven"
+    if not _pid_is_live(pid, proc_dir):
+        return "gone"
+    recorded = record.get("procStart")
+    if not isinstance(recorded, int) or isinstance(recorded, bool):
+        # The pid runs and nothing refutes its identity; keep the historical refusal.
+        return "live"
+    actual = _proc_start_ticks(pid, proc_dir if proc_dir is not None else Path("/proc"))
+    if actual is None:
+        return "unproven"
+    if actual == recorded:
+        return "live"
+    # A recycled pid: the recorded process is gone, but the record is NOT pruned --
+    # a `procStart` in some other unit (a platform that writes an epoch, say) would
+    # mismatch too, and deleting a live session's record misleads every other tool
+    # that reads this registry.  Not blocking the launch is enough to fix the bug.
+    return "unproven"
+
+
+def _prune_dead_cc_session_record(entry: Path) -> None:
+    """Remove a session record whose process is provably gone.
+
+    Claude Code does not reliably delete its own ``<pid>.json`` on kill or crash
+    and nothing ages the file out, so without this every abandoned record made its
+    session name unusable until a human found and deleted the file.  A losing race
+    with another process, or a read-only file, must not affect the caller.
+    """
+    with contextlib.suppress(OSError):
+        entry.unlink()
+
+
+def _cc_session_is_live(transcript: Path, proc_dir: Path | None = None) -> tuple[bool, int | str | None]:
     """Return whether Claude Code currently has ``transcript``'s UUID registered.
 
     Claude Code records each running local session in
     ``~/.claude/sessions/<pid>.json``.  The registry is best-effort: a missing,
     unreadable, or malformed directory must preserve the historical launch
-    behavior rather than block a session launch.
+    behavior rather than block a session launch.  A record only counts as live
+    when its pid is still running *and* that process's start time matches the
+    record's -- an abandoned record otherwise blocked its session name forever.
+    Records for dead pids are pruned as the directory is walked.
     """
     sessions_dir = Path.home() / ".claude" / "sessions"
     if not sessions_dir.is_dir():
         return False, None
+    live: tuple[bool, int | str | None] = (False, None)
     try:
-        entries = sessions_dir.glob("*.json")
+        entries = sorted(sessions_dir.glob("*.json"))
         for entry in entries:
             try:
                 with entry.open(encoding="utf-8") as fh:
                     record = json.load(fh)
             except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
                 continue
-            if record.get("sessionId") == transcript.stem:
-                return True, record.get("pid")
+            if not isinstance(record, dict):
+                continue
+            state = _cc_record_liveness(record, proc_dir)
+            if state == "gone":
+                _prune_dead_cc_session_record(entry)
+                continue
+            if state == "live" and record.get("sessionId") == transcript.stem and not live[0]:
+                live = (True, record.get("pid"))
     except OSError:
         pass
-    return False, None
+    return live
 
 
 def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
