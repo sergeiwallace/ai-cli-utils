@@ -340,7 +340,7 @@ session *after* a daemon restart, without the session itself having to notice.
 
 **Pros:**
 
-- Simple, scriptable, no background process; the agent or user can check explicitly, and any hook (SessionStart, `/task-panel`) can call it to sweep *other* live sessions.
+- Simple, scriptable, no background process; the agent or user can check explicitly, and any hook (SessionStart, `/load-task-panel`) can call it to sweep *other* live sessions.
 
 **Cons:**
 
@@ -705,7 +705,7 @@ Questions):
   surfaces truthful exit-and-relaunch steps instead.
 - **macOS-only** for now (F-3): non-macOS hosts return `unsupported`.
 - **No SessionStart hook** for self-detection (a session cannot see its own future drop) and **no
-  `/task-panel` skill edit** (that skill is canonical in `ai-harness`, a different repo); wiring the
+  `/load-task-panel` skill edit** (that skill is canonical in `ai-harness`, a different repo); wiring the
   on-demand check into a hook/skill is a reasonable follow-up, out of this worktree's scope.
 - **Empirical confirmation of the restart workaround** (does exit-and-relaunch actually restore
   `Task*`?) is a manual verification step for the next natural reproduction, not a code AC (OQ-1).
