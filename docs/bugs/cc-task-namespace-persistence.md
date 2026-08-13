@@ -145,18 +145,18 @@ hex-derived ones) are also among the few holding a long-lived accumulated task
 set (10 and 9 files). The reporting session was **not** launched via `ai c`,
 which is exactly why it was exposed.
 
-Recommendations, in priority order:
+Recommendations, in priority order at the time of diagnosis:
 
-1. **Correct the external `/task-panel` skill's documented premise.** It states
-   the key is "the first 8 hex chars of the transcript UUID (older CC) or the
-   full UUID". Both halves are wrong when agent-teams is on: it is the team name,
-   built from a per-process id that changes on every restart. That skill lives
-   outside this repo (`~/.claude/skills/task-panel/SKILL.md`); it needs an
-   owning-repo issue.
-2. **Rewrite that skill's recovery steps 3a–3f** (see Verification — they are
-   actively unsafe, not merely ineffective). Correct live-namespace resolution
-   reads `leadSessionId`/`name` from `~/.claude/teams/*/config.json`, not
-   `sessionId` from `~/.claude/sessions/*.json`.
+1. **Correct the external skill's documented premise — completed (AIH-676).**
+   At the time of this investigation it was named `/task-panel`; its current
+   name is `/load-task-panel`, at `~/.claude/skills/load-task-panel/SKILL.md`.
+   The premise that the key is "the first 8 hex chars of the transcript UUID
+   (older CC) or the full UUID" was corrected: with agent-teams on, it is the
+   team name, built from a per-process id that changes on every restart.
+2. **Rewrite that skill's recovery steps 3a–3f — completed (AIH-676).** The
+   current `/load-task-panel` procedure derives live namespaces from
+   `leadSessionId`/`name` in `~/.claude/teams/*/config.json`, not `sessionId`
+   from `~/.claude/sessions/*.json`.
 3. **Always pin `CLAUDE_CODE_TASK_LIST_ID`,** including for sessions not started
    by `ai c` — it defeats both mechanisms at once, since a pinned namespace is
    stable across restarts *and* is the namespace the sweeper is evaluated
