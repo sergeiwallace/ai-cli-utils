@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -321,6 +322,18 @@ def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
     return None
 
 
+#: ``/proc/<pid>/stat`` state characters for a process that has already exited and
+#: is only waiting to be reaped by its parent.
+_ENDED_PROC_STATES = frozenset({"Z", "X", "x"})
+
+#: State characters for a process that is present but is not running the session:
+#: ``T`` job-control stop, ``t`` tracing stop, plus the exited-but-unreaped states.
+#: A stopped process holds its pid, its ``/proc`` entry and its open files, never
+#: resumes on its own, and cannot even act on a ``SIGTERM`` until something
+#: continues it -- which is how an exited session kept its name reserved.
+_ABANDONED_PROC_STATES = _ENDED_PROC_STATES | frozenset({"T", "t"})
+
+
 def _proc_start_ticks(pid: int, proc_dir: Path) -> int | None:
     """Return field 22 (``starttime``) of ``/proc/<pid>/stat``, or None if unreadable.
 
@@ -344,8 +357,26 @@ def _proc_start_ticks(pid: int, proc_dir: Path) -> int | None:
         return None
 
 
+def _proc_state(pid: int, proc_dir: Path) -> str | None:
+    """Return field 3 (``state``) of ``/proc/<pid>/stat``, or None if unreadable.
+
+    Counted from after the *last* ``)`` for the same reason
+    :func:`_proc_start_ticks` counts from there: field 2 is a parenthesized
+    executable name that may itself contain spaces and parens, so splitting the
+    whole line reads the wrong character as the state.
+    """
+    try:
+        line = (proc_dir / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if ")" not in line:
+        return None
+    fields = line.rpartition(")")[2].split()
+    return fields[0] if fields else None
+
+
 def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
-    """Classify a session record as ``"live"``, ``"gone"`` (prunable), or ``"unproven"``.
+    """Classify a session record as ``"live"``, ``"abandoned"``, ``"gone"``, or ``"unproven"``.
 
     Deliberately fails OPEN: a pid that cannot be verified counts as ``"unproven"``
     and does not block a launch, matching this registry's best-effort contract
@@ -355,6 +386,14 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     (unreadable => live) because it guards a deletion; this one only decides
     whether a transcript may be reused, so the safe default is the opposite.  Do
     not "harmonize" the two.
+
+    ``"abandoned"`` is the answer for a process that is *present but not running
+    this session*, which pid existence alone cannot distinguish from a session
+    the operator is using: exiting Claude Code does not reliably end its
+    process, and one observed on a real host sat in state ``T`` (stopped) with
+    ``/proc/<pid>`` fully populated after a ``SIGTERM`` that returned 0.  A
+    stopped process never resumes on its own, so calling it live reserved the
+    session name forever.  See :func:`_reclaim_abandoned_cc_session`.
 
     The deferred import below is guarded for the same fail-open reason.  ``ai c``
     can replace this process's own installation mid-run (``ai update --force`` ->
@@ -380,11 +419,16 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
         return "unproven"
     if not _pid_is_live(pid, proc_dir):
         return "gone"
+    root = proc_dir if proc_dir is not None else Path("/proc")
+    # Checked before ``procStart``: a stopped process is abandoned whether or not
+    # the record carries enough to identify it.
+    if _proc_state(pid, root) in _ABANDONED_PROC_STATES:
+        return "abandoned"
     recorded = record.get("procStart")
     if not isinstance(recorded, int) or isinstance(recorded, bool):
         # The pid runs and nothing refutes its identity; keep the historical refusal.
         return "live"
-    actual = _proc_start_ticks(pid, proc_dir if proc_dir is not None else Path("/proc"))
+    actual = _proc_start_ticks(pid, root)
     if actual is None:
         return "unproven"
     if actual == recorded:
@@ -408,6 +452,120 @@ def _prune_dead_cc_session_record(entry: Path) -> None:
         entry.unlink()
 
 
+def _pid_has_ended(pid: int, proc_dir: Path) -> bool:
+    """True when ``pid`` is gone, or present only as a zombie.
+
+    The absence of ``/proc/<pid>`` is the answer -- never a kill's return code,
+    which is 0 for a stopped process that never acts on the signal.  A zombie
+    counts as ended: it has already exited and holds nothing open, and what
+    remains outstanding is its parent's ``wait()``, which a launcher that did not
+    spawn the process cannot perform (and a parent that is itself stopped never
+    will).
+    """
+    if not (proc_dir / str(pid)).exists():
+        return True
+    return _proc_state(pid, proc_dir) in _ENDED_PROC_STATES
+
+
+def _end_session_process(pid: int, timeout: float = 5.0) -> bool:
+    """SIGTERM, SIGCONT, bounded wait, SIGKILL -- then answer from ``/proc``.
+
+    The SIGCONT is part of the escalation rather than belt-and-braces: a stopped
+    process *queues* the SIGTERM and does not act on it until something continues
+    it, which is exactly how a ``kill -TERM`` that returned 0 left an exited
+    session alive in state ``T``.
+
+    Signals are aimed at the process *group*, so a wrapper's children go with it
+    instead of being orphaned.  The one exception is a group that is this
+    process's own: a group signal there would kill the launcher itself, and
+    everything else sharing its job, so the recorded pid alone is signalled.
+
+    Always reads the real ``/proc``: the signals are real, so an injected
+    directory would only make the confirmation dishonest.
+    """
+    group = 0
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            pgid = 0
+        if pgid > 1 and pgid != os.getpgrp():
+            group = pgid
+
+    def send(sig: int) -> None:
+        # Failures are ignored on purpose -- whether the process ended is read
+        # back from /proc below, never inferred from a signal's return.
+        with contextlib.suppress(OSError):
+            if group:
+                os.killpg(group, sig)
+            else:
+                os.kill(pid, sig)
+
+    def ended_within(seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while True:
+            if _pid_has_ended(pid, Path("/proc")):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    send(signal.SIGTERM)
+    send(signal.SIGCONT)
+    if ended_within(timeout):
+        return True
+    send(signal.SIGKILL)
+    return ended_within(timeout)
+
+
+def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
+    """End a session process that stopped instead of exiting, and prune its record.
+
+    What it found and what it did are always reported: silently launching a
+    differently-named session is the defect this exists to fix, so silently
+    reclaiming one would only move the surprise.
+
+    The process is signalled only when the record can prove *which* process it
+    is -- ``procStart`` must match the live ``/proc`` entry.  Killing on a pid
+    alone would eventually kill a stranger that inherited a recycled pid, and a
+    record outliving its process is this registry's known failure mode.
+    """
+    pid = int(record.get("pid", 0))
+    state = _proc_state(pid, Path("/proc")) or "?"
+    name = str(record.get("name") or "")
+    label = f"'{name}'" if name else (str(record.get("sessionId") or "")[:8] or "<unnamed>")
+    recorded = record.get("procStart")
+    identified = (
+        isinstance(recorded, int)
+        and not isinstance(recorded, bool)
+        and _proc_start_ticks(pid, Path("/proc")) == recorded
+    )
+    if not identified:
+        print(
+            f"Claude Code session {label} recorded pid {pid}, which is present but not running "
+            f"(state {state}). The record cannot prove that process is this session, so it is left "
+            f"alone -- the name is not treated as in use.",
+            file=sys.stderr,
+        )
+        return False
+    if _end_session_process(pid):
+        _prune_dead_cc_session_record(entry)
+        print(
+            f"Claude Code session {label} did not exit: pid {pid} was present in state {state}, "
+            f"not gone. Ended it and its process group, pruned the stale record, and resuming "
+            f"this session.",
+            file=sys.stderr,
+        )
+        return True
+    print(
+        f"Claude Code session {label} did not exit: pid {pid} is present in state {state} and "
+        f"could not be ended. Resuming the session anyway; end that process by hand with "
+        f"`kill -CONT {pid}; kill -TERM {pid}`.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _cc_session_is_live(transcript: Path, proc_dir: Path | None = None) -> tuple[bool, int | str | None]:
     """Return whether Claude Code currently has ``transcript``'s UUID registered.
 
@@ -418,6 +576,10 @@ def _cc_session_is_live(transcript: Path, proc_dir: Path | None = None) -> tuple
     when its pid is still running *and* that process's start time matches the
     record's -- an abandoned record otherwise blocked its session name forever.
     Records for dead pids are pruned as the directory is walked.
+
+    A pid that is present but *stopped* is not live either: it is reclaimed (this
+    session's own record only) so the resume can proceed, because a stopped
+    process never ends by itself and would otherwise hold the name for good.
     """
     sessions_dir = Path.home() / ".claude" / "sessions"
     if not sessions_dir.is_dir():
@@ -437,7 +599,15 @@ def _cc_session_is_live(transcript: Path, proc_dir: Path | None = None) -> tuple
             if state == "gone":
                 _prune_dead_cc_session_record(entry)
                 continue
-            if state == "live" and record.get("sessionId") == transcript.stem and not live[0]:
+            this_session = record.get("sessionId") == transcript.stem
+            if state == "abandoned":
+                # Scoped to the session being resumed: this walk visits every
+                # record, so ending someone else's abandoned process here would
+                # turn each launch into a fleet-wide reaper.
+                if this_session:
+                    _reclaim_abandoned_cc_session(entry, record)
+                continue
+            if state == "live" and this_session and not live[0]:
                 live = (True, record.get("pid"))
     except OSError:
         pass
