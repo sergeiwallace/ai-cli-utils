@@ -1,0 +1,13 @@
+# Line endings: LF in the index and in every checkout, on every platform.
+#
+# This repository ships no file that requires CRLF, and `.editorconfig` already
+# declares `end_of_line = lf` for editors. Nothing enforced it in git, so a
+# checkout on a CRLF platform could commit a text file back with CRLF: that is
+# how pyproject.toml was committed as CRLF from a Windows host while every other
+# file stayed LF, producing a permanent whole-file phantom diff everywhere else
+# (see docs/bugs/pyproject-crlf-round-trip.md). `eol=lf` makes that impossible
+# rather than relying on each contributor's core.autocrlf.
+#
+# `text=auto` still lets git detect binary content, so the images and videos
+# under assets/ and demo/ are left byte-for-byte alone.
+* text=auto eol=lf

@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launches in the same burst survived untouched, which is what made it look random.
   The loser now waits for the other update to finish and restarts itself, and the
   liveness check degrades instead of raising if a module goes missing mid-run.
+- `ai update` no longer rewrites `pyproject.toml`'s line endings, and
+  `.gitattributes` now pins every text file to LF in the index and in every
+  checkout (`AI-CLI-mbci`). The version bump round-tripped the file through
+  `Path.read_text()`/`Path.write_text()`, and `read_text()` applies
+  universal-newline translation: a CRLF file came back LF, so the restore
+  reverted the version but silently converted the whole file. `pyproject.toml`
+  had itself been committed as CRLF from a Windows host — the only such file in
+  the repository — so every checkout showed a permanent 172-line phantom diff
+  that re-appeared after every update run, and only the `git checkout --
+  pyproject.toml` opening the next update kept it from accumulating. The bump now
+  reads and writes bytes, so the restore is byte-identical even when the install
+  between the two writes raises, and the committed file is normalized to LF.
+  Details: `docs/bugs/pyproject-crlf-round-trip.md`.
 - **Data loss:** creating a session worktree could delete nested git worktrees,
   including commits that existed nowhere else (`AI-CLI-200`). `.worktrees/<name>`
   carries two incompatible meanings: `ai c <name>` wants that path to *be* the

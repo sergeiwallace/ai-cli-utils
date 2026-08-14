@@ -1692,19 +1692,28 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
         for f in conflict_files:
             print(f"  {f}", file=sys.stderr)
         sys.exit(1)
-    # Read version after pull so the bump applies to the current remote state
-    original = pyproject.read_text()
-    m = re.search(r'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
+    # Read version after pull so the bump applies to the current remote state.
+    #
+    # Bytes, not text, for the whole round trip. Path.read_text() applies
+    # universal-newline translation, so a CRLF pyproject.toml arrived as LF in
+    # memory and the restore below wrote LF back to disk: the version bump was
+    # reverted but the line endings were not, leaving a whole-file phantom diff
+    # that re-appeared on every single update run. Only `git checkout --
+    # pyproject.toml` above kept it from being noticed. write_bytes() translates
+    # nothing, so the restore is byte-identical whatever the file's endings are.
+    original = pyproject.read_bytes()
+    m = re.search(rb'^(version\s*=\s*")([^"]+)(")', original, re.MULTILINE)
     if not m:
         print("Error: could not find version in pyproject.toml", file=sys.stderr)
         sys.exit(1)
-    base = re.sub(r"\.post\d+$", "", m.group(2))
+    old_version = m.group(2).decode("utf-8", "replace")
+    base = re.sub(r"\.post\d+$", "", old_version)
     new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
-    print(f"Updating {m.group(2)} → {new_version}")
+    print(f"Updating {old_version} → {new_version}")
     uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
     exit_code = 0
     try:
-        pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
+        pyproject.write_bytes(original[: m.start(2)] + new_version.encode("utf-8") + original[m.end(2) :])
         # `uv tool install --force` REPLACES the tool environment: it deletes the
         # existing one and rebuilds it. When the tool being updated is the one
         # currently running, that environment holds this interpreter's own mapped
@@ -1729,7 +1738,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
         result = subprocess.run(uv_cmd, cwd=project_path, check=False)
         exit_code = result.returncode
     finally:
-        pyproject.write_text(original)
+        pyproject.write_bytes(original)
     if exit_code == 0:
         # Install into any configured extra venvs (e.g. tool venvs that depend on ai-cli-utils)
         extra_venvs = config.get("update", {}).get("extra_venvs", [])
