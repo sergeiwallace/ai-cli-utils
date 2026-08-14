@@ -291,8 +291,44 @@ ai memory watch          # Watch for Claude Code memory file changes
 ai quota watch           # Monitor API quota usage
 ai telemetry writer      # Run telemetry writer daemon
 ai update [-f/--force]   # Update to latest from source; --force also reinstalls all deps
+ai update -q/--quiet     # Capture git/uv output; report one line naming the new version
+ai update -v/--verbose   # Show the full transcript even when --quiet is also passed
 ai reconnect             # Print reconnect commands for remote sessions
 ```text
+
+### Staying current at session launch
+
+`uv tool install` copies the package into its own environment, so a source change
+does not take effect until it is reinstalled. `ai c <n>` therefore checks, before
+launching, whether the installed build still matches the source — and reinstalls
+it if not.
+
+The check is a content fingerprint of the files that ship in the package
+(`pyproject.toml` and `src/`), not the repository's current commit. A commit
+pointer answers the wrong question in both directions: it advances for commits
+that change nothing installed (a docs edit), and it does not move at all for an
+uncommitted edit under `src/`, which is the most common way the installed build
+goes stale while a change is being tested.
+
+When a reinstall is needed, the launch runs it quietly and prints one line:
+
+```text
+ai-cli-utils 0.7.0.post20260814190112 installed (cache-bypassing reinstall)
+```
+
+The version carries a `.post<timestamp>` suffix so uv cannot serve a cached build
+of an already-seen version; the file on disk is restored to its base version
+immediately afterwards. Failures are never quiet — the captured `git`/`uv`
+transcript is printed in full on stderr, and the stamp is cleared so the next
+launch retries rather than remembering a failed install as done.
+
+Two escape hatches:
+
+- `AI_CLI_UPDATE_VERBOSE=1` — show the whole transcript at launch instead of the
+  one-line summary.
+- `ai update --force` — reinstall on demand, bypassing uv's cache and
+  reinstalling dependencies. It never consults the fingerprint, so it is the way
+  to force a refresh when the installed build is suspect.
 
 ## Configuration
 

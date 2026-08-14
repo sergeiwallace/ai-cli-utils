@@ -16,6 +16,7 @@ from ai_cli.main import (
     _cmd_tunnel_status,
     _cmd_tunnel_stop,
     _find_aicli_project_path,
+    _installed_source_fingerprint,
     _load_iterm2_config,
     _log_handoff_event,
     _migrate_xdg_dir,
@@ -628,16 +629,25 @@ class TestAutoUpdateIfStaleLockContention:
     """
 
     def _project(self, tmp_path):
+        """Build the project and return the stamp value the launcher will look for.
+
+        The staleness signal is a content fingerprint of the packaged source
+        (`AI-CLI-ww8o`), not the repository's HEAD, so the stamp value is computed
+        from the tree rather than mocked out of `git rev-parse`. Deriving it from
+        the real function is deliberate: hard-coding a digest here would let the
+        test pass against a fingerprint that no longer matches what the launcher
+        computes, which is the whole condition these tests exist to pin.
+        """
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
         head = MagicMock()
         head.returncode = 0
         head.stdout = "abc123\n"
-        return head
+        return head, _installed_source_fingerprint(tmp_path)
 
     def test_given_peer_holds_lock_and_completes_update_when_auto_update_runs_then_requests_reexec(self, tmp_path):
         """The peer finished and the stamp advanced, so our imports are stale -> re-exec."""
-        head = self._project(tmp_path)
-        lock = tmp_path / "last_update_commit.lock"
+        head, fingerprint = self._project(tmp_path)
+        lock = tmp_path / "last_install_fingerprint.lock"
         lock.write_text("")  # a peer already claimed the update
 
         def fake_run(cmd, **kwargs):
@@ -647,7 +657,7 @@ class TestAutoUpdateIfStaleLockContention:
 
         def peer_finishes(*_args, **_kwargs):
             # Model the winner completing mid-wait: stamp written, lock released.
-            (tmp_path / "last_update_commit.txt").write_text("abc123")
+            (tmp_path / "last_install_fingerprint.txt").write_text(fingerprint)
             lock.unlink(missing_ok=True)
 
         with (
@@ -665,8 +675,8 @@ class TestAutoUpdateIfStaleLockContention:
         self, tmp_path, capsys
     ):
         """Bounded wait: a stuck peer must not hang the launch or loop re-execing (AC-3)."""
-        head = self._project(tmp_path)
-        (tmp_path / "last_update_commit.lock").write_text("")  # never released
+        head, _fingerprint = self._project(tmp_path)
+        (tmp_path / "last_install_fingerprint.lock").write_text("")  # never released
 
         def fake_run(cmd, **kwargs):
             if "rev-parse" in cmd:
@@ -696,8 +706,8 @@ class TestAutoUpdateIfStaleLockContention:
         Without this, both tests above would pass against a function that always
         returned True or always waited, which would assert nothing about contention.
         """
-        head = self._project(tmp_path)
-        (tmp_path / "last_update_commit.txt").write_text("abc123")
+        head, fingerprint = self._project(tmp_path)
+        (tmp_path / "last_install_fingerprint.txt").write_text(fingerprint)
 
         def fake_run(cmd, **kwargs):
             if "rev-parse" in cmd:

@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -666,17 +667,96 @@ def _await_peer_update(
     return False
 
 
+UPDATE_VERBOSE_ENV = "AI_CLI_UPDATE_VERBOSE"
+
+
+def _update_verbose_requested() -> bool:
+    """Whether the operator asked to see the whole update transcript at launch.
+
+    The session-launch auto-update is quiet by default; ``AI_CLI_UPDATE_VERBOSE=1``
+    is the escape hatch for the case the quieting exists to serve — checking
+    whether a source change actually reached the installed build.
+    """
+    return os.environ.get(UPDATE_VERBOSE_ENV, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _packaged_source_paths(project_path: Path) -> list[Path]:
+    """Return every file that ends up inside the installed wheel, sorted.
+
+    ``pyproject.toml`` (metadata, dependencies, entry points) plus the whole
+    ``src/`` tree, which is what ``[tool.hatch.build.targets.wheel]`` packages —
+    modules and the bundled ``data/`` artifacts alike. Nothing else in the
+    repository can change the installed code, so nothing else belongs here.
+    """
+    pyproject = project_path / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+    paths = [pyproject]
+    src_dir = project_path / "src"
+    if src_dir.is_dir():
+        paths += [
+            p
+            for p in src_dir.rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts and p.suffix not in (".pyc", ".pyo")
+        ]
+    # Sort on the POSIX-form relative path so the order is identical on every
+    # platform; rglob's own order is filesystem-defined and would change the hash.
+    return sorted(paths, key=lambda p: p.relative_to(project_path).as_posix())
+
+
+def _installed_source_fingerprint(project_path: Path) -> str | None:
+    """Hash the packaged source, or ``None`` if it cannot be read.
+
+    This is the staleness signal for the session-launch auto-update, replacing a
+    comparison against the repository's ``HEAD``. A commit pointer is the wrong
+    question in both directions: it advances for commits that change nothing that
+    ships (a docs edit, a task-tracker sync), which made every unrelated commit
+    cost the next launch a full pull-and-reinstall, and it does not move at all
+    for an uncommitted edit under ``src/``, which is the single most common way
+    the installed build actually goes stale while someone is testing a change.
+    """
+    digest = hashlib.sha256()
+    paths = _packaged_source_paths(project_path)
+    if not paths:
+        return None
+    for path in paths:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            # An unreadable input means the fingerprint cannot be trusted. Say so
+            # rather than hashing a partial tree, which would read as "changed"
+            # forever and reinstall on every launch.
+            return None
+        rel = path.relative_to(project_path).as_posix()
+        # Length-delimit each record so a rename cannot collide with a content edit.
+        digest.update(f"{rel}\0{len(data)}\0".encode())
+        digest.update(data)
+    return digest.hexdigest()
+
+
 def _auto_update_if_stale(config: dict) -> bool:
-    """Update stale source and report whether the invoking launcher must restart."""
+    """Reinstall at session launch only when the packaged source has changed, and
+    report whether the invoking launcher must restart.
+
+    The install is not editable — ``uv tool install`` copies the package into its
+    own venv — so a source change really does need a reinstall before it can take
+    effect, and ``ai update`` defeats uv's cache with a unique ``.post<timestamp>``
+    version to guarantee it. That guarantee is preserved; what changes here is
+    *when* it is spent and how loud it is. The trigger is a content fingerprint of
+    the packaged files (see ``_installed_source_fingerprint``), and the update runs
+    quietly, reporting one line instead of the whole pull-and-install transcript.
+
+    A successful reinstall rewrote this process's own installed tree, so the
+    caller must re-exec: True says so. Every other outcome returns False.
+    """
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
         return False
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True, check=False)
-    if head.returncode != 0:
+    fingerprint = _installed_source_fingerprint(project_path)
+    if fingerprint is None:
         return False
-    current_hash = head.stdout.strip()
-    stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
-    if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
+    stamp_file = _config.get_xdg_state_home() / "last_install_fingerprint.txt"
+    if stamp_file.exists() and stamp_file.read_text().strip() == fingerprint:
         return False
     # Serialize concurrent workers with an exclusive create-only lockfile.
     # O_CREAT|O_EXCL is atomic on both POSIX and Windows.
@@ -695,14 +775,22 @@ def _auto_update_if_stale(config: dict) -> bool:
         # adjacent line.  Wait for the peer instead, then re-exec if it advanced
         # the stamp.  Terminating by construction: the re-exec'd process sees the
         # fresh stamp and early-returns above, so it never reaches this branch.
-        return _await_peer_update(lock_path, stamp_file, current_hash)
+        return _await_peer_update(lock_path, stamp_file, fingerprint)
     try:
         # Re-check after acquiring lock — another process may have just updated.
-        if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
+        if stamp_file.exists() and stamp_file.read_text().strip() == fingerprint:
             return False
-        print("ai-cli-utils has new commits — running ai update --force...")
+        # The stamp is deliberately NOT written here, before the install. Doing so
+        # made a concurrent launch's early return above see the new fingerprint
+        # while `uv tool install` was still rewriting the files that launch imports
+        # from -- the same unsafe skip AI-CLI-an5r closed for the lock loser. It is
+        # written only once the install has actually succeeded, below, which also
+        # means a failed install is retried on the next launch rather than being
+        # remembered as done.
+        verbose = _update_verbose_requested()
         ai_bin = shutil.which("ai") or "ai"
-        result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path, check=False)
+        cmd = [ai_bin, "update", "--force"] + ([] if verbose else ["--quiet"])
+        result = subprocess.run(cmd, cwd=project_path, capture_output=not verbose, text=True, check=False)
         if result.returncode != 0:
             # A failed update is not automatically a harmless no-op. `uv tool
             # install --force` tears the environment down before rebuilding it, so
@@ -724,11 +812,23 @@ def _auto_update_if_stale(config: dict) -> bool:
                     "Warning: auto-update failed; the existing installation is intact and still in use.",
                     file=sys.stderr,
                 )
+            # Quieting the success path must never quiet a failure: with the
+            # transcript captured rather than streamed, it is the only diagnostic
+            # there is, so it is replayed in full here.
+            captured = f"{result.stdout or ''}{result.stderr or ''}".rstrip()
+            if captured:
+                print(captured, file=sys.stderr)
             return False
         # Do not make a failed installation look current.  The caller must re-exec
         # after a successful installation because this process still has the old
         # template generator imported.
-        stamp_file.write_text(current_hash)
+        stamp_file.write_text(fingerprint)
+        summary = (result.stdout or "").strip()
+        if summary:
+            print(summary)
+        warnings = (result.stderr or "").strip()
+        if warnings:
+            print(warnings, file=sys.stderr)
         return True
     finally:
         lock_path.unlink(missing_ok=True)
@@ -929,7 +1029,7 @@ def _sync_stable_session_script(tmux_session: str) -> "bool | None":
     return _write_launch_script_if_changed(state_dir / "sessions" / f"{tmux_session}.sh", script)
 
 
-def _refresh_live_session_scripts() -> int:
+def _refresh_live_session_scripts(quiet: bool = False) -> int:
     """Regenerate stable scripts for every live ai-cli tmux session.
 
     Called after ``ai update`` installs a new template so the wrapper's mtime
@@ -953,7 +1053,8 @@ def _refresh_live_session_scripts() -> int:
         if (_config.get_xdg_state_home() / f"session-meta-{sname}.json").exists() and _sync_stable_session_script(
             sname
         ):
-            print(f"  refreshed session template: {sname}")
+            if not quiet:
+                print(f"  refreshed session template: {sname}")
             refreshed += 1
     return refreshed
 
@@ -1617,7 +1718,15 @@ def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None)
 # --- Command implementations (invoked by Click handlers below) ---
 
 
-def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
+def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = False) -> None:
+    """Pull, bump the version so uv cannot serve a cached build, and install.
+
+    ``quiet`` captures git's and uv's output instead of streaming it, and reports
+    one summary line naming the version that was installed. It exists for the
+    session-launch auto-update, where the full transcript scrolled past every
+    launch immediately before the session painted. Failures are never quiet: the
+    captured transcript is printed in full on stderr.
+    """
     project_path = _find_aicli_project_path(config)
     if project_path is None:
         print(
@@ -1633,8 +1742,9 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
         )
         sys.exit(1)
     # Restore pyproject.toml before pull — it may be dirty from an interrupted previous update
-    subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, check=False)
-    print("Pulling latest from origin...")
+    subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, capture_output=quiet, check=False)
+    if not quiet:
+        print("Pulling latest from origin...")
     # AIH-443 Shape B: `git pull --rebase --autostash` exits 0 even when its
     # automatic stash pop conflicted, so the exit code alone cannot be trusted
     # (measured on git 2.43.0 and 2.55.0). Left unchecked this strands the
@@ -1709,9 +1819,11 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
     old_version = m.group(2).decode("utf-8", "replace")
     base = re.sub(r"\.post\d+$", "", old_version)
     new_version = f"{base}.post{int(time.strftime('%Y%m%d%H%M%S'))}"
-    print(f"Updating {old_version} → {new_version}")
+    if not quiet:
+        print(f"Updating {old_version} → {new_version}")
     uv_bin = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
     exit_code = 0
+    captured = ""
     try:
         pyproject.write_bytes(original[: m.start(2)] + new_version.encode("utf-8") + original[m.end(2) :])
         # `uv tool install --force` REPLACES the tool environment: it deletes the
@@ -1735,10 +1847,15 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
                 uv_cmd.append("--reinstall")
             if _should_use_uv_link_mode_copy(uv_bin):
                 uv_cmd.append("--link-mode=copy")
-        result = subprocess.run(uv_cmd, cwd=project_path, check=False)
+        result = subprocess.run(uv_cmd, cwd=project_path, capture_output=quiet, text=True, check=False)
         exit_code = result.returncode
+        if quiet:
+            captured = f"{result.stdout or ''}{result.stderr or ''}"
     finally:
         pyproject.write_bytes(original)
+    if exit_code != 0 and captured.strip():
+        # Quiet mode hides uv's progress, never its diagnosis.
+        print(captured.rstrip(), file=sys.stderr)
     if exit_code == 0:
         # Install into any configured extra venvs (e.g. tool venvs that depend on ai-cli-utils)
         extra_venvs = config.get("update", {}).get("extra_venvs", [])
@@ -1750,11 +1867,19 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
                     pip_cmd.append("--force-reinstall")
                 if _should_use_uv_link_mode_copy(uv_bin, venv_path):
                     pip_cmd.append("--link-mode=copy")
-                subprocess.run(
+                pip_result = subprocess.run(
                     pip_cmd,
                     env={**os.environ, "VIRTUAL_ENV": str(venv_path)},
+                    capture_output=quiet,
+                    text=True,
                     check=False,
                 )
+                if quiet and pip_result.returncode != 0:
+                    print(
+                        f"Warning: installing into {venv_path} failed (exit {pip_result.returncode}):\n"
+                        f"{(pip_result.stdout or '') + (pip_result.stderr or '')}".rstrip(),
+                        file=sys.stderr,
+                    )
         # Clear pycache (cross-platform)
         for _cache_dir in project_path.rglob("__pycache__"):
             if _cache_dir.is_dir():
@@ -1769,17 +1894,33 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
             stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
             stamp_file.parent.mkdir(parents=True, exist_ok=True)
             stamp_file.write_text(head.stdout.strip())
+        # Record the fingerprint of the source this install was built from, so the
+        # next session launch can tell "already installed" from "genuinely stale"
+        # without asking git what the current commit is. Written after the restore
+        # above, so it describes the pyproject.toml that will be on disk next time —
+        # not the transient bumped one. The HEAD stamp above stays: it is what the
+        # generated session wrapper's own self-update reads.
+        fingerprint = _installed_source_fingerprint(project_path)
+        if fingerprint is not None:
+            fingerprint_file = _config.get_xdg_state_home() / "last_install_fingerprint.txt"
+            fingerprint_file.parent.mkdir(parents=True, exist_ok=True)
+            fingerprint_file.write_text(fingerprint)
         # Regenerate the stable launch script for every live ai-cli session so the
         # wrapper's mtime hot-reload picks up this new template on its next restart —
         # no full `ai c` relaunch needed. Belt-and-suspenders alongside the commit-stamp
         # self-update baked into newly generated templates.
-        _n = _refresh_live_session_scripts()
-        if _n:
+        _n = _refresh_live_session_scripts(quiet=quiet)
+        if _n and not quiet:
             print(f"Refreshed {_n} live session template(s) — they reload on next restart.")
         # Deploy bundled CC config files to ~/.claude/ — write as plain files so any
         # pre-existing symlinks are replaced. These files are owned by ai-cli-utils and
         # should not be managed by ai sync or tracked in any project git repo.
         _deploy_cc_config_files(project_path)
+        if quiet:
+            # The whole quiet path's output: one line, naming what is now installed
+            # and why it was rebuilt.
+            reason = "cache-bypassing reinstall" if force_reinstall else "fresh build"
+            print(f"ai-cli-utils {new_version} installed ({reason})")
     sys.exit(exit_code)
 
 
@@ -3855,17 +3996,21 @@ def cmd_reconnect(sessions):
 
 
 @_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")
-@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install")
-def cmd_update(force):
+@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
+@click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
+@click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
+def cmd_update(force, quiet, verbose):
     config = _config.load_config()
-    _do_update_or_deploy(force_reinstall=force, config=config)
+    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose)
 
 
 @_cli_group.command("deploy", help="Alias for update (historical)")
-@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install")
-def cmd_deploy(force):
+@click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
+@click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
+@click.option("-v", "--verbose", is_flag=True, help="Show the full git/uv transcript even when --quiet is passed")
+def cmd_deploy(force, quiet, verbose):
     config = _config.load_config()
-    _do_update_or_deploy(force_reinstall=force, config=config)
+    _do_update_or_deploy(force_reinstall=force, config=config, quiet=quiet and not verbose)
 
 
 @_cli_group.command(

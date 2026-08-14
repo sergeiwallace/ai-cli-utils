@@ -68,6 +68,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launches in the same burst survived untouched, which is what made it look random.
   The loser now waits for the other update to finish and restarts itself, and the
   liveness check degrades instead of raising if a module goes missing mid-run.
+- `ai c <n>` no longer reinstalls the package, or prints the installer
+  transcript, on nearly every launch (`AI-CLI-ww8o`). The launch-time staleness
+  check compared the repository's `HEAD` against a stamp, so any commit — a
+  docs edit, a task-tracker sync — armed the next launch on every machine for a
+  full `git pull` plus `uv tool install`, whose whole `Resolved / Prepared /
+  Installed` block streamed into the terminal immediately before the session
+  painted. `HEAD` is the wrong signal in both directions: it also fails to move
+  for an uncommitted edit under `src/`, which is the most common way the
+  installed build goes stale while a change is being tested. The trigger is now
+  a content fingerprint of the files that actually ship (`pyproject.toml` and
+  `src/`), recorded at install time, so an unrelated commit costs nothing and an
+  uncommitted source edit is now picked up where it previously was not. The
+  reinstall itself keeps the unique `.post<timestamp>` version that stops uv
+  serving a cached build — the guarantee the unconditional reinstall existed for
+  — and reports one line naming the version and why it rebuilt, with `git`'s and
+  `uv`'s output captured. Failures are never quiet: the captured transcript is
+  printed in full on stderr and the stamp is cleared so the next launch retries.
+  `AI_CLI_UPDATE_VERBOSE=1` restores the full transcript at launch, `ai update`
+  gains `-q/--quiet` and `-v/--verbose`, and `ai update --force` still forces a
+  cache-bypassing reinstall on demand regardless of the fingerprint.
 - `ai update` no longer rewrites `pyproject.toml`'s line endings, and
   `.gitattributes` now pins every text file to LF in the index and in every
   checkout (`AI-CLI-mbci`). The version bump round-tripped the file through

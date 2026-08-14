@@ -16,6 +16,7 @@ from ai_cli.main import (
     _configure_tmux_for_iterm2,
     _decode_tmux_stderr,
     _ensure_nats_tunnel,
+    _installed_source_fingerprint,
     cli,
     get_engine_script,
     trigger_background_update,
@@ -2446,14 +2447,14 @@ class TestTriggerBackgroundUpdateRecent:
 
 
 class TestAutoUpdateIfStale:
-    def test_when_hash_matches_then_skips_update(self, tmp_path):
+    def test_when_fingerprint_matches_then_skips_update(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')
-        stamp = tmp_path / "last_update_commit.txt"
-        stamp.write_text("abc123")
+        stamp = tmp_path / "last_install_fingerprint.txt"
+        stamp.write_text(_installed_source_fingerprint(tmp_path))
 
         def fake_run(cmd, **kwargs):
-            return MagicMock(returncode=0, stdout="abc123\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
@@ -2461,21 +2462,21 @@ class TestAutoUpdateIfStale:
         ):
             _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
 
-        ai_calls = [c for c in mock_run.call_args_list if "ai" in str(c) and "update" in str(c)]
-        assert len(ai_calls) == 0
+        # Not just "no update": the launch must not shell out to git either.
+        assert mock_run.call_args_list == []
 
-    def test_when_hash_differs_then_runs_update(self, tmp_path):
+    def test_when_fingerprint_differs_then_runs_update(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nversion = "0.1.0"\n')
-        stamp = tmp_path / "last_update_commit.txt"
-        stamp.write_text("old_hash")
+        stamp = tmp_path / "last_install_fingerprint.txt"
+        stamp.write_text("a" * 64)
 
         update_called = []
 
         def fake_run(cmd, **kwargs):
             if "update" in cmd:
                 update_called.append(cmd)
-            return MagicMock(returncode=0, stdout="new_hash\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),

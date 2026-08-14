@@ -30,6 +30,7 @@ from conftest import run_cli
 from ai_cli.main import (
     _auto_update_if_stale,
     _deploy_cc_config_files,
+    _installed_source_fingerprint,
     cli,
     main,
 )
@@ -378,25 +379,20 @@ class TestReconnectTransportError:
         assert "ai c 1" in out or "remote session" in out.lower()
 
 
-# --- _auto_update_if_stale lockfile early-return (216-217) + post-lock re-check (221) ---
+# --- _auto_update_if_stale lockfile early-return + post-lock re-check ---
 
 
 class TestAutoUpdateLockfile:
     def test_given_lockfile_exists_when_auto_update_then_returns_early(self, tmp_path):
-        """Line 216-217: pre-existing lockfile → O_CREAT|O_EXCL raises OSError → return."""
+        """A pre-existing lockfile → O_CREAT|O_EXCL raises OSError → return."""
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         # Pre-create the lockfile so O_CREAT|O_EXCL fails
-        (state_dir / "last_update_commit.lock").touch()
-
-        head = MagicMock(returncode=0, stdout="abc123\n")
-        update = MagicMock(returncode=0)
+        (state_dir / "last_install_fingerprint.lock").touch()
 
         def fake_run(cmd, **kwargs):
-            if "rev-parse" in cmd:
-                return head
-            return update
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
             patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
@@ -405,34 +401,30 @@ class TestAutoUpdateLockfile:
             patch("shutil.which", return_value="/usr/bin/ai"),
         ):
             _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
-        # rev-parse runs, but update subprocess must NOT run
+        # The source is unstamped (so stale), but the update subprocess must NOT run
         calls = [c.args[0] for c in mock_run.call_args_list]
         update_calls = [c for c in calls if len(c) >= 2 and c[1] == "update"]
         assert not update_calls
 
     def test_given_stamp_matches_after_lock_when_auto_update_then_skips_update(self, tmp_path):
-        """Line 221: after acquiring lock, stamp file matches → return before update."""
+        """After acquiring the lock, a now-matching stamp returns before the update."""
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        # Initially stamp does not match — so we pass the pre-lock check.
-        # But we want the POST-lock check to match, so we install a side_effect
-        # that writes the stamp file at the moment the lockfile is created.
-        current_hash = "abc123"
-        head = MagicMock(returncode=0, stdout=current_hash + "\n")
+        # Initially the stamp is absent — so we pass the pre-lock check. To exercise
+        # the POST-lock check we write the current fingerprint at the moment the
+        # lockfile is created, standing in for a concurrent worker that just finished.
+        fingerprint = _installed_source_fingerprint(tmp_path)
 
         def fake_run(cmd, **kwargs):
-            if "rev-parse" in cmd:
-                return head
-            return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         real_os_open = os.open
 
         def fake_os_open(path, flags, *args, **kwargs):
             fd = real_os_open(path, flags, *args, **kwargs)
-            # Simulate a concurrent writer that populated the stamp just before we grabbed the lock
-            if "last_update_commit.lock" in str(path):
-                (state_dir / "last_update_commit.txt").write_text(current_hash)
+            if "last_install_fingerprint.lock" in str(path):
+                (state_dir / "last_install_fingerprint.txt").write_text(fingerprint)
             return fd
 
         with (
@@ -448,7 +440,7 @@ class TestAutoUpdateLockfile:
         update_calls = [c for c in calls if len(c) >= 2 and c[1] == "update"]
         assert not update_calls  # must skip update due to post-lock re-check
         # lockfile cleaned up
-        assert not (state_dir / "last_update_commit.lock").exists()
+        assert not (state_dir / "last_install_fingerprint.lock").exists()
 
     def test_given_successful_update_when_auto_update_then_records_stamp_and_requests_restart(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
@@ -469,7 +461,10 @@ class TestAutoUpdateLockfile:
             updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
 
         assert updated is True
-        assert (state_dir / "last_update_commit.txt").read_text() == "abc123"
+        # The recorded stamp is the packaged-source fingerprint, not HEAD (`AI-CLI-ww8o`):
+        # a commit pointer moved for commits that ship nothing and stood still for
+        # uncommitted edits under src/, so it was wrong in both directions.
+        assert (state_dir / "last_install_fingerprint.txt").read_text() == _installed_source_fingerprint(tmp_path)
 
 
 class TestSessionAutoUpdateRestart:
