@@ -165,13 +165,15 @@ def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
       exec the engine anyway, without the project environment.  Losing project
       env vars is a degraded session; losing the session entirely is not
       recoverable from inside the tool.
+    - ``.envrc`` present but direnv not installed: skip the approval hint (it
+      would fail anyway) and exec the engine directly.
     """
     envrc = _find_envrc(project_root)
     if envrc is not None and _direnv_env_usable(project_root):
         # FileNotFoundError falls through to a direct exec below
         with contextlib.suppress(FileNotFoundError):
             os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
-    elif envrc is not None:
+    elif envrc is not None and _direnv_installed():
         print(
             f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
             f"  Approve it with:  direnv allow {envrc.parent}",
@@ -200,6 +202,11 @@ def _find_envrc(start: Path) -> "Path | None":
         if candidate.is_file():
             return candidate
     return None
+
+
+def _direnv_installed() -> bool:
+    """True when direnv is available on PATH."""
+    return shutil.which("direnv") is not None
 
 
 def _direnv_env_usable(project_root: Path) -> bool:

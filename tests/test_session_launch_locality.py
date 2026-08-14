@@ -149,6 +149,26 @@ def test_given_direnv_missing_when_envrc_present_then_falls_back_to_direct_exec(
     assert execs and execs[0][0] == "claude"
 
 
+def test_given_direnv_missing_when_envrc_present_then_no_approval_warning(tmp_path, capsys):
+    """No 'direnv allow' hint when direnv is not installed.
+
+    The hint is only actionable when direnv is on PATH.  On a host where it is
+    absent, printing it misleads the user into running a command that will itself
+    fail with 'direnv: command not found'.
+    """
+    (tmp_path / ".envrc").write_text("export X=1\n")
+
+    with (
+        patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)),
+        patch("ai_cli.main.subprocess.run", side_effect=FileNotFoundError("no direnv")),
+        patch("ai_cli.main.shutil.which", return_value=None),
+    ):
+        with pytest.raises(SystemExit):
+            _exec_with_direnv(tmp_path, ["claude", "--name", "kg-1"])
+
+    assert "direnv allow" not in capsys.readouterr().err
+
+
 # --- end-to-end: the worktree lands in the launching repo ----------------------
 
 
