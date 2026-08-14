@@ -101,6 +101,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads and writes bytes, so the restore is byte-identical even when the install
   between the two writes raises, and the committed file is normalized to LF.
   Details: `docs/bugs/pyproject-crlf-round-trip.md`.
+- Exiting a session could leave its process **stopped** rather than gone, and the
+  launcher then refused to resume the name (`AI-CLI-2139`). A process in state `T`
+  is fully present in `/proc`, holds its pid and its open files, and never resumes
+  on its own, so the registry check's two questions — does the pid exist, does its
+  start time match the record — were both answered "yes" for a session nobody was
+  using. `ai c <n>` printed "still running", dropped `--continue`, and started a
+  new differently-named session; nothing ever reaped the stopped process, so the
+  name stayed reserved. The terminate that looked successful was the same trap: a
+  stopped process does not run, so it queues the `SIGTERM` and `kill` returns 0
+  without anything happening. The liveness check now reads the `/proc` state field
+  and classifies `T`/`t`/`Z`/`X`/`x` as *abandoned* rather than live, and the
+  launcher ends an abandoned process it can positively identify — `SIGTERM`,
+  `SIGCONT`, bounded wait, `SIGKILL`, aimed at the process **group** so a
+  wrapper's children are not orphaned — confirms the outcome from the absence of
+  `/proc/<pid>` rather than from a signal's return code, prunes the stale record,
+  and says what it found and what it did before resuming. Reclamation is scoped to
+  the session being resumed, so a launch never becomes a fleet-wide reaper; a
+  genuinely running session still blocks its name and is never signalled; and a
+  record that cannot prove which process its pid is (no matching start time) is
+  reported and left alone rather than killed. Procedure, including the
+  verification step to run after any exit:
+  `docs/procedures/exiting-a-cc-session.md`.
 - **Data loss:** creating a session worktree could delete nested git worktrees,
   including commits that existed nowhere else (`AI-CLI-200`). `.worktrees/<name>`
   carries two incompatible meanings: `ai c <name>` wants that path to *be* the
