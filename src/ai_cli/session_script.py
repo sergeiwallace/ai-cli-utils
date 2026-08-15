@@ -5,7 +5,35 @@ Depends on: nothing (self-contained).
 
 import json
 import re
+import shutil
 from pathlib import Path
+
+# Interpreters that can run the generated session template, most preferred first.
+# zsh stays first because that is what every host has used to date; the ordering,
+# not the presence of zsh, is what this list encodes.
+SESSION_SHELL_PREFERENCE = ("zsh", "bash")
+
+
+def resolve_session_shell() -> str | None:
+    """Absolute path of the shell that should interpret the session script.
+
+    zsh remains the *preferred* interpreter wherever it is installed — switching
+    hosts that have it would be a behavioural change, not a portability fix. bash
+    is the fallback, and a safe one: the generated template uses only ``[[ ]]``,
+    ``(( ))`` and POSIX builtins, and its own self-update branch already execs a
+    refreshed template under ``bash``.
+
+    Returns ``None`` when neither shell is installed, so the caller can fail with
+    an actionable message. Handing tmux an interpreter that does not exist is the
+    worst option available: ``tmux new-session`` still reports success, then the
+    pane's exec fails, the pane dies, the session is torn down, and the user sees
+    only a bare ``[exited]`` with no diagnostic.
+    """
+    for candidate in SESSION_SHELL_PREFERENCE:
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return None
 
 
 def _current_update_commit() -> str:
@@ -57,6 +85,11 @@ def get_engine_script(
     except Exception:
         _template_version = "unknown"
     _template_commit = _current_update_commit()
+    # Same interpreter the launcher hands tmux, baked in so a hot-reload/self-update
+    # exec cannot resurrect a hard zsh dependency the launch path just resolved away.
+    # ``or "bash"`` only guards template *generation* on a host with neither shell;
+    # the launch path itself refuses to start in that case, with a real message.
+    _session_shell = resolve_session_shell() or "bash"
 
     # Resolve iTerm2 slot values for embedding in bash template
     _cfg = iterm2_cfg or {}
@@ -89,10 +122,23 @@ def get_engine_script(
     {cd_cmd}
     direnv_root="$PWD"
     agent_direnv_blocked=false
+    agent_used_direnv=false
     run_agent() {{
-      direnv exec "$direnv_root" "$@"
+      # direnv is an enhancement, never a precondition for starting a session —
+      # the same invariant the bare launch path (`_exec_with_direnv`) documents and
+      # enforces. Unguarded, `direnv exec` on a host without direnv makes every
+      # launch exit 127 before the agent runs, which the elapsed<3 guard below then
+      # reports as an .envrc *approval* problem — pointing at a trust prompt when
+      # the binary simply is not installed.
+      if command -v direnv >/dev/null 2>&1; then
+        agent_used_direnv=true
+        direnv exec "$direnv_root" "$@"
+      else
+        agent_used_direnv=false
+        "$@"
+      fi
       agent_exit_code=$?
-      if (( agent_exit_code != 0 )); then
+      if (( agent_exit_code != 0 )) && $agent_used_direnv; then
         # A cheap, isolated re-probe (not a redirect on the command above) — that
         # command is a long-running interactive process (claude/gemini), and
         # capturing its stderr for later inspection would buffer it instead of
@@ -408,7 +454,7 @@ def get_engine_script(
         _cur_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
         if [[ "$_cur_mtime" != "$_script_start_mtime" && "$_cur_mtime" != "0" ]]; then
           echo "ai-cli session script updated — reloading..."
-          exec zsh "$_script_stable_path"
+          exec "{_session_shell}" "$_script_stable_path"
         fi
       fi
       start_watcher
@@ -560,10 +606,10 @@ with open(path, 'w') as f:
         echo "ai-cli updated — reloading session template..."
         _refresh_script=$(ai internal refresh-template "$tmux_session" 2>/dev/null)
         if [[ -n "$_refresh_script" && -f "$_refresh_script" ]]; then
-          exec bash "$_refresh_script"
+          exec "{_session_shell}" "$_refresh_script"
         elif [[ -f "$_script_stable_path" ]]; then
           # Fall back to the stable script `ai update` rewrote for this session.
-          exec zsh "$_script_stable_path"
+          exec "{_session_shell}" "$_script_stable_path"
         else
           # Do NOT advance _template_version/_template_commit on failure — a transient
           # refresh error must not permanently disable self-update. Retry next restart.

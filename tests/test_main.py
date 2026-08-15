@@ -27,6 +27,7 @@ from ai_cli.main import (
     get_xdg_state_home,
     load_config,
 )
+from ai_cli.session_script import resolve_session_shell
 
 # --- XDG helpers ---
 
@@ -247,7 +248,11 @@ class TestGetEngineScript:
         # The fifth branch starts fresh when the matched transcript is live.
         assert script.count("run_agent claude") == 5
         assert "--continue" in script
-        assert 'exec zsh "$_script_stable_path"' in script
+        # Hot-reload must exec an interpreter that exists here — a hardcoded one
+        # that does not kills the pane on the session's first self-update.
+        _shell = resolve_session_shell()
+        assert _shell is not None and os.access(_shell, os.X_OK)
+        assert f'exec "{_shell}" "$_script_stable_path"' in script
         assert "direnv denied or could not evaluate .envrc" in script
 
     def test_given_direnv_blocks_auto_restart_when_agent_exits_then_script_prints_recovery_command(self):

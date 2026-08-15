@@ -17,12 +17,27 @@ from ai_cli.main import (
     get_engine_script,
     trigger_background_update,
 )
+from ai_cli.session_script import resolve_session_shell
 
 
 def _successful_worktree(tmp_path, ai_name):
     path = tmp_path / ".worktrees" / ai_name
     path.mkdir(parents=True)
     return path, False
+
+
+def _worktree_with_envrc(tmp_path, ai_name):
+    """A worktree that direnv has something to load, so the launch path uses it.
+
+    ``direnv exec`` is only prefixed onto a launch when there is an ``.envrc``
+    above the target *and* direnv can evaluate it — direnv is an enhancement,
+    never a precondition. Tests that assert the direnv-wrapped argv therefore
+    have to create that precondition rather than assume it; the ``.envrc`` here
+    is a real file read by the real ``_find_envrc`` walk.
+    """
+    path, created = _successful_worktree(tmp_path, ai_name)
+    (path / ".envrc").write_text("export AI_CLI_TEST=1\n")
+    return path, created
 
 
 # --- CLI dispatch tests ---
@@ -856,7 +871,7 @@ class TestCliOncePath:
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -882,7 +897,7 @@ class TestCliOncePath:
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -909,7 +924,7 @@ class TestCliOncePath:
                             ):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-research"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-research"),
                                 ):
                                     with patch(
                                         "ai_cli.config.get_session_map", return_value={"sw-research": "uuid123"}
@@ -937,7 +952,7 @@ class TestCliOncePath:
                             ):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-research"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-research"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -1771,7 +1786,11 @@ class TestGetEngineScript:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "_script_stable_path" in script
         assert "_script_start_mtime" in script
-        assert "exec zsh" in script
+        # The hot-reload exec must name an interpreter that actually exists on
+        # this host: a hardcoded one that does not kills the pane on reload.
+        shell = resolve_session_shell()
+        assert shell is not None and os.access(shell, os.X_OK)
+        assert f'exec "{shell}" "$_script_stable_path"' in script
 
     def test_get_engine_script_includes_set_environment_after_first_run(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")

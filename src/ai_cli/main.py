@@ -168,24 +168,42 @@ def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
       recoverable from inside the tool.
     - ``.envrc`` present but direnv not installed: skip the approval hint (it
       would fail anyway) and exec the engine directly.
+
+    The decision itself lives in :func:`_direnv_prefix` so the tmux ``--once``
+    launch path applies the identical policy instead of its own hardcode.
     """
-    envrc = _find_envrc(project_root)
-    if envrc is not None and _direnv_env_usable(project_root):
+    prefix = _direnv_prefix(project_root)
+    if prefix:
         # FileNotFoundError falls through to a direct exec below
         with contextlib.suppress(FileNotFoundError):
-            os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
-    elif envrc is not None and _direnv_installed():
-        print(
-            f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
-            f"  Approve it with:  direnv allow {envrc.parent}",
-            file=sys.stderr,
-        )
+            os.execvp(prefix[0], [*prefix, *command])
 
     try:
         os.execvp(command[0], command)
     except FileNotFoundError:
         print(f"Error: {command[0]} not found on PATH.", file=sys.stderr)
         sys.exit(1)
+
+
+def _direnv_prefix(project_root: Path) -> list[str]:
+    """``["direnv", "exec", <root>]`` when direnv can actually run there, else ``[]``.
+
+    The single place the "direnv is an enhancement, never a precondition" policy
+    described in :func:`_exec_with_direnv` is decided, so every launch path — bare
+    exec and the tmux ``--once`` variants alike — makes the same call instead of
+    hardcoding ``direnv exec`` and failing closed with exit 127 on a host that
+    simply does not have direnv installed.
+    """
+    envrc = _find_envrc(project_root)
+    if envrc is not None and _direnv_env_usable(project_root):
+        return ["direnv", "exec", str(project_root)]
+    if envrc is not None and _direnv_installed():
+        print(
+            f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
+            f"  Approve it with:  direnv allow {envrc.parent}",
+            file=sys.stderr,
+        )
+    return []
 
 
 def _find_envrc(start: Path) -> "Path | None":
@@ -227,6 +245,30 @@ def _direnv_env_usable(project_root: Path) -> bool:
     except (FileNotFoundError, OSError):
         return False
     return probe.returncode == 0
+
+
+def _session_shell_or_exit() -> str:
+    """The interpreter tmux should run the session script with, or exit(1).
+
+    Delegates the preference order to :func:`session_script.resolve_session_shell`
+    (zsh first, bash as fallback) so the launcher and the template it generates
+    can never disagree about which shell the session runs under.
+
+    Exiting here is the point of the helper. ``tmux new-session`` returns 0 even
+    when the pane's interpreter does not exist: the pane dies on exec, tmux tears
+    the session down, and the attach that follows prints a bare ``[exited]`` with
+    nothing to act on. An explicit error names the missing dependency instead.
+    """
+    shell = _session_script.resolve_session_shell()
+    if shell is None:
+        print(
+            "Error: no usable shell for the tmux session — neither "
+            f"{' nor '.join(_session_script.SESSION_SHELL_PREFERENCE)} was found on PATH.\n"
+            "  Install one of them and retry (e.g. `sudo dnf install zsh` / `sudo apt install zsh`).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return shell
 
 
 def _cc_project_dir(cwd: Path) -> Path:
@@ -2252,6 +2294,11 @@ def _do_session_launch(
     if once:
         target_root = worktree_path or Path.cwd()
         cd_prefix = f"cd {shlex.quote(str(target_root))} && "
+        # Resolved once for the whole --once branch: the pane interpreter must
+        # exist (an absent one dies on exec and shows only `[exited]`), and direnv
+        # must be optional (an absent one made `direnv exec` fail closed at 127).
+        _session_shell = _session_shell_or_exit()
+        _direnv = _direnv_prefix(target_root)
         if engine == "c":
             command = ["claude"]
             if not _is_root():
@@ -2266,9 +2313,9 @@ def _do_session_launch(
                     session_id,
                     *_iterm_env_flags,
                     "--",
-                    "zsh",
+                    _session_shell,
                     "-c",
-                    cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                    cd_prefix + shlex.join([*_direnv, *command]),
                 ],
             )
         else:
@@ -2284,9 +2331,9 @@ def _do_session_launch(
                         session_id,
                         *_iterm_env_flags,
                         "--",
-                        "zsh",
+                        _session_shell,
                         "-c",
-                        cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                        cd_prefix + shlex.join([*_direnv, *command]),
                     ],
                 )
             else:
@@ -2300,9 +2347,9 @@ def _do_session_launch(
                         session_id,
                         *_iterm_env_flags,
                         "--",
-                        "zsh",
+                        _session_shell,
                         "-c",
-                        cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                        cd_prefix + shlex.join([*_direnv, *command]),
                     ],
                 )
 
@@ -2361,8 +2408,9 @@ def _do_session_launch(
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
+        _session_shell = _session_shell_or_exit()
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", "zsh", _script_path],
+            ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", _session_shell, _script_path],
             capture_output=True,
             check=False,
         )
@@ -2371,7 +2419,7 @@ def _do_session_launch(
             stderr = (raw.decode() if isinstance(raw, bytes) else raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "zsh", _script_path],
+                ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, _session_shell, _script_path],
                 capture_output=True,
                 check=False,
             )

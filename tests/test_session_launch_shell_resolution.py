@@ -338,3 +338,110 @@ def test_given_direnv_on_path_when_run_agent_invoked_then_the_agent_runs_under_d
     )
     assert direnv_used.exists(), "direnv was on PATH but the agent was not run under it"
     assert agent_marker.exists(), "the agent command was never executed"
+
+
+# --- `ai c --once` launch path ---------------------------------------------------
+#
+# The --once branch builds its own tmux argv (three call sites, one per engine
+# variant) and never touches the generated session script, so neither pair of
+# tests above covers it. It carried the same two hardcodes.
+
+
+def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
+    """Return the argv ``--once`` hands to ``os.execvp`` for a real tmux exec."""
+    captured: list = []
+
+    def fake_execvp(file, argv):
+        captured.append((file, argv))
+        raise SystemExit(0)
+
+    kwargs = _launch_kwargs(name="1")
+    kwargs["engine"] = engine
+    kwargs["once"] = True
+
+    with (
+        patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**kwargs)
+
+    assert captured, "--once never reached os.execvp"
+    file, argv = captured[0]
+    assert file == "tmux"
+    return argv
+
+
+def test_given_no_zsh_or_direnv_when_once_launched_then_the_engine_command_actually_runs(tmp_path, monkeypatch):
+    """``ai c --once`` must reach the engine on a host with neither zsh nor direnv.
+
+    Asserted by running the shell command the launch path actually produced, with
+    a stub engine on the hermetic PATH: the interpreter must be executable and the
+    engine must be reached. Both hardcodes broke this — an absent zsh kills the
+    pane, and an absent ``direnv exec`` fails closed at 127 before the engine.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.chdir(run_dir)
+
+    bin_dir = _clean_bin(tmp_path)
+    engine_marker = tmp_path / "engine-ran"
+    stub_engine = bin_dir / "claude"
+    stub_engine.write_text(f'#!/bin/sh\necho ran > "{engine_marker}"\n')
+    stub_engine.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert shutil.which("zsh") is None
+    assert shutil.which("direnv") is None
+
+    argv = _capture_once_argv(tmp_path)
+    interpreter, dash_c, command = argv[-3], argv[-2], argv[-1]
+    assert dash_c == "-c"
+    assert os.access(interpreter, os.X_OK), (
+        f"--once handed tmux an interpreter it cannot exec: {interpreter!r} — "
+        "the pane would die immediately and show only `[exited]`"
+    )
+
+    completed = subprocess.run([interpreter, "-c", command], capture_output=True, text=True, timeout=60, check=False)
+    assert engine_marker.exists(), (
+        f"the engine was never reached: rc={completed.returncode} stderr={completed.stderr!r}"
+    )
+
+
+def test_given_direnv_available_when_once_launched_then_the_engine_runs_under_direnv(tmp_path, monkeypatch):
+    """Negative constraint: ``--once`` must keep using direnv where it can load an .envrc."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ".envrc").write_text("export AI_CLI_TEST=1\n")
+    monkeypatch.chdir(run_dir)
+
+    bin_dir = _clean_bin(tmp_path)
+    engine_marker = tmp_path / "engine-ran"
+    stub_engine = bin_dir / "claude"
+    stub_engine.write_text(f'#!/bin/sh\necho ran > "{engine_marker}"\n')
+    stub_engine.chmod(0o755)
+    direnv_used = tmp_path / "direnv-was-used"
+    stub_direnv = bin_dir / "direnv"
+    stub_direnv.write_text(
+        f'#!/bin/sh\nif [ "$1" = "exec" ]; then\n  echo used >> "{direnv_used}"\n  shift 2\n  exec "$@"\nfi\nexit 0\n'
+    )
+    stub_direnv.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    # conftest's process guard refuses to let any test spawn a `direnv`, so the
+    # usability *probe* has to be answered here. The boundary that matters is
+    # untouched: `_find_envrc` still reads the real .envrc above, `_direnv_prefix`
+    # still makes the real decision, and the stub direnv below is really exec'd by
+    # the command the launch path produced.
+    with patch("ai_cli.main._direnv_env_usable", return_value=True):
+        argv = _capture_once_argv(tmp_path)
+    interpreter, command = argv[-3], argv[-1]
+
+    subprocess.run([interpreter, "-c", command], capture_output=True, text=True, timeout=60, check=False)
+    assert direnv_used.exists(), "direnv could load the .envrc but --once did not run the engine under it"
+    assert engine_marker.exists(), "the engine was never reached"
