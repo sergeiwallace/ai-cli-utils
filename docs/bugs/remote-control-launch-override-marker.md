@@ -86,6 +86,74 @@ The write remains worktree-scoped and remains excluded for the Gemini engine. It
 - The test executes the extracted generated Bash and Python snippet in a real subprocess against a
   temporary worktree; it asserts the resulting JSON file and value.
 
+## 2026-08-15 Follow-up Investigation
+
+**Status:** the original marker-gate fix remains deployed. No ai-cli-utils production change was
+made in this follow-up because the remaining automatic-reconnect report could not be reproduced in
+the available non-interactive environment.
+
+### Reproduction and environment
+
+- Revision investigated: `d6bbb77`.
+- Installed Claude Code: `2.1.233`; the prior investigation used `2.1.226`.
+- A generated Claude launch template was traced and its actual pre-launch Bash/Python block was
+  executed in a temporary worktree. Before any `run_agent claude` call, it created
+  `.claude/settings.local.json` containing `env.DISABLE_GROWTHBOOK: ""`.
+- The isolated-worktree initializer symlinks the repository's `.claude` directory when it exists,
+  so the normal `ai c` worktree path supplies the directory required by that write.
+- The launcher history after `3254431` contains no change to the pre-launch override block. The
+  SessionStart restorer remains registered in the installed user settings and in the hook manifest;
+  it starts only after Claude Code has started, so it cannot prevent the pre-launch write.
+- The focused pytest suite could not be run in this sandbox: its missing development environment
+  required a package download, and DNS/network access is unavailable. The existing test remains a
+  real subprocess/filesystem test of the generated block, rather than a mock or a copied snippet.
+
+### Manual `/rc` root cause
+
+The reported long-running process had no worktree-local override and inherited the user-global
+`DISABLE_GROWTHBOOK=1` setting. Static inspection of the installed 2.1.233 Claude Code client
+contains the explicit eligibility error: Remote Control requires feature-flag evaluation and is
+unavailable when `DISABLE_GROWTHBOOK` is set. Therefore `/rc` and `/remote-control` are correctly
+rejected in that process; this is not an ai-cli-utils slash-command implementation failure.
+
+```text
+global DISABLE_GROWTHBOOK=1 + no local empty override in the running process
+  -> Claude Code disables GrowthBook feature-flag evaluation
+  -> Claude Code rejects Remote Control eligibility
+  -> manual /rc fails
+```
+
+The pre-launch override cannot retroactively repair an already-running Claude process. A new
+process must start with the local empty override already present.
+
+### Automatic reconnect finding
+
+The reproducible launcher-level portion is correct: the current generated template writes the
+override before every normal tmux-path Claude invocation, including `--continue` invocations.
+The available evidence therefore rejects a reintroduction of the old marker-gate root cause and
+does not support a launcher patch.
+
+The residual report is outside what this sandbox can verify: pairing a device, invoking the
+interactive slash command, and starting a real attached `ai c` session are unavailable here. The
+2.1.233 binary does contain a reconnect diagnostic that instructs the user to retry or start a
+fresh session without `--resume`; ai-cli-utils normally uses `--continue` when resuming a matching
+conversation. That makes the Claude Code resume/reconnect path a concrete external hypothesis,
+not a confirmed release regression. No release-note or live-UAT evidence in this repository
+identifies when that behavior changed.
+
+```text
+fresh launcher process for an existing conversation
+  -> ai-cli-utils writes the GrowthBook override before Claude starts
+  -> ai-cli-utils may invoke Claude Code with --continue
+  -> remaining reconnect failure, if reproduced, is in Claude Code's resume/Remote-Control path
+```
+
+Required live UAT, outside this sandbox: launch a genuinely new `ai c` process for a previously
+paired conversation, confirm the local override exists before the Claude process begins, then
+confirm the phone reconnects. If it does not, capture the Claude Code version and the client error
+while comparing a non-resumed fresh conversation with the `--continue` launch. That discriminates
+the remaining resume-path hypothesis without changing the launcher.
+
 ## Lessons Learned
 
 A temporary safety rollback needs a tracked re-land condition and a test for the intended default
@@ -109,5 +177,6 @@ marker was absent fleet-wide or that the launch contract had changed.
 | Date | Notes |
 |---|---|
 | 2026-08-01 | Removed the marker predicate after freezing a no-marker regression test RED. |
+| 2026-08-15 | Re-traced the generated launcher, inspected the installed SessionStart wiring and Claude Code 2.1.233, and made no speculative production change. Confirmed the manual `/rc` failure is the inherited `DISABLE_GROWTHBOOK=1` eligibility gate; automatic reconnect still requires live UAT to attribute beyond the launcher. |
 
 <!-- /doc:region name="fix_log" -->
