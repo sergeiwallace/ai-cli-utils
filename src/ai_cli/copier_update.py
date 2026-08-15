@@ -138,7 +138,7 @@ def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
     repair_bare_worktree_config(root)
 
 
-def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool) -> tuple[str, object]:
+def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool) -> tuple[str, str | list[str]]:
     """Run copier + commit/push inside an already-created worktree.
 
     Returns (status, detail) where status is one of:
@@ -203,7 +203,7 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
     return "ok", ""
 
 
-def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) -> tuple[str, object]:
+def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) -> tuple[str, str | list[str]]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
     On ok/nochange/failed the temp worktree is removed. On conflict/pushfail it is

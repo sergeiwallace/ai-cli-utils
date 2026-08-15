@@ -362,6 +362,7 @@ def adopt_ready(
     ready, skipped = triage(report)
     outcomes: list[tuple[SessionRecord, AdoptionResult | AdoptionError]] = []
     for record in ready:
+        assert record.repo_root is not None
         try:
             outcomes.append(
                 (
