@@ -329,6 +329,8 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
     if probe_failure:
         return result, f"repo state could not be verified before the pull — {probe_failure}"
 
+    assert before_unmerged is not None
+    assert before_stashes is not None
     try:
         new_unmerged = unmerged_paths(repo_root) - before_unmerged
         new_stashes = stash_entries(repo_root) - before_stashes

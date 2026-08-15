@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import click
 
@@ -315,7 +316,7 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     from .session_adopt import _pid_is_live
 
     try:
-        pid = int(record.get("pid"))
+        pid = int(cast(Any, record.get("pid")))
     except (TypeError, ValueError):
         return "unproven"
     if pid <= 0:
