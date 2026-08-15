@@ -102,6 +102,17 @@ def test_given_matching_title_when_searched_then_returns_that_transcript(tmp_pat
     assert _find_cc_session_by_title(cwd, "kg-1") == want
 
 
+def test_given_later_different_title_when_searched_then_first_title_remains_the_session_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    transcript = _write_transcript(_cc_project_dir(cwd), "cccccccc-0000-4000-8000-000000000003", "proj-1-2")
+    with transcript.open("a") as handle:
+        handle.write(json.dumps({"type": "custom-title", "customTitle": "proj-1", "sessionId": transcript.stem}) + "\n")
+
+    assert _find_cc_session_by_title(cwd, "proj-1") is None
+    assert _find_cc_session_by_title(cwd, "proj-1-2") == transcript
+
+
 def test_given_no_matching_title_when_searched_then_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     cwd = Path("/repo/wt")
@@ -147,6 +158,34 @@ def test_given_bare_claude_when_prior_session_exists_then_adds_continue(tmp_path
     assert "--continue" in argv
     assert "--name" in argv
     assert transcript.stat().st_mtime > 1
+
+
+def test_given_two_named_transcripts_when_bare_claude_resumes_then_touches_only_exact_title(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    project_dir = _cc_project_dir(target)
+    matching = _write_transcript(project_dir, "12121212-0000-4000-8000-000000000005", "proj-1")
+    other = _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
+    os.utime(matching, (1, 1))
+    os.utime(other, (2, 2))
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--continue" in argv
+    assert matching.stat().st_mtime > 2
+    assert other.stat().st_mtime == 2
+
+
+def test_given_only_different_named_transcript_when_bare_claude_launches_then_does_not_continue(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    other = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
+    os.utime(other, (2, 2))
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--continue" not in argv
+    assert other.stat().st_mtime == 2
 
 
 @pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to register a genuinely live pid")

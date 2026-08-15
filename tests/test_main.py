@@ -245,8 +245,8 @@ class TestGetEngineScript:
 
         assert 'direnv_root="$PWD"' in script
         assert 'direnv exec "$direnv_root" "$@"' in script
-        # The fifth branch starts fresh when the matched transcript is live.
-        assert script.count("run_agent claude") == 5
+        # Prompt and regular launches each have exact-match and fresh-session paths.
+        assert script.count("run_agent claude") == 4
         assert "--continue" in script
         # Hot-reload must exec an interpreter that exists here — a hardcoded one
         # that does not kills the pane on the session's first self-update.
@@ -436,11 +436,16 @@ class TestGetEngineScript:
         assert "counter >= 10" in config_block
 
     def test_given_claude_script_when_generated_then_uses_shared_continue_target_resolver(self):
-        """The tmux path must use the same live-session guard as bare mode."""
+        """Every Claude Code continuation must first resolve an exact title."""
         script = self._make_script()
         assert 'ai internal resolve-continue-target "$PWD" "$ai_name"' in script
         assert "resolve_status=$?" in script
-        assert "[[ $resolve_status -eq 2 ]]" in script
+        assert script.index('ai internal resolve-continue-target "$PWD" "$ai_name"') < script.index(
+            'if [[ -f "$prompt_file" ]];'
+        )
+        assert 'run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"' in script
+        assert 'run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"' in script
+        assert 'find "$HOME/.claude/projects' not in script
 
 
 # --- Group 8: _log_handoff_event OSError ---

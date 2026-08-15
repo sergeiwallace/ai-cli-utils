@@ -475,8 +475,6 @@ def _bare_engine_command(
                     command.append("--continue")
                 except OSError:
                     pass
-        elif _cc_project_dir(target_root).is_dir() and any(_cc_project_dir(target_root).glob("*.jsonl")):
-            command.append("--continue")
         return command + extra_args
 
     command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]

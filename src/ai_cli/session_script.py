@@ -512,11 +512,24 @@ with open(path, 'w') as f:
 " 2>/dev/null || true
       fi
 
+      # Resolve before every Claude Code launch.  Claude Code's bare
+      # --continue chooses the newest transcript in the directory, so it is
+      # only safe after this resolver found the exact current customTitle.
+      if [[ "$engine" == "c" ]]; then
+        matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
+        resolve_status=$?
+      fi
+
       if [[ -f "$prompt_file" ]]; then
         resume_msg=$(cat "$prompt_file")
         rm -f "$prompt_file"
         if [[ "$engine" == "c" ]]; then
-          run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"
+          if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
+            touch "$matched_file" 2>/dev/null
+            run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"
+          else
+            run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"
+          fi
         else
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
@@ -529,14 +542,8 @@ with open(path, 'w') as f:
           # The shared resolver checks the session registry before allowing a
           # touch + --continue.  A live transcript cannot be resumed safely:
           # Claude Code may silently continue an unrelated older transcript.
-          matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
-          resolve_status=$?
           if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
             touch "$matched_file" 2>/dev/null
-            run_agent claude $claude_perms_flag --continue --name "$ai_name"
-          elif [[ $resolve_status -eq 2 ]]; then
-            run_agent claude $claude_perms_flag --name "$ai_name"
-          elif [[ -d "$HOME/.claude/projects/$(echo "$PWD" | sed 's|[^a-zA-Z0-9]|-|g')" ]] && [[ -n "$(find "$HOME/.claude/projects/$(echo "$PWD" | sed 's|[^a-zA-Z0-9]|-|g')" -maxdepth 1 -name '*.jsonl' -print -quit 2>/dev/null)" ]]; then
             run_agent claude $claude_perms_flag --continue --name "$ai_name"
           else
             run_agent claude $claude_perms_flag --name "$ai_name"
