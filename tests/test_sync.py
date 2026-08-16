@@ -1402,11 +1402,12 @@ def test_notify_conflicts_when_called_then_appends_to_log(tmp_path):
 
 def test_notify_conflicts_when_structured_event_then_logs_path_direction_and_classification(tmp_path):
     log_path = tmp_path / ".claude-sync-conflicts.log"
+    artifact = tmp_path / "conflict" / "MEMORY.md.conflict"
     event = {
         "path": "myproject/memory/MEMORY.md",
         "direction": "remote_to_local",
         "classification": "memory_merge_markers_unresolved",
-        "artifact": "/tmp/conflict/MEMORY.md.conflict",
+        "artifact": str(artifact),
     }
 
     with patch("subprocess.run"), patch("ai_cli.sync.CONFLICT_LOG", log_path):
@@ -1418,7 +1419,7 @@ def test_notify_conflicts_when_structured_event_then_logs_path_direction_and_cla
     assert logged["path"] == event["path"]
     assert logged["direction"] == event["direction"]
     assert logged["classification"] == event["classification"]
-    assert logged["artifact"] == event["artifact"]
+    assert Path(logged["artifact"]) == artifact
 
 
 def test_notify_conflicts_when_many_conflicts_then_truncates_notification(tmp_path):

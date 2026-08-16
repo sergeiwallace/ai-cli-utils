@@ -375,14 +375,16 @@ def test_do_update_conflict(tmp_path):
     """Changes + conflict markers → conflict with relative paths, no commit."""
     wt = tmp_path / "wt"
     runner = _wt_runner(porcelain=" M docs/x.py\n")
-    with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch(
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=runner),
+        patch(
             "ai_cli.copier_update._conflict_files",
             return_value=[str(wt / "docs" / "x.py")],
-        ):
-            status, detail = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", True)
+        ),
+    ):
+        status, detail = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", True)
     assert status == "conflict"
-    assert detail == ["docs/x.py"]
+    assert [Path(path) for path in detail] == [Path("docs") / "x.py"]
     # never committed or pushed on conflict
     assert not any("commit" in c for c in runner.calls)
     assert not any("push" in c for c in runner.calls)

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import time
 from unittest.mock import MagicMock, patch
@@ -12,6 +13,7 @@ from ai_cli.main import (
     _cmd_tunnel_status,
     _cmd_tunnel_stop,
     _configure_tmux_for_iterm2,
+    _decode_tmux_stderr,
     _ensure_nats_tunnel,
     cli,
     get_engine_script,
@@ -38,6 +40,27 @@ def _worktree_with_envrc(tmp_path, ai_name):
     path, created = _successful_worktree(tmp_path, ai_name)
     (path / ".envrc").write_text("export AI_CLI_TEST=1\n")
     return path, created
+
+
+@pytest.fixture
+def tmux_available():
+    """Declare tmux availability for unit tests that exercise its command path."""
+    original_which = shutil.which
+
+    def fake_which(command, *args, **kwargs):
+        if command == "tmux":
+            return "/usr/bin/tmux"
+        return original_which(command, *args, **kwargs)
+
+    with patch("ai_cli.main.shutil.which", side_effect=fake_which):
+        yield
+
+
+def test_given_invalid_utf8_tmux_stderr_when_decoded_then_diagnostic_is_preserved_without_error():
+    decoded = _decode_tmux_stderr(b"tmux failed: \x97")
+
+    assert decoded.startswith("tmux failed:")
+    assert "\ufffd" in decoded
 
 
 # --- CLI dispatch tests ---
@@ -448,6 +471,7 @@ class TestCliDispatchBranches:
                 assert exc.value.code == 1
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliSessionSetupBranches:
     def test_given_missing_engine_when_bare_agent_executes_then_exits_with_actionable_error(self, tmp_path, capsys):
         """A missing *engine* is fatal; a missing direnv is not.
@@ -837,6 +861,7 @@ class TestCliReconnectContinueBranch:
         assert "2 remote session" in out
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliResumePath:
     def test_cli_when_resume_and_session_found_then_attaches(self):
         with patch("sys.argv", ["ai", "c", "-r", "1"]):
@@ -861,6 +886,7 @@ class TestCliResumePath:
                             assert exc.value.code == 1
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliOncePath:
     def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
@@ -879,7 +905,7 @@ class TestCliOncePath:
                                                 "subprocess.run",
                                                 return_value=MagicMock(returncode=0, stdout="", stderr=""),
                                             ):
-                                                with patch("os.getuid", return_value=1000):
+                                                with patch("ai_cli.main._is_root", return_value=False):
                                                     with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                         with pytest.raises(SystemExit):
                                                             cli()
@@ -905,7 +931,7 @@ class TestCliOncePath:
                                                 "subprocess.run",
                                                 return_value=MagicMock(returncode=0, stdout="", stderr=""),
                                             ):
-                                                with patch("os.getuid", return_value=0):
+                                                with patch("ai_cli.main._is_root", return_value=True):
                                                     with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                         with pytest.raises(SystemExit):
                                                             cli()
@@ -982,6 +1008,7 @@ class TestConfigureTmuxForIterm2:
         assert any(cmd == ["tmux", "set-window-option", "-t", "c-sw-1", "automatic-rename", "off"] for cmd in run_calls)
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliSessionExecvp:
     def test_cli_when_existing_session_then_attaches_with_detach(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "1"]):
@@ -1045,6 +1072,7 @@ class TestCliSessionExecvp:
                                             assert "attach-session" in mock_exec.call_args[0][1]
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliIsRemotePath:
     def test_cli_when_is_remote_and_project_dir_exists_then_chdirs(self, tmp_path):
         project_dir = tmp_path / "projects" / "myproj"
@@ -1078,6 +1106,7 @@ class TestCliIsRemotePath:
                                                             mock_chdir.assert_called_once_with(project_dir)
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliWorktreeGitPull:
     def test_cli_when_worktree_created_then_runs_git_pull(self, tmp_path):
         worktree_path = tmp_path / ".worktrees" / "sw-1"
@@ -1798,6 +1827,7 @@ class TestGetEngineScript:
         assert "AI_SESSION_STARTED 1" in script
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliSessionStablePath:
     """Session script is written to a stable, deterministic path on every launch/re-attach."""
 
@@ -2770,6 +2800,7 @@ class TestTunnel:
 # --- Local -p chdir ---
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestLocalProjectChdir:
     def test_when_local_project_flag_then_chdirs_to_project_dir(self, tmp_path):
         project_dir = tmp_path / "projects" / "myproject"
