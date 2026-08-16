@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1945,7 +1946,7 @@ class TestDeploy:
         assert pyproject.read_text() == '[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n'
         all_cmds = [call[0][0] for call in mock_run.call_args_list]
         uv_cmd = next(
-            (c for c in all_cmds if c and c[0].endswith("uv") and "--force" in c and "--reinstall" not in c),
+            (c for c in all_cmds if c and Path(c[0]).stem == "uv" and "--force" in c and "--reinstall" not in c),
             None,
         )
         assert uv_cmd is not None
@@ -2141,7 +2142,7 @@ class TestDeploy:
         def guarded_run(cmd, **kwargs):
             # Let real git through; intercept only the install so the test never
             # mutates the developer's toolchain.
-            if cmd and str(cmd[0]).endswith("uv"):
+            if cmd and Path(cmd[0]).stem == "uv":
                 uv_called.append(list(cmd))
                 return MagicMock(returncode=0, stdout="")
             return real_run(cmd, **kwargs)
@@ -2265,7 +2266,7 @@ class TestDeploy:
         uv_called = []
 
         def fake_run(cmd, **kwargs):
-            if cmd and cmd[0].endswith("uv") and "tool" in cmd:
+            if cmd and Path(cmd[0]).stem == "uv" and "tool" in cmd:
                 uv_called.append(cmd)
             return MagicMock(returncode=0, stdout="")
 
@@ -2280,7 +2281,7 @@ class TestDeploy:
         assert not uv_called, "uv install must not run when conflict markers are present"
         captured = capsys.readouterr()
         assert "conflict markers" in captured.err
-        assert "src/ai_cli/main.py" in captured.err
+        assert str(Path("src") / "ai_cli" / "main.py") in captured.err
 
     def test_deploy_when_source_contains_conflict_string_literal_then_proceeds(self, tmp_path):
         """Guard must not false-positive on string literals containing conflict marker text."""
@@ -2293,7 +2294,7 @@ class TestDeploy:
         uv_called = []
 
         def fake_run(cmd, **kwargs):
-            if cmd and cmd[0].endswith("uv") and "tool" in cmd:
+            if cmd and Path(cmd[0]).stem == "uv" and "tool" in cmd:
                 uv_called.append(cmd)
             return MagicMock(returncode=0, stdout="")
 

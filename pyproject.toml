@@ -34,6 +34,10 @@ dependencies = [
     "portalocker>=2.0",
     "psutil>=5.9",
     "pydantic>=2.13.3",
+    # Windows has no system IANA timezone database; zoneinfo.ZoneInfo() raises
+    # ZoneInfoNotFoundError without it, breaking offset-aware datetime parsing
+    # in quota reset-time handling (AI-CLI-6ibt).
+    "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [tool.uv]

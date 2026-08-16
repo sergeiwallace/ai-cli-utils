@@ -57,15 +57,15 @@ def test_self_update_does_not_permanently_give_up_on_refresh_failure():
 
 
 def test_write_stable_script_returns_false_without_metadata(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: tmp_path / "ai-cli-utils")
     assert _write_stable_session_script("c-nope-1") is False
 
 
 def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
     """Given a persisted session-meta, the regen writes an executable stable script
     that carries the session's identity — this is what bumps mtime for hot-reload."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     state = tmp_path / "ai-cli-utils"
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     state.mkdir(parents=True)
     meta = {
         "engine": "c",
@@ -81,7 +81,7 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
     assert _write_stable_session_script("c-job-1") is True
     out = state / "sessions" / "c-job-1.sh"
     assert out.exists()
-    body = out.read_text()
+    body = out.read_text(encoding="utf-8")
     assert 'ai_name="job-1"' in body
     assert 'CLAUDE_CODE_TASK_LIST_ID="$ai_name"' in body
 

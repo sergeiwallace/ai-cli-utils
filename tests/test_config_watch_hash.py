@@ -19,11 +19,17 @@ narrows the watched-file set back down fails a real assertion, not just a grep.
 import os
 import re
 import subprocess
+import sys
 import textwrap
 
 import pytest
 
 from ai_cli.session_script import get_engine_script
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the generated watcher is a POSIX bash/sha256sum script and is not a native Windows feature",
+)
 
 
 def _extract_config_watch_files_line(script: str) -> str:

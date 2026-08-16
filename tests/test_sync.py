@@ -281,7 +281,7 @@ def test_translate_history_jsonl_when_foreign_paths_then_replaces(tmp_path, monk
         count = translate_history_jsonl()
 
     lines = history_path.read_text().splitlines()
-    assert str(tmp_path) in lines[0]
+    assert Path(json.loads(lines[0])["project"]).is_relative_to(tmp_path)
     assert mac_home not in lines[0]
     assert count == 2
 
@@ -446,9 +446,8 @@ def test_detect_foreign_home_when_no_cwd_then_returns_none(tmp_path):
 def test_translate_cwd_paths_replaces_foreign_home():
     content = f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject"}}\n'.encode()
     result = translate_cwd_paths(content, _FOREIGN_HOME)
-    local_home = str(Path.home()).encode()
     assert _FOREIGN_HOME.encode() not in result
-    assert local_home in result
+    assert Path(json.loads(result)["cwd"]).is_relative_to(Path.home())
 
 
 def test_apply_pull_files_translates_cwd_on_new_file(tmp_path):
@@ -475,7 +474,7 @@ def test_apply_pull_files_translates_cwd_on_new_file(tmp_path):
     assert dst.exists()
     content = dst.read_text()
     assert _FOREIGN_HOME not in content
-    assert str(Path.home()) in content
+    assert Path(json.loads(content)["cwd"]).is_relative_to(Path.home())
     assert result["applied_count"] == 1
 
 
@@ -863,7 +862,7 @@ def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
     assert dst.exists()
     content = dst.read_text()
     assert _FOREIGN_HOME not in content
-    assert str(Path.home()) in content
+    assert Path(json.loads(content)["cwd"]).is_relative_to(Path.home())
 
 
 def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
@@ -908,7 +907,7 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
     assert mac_wt_dir.is_dir()
     applied = (mac_wt_dir / "session.jsonl").read_text()
     assert _FOREIGN_HOME not in applied
-    assert str(Path.home()) in applied
+    assert Path(json.loads(applied)["cwd"]).is_relative_to(Path.home())
 
 
 # ---------------------------------------------------------------------------
@@ -1802,7 +1801,7 @@ def test_write_jsonl_translated_when_foreign_home_then_translates(tmp_path):
 
     content = dst.read_text()
     assert foreign not in content
-    assert str(tmp_path) in content
+    assert Path(json.loads(content)["cwd"]).is_relative_to(tmp_path)
 
 
 def test_write_jsonl_translated_when_no_foreign_then_copies(tmp_path):
@@ -2640,7 +2639,7 @@ def test_replicate_history_to_worktrees_when_verbose_then_prints(tmp_path, capsy
     history = tmp_path / ".claude" / "history.jsonl"
     history.parent.mkdir(parents=True)
     main_cwd = f"{tmp_path}/projects/myapp"
-    history.write_text(f'{{"project":"{main_cwd}"}}\n')
+    history.write_text(json.dumps({"project": main_cwd}) + "\n")
 
     with patch("pathlib.Path.home", return_value=tmp_path):
         with patch("ai_cli.config._get_projects_dir", return_value=projects_dir):
@@ -2891,7 +2890,7 @@ def test_replicate_to_worktrees_when_matching_conv_then_replicates(tmp_path, cap
 
     # Create a JSONL file with matching customTitle
     main_cwd = str(myapp)
-    jsonl_content = f'{{"customTitle":"myapp-1","cwd":"{main_cwd}"}}\n'
+    jsonl_content = json.dumps({"customTitle": "myapp-1", "cwd": main_cwd}) + "\n"
     conv_file = cc_dir / "abc123.jsonl"
     conv_file.write_text(jsonl_content)
 
@@ -3744,12 +3743,12 @@ def test_purge_phantom_history_entries_when_phantoms_exist_then_removes_them(tmp
     assert result == 1
     remaining = history.read_text()
     assert "shared-uuid" in remaining  # main-project entry kept
-    assert main_cwd in remaining
     assert "wt-only-uuid" in remaining  # genuine worktree entry kept
     # Phantom (worktree path + shared UUID) is gone
     lines = [_json.loads(l) for l in remaining.strip().split("\n") if l]
     wt_shared = [l for l in lines if l["project"] == wt_cwd and l["sessionId"] == "shared-uuid"]
     assert wt_shared == []
+    assert any(Path(line["project"]) == Path(main_cwd) for line in lines)
 
 
 def test_purge_phantom_history_entries_when_verbose_then_prints(tmp_path, capsys):
@@ -4687,7 +4686,7 @@ def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_verbose_then_pr
 
     out = capsys.readouterr().out
     assert "auto-merged" in out
-    assert "memory/info.md" in out
+    assert "memory/info.md" in out.replace("\\", "/")
 
 
 # ---------------------------------------------------------------------------
@@ -5442,7 +5441,7 @@ def test_sync_repos_when_worktree_bare_name_then_maps_to_base_project(tmp_path):
     with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
         sync_repos({"myproject--worktrees-sw-1"}, tmp_path, verbose=False)
 
-    assert any(str(project) in str(a) for a in pulled), "base project not pulled from worktree bare name"
+    assert any(Path(args[2]) == project for args in pulled), "base project not pulled from worktree bare name"
 
 
 def test_sync_repos_when_memories_only_then_not_called(tmp_path):

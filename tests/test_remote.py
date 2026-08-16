@@ -16,7 +16,10 @@ def supported_platform_for_remote_unit_tests():
     mock every transport boundary and verify command construction, so they must
     use a supported platform to reach that code path.
     """
-    with patch("ai_cli.main.sys.platform", "linux"):
+    with (
+        patch("ai_cli.main.sys.platform", "linux"),
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
+    ):
         yield
 
 
@@ -42,7 +45,9 @@ def test_given_windows_when_remote_flag_used_then_exits_with_documented_error(ca
         patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.session.get_project_prefix", return_value="test-project"),
         patch("ai_cli.main.trigger_background_update"),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=0),
         pytest.raises(SystemExit) as exc_info,
     ):
         cli()
@@ -128,6 +133,7 @@ def test_remote_flag_when_host_not_configured_then_exits_with_error():
     with (
         patch("sys.argv", ["ai", "c", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.session.get_project_prefix", return_value="test-project"),
         patch("ai_cli.main.trigger_background_update"),
         patch("sys.stderr"),
     ):

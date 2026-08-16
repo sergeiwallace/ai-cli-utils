@@ -712,7 +712,9 @@ def _write_launch_script_if_changed(script_path: Path, script: str) -> bool:
     """
     script_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if script_path.read_text(encoding="utf-8") == script and script_path.stat().st_mode & 0o777 == 0o700:
+        if script_path.read_text(encoding="utf-8") == script and (
+            os.name == "nt" or script_path.stat().st_mode & 0o777 == 0o700
+        ):
             return False
     except OSError:
         pass

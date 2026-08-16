@@ -30,6 +30,11 @@ import pytest
 
 from ai_cli.session_script import get_engine_script
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the generated launch-template block requires a POSIX bash and python3 environment",
+)
+
 MARKER_RELPATH = ".claude/.ai-cli-growthbook-toggle"
 SETTINGS_RELPATH = ".claude/settings.local.json"
 
