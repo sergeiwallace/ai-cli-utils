@@ -154,6 +154,102 @@ confirm the phone reconnects. If it does not, capture the Claude Code version an
 while comparing a non-resumed fresh conversation with the `--continue` launch. That discriminates
 the remaining resume-path hypothesis without changing the launcher.
 
+## 2026-08-15 Deployment and Pairing-State Investigation
+
+**Status:** no new ai-cli-utils source defect was found. The active session templates were generated
+from a checkout that predates the deployed launcher fix, so this is a local deployment/version-skew
+finding. No production change is appropriate in this repository until that deployed template is
+refreshed and live behavior is retested.
+
+### On-disk comparison
+
+The four numbered Claude sessions have persisted templates under the local ai-cli-utils state
+directory. All four were written within seconds of each other and embed the same earlier source
+commit. That commit precedes `3254431`, the commit that made the pre-launch
+`DISABLE_GROWTHBOOK` write unconditional. Accordingly, none of the four persisted templates
+contains the override block, even though the current `session_script.py` source does and the
+existing regression test covers it.
+
+This is load-bearing: the wrapper's automatic process restart reuses its existing generated
+template. A Claude Code restart inside that wrapper is therefore not proof that the current
+ai-cli-utils source was used. Reattaching with a launcher deployment that contains the fix must
+regenerate the stable template before the reported automatic-reconnect behavior can be attributed
+to the current launcher.
+
+The worktree-local settings files were also not uniform at inspection time: one had an empty
+`DISABLE_GROWTHBOOK` override and three had no local override file. These files are mutable
+runtime state and do not prove the environment at process creation; the stale generated templates
+are the reliable explanation for why three sessions would start without the pre-launch write.
+
+The Claude Code session registry contained a `bridgeSessionId` and a messaging socket for the
+reconnecting session and for one non-reconnecting session. The other two non-reconnecting sessions
+had neither field. This rejects the strong form of the "only the reconnecting session has ever
+paired" hypothesis: prior bridge state is not sufficient to explain successful auto-reconnect.
+The registry is not a documented Remote Control status API, so its fields must not be treated as
+proof of a currently live phone connection.
+
+### Launcher-path comparison
+
+The normal tmux launcher has no branch on the numeric session suffix. It computes the display name
+and worktree path from that suffix, then calls the same `get_engine_script()` template generator.
+For Claude Code, the current template writes the local empty GrowthBook override before each normal
+agent launch, including `--continue` restarts. The only relevant alternate paths are explicit
+bare or one-shot modes, neither of which was part of the reported ordinary `ai c N` launches.
+
+### Claude Code evidence and scope boundary
+
+Claude Code 2.1.233 exposes `--remote-control` but neither `claude --help` nor `claude doctor
+--help` exposes a pairing-state or Remote Control status command. Static inspection of that client
+also retains the diagnostic, "Couldn't reconnect to your Remote Control session. Retry, or start a
+fresh session without --resume." It is an actionable Claude Code resume-path lead, but it does not
+establish that `--continue` has the same failure condition.
+
+The official Remote Control and settings documentation describe `remoteControlAtStartup` as an
+auto-connect request subject to feature-flag eligibility. They do not document a dependency on a
+previously paired device, a pairing-history cache, or a user-manageable bridge-registration file.
+The 2.1.229--2.1.232 changelog/guide material does document recovery fixes for recorded Remote
+Control sessions, but not a launcher-side way to create or copy that state. Consequently, there is
+no safe ai-cli-utils workaround for the remaining bridge lifecycle behavior.
+
+The current sandbox cannot re-fetch the primary sites because DNS access is unavailable. The source
+links below are the same primary sources verified by the companion 2026-08-15 investigation; they
+should be rechecked during live UAT before filing an upstream report.
+
+- [Remote Control documentation](https://code.claude.com/docs/en/remote-control)
+- [Settings reference](https://code.claude.com/docs/en/settings)
+- [Claude Code changelog](https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md)
+- [Remote Control bridge re-initialization report](https://github.com/anthropics/claude-code/issues/86084)
+
+### Required next check
+
+Refresh the launcher deployment, then reattach each affected session so its stable template is
+regenerated. Before Claude Code starts, verify that the worktree-local settings file contains an
+empty `env.DISABLE_GROWTHBOOK` value. Test a fresh conversation and the ordinary `--continue`
+conversation separately. If the fresh process has the override and the session still fails while
+another session succeeds, capture the exact Claude Code footer/diagnostic and report the remaining
+asymmetry to Anthropic as a Remote Control bridge lifecycle issue. Do not copy registry or pairing
+state between sessions.
+
+### 2026-08-15 late correction (independent verification, orchestrating Claude session)
+
+Direct inspection of the live state directory
+(`~/.local/state/ai-cli-utils/sessions/c-sw-{1,2,4,6}.sh`) does **not** support the "stale
+template predates commit `3254431`" framing above as the *current* state: all four stable session
+scripts are present, same size, same `mtime` (regenerated together, well after `3254431`), and
+**none of the four** — including `c-sw-4.sh`, the session where RC reportedly works — contains a
+`DISABLE_GROWTHBOOK` block at all. So whatever currently distinguishes sw-4's working auto-reconnect
+from sw-1/sw-2/sw-6's failure, it is not explained by a template-version skew at this snapshot; the
+templates are already uniform. This does not necessarily mean the investigation above was wrong at
+the moment it ran — the state directory may have been refreshed between that pass and this
+verification (unclear by which mechanism/actor) — but the specific root-cause claim should not be
+carried forward as settled without live re-verification. The asymmetry remains **unexplained**.
+The research grounding (no documented Claude Code pairing-history/device-trust dependency; no
+programmatic RC status API) still stands as useful context for any upstream report. Next step is a
+live test: with all four templates now confirmed current and identical, have each of sw-1/sw-2/sw-6
+restart and manually attempt `/rc`, and record whether the asymmetry persists — that is the only
+way to distinguish "fixed by the incidental template refresh" from "a real, still-unexplained
+per-session difference."
+
 ## Lessons Learned
 
 A temporary safety rollback needs a tracked re-land condition and a test for the intended default
@@ -178,5 +274,6 @@ marker was absent fleet-wide or that the launch contract had changed.
 |---|---|
 | 2026-08-01 | Removed the marker predicate after freezing a no-marker regression test RED. |
 | 2026-08-15 | Re-traced the generated launcher, inspected the installed SessionStart wiring and Claude Code 2.1.233, and made no speculative production change. Confirmed the manual `/rc` failure is the inherited `DISABLE_GROWTHBOOK=1` eligibility gate; automatic reconnect still requires live UAT to attribute beyond the launcher. |
+| 2026-08-15 | Found that the four active stable templates predate the unconditional override fix. Pairing/bridge registry state is mixed and does not prove the warm-pairing hypothesis; refresh the deployed template before escalating any remaining automatic-reconnect asymmetry as an upstream Claude Code issue. |
 
 <!-- /doc:region name="fix_log" -->
