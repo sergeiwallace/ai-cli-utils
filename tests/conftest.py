@@ -220,7 +220,7 @@ def _reset_registry_cache():
 def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
     """Hermetic quota/statusline tests — never touch real user quota state (AI-CLI-97).
 
-    Three independent breaches this closes:
+    Four independent breaches this closes:
 
     1. **Real quota DB.** ``_get_quota_db_path()`` falls back to the real
        ``~/.local/state/ai-cli/quota.db`` when no override is set, so an unisolated
@@ -241,6 +241,10 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
        recorded then carried a different ``week_start`` than the one the statusline queried,
        no rows came back, and the render fell through to its ``📊 -`` placeholder. Redirect
        it to a per-test tmp path so the anchor resolves to the deterministic built-in default.
+    4. **Real scrape lock file.** ``_launch_background_scrape()`` skips spawning when
+       its process-global lock exists. Redirect it to a per-test path so a live
+       statusline or another xdist worker cannot make a test's launch assertion
+       depend on shared user state.
 
     Tests that exercise the scrape spawners themselves (they mock ``subprocess.Popen``
     locally and assert the real functions' behavior) opt out of the no-op via the
@@ -259,6 +263,8 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
     # scrape-scheduling state across tests / into the real user state).
     import ai_cli.quota as _q
 
+    _orig_scrape_lock_path = _q._SCRAPE_LOCK_PATH
+    _q._SCRAPE_LOCK_PATH = tmp_path_factory.mktemp("scrape_lock") / "quota-scrape.lock"
     _orig_fable_state = _q._FABLE_BACKOFF_STATE
     _q._FABLE_BACKOFF_STATE = tmp_path_factory.mktemp("fable_state") / "fable-scrape-backoff.json"
     try:
@@ -272,6 +278,7 @@ def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
                 yield
     finally:
         _qdb.set_db_path(None)
+        _q._SCRAPE_LOCK_PATH = _orig_scrape_lock_path
         _q._FABLE_BACKOFF_STATE = _orig_fable_state
 
 
