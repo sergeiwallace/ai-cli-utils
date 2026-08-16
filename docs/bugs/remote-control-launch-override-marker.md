@@ -230,6 +230,25 @@ another session succeeds, capture the exact Claude Code footer/diagnostic and re
 asymmetry to Anthropic as a Remote Control bridge lifecycle issue. Do not copy registry or pairing
 state between sessions.
 
+### Pairing-history follow-up (sw-4, 2026-08-15)
+
+The `bridgeSessionId` field noted above has no associated timestamp in
+`~/.claude/sessions/*.json` or elsewhere in the registry, so its presence cannot establish
+*when* a session became bridge-associated — only that it currently is or isn't. A conversation
+resumed with `--continue` or after compaction carries forward whatever association it already
+had, so an on-disk snapshot showing a mix of associated/unassociated conversations is consistent
+with either "some conversations were paired earlier and some weren't" or "the association was
+set by a `/rc` tap sometime after this conversation's own last restart" — the field alone can't
+distinguish the two. No user configuration or local database holds a conversation-to-pairing
+history; `claude remote-control`/`claude doctor` expose no pairing-state query.
+
+This narrows, but does not settle, the open "unexplained asymmetry" above. The decisive UAT: pair
+a deliberately new conversation once via `/rc`, restart that exact conversation without invoking
+`/rc` again, and compare its reconnect behavior against an unpaired new conversation launched
+under the same template/override/Claude Code version. That isolates first-pairing history as a
+variable independent of the template-skew and deployment questions the investigation above
+already covers.
+
 ### 2026-08-15 late correction (independent verification, orchestrating Claude session)
 
 Direct inspection of the live state directory
@@ -336,6 +355,7 @@ marker was absent fleet-wide or that the launch contract had changed.
 | 2026-08-01 | Removed the marker predicate after freezing a no-marker regression test RED. |
 | 2026-08-15 | Re-traced the generated launcher, inspected the installed SessionStart wiring and Claude Code 2.1.233, and made no speculative production change. Confirmed the manual `/rc` failure is the inherited `DISABLE_GROWTHBOOK=1` eligibility gate; automatic reconnect still requires live UAT to attribute beyond the launcher. |
 | 2026-08-15 | Found that the four active stable templates predate the unconditional override fix. Pairing/bridge registry state is mixed and does not prove the warm-pairing hypothesis; refresh the deployed template before escalating any remaining automatic-reconnect asymmetry as an upstream Claude Code issue. |
+| 2026-08-15 | Confirmed `bridgeSessionId` carries no timestamp, so it can corroborate but not settle the pairing-history hypothesis; proposed the decisive pair-once/restart-without-`/rc`/compare-to-unpaired UAT as the discriminating test. |
 | 2026-08-16 | Root-caused the cross-repository split to an auto-update launch race: an old parent generated a template after its child installed a newer tool. The launcher now re-execs after a successful auto-update and records its update stamp only on success; Agent Teams remains an unsupported correlation. |
 
 <!-- /doc:region name="fix_log" -->
