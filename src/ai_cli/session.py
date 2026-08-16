@@ -5,6 +5,7 @@ Depends on: config.py
 
 import contextlib
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -427,6 +428,85 @@ def find_recent_session(prefix: str) -> str:
 
 # Matches ai-cli session names: c-session-1, c-r-session-1, g-project-2, etc.
 _AI_SESSION_RE = re.compile(r"^[cg](-r)?-[a-zA-Z0-9]+-\d+$")
+_PROCESS_START_TIME_TOLERANCE_SECONDS = 5
+_BG_SPARE_TERMINATE_TIMEOUT_SECONDS = 2
+
+
+def _claude_sessions_dir() -> Path:
+    """Return Claude Code's per-process session-state directory."""
+    return Path.home() / ".claude" / "sessions"
+
+
+def _is_claude_bg_spare(cmdline: list[str]) -> bool:
+    """Return whether ``cmdline`` is a Claude Code bg-spare invocation."""
+    return any(
+        Path(command).name == "claude" and next_command == "bg-spare"
+        for command, next_command in itertools.pairwise(cmdline)
+    )
+
+
+def _has_live_tmux_session(session_name: object, active_sessions: set[str]) -> bool:
+    """Return whether a Claude session-state name is represented in tmux."""
+    if not isinstance(session_name, str):
+        return False
+    possible_sessions = {session_name}
+    if not _AI_SESSION_RE.fullmatch(session_name):
+        possible_sessions.update({f"c-{session_name}", f"g-{session_name}"})
+    return bool(possible_sessions & active_sessions)
+
+
+def _sweep_orphaned_claude_bg_spares(active_sessions: set[str] | None, timeout_seconds: int, now: float) -> None:
+    """Remove dead Claude state files and reap verified, old orphan bg-spares.
+
+    A failed tmux query passes ``None`` for ``active_sessions``.  Dead state
+    files are still safe to remove then, but a live process is never considered
+    orphaned without a successful tmux liveness check.
+    """
+    try:
+        import psutil
+    except Exception:
+        return
+
+    sessions_dir = _claude_sessions_dir()
+    if not sessions_dir.exists():
+        return
+
+    for state_file in sessions_dir.glob("*.json"):
+        try:
+            state = json.loads(state_file.read_text())
+            pid = state.get("pid")
+            started_at = state.get("startedAt")
+            if not isinstance(pid, int) or not isinstance(started_at, (int, float)):
+                continue
+            process = psutil.Process(pid)
+            if abs(process.create_time() - (started_at / 1000)) > _PROCESS_START_TIME_TOLERANCE_SECONDS:
+                state_file.unlink(missing_ok=True)
+                continue
+        except (OSError, ValueError, TypeError, json.JSONDecodeError, psutil.NoSuchProcess):
+            with contextlib.suppress(OSError):
+                state_file.unlink(missing_ok=True)
+            continue
+        except (psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+        last_activity = state.get("updatedAt", started_at)
+        if not isinstance(last_activity, (int, float)) or now - (last_activity / 1000) <= timeout_seconds:
+            continue
+        if active_sessions is None or _has_live_tmux_session(state.get("name"), active_sessions):
+            continue
+
+        try:
+            if not _is_claude_bg_spare(process.cmdline()):
+                continue
+            process.terminate()
+            try:
+                process.wait(timeout=_BG_SPARE_TERMINATE_TIMEOUT_SECONDS)
+            except psutil.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=_BG_SPARE_TERMINATE_TIMEOUT_SECONDS)
+            state_file.unlink(missing_ok=True)
+        except (OSError, psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, psutil.TimeoutExpired):
+            continue
 
 
 def cleanup_stale_sessions(config: dict) -> None:
@@ -440,6 +520,7 @@ def cleanup_stale_sessions(config: dict) -> None:
         return
     session_cfg = config.get("session", {})
     timeout_seconds = session_cfg.get("stale_session_timeout", 15) * 60
+    orphan_bg_spare_timeout_seconds = session_cfg.get("orphan_bg_spare_timeout", timeout_seconds // 60) * 60
     now = int(time.time())
 
     res = subprocess.run(
@@ -455,6 +536,7 @@ def cleanup_stale_sessions(config: dict) -> None:
         check=False,
     )
     if res.returncode != 0:
+        _sweep_orphaned_claude_bg_spares(None, orphan_bg_spare_timeout_seconds, now)
         return
 
     # Group pane commands by session name
@@ -491,6 +573,7 @@ def cleanup_stale_sessions(config: dict) -> None:
         if dead_shell or abandoned:
             subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True, check=False)
 
+    _sweep_orphaned_claude_bg_spares(set(sessions), orphan_bg_spare_timeout_seconds, now)
     _sweep_stale_iterm2_profiles()
 
 

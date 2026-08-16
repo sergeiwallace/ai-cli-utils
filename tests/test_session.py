@@ -8,9 +8,11 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 from conftest import _make_list_panes_output
 
+import ai_cli.session as _session_module
 from ai_cli.main import (
     _checkpoint_to_chat_uuid,
     _convert_checkpoint_to_chat,
@@ -239,6 +241,7 @@ def _cleanup(config, panes_output, now=None):
         patch("subprocess.run", side_effect=fake_run),
         patch("ai_cli.session.time") as mock_time,
         patch("ai_cli.session.sys.platform", "linux"),
+        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
     ):
         mock_time.time.return_value = now
         cleanup_stale_sessions(config)
@@ -337,6 +340,109 @@ def test_cleanup_when_old_format_session_then_ignores_it():
     panes = _make_list_panes_output(("claude-sw-1", now - 9999, "bash"))
     killed = _cleanup({}, panes, now)
     assert killed == []
+
+
+@pytest.fixture
+def bg_spare_stand_in():
+    """Start a disposable process whose arguments model a Claude bg-spare."""
+    if sys.platform == "win32":
+        # These tests spawn a real disposable process and drive real OS-level
+        # termination (both via the production code's psutil handle and, in one
+        # test, this fixture's own subprocess.Popen handle) -- Windows process
+        # teardown timing across two independent handles for the same PID is
+        # unverified under CI (observed: TimeoutExpired and a state mismatch on
+        # 2026-08-16, PR #37 first run). Same rationale as the real_tmux skips.
+        pytest.skip("bg-spare stand-in process teardown timing unverified on win32 (PR #37)")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(300)",
+            "claude",
+            "bg-spare",
+            "--bg-spare",
+            "/tmp/test-spare.sock",
+        ]
+    )
+    yield process
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+
+
+def _write_claude_session_state(sessions_dir, process, *, name="test-1", started_at=None):
+    sessions_dir.mkdir()
+    started_at = psutil.Process(process.pid).create_time() if started_at is None else started_at
+    state_file = sessions_dir / f"{process.pid}.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "pid": process.pid,
+                "cwd": "/tmp/myproject",
+                "startedAt": int(started_at * 1000),
+                "updatedAt": int((time.time() - 61) * 1000),
+                "name": name,
+                "status": "idle",
+            }
+        )
+    )
+    return state_file
+
+
+def test_given_orphaned_bg_spare_when_cleanup_runs_then_reaps_process_and_removes_state(
+    tmp_path, monkeypatch, bg_spare_stand_in
+):
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
+    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
+
+    with patch(
+        "ai_cli.session.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout=""),
+    ):
+        cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
+
+    assert bg_spare_stand_in.wait(timeout=2) is not None
+    assert not state_file.exists()
+
+
+def test_given_live_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(
+    tmp_path, monkeypatch, bg_spare_stand_in
+):
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
+    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
+    panes = _make_list_panes_output(("c-test-1", int(time.time()), "claude"))
+
+    with patch(
+        "ai_cli.session.subprocess.run",
+        return_value=panes,
+    ):
+        cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
+
+    assert bg_spare_stand_in.poll() is None
+    assert state_file.exists()
+
+
+def test_given_reused_pid_when_cleanup_runs_then_removes_state_without_touching_process(
+    tmp_path, monkeypatch, bg_spare_stand_in
+):
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in, started_at=0)
+    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
+
+    with patch(
+        "ai_cli.session.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout=""),
+    ):
+        cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
+
+    assert bg_spare_stand_in.poll() is None
+    assert not state_file.exists()
 
 
 # --- Session map tests ---
