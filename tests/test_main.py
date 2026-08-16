@@ -472,7 +472,7 @@ class TestFindAicliProjectPath:
 
 
 class TestAutoUpdateIfStaleFailure:
-    def test_when_update_command_fails_then_prints_warning(self, tmp_path, capsys):
+    def test_given_failed_update_when_auto_update_runs_then_warns_and_leaves_stamp_unset(self, tmp_path, capsys):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
         head_result = MagicMock()
         head_result.returncode = 0
@@ -491,8 +491,10 @@ class TestAutoUpdateIfStaleFailure:
             patch("subprocess.run", side_effect=fake_run),
             patch("shutil.which", return_value="/usr/bin/ai"),
         ):
-            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+            updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+        assert updated is False
         assert "Warning" in capsys.readouterr().err
+        assert not (tmp_path / "last_update_commit.txt").exists()
 
 
 # --- Group 11: _cmd_tunnel_start no remote host ---

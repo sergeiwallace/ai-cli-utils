@@ -269,6 +269,67 @@ restart and manually attempt `/rc`, and record whether the asymmetry persists â€
 way to distinguish "fixed by the incidental template refresh" from "a real, still-unexplained
 per-session difference."
 
+## 2026-08-16 Cross-Repo Auto-Reconnect Asymmetry Investigation
+
+**Status:** root cause found and launcher fix added. The observed cross-repository split was a
+deployment-time template skew, not evidence that the Agent Teams setting controls Remote Control.
+
+### Agent Teams hypothesis
+
+The only known successful comparison session had
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="0"`; the four unsuccessful sessions and this repository
+used `"1"`. The broader settings inventory does not add independent outcome data: every checked
+worktree inherits its repository's committed value, with one comparison repository using `"0"`
+and the other checked repositories using `"1"`. It therefore remains a single correlated
+configuration difference, not a causal sample.
+
+Static inspection of the installed Claude Code 2.1.233 client resolves this variable only in its
+Agent Teams/agent-swarms gate (also gated by its own GrowthBook experiment). The same client has
+separate Remote Control policy, startup, and bridge symbols, but no discovered call, setting
+description, or diagnostic connects Agent Teams to Remote Control eligibility or automatic
+reconnect. The client does explicitly connect Remote Control eligibility to GrowthBook and to
+account, policy, trusted-device, and network conditions. This weakens the Agent Teams hypothesis;
+it does not prove a closed-source client cannot contain an undocumented interaction.
+
+The official documentation, changelog, and public issue were re-requested, but this environment
+could not resolve their hosts. The primary-source links recorded in the preceding investigation
+remain the references to recheck during live UAT; this pass makes no claim that their current
+contents were fetched.
+
+### Template-version finding and root cause
+
+The successful session's stable template was 27,035 bytes and carried
+`_template_version="0.7.0.post20260815224300"`. Each unsuccessful session's template was 23,184
+bytes and carried `_template_version="0.7.0"`. All five carried the same source-commit stamp, but
+that stamp is not a content identity: the old templates lacked the pre-launch
+`DISABLE_GROWTHBOOK` write, the `run_agent` wrapper, and other generator changes that the newer
+template contained. The old template body predates the commit that introduced the pre-launch
+override.
+
+The launcher explains how this occurs. On `ai c`/`ai g`, `_auto_update_if_stale()` installs the
+updated tool in a child process, then the still-running parent continued into session generation
+with its already-imported, older template generator. It also wrote the current source stamp before
+checking whether the child update succeeded. Thus a session launched during an update can start
+without the override even though its template claims the latest source stamp; a later session
+started from the newly installed entry point receives the new template. The newer template's
+`direnv exec` wrapper is coincidental: it was introduced in the same later generator generation,
+but no evidence ties direnv to Remote Control eligibility.
+
+### Fix and verification
+
+`_auto_update_if_stale()` now writes the source stamp only after a successful update and returns
+whether it installed one. The `ai c`/`ai g` command re-execs the requested invocation through the
+updated entry point before generating a stable template. Focused regression coverage verifies both
+the failed-update stamp behavior and the re-exec path. This preserves normal launches when no
+update occurs.
+
+Required live UAT: install this change, start a new Claude Code process for an affected session,
+and verify before process creation that its generated template contains the empty
+`DISABLE_GROWTHBOOK` override. Then test automatic Remote Control reconnect. If it still fails
+while the successful comparison session reconnects, report that remaining difference upstream
+with the Claude Code version and Remote Control diagnostics; the launcher no longer has the
+identified stale-generator path.
+
 ## Lessons Learned
 
 A temporary safety rollback needs a tracked re-land condition and a test for the intended default
@@ -295,5 +356,6 @@ marker was absent fleet-wide or that the launch contract had changed.
 | 2026-08-15 | Re-traced the generated launcher, inspected the installed SessionStart wiring and Claude Code 2.1.233, and made no speculative production change. Confirmed the manual `/rc` failure is the inherited `DISABLE_GROWTHBOOK=1` eligibility gate; automatic reconnect still requires live UAT to attribute beyond the launcher. |
 | 2026-08-15 | Found that the four active stable templates predate the unconditional override fix. Pairing/bridge registry state is mixed and does not prove the warm-pairing hypothesis; refresh the deployed template before escalating any remaining automatic-reconnect asymmetry as an upstream Claude Code issue. |
 | 2026-08-15 | Confirmed `bridgeSessionId` carries no timestamp, so it can corroborate but not settle the pairing-history hypothesis; proposed the decisive pair-once/restart-without-`/rc`/compare-to-unpaired UAT as the discriminating test. |
+| 2026-08-16 | Root-caused the cross-repository split to an auto-update launch race: an old parent generated a template after its child installed a newer tool. The launcher now re-execs after a successful auto-update and records its update stamp only on success; Agent Teams remains an unsupported correlation. |
 
 <!-- /doc:region name="fix_log" -->
