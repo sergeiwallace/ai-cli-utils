@@ -95,7 +95,15 @@ _TMUX_RUNNABLE, _TMUX_SKIP_REASON = _tmux_runnable()
 
 pytestmark = [
     pytest.mark.real_tmux,
-    pytest.mark.skipif(sys.platform == "win32", reason="tmux session template is POSIX-only"),
+    # This drives a REAL tmux server + libtmux against it, not just a `tmux -V`
+    # presence check. An earlier attempt to run it under the new MSYS2 CI lane
+    # hung past 30 minutes with no sign of progress (killed manually, PR #35) --
+    # MSYS2's tmux socket/session behavior under GitHub's Windows runner is
+    # unproven, so skip here until that's verified deliberately, not as a
+    # blind revert of the "POSIX-only" framing this used to carry.
+    pytest.mark.skipif(
+        sys.platform == "win32", reason="real tmux server behavior unverified under MSYS2 CI (PR #35 hang)"
+    ),
 ]
 
 

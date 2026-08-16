@@ -102,6 +102,7 @@ def _main_worktree(root: Path) -> Path | None:
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -129,13 +130,18 @@ def _venv_ruff(root: Path) -> Path | None:
     rather than on the repo being checked.
     """
     exe = "ruff" + (sysconfig.get_config_var("EXE") or "")
+    executable_names = [exe]
+    if sys.platform == "win32":
+        # A venv normally provides ruff.exe, but command wrappers are also
+        # executable from Windows shells and are common in lightweight setups.
+        executable_names.append("ruff.cmd")
     roots = [root]
     main_tree = _main_worktree(root)
     if main_tree is not None and main_tree != root:
         roots.append(main_tree)
 
-    candidates = [r / ".venv" / sub / exe for r in roots for sub in ("bin", "Scripts")]
-    candidates.append(Path(sysconfig.get_path("scripts")) / exe)
+    candidates = [r / ".venv" / sub / name for r in roots for sub in ("bin", "Scripts") for name in executable_names]
+    candidates.extend(Path(sysconfig.get_path("scripts")) / name for name in executable_names)
 
     return next((c for c in candidates if c.is_file()), None)
 
@@ -145,7 +151,7 @@ def _installed_ruff_version(root: Path) -> str | None:
     if ruff is None:
         return None
     try:
-        out = subprocess.run([str(ruff), "--version"], capture_output=True, text=True, timeout=30)
+        out = subprocess.run([str(ruff), "--version"], capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:

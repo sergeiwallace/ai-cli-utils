@@ -43,6 +43,10 @@ def _minimal_path_with_python3() -> str:
     did nothing and the assertions failed while the code under test was fine. Derive the
     directory from the running interpreter instead of guessing at it.
     """
+    if sys.platform == "win32":
+        # The MSYS2 shell uses colon-separated PATH entries even though Python
+        # exposes Windows' semicolon-separated path separator.
+        return os.environ["PATH"]
     interpreter_dir = str(Path(sys.executable).parent)
     return os.pathsep.join([interpreter_dir, "/usr/bin", "/bin", "/sbin", "/usr/sbin"])
 
