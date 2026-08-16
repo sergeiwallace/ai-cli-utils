@@ -48,6 +48,10 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
+    # A real_tmux test spawning MSYS2's tmux for real hung an earlier run past
+    # 30 minutes with no sign of progress (killed manually, PR #35) -- bound
+    # the blast radius of any future hang instead of burning hours of CI time.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
