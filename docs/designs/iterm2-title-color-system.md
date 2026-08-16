@@ -481,10 +481,12 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 ### Resolved
 
 1. **OSC 0 type symbol in tab title.** ✅ **Decision:** Include type symbols (`*`, `✦`) by default — enabled via `show_type_symbol = true` in `iterm2.toml`. Users can set `show_type_symbol = false` to disable. See [Configuration](#configuration).
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 2. **`_ai_iterm2_precmd` race condition with remote launches.** Defer to debugging post-implementation. In principle, `os.execvp` replaces the process immediately, so precmd should not fire after the pre-launch emit. If Bug 2 persists after the other fixes, the root cause is elsewhere and will be diagnosed with real sessions. Unit and integration tests will be written during implementation to catch regressions.
 
 3. **Icon PNG generation pipeline.** ✅ **Decision (revised):** Runtime Pillow generation at session launch — no pre-baked PNGs in repo. All profile types (Claude, Gemini, shell, Chrome, caffeinate, SSH) use the same pipeline. Tint auto-derived from tab background via HSL color theory; user can override per palette entry with explicit `icon_color`. See [Icon Color System](#icon-color-system).
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 4. **Gemini `--resume` with wrong chats directory.** ✅ **Correction:** Sessions are NOT permanently broken — running `ai g N -p PROJECT` from the correct project root successfully resumes the session. The fix (`os.chdir()` for local `-p` sessions) is a UX improvement so the command works from ANY directory, not a recovery mechanism for broken sessions. No session-map cleanup needed.
 

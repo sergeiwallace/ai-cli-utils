@@ -571,6 +571,7 @@ of what exists.
 ##### Recommendation
 
 > **Decision:** `✅ Resolved by Fable — (c)` (high confidence)
+<!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=fable-5; ai-effort=N/A; ai-profile=coordinator -->
 
 The failure analysis shows a sound storage design with an unfinished delivery layer — complete
 it rather than replace it. A well-evidenced "the current design is closer to right than it
@@ -626,6 +627,7 @@ is unacknowledged and racy (local evidence + community corroboration, research �
 ##### Recommendation
 
 > **Decision:** `✅ Resolved by Fable — (d)` (high confidence on hooks; medium on Channels timing)
+<!-- decision-record: chosen-option=(d); ai-family=claude; ai-model=fable-5; ai-effort=N/A; ai-profile=coordinator -->
 
 ---
 
@@ -665,6 +667,7 @@ stranding engine.
 ##### Recommendation
 
 > **Decision:** `✅ Resolved by Fable — (b)` (high confidence)
+<!-- decision-record: chosen-option=(b); ai-family=claude; ai-model=fable-5; ai-effort=N/A; ai-profile=coordinator -->
 
 ---
 
@@ -710,6 +713,7 @@ written locally by the consumer). The decision must describe the system that act
 > **Decision:** `✅ Resolved by Fable — (c)` (medium-high confidence). Revisit trigger:
 > routine two-machine claiming of the same work items (then (a) per research §1.2 with durable
 > pull consumers + explicit ack tied to claim).
+<!-- decision-record: chosen-option=(c); ai-family=claude; ai-model=fable-5; ai-effort=N/A; ai-profile=coordinator -->
 
 ---
 
@@ -743,6 +747,7 @@ orchestrators; §3 surveyed Agent Teams / Agent View.
 
 > **Decision:** `✅ Resolved by Fable — (b)` (high confidence). Agent View evaluation is
 > deliberately out of scope here — file separately if wanted.
+<!-- decision-record: chosen-option=(b); ai-family=claude; ai-model=fable-5; ai-effort=N/A; ai-profile=coordinator -->
 
 ---
 
@@ -772,6 +777,7 @@ orchestrators; §3 surveyed Agent Teams / Agent View.
 ##### Recommendation
 
 > **Decision:** `✅ Resolved by Fable — (b)` (high confidence)
+<!-- decision-record: chosen-option=(b); ai-family=claude; ai-model=fable-5; ai-effort=N/A; ai-profile=coordinator -->
 
 ---
 

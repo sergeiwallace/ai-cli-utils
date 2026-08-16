@@ -135,6 +135,7 @@ as hard dependencies. Replace all `fcntl` and `os.kill` calls with these librari
 #### Recommendation
 
 > **Decision:** `APPROVED — (c) portalocker + psutil`
+<!-- decision-record: chosen-option=(c); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 portalocker and psutil are the right tool for this. The native extension in psutil is standard
 and present in virtually every Python environment. This avoids scattered conditionals and makes
@@ -180,6 +181,7 @@ Use `plyer` (cross-platform notification library) installed as an optional extra
 #### Recommendation
 
 > **Decision:** `APPROVED — (b) plyer optional extra [notify-win]`
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 User does not use PowerShell as their primary shell. plyer provides a clean, testable API
 and keeps PowerShell out of the dependency chain. Made optional so the base install stays lean.
@@ -224,6 +226,7 @@ PowerShell remains a secondary target where no bash-specific calls are made.
 #### Recommendation
 
 > **Decision:** `APPROVED — (b) Git Bash primary`
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 User uses Git Bash as their primary Windows shell. All bash session scripts work in Git Bash.
 tmux is installable via MSYS2. PowerShell compatibility is maintained where it doesn't conflict.
@@ -249,6 +252,7 @@ This is a significant portability change introducing new hard dependencies and C
 #### Recommendation
 
 > **Decision:** `APPROVED — (b) 0.6.0`
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
 

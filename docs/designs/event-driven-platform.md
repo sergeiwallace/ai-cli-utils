@@ -76,6 +76,7 @@ This document defines the platform-wide event-driven architecture — what NATS 
 NATS Core is pure pub/sub — fire-and-forget. If no subscriber is listening when a message is published, it's gone. JetStream layers persistence on top: durable delivery, consumer ACKs (unacked messages are redelivered), work queues with exactly-once semantics, replay from offset, and pull consumers that request batches at their own pace.
 
 **Decision: JetStream from day 1** (decided 2026-03-25)
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Key factors that drove the decision:
 - 4 of 14 candidate systems already require durable delivery (auto-dream safety, quota tracking, mobile notifications, session teleportation) — JetStream adoption was never truly optional

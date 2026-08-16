@@ -338,8 +338,10 @@ No code changes needed — tests already have `@pytest.mark.skipif` guards or mo
 ### Track C: SSH Integration Tests (Hetzner)
 
 **Decision:** Deferred until after Track B. If NATS CI covers most of sync.py, SSH tests may only add 1-2% and may not be worth the operational complexity. Re-evaluate after Track B is implemented.
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 If proceeding, **Decision:** Option D — separate CI job with `continue-on-error: true`. Failures get flagged as P0/P1 in the session config and investigated. The CLAUDE.md guardrails mean failures won't be silently ignored.
+<!-- decision-record: chosen-option=(d); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ### Setup steps
 

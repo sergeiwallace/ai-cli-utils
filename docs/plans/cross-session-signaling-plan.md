@@ -447,9 +447,11 @@ Analyze `handoff-events.jsonl` for send-keys nudge failures. Potential fixes: `c
 
 1. Should the banner use emoji or plain ASCII?
 > **Decision:** plain ASCII
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 2. Should `signal-watch` replay missed signals on startup (durable consumer) or new-only?
 > **Decision:** durable with replay — missed signals while subscriber was down are recovered on reconnect
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
 

@@ -123,6 +123,7 @@ Walk `~/projects/`, find all git repos.
 #### Recommendation
 
 > **Decision:** `APPROVED — (b) Parse .code-workspace`
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Parse the workspace file — it is already maintained as the authoritative list of active projects. JSON5 handling: strip single-line `//` comments and trailing commas before parsing with `json.loads`. No external dependency needed for this simple case.
 
@@ -170,6 +171,7 @@ Parse the workspace file — it is already maintained as the authoritative list 
 #### Recommendation
 
 > **Decision:** `APPROVED — (a) ai ws pull`
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 `ai ws pull` is the right call. `pull` names the exact git operation; `ws` groups the command correctly and creates a home for future workspace sub-commands. All alternatives are either longer, vaguer, or both.
 

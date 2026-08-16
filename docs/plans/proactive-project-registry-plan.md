@@ -133,6 +133,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 #### Recommendation
 
 > **Decision:** `PENDING` — Recommend **(b)**. The registry is a ai-core-specific feature; basic session management (`ai c N`, `ai ls`, etc.) should work out of the box for any pip user. The guard condition is simple: `if not config.get("project", {}).get("main_project"): return`. Zero behavior change for ai-core users.
+<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
 
@@ -178,6 +179,7 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 #### Recommendation
 
 > **Decision:** `PENDING` — Recommend **(c)**. `ai register` is the mechanical primitive needed for automation; `ai setup` is the human-facing wizard. Both are small. Start with `ai register` (needed for copier hook) and enhance `ai setup` in the same batch.
+<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
 
@@ -229,6 +231,7 @@ project_type = "tool"
 #### Recommendation
 
 > **Decision:** `PENDING` — Recommend **(b)** for private Python repos (the dominant case in ai-core). Defer `.ai-project.toml` (option c) until a non-Python repo actually needs it. Defer from this scope if D5 (copier hook) is sufficient — the project-local read path is a nice-to-have, not critical path.
+<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
 
@@ -273,6 +276,7 @@ project_type = "tool"
 #### Recommendation
 
 > **Decision:** `PENDING` — Recommend **(c)** as the base behavior (D1b gating handles this), paired with a prominent README section: "First-time setup" → `ai setup`. If the registry is unconfigured, features that depend on it (`ai ls -p project`, session naming) degrade gracefully with a clear message rather than a hard-block.
+<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
 
@@ -319,6 +323,7 @@ _tasks:
 #### Recommendation
 
 > **Decision:** `PENDING` — Recommend **(a)**. The `|| true` guard makes it gracefully no-op when `ai` isn't installed. The copier hook is the right place; `ai register` is the right interface. If `ai` isn't installed, the user still gets the interactive prompt at first `ai c` launch — no regression.
+<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
 
