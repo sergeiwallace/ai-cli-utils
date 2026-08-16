@@ -249,6 +249,7 @@ remediation value.
 **Recommendation (Codex, Round 1):** (a), with `confirmed_unavailable`, `at_risk_after_restart`,
 `healthy`, `unobservable`, and `unsupported` as distinct reason-coded states.
 **Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved, refined.**
+<!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=N/A; ai-effort=high; ai-profile=review -->
 Confidence: **high.** Decision-framework criterion that moved it: **criterion 2 (blast radius)**,
 backed by **criterion 1 (fast-decaying reversibility)** — the `Verdict`/reason-code contract is shared
 single-source-of-truth infra consumed by the CLI, JSON output, exit codes, and any future watcher, so
@@ -288,6 +289,7 @@ escalation, timeout, cross-platform tests; recovery still needs empirical valida
 **Recommendation (Codex, Round 1):** (a) for this plan; treat (b) as separate work after recovery
 is verified.
 **Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved; reject
+<!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=N/A; ai-effort=high; ai-profile=review -->
 (c); defer (b).** Confidence: **high.** Criterion: **criterion 4 (cost of wrong-simple vs.
 over-engineering) + the sequencing carve-out.** Not a plain "simpler wins": (b) would build a
 process-killing restart command on an **unverified premise** — the plan's own OQ-1 admits
@@ -328,6 +330,7 @@ monitoring; existing loop latency/exception behavior needs changes regardless.
 **Recommendation (Codex, Round 1):** (a) until AD-1 is validated; if proactive monitoring remains
 a requirement, choose (b), not the quota watcher.
 **Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved; defer
+<!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=N/A; ai-effort=high; ai-profile=review -->
 the sweep; reject (c).** Confidence: **high.** Criteria: **criterion 5 (YAGNI — speculative structural
 complexity)** + **criterion 2 (concern-coupling / blast radius)** + **criterion 4 sequencing.** The
 roadmap entry is a P2 "lightweight nudge" for a **once-observed** quirk (read directly:
@@ -372,6 +375,7 @@ visibility; no other roadmap/plan entry in this repo has ever been scrubbed this
 it for one doc would be inconsistent without a deliberate repo-wide decision. Flagging as PENDING
 rather than self-resolving since it touches a fleet-wide convention, not just this plan.
 **Decision:** ✅ **Resolved (AI recommendation; awaiting human ratification)** — **(a) approved: no
+<!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=N/A; ai-effort=high; ai-profile=review -->
 change.** Confidence: **high.** Criterion: **criterion 2 (consistency with the established repo-wide
 convention)** — trivial, reversible, contained (one-liner resolution, scorer skipped per the
 framework). Every other doc in this repo uses `AI-CLI-N` IDs and the decision-framework's own
