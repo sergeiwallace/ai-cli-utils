@@ -586,18 +586,18 @@ def _deploy_cc_config_files(project_path: Path) -> None:
             dst.chmod(dst.stat().st_mode | 0o755)
 
 
-def _auto_update_if_stale(config: dict) -> None:
-    """Run `ai update --force` if the project has new commits since the last update."""
+def _auto_update_if_stale(config: dict) -> bool:
+    """Update stale source and report whether the invoking launcher must restart."""
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
-        return
+        return False
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True, check=False)
     if head.returncode != 0:
-        return
+        return False
     current_hash = head.stdout.strip()
     stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
     if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
-        return
+        return False
     # Serialize concurrent workers with an exclusive create-only lockfile.
     # O_CREAT|O_EXCL is atomic on both POSIX and Windows.
     lock_path = stamp_file.with_suffix(".lock")
@@ -606,18 +606,22 @@ def _auto_update_if_stale(config: dict) -> None:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
     except OSError:
-        return  # Another process already claimed the update
+        return False  # Another process already claimed the update
     try:
         # Re-check after acquiring lock — another process may have just updated.
         if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
-            return
-        # Write stamp before running update so any remaining concurrent readers skip.
-        stamp_file.write_text(current_hash)
+            return False
         print("ai-cli-utils has new commits — running ai update --force...")
         ai_bin = shutil.which("ai") or "ai"
         result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path, check=False)
         if result.returncode != 0:
             print("Warning: auto-update failed, continuing with current version", file=sys.stderr)
+            return False
+        # Do not make a failed installation look current.  The caller must re-exec
+        # after a successful installation because this process still has the old
+        # template generator imported.
+        stamp_file.write_text(current_hash)
+        return True
     finally:
         lock_path.unlink(missing_ok=True)
 
@@ -2465,7 +2469,9 @@ def _session_command(engine: str):
         # Startup hooks happen only when launching a new session.
         config = _config.load_config()
         trigger_background_update()
-        _auto_update_if_stale(config)
+        if _auto_update_if_stale(config) is True:
+            ai_bin = shutil.which("ai") or "ai"
+            os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
         _tunnel._ensure_nats_tunnel(config)
         _do_session_launch(
             engine=engine,
