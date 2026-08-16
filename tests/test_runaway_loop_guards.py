@@ -89,7 +89,8 @@ while true; do
   (( SECONDS >= {_WATCH_WINDOW_SECONDS} )) && break
 done
 echo "TICKS=$ticks"
-"""
+""",
+        encoding="utf-8",
     )
 
     result = subprocess.run(
