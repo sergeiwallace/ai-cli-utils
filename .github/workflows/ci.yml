@@ -61,6 +61,9 @@ jobs:
         with:
           msystem: MSYS
           update: true
+          # Default path-type (minimal) hides uv, installed on the native
+          # Windows PATH by setup-uv above, from this MSYS2 shell.
+          path-type: inherit
           install: >-
             tmux
             python
