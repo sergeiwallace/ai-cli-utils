@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -52,7 +53,19 @@ def _tmux_runnable() -> tuple[bool, str]:
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = _tmux_runnable()
 
-pytestmark = [pytest.mark.real_tmux]
+pytestmark = [
+    pytest.mark.real_tmux,
+    # This drives a REAL tmux server (libtmux.Server) against MSYS2's tmux, same
+    # mechanism as test_session_launch_shell_resolution.py -- that file's skip
+    # (PR #35) did not cover this one, and it hung the Windows CI job for the
+    # full 15-minute job timeout on 2026-08-16 (run 31930040855, stalled at 94%
+    # with no progress for ~10 minutes before being killed). Skip until MSYS2's
+    # tmux socket/session behavior under GitHub's Windows runner is verified
+    # deliberately.
+    pytest.mark.skipif(
+        sys.platform == "win32", reason="real tmux server behavior unverified under MSYS2 CI (PR #35 hang)"
+    ),
+]
 
 
 @pytest.fixture
