@@ -18,7 +18,6 @@ actually does.
 """
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -58,13 +57,6 @@ def _run_watcher_loop(tmp_path: Path) -> int:
     if shell is None:  # pragma: no cover - CI always has one of these
         pytest.skip("no zsh/bash available to run the watcher loop")
 
-    stub_bin = tmp_path / "bin"
-    stub_bin.mkdir()
-    for name in ("tmux", "ai", "sha256sum"):
-        stub = stub_bin / name
-        stub.write_text("#!/bin/sh\nexit 0\n")
-        stub.chmod(0o755)
-
     watched = tmp_path / "watched.json"
     watched.write_text("{}")
 
@@ -85,6 +77,12 @@ _config_reload_idle_secs=90
 counter=0
 ticks=0
 SECONDS=0
+# Shell functions shadow the external commands the watcher invokes.  This is
+# more reliable than prepending a native Windows path to PATH before MSYS2
+# Bash interprets it, and still exercises the real watcher loop and its sleep.
+tmux() {{ :; }}
+ai() {{ :; }}
+sha256sum() {{ :; }}
 while true; do
 {_watcher_loop_body()}
   ticks=$((ticks+1))
@@ -94,12 +92,10 @@ echo "TICKS=$ticks"
 """
     )
 
-    env = {**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
     result = subprocess.run(
         [shell, str(harness)],
         capture_output=True,
         text=True,
-        env=env,
         timeout=_WATCH_WINDOW_SECONDS + 60,
         check=False,
     )
