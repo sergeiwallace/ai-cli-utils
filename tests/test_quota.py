@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2758,6 +2759,10 @@ class TestQuotaStatuslinePartSingleLine:
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not available")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="statusline-command.sh requires a POSIX bash environment and utilities",
+)
 class TestStatuslineScript:
     """Integration tests for statusline-command.sh.
 

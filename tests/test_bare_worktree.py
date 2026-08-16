@@ -523,7 +523,10 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
         text=True,
         check=True,
     ).stdout
-    assert str(worktree) in listed, "worktree must be registered with git"
+    registered_worktrees = [
+        Path(line.removeprefix("worktree ")) for line in listed.splitlines() if line.startswith("worktree ")
+    ]
+    assert worktree in registered_worktrees, "worktree must be registered with git"
 
     branches = subprocess.run(
         ["git", "branch", "--list", "wt-kg-1"],

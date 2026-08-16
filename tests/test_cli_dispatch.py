@@ -19,6 +19,7 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -490,11 +491,13 @@ class TestDeployCcConfigFiles:
         dst = fake_home / ".claude" / "statusline-command.sh"
         assert dst.exists()
         assert dst.read_text() == "#!/bin/bash\necho hi\n"
-        # chmod applied → executable bits set
-        mode = dst.stat().st_mode
-        assert mode & stat.S_IXUSR
-        assert mode & stat.S_IXGRP
-        assert mode & stat.S_IXOTH
+        # Windows does not expose POSIX executable mode bits. The copy itself is
+        # the portable contract; assert the mode only where it is meaningful.
+        if sys.platform != "win32":
+            mode = dst.stat().st_mode
+            assert mode & stat.S_IXUSR
+            assert mode & stat.S_IXGRP
+            assert mode & stat.S_IXOTH
 
     def test_given_existing_symlink_at_dst_when_deploy_then_symlink_preserved(self, tmp_path):
         # ai-harness install.sh owns symlinked files — ai update must not overwrite them.
@@ -552,6 +555,7 @@ class TestSessionLaunchExtraArgsName:
         with (
             patch("sys.argv", ["ai", "c", "-R", "--", "myname"]),
             patch("ai_cli.config.load_config", return_value={"remote": {}}),
+            patch("ai_cli.session.get_project_prefix", return_value="test-project"),
             patch("ai_cli.main.trigger_background_update"),
         ):
             with pytest.raises(SystemExit) as exc:

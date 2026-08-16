@@ -122,7 +122,7 @@ def test_migrate_given_titled_session_when_moved_then_dest_has_rewritten_cwds(ro
     assert records[0]["cwd"] == wt
     assert records[1]["cwd"] == wt
     # Subpath rewrites keep the suffix; originalCwd is rewritten too.
-    assert records[2]["cwd"] == wt + "/docs"
+    assert Path(records[2]["cwd"]) == Path(wt) / "docs"
     assert records[2]["originalCwd"] == wt
     # Non-JSON lines and unrelated paths are byte-preserved.
     assert records[3] == "not json at all"

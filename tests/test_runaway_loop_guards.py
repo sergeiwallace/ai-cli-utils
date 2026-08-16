@@ -155,10 +155,10 @@ class _FakeTmux:
 @pytest.fixture
 def refresh_env(monkeypatch, tmp_path):
     """Isolated state dir with one live ai-cli session, plus a counting fake tmux."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    state = tmp_path / "ai-cli-utils"
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
-    state = tmp_path / "ai-cli-utils"
     _install_session_meta(state, "c-sw-1", "sw-1")
     fake_tmux = _FakeTmux(["c-sw-1", "c-other-9"])
     with patch.object(main.subprocess, "run", fake_tmux):
@@ -244,7 +244,7 @@ def test_given_refresh_budget_is_spent_when_caller_keeps_spinning_then_rejection
 
 def test_given_no_metadata_when_writing_stable_script_then_it_reports_failure(monkeypatch, tmp_path):
     """The unchanged-script short circuit must not mask a genuinely missing session."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: tmp_path / "ai-cli-utils")
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
     assert _write_stable_session_script("c-nope-1") is False
@@ -252,10 +252,11 @@ def test_given_no_metadata_when_writing_stable_script_then_it_reports_failure(mo
 
 def test_given_unchanged_script_when_writing_stable_script_then_it_reports_success(monkeypatch, tmp_path):
     """``ai internal write-stable-script`` exits 0 when the script is already current."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    state = tmp_path / "ai-cli-utils"
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
-    _install_session_meta(tmp_path / "ai-cli-utils", "c-sw-1", "sw-1")
+    _install_session_meta(state, "c-sw-1", "sw-1")
 
     assert _write_stable_session_script("c-sw-1") is True
     assert _write_stable_session_script("c-sw-1") is True

@@ -235,7 +235,11 @@ def _cleanup(config, panes_output, now=None):
             kill_calls.append(cmd[cmd.index("-t") + 1])
         return MagicMock(returncode=0)
 
-    with patch("subprocess.run", side_effect=fake_run), patch("ai_cli.session.time") as mock_time:
+    with (
+        patch("subprocess.run", side_effect=fake_run),
+        patch("ai_cli.session.time") as mock_time,
+        patch("ai_cli.session.sys.platform", "linux"),
+    ):
         mock_time.time.return_value = now
         cleanup_stale_sessions(config)
     return kill_calls

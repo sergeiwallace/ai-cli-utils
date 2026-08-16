@@ -83,7 +83,7 @@ def test_conflict_files_returns_files_with_markers(tmp_path):
     conflict_file.write_text("<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>>\n")
 
     result = _conflict_files(tmp_path)
-    assert str(conflict_file) in result
+    assert conflict_file in {Path(path) for path in result}
 
 
 def test_conflict_files_returns_empty_when_none(tmp_path):
@@ -164,7 +164,7 @@ def test_run_copier_update_project_filter_found(tmp_path, capsys):
     copier_calls = [c for c in mock_run.call_args_list if "copier" in str(c.args[0][0])]
     assert len(copier_calls) == 1
     call_args = copier_calls[0][0][0]  # positional args list
-    assert str(tmp_path / "alpha") in str(copier_calls[0])
+    assert copier_calls[0].kwargs["cwd"] == tmp_path / "alpha"
     assert "--vcs-ref" in call_args
     assert "HEAD" in call_args
 
@@ -570,7 +570,7 @@ def test_conflict_files_whole_tree_still_works(tmp_path):
     """paths=None preserves the original whole-tree scan (legacy direct mode)."""
     (tmp_path / "c.py").write_text("<<<<<<< HEAD\n")
     result = _conflict_files(tmp_path)
-    assert str(tmp_path / "c.py") in result
+    assert tmp_path / "c.py" in {Path(path) for path in result}
 
 
 def test_do_update_ignores_unchanged_marker_files(tmp_path):
