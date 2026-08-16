@@ -21,7 +21,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -95,7 +94,7 @@ echo "TICKS=$ticks"
 """
     )
 
-    env = {**os.environ, "PATH": f"{stub_bin}:{os.environ.get('PATH', '')}"}
+    env = {**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
     result = subprocess.run(
         [shell, str(harness)],
         capture_output=True,
@@ -109,7 +108,6 @@ echo "TICKS=$ticks"
     return int(ticks_line[-1].split("=", 1)[1])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="session template is POSIX shell")
 def test_given_idle_session_watcher_when_it_polls_then_it_ticks_at_most_once_per_second(tmp_path):
     """An idle watcher must tick about once per second, not spin.
 

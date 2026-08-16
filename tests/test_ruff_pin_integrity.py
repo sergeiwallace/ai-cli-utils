@@ -47,8 +47,17 @@ def _write_repo(root: Path, rev: str, pin: str) -> None:
 def _write_fake_ruff(path: Path, version: str) -> None:
     """Install a stub `ruff` that reports `version`, so the guard's real
     subprocess boundary is exercised without downloading a second ruff."""
-    path.write_text(f'#!/usr/bin/env python3\nprint("ruff {version}")\n')
-    path.chmod(0o755)
+    if sys.platform == "win32":
+        path.write_text(f"@echo off\r\necho ruff {version}\r\n")
+    else:
+        path.write_text(f'#!/usr/bin/env python3\nprint("ruff {version}")\n')
+        path.chmod(0o755)
+
+
+def _fake_ruff_path(root: Path) -> Path:
+    if sys.platform == "win32":
+        return root / ".venv" / "Scripts" / "ruff.cmd"
+    return root / ".venv" / "bin" / "ruff"
 
 
 def _add_worktree(main_tree: Path, worktree: Path) -> Path:
@@ -127,9 +136,9 @@ def test_given_a_linked_worktree_with_no_local_venv_when_checked_then_uses_the_m
     main_tree.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(main_tree)], check=True)
     _write_repo(main_tree, "0.16.0", "0.16.0")
-    fake_bin = main_tree / ".venv" / "bin"
-    fake_bin.mkdir(parents=True)
-    _write_fake_ruff(fake_bin / "ruff", "0.16.0")
+    fake_ruff = _fake_ruff_path(main_tree)
+    fake_ruff.parent.mkdir(parents=True)
+    _write_fake_ruff(fake_ruff, "0.16.0")
     worktree = _add_worktree(main_tree, tmp_path / "wt")
     assert not (worktree / ".venv").exists()
 
@@ -142,9 +151,9 @@ def test_given_a_linked_worktree_whose_main_venv_is_stale_when_checked_then_stil
     main_tree.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(main_tree)], check=True)
     _write_repo(main_tree, "0.16.0", "0.16.0")
-    fake_bin = main_tree / ".venv" / "bin"
-    fake_bin.mkdir(parents=True)
-    _write_fake_ruff(fake_bin / "ruff", "0.15.11")
+    fake_ruff = _fake_ruff_path(main_tree)
+    fake_ruff.parent.mkdir(parents=True)
+    _write_fake_ruff(fake_ruff, "0.15.11")
     worktree = _add_worktree(main_tree, tmp_path / "wt")
 
     errors = check_installed_version(worktree)

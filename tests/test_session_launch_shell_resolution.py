@@ -26,7 +26,6 @@ constraint: the fix must not stop preferring zsh/direnv where they exist.
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -95,7 +94,6 @@ _TMUX_RUNNABLE, _TMUX_SKIP_REASON = _tmux_runnable()
 
 pytestmark = [
     pytest.mark.real_tmux,
-    pytest.mark.skipif(sys.platform == "win32", reason="tmux session template is POSIX-only"),
 ]
 
 

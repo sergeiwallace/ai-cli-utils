@@ -8,6 +8,49 @@ from ai_cli.main import cli
 # --- --remote flag tests ---
 
 
+@pytest.fixture(autouse=True)
+def supported_platform_for_remote_unit_tests():
+    """Exercise remote command construction independently of the host OS.
+
+    Remote transport is deliberately rejected on native Windows. These tests
+    mock every transport boundary and verify command construction, so they must
+    use a supported platform to reach that code path.
+    """
+    with patch("ai_cli.main.sys.platform", "linux"):
+        yield
+
+
+def test_given_windows_when_remote_flag_used_then_exits_with_documented_error(capsys):
+    # transport must be "ssh" -- the default (mosh) never reaches the Windows
+    # check at all, since that check only guards the pure-SSH branch.
+    config = {
+        "remote": {
+            "host": "example.com",
+            "user": "user",
+            "port": 22,
+            "identity_file": "",
+            "transport": "ssh",
+        }
+    }
+
+    with (
+        patch("ai_cli.main.sys.platform", "win32"),
+        # shutil.which()'s own stdlib implementation branches on the real
+        # sys.platform too, and its win32 branch needs the (real-Windows-only)
+        # _winapi module -- patching platform alone crashes it on a non-Windows
+        # test host before the code under test even reaches the Windows check.
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
+        patch("sys.argv", ["ai", "c", "1", "--remote"]),
+        patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.main.trigger_background_update"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli()
+
+    assert exc_info.value.code == 1
+    assert "remote SSH transport is not supported on Windows" in capsys.readouterr().err
+
+
 def test_remote_flag_when_host_configured_then_sshs_to_host():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
     mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)

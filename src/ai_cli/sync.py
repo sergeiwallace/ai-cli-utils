@@ -63,6 +63,38 @@ class SyncConfig:
     source_machine: str  # "mac" or "server"
 
 
+def _canonical_path(path: str) -> str:
+    """Return a filesystem path in separator-neutral form for comparisons."""
+    return path.replace("\\", "/")
+
+
+def _is_absolute_filesystem_path(path: str) -> bool:
+    """Return whether ``path`` is absolute on either supported path syntax."""
+    return path.startswith("/") or bool(re.match(r"^[A-Za-z]:[\\/]", path))
+
+
+def _home_from_project_path(path: str) -> str | None:
+    """Extract the home-directory prefix from an absolute path below ``projects``."""
+    canonical = _canonical_path(path)
+    marker = "/projects/"
+    index = canonical.find(marker)
+    if not _is_absolute_filesystem_path(path) or index == -1:
+        return None
+    return path[:index]
+
+
+def _is_worktree_path(path: str) -> bool:
+    """Return whether a filesystem path identifies a worktree."""
+    return ".worktrees/" in _canonical_path(path)
+
+
+def _replace_serialized_path(line: str, source: str, destination: str) -> str:
+    """Replace a path in either plain or JSON-escaped serialized text."""
+    source_json = json.dumps(source)[1:-1]
+    destination_json = json.dumps(destination)[1:-1]
+    return line.replace(source_json, destination_json).replace(source, destination)
+
+
 def _is_mac() -> bool:
     return sys.platform == "darwin"
 
@@ -298,13 +330,9 @@ def _detect_foreign_home(jsonl_path: Path) -> str | None:
                     continue
                 for key in ("cwd", "project"):
                     val = entry.get(key, "")
-                    if val and val.startswith("/") and not val.startswith(local_home):
-                        # Extract the home prefix: the path starts with /home/user or /Users/user
-                        parts = val.split("/")
-                        # /home/user/... -> parts[0]="" parts[1]="home" parts[2]="user"
-                        # /Users/username/... -> parts[1]="Users" parts[2]="username"
-                        if len(parts) >= 3:
-                            return "/" + "/".join(parts[1:3])
+                    foreign_home = _home_from_project_path(val) if isinstance(val, str) else None
+                    if foreign_home and not val.startswith(local_home):
+                        return foreign_home
     except Exception:
         pass
     return None
@@ -313,7 +341,9 @@ def _detect_foreign_home(jsonl_path: Path) -> str | None:
 def translate_cwd_paths(content: bytes, foreign_home: str) -> bytes:
     """Replace foreign home path prefix with local home in a JSONL file's bytes."""
     local_home = str(Path.home())
-    return content.replace(foreign_home.encode(), local_home.encode())
+    foreign_json = json.dumps(foreign_home)[1:-1].encode()
+    local_json = json.dumps(local_home)[1:-1].encode()
+    return content.replace(foreign_json, local_json).replace(foreign_home.encode(), local_home.encode())
 
 
 def detect_jsonl_divergence(local_path: Path, staging_path: Path) -> str:
@@ -570,10 +600,9 @@ def _detect_foreign_home_in_history(history_path: Path) -> str | None:
                 try:
                     entry = _json.loads(raw)
                     project = entry.get("project", "")
-                    if project and not project.startswith(local_home):
-                        parts = project.split("/")
-                        if len(parts) >= 3:
-                            return "/" + "/".join(parts[1:3])
+                    foreign_home = _home_from_project_path(project) if isinstance(project, str) else None
+                    if foreign_home and not project.startswith(local_home):
+                        return foreign_home
                 except Exception:
                     pass
     except Exception:
@@ -601,12 +630,16 @@ def translate_history_jsonl(verbose: bool = False) -> int:
 
     local_home = str(Path.home())
     content = history_path.read_bytes()
-    updated = content.replace(foreign_home.encode(), local_home.encode())
+    updated = translate_cwd_paths(content, foreign_home)
 
     if updated == content:
         return 0
 
-    count = content.count(foreign_home.encode())
+    foreign_raw = foreign_home.encode()
+    foreign_json = json.dumps(foreign_home)[1:-1].encode()
+    count = content.count(foreign_json)
+    if foreign_json != foreign_raw:
+        count += content.count(foreign_raw)
     history_path.write_bytes(updated)
     if verbose:
         print(f"  translate history.jsonl: {count} project paths updated ({foreign_home} → {local_home})")
@@ -650,7 +683,12 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
             proj = d.get("project", "")
             existing_projects.add(proj)
             # Collect main project entries (not worktree entries)
-            if proj and "/projects/" in proj and "--worktrees-" not in proj and ".worktrees/" not in proj:
+            if (
+                proj
+                and "/projects/" in _canonical_path(proj)
+                and "--worktrees-" not in proj
+                and not _is_worktree_path(proj)
+            ):
                 main_entries_by_project.setdefault(proj, []).append(line)
         except Exception:
             pass
@@ -658,7 +696,7 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
     new_entries = []
     for main_cwd, lines in main_entries_by_project.items():
         # Find the project name from the path
-        project_name = main_cwd.rstrip("/").split("/")[-1]
+        project_name = _canonical_path(main_cwd).rstrip("/").rsplit("/", 1)[-1]
         project_path = projects_base / project_name
         if not project_path.is_dir():
             continue
@@ -675,8 +713,7 @@ def replicate_history_to_worktrees(verbose: bool = False) -> int:
                 continue  # Already have entries for this worktree
 
             for line in lines:
-                translated = line.replace(f'"project":"{main_cwd}"', f'"project":"{wt_cwd}"')
-                translated = translated.replace(f'"project": "{main_cwd}"', f'"project": "{wt_cwd}"')
+                translated = _replace_serialized_path(line, main_cwd, wt_cwd)
                 if translated != line:
                     new_entries.append(translated)
 
@@ -726,7 +763,7 @@ def purge_phantom_history_entries(verbose: bool = False) -> int:
         try:
             d = _json.loads(line)
             proj = d.get("project", "")
-            if proj and ".worktrees/" not in proj and "--worktrees-" not in proj:
+            if proj and not _is_worktree_path(proj) and "--worktrees-" not in proj:
                 session_id = d.get("sessionId", "")
                 if session_id:
                     main_project_uuids.add(session_id)
@@ -742,7 +779,7 @@ def purge_phantom_history_entries(verbose: bool = False) -> int:
             d = _json.loads(line)
             proj = d.get("project", "")
             session_id = d.get("sessionId", "")
-            if (".worktrees/" in proj or "--worktrees-" in proj) and session_id in main_project_uuids:
+            if (_is_worktree_path(proj) or "--worktrees-" in proj) and session_id in main_project_uuids:
                 removed += 1
                 continue
         except Exception:

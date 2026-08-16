@@ -16,6 +16,7 @@ behavioral test, not a string-presence check — so a future refactor that quiet
 narrows the watched-file set back down fails a real assertion, not just a grep.
 """
 
+import os
 import re
 import subprocess
 import textwrap
@@ -45,7 +46,7 @@ def _hash_via_bash(home: str, cwd: str, watch_files_line: str) -> str:
     result = subprocess.run(
         ["bash", "-c", snippet],
         cwd=cwd,
-        env={"HOME": home, "PATH": "/usr/bin:/bin:/sbin:/usr/sbin"},
+        env={**os.environ, "HOME": home},
         capture_output=True,
         text=True,
         timeout=10,

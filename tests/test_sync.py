@@ -133,6 +133,19 @@ def test_get_local_prefix_consistent_with_home():
     assert get_local_prefix() == expected
 
 
+def test_given_windows_jsonl_path_when_foreign_home_detected_then_preserves_drive_prefix(tmp_path):
+    jsonl_path = tmp_path / "conversation.jsonl"
+    foreign_path = r"C:\Users\foreign\projects\myproject"
+    local_home = r"D:\Users\local"
+    jsonl_path.write_text(json.dumps({"cwd": foreign_path}) + "\n")
+
+    with patch("pathlib.Path.home", return_value=Path(local_home)):
+        assert _detect_foreign_home(jsonl_path) == r"C:\Users\foreign"
+        translated = translate_cwd_paths(jsonl_path.read_bytes(), r"C:\Users\foreign")
+
+    assert json.loads(translated)["cwd"] == r"D:\Users\local\projects\myproject"
+
+
 # ---------------------------------------------------------------------------
 # is_memory_file
 # ---------------------------------------------------------------------------
@@ -2411,6 +2424,26 @@ def test_replicate_history_to_worktrees_when_worktrees_exist_then_adds_entries(t
         with patch("ai_cli.config._get_projects_dir", return_value=projects_base):
             result = replicate_history_to_worktrees(verbose=False)
     assert result >= 1
+
+
+def test_given_windows_history_path_when_replicating_then_writes_worktree_entry(tmp_path):
+    history = tmp_path / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(json.dumps({"project": r"C:\Users\user\projects\myapp", "sessionId": "s1"}) + "\n")
+
+    projects_base = tmp_path / "projects"
+    worktree = projects_base / "myapp" / ".worktrees" / "wt-1"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: ...")
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("ai_cli.config._get_projects_dir", return_value=projects_base),
+    ):
+        assert replicate_history_to_worktrees() == 1
+
+    entries = [json.loads(line) for line in history.read_text().splitlines()]
+    assert entries[-1]["project"] == str(worktree)
 
 
 def test_retranslate_project_jsonls_when_no_cc_dir_then_returns_zero(tmp_path):
