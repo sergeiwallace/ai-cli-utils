@@ -834,20 +834,31 @@ class TestDetectRepoRoot:
         # --git-common-dir returns the .git directory; parent is the repo root.
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "/home/user/projects/myapp/.git\n"
+        if os.name == "nt":
+            mock_result.stdout = "C:\\Users\\user\\projects\\myapp\\.git\n"
+            expected = Path("C:/Users/user/projects/myapp")
+        else:
+            mock_result.stdout = "/home/user/projects/myapp/.git\n"
+            expected = Path("/home/user/projects/myapp")
         with patch("subprocess.run", return_value=mock_result):
             result = detect_repo_root()
-        assert result == Path("/home/user/projects/myapp")
+        assert result == expected
 
     def test_detect_repo_root_when_in_worktree_then_returns_main_root(self):
         # --git-common-dir from a worktree may return a relative path; resolve it.
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "../../.git\n"
+        cwd = (
+            Path("C:/Users/user/projects/myapp/.worktrees/sw-1")
+            if os.name == "nt"
+            else Path("/home/user/projects/myapp/.worktrees/sw-1")
+        )
+        expected = Path("C:/Users/user/projects/myapp") if os.name == "nt" else Path("/home/user/projects/myapp")
         with patch("subprocess.run", return_value=mock_result):
-            with patch("ai_cli.session.Path.cwd", return_value=Path("/home/user/projects/myapp/.worktrees/sw-1")):
+            with patch("ai_cli.session.Path.cwd", return_value=cwd):
                 result = detect_repo_root()
-        assert result == Path("/home/user/projects/myapp")
+        assert result == expected
 
     def test_detect_repo_root_when_not_in_repo_then_returns_none(self):
         mock_result = MagicMock()

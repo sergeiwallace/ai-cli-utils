@@ -712,13 +712,20 @@ def _write_launch_script_if_changed(script_path: Path, script: str) -> bool:
     """
     script_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if script_path.read_text() == script and script_path.stat().st_mode & 0o777 == 0o700:
+        if script_path.read_text(encoding="utf-8") == script and script_path.stat().st_mode & 0o777 == 0o700:
             return False
     except OSError:
         pass
-    script_path.write_text(script)
+    script_path.write_text(script, encoding="utf-8")
     script_path.chmod(0o700)
     return True
+
+
+def _decode_tmux_stderr(raw: str | bytes) -> str:
+    """Decode captured tmux stderr without hiding the original diagnostic."""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw
 
 
 # Bound on how often the live-session template refresh may run. Each run spawns a
@@ -2420,7 +2427,7 @@ def _do_session_launch(
         )
         if result.returncode != 0:
             raw = result.stderr
-            stderr = (raw.decode() if isinstance(raw, bytes) else raw).strip()
+            stderr = _decode_tmux_stderr(raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
                 ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, _session_shell, _script_path],
@@ -2429,7 +2436,7 @@ def _do_session_launch(
             )
             if result2.returncode != 0:
                 raw2 = result2.stderr
-                stderr2 = (raw2.decode() if isinstance(raw2, bytes) else raw2).strip()
+                stderr2 = _decode_tmux_stderr(raw2).strip()
                 Path(_script_path).unlink()
                 print(f"Error: failed to create tmux session '{session_id}'", file=sys.stderr)
                 print(f"  (with --): {stderr}", file=sys.stderr)

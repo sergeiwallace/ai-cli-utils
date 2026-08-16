@@ -127,7 +127,11 @@ def _rewrite_line(raw: str, source_root: str, dest_root: str) -> str:
     changed = False
     for key in _CWD_KEYS:
         value = record.get(key)
-        if isinstance(value, str) and (value == source_root or value.startswith(source_root + "/")):
+        if (
+            isinstance(value, str)
+            and value.startswith(source_root)
+            and (len(value) == len(source_root) or value[len(source_root)] in ("/", "\\"))
+        ):
             record[key] = dest_root + value[len(source_root) :]
             changed = True
     if not changed:

@@ -13,8 +13,9 @@ These assert the behavioral contract of the generated bash + the regen helper.
 """
 
 import json
+from pathlib import Path
 
-from ai_cli.main import _write_stable_session_script
+from ai_cli.main import _write_launch_script_if_changed, _write_stable_session_script
 from ai_cli.session_script import get_engine_script
 
 
@@ -83,3 +84,21 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
     body = out.read_text()
     assert 'ai_name="job-1"' in body
     assert 'CLAUDE_CODE_TASK_LIST_ID="$ai_name"' in body
+
+
+def test_given_non_ascii_script_when_written_then_utf8_is_used_at_each_file_boundary(monkeypatch, tmp_path):
+    script_path = tmp_path / "sessions" / "job-1.sh"
+    script = "✦ ▶ ✓ ✗ ↻ ⏸\n"
+    original_open = Path.open
+    open_calls = []
+
+    def recording_open(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        open_calls.append((mode, encoding))
+        return original_open(path, mode, buffering, encoding, errors, newline)
+
+    monkeypatch.setattr(Path, "open", recording_open)
+
+    assert _write_launch_script_if_changed(script_path, script) is True
+    assert script_path.read_text(encoding="utf-8") == script
+    assert ("r", "utf-8") in open_calls
+    assert ("w", "utf-8") in open_calls

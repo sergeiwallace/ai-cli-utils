@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from ai_cli.cc_migrate import (
+    _rewrite_line,
     cc_project_dir,
     find_transcript,
     migrate_session,
@@ -56,6 +57,29 @@ def roots(tmp_path):
 def test_project_dir_given_underscored_path_when_slugified_then_every_nonalnum_becomes_dash(tmp_path):
     d = cc_project_dir(Path("/home/me/my_proj.x"), tmp_path)
     assert d == tmp_path / "projects" / "-home-me-my-proj-x"
+
+
+def test_given_windows_root_cwd_when_rewritten_then_exact_root_is_replaced():
+    source_root = r"C:\Users\user\projects\myproject"
+    dest_root = r"D:\worktrees\myproject-1"
+
+    rewritten = _rewrite_line(_record(cwd=source_root, originalCwd=source_root) + "\n", source_root, dest_root)
+
+    assert json.loads(rewritten) == {"cwd": dest_root, "originalCwd": dest_root}
+
+
+def test_given_windows_nested_cwd_when_rewritten_then_backslash_suffix_is_preserved():
+    source_root = r"C:\Users\user\projects\myproject"
+    dest_root = r"D:\worktrees\myproject-1"
+    nested_cwd = source_root + r"\docs"
+    nested_original_cwd = source_root + r"\.worktrees\myproject-2"
+
+    rewritten = _rewrite_line(_record(cwd=nested_cwd, originalCwd=nested_original_cwd) + "\n", source_root, dest_root)
+
+    assert json.loads(rewritten) == {
+        "cwd": dest_root + r"\docs",
+        "originalCwd": dest_root + r"\.worktrees\myproject-2",
+    }
 
 
 # ---- find_transcript / transcript_title ------------------------------------
