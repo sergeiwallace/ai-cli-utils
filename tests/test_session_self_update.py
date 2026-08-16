@@ -81,7 +81,7 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
     assert _write_stable_session_script("c-job-1") is True
     out = state / "sessions" / "c-job-1.sh"
     assert out.exists()
-    body = out.read_text()
+    body = out.read_text(encoding="utf-8")
     assert 'ai_name="job-1"' in body
     assert 'CLAUDE_CODE_TASK_LIST_ID="$ai_name"' in body
 

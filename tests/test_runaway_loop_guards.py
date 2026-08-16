@@ -20,6 +20,7 @@ actually does.
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -165,13 +166,14 @@ def refresh_env(monkeypatch, tmp_path):
         yield state, fake_tmux
 
 
-def test_given_unchanged_template_when_refresh_reruns_then_script_is_not_rewritten(refresh_env):
+def test_given_windows_when_unchanged_template_refresh_reruns_then_script_is_not_rewritten(refresh_env, monkeypatch):
     """A refresh that would regenerate identical bytes must not touch the file.
 
     The stable script's mtime is the hot-reload signal every live wrapper watches,
     so rewriting an unchanged script makes every session exec a reload for nothing.
     """
     state, _ = refresh_env
+    monkeypatch.setattr(main.os, "name", "nt")
 
     assert _refresh_live_session_scripts() == 1
     script_path = state / "sessions" / "c-sw-1.sh"
@@ -186,11 +188,14 @@ def test_given_changed_template_when_refresh_runs_then_script_is_rewritten(refre
     state, _ = refresh_env
     _refresh_live_session_scripts()
     script_path = state / "sessions" / "c-sw-1.sh"
-    script_path.write_text("#!/bin/zsh\n# stale content from an older template\n")
+    script_path.write_text("#!/bin/zsh\n# stale content from an older template\n", encoding="utf-8")
 
     assert _refresh_live_session_scripts() == 1
-    assert "stale content" not in script_path.read_text()
-    assert script_path.stat().st_mode & 0o777 == 0o700
+    assert "stale content" not in script_path.read_text(encoding="utf-8")
+    # Windows' chmod() only toggles the read-only attribute -- it cannot express
+    # POSIX owner/group/other bits, so st_mode never reports 0o700 there.
+    if sys.platform != "win32":
+        assert script_path.stat().st_mode & 0o777 == 0o700
 
 
 def test_given_refresh_called_in_a_storm_then_it_stops_and_reports_the_caller(refresh_env, capsys):

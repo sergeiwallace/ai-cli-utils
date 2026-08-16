@@ -2639,7 +2639,7 @@ def test_replicate_history_to_worktrees_when_verbose_then_prints(tmp_path, capsy
     history = tmp_path / ".claude" / "history.jsonl"
     history.parent.mkdir(parents=True)
     main_cwd = f"{tmp_path}/projects/myapp"
-    history.write_text(f'{{"project":"{main_cwd}"}}\n')
+    history.write_text(json.dumps({"project": main_cwd}) + "\n")
 
     with patch("pathlib.Path.home", return_value=tmp_path):
         with patch("ai_cli.config._get_projects_dir", return_value=projects_dir):
@@ -2890,7 +2890,7 @@ def test_replicate_to_worktrees_when_matching_conv_then_replicates(tmp_path, cap
 
     # Create a JSONL file with matching customTitle
     main_cwd = str(myapp)
-    jsonl_content = f'{{"customTitle":"myapp-1","cwd":"{main_cwd}"}}\n'
+    jsonl_content = json.dumps({"customTitle": "myapp-1", "cwd": main_cwd}) + "\n"
     conv_file = cc_dir / "abc123.jsonl"
     conv_file.write_text(jsonl_content)
 
@@ -5441,7 +5441,7 @@ def test_sync_repos_when_worktree_bare_name_then_maps_to_base_project(tmp_path):
     with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
         sync_repos({"myproject--worktrees-sw-1"}, tmp_path, verbose=False)
 
-    assert any(str(project) in str(a) for a in pulled), "base project not pulled from worktree bare name"
+    assert any(Path(args[2]) == project for args in pulled), "base project not pulled from worktree bare name"
 
 
 def test_sync_repos_when_memories_only_then_not_called(tmp_path):
