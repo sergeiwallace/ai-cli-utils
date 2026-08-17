@@ -148,6 +148,48 @@ def test_build_session_name_with_index_when_called_then_respects_index():
     assert ai_name == "sw-3"
 
 
+def test_given_custom_name_with_trailing_index_when_new_session_is_built_then_preserves_index():
+    with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+        session_id, ai_name = build_session_name("c", "sw", "feature-1")
+
+    assert session_id == "c-sw-feature-1"
+    assert ai_name == "sw-feature-1"
+
+
+def test_given_custom_name_with_trailing_index_when_tmux_session_exists_then_reuses_same_session():
+    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-sw-feature-1\n")):
+        session_id, ai_name = build_session_name("c", "sw", "feature-1")
+
+    assert session_id == "c-sw-feature-1"
+    assert ai_name == "sw-feature-1"
+
+
+def test_given_custom_name_with_trailing_index_when_bare_worktree_exists_then_reuses_same_slot(tmp_path):
+    (tmp_path / ".worktrees" / "sw-feature-1").mkdir(parents=True)
+
+    with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+        session_id, ai_name = build_session_name("c", "sw", "feature-1", use_tmux=False)
+
+    assert session_id == "c-sw-feature-1"
+    assert ai_name == "sw-feature-1"
+
+
+def test_given_explicit_numeric_slot_when_session_exists_then_reuses_same_session():
+    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-sw-1\n")):
+        session_id, ai_name = build_session_name("c", "sw", "1")
+
+    assert session_id == "c-sw-1"
+    assert ai_name == "sw-1"
+
+
+def test_given_custom_name_without_trailing_index_when_slot_is_taken_then_increments_index():
+    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-sw-feature-1\n")):
+        session_id, ai_name = build_session_name("c", "sw", "feature")
+
+    assert session_id == "c-sw-feature-2"
+    assert ai_name == "sw-feature-2"
+
+
 @pytest.mark.parametrize("engine", ["c", "g"])
 def test_given_legacy_remote_session_when_explicit_index_then_reuses_legacy_slot(engine):
     """A prefix case or remote-mode change must not fork an occupied slot."""
