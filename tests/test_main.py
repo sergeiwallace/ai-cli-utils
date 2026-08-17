@@ -502,6 +502,108 @@ class TestAutoUpdateIfStaleFailure:
         assert not (tmp_path / "last_update_commit.txt").exists()
 
 
+class TestAutoUpdateIfStaleLockContention:
+    """The lock LOSER must not keep running while a peer reinstalls it.
+
+    AI-CLI-ai-c-loser-auto-update-lock-bvzd. `ai update --force` runs `uv tool
+    install`, which tears down and rewrites this process's own installed tree. The
+    winner re-execs (AI-CLI-an5r / c5b33d04 added that), but the loser returned
+    False -- "no restart needed" -- and carried on executing deferred imports
+    against a directory being deleted. Measured 2026-08-17: five `ai c` launches
+    within 34 seconds, and the two that had a prior transcript to resume died on
+    `from .session_adopt import _pid_is_live` while three siblings survived.
+
+    `False` conflated "no update was needed" with "a peer is replacing my files
+    right now". Only the first is safe to continue on.
+    """
+
+    def _project(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
+        head = MagicMock()
+        head.returncode = 0
+        head.stdout = "abc123\n"
+        return head
+
+    def test_given_peer_holds_lock_and_completes_update_when_auto_update_runs_then_requests_reexec(self, tmp_path):
+        """The peer finished and the stamp advanced, so our imports are stale -> re-exec."""
+        head = self._project(tmp_path)
+        lock = tmp_path / "last_update_commit.lock"
+        lock.write_text("")  # a peer already claimed the update
+
+        def fake_run(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                return head
+            raise AssertionError("the loser must not run `ai update` itself")
+
+        def peer_finishes(*_args, **_kwargs):
+            # Model the winner completing mid-wait: stamp written, lock released.
+            (tmp_path / "last_update_commit.txt").write_text("abc123")
+            lock.unlink(missing_ok=True)
+
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+            patch("time.sleep", side_effect=peer_finishes),
+        ):
+            updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+
+        assert updated is True, "loser saw its installation replaced and must re-exec, not continue"
+
+    def test_given_peer_holds_lock_indefinitely_when_auto_update_runs_then_terminates_without_reexec(
+        self, tmp_path, capsys
+    ):
+        """Bounded wait: a stuck peer must not hang the launch or loop re-execing (AC-3)."""
+        head = self._project(tmp_path)
+        (tmp_path / "last_update_commit.lock").write_text("")  # never released
+
+        def fake_run(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                return head
+            raise AssertionError("the loser must not run `ai update` itself")
+
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+            # Shrink the real bound rather than stubbing sleep: with sleep stubbed and
+            # the deadline on real monotonic time, the loop busy-spins the full 90s and
+            # the test takes 101s. Patching the constant proves the bound is finite
+            # AND keeps the suite fast.
+            patch("ai_cli.main._PEER_UPDATE_WAIT_SECONDS", 0.05),
+            patch("ai_cli.main._PEER_UPDATE_POLL_SECONDS", 0.01),
+        ):
+            updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+
+        assert updated is False, "an unfinished peer must not trigger a re-exec (no exec loop)"
+        assert "Warning" in capsys.readouterr().err, "silently continuing on a torn install is the bug"
+
+    def test_given_stamp_already_current_when_auto_update_runs_then_no_wait_and_no_reexec(self, tmp_path):
+        """Positive control + AC-4: the common case must not pay for the fix.
+
+        Without this, both tests above would pass against a function that always
+        returned True or always waited, which would assert nothing about contention.
+        """
+        head = self._project(tmp_path)
+        (tmp_path / "last_update_commit.txt").write_text("abc123")
+
+        def fake_run(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                return head
+            raise AssertionError("no update should be attempted when the stamp is current")
+
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+            patch("time.sleep", side_effect=AssertionError("must not wait when nothing is stale")),
+        ):
+            assert _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}}) is False
+
+
 # --- Group 11: _cmd_tunnel_start no remote host ---
 
 

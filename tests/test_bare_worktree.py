@@ -6,6 +6,7 @@ Regression tests for the ordering bug where ``if bare:`` exec'd the engine
 a plain ``claude`` in the repo root -- no worktree, no ``--name``, no resume.
 """
 
+import builtins
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ import pytest
 from ai_cli.main import (
     _bare_engine_command,
     _cc_project_dir,
+    _cc_record_liveness,
     _cc_session_is_live,
     _do_session_launch,
     _find_cc_session_by_title,
@@ -714,3 +716,45 @@ def test_given_use_tmux_false_config_when_launched_then_still_creates_worktree(r
             _do_session_launch(**_launch_kwargs(bare=False))
 
     assert (real_repo / ".worktrees" / "kg-1").is_dir()
+
+
+def test_given_session_adopt_module_missing_when_liveness_checked_then_unproven(tmp_path, monkeypatch):
+    """A torn source tree must cost a liveness check, not every `ai` invocation (AI-CLI-205).
+
+    `ai` is installed editable against the main working tree, and `ai c` pulls that
+    same tree, so git's file-at-a-time write order opens a window where `main.py`
+    already imports `session_adopt` and the module file is not on disk yet. The
+    function-local import turned that window into a crash for EVERY command --
+    measured from two unrelated repo roots, because the import path is absolute and
+    the cwd is irrelevant.
+
+    `_cc_record_liveness` already documents that it fails OPEN and that anything it
+    cannot verify is "unproven"; a missing module is that same class of
+    unreliability, so it must degrade the same way rather than propagate.
+    """
+    _write_proc_stat(tmp_path / "proc", 4242, starttime=777)
+
+    real_import = builtins.__import__
+
+    def _hide_session_adopt(name, globals=None, locals=None, fromlist=(), level=0):
+        # Mirrors the real failure: the module is absent from disk, so the
+        # relative import inside _cc_record_liveness raises rather than the
+        # attribute lookup. Every other import must still work.
+        if level and "session_adopt" in name:
+            raise ModuleNotFoundError("No module named 'ai_cli.session_adopt'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _hide_session_adopt)
+
+    assert _cc_record_liveness({"pid": 4242, "procStart": 777}, proc_dir=tmp_path / "proc") == "unproven"
+
+
+def test_given_session_adopt_module_present_when_liveness_checked_then_still_classifies(tmp_path):
+    """Positive control for the test above: unpatched, the same record reads `live`.
+
+    Without this, the guard test would pass just as well against a function that
+    always returned "unproven", which would assert nothing about the import guard.
+    """
+    _write_proc_stat(tmp_path / "proc", 4242, starttime=777)
+
+    assert _cc_record_liveness({"pid": 4242, "procStart": 777}, proc_dir=tmp_path / "proc") == "live"

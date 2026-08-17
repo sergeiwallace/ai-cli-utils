@@ -354,8 +354,22 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     (unreadable => live) because it guards a deletion; this one only decides
     whether a transcript may be reused, so the safe default is the opposite.  Do
     not "harmonize" the two.
+
+    The deferred import below is guarded for the same fail-open reason.  ``ai c``
+    can replace this process's own installation mid-run (``ai update --force`` ->
+    ``uv tool install`` rewrites ``site-packages/ai_cli``), so a lazily-imported
+    module can vanish between interpreter start and this call.  A missing module
+    is exactly the "cannot verify" case this function already promises to tolerate,
+    so it must cost a liveness check rather than the whole command -- AI-CLI-205,
+    where two launches died here while three siblings survived only because they
+    never reached this branch.  The real defect is the mid-run reinstall, fixed
+    separately in :func:`_auto_update_if_stale`; this guard keeps a future window
+    from being fatal.
     """
-    from .session_adopt import _pid_is_live
+    try:
+        from .session_adopt import _pid_is_live
+    except ImportError:
+        return "unproven"
 
     try:
         pid = int(cast(Any, record.get("pid")))
@@ -584,6 +598,55 @@ def _deploy_cc_config_files(project_path: Path) -> None:
             dst.chmod(dst.stat().st_mode | 0o755)
 
 
+_PEER_UPDATE_WAIT_SECONDS = 90.0
+_PEER_UPDATE_POLL_SECONDS = 0.25
+
+
+def _await_peer_update(
+    lock_path: Path,
+    stamp_file: Path,
+    current_hash: str,
+    timeout: float | None = None,
+    poll: float | None = None,
+) -> bool:
+    """Wait for a peer's in-flight update, and report whether we must re-exec.
+
+    Returns True when the peer advanced the stamp to ``current_hash`` -- our
+    imported modules are then stale and our installed files were rewritten
+    underneath us, so the caller must re-exec.  Returns False when the wait times
+    out, warning on stderr: continuing is not safe, but blocking a launch forever
+    on a stuck peer is worse, and a re-exec here could land while `uv tool install`
+    is still rewriting the `ai` entry point.  A bounded wait is the lesser evil and
+    is why this is not simply an unconditional re-exec.
+
+    ``timeout``/``poll`` default to the module constants at CALL time, not as
+    default arguments, so a test can patch the bound down instead of busy-spinning
+    the real 90 seconds.
+    """
+    if timeout is None:
+        timeout = _PEER_UPDATE_WAIT_SECONDS
+    if poll is None:
+        poll = _PEER_UPDATE_POLL_SECONDS
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not lock_path.exists():
+            break
+        time.sleep(poll)
+    try:
+        advanced = stamp_file.exists() and stamp_file.read_text().strip() == current_hash
+    except OSError:
+        advanced = False
+    if advanced:
+        return True
+    print(
+        "Warning: another `ai` process is still updating ai-cli-utils; continuing with the\n"
+        "  currently-loaded version. If this command fails with an unexpected ImportError,\n"
+        "  re-run it once the other update finishes.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _auto_update_if_stale(config: dict) -> bool:
     """Update stale source and report whether the invoking launcher must restart."""
     project_path = _find_aicli_project_path(config)
@@ -604,7 +667,16 @@ def _auto_update_if_stale(config: dict) -> bool:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
     except OSError:
-        return False  # Another process already claimed the update
+        # Another process claimed the update -- which means it is running
+        # `uv tool install`, tearing down and rewriting THIS process's own
+        # installed tree while we run.  Returning False here said "no restart
+        # needed" and let the caller carry on, so every not-yet-executed deferred
+        # import was aimed at files being deleted.  AI-CLI-an5r/c5b33d04 fixed
+        # this for the lock WINNER (it re-execs); the loser was left behind on the
+        # adjacent line.  Wait for the peer instead, then re-exec if it advanced
+        # the stamp.  Terminating by construction: the re-exec'd process sees the
+        # fresh stamp and early-returns above, so it never reaches this branch.
+        return _await_peer_update(lock_path, stamp_file, current_hash)
     try:
         # Re-check after acquiring lock — another process may have just updated.
         if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
