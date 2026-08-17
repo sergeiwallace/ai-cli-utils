@@ -277,11 +277,11 @@ def _tmux_session_names() -> list[str]:
     return [name for name in (res.stdout or "").splitlines() if name]
 
 
-def _matching_tmux_sessions(engine_short: str, project_prefix: str, index: str | int) -> list[str]:
+def _matching_tmux_sessions(engine_short: str, project_prefix: str, slot: str | int) -> list[str]:
     """Find local and remote tmux names for a slot, ignoring prefix casing."""
     targets = {
-        f"{engine_short}-{project_prefix}-{index}".casefold(),
-        f"{engine_short}-r-{project_prefix}-{index}".casefold(),
+        f"{engine_short}-{project_prefix}-{slot}".casefold(),
+        f"{engine_short}-r-{project_prefix}-{slot}".casefold(),
     }
     return [name for name in _tmux_session_names() if name.casefold() in targets]
 
@@ -292,11 +292,11 @@ def _session_slot_name(engine_short: str, session_name: str) -> str:
     return session_name[prefix_length:]
 
 
-def _resolve_explicit_tmux_slot(engine_short: str, project_prefix: str, index: str) -> tuple[str, str] | None:
-    candidates = _matching_tmux_sessions(engine_short, project_prefix, index)
+def _resolve_explicit_tmux_slot(engine_short: str, project_prefix: str, slot: str) -> tuple[str, str] | None:
+    candidates = _matching_tmux_sessions(engine_short, project_prefix, slot)
     if len(candidates) > 1:
         joined = ", ".join(candidates)
-        raise SessionSlotAmbiguityError(f"ambiguous existing sessions for slot {project_prefix}-{index}: {joined}")
+        raise SessionSlotAmbiguityError(f"ambiguous existing sessions for slot {project_prefix}-{slot}: {joined}")
     if candidates:
         session_name = candidates[0]
         return session_name, _session_slot_name(engine_short, session_name)
@@ -311,17 +311,17 @@ def _matching_worktrees(worktree_base: Path, ai_name: str) -> list[Path]:
         return []
 
 
-def _resolve_explicit_bare_slot(engine_short: str, project_prefix: str, index: str) -> tuple[str, str] | None:
+def _resolve_explicit_bare_slot(engine_short: str, project_prefix: str, slot: str) -> tuple[str, str] | None:
     try:
         repo_root = detect_repo_root()
     except RuntimeError:
         repo_root = None
     if not repo_root:
         return None
-    candidates = _matching_worktrees(repo_root / WORKTREE_DIR, f"{project_prefix}-{index}")
+    candidates = _matching_worktrees(repo_root / WORKTREE_DIR, f"{project_prefix}-{slot}")
     if len(candidates) > 1:
         joined = ", ".join(str(path) for path in candidates)
-        raise SessionSlotAmbiguityError(f"ambiguous existing worktrees for slot {project_prefix}-{index}: {joined}")
+        raise SessionSlotAmbiguityError(f"ambiguous existing worktrees for slot {project_prefix}-{slot}: {joined}")
     if candidates:
         ai_name = candidates[0].name
         return f"{engine_short}-{ai_name}", ai_name
@@ -708,7 +708,7 @@ def build_session_name(
     clean_name = re.sub(r"-+", "-", clean_name)
     clean_name = clean_name.strip("-").lower()
 
-    if clean_name.isdigit():
+    if clean_name.isdigit() or clean_name.rsplit("-", 1)[-1].isdigit():
         existing = (
             _resolve_explicit_tmux_slot(engine_short, project_prefix, clean_name)
             if use_tmux
