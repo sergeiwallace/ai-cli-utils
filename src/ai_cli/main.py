@@ -613,7 +613,26 @@ def _auto_update_if_stale(config: dict) -> bool:
         ai_bin = shutil.which("ai") or "ai"
         result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path, check=False)
         if result.returncode != 0:
-            print("Warning: auto-update failed, continuing with current version", file=sys.stderr)
+            # A failed update is not automatically a harmless no-op. `uv tool
+            # install --force` tears the environment down before rebuilding it, so
+            # an interrupted run can leave it with no packages — and reporting that
+            # as "continuing with current version" sent users on to the next
+            # command with a tool that could no longer start at all. Check the
+            # environment before characterising the failure.
+            self_venv = _running_uv_tool_venv()
+            if self_venv is not None and not _tool_env_can_import(self_venv):
+                print(
+                    "Error: auto-update failed AND left the installation broken — "
+                    f"{self_venv} can no longer import ai_cli.\n"
+                    f"  Repair it with:\n"
+                    f"    uv tool install -e {project_path} --force --reinstall",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "Warning: auto-update failed; the existing installation is intact and still in use.",
+                    file=sys.stderr,
+                )
             return False
         # Do not make a failed installation look current.  The caller must re-exec
         # after a successful installation because this process still has the old
@@ -1382,6 +1401,47 @@ def _has_conflict_or_unknown(repo_root) -> bool:
         return True
 
 
+def _running_uv_tool_venv() -> "Path | None":
+    """Return the uv tool environment this interpreter runs from, else None.
+
+    uv writes ``uv-receipt.toml`` at the root of every tool environment, so its
+    presence beside ``sys.prefix`` identifies one exactly — no ``uv tool dir``
+    round trip, and it stays correct however uv relocates its directories.
+    """
+    if sys.prefix == sys.base_prefix:
+        return None  # not a virtual environment at all
+    prefix = Path(sys.prefix)
+    return prefix if (prefix / "uv-receipt.toml").is_file() else None
+
+
+def _venv_interpreter(venv: "Path") -> "Path":
+    """Path to a venv's interpreter, on either platform layout."""
+    if os.name == "nt":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
+def _tool_env_can_import(venv: "Path", module: str = "ai_cli") -> bool:
+    """Whether a *fresh* interpreter from ``venv`` can import ``module``.
+
+    Must be a subprocess: this process already holds the module in memory, so an
+    in-process import proves nothing about what survived on disk.
+    """
+    py = _venv_interpreter(venv)
+    if not py.exists():
+        return False
+    try:
+        probe = subprocess.run(
+            [str(py), "-c", f"import {module}"],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except OSError:
+        return False
+    return probe.returncode == 0
+
+
 def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None) -> bool:
     """Detect if uv's cache and install target dirs are on different filesystems.
 
@@ -1554,11 +1614,27 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
     exit_code = 0
     try:
         pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
-        uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
-        if force_reinstall:
-            uv_cmd.append("--reinstall")
-        if _should_use_uv_link_mode_copy(uv_bin):
-            uv_cmd.append("--link-mode=copy")
+        # `uv tool install --force` REPLACES the tool environment: it deletes the
+        # existing one and rebuilds it. When the tool being updated is the one
+        # currently running, that environment holds this interpreter's own mapped
+        # image (<venv>/Scripts/python.exe), and Windows refuses to unlink a mapped
+        # image — `Access is denied. (os error 5)`. uv is not atomic about it, so it
+        # removes Lib/site-packages, then fails on Scripts, leaving an environment
+        # with no packages at all. Install into the live environment instead: that
+        # rewrites Lib/site-packages and never touches Scripts.
+        self_venv = _running_uv_tool_venv()
+        if self_venv is not None:
+            uv_cmd = [uv_bin, "pip", "install", "--python", str(_venv_interpreter(self_venv)), str(project_path)]
+            if force_reinstall:
+                uv_cmd.append("--force-reinstall")
+            if _should_use_uv_link_mode_copy(uv_bin, self_venv):
+                uv_cmd.append("--link-mode=copy")
+        else:
+            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
+            if force_reinstall:
+                uv_cmd.append("--reinstall")
+            if _should_use_uv_link_mode_copy(uv_bin):
+                uv_cmd.append("--link-mode=copy")
         result = subprocess.run(uv_cmd, cwd=project_path, check=False)
         exit_code = result.returncode
     finally:
