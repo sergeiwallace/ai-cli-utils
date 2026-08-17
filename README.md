@@ -44,15 +44,25 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 
 ## Installation
 
+### macOS and Linux
+
+Install [uv](https://docs.astral.sh/uv/) first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then install the package:
+
 ```bash
 uv tool install ai-cli-utils
-```text
+```
 
 Or with pipx:
 
 ```bash
 pipx install ai-cli-utils
-```text
+```
 
 ### Windows
 
@@ -61,13 +71,43 @@ Windows is supported via [MSYS2](https://www.msys2.org/) + Git Bash. Before inst
 1. Install [MSYS2](https://www.msys2.org/) and add it to your PATH.
 2. Install tmux inside MSYS2: `pacman -S tmux`
 3. Install Python 3.11+ from [python.org](https://www.python.org/downloads/) (the standard Windows installer).
-4. Install the package: `uv tool install ai-cli-utils` (or `pipx install ai-cli-utils`)
+4. Install [uv](https://docs.astral.sh/uv/) from PowerShell:
+
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+   ```
+
+5. Restart Git Bash, then install the package: `uv tool install ai-cli-utils` (or `pipx install ai-cli-utils`)
+
+### Install from a local clone
+
+Install uv first using the instructions for your operating system above, then clone and install the repository.
+
+#### macOS and Linux
+
+```bash
+git clone <repository-url>
+cd ai-cli-utils
+uv tool install .
+ai --version
+```
+
+#### Windows (MSYS2 / Git Bash)
+
+After installing uv from PowerShell, open Git Bash and run:
+
+```bash
+git clone <repository-url>
+cd ai-cli-utils
+uv tool install .
+ai --version
+```
 
 For Windows toast notifications, install the optional extra:
 
 ```bash
 uv tool install "ai-cli-utils[notify-win]"
-```text
+```
 
 **Unsupported on Windows:**
 - `ai c -R` / remote sessions (requires SSH + mosh)
@@ -333,7 +373,9 @@ export AI_HOST=mac    # or "hetzner", "work-laptop", etc.
 
 - Python 3.11+
 - [tmux](https://github.com/tmux/tmux) (on Windows: install via MSYS2 — `pacman -S tmux`)
+- `zsh` **or** `bash` — the tmux session pane runs the generated session script under zsh when it is installed, and falls back to bash otherwise
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- [direnv](https://direnv.net/) (optional — when installed, sessions start under `direnv exec` so the project `.envrc` is loaded; sessions start normally without it)
 - [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH; Linux/macOS only)
 - [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`; Linux/macOS only)
 - [NATS](https://nats.io/) (optional — enables real-time handoff delivery, sync watch, and session events; see [NATS Setup Guide](docs/guides/nats-setup.md))

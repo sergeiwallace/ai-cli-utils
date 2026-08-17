@@ -235,6 +235,11 @@ def _reap(proc: subprocess.Popen) -> None:
     child is not left a zombie — a zombie keeps its ``/proc/<pid>`` entry and
     would therefore still read as *live*.
     """
+    if sys.platform == "win32":
+        proc.terminate()
+        proc.wait(timeout=5)
+        return
+
     try:
         group = os.getpgid(proc.pid)
     except (ProcessLookupError, PermissionError):

@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1927,6 +1928,12 @@ class TestConftestQuotaHermeticity:
             q._maybe_trigger_background_scrape("2020-01-01T00:00:00Z")  # stale ts
         mock_popen.assert_not_called()
 
+    def test_scrape_lock_path_is_isolated_not_real(self):
+        import ai_cli.quota as q
+
+        assert "scrape_lock" in str(q._SCRAPE_LOCK_PATH)
+        assert Path.home() / ".local" / "state" / "ai-cli" / "quota-scrape.lock" != q._SCRAPE_LOCK_PATH
+
 
 class TestQuotaStatuslinePart:
     """Statusline pace rendering, driven by an injected clock rather than the real one.
@@ -2752,6 +2759,10 @@ class TestQuotaStatuslinePartSingleLine:
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not available")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="statusline-command.sh requires a POSIX bash environment and utilities",
+)
 class TestStatuslineScript:
     """Integration tests for statusline-command.sh.
 

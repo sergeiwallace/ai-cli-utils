@@ -149,6 +149,7 @@ Let users manually pin colors per session in `config.toml` (`[iterm2.sessions."c
 ---
 
 ### **Decision: Option B — `ai recolor` command**
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Option B works on any tmux window regardless of whether a layout YAML exists, reuses the same geometry + graph-coloring logic as Part 2, and gives the user a simple `ai recolor` they can run anytime. Option A is too narrow. Option C is manual overhead.
 
@@ -215,6 +216,7 @@ Getting the iTerm2 window for the current session: `$ITERM_SESSION_ID` encodes w
 ---
 
 ### **Decision: Option A — tmux geometry at startup**
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Option A is the most correct approach with the least complexity. The approximation is acceptable for the common case (new session in a 2–4 pane split). Option C is simpler but over-restricts. Option B introduces visible startup flicker and two-phase writes.
 
@@ -279,6 +281,7 @@ Do not implement automatic post-move recoloring. Instead:
 ---
 
 ### **Decision: Option C — Deferred / Manual Trigger**
+<!-- decision-record: chosen-option=(c); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 The cost/benefit of a polling daemon for an aesthetic feature doesn't hold up. `ai recolor` covers the use case cleanly with explicit intent. If iTerm2 exposes a reliable layout event in the future, Option A becomes viable.
 

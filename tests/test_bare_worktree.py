@@ -6,6 +6,7 @@ Regression tests for the ordering bug where ``if bare:`` exec'd the engine
 a plain ``claude`` in the repo root -- no worktree, no ``--name``, no resume.
 """
 
+import builtins
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ import pytest
 from ai_cli.main import (
     _bare_engine_command,
     _cc_project_dir,
+    _cc_record_liveness,
     _cc_session_is_live,
     _do_session_launch,
     _find_cc_session_by_title,
@@ -102,6 +104,17 @@ def test_given_matching_title_when_searched_then_returns_that_transcript(tmp_pat
     assert _find_cc_session_by_title(cwd, "kg-1") == want
 
 
+def test_given_later_different_title_when_searched_then_first_title_remains_the_session_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    transcript = _write_transcript(_cc_project_dir(cwd), "cccccccc-0000-4000-8000-000000000003", "proj-1-2")
+    with transcript.open("a") as handle:
+        handle.write(json.dumps({"type": "custom-title", "customTitle": "proj-1", "sessionId": transcript.stem}) + "\n")
+
+    assert _find_cc_session_by_title(cwd, "proj-1") is None
+    assert _find_cc_session_by_title(cwd, "proj-1-2") == transcript
+
+
 def test_given_no_matching_title_when_searched_then_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     cwd = Path("/repo/wt")
@@ -147,6 +160,34 @@ def test_given_bare_claude_when_prior_session_exists_then_adds_continue(tmp_path
     assert "--continue" in argv
     assert "--name" in argv
     assert transcript.stat().st_mtime > 1
+
+
+def test_given_two_named_transcripts_when_bare_claude_resumes_then_touches_only_exact_title(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    project_dir = _cc_project_dir(target)
+    matching = _write_transcript(project_dir, "12121212-0000-4000-8000-000000000005", "proj-1")
+    other = _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
+    os.utime(matching, (1, 1))
+    os.utime(other, (2, 2))
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--continue" in argv
+    assert matching.stat().st_mtime > 2
+    assert other.stat().st_mtime == 2
+
+
+def test_given_only_different_named_transcript_when_bare_claude_launches_then_does_not_continue(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    other = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
+    os.utime(other, (2, 2))
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--continue" not in argv
+    assert other.stat().st_mtime == 2
 
 
 @pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to register a genuinely live pid")
@@ -523,7 +564,10 @@ def test_given_bare_launch_when_worktree_enabled_then_worktree_created_and_enter
         text=True,
         check=True,
     ).stdout
-    assert str(worktree) in listed, "worktree must be registered with git"
+    registered_worktrees = [
+        Path(line.removeprefix("worktree ")) for line in listed.splitlines() if line.startswith("worktree ")
+    ]
+    assert worktree in registered_worktrees, "worktree must be registered with git"
 
     branches = subprocess.run(
         ["git", "branch", "--list", "wt-kg-1"],
@@ -672,3 +716,79 @@ def test_given_use_tmux_false_config_when_launched_then_still_creates_worktree(r
             _do_session_launch(**_launch_kwargs(bare=False))
 
     assert (real_repo / ".worktrees" / "kg-1").is_dir()
+
+
+def test_given_session_adopt_module_missing_when_liveness_checked_then_unproven(tmp_path, monkeypatch):
+    """A torn source tree must cost a liveness check, not every `ai` invocation (AI-CLI-205).
+
+    `ai` is installed editable against the main working tree, and `ai c` pulls that
+    same tree, so git's file-at-a-time write order opens a window where `main.py`
+    already imports `session_adopt` and the module file is not on disk yet. The
+    function-local import turned that window into a crash for EVERY command --
+    measured from two unrelated repo roots, because the import path is absolute and
+    the cwd is irrelevant.
+
+    `_cc_record_liveness` already documents that it fails OPEN and that anything it
+    cannot verify is "unproven"; a missing module is that same class of
+    unreliability, so it must degrade the same way rather than propagate.
+    """
+    _write_proc_stat(tmp_path / "proc", 4242, starttime=777)
+
+    real_import = builtins.__import__
+
+    def _hide_session_adopt(name, globals=None, locals=None, fromlist=(), level=0):
+        # Mirrors the real failure: the module is absent from disk, so the
+        # relative import inside _cc_record_liveness raises rather than the
+        # attribute lookup. Every other import must still work.
+        if level and "session_adopt" in name:
+            raise ModuleNotFoundError("No module named 'ai_cli.session_adopt'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _hide_session_adopt)
+
+    assert _cc_record_liveness({"pid": 4242, "procStart": 777}, proc_dir=tmp_path / "proc") == "unproven"
+
+
+def test_given_session_adopt_module_present_when_liveness_checked_then_still_classifies(tmp_path):
+    """Positive control for the test above: unpatched, the same record reads `live`.
+
+    Without this, the guard test would pass just as well against a function that
+    always returned "unproven", which would assert nothing about the import guard.
+    """
+    _write_proc_stat(tmp_path / "proc", 4242, starttime=777)
+
+    assert _cc_record_liveness({"pid": 4242, "procStart": 777}, proc_dir=tmp_path / "proc") == "live"
+
+
+def test_given_resume_branch_and_missing_session_adopt_when_bare_command_built_then_still_launches(
+    tmp_path, monkeypatch
+):
+    """AC-5: the two-condition failure, end to end through the real crash path.
+
+    Reproduces the reported traceback rather than either half of it: a matching
+    prior transcript exists (so `_bare_engine_command` takes the resume branch and
+    reaches `_cc_session_is_live` -> `_cc_record_liveness`), AND `session_adopt` is
+    unimportable (as it is mid-`uv tool install`). Before the guard this raised
+    ModuleNotFoundError out of `ai c` and no session launched at all.
+
+    The two separate tests above pin the halves; this one pins that they compose,
+    which is what actually broke `ai c 2` and `ai c 1`.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    _write_transcript(_cc_project_dir(target), "99999999-0000-4000-8000-000000000009", "aih-2")
+    _write_session_registry(tmp_path, 4242, "99999999-0000-4000-8000-000000000009", proc_start=777)
+
+    real_import = builtins.__import__
+
+    def _hide_session_adopt(name, globals=None, locals=None, fromlist=(), level=0):
+        if level and "session_adopt" in name:
+            raise ModuleNotFoundError("No module named 'ai_cli.session_adopt'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _hide_session_adopt)
+
+    argv = _bare_engine_command("c", "aih-2", target, None, "gemini", "--no-sandbox", [])
+
+    assert argv[0] == "claude"
+    assert "--name" in argv and argv[argv.index("--name") + 1] == "aih-2"

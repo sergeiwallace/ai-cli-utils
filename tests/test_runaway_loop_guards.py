@@ -18,7 +18,6 @@ actually does.
 """
 
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -59,13 +58,6 @@ def _run_watcher_loop(tmp_path: Path) -> int:
     if shell is None:  # pragma: no cover - CI always has one of these
         pytest.skip("no zsh/bash available to run the watcher loop")
 
-    stub_bin = tmp_path / "bin"
-    stub_bin.mkdir()
-    for name in ("tmux", "ai", "sha256sum"):
-        stub = stub_bin / name
-        stub.write_text("#!/bin/sh\nexit 0\n")
-        stub.chmod(0o755)
-
     watched = tmp_path / "watched.json"
     watched.write_text("{}")
 
@@ -86,21 +78,26 @@ _config_reload_idle_secs=90
 counter=0
 ticks=0
 SECONDS=0
+# Shell functions shadow the external commands the watcher invokes.  This is
+# more reliable than prepending a native Windows path to PATH before MSYS2
+# Bash interprets it, and still exercises the real watcher loop and its sleep.
+tmux() {{ :; }}
+ai() {{ :; }}
+sha256sum() {{ :; }}
 while true; do
 {_watcher_loop_body()}
   ticks=$((ticks+1))
   (( SECONDS >= {_WATCH_WINDOW_SECONDS} )) && break
 done
 echo "TICKS=$ticks"
-"""
+""",
+        encoding="utf-8",
     )
 
-    env = {**os.environ, "PATH": f"{stub_bin}:{os.environ.get('PATH', '')}"}
     result = subprocess.run(
         [shell, str(harness)],
         capture_output=True,
         text=True,
-        env=env,
         timeout=_WATCH_WINDOW_SECONDS + 60,
         check=False,
     )
@@ -109,7 +106,6 @@ echo "TICKS=$ticks"
     return int(ticks_line[-1].split("=", 1)[1])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="session template is POSIX shell")
 def test_given_idle_session_watcher_when_it_polls_then_it_ticks_at_most_once_per_second(tmp_path):
     """An idle watcher must tick about once per second, not spin.
 
@@ -160,23 +156,24 @@ class _FakeTmux:
 @pytest.fixture
 def refresh_env(monkeypatch, tmp_path):
     """Isolated state dir with one live ai-cli session, plus a counting fake tmux."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    state = tmp_path / "ai-cli-utils"
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
-    state = tmp_path / "ai-cli-utils"
     _install_session_meta(state, "c-sw-1", "sw-1")
     fake_tmux = _FakeTmux(["c-sw-1", "c-other-9"])
     with patch.object(main.subprocess, "run", fake_tmux):
         yield state, fake_tmux
 
 
-def test_given_unchanged_template_when_refresh_reruns_then_script_is_not_rewritten(refresh_env):
+def test_given_windows_when_unchanged_template_refresh_reruns_then_script_is_not_rewritten(refresh_env, monkeypatch):
     """A refresh that would regenerate identical bytes must not touch the file.
 
     The stable script's mtime is the hot-reload signal every live wrapper watches,
     so rewriting an unchanged script makes every session exec a reload for nothing.
     """
     state, _ = refresh_env
+    monkeypatch.setattr(main.os, "name", "nt")
 
     assert _refresh_live_session_scripts() == 1
     script_path = state / "sessions" / "c-sw-1.sh"
@@ -191,11 +188,14 @@ def test_given_changed_template_when_refresh_runs_then_script_is_rewritten(refre
     state, _ = refresh_env
     _refresh_live_session_scripts()
     script_path = state / "sessions" / "c-sw-1.sh"
-    script_path.write_text("#!/bin/zsh\n# stale content from an older template\n")
+    script_path.write_text("#!/bin/zsh\n# stale content from an older template\n", encoding="utf-8")
 
     assert _refresh_live_session_scripts() == 1
-    assert "stale content" not in script_path.read_text()
-    assert script_path.stat().st_mode & 0o777 == 0o700
+    assert "stale content" not in script_path.read_text(encoding="utf-8")
+    # Windows' chmod() only toggles the read-only attribute -- it cannot express
+    # POSIX owner/group/other bits, so st_mode never reports 0o700 there.
+    if sys.platform != "win32":
+        assert script_path.stat().st_mode & 0o777 == 0o700
 
 
 def test_given_refresh_called_in_a_storm_then_it_stops_and_reports_the_caller(refresh_env, capsys):
@@ -249,7 +249,7 @@ def test_given_refresh_budget_is_spent_when_caller_keeps_spinning_then_rejection
 
 def test_given_no_metadata_when_writing_stable_script_then_it_reports_failure(monkeypatch, tmp_path):
     """The unchanged-script short circuit must not mask a genuinely missing session."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: tmp_path / "ai-cli-utils")
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
     assert _write_stable_session_script("c-nope-1") is False
@@ -257,10 +257,11 @@ def test_given_no_metadata_when_writing_stable_script_then_it_reports_failure(mo
 
 def test_given_unchanged_script_when_writing_stable_script_then_it_reports_success(monkeypatch, tmp_path):
     """``ai internal write-stable-script`` exits 0 when the script is already current."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    state = tmp_path / "ai-cli-utils"
+    monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
-    _install_session_meta(tmp_path / "ai-cli-utils", "c-sw-1", "sw-1")
+    _install_session_meta(state, "c-sw-1", "sw-1")
 
     assert _write_stable_session_script("c-sw-1") is True
     assert _write_stable_session_script("c-sw-1") is True

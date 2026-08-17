@@ -68,13 +68,13 @@ class TestParseWorkspaceFolders:
 
     def test_json5_comments_stripped(self, tmp_path):
         ws = tmp_path / "test.code-workspace"
-        ws.write_text(f'// workspace comment\n{{"folders": [{{"path": "{tmp_path / "p"}"}}]}}')
+        ws.write_text(f'// workspace comment\n{{"folders": [{{"path": {json.dumps(str(tmp_path / "p"))}}}]}}')
         result = _parse_workspace_folders(ws)
         assert result == [(tmp_path / "p").resolve()]
 
     def test_json5_trailing_commas_stripped(self, tmp_path):
         ws = tmp_path / "test.code-workspace"
-        ws.write_text(f'{{"folders": [{{"path": "{tmp_path / "p"}",}},]}}')
+        ws.write_text(f'{{"folders": [{{"path": {json.dumps(str(tmp_path / "p"))},}},]}}')
         result = _parse_workspace_folders(ws)
         assert result == [(tmp_path / "p").resolve()]
 
@@ -84,8 +84,8 @@ class TestParseWorkspaceFolders:
         content = f"""// My workspace
 {{
     "folders": [
-        {{"path": "{p1}"}}, // first
-        {{"path": "{p2}"}}, // second
+        {{"path": {json.dumps(str(p1))}}}, // first
+        {{"path": {json.dumps(str(p2))}}}, // second
     ],
 }}"""
         ws = tmp_path / "test.code-workspace"

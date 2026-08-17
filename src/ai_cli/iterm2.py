@@ -123,7 +123,7 @@ def _load_iterm2_config() -> dict:
     config_path = get_xdg_config_home() / "iterm2.toml"
     if not config_path.exists():
         get_xdg_config_home().mkdir(parents=True, exist_ok=True)
-        config_path.write_text(_DEFAULT_ITERM2_CONFIG)
+        config_path.write_text(_DEFAULT_ITERM2_CONFIG, encoding="utf-8")
     try:
         with config_path.open("rb") as f:
             return tomllib.load(f)
@@ -335,7 +335,7 @@ def _current_pane_tty() -> str:
     for fd in (1, 2, 0):
         try:
             return os.ttyname(fd)
-        except OSError:
+        except (AttributeError, OSError):
             continue
     return ""
 

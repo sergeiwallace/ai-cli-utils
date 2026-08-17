@@ -104,7 +104,8 @@ class TestCheckAlignmentDrift:
         claude = tmp_path / "CLAUDE.md"
         gemini = tmp_path / "GEMINI.md"
         claude.write_text(
-            "## Test Requirements\n\n- **`# pragma: no cover` is a hard human gate** — never add it autonomously.\n"
+            "## Test Requirements\n\n- **`# pragma: no cover` is a hard human gate** — never add it autonomously.\n",
+            encoding="utf-8",
         )
-        gemini.write_text("## Test Requirements\n\n- **`# pragma: no cover`** — ask before adding.\n")
+        gemini.write_text("## Test Requirements\n\n- **`# pragma: no cover`** — ask before adding.\n", encoding="utf-8")
         assert check_alignment(claude, gemini) == 1

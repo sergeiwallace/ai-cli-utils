@@ -19,6 +19,7 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -433,6 +434,43 @@ class TestAutoUpdateLockfile:
         # lockfile cleaned up
         assert not (state_dir / "last_update_commit.lock").exists()
 
+    def test_given_successful_update_when_auto_update_then_records_stamp_and_requests_restart(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        head = MagicMock(returncode=0, stdout="abc123\n")
+        update = MagicMock(returncode=0)
+
+        def fake_run(cmd, **kwargs):
+            return head if "rev-parse" in cmd else update
+
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+
+        assert updated is True
+        assert (state_dir / "last_update_commit.txt").read_text() == "abc123"
+
+
+class TestSessionAutoUpdateRestart:
+    def test_given_successful_auto_update_when_launching_session_then_reexecs_current_entrypoint(self):
+        with (
+            patch("sys.argv", ["ai", "c", "session-1"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._auto_update_if_stale", return_value=True),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+            patch("os.execvp", side_effect=SystemExit(0)) as execvp,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        execvp.assert_called_once_with("/usr/bin/ai", ["/usr/bin/ai", "c", "session-1"])
+
 
 # --- _deploy_cc_config_files copy path (185-194) ---
 
@@ -453,11 +491,13 @@ class TestDeployCcConfigFiles:
         dst = fake_home / ".claude" / "statusline-command.sh"
         assert dst.exists()
         assert dst.read_text() == "#!/bin/bash\necho hi\n"
-        # chmod applied → executable bits set
-        mode = dst.stat().st_mode
-        assert mode & stat.S_IXUSR
-        assert mode & stat.S_IXGRP
-        assert mode & stat.S_IXOTH
+        # Windows does not expose POSIX executable mode bits. The copy itself is
+        # the portable contract; assert the mode only where it is meaningful.
+        if sys.platform != "win32":
+            mode = dst.stat().st_mode
+            assert mode & stat.S_IXUSR
+            assert mode & stat.S_IXGRP
+            assert mode & stat.S_IXOTH
 
     def test_given_existing_symlink_at_dst_when_deploy_then_symlink_preserved(self, tmp_path):
         # ai-harness install.sh owns symlinked files — ai update must not overwrite them.
@@ -515,6 +555,7 @@ class TestSessionLaunchExtraArgsName:
         with (
             patch("sys.argv", ["ai", "c", "-R", "--", "myname"]),
             patch("ai_cli.config.load_config", return_value={"remote": {}}),
+            patch("ai_cli.session.get_project_prefix", return_value="test-project"),
             patch("ai_cli.main.trigger_background_update"),
         ):
             with pytest.raises(SystemExit) as exc:

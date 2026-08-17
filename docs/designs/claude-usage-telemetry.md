@@ -394,6 +394,7 @@ Render `\033[2m-% S\033[0m` (dim) in place of Sonnet %, and trigger `_launch_bac
 ##### Recommendation
 
 > **Decision:** `APPROVED — (B) dimmed placeholder + background scrape`
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Option (B). Consistency with the rest of the widget and stable width both favor this approach.
 
@@ -406,6 +407,7 @@ Options: `son`, `sonnet`, or `S` for the Sonnet label; implicit all-models label
 ##### Recommendation
 
 > **Decision:** `APPROVED — S for Sonnet %, W for all-models weekly %`
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Both values now labeled. Terse, consistent with statusline aesthetic. Format: `📊 42% W ✅ →8% | 87% S`. When Sonnet absent: `📊 42% W ✅ →8% | \033[2m-% S\033[0m`.
 
@@ -418,6 +420,7 @@ Options: same thresholds as all-models (<50% green, 50–75% yellow, ≥75% red)
 ##### Recommendation
 
 > **Decision:** `APPROVED — same thresholds as all-models`
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Consistent and revisable after observing real usage. If Sonnet is consistently hit harder, tighten thresholds empirically.
 
@@ -495,6 +498,7 @@ Implementation: `statusline-command.sh` passes `$COLUMNS` as `AI_CLI_STATUSLINE_
 ##### Recommendation
 
 > **Decision:** `APPROVED — (E) adaptive-width with bold + color`
+<!-- decision-record: chosen-option=(e); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Option (E). Adaptive behavior gives `Week`/`Son` readability in normal-width terminals while degrading cleanly to `W`/`S` in narrow panes. The bold + distinct color styling for the labels answers the request to make them visually distinct field headers regardless of which label text is chosen.
 
@@ -532,6 +536,7 @@ Don't render the Sonnet pace field at all if `weekly_sonnet_pct` is absent. Sect
 ##### Recommendation
 
 > **Decision:** `APPROVED — (a) dimmed placeholder + background scrape`
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Option (a). Consistent with D6 (Sonnet usage %) and with the existing weekly pace behavior — when the weekly pace is absent, the same dimmed placeholder + background scrape pattern is used. Stable statusline width prevents layout jitter.
 

@@ -812,6 +812,7 @@ def adopt_session(
     warnings: list[str] = [] if (migration is None or retitled_from) else list(migration.warnings)
     resolved = None
     if not dry_run:
+        assert migration is not None
         resolved = probe_resolves(dest_root, target_title, home)
         if resolved != migration.dest_jsonl:
             warnings.append(

@@ -30,6 +30,11 @@ import pytest
 
 from ai_cli.session_script import get_engine_script
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the generated launch-template block requires a POSIX bash and python3 environment",
+)
+
 MARKER_RELPATH = ".claude/.ai-cli-growthbook-toggle"
 SETTINGS_RELPATH = ".claude/settings.local.json"
 
@@ -43,6 +48,10 @@ def _minimal_path_with_python3() -> str:
     did nothing and the assertions failed while the code under test was fine. Derive the
     directory from the running interpreter instead of guessing at it.
     """
+    if sys.platform == "win32":
+        # The MSYS2 shell uses colon-separated PATH entries even though Python
+        # exposes Windows' semicolon-separated path separator.
+        return os.environ["PATH"]
     interpreter_dir = str(Path(sys.executable).parent)
     return os.pathsep.join([interpreter_dir, "/usr/bin", "/bin", "/sbin", "/usr/sbin"])
 

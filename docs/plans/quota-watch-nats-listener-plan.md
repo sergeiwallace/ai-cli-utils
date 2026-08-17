@@ -99,6 +99,7 @@ Add a second `[watcher]` entry in `circus.ini` running `ai quota listen`.
 #### Recommendation
 
 > **Decision:** `APPROVED — (a) daemon thread in quota_watch`
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 A separate worker is not justified — the listener is lightweight (subscribe +
 heartbeat loop, minimal CPU) and tightly coupled to the watch lifecycle. Daemon
@@ -136,6 +137,7 @@ fall back to legacy `quota.claude.current` when unset.
 #### Recommendation
 
 > **Decision:** `APPROVED — (b) machine-conditional with fallback`
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Pre-v1 public package — external pip users may not have `AI_HOST`. The
 fallback costs one conditional per read/write and avoids a breaking change.

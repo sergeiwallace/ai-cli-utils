@@ -57,6 +57,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ai c` could crash with `ModuleNotFoundError: No module named
+  'ai_cli.session_adopt'`** when two launches ran at once. It was never flaky: two
+  conditions had to coincide. `ai c` auto-updates by running `ai update --force`,
+  and `uv tool install` rewrites the very installation the running process imports
+  from. Only one launch wins that lock; the loser used to treat "someone else is
+  updating" as "nothing to do", so it kept running while its own module files were
+  replaced underneath it. It then crashed only if it *also* had a prior transcript
+  to resume, because the import that failed sits in the resume path. So sibling
+  launches in the same burst survived untouched, which is what made it look random.
+  The loser now waits for the other update to finish and restarts itself, and the
+  liveness check degrades instead of raising if a module goes missing mid-run.
 - **Data loss:** creating a session worktree could delete nested git worktrees,
   including commits that existed nowhere else (`AI-CLI-200`). `.worktrees/<name>`
   carries two incompatible meanings: `ai c <name>` wants that path to *be* the

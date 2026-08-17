@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import click
 
@@ -167,24 +168,42 @@ def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
       recoverable from inside the tool.
     - ``.envrc`` present but direnv not installed: skip the approval hint (it
       would fail anyway) and exec the engine directly.
+
+    The decision itself lives in :func:`_direnv_prefix` so the tmux ``--once``
+    launch path applies the identical policy instead of its own hardcode.
     """
-    envrc = _find_envrc(project_root)
-    if envrc is not None and _direnv_env_usable(project_root):
+    prefix = _direnv_prefix(project_root)
+    if prefix:
         # FileNotFoundError falls through to a direct exec below
         with contextlib.suppress(FileNotFoundError):
-            os.execvp("direnv", ["direnv", "exec", str(project_root), *command])
-    elif envrc is not None and _direnv_installed():
-        print(
-            f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
-            f"  Approve it with:  direnv allow {envrc.parent}",
-            file=sys.stderr,
-        )
+            os.execvp(prefix[0], [*prefix, *command])
 
     try:
         os.execvp(command[0], command)
     except FileNotFoundError:
         print(f"Error: {command[0]} not found on PATH.", file=sys.stderr)
         sys.exit(1)
+
+
+def _direnv_prefix(project_root: Path) -> list[str]:
+    """``["direnv", "exec", <root>]`` when direnv can actually run there, else ``[]``.
+
+    The single place the "direnv is an enhancement, never a precondition" policy
+    described in :func:`_exec_with_direnv` is decided, so every launch path — bare
+    exec and the tmux ``--once`` variants alike — makes the same call instead of
+    hardcoding ``direnv exec`` and failing closed with exit 127 on a host that
+    simply does not have direnv installed.
+    """
+    envrc = _find_envrc(project_root)
+    if envrc is not None and _direnv_env_usable(project_root):
+        return ["direnv", "exec", str(project_root)]
+    if envrc is not None and _direnv_installed():
+        print(
+            f"Warning: direnv could not load {envrc} — starting without the project environment.\n"
+            f"  Approve it with:  direnv allow {envrc.parent}",
+            file=sys.stderr,
+        )
+    return []
 
 
 def _find_envrc(start: Path) -> "Path | None":
@@ -226,6 +245,30 @@ def _direnv_env_usable(project_root: Path) -> bool:
     except (FileNotFoundError, OSError):
         return False
     return probe.returncode == 0
+
+
+def _session_shell_or_exit() -> str:
+    """The interpreter tmux should run the session script with, or exit(1).
+
+    Delegates the preference order to :func:`session_script.resolve_session_shell`
+    (zsh first, bash as fallback) so the launcher and the template it generates
+    can never disagree about which shell the session runs under.
+
+    Exiting here is the point of the helper. ``tmux new-session`` returns 0 even
+    when the pane's interpreter does not exist: the pane dies on exec, tmux tears
+    the session down, and the attach that follows prints a bare ``[exited]`` with
+    nothing to act on. An explicit error names the missing dependency instead.
+    """
+    shell = _session_script.resolve_session_shell()
+    if shell is None:
+        print(
+            "Error: no usable shell for the tmux session — neither "
+            f"{' nor '.join(_session_script.SESSION_SHELL_PREFERENCE)} was found on PATH.\n"
+            "  Install one of them and retry (e.g. `sudo dnf install zsh` / `sudo apt install zsh`).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return shell
 
 
 def _cc_project_dir(cwd: Path) -> Path:
@@ -311,11 +354,25 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     (unreadable => live) because it guards a deletion; this one only decides
     whether a transcript may be reused, so the safe default is the opposite.  Do
     not "harmonize" the two.
+
+    The deferred import below is guarded for the same fail-open reason.  ``ai c``
+    can replace this process's own installation mid-run (``ai update --force`` ->
+    ``uv tool install`` rewrites ``site-packages/ai_cli``), so a lazily-imported
+    module can vanish between interpreter start and this call.  A missing module
+    is exactly the "cannot verify" case this function already promises to tolerate,
+    so it must cost a liveness check rather than the whole command -- AI-CLI-205,
+    where two launches died here while three siblings survived only because they
+    never reached this branch.  The real defect is the mid-run reinstall, fixed
+    separately in :func:`_auto_update_if_stale`; this guard keeps a future window
+    from being fatal.
     """
-    from .session_adopt import _pid_is_live
+    try:
+        from .session_adopt import _pid_is_live
+    except ImportError:
+        return "unproven"
 
     try:
-        pid = int(record.get("pid"))
+        pid = int(cast(Any, record.get("pid")))
     except (TypeError, ValueError):
         return "unproven"
     if pid <= 0:
@@ -432,8 +489,6 @@ def _bare_engine_command(
                     command.append("--continue")
                 except OSError:
                     pass
-        elif _cc_project_dir(target_root).is_dir() and any(_cc_project_dir(target_root).glob("*.jsonl")):
-            command.append("--continue")
         return command + extra_args
 
     command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
@@ -543,18 +598,67 @@ def _deploy_cc_config_files(project_path: Path) -> None:
             dst.chmod(dst.stat().st_mode | 0o755)
 
 
-def _auto_update_if_stale(config: dict) -> None:
-    """Run `ai update --force` if the project has new commits since the last update."""
+_PEER_UPDATE_WAIT_SECONDS = 90.0
+_PEER_UPDATE_POLL_SECONDS = 0.25
+
+
+def _await_peer_update(
+    lock_path: Path,
+    stamp_file: Path,
+    current_hash: str,
+    timeout: float | None = None,
+    poll: float | None = None,
+) -> bool:
+    """Wait for a peer's in-flight update, and report whether we must re-exec.
+
+    Returns True when the peer advanced the stamp to ``current_hash`` -- our
+    imported modules are then stale and our installed files were rewritten
+    underneath us, so the caller must re-exec.  Returns False when the wait times
+    out, warning on stderr: continuing is not safe, but blocking a launch forever
+    on a stuck peer is worse, and a re-exec here could land while `uv tool install`
+    is still rewriting the `ai` entry point.  A bounded wait is the lesser evil and
+    is why this is not simply an unconditional re-exec.
+
+    ``timeout``/``poll`` default to the module constants at CALL time, not as
+    default arguments, so a test can patch the bound down instead of busy-spinning
+    the real 90 seconds.
+    """
+    if timeout is None:
+        timeout = _PEER_UPDATE_WAIT_SECONDS
+    if poll is None:
+        poll = _PEER_UPDATE_POLL_SECONDS
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not lock_path.exists():
+            break
+        time.sleep(poll)
+    try:
+        advanced = stamp_file.exists() and stamp_file.read_text().strip() == current_hash
+    except OSError:
+        advanced = False
+    if advanced:
+        return True
+    print(
+        "Warning: another `ai` process is still updating ai-cli-utils; continuing with the\n"
+        "  currently-loaded version. If this command fails with an unexpected ImportError,\n"
+        "  re-run it once the other update finishes.",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _auto_update_if_stale(config: dict) -> bool:
+    """Update stale source and report whether the invoking launcher must restart."""
     project_path = _find_aicli_project_path(config)
     if project_path is None or not (project_path / "pyproject.toml").exists():
-        return
+        return False
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_path, capture_output=True, text=True, check=False)
     if head.returncode != 0:
-        return
+        return False
     current_hash = head.stdout.strip()
     stamp_file = _config.get_xdg_state_home() / "last_update_commit.txt"
     if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
-        return
+        return False
     # Serialize concurrent workers with an exclusive create-only lockfile.
     # O_CREAT|O_EXCL is atomic on both POSIX and Windows.
     lock_path = stamp_file.with_suffix(".lock")
@@ -563,18 +667,50 @@ def _auto_update_if_stale(config: dict) -> None:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
     except OSError:
-        return  # Another process already claimed the update
+        # Another process claimed the update -- which means it is running
+        # `uv tool install`, tearing down and rewriting THIS process's own
+        # installed tree while we run.  Returning False here said "no restart
+        # needed" and let the caller carry on, so every not-yet-executed deferred
+        # import was aimed at files being deleted.  AI-CLI-an5r/c5b33d04 fixed
+        # this for the lock WINNER (it re-execs); the loser was left behind on the
+        # adjacent line.  Wait for the peer instead, then re-exec if it advanced
+        # the stamp.  Terminating by construction: the re-exec'd process sees the
+        # fresh stamp and early-returns above, so it never reaches this branch.
+        return _await_peer_update(lock_path, stamp_file, current_hash)
     try:
         # Re-check after acquiring lock — another process may have just updated.
         if stamp_file.exists() and stamp_file.read_text().strip() == current_hash:
-            return
-        # Write stamp before running update so any remaining concurrent readers skip.
-        stamp_file.write_text(current_hash)
+            return False
         print("ai-cli-utils has new commits — running ai update --force...")
         ai_bin = shutil.which("ai") or "ai"
         result = subprocess.run([ai_bin, "update", "--force"], cwd=project_path, check=False)
         if result.returncode != 0:
-            print("Warning: auto-update failed, continuing with current version", file=sys.stderr)
+            # A failed update is not automatically a harmless no-op. `uv tool
+            # install --force` tears the environment down before rebuilding it, so
+            # an interrupted run can leave it with no packages — and reporting that
+            # as "continuing with current version" sent users on to the next
+            # command with a tool that could no longer start at all. Check the
+            # environment before characterising the failure.
+            self_venv = _running_uv_tool_venv()
+            if self_venv is not None and not _tool_env_can_import(self_venv):
+                print(
+                    "Error: auto-update failed AND left the installation broken — "
+                    f"{self_venv} can no longer import ai_cli.\n"
+                    f"  Repair it with:\n"
+                    f"    uv tool install -e {project_path} --force --reinstall",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "Warning: auto-update failed; the existing installation is intact and still in use.",
+                    file=sys.stderr,
+                )
+            return False
+        # Do not make a failed installation look current.  The caller must re-exec
+        # after a successful installation because this process still has the old
+        # template generator imported.
+        stamp_file.write_text(current_hash)
+        return True
     finally:
         lock_path.unlink(missing_ok=True)
 
@@ -665,13 +801,22 @@ def _write_launch_script_if_changed(script_path: Path, script: str) -> bool:
     """
     script_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if script_path.read_text() == script and script_path.stat().st_mode & 0o777 == 0o700:
+        if script_path.read_text(encoding="utf-8") == script and (
+            os.name == "nt" or script_path.stat().st_mode & 0o777 == 0o700
+        ):
             return False
     except OSError:
         pass
-    script_path.write_text(script)
+    script_path.write_text(script, encoding="utf-8")
     script_path.chmod(0o700)
     return True
+
+
+def _decode_tmux_stderr(raw: str | bytes) -> str:
+    """Decode captured tmux stderr without hiding the original diagnostic."""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw
 
 
 # Bound on how often the live-session template refresh may run. Each run spawns a
@@ -1328,6 +1473,47 @@ def _has_conflict_or_unknown(repo_root) -> bool:
         return True
 
 
+def _running_uv_tool_venv() -> "Path | None":
+    """Return the uv tool environment this interpreter runs from, else None.
+
+    uv writes ``uv-receipt.toml`` at the root of every tool environment, so its
+    presence beside ``sys.prefix`` identifies one exactly — no ``uv tool dir``
+    round trip, and it stays correct however uv relocates its directories.
+    """
+    if sys.prefix == sys.base_prefix:
+        return None  # not a virtual environment at all
+    prefix = Path(sys.prefix)
+    return prefix if (prefix / "uv-receipt.toml").is_file() else None
+
+
+def _venv_interpreter(venv: "Path") -> "Path":
+    """Path to a venv's interpreter, on either platform layout."""
+    if os.name == "nt":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
+def _tool_env_can_import(venv: "Path", module: str = "ai_cli") -> bool:
+    """Whether a *fresh* interpreter from ``venv`` can import ``module``.
+
+    Must be a subprocess: this process already holds the module in memory, so an
+    in-process import proves nothing about what survived on disk.
+    """
+    py = _venv_interpreter(venv)
+    if not py.exists():
+        return False
+    try:
+        probe = subprocess.run(
+            [str(py), "-c", f"import {module}"],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except OSError:
+        return False
+    return probe.returncode == 0
+
+
 def _should_use_uv_link_mode_copy(uv_bin: str, target_dir: "Path | None" = None) -> bool:
     """Detect if uv's cache and install target dirs are on different filesystems.
 
@@ -1500,11 +1686,27 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
     exit_code = 0
     try:
         pyproject.write_text(original[: m.start(2)] + new_version + original[m.end(2) :])
-        uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
-        if force_reinstall:
-            uv_cmd.append("--reinstall")
-        if _should_use_uv_link_mode_copy(uv_bin):
-            uv_cmd.append("--link-mode=copy")
+        # `uv tool install --force` REPLACES the tool environment: it deletes the
+        # existing one and rebuilds it. When the tool being updated is the one
+        # currently running, that environment holds this interpreter's own mapped
+        # image (<venv>/Scripts/python.exe), and Windows refuses to unlink a mapped
+        # image — `Access is denied. (os error 5)`. uv is not atomic about it, so it
+        # removes Lib/site-packages, then fails on Scripts, leaving an environment
+        # with no packages at all. Install into the live environment instead: that
+        # rewrites Lib/site-packages and never touches Scripts.
+        self_venv = _running_uv_tool_venv()
+        if self_venv is not None:
+            uv_cmd = [uv_bin, "pip", "install", "--python", str(_venv_interpreter(self_venv)), str(project_path)]
+            if force_reinstall:
+                uv_cmd.append("--force-reinstall")
+            if _should_use_uv_link_mode_copy(uv_bin, self_venv):
+                uv_cmd.append("--link-mode=copy")
+        else:
+            uv_cmd = [uv_bin, "tool", "install", str(project_path), "--force"]
+            if force_reinstall:
+                uv_cmd.append("--reinstall")
+            if _should_use_uv_link_mode_copy(uv_bin):
+                uv_cmd.append("--link-mode=copy")
         result = subprocess.run(uv_cmd, cwd=project_path, check=False)
         exit_code = result.returncode
     finally:
@@ -2251,6 +2453,11 @@ def _do_session_launch(
     if once:
         target_root = worktree_path or Path.cwd()
         cd_prefix = f"cd {shlex.quote(str(target_root))} && "
+        # Resolved once for the whole --once branch: the pane interpreter must
+        # exist (an absent one dies on exec and shows only `[exited]`), and direnv
+        # must be optional (an absent one made `direnv exec` fail closed at 127).
+        _session_shell = _session_shell_or_exit()
+        _direnv = _direnv_prefix(target_root)
         if engine == "c":
             command = ["claude"]
             if not _is_root():
@@ -2265,9 +2472,9 @@ def _do_session_launch(
                     session_id,
                     *_iterm_env_flags,
                     "--",
-                    "zsh",
+                    _session_shell,
                     "-c",
-                    cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                    cd_prefix + shlex.join([*_direnv, *command]),
                 ],
             )
         else:
@@ -2283,9 +2490,9 @@ def _do_session_launch(
                         session_id,
                         *_iterm_env_flags,
                         "--",
-                        "zsh",
+                        _session_shell,
                         "-c",
-                        cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                        cd_prefix + shlex.join([*_direnv, *command]),
                     ],
                 )
             else:
@@ -2299,9 +2506,9 @@ def _do_session_launch(
                         session_id,
                         *_iterm_env_flags,
                         "--",
-                        "zsh",
+                        _session_shell,
                         "-c",
-                        cd_prefix + shlex.join(["direnv", "exec", str(target_root), *command]),
+                        cd_prefix + shlex.join([*_direnv, *command]),
                     ],
                 )
 
@@ -2360,23 +2567,24 @@ def _do_session_launch(
         # New session: create detached so tmux options can be set before attaching.
         # tmux always allocates a PTY for the pane regardless of client attachment,
         # so Claude Code gets a proper PTY once we attach immediately after.
+        _session_shell = _session_shell_or_exit()
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", "zsh", _script_path],
+            ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", _session_shell, _script_path],
             capture_output=True,
             check=False,
         )
         if result.returncode != 0:
             raw = result.stderr
-            stderr = (raw.decode() if isinstance(raw, bytes) else raw).strip()
+            stderr = _decode_tmux_stderr(raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "zsh", _script_path],
+                ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, _session_shell, _script_path],
                 capture_output=True,
                 check=False,
             )
             if result2.returncode != 0:
                 raw2 = result2.stderr
-                stderr2 = (raw2.decode() if isinstance(raw2, bytes) else raw2).strip()
+                stderr2 = _decode_tmux_stderr(raw2).strip()
                 Path(_script_path).unlink()
                 print(f"Error: failed to create tmux session '{session_id}'", file=sys.stderr)
                 print(f"  (with --): {stderr}", file=sys.stderr)
@@ -2416,7 +2624,9 @@ def _session_command(engine: str):
         # Startup hooks happen only when launching a new session.
         config = _config.load_config()
         trigger_background_update()
-        _auto_update_if_stale(config)
+        if _auto_update_if_stale(config) is True:
+            ai_bin = shutil.which("ai") or "ai"
+            os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
         _tunnel._ensure_nats_tunnel(config)
         _do_session_launch(
             engine=engine,

@@ -1,7 +1,9 @@
 import json
 import os
+import shutil
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,17 +14,54 @@ from ai_cli.main import (
     _cmd_tunnel_status,
     _cmd_tunnel_stop,
     _configure_tmux_for_iterm2,
+    _decode_tmux_stderr,
     _ensure_nats_tunnel,
     cli,
     get_engine_script,
     trigger_background_update,
 )
+from ai_cli.session_script import resolve_session_shell
 
 
 def _successful_worktree(tmp_path, ai_name):
     path = tmp_path / ".worktrees" / ai_name
     path.mkdir(parents=True)
     return path, False
+
+
+def _worktree_with_envrc(tmp_path, ai_name):
+    """A worktree that direnv has something to load, so the launch path uses it.
+
+    ``direnv exec`` is only prefixed onto a launch when there is an ``.envrc``
+    above the target *and* direnv can evaluate it — direnv is an enhancement,
+    never a precondition. Tests that assert the direnv-wrapped argv therefore
+    have to create that precondition rather than assume it; the ``.envrc`` here
+    is a real file read by the real ``_find_envrc`` walk.
+    """
+    path, created = _successful_worktree(tmp_path, ai_name)
+    (path / ".envrc").write_text("export AI_CLI_TEST=1\n")
+    return path, created
+
+
+@pytest.fixture
+def tmux_available():
+    """Declare tmux availability for unit tests that exercise its command path."""
+    original_which = shutil.which
+
+    def fake_which(command, *args, **kwargs):
+        if command == "tmux":
+            return "/usr/bin/tmux"
+        return original_which(command, *args, **kwargs)
+
+    with patch("ai_cli.main.shutil.which", side_effect=fake_which):
+        yield
+
+
+def test_given_invalid_utf8_tmux_stderr_when_decoded_then_diagnostic_is_preserved_without_error():
+    decoded = _decode_tmux_stderr(b"tmux failed: \x97")
+
+    assert decoded.startswith("tmux failed:")
+    assert "\ufffd" in decoded
 
 
 # --- CLI dispatch tests ---
@@ -433,6 +472,7 @@ class TestCliDispatchBranches:
                 assert exc.value.code == 1
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliSessionSetupBranches:
     def test_given_missing_engine_when_bare_agent_executes_then_exits_with_actionable_error(self, tmp_path, capsys):
         """A missing *engine* is fatal; a missing direnv is not.
@@ -822,6 +862,7 @@ class TestCliReconnectContinueBranch:
         assert "2 remote session" in out
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliResumePath:
     def test_cli_when_resume_and_session_found_then_attaches(self):
         with patch("sys.argv", ["ai", "c", "-r", "1"]):
@@ -846,6 +887,7 @@ class TestCliResumePath:
                             assert exc.value.code == 1
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliOncePath:
     def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
@@ -856,7 +898,7 @@ class TestCliOncePath:
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -864,7 +906,7 @@ class TestCliOncePath:
                                                 "subprocess.run",
                                                 return_value=MagicMock(returncode=0, stdout="", stderr=""),
                                             ):
-                                                with patch("os.getuid", return_value=1000):
+                                                with patch("ai_cli.main._is_root", return_value=False):
                                                     with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                         with pytest.raises(SystemExit):
                                                             cli()
@@ -882,7 +924,7 @@ class TestCliOncePath:
                             with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -890,7 +932,7 @@ class TestCliOncePath:
                                                 "subprocess.run",
                                                 return_value=MagicMock(returncode=0, stdout="", stderr=""),
                                             ):
-                                                with patch("os.getuid", return_value=0):
+                                                with patch("ai_cli.main._is_root", return_value=True):
                                                     with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                                         with pytest.raises(SystemExit):
                                                             cli()
@@ -909,7 +951,7 @@ class TestCliOncePath:
                             ):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-research"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-research"),
                                 ):
                                     with patch(
                                         "ai_cli.config.get_session_map", return_value={"sw-research": "uuid123"}
@@ -937,7 +979,7 @@ class TestCliOncePath:
                             ):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-research"),
+                                    return_value=_worktree_with_envrc(tmp_path, "sw-research"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -967,6 +1009,7 @@ class TestConfigureTmuxForIterm2:
         assert any(cmd == ["tmux", "set-window-option", "-t", "c-sw-1", "automatic-rename", "off"] for cmd in run_calls)
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliSessionExecvp:
     def test_cli_when_existing_session_then_attaches_with_detach(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "1"]):
@@ -1030,6 +1073,7 @@ class TestCliSessionExecvp:
                                             assert "attach-session" in mock_exec.call_args[0][1]
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliIsRemotePath:
     def test_cli_when_is_remote_and_project_dir_exists_then_chdirs(self, tmp_path):
         project_dir = tmp_path / "projects" / "myproj"
@@ -1063,6 +1107,7 @@ class TestCliIsRemotePath:
                                                             mock_chdir.assert_called_once_with(project_dir)
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliWorktreeGitPull:
     def test_cli_when_worktree_created_then_runs_git_pull(self, tmp_path):
         worktree_path = tmp_path / ".worktrees" / "sw-1"
@@ -1771,7 +1816,11 @@ class TestGetEngineScript:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "_script_stable_path" in script
         assert "_script_start_mtime" in script
-        assert "exec zsh" in script
+        # The hot-reload exec must name an interpreter that actually exists on
+        # this host: a hardcoded one that does not kills the pane on reload.
+        shell = resolve_session_shell()
+        assert shell is not None and os.access(shell, os.X_OK)
+        assert f'exec "{shell}" "$_script_stable_path"' in script
 
     def test_get_engine_script_includes_set_environment_after_first_run(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -1779,6 +1828,7 @@ class TestGetEngineScript:
         assert "AI_SESSION_STARTED 1" in script
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestCliSessionStablePath:
     """Session script is written to a stable, deterministic path on every launch/re-attach."""
 
@@ -1896,7 +1946,7 @@ class TestDeploy:
         assert pyproject.read_text() == '[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n'
         all_cmds = [call[0][0] for call in mock_run.call_args_list]
         uv_cmd = next(
-            (c for c in all_cmds if c and c[0].endswith("uv") and "--force" in c and "--reinstall" not in c),
+            (c for c in all_cmds if c and Path(c[0]).stem == "uv" and "--force" in c and "--reinstall" not in c),
             None,
         )
         assert uv_cmd is not None
@@ -2092,7 +2142,7 @@ class TestDeploy:
         def guarded_run(cmd, **kwargs):
             # Let real git through; intercept only the install so the test never
             # mutates the developer's toolchain.
-            if cmd and str(cmd[0]).endswith("uv"):
+            if cmd and Path(cmd[0]).stem == "uv":
                 uv_called.append(list(cmd))
                 return MagicMock(returncode=0, stdout="")
             return real_run(cmd, **kwargs)
@@ -2216,7 +2266,7 @@ class TestDeploy:
         uv_called = []
 
         def fake_run(cmd, **kwargs):
-            if cmd and cmd[0].endswith("uv") and "tool" in cmd:
+            if cmd and Path(cmd[0]).stem == "uv" and "tool" in cmd:
                 uv_called.append(cmd)
             return MagicMock(returncode=0, stdout="")
 
@@ -2231,7 +2281,7 @@ class TestDeploy:
         assert not uv_called, "uv install must not run when conflict markers are present"
         captured = capsys.readouterr()
         assert "conflict markers" in captured.err
-        assert "src/ai_cli/main.py" in captured.err
+        assert str(Path("src") / "ai_cli" / "main.py") in captured.err
 
     def test_deploy_when_source_contains_conflict_string_literal_then_proceeds(self, tmp_path):
         """Guard must not false-positive on string literals containing conflict marker text."""
@@ -2244,7 +2294,7 @@ class TestDeploy:
         uv_called = []
 
         def fake_run(cmd, **kwargs):
-            if cmd and cmd[0].endswith("uv") and "tool" in cmd:
+            if cmd and Path(cmd[0]).stem == "uv" and "tool" in cmd:
                 uv_called.append(cmd)
             return MagicMock(returncode=0, stdout="")
 
@@ -2751,6 +2801,7 @@ class TestTunnel:
 # --- Local -p chdir ---
 
 
+@pytest.mark.usefixtures("tmux_available")
 class TestLocalProjectChdir:
     def test_when_local_project_flag_then_chdirs_to_project_dir(self, tmp_path):
         project_dir = tmp_path / "projects" / "myproject"

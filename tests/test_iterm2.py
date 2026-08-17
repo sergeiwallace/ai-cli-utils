@@ -165,16 +165,16 @@ class TestIterm2StateDir:
     """Tests for _iterm2_state_dir."""
 
     def test_returns_xdg_state_iterm2_subdir(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        result = _iterm2_state_dir()
+        with patch("ai_cli.iterm2.get_xdg_state_home", return_value=tmp_path / "ai-cli-utils"):
+            result = _iterm2_state_dir()
         assert result == tmp_path / "ai-cli-utils" / "iterm2"
         assert result.is_dir()
 
     def test_creates_directory_if_absent(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
         target = tmp_path / "ai-cli-utils" / "iterm2"
         assert not target.exists()
-        _iterm2_state_dir()
+        with patch("ai_cli.iterm2.get_xdg_state_home", return_value=tmp_path / "ai-cli-utils"):
+            _iterm2_state_dir()
         assert target.is_dir()
 
 
@@ -569,14 +569,18 @@ class TestCurrentPaneTty:
     """Tests for _current_pane_tty — the process's own controlling tty."""
 
     def test_returns_ttyname_of_stdout(self):
-        with patch("ai_cli.iterm2.os.ttyname", return_value="/dev/ttys005") as mock_tty:
+        with patch("ai_cli.iterm2.os.ttyname", return_value="/dev/ttys005", create=True) as mock_tty:
             assert _current_pane_tty() == "/dev/ttys005"
         # Tries stdout (fd 1) first.
         assert mock_tty.call_args_list[0][0][0] == 1
 
     def test_falls_through_fds_and_returns_empty_when_no_tty(self):
-        with patch("ai_cli.iterm2.os.ttyname", side_effect=OSError):
+        with patch("ai_cli.iterm2.os.ttyname", side_effect=OSError, create=True):
             assert _current_pane_tty() == ""
+
+    def test_given_platform_without_ttyname_when_called_then_returns_empty(self, monkeypatch):
+        monkeypatch.delattr(os, "ttyname", raising=False)
+        assert _current_pane_tty() == ""
 
 
 class TestSetIterm2NameInternalCommand:

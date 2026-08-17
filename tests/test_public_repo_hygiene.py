@@ -102,7 +102,9 @@ def test_given_a_line_that_uses_the_private_name_as_a_project_name_when_scanned_
     findings = scan_for_private_names(tmp_path)
 
     assert len(findings) == 1
-    assert findings[0].startswith("src/example.py:1:")
+    path, line, _ = findings[0].split(":", 2)
+    assert Path(path) == Path("src") / "example.py"
+    assert line == "1"
 
 
 def test_given_the_real_repository_url_when_scanned_then_it_is_not_flagged(tmp_path):
@@ -132,7 +134,9 @@ def test_given_a_private_repository_name_when_scanned_then_it_is_flagged(tmp_pat
     findings = scan_for_private_names(tmp_path)
 
     assert len(findings) == 1
-    assert findings[0].startswith("tests/test_example.py:1:")
+    path, line, _ = findings[0].split(":", 2)
+    assert Path(path) == Path("tests") / "test_example.py"
+    assert line == "1"
 
 
 def test_given_a_private_platform_name_when_scanned_then_it_is_flagged(tmp_path):
@@ -153,7 +157,10 @@ def test_given_a_private_platform_name_when_scanned_then_it_is_flagged(tmp_path)
 
     assert len(findings) == len(_PRIVATE_PLATFORM_NAMES)
     for index, name in enumerate(_PRIVATE_PLATFORM_NAMES):
-        assert any(f.startswith(f"src/leak_{index}.py:1:") for f in findings), f"scan did not flag {name!r}"
+        assert any(
+            Path(finding.split(":", 2)[0]) == Path("src") / f"leak_{index}.py" and finding.split(":", 2)[1] == "1"
+            for finding in findings
+        ), f"scan did not flag {name!r}"
 
 
 def test_given_a_longer_identifier_containing_a_platform_name_when_scanned_then_it_is_not_flagged(tmp_path):

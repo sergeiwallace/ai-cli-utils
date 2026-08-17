@@ -12,8 +12,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.12"
       - run: uv sync --dev
@@ -33,28 +33,45 @@ jobs:
         ports:
           - 4222:4222
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --dev
       - run: uv run pytest --cov=ai_cli --cov-report=xml --tb=short -q
       - name: Upload coverage
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
   test-windows:
     runs-on: windows-latest
+    # A real_tmux test spawning MSYS2's tmux for real hung an earlier run past
+    # 30 minutes with no sign of progress (killed manually, PR #35) -- bound
+    # the blast radius of any future hang instead of burning hours of CI time.
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --dev
-      - run: uv run pytest --tb=short -q
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          # Default path-type (minimal) hides uv, installed on the native
+          # Windows PATH by setup-uv above, from this MSYS2 shell.
+          path-type: inherit
+          install: >-
+            tmux
+            python
+      - shell: msys2 {0}
+        run: uv sync --dev --python ${{ matrix.python-version }}
+      - shell: msys2 {0}
+        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q

@@ -16,8 +16,8 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.12"
       - run: uv build
@@ -29,7 +29,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Extract changelog for current version
         id: changelog
         run: |

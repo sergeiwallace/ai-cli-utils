@@ -1,6 +1,7 @@
 """Tests for sync_watch PID file guard and deduplication."""
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -47,5 +48,7 @@ class TestPidFileGuard:
 
     def test_pid_file_path_returns_expected_location(self, monkeypatch, tmp_path):
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        if sys.platform == "win32":
+            monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         path = _pid_file_path("sync-watch")
         assert path == tmp_path / "ai-cli-utils" / "sync-watch.pid"

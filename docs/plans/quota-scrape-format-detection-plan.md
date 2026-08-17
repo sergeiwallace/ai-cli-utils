@@ -83,6 +83,7 @@ Write debug file only; no DB state; no statusline indicator.
 ##### Recommendation
 
 > **Decision:** `APPROVED — (A) In-band DB flag + debug dump + statusline indicator`
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Option (A). The statusline indicator is the reason for this feature — silent logging misses the goal entirely.
 
@@ -111,6 +112,7 @@ Example statusline when mismatch is active:
 #### Recommendation
 
 > **Decision:** `APPROVED`
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 No ANSI codes. Siren prefix `🚨 BROKEN 🚨` prepended to the left of normal quota output. Quota data preserved to the right. Consistent with how other statusline prefixes work in this codebase.
 

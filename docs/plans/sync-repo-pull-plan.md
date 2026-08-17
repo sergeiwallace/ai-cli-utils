@@ -108,6 +108,7 @@ Pull every project in `~/projects/` that is a git repo.
 #### Recommendation
 
 > **Decision:** `APPROVED — (a) affected only`
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Affected-only matches the scope of what `ai sync pull` knows about. Pulling all repos changes the contract of the command. Users who want a full fleet pull can run `git pull` manually or via a future `ai sync repos` standalone command.
 
@@ -156,6 +157,7 @@ Auto-commit uncommitted changes before pulling.
 #### Recommendation
 
 > **Decision:** `APPROVED — (a) skip + log`
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Skip is the only safe answer for dirty trees. Stash modifies files on disk — any active process (CC or otherwise) reading those files during the window sees incorrect content. The worktree will sync when the CC session finishes (auto-pull on `ai c N` launch) or when the user manually runs `git pull --rebase`.
 
@@ -195,6 +197,7 @@ Use result to vary log message severity and detail only. Same action (skip) for 
 #### Recommendation
 
 > **Decision:** `APPROVED — (b) state affects log severity`
+<!-- decision-record: chosen-option=(b); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 Same action (skip), richer signal. Knowing whether CC is actively mid-execution vs idle helps the user decide when to manually pull. Implementation is straightforward: worktree name → session name mapping is deterministic from the path.
 
@@ -226,6 +229,7 @@ Pull repos even in memories-only mode.
 #### Recommendation
 
 > **Decision:** `APPROVED — (a) skip`
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 `ai c N` already pulls on launch. Running again inside the memories-only hook is redundant and adds latency. Skip.
 

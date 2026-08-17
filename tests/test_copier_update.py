@@ -83,7 +83,7 @@ def test_conflict_files_returns_files_with_markers(tmp_path):
     conflict_file.write_text("<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>>\n")
 
     result = _conflict_files(tmp_path)
-    assert str(conflict_file) in result
+    assert conflict_file in {Path(path) for path in result}
 
 
 def test_conflict_files_returns_empty_when_none(tmp_path):
@@ -164,7 +164,7 @@ def test_run_copier_update_project_filter_found(tmp_path, capsys):
     copier_calls = [c for c in mock_run.call_args_list if "copier" in str(c.args[0][0])]
     assert len(copier_calls) == 1
     call_args = copier_calls[0][0][0]  # positional args list
-    assert str(tmp_path / "alpha") in str(copier_calls[0])
+    assert copier_calls[0].kwargs["cwd"] == tmp_path / "alpha"
     assert "--vcs-ref" in call_args
     assert "HEAD" in call_args
 
@@ -375,14 +375,16 @@ def test_do_update_conflict(tmp_path):
     """Changes + conflict markers → conflict with relative paths, no commit."""
     wt = tmp_path / "wt"
     runner = _wt_runner(porcelain=" M docs/x.py\n")
-    with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch(
+    with (
+        patch("ai_cli.copier_update.subprocess.run", side_effect=runner),
+        patch(
             "ai_cli.copier_update._conflict_files",
             return_value=[str(wt / "docs" / "x.py")],
-        ):
-            status, detail = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", True)
+        ),
+    ):
+        status, detail = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", True)
     assert status == "conflict"
-    assert detail == ["docs/x.py"]
+    assert [Path(path) for path in detail] == [Path("docs") / "x.py"]
     # never committed or pushed on conflict
     assert not any("commit" in c for c in runner.calls)
     assert not any("push" in c for c in runner.calls)
@@ -568,7 +570,7 @@ def test_conflict_files_whole_tree_still_works(tmp_path):
     """paths=None preserves the original whole-tree scan (legacy direct mode)."""
     (tmp_path / "c.py").write_text("<<<<<<< HEAD\n")
     result = _conflict_files(tmp_path)
-    assert str(tmp_path / "c.py") in result
+    assert tmp_path / "c.py" in {Path(path) for path in result}
 
 
 def test_do_update_ignores_unchanged_marker_files(tmp_path):

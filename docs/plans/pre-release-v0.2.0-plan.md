@@ -156,6 +156,7 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 | `docs/bugs/` | Session names like `c-aido-2`, `c-art-2` in bug reports | Leave as-is (historical bug docs, not public API) |
 
 **Note on `setup.py` and `test_setup.py`:** `ai-core` appears as the feature name throughout (e.g. `_is_managed_platform()`, "managed platform detected"). **Decision (2026-04-04):** rename to generic — `_is_managed_platform()` / "managed platform detected". All references in `setup.py`, `test_setup.py`, and any docs updated accordingly.
+<!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 **Audit command to verify clean:**
 ```bash
