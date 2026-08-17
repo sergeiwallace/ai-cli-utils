@@ -758,3 +758,37 @@ def test_given_session_adopt_module_present_when_liveness_checked_then_still_cla
     _write_proc_stat(tmp_path / "proc", 4242, starttime=777)
 
     assert _cc_record_liveness({"pid": 4242, "procStart": 777}, proc_dir=tmp_path / "proc") == "live"
+
+
+def test_given_resume_branch_and_missing_session_adopt_when_bare_command_built_then_still_launches(
+    tmp_path, monkeypatch
+):
+    """AC-5: the two-condition failure, end to end through the real crash path.
+
+    Reproduces the reported traceback rather than either half of it: a matching
+    prior transcript exists (so `_bare_engine_command` takes the resume branch and
+    reaches `_cc_session_is_live` -> `_cc_record_liveness`), AND `session_adopt` is
+    unimportable (as it is mid-`uv tool install`). Before the guard this raised
+    ModuleNotFoundError out of `ai c` and no session launched at all.
+
+    The two separate tests above pin the halves; this one pins that they compose,
+    which is what actually broke `ai c 2` and `ai c 1`.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    _write_transcript(_cc_project_dir(target), "99999999-0000-4000-8000-000000000009", "aih-2")
+    _write_session_registry(tmp_path, 4242, "99999999-0000-4000-8000-000000000009", proc_start=777)
+
+    real_import = builtins.__import__
+
+    def _hide_session_adopt(name, globals=None, locals=None, fromlist=(), level=0):
+        if level and "session_adopt" in name:
+            raise ModuleNotFoundError("No module named 'ai_cli.session_adopt'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _hide_session_adopt)
+
+    argv = _bare_engine_command("c", "aih-2", target, None, "gemini", "--no-sandbox", [])
+
+    assert argv[0] == "claude"
+    assert "--name" in argv and argv[argv.index("--name") + 1] == "aih-2"
