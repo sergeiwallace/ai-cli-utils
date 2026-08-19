@@ -2,14 +2,14 @@
 title: "Session custom title and tmux name divergence investigation"
 category: bug
 tags: [bug, session, tmux, naming]
-status: not-reproduced
+status: fixed
 severity: P2
 template_version: "bug-1.0.0"
 ---
 
 # Session custom title and tmux name divergence investigation
 
-**Status:** not reproduced
+**Status:** fixed
 
 **Created:** 2026-08-18
 
@@ -17,67 +17,53 @@ template_version: "bug-1.0.0"
 
 ## Summary
 
-An observed session custom title ended in `-1` while its tmux session name
-appeared to end in `-0`, and another observed tmux name appeared to omit a
-non-numeric custom-name segment. The current source did not reproduce either
-outcome for `ai c fw`.
+The tmux native status bar could show a stale default window name even while
+the session name and custom title were correct. This affected terminals that
+render tmux's own status line.
 
 ## Reproduction
 
-The tmux boundary was mocked so no live tmux server was queried. With no
-sessions, `build_session_name("c", "myproject", "fw")` returned
-`c-myproject-fw-1` and `myproject-fw-1`; the equivalent hyphenated project
-prefix also retained `fw`. When `c-my-cli-fw-1` was occupied, both returned
-names advanced together to `c-my-cli-fw-2` and `my-cli-fw-2`.
-
-The available source history was also inspected. Its index allocator starts at
-1, and the non-numeric-name path constructs both returned values from the same
-normalized name and index. The history available in this clone contains no
-`i = 0` allocator or name-splitting operation that could drop `fw`.
+The tmux session name was correct. The apparent `0` was tmux's default
+zero-based window index, not the session-slot index. The stale text was the
+tmux window name.
 
 ## Root Cause Analysis
 
-Not established. Current `cmd_c`/`cmd_g` call `build_session_name()` once,
-then pass its `session_id` to `tmux new-session` and its `ai_name` to the
-engine's `--name`; no later tmux rename path exists. Template refresh also
-reuses persisted metadata. Consequently, the reported divergence cannot be
-produced by the inspected current or available historical naming paths. A
-future investigation needs the original session creation time, package version,
-and the exact session name from the tmux server at that time; an already-created
-tmux session cannot be retroactively renamed by this code.
+The launcher disables tmux `automatic-rename` for every session so iTerm2
+title handling remains stable. Without an explicit `tmux rename-window`, the
+window therefore remained named `tmux` in non-iTerm2 terminals, even though
+the session's `ai_name` was available at launch.
 
 ## Prior Fix Attempts
 
 | # | Date | What was tried | Outcome |
 | --- | --- | --- | --- |
-| 1 | 2026-08-18 | Isolated mocked-tmux reproduction and source/history trace | Not reproduced; no production change attempted. |
+| 1 | 2026-08-18 | Isolated mocked-tmux reproduction and source/history trace | Session naming was correct; window naming was not yet isolated. |
 
 ## Fix
 
-None. No causal defect was confirmed, so no speculative production patch or
-regression test was added.
+`_rename_tmux_window()` now invokes `tmux rename-window -t <session_id>
+<ai_name>` after tmux configuration for both new sessions and re-attaches.
+This preserves the existing `automatic-rename off` behavior while ensuring
+tmux's native status line displays the session identity on every terminal.
 
 ## Verification
 
-- Isolated Python reproduction: passed; the returned session and custom names
-  were aligned for empty and occupied slots.
-- `uv run pytest tests/test_session.py -q`: not run to completion. The stated
-  `.venv` was absent; uv's default cache is read-only in this environment, and
-  an isolated offline cache could not provide `pillow==12.3.0`.
-- The full ruff/pytest gate has the same unavailable-environment dependency and
-  was not claimed as passing.
+- Focused regression tests mock `subprocess.run`, assert the exact tmux rename
+  command, and cover both launch paths.
+- Repository-wide lint and formatting may report unrelated existing paths;
+  verify the current branch's full gate alongside this change.
 
 ## Lessons Learned
 
-Session creation is the only point that can set a tmux session name. Preserve
-the creation-time version and raw tmux observation when reporting a naming
-issue; later custom-title observations alone cannot establish the name that was
-initially allocated.
+Distinguish tmux session names from tmux window names and indices. Disabling
+automatic window naming requires an explicit replacement name wherever the
+native tmux status line is expected to reflect application identity.
 
 ## Fix Log
 
 | Date | Commit | Notes |
 | --- | --- | --- |
-| 2026-08-18 | — | Documented the unreproduced report and evidence gap; no code change. |
+| 2026-08-18 | — | Added explicit tmux window naming after session creation and re-attach. |
 
 <!-- /doc:region name="summary" -->

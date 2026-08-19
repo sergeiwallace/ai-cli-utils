@@ -367,6 +367,15 @@ def _configure_tmux_for_iterm2(session_id: str) -> None:
     )
 
 
+def _rename_tmux_window(session_id: str, name: str) -> None:
+    """Set the tmux window name shown in tmux's native status line."""
+    subprocess.run(
+        ["tmux", "rename-window", "-t", session_id, name],
+        capture_output=True,
+        check=False,
+    )
+
+
 def _emit_iterm2_profile_setup(
     ai_name: str,
     engine: str,

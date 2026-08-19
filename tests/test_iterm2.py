@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from conftest import make_iterm2_config
 
+from ai_cli.iterm2 import _rename_tmux_window
 from ai_cli.main import (
     _assign_iterm2_color_slot,
     _current_pane_tty,
@@ -563,6 +564,18 @@ class TestItermPaneTtyForTmuxSession:
         with patch("ai_cli.iterm2.subprocess.run") as mock_run:
             assert _iterm_pane_tty_for_tmux_session("") == ""
         mock_run.assert_not_called()
+
+
+class TestRenameTmuxWindow:
+    def test_given_session_identity_when_renamed_then_calls_tmux_rename_window(self):
+        with patch("ai_cli.iterm2.subprocess.run") as mock_run:
+            _rename_tmux_window("c-myproject-feature-1", "myproject-feature-1")
+
+        mock_run.assert_called_once_with(
+            ["tmux", "rename-window", "-t", "c-myproject-feature-1", "myproject-feature-1"],
+            capture_output=True,
+            check=False,
+        )
 
 
 class TestCurrentPaneTty:

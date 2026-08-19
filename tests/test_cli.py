@@ -1032,11 +1032,13 @@ class TestCliSessionExecvp:
                                             # guard when run from a worktree.
                                             with patch("ai_cli.session.detect_repo_root", return_value=None):
                                                 with patch("subprocess.run", return_value=existing):
-                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
+                                                    with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
+                                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                            with pytest.raises(SystemExit):
+                                                                cli()
                                                     assert "attach-session" in mock_exec.call_args[0][1]
                                                     assert "-d" in mock_exec.call_args[0][1]
+                                                    mock_rename.assert_called_once_with("c-sw-1", "sw-1")
 
     def test_cli_when_no_existing_session_then_creates_new(self, tmp_path):
         run_calls = []
@@ -1065,12 +1067,14 @@ class TestCliSessionExecvp:
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
                                             with patch("subprocess.run", side_effect=fake_run):
-                                                with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                    with pytest.raises(SystemExit):
-                                                        cli()
+                                                with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
+                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
                                             # New session: detached new-session via subprocess, then attach via execvp
                                             assert any("new-session" in c for c in run_calls)
                                             assert "attach-session" in mock_exec.call_args[0][1]
+                                            mock_rename.assert_called_once_with("c-sw-1", "sw-1")
 
 
 @pytest.mark.usefixtures("tmux_available")

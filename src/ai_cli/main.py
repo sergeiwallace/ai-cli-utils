@@ -2562,6 +2562,7 @@ def _do_session_launch(
         # live client tty inside the session script, so there is no GUID to
         # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
+        _iterm2._rename_tmux_window(session_id, ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
@@ -2591,6 +2592,7 @@ def _do_session_launch(
                 print(f"  (without --): {stderr2}", file=sys.stderr)
                 sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(session_id)
+        _iterm2._rename_tmux_window(session_id, ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
 
 
