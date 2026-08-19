@@ -1162,7 +1162,9 @@ def quota_sync_from_remote() -> int:
         from .config import load_config
 
         cfg = load_config()
-        remote = cfg.get("remote", {})
+        from .config import get_remote_machine
+
+        remote = get_remote_machine(cfg)
         host = remote.get("host", "")
         user = remote.get("user", "")
         port = str(remote.get("port", 22))

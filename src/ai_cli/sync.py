@@ -145,8 +145,10 @@ def load_sync_config() -> SyncConfig:
     source_machine = get_source_machine()
     remote_host = sync_cfg.get("remote_host")
     if not remote_host:
-        # Derive from [remote] section if available
-        remote_cfg = config.get("remote", {})
+        # Derive from the default remote machine if available.
+        from .config import get_remote_machine
+
+        remote_cfg = get_remote_machine(config)
         r_host = remote_cfg.get("host")
         r_user = remote_cfg.get("user", "ubuntu")
         if r_host:

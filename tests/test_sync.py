@@ -1681,6 +1681,22 @@ def test_load_sync_config_when_no_sync_host_then_derives_from_remote():
     assert cfg.remote_host == "ubuntu@1.2.3.4"
 
 
+def test_load_sync_config_when_named_remote_default_then_derives_from_default_machine():
+    config = {
+        "sync": {},
+        "remote": {
+            "default": "fw",
+            "machines": {
+                "fw": {"host": "framework.example.com", "user": "dev"},
+                "hz": {"host": "server.example.com", "user": "root"},
+            },
+        },
+    }
+    with patch("ai_cli.config.load_config", return_value=config):
+        cfg = load_sync_config()
+    assert cfg.remote_host == "dev@framework.example.com"
+
+
 def test_load_sync_config_when_no_host_at_all_then_exits():
     config = {"sync": {}, "remote": {}}
     with patch("ai_cli.config.load_config", return_value=config):

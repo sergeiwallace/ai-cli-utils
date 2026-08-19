@@ -68,6 +68,54 @@ def test_remote_flag_when_host_configured_then_sshs_to_host():
     assert "--is-remote" in bash_cmd and "1" in bash_cmd
 
 
+def test_given_named_remote_default_when_remote_flag_used_then_ssh_uses_default_machine():
+    config = {
+        "remote": {
+            "default": "fw",
+            "machines": {
+                "fw": {"host": "framework.example.com", "user": "dev", "port": 2222, "transport": "ssh"},
+                "hz": {"host": "server.example.com", "user": "root", "transport": "ssh"},
+            },
+        }
+    }
+    mock_exec = _run_cli_with_args(["ai", "c", "1", "-R"], config)
+    assert "dev@framework.example.com" in mock_exec.call_args[0][1][2]
+    assert "-p 2222" in mock_exec.call_args[0][1][2]
+
+
+def test_given_named_remote_alias_when_remote_machine_selected_then_ssh_uses_selected_machine():
+    config = {
+        "remote": {
+            "default": "fw",
+            "machines": {
+                "fw": {"host": "framework.example.com", "user": "dev", "transport": "ssh"},
+                "hz": {"host": "server.example.com", "user": "root", "port": 2200, "transport": "ssh"},
+            },
+        }
+    }
+    mock_exec = _run_cli_with_args(["ai", "c", "1", "-R", "-m", "hz"], config)
+    assert "root@server.example.com" in mock_exec.call_args[0][1][2]
+    assert "-p 2200" in mock_exec.call_args[0][1][2]
+
+
+def test_given_unknown_remote_alias_when_remote_machine_selected_then_prints_configured_aliases(capsys):
+    config = {
+        "remote": {
+            "default": "fw",
+            "machines": {"fw": {"host": "framework.example.com"}, "hz": {"host": "server.example.com"}},
+        }
+    }
+    with (
+        patch("sys.argv", ["ai", "c", "1", "-R", "-m", "missing"]),
+        patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.main.trigger_background_update"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli()
+    assert exc_info.value.code == 1
+    assert "Remote machine 'missing' is not configured. Configured aliases: fw, hz" in capsys.readouterr().err
+
+
 def test_remote_flag_when_host_configured_then_passes_is_remote_flag():
     config = {"remote": {"host": "hetzner-dev", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
     mock_exec = _run_cli_with_args(["ai", "g", "research", "--remote"], config)
