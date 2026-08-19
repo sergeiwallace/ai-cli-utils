@@ -461,6 +461,7 @@ def _bare_engine_command(
     gemini_cmd: str,
     sandbox_flag: str,
     extra_args: list[str],
+    resume: bool = False,
 ) -> list[str]:
     """Build the argv for a bare (no-tmux) engine launch.
 
@@ -490,6 +491,15 @@ def _bare_engine_command(
                 except OSError:
                     pass
         return command + extra_args
+
+    if engine == "p":
+        # Pi scopes its saved sessions to the current worktree.  Continuing here
+        # therefore resumes this session's prior conversation without needing a
+        # provider-specific UUID registry.
+        command = ["pi"]
+        if resume:
+            command.append("--continue")
+        return [*command, "--name", ai_name, *extra_args]
 
     command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
     if uuid:
@@ -1873,10 +1883,10 @@ def _do_ls(show_all: bool) -> None:
         return f"{delta // 86400}d"
 
     def _project_from_session(name: str) -> str:
-        """Extract project prefix from session name: c-myproject-1 → myproject, c-r-myproject-1 → myproject."""
+        """Extract project prefix from a provider session name."""
         parts = name.split("-")
-        # Format: {c|g}[-r]-{project}-{index}
-        if len(parts) >= 3 and parts[0] in ("c", "g"):
+        # Format: {c|g|p}[-r]-{project}-{index}
+        if len(parts) >= 3 and parts[0] in ("c", "g", "p"):
             start = 2 if parts[1] == "r" else 1
             # project is everything between start and last segment
             return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
@@ -2102,13 +2112,17 @@ def _do_session_launch(
         except _config.ProjectPrefixError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-    engine_short = "c" if engine == "c" else "g"
+    engine_short = engine
     remote_seg = "-r" if is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
 
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
     gemini_cmd = config.get("gemini", {}).get("command", "gemini")
+
+    if engine == "p" and not shutil.which("pi"):
+        print("Error: pi executable not found on PATH. Install pi, then retry.", file=sys.stderr)
+        sys.exit(1)
 
     if not name and extra_args:
         name = extra_args[0]
@@ -2151,7 +2165,7 @@ def _do_session_launch(
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
-        _r_engine_short = "c" if engine == "c" else "g"
+        _r_engine_short = engine
         _r_ai_name = _session._new_session_display_name(_r_engine_short, remote_prefix, name or "1", True)
         _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
         _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
@@ -2421,11 +2435,12 @@ def _do_session_launch(
                     file=sys.stderr,
                 )
 
-    d = _config.get_session_map(engine)
-    uuid = d.get(ai_name)
     # For Gemini, always check the chats directory for the latest session — the
     # session map may be stale if the user exited and restarted directly via gemini CLI.
+    uuid = None
     if engine == "g":
+        d = _config.get_session_map(engine)
+        uuid = d.get(ai_name)
         latest = _session._find_latest_gemini_uuid(ai_name)
         if latest and latest != uuid:
             uuid = latest
@@ -2448,7 +2463,9 @@ def _do_session_launch(
             # Pin the task-list namespace to ai_name, matching the tmux session
             # script, so the CC task panel survives process restarts.
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
-        command = _bare_engine_command(engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args)
+        command = _bare_engine_command(
+            engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args, resume=resume
+        )
         _exec_with_direnv(target_root, command)
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
@@ -2487,7 +2504,7 @@ def _do_session_launch(
                     cd_prefix + shlex.join([*_direnv, *command]),
                 ],
             )
-        else:
+        elif engine == "g":
             command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
             if uuid:
                 command += ["-r", uuid]
@@ -2521,6 +2538,22 @@ def _do_session_launch(
                         cd_prefix + shlex.join([*_direnv, *command]),
                     ],
                 )
+        else:
+            command = ["pi", "--name", ai_name]
+            os.execvp(
+                "tmux",
+                [
+                    "tmux",
+                    "new-session",
+                    "-s",
+                    session_id,
+                    *_iterm_env_flags,
+                    "--",
+                    _session_shell,
+                    "-c",
+                    cd_prefix + shlex.join([*_direnv, *command]),
+                ],
+            )
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
@@ -2617,7 +2650,7 @@ SESSION_CONTEXT = {
 
 
 def _session_command(engine: str):
-    """Factory for the shared ``ai c`` / ``ai g`` session-launch command."""
+    """Factory for the shared provider session-launch commands."""
 
     def _impl(
         ctx,
@@ -2673,7 +2706,7 @@ def _session_command(engine: str):
 @click.option("-V", "--version", is_flag=True, help="Show version and exit")
 @click.pass_context
 def _cli_group(ctx, version):
-    """Unified AI CLI for Claude and Gemini."""
+    """Unified AI CLI for Claude, Gemini, and Pi."""
     if version:
         click.echo(_pkg_version_string())
         ctx.exit(0)
@@ -2769,6 +2802,14 @@ def cmd_g(
         project,
         is_remote,
         project_prefix,
+    )
+
+
+@_cli_group.command("p", context_settings=SESSION_CONTEXT, help="Launch a Pi session")
+@_session_options
+def cmd_p(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix):
+    _session_command("p")(
+        ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix
     )
 
 

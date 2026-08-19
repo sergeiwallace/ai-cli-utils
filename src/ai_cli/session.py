@@ -221,11 +221,11 @@ def get_latest_gemini_session_id(ai_name: str | None = None) -> str | None:
 def _prefix_from_session_name(session_name: str) -> str:
     """Extract the project prefix from a tmux session name.
 
-    e.g. ``c-ai-cli-2`` → ``ai-cli``, ``c-r-myproj-1`` → ``myproj``.
+    e.g. ``c-ai-cli-2`` → ``ai-cli``, ``p-r-myproj-1`` → ``myproj``.
     Returns empty string if the format is not recognised.
     """
     parts = session_name.split("-")
-    if len(parts) >= 3 and parts[0] in ("c", "g"):
+    if len(parts) >= 3 and parts[0] in ("c", "g", "p"):
         start = 2 if parts[1] == "r" else 1
         end = len(parts) - 1
         if end > start:
@@ -338,7 +338,7 @@ def find_next_index(prefix: str, use_tmux: bool = True) -> int:
     """
     if not use_tmux:
         return _find_next_index_from_worktrees(prefix)
-    match = re.fullmatch(r"([cg])(?:-r)?-(.+)-", prefix)
+    match = re.fullmatch(r"([cgp])(?:-r)?-(.+)-", prefix)
     if not match:
         return 1
     engine_short, project_prefix = match.groups()
@@ -359,7 +359,7 @@ def _find_next_index_from_worktrees(prefix: str) -> int:
     indexes would climb forever, since bare mode has no session-exit hook to
     remove the worktree (the tmux path's EXIT trap does that).
     """
-    ai_prefix = re.sub(r"^[cg](-r)?-", "", prefix)
+    ai_prefix = re.sub(r"^[cgp](-r)?-", "", prefix)
     try:
         repo_root = detect_repo_root()
     except RuntimeError:
@@ -427,7 +427,7 @@ def find_recent_session(prefix: str) -> str:
 
 
 # Matches ai-cli session names: c-session-1, c-r-session-1, g-project-2, etc.
-_AI_SESSION_RE = re.compile(r"^[cg](-r)?-[a-zA-Z0-9]+-\d+$")
+_AI_SESSION_RE = re.compile(r"^[cgp](-r)?-[a-zA-Z0-9]+-\d+$")
 _PROCESS_START_TIME_TOLERANCE_SECONDS = 5
 _BG_SPARE_TERMINATE_TIMEOUT_SECONDS = 2
 
@@ -627,7 +627,7 @@ def resolve_session(prefix: str, name: str) -> str:
     if res.returncode == 0:
         return f"{prefix}{name}"
     if name.isdigit():
-        match = re.fullmatch(r"([cg])(?:-r)?-(.+)-", prefix)
+        match = re.fullmatch(r"([cgp])(?:-r)?-(.+)-", prefix)
         if match:
             engine_short, project_prefix = match.groups()
             expected_prefix = prefix.casefold()
@@ -675,8 +675,8 @@ def build_session_name(
 ) -> tuple[str, str]:
     """Build tmux session name and ai_name.
 
-    Session name format: {c|g}[-r]-{project}-{index}
-      e.g. c-myproject-1, c-r-myproject-1, g-myproject-2
+    Session name format: {c|g|p}[-r]-{project}-{index}
+      e.g. c-myproject-1, c-r-myproject-1, g-myproject-2, p-myproject-3
     ai_name (used for --name, worktrees, session map): {project}-{index}
       e.g. myproject-1, myproject-2
 
@@ -685,7 +685,7 @@ def build_session_name(
     the same format so it remains a stable key for the session map and logs even
     though no tmux session will exist.
     """
-    engine_short = "c" if engine_type == "c" else "g"
+    engine_short = engine_type
     naming_prefix = project_prefix.lower()
     tmux_base = f"{engine_short}{'-r' if is_remote else ''}-{naming_prefix}-"
     ai_base = f"{naming_prefix}-"
@@ -696,8 +696,11 @@ def build_session_name(
         f"c-{project_prefix}-",
         f"g-r-{project_prefix}-",
         f"g-{project_prefix}-",
+        f"p-r-{project_prefix}-",
+        f"p-{project_prefix}-",
         f"claude-{project_prefix}-",
         f"gemini-{project_prefix}-",
+        f"pi-{project_prefix}-",
         f"{project_prefix}-",
     ]
     for p in sorted(prefixes_to_strip, key=len, reverse=True):

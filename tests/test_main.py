@@ -9,6 +9,7 @@ from conftest import make_iterm2_config, run_cli
 from ai_cli.main import (
     _assign_iterm2_color_slot,
     _auto_update_if_stale,
+    _bare_engine_command,
     _cmd_signal_watch_start,
     _cmd_signal_watch_status,
     _cmd_tunnel_start,
@@ -294,6 +295,20 @@ class TestGetEngineScript:
         assert script.count("run_agent gemini") == 4
         assert "exec $SHELL" in script
 
+    def test_given_pi_engine_when_generating_script_then_launches_named_pi_session(self):
+        script = get_engine_script(
+            engine="p",
+            ai_name="myproject-1",
+            session="p-myproject-1",
+            prefix="p-myproject-",
+            project_prefix="myproject",
+        )
+
+        assert 'export PI_TMUX_SESSION="$tmux_session"' in script
+        assert 'run_agent pi --name "$ai_name"' in script
+        assert 'run_agent pi --continue --name "$ai_name"' in script
+        assert '[[ "$engine" == "p" ]] && export CLAUDE_CODE_TASK_LIST_ID' not in script
+
     def _make_script(self, **kwargs):
         defaults = {
             "engine": "c",
@@ -449,6 +464,47 @@ class TestGetEngineScript:
 
 
 # --- Group 8: _log_handoff_event OSError ---
+
+
+def test_given_pi_bare_launch_when_not_resuming_then_starts_named_session():
+    command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [])
+
+    assert command == ["pi", "--name", "myproject-1"]
+
+
+def test_given_pi_bare_launch_when_resuming_then_continues_named_session():
+    command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], resume=True)
+
+    assert command == ["pi", "--continue", "--name", "myproject-1"]
+
+
+def test_given_pi_missing_from_path_when_launching_then_reports_pi(capsys):
+    from ai_cli.main import _do_session_launch
+
+    with (
+        patch("ai_cli.main.shutil.which", return_value=None),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _do_session_launch(
+            engine="p",
+            name="1",
+            resume=False,
+            once=False,
+            bare=True,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            remote=False,
+            project="",
+            is_remote=False,
+            project_prefix_override="myproject",
+            extra_args=[],
+            config={},
+        )
+
+    assert exc_info.value.code == 1
+    assert "pi executable not found" in capsys.readouterr().err
 
 
 class TestLogHandoffEvent:
