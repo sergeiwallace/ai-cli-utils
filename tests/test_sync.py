@@ -18,9 +18,12 @@ from ai_cli.sync import (
     _release_pid_file,
     _remote_newer_files,
     _replicate_to_worktrees,
+    _sync_projects_root,
     _wait_for_dream_completion,
     _write_jsonl_translated,
+    apply_history_file,
     apply_pull_files,
+    apply_task_files,
     clean_worktree_cc_dirs,
     denormalize_project_name,
     detect_jsonl_divergence,
@@ -40,8 +43,11 @@ from ai_cli.sync import (
     repair_worktree_cc_dir,
     replicate_history_to_worktrees,
     retranslate_project_jsonls,
+    rewrite_transcript_for_local_projects,
     should_sync_file,
+    stage_history_file,
     stage_project_files,
+    stage_task_files,
     sync_pull,
     sync_push,
     sync_watch,
@@ -448,6 +454,61 @@ def test_translate_cwd_paths_replaces_foreign_home():
     result = translate_cwd_paths(content, _FOREIGN_HOME)
     assert _FOREIGN_HOME.encode() not in result
     assert Path(json.loads(result)["cwd"]).is_relative_to(Path.home())
+
+
+def test_given_foreign_transcript_when_rewritten_then_only_cwd_fields_use_local_projects_root(tmp_path):
+    destination_root = tmp_path / "projects"
+    content = (
+        b'{"cwd":"/home/remote/projects/myproject/.worktrees/session-1","originalCwd":"/home/remote/projects/myproject"}\n'
+        b'{"text":"keep /home/remote/projects/myproject exactly as recorded"}\n'
+    )
+
+    rewritten = rewrite_transcript_for_local_projects(content, destination_root)
+    records = [json.loads(line) for line in rewritten.splitlines()]
+
+    assert records[0]["cwd"] == f"{destination_root}/myproject/.worktrees/session-1"
+    assert records[0]["originalCwd"] == f"{destination_root}/myproject"
+    assert records[1]["text"] == "keep /home/remote/projects/myproject exactly as recorded"
+
+
+def test_given_task_namespace_when_staged_and_applied_then_task_json_is_restored(tmp_path):
+    tasks_dir = tmp_path / "source" / "tasks"
+    namespace = tasks_dir / "myproject-1"
+    namespace.mkdir(parents=True)
+    (namespace / "1.json").write_text('{"id":"1","subject":"Implement sync"}')
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+
+    staged = stage_task_files(staging_dir, tasks_dir, verbose=False, dry_run=False)
+    destination_tasks = tmp_path / "destination" / "tasks"
+    applied = apply_task_files(staging_dir, destination_tasks, verbose=False, dry_run=False)
+
+    assert len(staged) == 1
+    assert applied == 1
+    assert (destination_tasks / "myproject-1" / "1.json").read_text() == '{"id":"1","subject":"Implement sync"}'
+
+
+def test_given_history_when_staged_and_applied_then_resume_index_is_restored(tmp_path):
+    history = tmp_path / "source" / "history.jsonl"
+    history.parent.mkdir()
+    history.write_text('{"sessionId":"abc"}\n')
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    destination = tmp_path / "destination" / "history.jsonl"
+
+    assert len(stage_history_file(staging_dir, history, dry_run=False)) == 1
+    assert apply_history_file(staging_dir, destination, dry_run=False) == 1
+    assert destination.read_text() == history.read_text()
+
+
+def test_given_missing_projects_root_when_resolving_sync_destination_then_raises_clear_error(tmp_path):
+    missing = tmp_path / "missing-projects"
+
+    with (
+        patch("ai_cli.config._get_projects_dir", return_value=missing),
+        pytest.raises(ValueError, match=r"projects root.*configure \[project\] projects_dir"),
+    ):
+        _sync_projects_root()
 
 
 def test_apply_pull_files_translates_cwd_on_new_file(tmp_path):
