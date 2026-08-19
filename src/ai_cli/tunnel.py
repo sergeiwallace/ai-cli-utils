@@ -14,7 +14,7 @@ from pathlib import Path
 
 import psutil
 
-from .config import _pid_alive, get_xdg_data_home, get_xdg_state_home
+from .config import _pid_alive, get_remote_machine, get_xdg_data_home, get_xdg_state_home
 from .transport import _is_vpn_active
 
 
@@ -42,7 +42,7 @@ def _cmd_tunnel_start(
         )
         sys.exit(1)
 
-    remote_cfg = config.get("remote", {})
+    remote_cfg = get_remote_machine(config)
     host = remote_cfg.get("host", "")
     user = remote_cfg.get("user", "ubuntu")
     if not host:

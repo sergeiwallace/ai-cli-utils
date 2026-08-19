@@ -721,7 +721,9 @@ def cmd_ps(
     """
     out = stdout_fn or print
 
-    remote_cfg = config.get("remote", {})
+    from .config import get_remote_machine
+
+    remote_cfg = get_remote_machine(config)
     remote_host = remote_cfg.get("host", "")
     remote_user = remote_cfg.get("user", "")
     # Use vpn_host (direct IP) when VPN is active so Tailscale-blocked connections

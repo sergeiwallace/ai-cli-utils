@@ -1757,7 +1757,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict) -> None:
 
 def _do_reconnect(requested: "list[int] | None", config: dict) -> None:
     # List remote tmux sessions and print reconnect commands.
-    remote_cfg = config.get("remote", {})
+    remote_cfg = _config.get_remote_machine(config)
     host = remote_cfg.get("host", "")
     user = remote_cfg.get("user", "ubuntu")
     if not host:
@@ -1959,7 +1959,7 @@ def _do_color(color_arg: str) -> None:
 
 def _do_handoff_post(remote: bool, for_machine: str, post_args: "list[str]") -> None:
     if remote:
-        remote_cfg = _config.load_config().get("remote", {})
+        remote_cfg = _config.get_remote_machine(_config.load_config())
         remote_host = remote_cfg.get("host", "")
         remote_user = remote_cfg.get("user", "ubuntu")
         if not remote_host:
@@ -2001,6 +2001,7 @@ def _do_session_launch(
     project_prefix_override: str,
     extra_args: "list[str]",
     config: dict,
+    remote_machine: str = "",
 ) -> None:
     # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
     # only the client library, so tmux can never be auto-installed by pip/uv and
@@ -2046,6 +2047,14 @@ def _do_session_launch(
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
     is_remote = _session._resolve_is_remote(is_remote)
+
+    remote_cfg: dict | None = None
+    if remote:
+        try:
+            remote_cfg = _config.get_remote_machine(config, remote_machine)
+        except _config.RemoteMachineError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     # Discovery is useful when creating an unqualified session, but a named
     # session or explicit project already identifies the launch target.  Do not
@@ -2106,7 +2115,8 @@ def _do_session_launch(
         extra_args = extra_args[1:]
 
     if remote:
-        remote_cfg = config.get("remote", {})
+        if remote_cfg is None:
+            raise RuntimeError("remote machine was not resolved")
         host = remote_cfg.get("host", "")
         if not host:
             print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
@@ -2196,7 +2206,7 @@ def _do_session_launch(
     # before creating the worktree so git commands work correctly.
     if is_remote:
         aliases = _config.get_project_aliases()
-        raw_project = project or config.get("remote", {}).get("project") or _config._get_main_project_name()
+        raw_project = project or _config.get_remote_machine(config).get("project") or _config._get_main_project_name()
         if raw_project:
             project_name = aliases.get(raw_project, raw_project)
             project_dir = _config._find_project_dir(project_name)
@@ -2619,10 +2629,13 @@ def _session_command(engine: str):
         sandbox,
         no_worktree,
         remote,
+        remote_machine,
         project,
         is_remote,
         project_prefix,
     ):
+        if remote_machine and not remote:
+            raise click.UsageError("--remote-machine requires -R/--remote")
         # Startup hooks happen only when launching a new session.
         config = _config.load_config()
         trigger_background_update()
@@ -2645,6 +2658,7 @@ def _session_command(engine: str):
             project_prefix_override=project_prefix,
             extra_args=list(ctx.args),
             config=config,
+            remote_machine=remote_machine,
         )
 
     _impl.__name__ = f"cmd_session_{engine}"
@@ -2678,9 +2692,8 @@ def _session_options(func):
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
-    func = click.option("-R", "--remote", is_flag=True, help="Run session on remote server (configured in [remote])")(
-        func
-    )
+    func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
+    func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
         "-p",
         "--project",
@@ -2693,17 +2706,69 @@ def _session_options(func):
 
 @_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
 @_session_options
-def cmd_c(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix):
+def cmd_c(
+    ctx,
+    name,
+    resume,
+    once,
+    bare,
+    notify,
+    sandbox,
+    no_worktree,
+    remote,
+    remote_machine,
+    project,
+    is_remote,
+    project_prefix,
+):
     _session_command("c")(
-        ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix
+        ctx,
+        name,
+        resume,
+        once,
+        bare,
+        notify,
+        sandbox,
+        no_worktree,
+        remote,
+        remote_machine,
+        project,
+        is_remote,
+        project_prefix,
     )
 
 
 @_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
 @_session_options
-def cmd_g(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix):
+def cmd_g(
+    ctx,
+    name,
+    resume,
+    once,
+    bare,
+    notify,
+    sandbox,
+    no_worktree,
+    remote,
+    remote_machine,
+    project,
+    is_remote,
+    project_prefix,
+):
     _session_command("g")(
-        ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix
+        ctx,
+        name,
+        resume,
+        once,
+        bare,
+        notify,
+        sandbox,
+        no_worktree,
+        remote,
+        remote_machine,
+        project,
+        is_remote,
+        project_prefix,
     )
 
 

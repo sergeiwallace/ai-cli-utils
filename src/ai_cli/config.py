@@ -185,7 +185,13 @@ stale_session_timeout = 15
 # use_tmux = true
 
 [remote]
-## Remote server for AI sessions (ai c --remote)
+## Default alias for remote AI sessions. Each machine lives under
+## [remote.machines.<alias>]. `ai c -R` uses this machine; pass
+## `ai c -R -m <alias>` to choose another configured machine for one launch.
+# default = "server"
+
+#[remote.machines.server]
+## Remote server for AI sessions
 # host = "1.2.3.4"
 # user = "ubuntu"
 # port = 22
@@ -196,7 +202,7 @@ stale_session_timeout = 15
 # vpn_poll_interval = 3
 
 [sync]
-## Remote host for cc sync (SSH user@host format). Derived from [remote] host/user if not set.
+## Remote host for cc sync (SSH user@host format). Derived from the default remote machine if not set.
 # remote_host = "user@host"
 # staging_dir = "~/.claude-sync-staging"
 # remote_url = "ssh://user@host/home/user/.claude-sync-staging.git"
@@ -290,6 +296,44 @@ def load_config():
             pass
 
     return cfg
+
+
+class RemoteMachineError(ValueError):
+    """Raised when a configured remote-machine alias cannot be resolved."""
+
+
+def get_remote_machine(config: dict, alias: str = "") -> dict:
+    """Return a named remote machine, or the configured default.
+
+    Legacy flat ``[remote]`` configuration remains a single implicit default
+    machine. New configurations use ``[remote.machines.<alias>]`` and select a
+    default with ``[remote] default``.
+    """
+    remote = config.get("remote", {})
+    if not isinstance(remote, dict):
+        raise RemoteMachineError("[remote] must be a table")
+
+    machines = remote.get("machines")
+    if machines is None:
+        if alias:
+            raise RemoteMachineError(
+                f"Remote machine '{alias}' is not configured. Configured aliases: none (legacy [remote] is the default)"
+            )
+        return remote
+    if not isinstance(machines, dict):
+        raise RemoteMachineError("[remote.machines] must be a table")
+
+    aliases = sorted(name for name, machine in machines.items() if isinstance(machine, dict))
+    available = ", ".join(aliases) or "none"
+    selected = alias or remote.get("default", "")
+    if not selected:
+        if len(aliases) == 1:
+            selected = aliases[0]
+        else:
+            raise RemoteMachineError(f"No default remote machine is configured. Configured aliases: {available}")
+    if not isinstance(selected, str) or selected not in machines or not isinstance(machines[selected], dict):
+        raise RemoteMachineError(f"Remote machine '{selected}' is not configured. Configured aliases: {available}")
+    return machines[selected]
 
 
 # --- Prefix registry ---

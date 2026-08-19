@@ -22,7 +22,9 @@ def run_vpn_watch(config: dict) -> None:
 
 
 async def _vpn_watch_loop(config: dict) -> None:
-    poll_interval = int(config.get("remote", {}).get("vpn_poll_interval", 3))
+    from .config import get_remote_machine
+
+    poll_interval = int(get_remote_machine(config).get("vpn_poll_interval", 3))
     state_dir = get_xdg_state_home()
     state_dir.mkdir(parents=True, exist_ok=True)
     log_file = state_dir / "vpn-transitions.log"

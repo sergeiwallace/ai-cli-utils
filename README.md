@@ -310,9 +310,12 @@ Configuration lives in `~/.config/ai-cli/config.toml`. A default config is creat
 main_project = "myproject"     # default project directory under ~/projects/
 
 [remote]
-host = "1.2.3.4"              # remote dev server
+default = "server"             # used by `ai c -R`
+
+[remote.machines.server]
+host = "1.2.3.4"               # remote dev server
 user = "ubuntu"
-transport = "mosh"             # "mosh" (default) or "ssh"
+transport = "mosh"              # "mosh" (default) or "ssh"
 # port = 22
 # identity_file = "~/.ssh/id_ed25519"
 
@@ -339,6 +342,11 @@ notify_on_exit = true          # desktop notifications on task completion
 [update]
 # extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
 ```text
+
+To add another machine, give it a short alias and select it for one launch with
+`ai c -R -m alias` (or `ai c --remote --remote-machine alias`). `-R` alone uses
+`[remote] default`. Existing flat `[remote]` configurations remain supported as
+one implicit default machine.
 
 ### iTerm2 Config
 
