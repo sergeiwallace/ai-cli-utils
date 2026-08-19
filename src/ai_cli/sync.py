@@ -8,7 +8,9 @@ the mechanism that moves this data between machines.
 
 What sync does NOT touch:
   - Git-tracked files (config, hooks, statusline, handoff queue) — use git.
-  - ~/.claude/settings.json or other machine-specific CC config.
+  - ~/.claude/shell-snapshots/*.sh, which are ephemeral per-machine environment dumps.
+  - ~/.claude.json and ~/.claude/settings.json, which contain machine-specific
+    and auth-adjacent state.
 
 Architecture:
   Mac: ~/.claude-sync-staging/  (working git repo, remote = ssh://{user}@{host}/{home}/.claude-sync-staging.git)
@@ -622,6 +624,8 @@ def stage_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
     return staged_files
 
 
+# History sync deliberately excludes shell snapshots and ~/.claude.json/settings.json:
+# they contain per-machine environment dumps and machine-specific, auth-adjacent state.
 def stage_history_file(staging_dir: Path, history_path: Path, dry_run: bool) -> list[tuple[Path, Path]]:
     """Stage the CC resume-history index when it exists."""
     if not history_path.is_file():
@@ -1132,14 +1136,57 @@ def apply_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
     return applied
 
 
+def _history_line_identity(line: str) -> tuple[str, str]:
+    """Return the de-duplication key for one history JSONL line."""
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        return ("line", line)
+    if isinstance(entry, dict) and "sessionId" in entry and "timestamp" in entry:
+        return ("event", json.dumps((entry["sessionId"], entry["timestamp"]), sort_keys=True))
+    return ("line", line)
+
+
+def _history_line_timestamp(line: str) -> float | None:
+    """Return a sortable timestamp for one history line when available."""
+    try:
+        entry = json.loads(line)
+        timestamp = entry.get("timestamp") if isinstance(entry, dict) else None
+        if isinstance(timestamp, bool) or timestamp is None:
+            return None
+        return float(timestamp)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _merge_history_lines(target_content: str, staged_content: str) -> str:
+    """Union independent history entries and order timestamped entries chronologically."""
+    seen: set[tuple[str, str]] = set()
+    merged: list[tuple[str, float | None, int]] = []
+    for line in [*target_content.splitlines(), *staged_content.splitlines()]:
+        identity = _history_line_identity(line)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append((line, _history_line_timestamp(line), len(merged)))
+
+    ordered = sorted(merged, key=lambda item: (item[1] is None, item[1] or 0, item[2]))
+    return "".join(f"{line}\n" for line, _, _ in ordered)
+
+
+# This history-only path also excludes shell snapshots and ~/.claude.json/settings.json.
 def apply_history_file(staging_dir: Path, history_path: Path, dry_run: bool) -> int:
-    """Restore the staged CC resume-history index when it changed."""
+    """Union the staged and local CC resume-history indexes without data loss."""
     src = staging_dir / "history.jsonl"
-    if not src.is_file() or (history_path.exists() and file_hash(src) == file_hash(history_path)):
+    if not src.is_file():
+        return 0
+    target_content = history_path.read_text() if history_path.is_file() else ""
+    merged_content = _merge_history_lines(target_content, src.read_text())
+    if merged_content == target_content:
         return 0
     if not dry_run:
         history_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, history_path)
+        history_path.write_text(merged_content)
     return 1
 
 
