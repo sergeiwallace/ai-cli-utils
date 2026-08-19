@@ -28,7 +28,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
 | **Remote sessions** | `ai c -R` — run sessions on a remote server via mosh or SSH; Tailscale auto-started if mosh fails (macOS) |
-| **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory and conversations between machines |
+| **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory, conversations, and task lists between machines |
 | **Handoff queue** | `ai handoff post/check/claim/complete` — delegate tasks between sessions |
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
 | **Stale session cleanup** | Automatic detection and cleanup of orphaned sessions |
@@ -204,6 +204,10 @@ ai sync watch [-v]                  # Watch for sync events via NATS
 ```text
 
 Flags: `-m`/`--memories-only`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force`
+
+Sync includes transcripts, memory, history, and task JSON files under `~/.claude/tasks/<session-name>/`.
+On pull, transcript `cwd` and `originalCwd` fields are rewritten to the receiving machine's configured
+`[project] projects_dir` (default `~/projects`) so sessions remain resumable across machines.
 
 ### Gemini with auth fallback
 

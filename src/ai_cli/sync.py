@@ -2,9 +2,9 @@
 ai sync push/pull — bidirectional CC session data sync via git staging repo.
 
 Scope: CC session data only — conversation JSONL files, memory files
-(MEMORY.md + memory/*.md), and history.jsonl. All files live in
-~/.claude/projects/ which is not a git repo. Sync is the only mechanism
-that moves this data between machines.
+(MEMORY.md + memory/*.md), history.jsonl, and task JSON files under
+~/.claude/tasks/<session-name>/. The session files are not git repos; sync is
+the mechanism that moves this data between machines.
 
 What sync does NOT touch:
   - Git-tracked files (config, hooks, statusline, handoff queue) — use git.
@@ -30,6 +30,8 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from .cc_migrate import _rewrite_line
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -178,6 +180,29 @@ def load_sync_config() -> SyncConfig:
 
 def _cc_projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
+
+
+def _cc_tasks_dir() -> Path:
+    """Return Claude Code's task-namespace directory."""
+    return Path.home() / ".claude" / "tasks"
+
+
+def _sync_projects_root() -> Path:
+    """Return the configured local projects root, or fail before rewriting paths.
+
+    A transcript can only be resumed when its rewritten paths point at this
+    machine's real project root.  Requiring the directory to exist avoids
+    silently replacing a valid foreign path with a guessed local one.
+    """
+    from .config import _get_projects_dir
+
+    projects_dir = _get_projects_dir().expanduser()
+    if not projects_dir.is_dir():
+        raise ValueError(
+            f"Cannot determine this machine's projects root: {projects_dir} does not exist. "
+            "Create it or configure [project] projects_dir in ~/.config/ai-cli-utils/config.toml."
+        )
+    return projects_dir.resolve()
 
 
 def _dream_state_path() -> Path:
@@ -346,6 +371,47 @@ def translate_cwd_paths(content: bytes, foreign_home: str) -> bytes:
     foreign_json = json.dumps(foreign_home)[1:-1].encode()
     local_json = json.dumps(local_home)[1:-1].encode()
     return content.replace(foreign_json, local_json).replace(foreign_home.encode(), local_home.encode())
+
+
+def _projects_root_from_path(path: str) -> str | None:
+    """Return the path through ``projects`` for an absolute project path."""
+    canonical = _canonical_path(path)
+    marker = "/projects/"
+    index = canonical.find(marker)
+    if not _is_absolute_filesystem_path(path) or index == -1:
+        return None
+    separator = "\\" if "\\" in path and "/" not in path else "/"
+    return path[:index] + separator + "projects"
+
+
+def rewrite_transcript_for_local_projects(content: bytes, local_projects_root: Path) -> bytes:
+    """Rewrite transcript cwd fields to the configured local projects root.
+
+    This deliberately delegates each record to ``cc_migrate._rewrite_line``:
+    it changes only top-level ``cwd`` and ``originalCwd`` fields and preserves
+    malformed records and conversation content byte-for-byte.
+    """
+    destination = str(local_projects_root)
+    out: list[str] = []
+    changed = False
+    for raw in content.decode("utf-8").splitlines(keepends=True):
+        rewritten = raw
+        try:
+            record = json.loads(raw.strip())
+        except (json.JSONDecodeError, ValueError):
+            record = None
+        if isinstance(record, dict):
+            roots = {
+                root
+                for key in ("cwd", "originalCwd")
+                if isinstance(record.get(key), str)
+                if (root := _projects_root_from_path(record[key])) and root != destination
+            }
+            for source in roots:
+                rewritten = _rewrite_line(rewritten, source, destination)
+        changed |= rewritten != raw
+        out.append(rewritten)
+    return "".join(out).encode("utf-8") if changed else content
 
 
 def detect_jsonl_divergence(local_path: Path, staging_path: Path) -> str:
@@ -534,6 +600,40 @@ def stage_project_files(
     }
 
 
+def stage_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_run: bool) -> list[tuple[Path, Path]]:
+    """Stage Claude Code task JSON files under their stable session namespaces."""
+    staged_files: list[tuple[Path, Path]] = []
+    if not cc_tasks_dir.is_dir():
+        return staged_files
+
+    for namespace in sorted(cc_tasks_dir.iterdir()):
+        if not namespace.is_dir() or namespace.name.startswith("."):
+            continue
+        for src in sorted(namespace.glob("*.json")):
+            dst = staging_dir / "tasks" / namespace.name / src.name
+            if not dry_run:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if dst.exists() and file_hash(src) == file_hash(dst):
+                    continue
+                shutil.copy2(src, dst)
+            staged_files.append((src, dst))
+            if verbose:
+                print(f"  stage task: {namespace.name}/{src.name}")
+    return staged_files
+
+
+def stage_history_file(staging_dir: Path, history_path: Path, dry_run: bool) -> list[tuple[Path, Path]]:
+    """Stage the CC resume-history index when it exists."""
+    if not history_path.is_file():
+        return []
+    dst = staging_dir / "history.jsonl"
+    if not dry_run:
+        if dst.exists() and file_hash(history_path) == file_hash(dst):
+            return []
+        shutil.copy2(history_path, dst)
+    return [(history_path, dst)]
+
+
 # ---------------------------------------------------------------------------
 # Git commit
 # ---------------------------------------------------------------------------
@@ -578,15 +678,11 @@ def git_commit_staged(
 # ---------------------------------------------------------------------------
 
 
-def _write_jsonl_translated(src: Path, dst: Path) -> None:
-    """Write src JSONL to dst, translating any foreign home paths to the local home."""
-    foreign_home = _detect_foreign_home(src)
-    if foreign_home:
-        content = src.read_bytes()
-        content = translate_cwd_paths(content, foreign_home)
-        dst.write_bytes(content)
-    else:
-        shutil.copy2(src, dst)
+def _write_jsonl_translated(src: Path, dst: Path, local_projects_root: Path | None = None) -> None:
+    """Write a transcript with cwd fields rooted at this machine's projects directory."""
+    projects_root = local_projects_root or Path.home() / "projects"
+    content = rewrite_transcript_for_local_projects(src.read_bytes(), projects_root)
+    dst.write_bytes(content)
 
 
 def _detect_foreign_home_in_history(history_path: Path) -> str | None:
@@ -796,7 +892,7 @@ def purge_phantom_history_entries(verbose: bool = False) -> int:
     return removed
 
 
-def retranslate_project_jsonls(verbose: bool = False) -> int:
+def retranslate_project_jsonls(verbose: bool = False, local_projects_root: Path | None = None) -> int:
     """Translate foreign home paths in-place in all conversation JSONL files.
 
     Fixes files that were synced before path translation was implemented,
@@ -810,16 +906,20 @@ def retranslate_project_jsonls(verbose: bool = False) -> int:
     if not cc_projects_dir.exists():
         return 0
 
-    local_home = str(Path.home())
+    local_projects_root = local_projects_root or Path.home() / "projects"
     count = 0
     for jsonl_path in cc_projects_dir.rglob("*.jsonl"):
         if not jsonl_path.is_file():
             continue
-        foreign_home = _detect_foreign_home(jsonl_path)
-        if not foreign_home:
-            continue
         content = jsonl_path.read_bytes()
-        updated = content.replace(foreign_home.encode(), local_home.encode())
+        updated = rewrite_transcript_for_local_projects(content, local_projects_root)
+        # Preserve support for older transcript records that only stored a
+        # ``project`` field. New cwd/originalCwd rewrites above use the safer
+        # line-level migration helper.
+        if updated == content:
+            foreign_home = _detect_foreign_home(jsonl_path)
+            if foreign_home:
+                updated = translate_cwd_paths(content, foreign_home)
         if updated != content:
             jsonl_path.write_bytes(updated)
             count += 1
@@ -836,6 +936,7 @@ def apply_pull_files(
     verbose: bool,
     dry_run: bool,
     prefer_remote: bool = False,
+    local_projects_root: Path | None = None,
 ) -> dict:
     """Apply files from staging_dir to cc_projects_dir.
 
@@ -853,9 +954,14 @@ def apply_pull_files(
     staging_to_commit: list[Path] = []
     # Bare project names (staging dir names) that had at least one file applied.
     updated_bare_names: set[str] = set()
+    local_projects_root = local_projects_root or Path.home() / "projects"
 
     for staging_project_dir in sorted(staging_dir.iterdir()):
-        if not staging_project_dir.is_dir() or staging_project_dir.name.startswith("."):
+        if (
+            not staging_project_dir.is_dir()
+            or staging_project_dir.name.startswith(".")
+            or staging_project_dir.name == "tasks"
+        ):
             continue
 
         bare_name = staging_project_dir.name
@@ -889,7 +995,7 @@ def apply_pull_files(
                 if divergence == "fast_forward_remote":
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        _write_jsonl_translated(src, dst)
+                        _write_jsonl_translated(src, dst, local_projects_root)
                     applied_count += 1
                     updated_bare_names.add(bare_name)
                     if verbose:
@@ -901,7 +1007,7 @@ def apply_pull_files(
                     if prefer_remote:
                         if not dry_run:
                             dst.parent.mkdir(parents=True, exist_ok=True)
-                            _write_jsonl_translated(src, dst)
+                            _write_jsonl_translated(src, dst, local_projects_root)
                         applied_count += 1
                         updated_bare_names.add(bare_name)
                         if verbose:
@@ -1002,6 +1108,39 @@ def apply_pull_files(
         "staging_to_commit": staging_to_commit,
         "updated_bare_names": updated_bare_names,
     }
+
+
+def apply_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_run: bool) -> int:
+    """Apply staged task JSON files into their matching CC task namespaces."""
+    staging_tasks_dir = staging_dir / "tasks"
+    applied = 0
+    if not staging_tasks_dir.is_dir():
+        return applied
+    for namespace in sorted(staging_tasks_dir.iterdir()):
+        if not namespace.is_dir() or namespace.name.startswith("."):
+            continue
+        for src in sorted(namespace.glob("*.json")):
+            dst = cc_tasks_dir / namespace.name / src.name
+            if dst.exists() and file_hash(src) == file_hash(dst):
+                continue
+            if not dry_run:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            applied += 1
+            if verbose:
+                print(f"  apply task: {namespace.name}/{src.name}")
+    return applied
+
+
+def apply_history_file(staging_dir: Path, history_path: Path, dry_run: bool) -> int:
+    """Restore the staged CC resume-history index when it changed."""
+    src = staging_dir / "history.jsonl"
+    if not src.is_file() or (history_path.exists() and file_hash(src) == file_hash(history_path)):
+        return 0
+    if not dry_run:
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, history_path)
+    return 1
 
 
 def _find_project_worktrees(project_path: Path) -> list[Path]:
@@ -1867,12 +2006,26 @@ def sync_push(flags: list[str]) -> int:
         verbose=verbose,
         dry_run=dry_run,
     )
+    task_files = (
+        [] if memories_only else stage_task_files(cfg.staging_dir, _cc_tasks_dir(), verbose=verbose, dry_run=dry_run)
+    )
+    history_files = (
+        []
+        if memories_only
+        else stage_history_file(cfg.staging_dir, Path.home() / ".claude" / "history.jsonl", dry_run=dry_run)
+    )
 
     if dry_run:
         staged = result["staged_files"]
         project_names = result["project_names"]
-        print(f"Would sync {len(staged)} files across {len(project_names)} projects:")
+        print(
+            f"Would sync {len(staged) + len(task_files) + len(history_files)} files across {len(project_names)} projects:"
+        )
         for src, _dst in staged:
+            print(f"  {src}")
+        for src, _dst in task_files:
+            print(f"  {src}")
+        for src, _dst in history_files:
             print(f"  {src}")
         return 0
 
@@ -1894,7 +2047,7 @@ def sync_push(flags: list[str]) -> int:
         project_names=result["project_names"],
         memory_count=result["memory_count"],
         jsonl_count=result["jsonl_count"],
-        total_count=len(result["staged_files"]),
+        total_count=len(result["staged_files"]) + len(task_files) + len(history_files),
     )
 
     if not committed:
@@ -1918,7 +2071,8 @@ def sync_push(flags: list[str]) -> int:
 
     if verbose:
         print(
-            f"Pushed {len(result['staged_files'])} files ({len(result['project_names'])} projects) to {cfg.remote_host}"
+            f"Pushed {len(result['staged_files']) + len(task_files) + len(history_files)} files "
+            f"({len(result['project_names'])} projects) to {cfg.remote_host}"
         )
     return 0
 
@@ -1935,6 +2089,15 @@ def sync_pull(flags: list[str]) -> int:
     except Exception as e:
         print(f"Error loading sync config: {e}", file=sys.stderr)
         return 1
+
+    if not memories_only:
+        try:
+            local_projects_root = _sync_projects_root()
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+    else:
+        local_projects_root = Path.home() / "projects"
 
     if not force and is_cc_active_locally():
         print(
@@ -1987,14 +2150,20 @@ def sync_pull(flags: list[str]) -> int:
         verbose=verbose,
         dry_run=dry_run,
         prefer_remote=prefer_remote,
+        local_projects_root=local_projects_root,
     )
+    if not memories_only:
+        result["applied_count"] += apply_task_files(cfg.staging_dir, _cc_tasks_dir(), verbose=verbose, dry_run=dry_run)
+        result["applied_count"] += apply_history_file(
+            cfg.staging_dir, Path.home() / ".claude" / "history.jsonl", dry_run=dry_run
+        )
 
     if verbose and not dry_run:
         print(f"Applied {result['applied_count']} files to {cc_projects_dir}")
 
     if not dry_run and not memories_only:
         translate_history_jsonl(verbose=verbose)
-        retranslate_project_jsonls(verbose=verbose)
+        retranslate_project_jsonls(verbose=verbose, local_projects_root=local_projects_root)
         purge_phantom_history_entries(verbose=verbose)
     if not dry_run:
         # Commit and push any staging files that were modified during apply:
