@@ -491,17 +491,73 @@ def test_given_task_namespace_when_staged_and_applied_then_task_json_is_restored
     assert (destination_tasks / "myproject-1" / "1.json").read_text() == '{"id":"1","subject":"Implement sync"}'
 
 
-def test_given_history_when_staged_and_applied_then_resume_index_is_restored(tmp_path):
+def test_given_divergent_history_files_when_applied_then_unions_entries(tmp_path):
     history = tmp_path / "source" / "history.jsonl"
     history.parent.mkdir()
-    history.write_text('{"sessionId":"abc"}\n')
+    history.write_text('{"sessionId":"remote","timestamp":2}\n')
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir()
     destination = tmp_path / "destination" / "history.jsonl"
+    destination.parent.mkdir()
+    destination.write_text('{"sessionId":"local","timestamp":1}\n')
 
     assert len(stage_history_file(staging_dir, history, dry_run=False)) == 1
     assert apply_history_file(staging_dir, destination, dry_run=False) == 1
-    assert destination.read_text() == history.read_text()
+    assert destination.read_text().splitlines() == [
+        '{"sessionId":"local","timestamp":1}',
+        '{"sessionId":"remote","timestamp":2}',
+    ]
+
+
+def test_given_missing_history_target_when_applied_then_creates_resume_index(tmp_path):
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    (staging_dir / "history.jsonl").write_text('{"sessionId":"remote","timestamp":2}\n')
+    destination = tmp_path / "destination" / "history.jsonl"
+
+    assert apply_history_file(staging_dir, destination, dry_run=False) == 1
+    assert destination.read_text() == '{"sessionId":"remote","timestamp":2}\n'
+
+
+def test_given_history_changes_when_dry_run_then_does_not_write(tmp_path):
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    (staging_dir / "history.jsonl").write_text('{"sessionId":"remote","timestamp":2}\n')
+    destination = tmp_path / "destination" / "history.jsonl"
+    destination.parent.mkdir()
+    destination.write_text('{"sessionId":"local","timestamp":1}\n')
+
+    assert apply_history_file(staging_dir, destination, dry_run=True) == 1
+    assert destination.read_text() == '{"sessionId":"local","timestamp":1}\n'
+
+
+def test_given_identical_history_files_when_applied_then_noops(tmp_path):
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    content = '{"sessionId":"shared","timestamp":1}\n'
+    (staging_dir / "history.jsonl").write_text(content)
+    destination = tmp_path / "destination" / "history.jsonl"
+    destination.parent.mkdir()
+    destination.write_text(content)
+
+    assert apply_history_file(staging_dir, destination, dry_run=False) == 0
+    assert destination.read_text() == content
+
+
+def test_given_malformed_history_line_when_applied_then_preserves_it(tmp_path):
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    (staging_dir / "history.jsonl").write_text('not-json\n{"sessionId":"remote","timestamp":2}\n')
+    destination = tmp_path / "destination" / "history.jsonl"
+    destination.parent.mkdir()
+    destination.write_text('{"sessionId":"local","timestamp":1}\n')
+
+    assert apply_history_file(staging_dir, destination, dry_run=False) == 1
+    assert destination.read_text().splitlines() == [
+        '{"sessionId":"local","timestamp":1}',
+        '{"sessionId":"remote","timestamp":2}',
+        "not-json",
+    ]
 
 
 def test_given_missing_projects_root_when_resolving_sync_destination_then_raises_clear_error(tmp_path):
