@@ -7,23 +7,23 @@
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![codecov](https://codecov.io/gh/sergeiwallace/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/sergeiwallace/ai-cli-utils)
 
-Unified AI session manager and automation toolkit for Claude Code and Gemini CLI.
+Unified AI session manager and automation toolkit for Claude Code, Gemini CLI, pi, and Codex.
 
 <video src="demo/demo-20260420-053045-1cdf560.mp4" autoplay loop muted playsinline width="100%"></video>
 
-*Four iTerm2 panes: launching Claude Code (`ai c 1`), Gemini CLI (`ai g 1`), and a remote dev server session (`ai c -R 1`), then browsing active sessions with `ai ls`, checking token quota with `ai quota status`, and running a Gemini query with automatic auth fallback.*
+*Four iTerm2 panes: launching Claude Code (`ai c 1`), Gemini CLI (`ai g 1`), pi (`ai p 1`), and Codex (`ai cx 1`), then browsing active sessions with `ai ls`, checking token quota with `ai quota status`, and running a Gemini query with automatic auth fallback.*
 
 Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, resilient Gemini API access with automatic auth fallback, and persistent SSH tunnels via autossh. Every command and subcommand supports `--help` for inline usage reference.
 
 ## What it does
 
-`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Gemini CLI](https://github.com/google-gemini/gemini-cli) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine memory sync, and session lifecycle management. It also provides `ai gemini` — a Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) that automatically retries on capacity errors, so your research prompts keep working even when one auth method is exhausted. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
+`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and [Codex](https://developers.openai.com/codex/cli/) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine memory sync, and session lifecycle management. It also provides `ai gemini` — a Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) that automatically retries on capacity errors, so your research prompts keep working even when one auth method is exhausted. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Session management** | `ai c 1`, `ai c 2` — numbered tmux sessions with auto-resume on disconnect |
+| **Session management** | `ai c 1`, `ai g 1`, `ai p 1`, `ai cx 1` — named tmux sessions with auto-resume on disconnect |
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
@@ -129,6 +129,10 @@ ai c 2
 # Launch Gemini CLI session
 ai g research
 
+# Launch pi or Codex session
+ai p planning
+ai cx review
+
 # Resume a disconnected session
 ai c -r 1
 
@@ -146,6 +150,8 @@ ai sync push
 ```bash
 ai c <name>            # Start/resume Claude Code session
 ai g <name>            # Start/resume Gemini CLI session
+ai p <name>            # Start/resume pi session
+ai cx <name>           # Start/resume Codex session
 ai c -r/--resume       # Resume existing session explicitly
 ai c -b/--bare         # Run bare (no tmux wrapper)
 ai c -o/--once         # Run once (no auto-resume loop)
@@ -184,7 +190,7 @@ When a worktree's `.envrc` is byte-for-byte identical to a repository-root
 `.envrc` that `direnv` can successfully execute, `ai` approves that new
 worktree path automatically.
 Changed or unapproved `.envrc` files still require an explicit `direnv allow`.
-Targeted session launches (`ai c <name>` and `ai g <name>`) do not pause for
+Targeted session launches (`ai c <name>`, `ai g <name>`, `ai p <name>`, and `ai cx <name>`) do not pause for
 unrelated project-registry discovery prompts.
 
 ### Remote sessions
@@ -386,7 +392,7 @@ export AI_HOST=mac    # or "hetzner", "work-laptop", etc.
 - Python 3.11+
 - [tmux](https://github.com/tmux/tmux) (on Windows: install via MSYS2 — `pacman -S tmux`)
 - `zsh` **or** `bash` — the tmux session pane runs the generated session script under zsh when it is installed, and falls back to bash otherwise
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)
 - [direnv](https://direnv.net/) (optional — when installed, sessions start under `direnv exec` so the project `.envrc` is loaded; sessions start normally without it)
 - [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH; Linux/macOS only)
 - [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`; Linux/macOS only)

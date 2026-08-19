@@ -336,7 +336,10 @@ def test_retranslate_project_jsonls_when_foreign_cwd_then_translates(tmp_path):
     assert count == 1
     content = conv.read_text()
     assert mac_home not in content
-    assert str(tmp_path) in content
+    # Compare against the JSON-escaped form: content is JSON, and on Windows
+    # str(tmp_path) contains backslashes that get doubled when JSON-escaped,
+    # so a raw substring check never matches there.
+    assert json.dumps(str(tmp_path))[1:-1] in content
 
 
 def test_retranslate_project_jsonls_when_foreign_project_field_then_translates(tmp_path):
@@ -356,7 +359,7 @@ def test_retranslate_project_jsonls_when_foreign_project_field_then_translates(t
     assert count == 1
     content = conv.read_text()
     assert mac_home not in content
-    assert str(tmp_path) in content
+    assert json.dumps(str(tmp_path))[1:-1] in content
 
 
 def test_retranslate_project_jsonls_when_already_translated_then_noop(tmp_path):
@@ -4701,6 +4704,11 @@ def test_apply_pull_files_when_conflict_markers_and_llm_fails_then_conflict_file
                 memories_only=False,
                 verbose=False,
                 dry_run=False,
+                # Clearing os.environ above wipes HOME/USERPROFILE too, and
+                # Path.home() requires USERPROFILE on Windows (no pwd-module
+                # fallback there) — pass an explicit root so this test's
+                # unrelated env-clearing doesn't break path resolution.
+                local_projects_root=tmp_path / "projects",
             )
 
     assert len(result["conflicts"]) == 1

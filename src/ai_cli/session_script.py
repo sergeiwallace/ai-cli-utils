@@ -74,7 +74,7 @@ def get_engine_script(
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
-    env_var_prefix = {"c": "CC", "g": "GG", "p": "PI"}[engine]
+    env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
     sandbox_flag = "-s" if sandbox else "--no-sandbox"
     cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"
     notify_cmd = 'ai internal notify "$tmux_session" "Agent Finished Task" 2>/dev/null || true' if notify else "true"
@@ -537,10 +537,15 @@ with open(path, 'w') as f:
           if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
           else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
-        else
+        elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if $first_run; then run_agent pi --name "$ai_name"
           else run_agent pi --continue --name "$ai_name"
+          fi
+        else
+          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
+          if $first_run; then run_agent codex
+          else run_agent codex resume --last
           fi
         fi
       else
@@ -559,9 +564,13 @@ with open(path, 'w') as f:
           if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
           else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
-        else
+        elif [[ "$engine" == "p" ]]; then
           if $first_run; then run_agent pi --name "$ai_name"
           else run_agent pi --continue --name "$ai_name"
+          fi
+        else
+          if $first_run; then run_agent codex
+          else run_agent codex resume --last
           fi
         fi
       fi

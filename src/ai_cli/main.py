@@ -501,6 +501,15 @@ def _bare_engine_command(
             command.append("--continue")
         return [*command, "--name", ai_name, *extra_args]
 
+    if engine == "cx":
+        # Codex does not offer a launch-time session-name option. Its resume
+        # command scopes --last to the current working directory by default,
+        # which is this session's isolated worktree.
+        command = ["codex"]
+        if resume:
+            command += ["resume", "--last"]
+        return [*command, *extra_args]
+
     command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
     if uuid:
         command += ["-r", uuid]
@@ -1885,8 +1894,8 @@ def _do_ls(show_all: bool) -> None:
     def _project_from_session(name: str) -> str:
         """Extract project prefix from a provider session name."""
         parts = name.split("-")
-        # Format: {c|g|p}[-r]-{project}-{index}
-        if len(parts) >= 3 and parts[0] in ("c", "g", "p"):
+        # Format: {c|g|p|cx}[-r]-{project}-{index}
+        if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx"):
             start = 2 if parts[1] == "r" else 1
             # project is everything between start and last segment
             return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
@@ -2122,6 +2131,9 @@ def _do_session_launch(
 
     if engine == "p" and not shutil.which("pi"):
         print("Error: pi executable not found on PATH. Install pi, then retry.", file=sys.stderr)
+        sys.exit(1)
+    if engine == "cx" and not shutil.which("codex"):
+        print("Error: codex executable not found on PATH. Install Codex, then retry.", file=sys.stderr)
         sys.exit(1)
 
     if not name and extra_args:
@@ -2538,22 +2550,24 @@ def _do_session_launch(
                         cd_prefix + shlex.join([*_direnv, *command]),
                     ],
                 )
-        else:
+        elif engine == "p":
             command = ["pi", "--name", ai_name]
-            os.execvp(
+        else:
+            command = ["codex"]
+        os.execvp(
+            "tmux",
+            [
                 "tmux",
-                [
-                    "tmux",
-                    "new-session",
-                    "-s",
-                    session_id,
-                    *_iterm_env_flags,
-                    "--",
-                    _session_shell,
-                    "-c",
-                    cd_prefix + shlex.join([*_direnv, *command]),
-                ],
-            )
+                "new-session",
+                "-s",
+                session_id,
+                *_iterm_env_flags,
+                "--",
+                _session_shell,
+                "-c",
+                cd_prefix + shlex.join([*_direnv, *command]),
+            ],
+        )
 
     # Assign iTerm2 color slot before generating the script so both the pre-launch
     # emission and the embedded bash variables use the same slot.
@@ -2706,7 +2720,7 @@ def _session_command(engine: str):
 @click.option("-V", "--version", is_flag=True, help="Show version and exit")
 @click.pass_context
 def _cli_group(ctx, version):
-    """Unified AI CLI for Claude, Gemini, and Pi."""
+    """Unified AI CLI for Claude, Gemini, Pi, and Codex."""
     if version:
         click.echo(_pkg_version_string())
         ctx.exit(0)
@@ -2807,9 +2821,69 @@ def cmd_g(
 
 @_cli_group.command("p", context_settings=SESSION_CONTEXT, help="Launch a Pi session")
 @_session_options
-def cmd_p(ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix):
+def cmd_p(
+    ctx,
+    name,
+    resume,
+    once,
+    bare,
+    notify,
+    sandbox,
+    no_worktree,
+    remote,
+    remote_machine,
+    project,
+    is_remote,
+    project_prefix,
+):
     _session_command("p")(
-        ctx, name, resume, once, bare, notify, sandbox, no_worktree, remote, project, is_remote, project_prefix
+        ctx,
+        name,
+        resume,
+        once,
+        bare,
+        notify,
+        sandbox,
+        no_worktree,
+        remote,
+        remote_machine,
+        project,
+        is_remote,
+        project_prefix,
+    )
+
+
+@_cli_group.command("cx", context_settings=SESSION_CONTEXT, help="Launch a Codex session")
+@_session_options
+def cmd_cx(
+    ctx,
+    name,
+    resume,
+    once,
+    bare,
+    notify,
+    sandbox,
+    no_worktree,
+    remote,
+    remote_machine,
+    project,
+    is_remote,
+    project_prefix,
+):
+    _session_command("cx")(
+        ctx,
+        name,
+        resume,
+        once,
+        bare,
+        notify,
+        sandbox,
+        no_worktree,
+        remote,
+        remote_machine,
+        project,
+        is_remote,
+        project_prefix,
     )
 
 
