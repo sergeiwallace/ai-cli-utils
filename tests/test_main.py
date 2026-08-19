@@ -309,6 +309,19 @@ class TestGetEngineScript:
         assert 'run_agent pi --continue --name "$ai_name"' in script
         assert '[[ "$engine" == "p" ]] && export CLAUDE_CODE_TASK_LIST_ID' not in script
 
+    def test_given_codex_engine_when_generating_script_then_resumes_last_worktree_session(self):
+        script = get_engine_script(
+            engine="cx",
+            ai_name="myproject-1",
+            session="cx-myproject-1",
+            prefix="cx-myproject-",
+            project_prefix="myproject",
+        )
+
+        assert 'export CX_TMUX_SESSION="$tmux_session"' in script
+        assert "if $first_run; then run_agent codex" in script
+        assert "else run_agent codex resume --last" in script
+
     def _make_script(self, **kwargs):
         defaults = {
             "engine": "c",
@@ -478,6 +491,18 @@ def test_given_pi_bare_launch_when_resuming_then_continues_named_session():
     assert command == ["pi", "--continue", "--name", "myproject-1"]
 
 
+def test_given_codex_bare_launch_when_not_resuming_then_starts_interactive_codex():
+    command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [])
+
+    assert command == ["codex"]
+
+
+def test_given_codex_bare_launch_when_resuming_then_resumes_last_session_in_worktree():
+    command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], resume=True)
+
+    assert command == ["codex", "resume", "--last"]
+
+
 def test_given_pi_missing_from_path_when_launching_then_reports_pi(capsys):
     from ai_cli.main import _do_session_launch
 
@@ -505,6 +530,35 @@ def test_given_pi_missing_from_path_when_launching_then_reports_pi(capsys):
 
     assert exc_info.value.code == 1
     assert "pi executable not found" in capsys.readouterr().err
+
+
+def test_given_codex_missing_from_path_when_launching_then_reports_codex(capsys):
+    from ai_cli.main import _do_session_launch
+
+    with (
+        patch("ai_cli.main.shutil.which", return_value=None),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _do_session_launch(
+            engine="cx",
+            name="1",
+            resume=False,
+            once=False,
+            bare=True,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            remote=False,
+            project="",
+            is_remote=False,
+            project_prefix_override="myproject",
+            extra_args=[],
+            config={},
+        )
+
+    assert exc_info.value.code == 1
+    assert "codex executable not found" in capsys.readouterr().err
 
 
 class TestLogHandoffEvent:

@@ -125,6 +125,14 @@ class TestCliGroupNoSubcommand:
         assert "-r, --resume" in stdout
         assert "-b, --bare" in stdout
 
+    def test_given_codex_help_when_requested_then_matches_session_command_options(self):
+        exit_code, stdout, _ = run_cli(["ai", "cx", "--help"])
+
+        assert exit_code == 0
+        assert "Launch a Codex session" in stdout
+        assert "-r, --resume" in stdout
+        assert "-b, --bare" in stdout
+
 
 # --- `ai quota statusline-part` / `ai quota sync` ---
 

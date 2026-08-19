@@ -225,7 +225,7 @@ def _prefix_from_session_name(session_name: str) -> str:
     Returns empty string if the format is not recognised.
     """
     parts = session_name.split("-")
-    if len(parts) >= 3 and parts[0] in ("c", "g", "p"):
+    if len(parts) >= 3 and parts[0] in ("c", "g", "p", "cx"):
         start = 2 if parts[1] == "r" else 1
         end = len(parts) - 1
         if end > start:
@@ -675,8 +675,8 @@ def build_session_name(
 ) -> tuple[str, str]:
     """Build tmux session name and ai_name.
 
-    Session name format: {c|g|p}[-r]-{project}-{index}
-      e.g. c-myproject-1, c-r-myproject-1, g-myproject-2, p-myproject-3
+    Session name format: {c|g|p|cx}[-r]-{project}-{index}
+      e.g. c-myproject-1, c-r-myproject-1, g-myproject-2, p-myproject-3, cx-myproject-4
     ai_name (used for --name, worktrees, session map): {project}-{index}
       e.g. myproject-1, myproject-2
 
@@ -698,9 +698,12 @@ def build_session_name(
         f"g-{project_prefix}-",
         f"p-r-{project_prefix}-",
         f"p-{project_prefix}-",
+        f"cx-r-{project_prefix}-",
+        f"cx-{project_prefix}-",
         f"claude-{project_prefix}-",
         f"gemini-{project_prefix}-",
         f"pi-{project_prefix}-",
+        f"codex-{project_prefix}-",
         f"{project_prefix}-",
     ]
     for p in sorted(prefixes_to_strip, key=len, reverse=True):

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from conftest import make_iterm2_config
 
-from ai_cli.iterm2 import _rename_tmux_window
+from ai_cli.iterm2 import _iterm2_session_type, _rename_tmux_window
 from ai_cli.main import (
     _assign_iterm2_color_slot,
     _current_pane_tty,
@@ -30,6 +30,9 @@ class TestResolveIterm2Config:
         cfg = make_iterm2_config()
         result = _resolve_iterm2_config(cfg, "c-sw-1")
         assert result == {}
+
+    def test_when_codex_engine_then_uses_codex_profile_type(self):
+        assert _iterm2_session_type("cx") == "codex"
 
     def test_defaults_returned_when_no_project_or_session(self):
         cfg = make_iterm2_config(defaults={"tab_color": "blue"})

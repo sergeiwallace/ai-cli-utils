@@ -34,7 +34,7 @@ from ai_cli.main import (
 from ai_cli.session import _prefix_from_session_name, get_project_prefix, is_current_project_resolved
 
 # --- build_session_name tests ---
-# Session name format: {c|g|p}[-r]-{project}-{index}
+# Session name format: {c|g|p|cx}[-r]-{project}-{index}
 # ai_name format: {project}-{index}
 
 
@@ -55,6 +55,14 @@ def test_given_pi_engine_when_building_session_name_then_uses_pi_prefix():
         session_id, ai_name = build_session_name("p", "myproject", "1")
 
     assert session_id == "p-myproject-1"
+    assert ai_name == "myproject-1"
+
+
+def test_given_codex_engine_when_building_session_name_then_uses_codex_prefix():
+    with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
+        session_id, ai_name = build_session_name("cx", "myproject", "1")
+
+    assert session_id == "cx-myproject-1"
     assert ai_name == "myproject-1"
 
 
@@ -1696,6 +1704,9 @@ class TestPrefixFromSessionName:
 
     def test_when_pi_session_then_extracts_prefix(self):
         assert _prefix_from_session_name("p-myproj-3") == "myproj"
+
+    def test_when_codex_session_then_extracts_prefix(self):
+        assert _prefix_from_session_name("cx-myproj-3") == "myproj"
 
     def test_when_remote_gemini_session_then_extracts_prefix(self):
         assert _prefix_from_session_name("g-r-myproj-1") == "myproj"

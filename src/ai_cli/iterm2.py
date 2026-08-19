@@ -101,6 +101,7 @@ charcoal    = "#2d2d2d"
 cc         = "Default"
 gemini     = "Default"
 pi         = "Default"
+codex      = "Default"
 shell      = "Default"
 chrome     = "Default"
 caffeinate = "Default"
@@ -265,7 +266,17 @@ def _release_iterm2_color_slot(ai_name: str) -> None:
 
 def _iterm2_session_type(engine: str) -> str:
     """Map engine string to icon_generator session_type."""
-    return "cc" if engine == "c" else "gemini" if engine == "g" else "pi" if engine == "p" else "shell"
+    return (
+        "cc"
+        if engine == "c"
+        else "gemini"
+        if engine == "g"
+        else "pi"
+        if engine == "p"
+        else "codex"
+        if engine == "cx"
+        else "shell"
+    )
 
 
 def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:
