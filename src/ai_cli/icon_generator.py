@@ -40,6 +40,7 @@ _DYNAMIC_PROFILE_PREFIX = "ai-cli-session-"
 _BASE_PROFILES: dict[str, str] = {
     "cc": "Default",
     "gemini": "Default",
+    "pi": "Default",
     "shell": "Default",
     "chrome": "Default",
     "caffeinate": "Default",
@@ -53,6 +54,7 @@ _CLAUDE_BRAND_ORANGE = "#da7756"
 _SOURCE_LOGOS: dict[str, str] = {
     "cc": "claude-logo.png",
     "gemini": "gemini-logo.png",
+    "pi": "shell-logo.png",
     "shell": "shell-logo.png",
     "chrome": "chrome-logo.png",
     "caffeinate": "caffeinate-logo.png",
@@ -166,7 +168,7 @@ def generate_session_icon(
     Args:
         session_name: e.g. "c-sw-5"
         tab_hex: tab background color, e.g. "#5e35b1"
-        session_type: "cc", "gemini", "shell", "chrome", "caffeinate", "ssh"
+        session_type: "cc", "gemini", "pi", "shell", "chrome", "caffeinate", "ssh"
         icon_color: explicit tint override; auto-derived from tab_hex if None
 
     Returns path to the written PNG, or None if Pillow is unavailable.

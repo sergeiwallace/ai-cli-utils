@@ -74,7 +74,7 @@ def get_engine_script(
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
         session_id_uuid = ""
-    env_var_prefix = "CC" if engine == "c" else "GG"
+    env_var_prefix = {"c": "CC", "g": "GG", "p": "PI"}[engine]
     sandbox_flag = "-s" if sandbox else "--no-sandbox"
     cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"
     notify_cmd = 'ai internal notify "$tmux_session" "Agent Finished Task" 2>/dev/null || true' if notify else "true"
@@ -413,6 +413,7 @@ def get_engine_script(
       [[ "$_iterm2_show_type_sym" == "1" ]] && {{
         [[ "$stype" == "cc" ]]     && type_sym="* "
         [[ "$stype" == "gemini" ]] && type_sym="✦ "
+        [[ "$stype" == "pi" ]]     && type_sym="π "
       }}
       if [[ "$_iterm2_show_status_sym" == "1" ]]; then
         sym="▶"
@@ -431,6 +432,7 @@ def get_engine_script(
     _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
+    [[ "$engine" == "p" ]] && _session_type="pi"
 
     # Export for CC Notification hook to use
     export ITERM2_SESSION_NUM="$_session_num"
@@ -530,10 +532,15 @@ with open(path, 'w') as f:
           else
             run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"
           fi
-        else
+        elif [[ "$engine" == "g" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
           if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
           else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+          fi
+        else
+          (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
+          if $first_run; then run_agent pi --name "$ai_name"
+          else run_agent pi --continue --name "$ai_name"
           fi
         fi
       else
@@ -548,9 +555,13 @@ with open(path, 'w') as f:
           else
             run_agent claude $claude_perms_flag --name "$ai_name"
           fi
-        else
+        elif [[ "$engine" == "g" ]]; then
           if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
           else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+          fi
+        else
+          if $first_run; then run_agent pi --name "$ai_name"
+          else run_agent pi --continue --name "$ai_name"
           fi
         fi
       fi
@@ -567,10 +578,12 @@ with open(path, 'w') as f:
 
       {notify_cmd}
 
-      new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)
-      if [[ -n "$new_uuid" ]]; then
-        uuid="$new_uuid"
-        ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null
+      if [[ "$engine" == "g" ]]; then
+        new_uuid=$(ai internal get-latest-gemini-id "$ai_name" 2>/dev/null)
+        if [[ -n "$new_uuid" ]]; then
+          uuid="$new_uuid"
+          ai internal update-session-map g "$ai_name" "$uuid" 2>/dev/null
+        fi
       fi
 
       first_run=false

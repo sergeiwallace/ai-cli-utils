@@ -28,7 +28,7 @@ _DEFAULT_ITERM2_CONFIG = """\
 enabled = true
 
 [iterm2.tab_title]
-## Include type symbol (* for CC, ✦ for Gemini) in tab and pane titles
+## Include type symbol (* for CC, ✦ for Gemini, π for Pi) in tab and pane titles
 show_type_symbol = false
 ## Include status symbol (▶ ✓ ✗ ↻ ⏸) in tab and pane titles
 show_status_symbol = false
@@ -100,6 +100,7 @@ charcoal    = "#2d2d2d"
 ## profile only if you deliberately want a session type to inherit from it.
 cc         = "Default"
 gemini     = "Default"
+pi         = "Default"
 shell      = "Default"
 chrome     = "Default"
 caffeinate = "Default"
@@ -264,7 +265,7 @@ def _release_iterm2_color_slot(ai_name: str) -> None:
 
 def _iterm2_session_type(engine: str) -> str:
     """Map engine string to icon_generator session_type."""
-    return "cc" if engine == "c" else "gemini" if engine == "g" else "shell"
+    return "cc" if engine == "c" else "gemini" if engine == "g" else "pi" if engine == "p" else "shell"
 
 
 def _set_iterm2_name_by_tty(tty: str, name: str) -> bool:

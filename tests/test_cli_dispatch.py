@@ -117,6 +117,14 @@ class TestCliGroupNoSubcommand:
         assert exit_code == 0
         assert "Usage:" in stdout or "Commands" in stdout
 
+    def test_given_pi_help_when_requested_then_matches_session_command_options(self):
+        exit_code, stdout, _ = run_cli(["ai", "p", "--help"])
+
+        assert exit_code == 0
+        assert "Launch a Pi session" in stdout
+        assert "-r, --resume" in stdout
+        assert "-b, --bare" in stdout
+
 
 # --- `ai quota statusline-part` / `ai quota sync` ---
 
