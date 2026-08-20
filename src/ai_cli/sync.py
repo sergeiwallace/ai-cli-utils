@@ -472,12 +472,19 @@ def init_staging_repo(staging_dir: Path, remote_url: str) -> None:
 
     Tries to clone from remote first (preserves shared history with the bare repo).
     Falls back to git init + initial commit only if remote is empty/unreachable.
+
+    A pre-existing staging repo's ``origin`` is reconciled against ``remote_url`` on
+    every call: switching ``[sync] remote_host`` (e.g. targeting a different machine)
+    must retarget the same local staging repo rather than silently keep pushing to
+    whichever host it was first initialized against.
     """
     if staging_dir.exists() and (staging_dir / ".git").exists():
-        # Already initialized — verify remote is set
-        res = _git(["remote", "get-url", "origin"], staging_dir, check=False)
+        # Already initialized — verify remote is set and matches the configured URL
+        res = _git(["remote", "get-url", "origin"], staging_dir, check=False, text=True)
         if res.returncode != 0:
             _git(["remote", "add", "origin", remote_url], staging_dir)
+        elif res.stdout.strip() != remote_url:
+            _git(["remote", "set-url", "origin", remote_url], staging_dir)
         return
 
     # Try to clone from remote (handles case where remote already has commits)
