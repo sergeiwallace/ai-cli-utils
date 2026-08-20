@@ -76,6 +76,7 @@ class GeminiResult:
     event_id: str = ""
     machine: str = ""
 
+
 @dataclass
 class AttemptLog:
     tier: int
@@ -99,6 +100,7 @@ def read_latest_snapshot() -> QuotaSnapshot | None:
     Reads from the local DB without scraping — fast and safe to call from
     library code. Returns None if no snapshots have been recorded yet.
     """
+
 
 @dataclass
 class QuotaSnapshot:

@@ -84,7 +84,7 @@ def parse_jsonl(path: Path) -> dict:
     """Parse a JSONL file into a structured conversation dict."""
     records = []
     try:
-        with open(path) as f:
+        with path.open() as f:
             for line in f:
                 line = line.strip()
                 if line:

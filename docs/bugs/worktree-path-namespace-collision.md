@@ -59,7 +59,7 @@ name.
 ### Defect B — `session.create_worktree`
 
 ```python
-if str(wt_dir) in res.stdout:   # git worktree list --porcelain
+if str(wt_dir) in res.stdout:  # git worktree list --porcelain
     ...
     return wt_dir
 shutil.rmtree(wt_dir, ignore_errors=True)

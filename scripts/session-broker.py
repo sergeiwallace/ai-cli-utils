@@ -10,7 +10,7 @@ Usage: python scripts/session-broker.py [--project PROJECT_NAME] [--config CONFI
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -35,7 +35,7 @@ def generate_session_context(config_path: Path | None = None, project: str | Non
     except Exception as e:
         return f"# Session Context\n\n> Failed to generate: {e}\n"
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     sections = [f"# Session Context\n\n> Generated: {now}\n> Project: {project or 'all'}\n"]
 
     # P0/P1 priorities across all projects

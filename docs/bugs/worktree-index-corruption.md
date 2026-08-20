@@ -129,7 +129,9 @@ In `main.py`, immediately before `git pull --rebase --autostash`, detect and fix
 ```python
 _deleted = subprocess.run(
     ["git", "diff", "--cached", "--name-only", "--diff-filter=D"],
-    capture_output=True, text=True, cwd=worktree_path,
+    capture_output=True,
+    text=True,
+    cwd=worktree_path,
 )
 if len(_deleted.stdout.strip().splitlines()) > 50:
     subprocess.run(["git", "read-tree", "HEAD"], capture_output=True, cwd=worktree_path)

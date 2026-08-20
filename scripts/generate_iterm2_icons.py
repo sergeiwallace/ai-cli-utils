@@ -72,8 +72,6 @@ def load_png_as_image(png_path: Path, size: int) -> Image.Image:
 
 def colorize(img: Image.Image, target_rgb: tuple[int, int, int]) -> Image.Image:
     """Recolor all non-transparent pixels to target_rgb, preserving alpha and luminance."""
-    r, g, b, a = img.split()
-
     # Use luminance from grayscale to modulate the color
     # Convert both to float arrays for per-pixel blend
     import numpy as np
@@ -87,8 +85,7 @@ def colorize(img: Image.Image, target_rgb: tuple[int, int, int]) -> Image.Image:
     out_arr[:, :, 1] = tg * lum
     out_arr[:, :, 2] = tb * lum
     out_arr[:, :, 3] = arr[:, :, 3]
-    out = Image.fromarray(out_arr.astype(np.uint8), "RGBA")
-    return out
+    return Image.fromarray(out_arr.astype(np.uint8), "RGBA")
 
 
 def add_outline(img: Image.Image, outline_color: tuple[int, int, int], width: int = 2) -> Image.Image:
@@ -113,8 +110,7 @@ def add_outline(img: Image.Image, outline_color: tuple[int, int, int], width: in
     outline_img.putalpha(diff)
 
     # Composite: outline below original
-    result = Image.alpha_composite(outline_img, img)
-    return result
+    return Image.alpha_composite(outline_img, img)
 
 
 def auto_outline_color(icon_rgb: tuple[int, int, int]) -> tuple[int, int, int]:

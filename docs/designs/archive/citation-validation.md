@@ -246,8 +246,8 @@ Validation deps span three tiers:
 @dataclass
 class UnknownVenueCitation:
     url: str
-    context: str   # surrounding sentence for triage
-    reason: str    # e.g. "URL path contains /proceedings/ but no known extractor matched"
+    context: str  # surrounding sentence for triage
+    reason: str  # e.g. "URL path contains /proceedings/ but no known extractor matched"
 ```
 
 > **Feedback:** Approved. Add recursive/surfacing mechanism for unknown venues — flag them in the report so we can decide whether to add a task or handle on the spot.
@@ -271,9 +271,10 @@ from typing import Literal
 CitationType = Literal["arxiv", "doi", "acl"]
 Verdict = Literal["PASS", "WARN", "FAIL", "EXISTENCE_ONLY"]
 
+
 @dataclass
 class CitationResult:
-    citation_id: str              # arXiv ID, DOI string, or ACL ID
+    citation_id: str  # arXiv ID, DOI string, or ACL ID
     citation_type: CitationType
     verdict: Verdict
     title_found: str | None = None
@@ -281,26 +282,28 @@ class CitationResult:
     nli_score: float | None = None
     error: str | None = None
 
+
 @dataclass
 class UnknownVenueCitation:
     url: str
-    context: str    # surrounding sentence for triage
-    reason: str     # why it didn't match any known extractor
+    context: str  # surrounding sentence for triage
+    reason: str  # why it didn't match any known extractor
+
 
 @dataclass
 class ValidationReport:
-    results: list[CitationResult]            # all arXiv + DOI + ACL
+    results: list[CitationResult]  # all arXiv + DOI + ACL
     dead_links: list[str]
     unknown_venues: list[UnknownVenueCitation]
     tools_used: list[str]
     validated_at: str
 
-    def passes(self) -> int: ...             # count where verdict == "PASS"
-    def warns(self) -> int: ...              # count where verdict == "WARN"
-    def fails(self) -> int: ...              # count where verdict == "FAIL"
-    def existence_only(self) -> int: ...     # count where verdict == "EXISTENCE_ONLY"
+    def passes(self) -> int: ...  # count where verdict == "PASS"
+    def warns(self) -> int: ...  # count where verdict == "WARN"
+    def fails(self) -> int: ...  # count where verdict == "FAIL"
+    def existence_only(self) -> int: ...  # count where verdict == "EXISTENCE_ONLY"
     def by_type(self, t: CitationType) -> list[CitationResult]: ...
-    def to_markdown(self) -> str: ...        # groups by citation_type for ## Citation Validation section
+    def to_markdown(self) -> str: ...  # groups by citation_type for ## Citation Validation section
 ```
 
 > **Feedback:** Option B — unified model. Refactor. Let's do it right.
@@ -340,10 +343,10 @@ from citation_validator import validate_citations, ValidationReport, CitationRes
 report: ValidationReport = validate_citations(
     doc_path=Path("/path/to/output.md"),
     run_id="20260421-...",
-    run_nli=False,         # --validate-nli / citation-nli extra
-    strict="none",         # "none" | "fail" | "warn"
+    run_nli=False,  # --validate-nli / citation-nli extra
+    strict="none",  # "none" | "fail" | "warn"
     quiet=False,
-    validator_script=None, # D2 plugin hook: path to external script, overrides built-in
+    validator_script=None,  # D2 plugin hook: path to external script, overrides built-in
 )
 # report.results           ← list[CitationResult] (arXiv + DOI + ACL unified)
 # report.dead_links
