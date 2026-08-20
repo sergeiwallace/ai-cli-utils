@@ -2480,13 +2480,21 @@ def test_detect_jsonl_divergence_when_foreign_cwd_then_translates_and_matches(tm
     """A staged file with a foreign machine's cwd is translated to the local
     projects root before comparing -- the same field-scoped rewrite that
     _write_jsonl_translated uses to actually apply the file, so this must
-    predict exactly what applying it would produce on disk."""
+    predict exactly what applying it would produce on disk.
+
+    The "local" (already-applied) fixture is built by calling the real rewrite
+    function rather than hand-writing JSON text: on Windows, str(Path) contains
+    backslashes, and json.dumps double-escapes them on the comparison side --
+    a hand-written fixture with raw single backslashes would never match that,
+    which is a test-fixture bug, not a bug in the code under test.
+    """
     local_root = tmp_path / "projects"
     local_root.mkdir()
     local = local_root / "local.jsonl"
     staging = local_root / "staging.jsonl"
-    local.write_text(f'{{"cwd":"{local_root}/test"}}\n')
-    staging.write_text('{"cwd":"/Users/foreign/projects/test"}\n')
+    staging_content = b'{"cwd":"/Users/foreign/projects/test"}\n'
+    local.write_bytes(rewrite_transcript_for_local_projects(staging_content, local_root))
+    staging.write_bytes(staging_content)
 
     result = detect_jsonl_divergence(local, staging, local_root)
     assert result == "identical"
@@ -2505,20 +2513,18 @@ def test_detect_jsonl_divergence_when_message_content_mentions_a_path_then_not_f
     local = local_root / "local.jsonl"
     staging = local_root / "staging.jsonl"
 
-    local.write_text(
-        '{"cwd":"'
-        + str(local_root)
-        + '/ai-cli-utils",'
-        + '"message":{"content":"Read /Users/foreign/projects/ai-cli-utils/src/ai_cli/sync.py"}}\n'
+    staging_content = (
+        b'{"cwd":"/Users/foreign/projects/ai-cli-utils",'
+        b'"message":{"content":"Read /Users/foreign/projects/ai-cli-utils/src/ai_cli/sync.py"}}\n'
     )
-    staging.write_text(
-        '{"cwd":"/Users/foreign/projects/ai-cli-utils",'
-        '"message":{"content":"Read /Users/foreign/projects/ai-cli-utils/src/ai_cli/sync.py"}}\n'
-    )
+    local.write_bytes(rewrite_transcript_for_local_projects(staging_content, local_root))
+    staging.write_bytes(staging_content)
 
     result = detect_jsonl_divergence(local, staging, local_root)
 
     assert result == "identical"
+    # The message content itself must survive untouched -- only cwd/originalCwd move.
+    assert b"/Users/foreign/projects/ai-cli-utils/src/ai_cli/sync.py" in local.read_bytes()
 
 
 def test_init_staging_repo_when_remote_not_set_then_adds_remote(tmp_path):
