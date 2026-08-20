@@ -164,6 +164,19 @@ notify_on_exit = true
 ## Enable automatic git worktree isolation for new sessions
 enabled = true
 
+[direnv]
+## Preflight direnv on session launch: when a .envrc applies but direnv is not
+## usable, try one unattended install (scoop/winget/choco, brew, or the system
+## package manager when running as root) and otherwise print per-OS remediation.
+## A launch is never blocked by this -- direnv only supplies the project
+## environment, so its absence degrades a session rather than ending it.
+##
+## Set false to skip the preflight entirely on this machine. Equivalent one-offs:
+## AI_CLI_SKIP_DIRENV=1 in the environment, or -D/--no-direnv on the launch.
+## Note direnv always evaluates .envrc in a bash sub-process, so a Windows host
+## additionally needs bash on PATH (Git for Windows supplies one).
+# enabled = true
+
 [worktree_upstream]
 ## Integration branch for session worktrees, keyed by repository directory name.
 ## A new worktree is based on, and tracks, this branch instead of "main". Set it
