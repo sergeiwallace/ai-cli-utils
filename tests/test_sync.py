@@ -1888,6 +1888,38 @@ def test_init_staging_repo_when_clone_fails_then_inits_fresh(tmp_path):
     assert any("commit" in str(c) for c in mock_git.call_args_list)
 
 
+def test_init_staging_repo_when_origin_already_matches_then_leaves_it(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    subprocess.run(["git", "init"], cwd=staging, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "ssh://host/repo.git"], cwd=staging, check=True, capture_output=True
+    )
+
+    init_staging_repo(staging, "ssh://host/repo.git")
+
+    result = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=staging, check=True, capture_output=True, text=True
+    )
+    assert result.stdout.strip() == "ssh://host/repo.git"
+
+
+def test_init_staging_repo_when_remote_host_switches_then_retargets_origin(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    subprocess.run(["git", "init"], cwd=staging, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "ssh://old-host/repo.git"], cwd=staging, check=True, capture_output=True
+    )
+
+    init_staging_repo(staging, "ssh://new-host/repo.git")
+
+    result = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=staging, check=True, capture_output=True, text=True
+    )
+    assert result.stdout.strip() == "ssh://new-host/repo.git"
+
+
 # ---------------------------------------------------------------------------
 # _detect_foreign_home_in_history
 # ---------------------------------------------------------------------------
