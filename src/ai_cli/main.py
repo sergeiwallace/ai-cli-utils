@@ -20,6 +20,7 @@ import click
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
 from . import config as _config
+from . import direnv_setup as _direnv_setup
 from . import handoff as _handoff
 from . import iterm2 as _iterm2
 from . import process_manager as _process_manager
@@ -2341,6 +2342,7 @@ def _do_session_launch(
     extra_args: "list[str]",
     config: dict,
     remote_machine: str = "",
+    no_direnv: bool = False,
 ) -> None:
     # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
     # only the client library, so tmux can never be auto-installed by pip/uv and
@@ -2382,6 +2384,14 @@ def _do_session_launch(
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    # direnv preflight, alongside tmux above for the same reason: it is a native
+    # binary that pip/uv can never supply. Unlike tmux it is never fatal — the
+    # engine runs fine without a project environment, and making a launch depend
+    # on it is the exact regression AI-CLI-ai-c-direnv-jsqn fixed. So this
+    # auto-installs when it can and otherwise prints remediation and continues.
+    if not no_direnv:
+        _direnv_setup.ensure_direnv(Path.cwd(), config)
 
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
@@ -2995,6 +3005,7 @@ def _session_command(engine: str):
         notify,
         sandbox,
         no_worktree,
+        no_direnv,
         remote,
         remote_machine,
         project,
@@ -3026,6 +3037,7 @@ def _session_command(engine: str):
             extra_args=list(ctx.args),
             config=config,
             remote_machine=remote_machine,
+            no_direnv=no_direnv,
         )
 
     _impl.__name__ = f"cmd_session_{engine}"
@@ -3059,6 +3071,7 @@ def _session_options(func):
     func = click.option("-n", "--notify", is_flag=True, help="Fire system notifications on task completion")(func)
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
+    func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
@@ -3082,6 +3095,7 @@ def cmd_c(
     notify,
     sandbox,
     no_worktree,
+    no_direnv,
     remote,
     remote_machine,
     project,
@@ -3097,6 +3111,7 @@ def cmd_c(
         notify,
         sandbox,
         no_worktree,
+        no_direnv,
         remote,
         remote_machine,
         project,
@@ -3116,6 +3131,7 @@ def cmd_g(
     notify,
     sandbox,
     no_worktree,
+    no_direnv,
     remote,
     remote_machine,
     project,
@@ -3131,6 +3147,7 @@ def cmd_g(
         notify,
         sandbox,
         no_worktree,
+        no_direnv,
         remote,
         remote_machine,
         project,
@@ -3150,6 +3167,7 @@ def cmd_p(
     notify,
     sandbox,
     no_worktree,
+    no_direnv,
     remote,
     remote_machine,
     project,
@@ -3165,6 +3183,7 @@ def cmd_p(
         notify,
         sandbox,
         no_worktree,
+        no_direnv,
         remote,
         remote_machine,
         project,
@@ -3184,6 +3203,7 @@ def cmd_cx(
     notify,
     sandbox,
     no_worktree,
+    no_direnv,
     remote,
     remote_machine,
     project,
@@ -3199,6 +3219,7 @@ def cmd_cx(
         notify,
         sandbox,
         no_worktree,
+        no_direnv,
         remote,
         remote_machine,
         project,
@@ -3244,6 +3265,39 @@ def cmd_setup():
     from .setup import run_setup
 
     sys.exit(run_setup())
+
+
+@_cli_group.command("doctor", help="Check the native binaries ai-cli-utils needs, installing what it can")
+@click.option("-n", "--dry-run", is_flag=True, help="Report status only; install nothing")
+def cmd_doctor(dry_run):
+    """Report on the native dependencies pip/uv cannot supply, and repair direnv.
+
+    Unlike the launch-time preflight this exits non-zero when something is still
+    unusable: `ai doctor` is where an operator has asked to be told, so a silent
+    pass would defeat the point.
+    """
+    config = _config.load_config()
+    root = Path.cwd()
+
+    # tmux is reported, never installed: `[session] use_tmux = false` and -b/--bare
+    # are both legitimate permanent answers, so its absence is not a defect.
+    for label, present, note in (
+        ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
+        ("tmux", shutil.which("tmux") is not None, "optional; -b/--bare and use_tmux=false opt out"),
+    ):
+        click.echo(f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
+
+    if _direnv_setup.is_bypassed(config):
+        click.echo(f"  SKIP  direnv    bypassed via {_direnv_setup.BYPASS_ENV} or [direnv] enabled = false")
+        return
+
+    envrc = _direnv_setup.find_envrc(root)
+    result = _direnv_setup.ensure_direnv(root, config, auto_install=not dry_run)
+    if result.installed:
+        click.echo(f"  OK    direnv    {result.detail or result.tool or 'usable'}")
+        return
+    click.echo(f"  MISS  direnv    {envrc} will not load", err=True)
+    raise SystemExit(1)
 
 
 # --- handoff group ---

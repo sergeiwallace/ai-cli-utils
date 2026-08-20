@@ -40,6 +40,14 @@ def run_setup(cwd: Path | None = None) -> int:
         print("Error: not inside a git repository", file=sys.stderr)
         return 1
 
+    # Install-time direnv bootstrap. This is the cross-platform entry point --
+    # setup.sh covers the same ground but is bash-only, so it never runs for a
+    # PowerShell user. Non-fatal by design: run_setup's job is CLAUDE.md, and a
+    # host without direnv still gets a correct config.
+    from .direnv_setup import ensure_direnv
+
+    ensure_direnv(repo_root)
+
     claude_md = repo_root / "CLAUDE.md"
     claude_full_md = repo_root / "CLAUDE-full.md"
 
