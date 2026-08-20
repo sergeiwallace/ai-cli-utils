@@ -15,7 +15,7 @@ import argparse
 import json
 import re
 import shutil
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 
 STUB_SIZE_THRESHOLD = 10 * 1024  # 10KB
@@ -60,7 +60,7 @@ def get_custom_title_and_linecount(jsonl_path: Path) -> tuple[str | None, int]:
     title = None
     line_count = 0
     try:
-        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        with jsonl_path.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 line_count += 1
                 if title is None:
@@ -194,7 +194,7 @@ def main() -> None:
     home = Path.home()
     local_base = home / ".claude" / "projects"
     staging_base = home / ".claude-sync-staging"
-    archive_base = home / ".claude-session-archive" / date.today().isoformat()
+    archive_base = home / ".claude-session-archive" / datetime.now(UTC).astimezone().date().isoformat()
 
     mode = "EXECUTE" if args.execute else "DRY RUN"
     print(f"CC Session Cleanup [{mode}]")

@@ -108,9 +108,9 @@ Causal chain:
 `main`:
 
 ```python
-res = subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", branch], ...)   # base = HEAD
+res = subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", branch], ...)  # base = HEAD
 ...
-subprocess.run(["git", "branch", "--set-upstream-to=origin/main", branch], ...)    # upstream = main
+subprocess.run(["git", "branch", "--set-upstream-to=origin/main", branch], ...)  # upstream = main
 ```
 
 `git worktree add -b <branch> <dir>` documents `<commit-ish>` as optional and defaults it to

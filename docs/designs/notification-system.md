@@ -281,10 +281,10 @@ class Notifier:
         self,
         title: str,
         body: str,
-        priority: str = "default",      # "urgent" | "high" | "default" | "low"
+        priority: str = "default",  # "urgent" | "high" | "default" | "low"
         tags: list[str] | None = None,
         channels: list[str] | None = None,  # None = all enabled channels
-        source: str = "",               # caller identifier, stored in notification_log
+        source: str = "",  # caller identifier, stored in notification_log
     ) -> list[NotificationResult]:
         """Fire all enabled channels in parallel. Returns per-channel results."""
 ```
@@ -294,7 +294,7 @@ class Notifier:
 ```python
 @dataclass
 class NotificationResult:
-    channel: str       # "discord" | "ntfy" | "os"
+    channel: str  # "discord" | "ntfy" | "os"
     success: bool
     status_code: int | None
     error: str | None

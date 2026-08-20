@@ -186,7 +186,7 @@ In the polling loop (lines 361–372), after `"% used"` is confirmed in output b
 if cap.returncode == 0 and "% used" in cap.stdout:
     snapshot = _parse_usage_output(cap.stdout)
     if snapshot:
-        _clear_scrape_format_mismatch()   # new helper: resets count to 0
+        _clear_scrape_format_mismatch()  # new helper: resets count to 0
         break
     else:
         _record_scrape_format_mismatch(cap.stdout)  # new helper: dump + increment

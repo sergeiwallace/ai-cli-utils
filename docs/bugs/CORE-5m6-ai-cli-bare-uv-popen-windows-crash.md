@@ -98,7 +98,7 @@ if not uv_bin:
     # Pre-fix: no check here — fell through to Popen with uv_bin=None
     pass
 # Pre-fix: passed bare "uv" instead of uv_bin
-upgrade_cmd = ["uv", "tool", "upgrade", "ai-cli-utils"]  
+upgrade_cmd = ["uv", "tool", "upgrade", "ai-cli-utils"]
 if _should_use_uv_link_mode_copy(uv_bin):  # used uv_bin here but not in upgrade_cmd
     upgrade_cmd.append("--link-mode=copy")
 subprocess.Popen(

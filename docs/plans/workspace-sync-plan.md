@@ -201,8 +201,8 @@ def _parse_workspace_folders(workspace_path: Path) -> list[Path]:
     """Return absolute paths of all folders in a .code-workspace file."""
     text = workspace_path.read_text()
     # Strip // comments and trailing commas (JSON5 subset)
-    text = re.sub(r'//[^\n]*', '', text)
-    text = re.sub(r',(\s*[}\]])', r'\1', text)
+    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
     data = json.loads(text)
     base = workspace_path.parent
     return [(base / f["path"]).resolve() for f in data.get("folders", [])]

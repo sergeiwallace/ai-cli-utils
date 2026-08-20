@@ -138,7 +138,7 @@ indistinguishable from a fresh one.
 `_resolve_is_remote` to False:
 
 ```python
-patch("ai_cli.session._resolve_is_remote", return_value=False),
+(patch("ai_cli.session._resolve_is_remote", return_value=False),)
 ```
 
 which asserts the *fixed* behaviour while the shipped function returned True. Separately, 22

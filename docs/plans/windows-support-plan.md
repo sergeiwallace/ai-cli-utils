@@ -269,6 +269,7 @@ def get_xdg_config_home() -> Path:
         return Path(base) / "ai-cli-utils"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ai-cli-utils"
 
+
 def get_xdg_state_home() -> Path:
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local"
@@ -297,6 +298,7 @@ with open(lock_path, "w") as f:
 ```python
 import psutil
 
+
 def _pid_alive(pid: int) -> bool:
     return psutil.pid_exists(pid)
 ```
@@ -318,6 +320,7 @@ reconfiguration guard in any module that writes emoji to stdout:
 
 ```python
 import sys
+
 if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ```

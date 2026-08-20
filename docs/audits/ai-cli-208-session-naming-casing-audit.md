@@ -398,7 +398,7 @@ clean_name = name
 prefixes_to_strip = [
     f"c-r-{project_prefix}-",
     f"c-{project_prefix}-",
-# ...
+    # ...
 ]
 for p in sorted(prefixes_to_strip, key=len, reverse=True):
     if clean_name.startswith(p):
@@ -408,7 +408,7 @@ for p in sorted(prefixes_to_strip, key=len, reverse=True):
 ```python
 # tests/test_session.py:87-96
 def test_build_session_name_with_new_full_name_and_index_when_called_then_strips_all():
-# ...
+    # ...
     session_id, ai_name = build_session_name("c", "sw", "c-sw-1")
 
     assert session_id == "c-sw-1"
@@ -542,7 +542,7 @@ Do not patch `resolve_project_prefix()` or `create_worktree()` in that test.
 
 ```python
 def test_given_registered_repo_when_resolving_then_returns_same_prefix_for_worktree_and_titles(self, tmp_path):
-# ...
+    # ...
     assert resolve_project_prefix(repo / ".worktrees" / "session-1") == "PROJECT"
 ```
 
