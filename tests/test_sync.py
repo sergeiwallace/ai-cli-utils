@@ -2220,6 +2220,31 @@ def test_sync_pull_when_dry_run_then_succeeds(tmp_path):
     assert result == 0
 
 
+def test_sync_pull_when_dry_run_and_no_staging_repo_yet_then_returns_0(tmp_path):
+    """A fresh machine that has never synced has no local staging repo. dry-run
+    intentionally skips init_staging_repo (no mutation) -- it must not crash
+    trying to preview a directory that doesn't exist yet."""
+    from ai_cli.sync import sync_pull
+
+    staging_dir = tmp_path / "staging"  # deliberately never created
+    cc_projects_dir = tmp_path / ".claude" / "projects"
+
+    cfg = SyncConfig(
+        staging_dir=staging_dir,
+        remote_url="ssh://user@host/repo.git",
+        local_prefix=_SERVER_PREFIX,
+        remote_host="user@host",
+        source_machine="server",
+    )
+
+    with patch("ai_cli.sync.load_sync_config", return_value=cfg):
+        with patch("ai_cli.sync._cc_projects_dir", return_value=cc_projects_dir):
+            with patch("ai_cli.sync.is_cc_active_locally", return_value=False):
+                result = sync_pull(["--dry-run"])
+
+    assert result == 0
+
+
 def test_sync_pull_when_config_error_then_returns_1():
     from ai_cli.sync import sync_pull
 
@@ -2389,6 +2414,35 @@ def test_push_to_remote_when_rejected_and_rebase_fails_then_false(tmp_path):
 
     with patch("subprocess.run", side_effect=mock_run):
         assert _push_to_remote(tmp_path, verbose=False) is False
+
+
+def test_push_to_remote_when_rebase_conflict_then_aborts_the_rebase(tmp_path):
+    """A failed pull --rebase (real content conflict) must not leave the repo mid-rebase --
+    the caller (pre-pull memory push) is non-fatal and may swallow the False return, so the
+    next git operation must find a clean repo, not an interrupted rebase."""
+    from ai_cli.sync import _push_to_remote
+
+    calls = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        m = MagicMock()
+        if cmd == ["git", "push", "origin", "HEAD:main"]:
+            m.returncode = 1
+            m.stderr = "non-fast-forward rejected"
+        elif cmd == ["git", "pull", "--rebase", "origin", "main"]:
+            m.returncode = 1
+            m.stderr = "CONFLICT: real content conflict"
+        else:
+            m.returncode = 0
+        return m
+
+    with patch("subprocess.run", side_effect=mock_run):
+        assert _push_to_remote(tmp_path, verbose=False) is False
+
+    assert ["git", "rebase", "--abort"] in calls
+    # The abort must happen after the failed rebase, not before.
+    assert calls.index(["git", "pull", "--rebase", "origin", "main"]) < calls.index(["git", "rebase", "--abort"])
 
 
 def test_push_to_remote_when_rejected_and_rebase_succeeds_then_retries(tmp_path):
@@ -5318,6 +5372,7 @@ def test_sync_pull_when_no_staging_changes_then_no_push(tmp_path):
 def test_sync_pull_when_dry_run_with_conflicts_then_no_staging_commit_or_push(tmp_path):
     """Dry-run must never write to staging or push, even when conflicts are reported."""
     cfg = _make_pull_cfg(tmp_path)
+    cfg.staging_dir.mkdir(parents=True)  # a machine that has synced before and has a real conflict
     cc_dir = tmp_path / ".claude" / "projects"
     cc_dir.mkdir(parents=True)
 
