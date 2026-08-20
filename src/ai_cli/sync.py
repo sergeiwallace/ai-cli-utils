@@ -1768,6 +1768,18 @@ def _push_to_remote(staging_dir: Path, verbose: bool) -> bool:
             check=False,
         )
         if rebase.returncode != 0:
+            # A real content conflict (not just a stale rebase) leaves the repo
+            # mid-rebase. Abort it so the caller — which may swallow this
+            # False return (e.g. the pre-pull memory push is non-fatal) —
+            # doesn't leave the staging repo in a broken interrupted state
+            # for the next git operation to trip over.
+            subprocess.run(
+                ["git", "rebase", "--abort"],
+                cwd=staging_dir,
+                capture_output=True,
+                env=_GIT_ENV,
+                check=False,
+            )
             print(f"Error: git pull --rebase failed: {rebase.stderr}", file=sys.stderr)
             return False
         res2 = subprocess.run(
@@ -2194,6 +2206,11 @@ def sync_pull(flags: list[str]) -> int:
             env=_GIT_ENV,
             check=False,
         )
+    elif not cfg.staging_dir.exists():
+        # Dry-run intentionally skips init_staging_repo (no mutation). On a machine
+        # that has never synced, there is nothing to preview yet.
+        print("Nothing to preview — no local staging repo yet. Run without --dry-run first.")
+        return 0
 
     cc_projects_dir = _cc_projects_dir()
     result = apply_pull_files(
