@@ -416,12 +416,19 @@ def rewrite_transcript_for_local_projects(content: bytes, local_projects_root: P
     return "".join(out).encode("utf-8") if changed else content
 
 
-def detect_jsonl_divergence(local_path: Path, staging_path: Path) -> str:
+def detect_jsonl_divergence(local_path: Path, staging_path: Path, local_projects_root: Path | None = None) -> str:
     """Classify the relationship between a local and staged JSONL file.
 
-    Applies cwd path translation to staging content before comparing, so a
-    locally-translated file is not falsely flagged as diverged from its
-    untranslated staging counterpart.
+    Applies the SAME field-scoped cwd/originalCwd rewrite that ``_write_jsonl_translated``
+    uses to actually apply a file, so this comparison predicts exactly what applying
+    ``staging_path`` would produce on disk. Using a different, blanket substring
+    replace here (the earlier ``translate_cwd_paths``, which rewrites the foreign home
+    prefix wherever it appears in the line -- including inside ordinary conversation
+    content that happens to mention a path) caused mass false "diverged" results on
+    real transcripts that mention this repo's own paths in tool calls or messages: the
+    applied on-disk file only has cwd/originalCwd rewritten, but the old comparison
+    also rewrote occurrences inside message content, so the two were never byte-equal
+    even when nothing meaningfully differed.
 
     Returns one of:
     - "identical"           — files are the same (after translation)
@@ -442,11 +449,10 @@ def detect_jsonl_divergence(local_path: Path, staging_path: Path) -> str:
     local_bytes = local_path.read_bytes()
     staging_bytes = staging_path.read_bytes()
 
-    # Translate staging content before comparing so cross-machine cwd differences
-    # don't cause false divergence on files that are otherwise identical.
-    foreign_home = _detect_foreign_home(staging_path)
-    if foreign_home:
-        staging_bytes = translate_cwd_paths(staging_bytes, foreign_home)
+    # Translate staging content the same way it would be written to disk, so this
+    # comparison never disagrees with what applying it actually produces.
+    projects_root = local_projects_root or Path.home() / "projects"
+    staging_bytes = rewrite_transcript_for_local_projects(staging_bytes, projects_root)
 
     if local_bytes == staging_bytes:
         return "identical"
@@ -1000,7 +1006,7 @@ def apply_pull_files(
             dst = cc_project_dir / rel
 
             if is_jsonl_file(src):
-                divergence = detect_jsonl_divergence(dst, src)
+                divergence = detect_jsonl_divergence(dst, src, local_projects_root)
                 if divergence == "identical":
                     continue
                 if divergence == "fast_forward_remote":
