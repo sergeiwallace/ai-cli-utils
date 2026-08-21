@@ -51,7 +51,7 @@ repos:
 
   # ── Python: ruff (check, report-only + format) ───────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.3
+    rev: v0.16.4
     hooks:
       # Exclude .githooks/ — those .py files are vendored from project-template and
       # are re-linted at each repo's own line-length (88/100/120/150 vary across the
