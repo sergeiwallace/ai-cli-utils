@@ -2,6 +2,7 @@ import io
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -404,6 +405,74 @@ def _make_list_panes_output(*entries):
     mock.returncode = 0
     mock.stdout = lines
     return mock
+
+
+def _restore_inherited_acl(path: Path) -> None:
+    """Replace ``path``'s explicit Windows ACL with the entries it inherits."""
+    subprocess.run(["icacls", str(path), "/reset"], capture_output=True, check=False)
+
+
+def _pytest_temp_ancestry(basetemp: Path) -> list[Path]:
+    """``basetemp`` and the pytest-created directories above it, outermost first.
+
+    Under ``-n auto`` the chain is ``pytest-of-<user>/pytest-<n>/popen-gw<k>``, and
+    an ACL has to be repaired outermost-first because each repair copies down what
+    its parent offers. The walk stops at the first directory pytest did not create,
+    so an explicit ``--basetemp`` outside the usual root never reaches up into the
+    caller's own directories.
+    """
+    chain = [basetemp]
+    probe = basetemp.parent
+    while probe != probe.parent and (probe.name.startswith("pytest-") or probe.name.startswith("popen-gw")):
+        chain.append(probe)
+        if probe.name.startswith("pytest-of-"):
+            break
+        probe = probe.parent
+    return list(reversed(chain))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _temp_root_allows_git(tmp_path_factory):
+    """Undo the restrictive ACL pytest's base temp directory is created with (Windows).
+
+    Python 3.14 began honouring ``os.mkdir``'s ``mode`` on Windows by writing an
+    explicit ACL naming only SYSTEM, Administrators and OWNER RIGHTS. pytest
+    creates its base temp directory and every ``tmp_path`` with ``mode=0o700``, so
+    on 3.14 both land with that ACL -- and Git for Windows cannot create a
+    directory inside one: ``git init <dir>`` dies with ``cannot mkdir <dir>:
+    Permission denied`` even though the very same process creates it happily with
+    ``os.mkdir``. Every test that builds a real git repository under ``tmp_path``
+    therefore errored in setup (141 of them on this suite), while ``mkdir``,
+    ``touch`` and Python's own writes into the identical directory all succeeded.
+
+    Restoring the inherited entries is what the pre-3.14 behaviour amounted to,
+    and it is applied to the temp root once per session rather than to each
+    ``tmp_path`` because ``icacls`` costs over a second per call.
+    """
+    if sys.platform != "win32":
+        return
+    for path in _pytest_temp_ancestry(tmp_path_factory.getbasetemp()):
+        _restore_inherited_acl(path)
+
+
+@pytest.fixture(autouse=True)
+def _tmp_path_allows_git(_temp_root_allows_git, tmp_path: Path):
+    """Recreate ``tmp_path`` so it inherits the repaired temp-root ACL (Windows).
+
+    The session fixture above cannot cover ``tmp_path`` itself: pytest creates it
+    per test, after that fixture has run, and with the same ``mode=0o700`` that
+    writes the explicit ACL. Recreating it without a mode makes it inherit
+    instead, which costs microseconds where a second ``icacls`` call would cost
+    over a second. pytest hands the directory over empty, so the ``rmdir``
+    discards nothing; if anything is already in it, leave it alone.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        tmp_path.rmdir()
+    except OSError:
+        return
+    tmp_path.mkdir()
 
 
 @pytest.fixture(autouse=True)
