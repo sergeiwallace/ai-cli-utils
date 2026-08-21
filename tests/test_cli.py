@@ -16,12 +16,19 @@ from ai_cli.main import (
     _configure_tmux_for_iterm2,
     _decode_tmux_stderr,
     _ensure_nats_tunnel,
+    _install_is_editable,
     _installed_source_fingerprint,
     cli,
     get_engine_script,
     trigger_background_update,
 )
 from ai_cli.session_script import resolve_session_shell
+
+
+def _venv_python(venv: Path) -> Path:
+    """A venv's interpreter, matching whichever layout this platform uses."""
+    win = venv / "Scripts" / "python.exe"
+    return win if win.exists() else venv / "bin" / "python"
 
 
 def _successful_worktree(tmp_path, ai_name):
@@ -2892,3 +2899,169 @@ class TestLocalProjectChdir:
         assert exc_info.value.code == 1
         assert f"ai register -p {project_dir} -x PREFIX" in capsys.readouterr().err
         mock_chdir.assert_not_called()
+
+
+class TestSelfUpdatePreservesEditableInstall:
+    """Self-update must not convert an editable tool install into a copied one.
+
+    A plain install silently drops the editable marker, and the fleet installer
+    reads a missing marker as damage to repair with
+    ``uv tool install --force --editable`` — which deletes and rebuilds the whole
+    tool environment, taking ``~/.local/bin/ai`` with it. So the two owners
+    alternate forever and every install-side repair is a window in which a fresh
+    shell gets ``bash: ai: command not found``.
+
+    Measured on sem-kg-sagemaker 2026-08-21: the live environment was editable
+    (``uv-receipt.toml`` recorded ``editable = <repo>``) immediately after an
+    installer run, having been a copied snapshot before it.
+    """
+
+    @staticmethod
+    def _tool_venv(root, *, marker: bool, receipt: str | None) -> Path:
+        venv = root / "tool-venv"
+        site = venv / "lib" / "python3.12" / "site-packages"
+        site.mkdir(parents=True)
+        if marker:
+            (site / "_editable_impl_ai_cli_utils.pth").write_text("/src", encoding="utf-8")
+        if receipt is not None:
+            (venv / "uv-receipt.toml").write_text(receipt, encoding="utf-8")
+        return venv
+
+    # --- the predicate ----------------------------------------------------
+
+    def test_given_editable_marker_when_checked_then_reports_editable(self, tmp_path):
+        venv = self._tool_venv(tmp_path, marker=True, receipt=None)
+        assert _install_is_editable(venv) is True
+
+    def test_given_copied_install_when_checked_then_reports_not_editable(self, tmp_path):
+        """Positive control: without this, the marker test above proves nothing."""
+        venv = self._tool_venv(tmp_path, marker=False, receipt='[tool]\nrequirements = [{ name = "x" }]\n')
+        assert _install_is_editable(venv) is False
+
+    def test_given_receipt_records_editable_but_marker_gone_when_checked_then_reports_editable(self, tmp_path):
+        """The state a previous plain self-update leaves behind, and must heal.
+
+        ``uv pip install`` does not rewrite ``uv-receipt.toml``, so the receipt
+        still records the original editable intent after the marker is clobbered.
+        """
+        venv = self._tool_venv(
+            tmp_path, marker=False, receipt='[tool]\nrequirements = [{ name = "x", editable = "/src" }]\n'
+        )
+        assert _install_is_editable(venv) is True
+
+    def test_given_no_receipt_and_no_marker_when_checked_then_reports_not_editable(self, tmp_path):
+        venv = self._tool_venv(tmp_path, marker=False, receipt=None)
+        assert _install_is_editable(venv) is False
+
+    # --- the command the updater actually builds ---------------------------
+
+    @staticmethod
+    def _run_update(tmp_path, venv):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.1"\n')
+        with (
+            patch("sys.argv", ["ai", "deploy"]),
+            patch("ai_cli.config.load_config", return_value={"deploy": {"project_path": str(tmp_path)}}),
+            patch("ai_cli.main._running_uv_tool_venv", return_value=venv),
+            patch("ai_cli.main._should_use_uv_link_mode_copy", return_value=False),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")) as mock_run,
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            if cmd and Path(cmd[0]).stem == "uv" and "pip" in cmd:
+                return cmd
+        return None
+
+    def test_given_editable_install_when_self_update_runs_then_command_keeps_editable(self, tmp_path):
+        venv = self._tool_venv(tmp_path, marker=True, receipt=None)
+
+        cmd = self._run_update(tmp_path, venv)
+
+        assert cmd is not None, "no uv pip install command was issued"
+        assert "-e" in cmd
+        # -e must precede the target, or uv reads the path as a plain requirement.
+        assert cmd.index("-e") < cmd.index(str(tmp_path))
+
+    def test_given_copied_install_when_self_update_runs_then_command_omits_editable(self, tmp_path):
+        """Positive control for the test above: the flag is conditional, not constant."""
+        venv = self._tool_venv(tmp_path, marker=False, receipt=None)
+
+        cmd = self._run_update(tmp_path, venv)
+
+        assert cmd is not None, "no uv pip install command was issued"
+        assert "-e" not in cmd
+
+    # --- the real uv behaviour the whole fix rests on ---------------------
+
+    def test_given_editable_venv_when_plain_install_runs_then_marker_is_destroyed(self, tmp_path):
+        """The mechanism itself, against real uv — not a mock of it.
+
+        Everything above asserts we pass ``-e``. This asserts WHY that matters:
+        a plain install over an editable one really does remove the marker the
+        fleet installer looks for. If uv ever stopped doing this, the fix would
+        be unnecessary and this test is how we would find out.
+        """
+        uv = shutil.which("uv")
+        if uv is None:
+            pytest.skip("uv is not on PATH")
+
+        pkg = tmp_path / "pkg"
+        (pkg / "src" / "probepkg").mkdir(parents=True)
+        (pkg / "src" / "probepkg" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+        (pkg / "pyproject.toml").write_text(
+            '[project]\nname = "probepkg"\nversion = "0.1.0"\n'
+            '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n'
+            '[tool.hatch.build.targets.wheel]\npackages = ["src/probepkg"]\n',
+            encoding="utf-8",
+        )
+        venv = tmp_path / "venv"
+        subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True)
+        python = _venv_python(venv)
+
+        def markers():
+            return sorted(p.name for p in venv.glob("lib/python*/site-packages/*editable*"))
+
+        subprocess.run(
+            [uv, "pip", "install", "--python", str(python), "-e", str(pkg)],
+            check=True,
+            capture_output=True,
+        )
+        assert markers(), "editable install left no marker — fixture is wrong"
+
+        subprocess.run(
+            [uv, "pip", "install", "--python", str(python), str(pkg)],
+            check=True,
+            capture_output=True,
+        )
+
+        assert markers() == [], "a plain install no longer clobbers the editable marker"
+
+    def test_given_editable_venv_when_editable_install_repeats_then_marker_survives(self, tmp_path):
+        """Pairs with the test above: ``-e`` is what keeps the marker alive."""
+        uv = shutil.which("uv")
+        if uv is None:
+            pytest.skip("uv is not on PATH")
+
+        pkg = tmp_path / "pkg"
+        (pkg / "src" / "probepkg").mkdir(parents=True)
+        (pkg / "src" / "probepkg" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+        (pkg / "pyproject.toml").write_text(
+            '[project]\nname = "probepkg"\nversion = "0.1.0"\n'
+            '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n'
+            '[tool.hatch.build.targets.wheel]\npackages = ["src/probepkg"]\n',
+            encoding="utf-8",
+        )
+        venv = tmp_path / "venv"
+        subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True)
+        python = _venv_python(venv)
+
+        for _ in range(2):
+            subprocess.run(
+                [uv, "pip", "install", "--python", str(python), "-e", str(pkg)],
+                check=True,
+                capture_output=True,
+            )
+
+        assert sorted(p.name for p in venv.glob("lib/python*/site-packages/*editable*"))

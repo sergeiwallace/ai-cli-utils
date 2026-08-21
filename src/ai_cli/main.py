@@ -1784,6 +1784,39 @@ def _venv_interpreter(venv: "Path") -> "Path":
     return venv / "bin" / "python"
 
 
+def _install_is_editable(venv: "Path") -> bool:
+    """Whether this tool environment holds (or is recorded as) an editable install.
+
+    Self-update must preserve editability, and NOT because editable is nicer.  A
+    plain install silently converts the environment to a copied snapshot, and the
+    fleet installer treats a missing editable marker as damage to repair with
+    ``uv tool install --force --editable`` — which deletes and rebuilds the whole
+    environment, taking ``~/.local/bin/ai`` with it.  Two owners then alternate
+    forever, and every install-side repair is an outage window in which a fresh
+    shell cannot resolve ``ai`` at all.
+
+    Both evidence sources are consulted because they answer different questions.
+    A marker in ``site-packages`` is ground truth about the CURRENT state.  uv's
+    own ``uv-receipt.toml`` records the ORIGINAL intent and is not rewritten by
+    ``uv pip install``, so it still reads ``editable`` after a plain install has
+    already clobbered the marker — which is exactly the state that needs healing,
+    so either being true means install editably.
+    """
+    for pattern in (
+        "lib/python*/site-packages/__editable__*",
+        "lib/python*/site-packages/*_editable_impl_*",
+        "Lib/site-packages/__editable__*",
+        "Lib/site-packages/*_editable_impl_*",
+    ):
+        if any(venv.glob(pattern)):
+            return True
+    try:
+        receipt = (venv / "uv-receipt.toml").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "editable" in receipt
+
+
 def _tool_env_can_import(venv: "Path", module: str = "ai_cli") -> bool:
     """Whether a *fresh* interpreter from ``venv`` can import ``module``.
 
@@ -2007,7 +2040,13 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
         # rewrites Lib/site-packages and never touches Scripts.
         self_venv = _running_uv_tool_venv()
         if self_venv is not None:
-            uv_cmd = [uv_bin, "pip", "install", "--python", str(_venv_interpreter(self_venv)), str(project_path)]
+            uv_cmd = [uv_bin, "pip", "install", "--python", str(_venv_interpreter(self_venv))]
+            # Keep an editable install editable.  Dropping ``-e`` here is what
+            # hands the environment back and forth with the fleet installer, and
+            # its repair path is destructive — see `_install_is_editable`.
+            if _install_is_editable(self_venv):
+                uv_cmd.append("-e")
+            uv_cmd.append(str(project_path))
             if force_reinstall:
                 uv_cmd.append("--force-reinstall")
             if _should_use_uv_link_mode_copy(uv_bin, self_venv):

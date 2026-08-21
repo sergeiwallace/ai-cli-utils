@@ -57,6 +57,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ai` could vanish from your shell entirely, reporting `bash: ai: command not
+  found`,** for as long as an installer run took to finish. Self-update installed
+  the package *plainly* into its own environment, which silently converts an
+  editable install into a copied snapshot. The fleet installer treats a missing
+  editable marker as damage and repairs it by reinstalling the tool from scratch —
+  and that repair deletes and rebuilds the whole environment, taking the `ai`
+  entry point with it. So the two owners took turns undoing each other forever,
+  and every installer-side repair was an outage window. The failure looked random
+  because it depended on which of the two had run more recently, and it could not
+  be defended against from inside the program: the command is gone before a single
+  line of it runs. Self-update now preserves editability, so the marker survives,
+  the installer sees nothing to repair, and the destructive path is never taken.
+  The same change fixes a quieter symptom of the same cause — between a
+  self-update and the next installer run, `ai` was a stale copy that no longer
+  tracked its source, so edits appeared to have no effect.
+
 - **`ai c` could crash with `ModuleNotFoundError: No module named
   'ai_cli.session_adopt'`** when two launches ran at once. It was never flaky: two
   conditions had to coincide. `ai c` auto-updates by running `ai update --force`,
