@@ -1165,9 +1165,16 @@ def create_worktree(
             # existing branch of that name. The fallback deliberately passes no start-point:
             # a `wt-<name>` that already exists carries a previous session's commits, and
             # forcing it back to the integration branch would discard them.
+            # cwd=repo_root, like every other git call here: this is the one that
+            # WRITES, and without it git resolves the repository from the process's
+            # current directory and registers the worktree in whichever repository
+            # the caller happened to be standing in. The checkout still appears at
+            # the requested path, so the only symptom is a later, misleading
+            # `fatal: branch 'wt-<name>' does not exist` from the upstream step.
             res = subprocess.run(
                 ["git", "worktree", "add", str(wt_dir), "-b", branch, base],
                 capture_output=True,
+                cwd=repo_root,
                 env=_git_env(),
                 check=False,
             )
@@ -1177,6 +1184,7 @@ def create_worktree(
                 res = subprocess.run(
                     ["git", "worktree", "add", str(wt_dir), branch],
                     capture_output=True,
+                    cwd=repo_root,
                     env=_git_env(),
                     check=False,
                 )
