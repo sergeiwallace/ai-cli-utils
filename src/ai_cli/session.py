@@ -1001,6 +1001,26 @@ def _contains_git_checkout(directory: Path) -> Path | None:
     return None
 
 
+def _is_empty_dir(directory: Path) -> bool:
+    """Return whether ``directory`` is a directory holding no entries at all.
+
+    Deliberately mirrors git's own ``is_empty_dir``, which ``git worktree add``
+    uses to decide that an existing path may be written into: a single level, and
+    every entry counts, so a dotfile or an empty subdirectory makes a directory
+    non-empty. A looser reading here would admit a slot that git then rejects
+    with ``already exists``, replacing an actionable refusal with a confusing one.
+
+    Anything that is not a readable directory — a file at that path, a permission
+    error, a race that removes it mid-check — answers False, so the caller falls
+    through to refusing rather than to deleting.
+    """
+    try:
+        with os.scandir(directory) as entries:
+            return next(entries, None) is None
+    except OSError:
+        return False
+
+
 def _same_worktree_path(first: Path, second: Path) -> bool:
     """Return whether two existing paths identify the same filesystem object."""
     try:
@@ -1106,9 +1126,18 @@ def create_worktree(
                 result = (registered, False)
                 return result if with_status else registered
 
-            if wt_dir.exists():
+            if wt_dir.exists() and not _is_empty_dir(wt_dir):
                 # A non-registered directory might hold files or git data that the
                 # launcher cannot safely evaluate. Never recycle it automatically.
+                #
+                # An *empty* one is excluded above rather than refused: it holds
+                # nothing to protect, and `git worktree add` writes into an
+                # existing empty directory by design, so the add below succeeds
+                # without deleting anything. Windows produces this state routinely
+                # — `git worktree remove` drops the registration before it has
+                # verified the directory is gone, so a file still held open by a
+                # live process leaves the slot present and deregistered, and every
+                # later launch refused over a directory git would have accepted.
                 holder = _contains_git_checkout(wt_dir)
                 if holder is not None:
                     raise RuntimeError(

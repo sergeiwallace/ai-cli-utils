@@ -211,6 +211,68 @@ def test_given_an_unregistered_directory_when_a_session_worktree_is_created_then
     assert (stale / "leftover.txt").read_text() == "debris from an interrupted run\n"
 
 
+def test_given_an_empty_unregistered_directory_when_a_session_worktree_is_created_then_it_is_reused(repo, monkeypatch):
+    """An empty slot must launch, because ``git worktree add`` accepts one.
+
+    Windows leaves this state behind routinely: ``git worktree remove`` drops the
+    registration before it verifies the directory is gone, so a file held open by
+    a live process leaves the slot present and deregistered. Refusing it stops the
+    launch over a directory git itself would have written into, and the refusal has
+    nothing to protect — an empty directory holds no work.
+
+    The checkout assertions are what separate this from a shallow fix that merely
+    swallows the refusal and returns the path: an empty directory would still be
+    empty.
+    """
+    monkeypatch.chdir(repo)
+    slot = repo / ".worktrees" / "session-empty"
+    slot.mkdir(parents=True)
+
+    created = create_worktree("session-empty")
+
+    assert created == slot
+    assert slot in registered_worktrees(repo), "the slot must end up a real registered worktree"
+    assert (slot / "README.md").read_text() == "base\n", "a real checkout must have landed in it"
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-session-empty"
+
+
+def test_given_a_slot_holding_only_a_dotfile_when_a_session_worktree_is_created_then_it_is_refused(repo, monkeypatch):
+    """Emptiness is every entry, not every visible entry.
+
+    ``git worktree add`` counts a dotfile as occupied and fails with ``already
+    exists``, so a glob-based emptiness test would wave a slot through only for
+    git to reject it — trading an actionable refusal for a confusing one.
+    """
+    monkeypatch.chdir(repo)
+    slot = repo / ".worktrees" / "session-dotfile"
+    slot.mkdir(parents=True)
+    (slot / ".leftover").write_text("hidden debris\n")
+
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        create_worktree("session-dotfile")
+
+    assert (slot / ".leftover").read_text() == "hidden debris\n"
+
+
+def test_given_a_slot_holding_only_an_empty_subdirectory_when_a_session_worktree_is_created_then_it_is_refused(
+    repo, monkeypatch
+):
+    """git's emptiness test is one level deep, and this one must agree with it.
+
+    A recursive reading would call this slot empty; ``git worktree add`` does not,
+    and git is the operation that has to succeed.
+    """
+    monkeypatch.chdir(repo)
+    slot = repo / ".worktrees" / "session-subdir"
+    nested = slot / "nested"
+    nested.mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        create_worktree("session-subdir")
+
+    assert nested.is_dir(), "the nested directory must survive the refusal"
+
+
 @pytest.fixture
 def uppercase_fleet_prefix(repo, monkeypatch):
     """Register an uppercase prefix through the production fleet-registry tier."""
