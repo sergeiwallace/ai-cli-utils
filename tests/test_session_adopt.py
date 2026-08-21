@@ -950,9 +950,16 @@ def test_adopt_given_a_destination_that_is_not_a_worktree_when_adopted_then_refu
     check passed it. Only a registration lookup can tell it apart. If the
     directory *were* a real worktree this would not raise, which is the control
     immediately below.
+
+    The directory must hold CONTENT. An *empty* slot is deliberately reused now
+    rather than refused (``session.py``, shipped in 0165e25 after this test was
+    written), so an empty fixture stopped reaching this guard at all and silently
+    asserted behaviour the fleet had already replaced. Verified by perturbation:
+    drop the write below and this test fails again.
     """
     plain = world["repo"] / ".worktrees" / "myproject-2"
     plain.mkdir(parents=True)
+    (plain / "debris.txt").write_text("not a checkout", encoding="utf-8")
 
     with pytest.raises(AdoptionError, match="not a worktree"):
         adopt()
