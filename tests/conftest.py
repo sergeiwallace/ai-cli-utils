@@ -1,7 +1,10 @@
+import contextlib
 import io
 import os
 import shlex
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +16,105 @@ from ai_cli.git_repair import _GIT_TARGETING_VARS
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
 _PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv"})
+
+# Short directory name for the relocated Windows temp root -- see
+# _windows_temproot for why the length itself is the point.
+_WIN_TEMPROOT_NAME = "aipt"
+
+
+def _windows_temproot() -> Path:
+    """Return a deliberately SHORT temp root on the same drive as the default one.
+
+    Windows still enforces MAX_PATH (260) unless ``LongPathsEnabled`` is set,
+    which needs admin and is therefore not available here. Two things make the
+    suite's paths unusually long: pytest nests
+    ``<temp>/pytest-of-<user>/pytest-N/<test-name>/``, and several tests build a
+    Claude Code project directory whose *name* is an entire absolute path with
+    every non-alphanumeric byte replaced by ``-`` (see
+    ``ai_cli.main._cc_project_dir``, which must keep matching Claude Code's own
+    slugify and so cannot be shortened).
+
+    Because that slug embeds the temp path, shortening the root shortens the
+    path *twice over* -- once in the real path and again inside the slug. The
+    default root here is 40 characters; this one is ~7, which measured a
+    reduction from 270 characters (winerror 3) to comfortably under the limit.
+
+    The drive is taken from the default temp dir rather than hardcoded so this
+    does not assume ``C:``.
+    """
+    return Path(Path(tempfile.gettempdir()).anchor) / _WIN_TEMPROOT_NAME
+
+
+def _repair_inherited_acl(target: Path, recurse: bool = False) -> None:
+    """Re-enable ACL inheritance on ``target`` so Git for Windows can write under it.
+
+    pytest creates ``pytest-of-<user>`` with ``mode=0o700``. CPython implements
+    that on Windows as a *protected* DACL: inheritance disabled, with ACEs for
+    SYSTEM, Administrators and ``OWNER RIGHTS`` only and NO explicit ACE for the
+    current user. Directories git then creates underneath inherit no usable ACE,
+    so Git for Windows' own access check refuses them -- ``git init`` and
+    ``git clone`` both fail rc=128 with "could not create leading directories
+    ... Permission denied". On a host whose domain trust is broken (seen here:
+    ``icacls`` prints "The trust relationship between this workstation and the
+    primary domain failed") ``OWNER RIGHTS`` does not rescue it.
+
+    Measured remedies, both rc=0 and neither needing admin: ``/inheritance:e``
+    and ``/reset``. ``chmod(0o777)`` from Python does NOT work -- on Windows it
+    only toggles FILE_ATTRIBUTE_READONLY and cannot rewrite a DACL -- and a
+    ``/grant`` of the user SID on a leaf directory alone also left the clone
+    failing. Order matters: the repair has to land before any repo is created
+    inside the directory, or git has already failed.
+    """
+    argv = ["icacls", str(target), "/inheritance:e", "/C", "/Q"]
+    if recurse:
+        argv.insert(3, "/T")
+    # Best effort: a failure here leaves the pre-existing breakage in place and
+    # the affected tests fail loudly, which is the honest outcome. Never fatal --
+    # this runs for every session, and icacls may be absent on a stripped host.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+
+
+def pytest_configure(config):
+    """Relocate the Windows temp root before pytest first resolves ``basetemp``.
+
+    This is the MAX_PATH half of the Windows fix; the DACL half is handled
+    lazily in :func:`_reject_real_agent_processes`.
+
+    ``PYTEST_DEBUG_TEMPROOT`` is pytest's own hook for the root and is read
+    lazily when the base temp dir is first needed, so setting it here is early
+    enough. It is only set when the operator has not chosen a root themselves.
+
+    Patching pytest to stop requesting ``mode=0o700`` was tried and rejected:
+    the mode is hardcoded at five separate call sites in ``_pytest.tmpdir``, and
+    ``getbasetemp`` additionally *validates* that the root is not group/world
+    accessible (``if (rootdir_stat.st_mode & 0o077) != 0``), so forcing it wide
+    fights pytest's own security check.
+    """
+    if sys.platform != "win32" or os.environ.get("PYTEST_DEBUG_TEMPROOT"):
+        return
+    root = _windows_temproot()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return  # fall back to the default root; the ACL repair still applies
+    os.environ["PYTEST_DEBUG_TEMPROOT"] = str(root)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _repair_windows_temp_tree(tmp_path_factory):
+    """Repair the session's temp roots once, before any test uses them.
+
+    Covers ``pytest-of-<user>`` (the protected parent) and this session's base
+    dir. Per-test directories need their own repair -- pytest applies
+    ``mode=0o700`` to each of those too, so they do not exist yet here. That is
+    handled per test in :func:`_make_tmp_path_deletable`.
+    """
+    if sys.platform != "win32":
+        return
+    base = tmp_path_factory.getbasetemp()
+    _repair_inherited_acl(base.parent)
+    _repair_inherited_acl(base)
 
 
 def _command_program(command):
@@ -82,15 +184,39 @@ def _reject_real_agent_processes(request):
     real_run = subprocess.run
     real_popen = subprocess.Popen
     real_execvp = os.execvp
+    repaired: list[bool] = []
+
+    def repair_temp_acl_for_git(command) -> None:
+        """On Windows, fix this test's temp-dir DACL the first time it runs git.
+
+        Deliberately lazy and keyed on git, because the repair costs an
+        ``icacls`` process and only git needs it: measured unconditionally per
+        test it roughly doubled a fast test file's runtime (26s -> 56s), while
+        the tests that actually shell out to git are a small minority.
+
+        Why it is needed at all: pytest creates every temp directory with
+        ``mode=0o700``, which CPython implements on Windows as a protected DACL
+        naming no ACE for the current user, so Git for Windows cannot create
+        anything underneath it (see :func:`_repair_inherited_acl`). Repairing the
+        session roots is not sufficient -- each per-test directory is protected
+        in its own right.
+        """
+        if sys.platform != "win32" or repaired or _command_program(command) != "git":
+            return
+        repaired.append(True)
+        if "tmp_path" in request.fixturenames:
+            _repair_inherited_acl(request.getfixturevalue("tmp_path"), recurse=True)
 
     def guarded_run(*args, **kwargs):
         command = args[0] if args else kwargs.get("args")
         _reject_real_agent_process(command, allowed_binaries)
+        repair_temp_acl_for_git(command)
         return real_run(*args, **kwargs)
 
     def guarded_popen(*args, **kwargs):
         command = args[0] if args else kwargs.get("args")
         _reject_real_agent_process(command, allowed_binaries)
+        repair_temp_acl_for_git(command)
         return real_popen(*args, **kwargs)
 
     def guarded_execvp(*args, **kwargs):
@@ -423,6 +549,11 @@ def _make_tmp_path_deletable(tmp_path: Path):
     Deliberately unconditional rather than a ``sys.platform`` branch -- POSIX
     ``rmtree`` only needs write on the parent directory, so this is a no-op cost
     on Linux and macOS instead of a platform special case (AIH-824).
+
+    The Windows DACL problem that used to need a repair here is prevented
+    upstream instead -- see :func:`_stop_pytest_protecting_temp_dirs`, which stops
+    pytest requesting ``mode=0o700`` at all. Repairing per test also worked but
+    cost an ``icacls`` process per test, roughly doubling a fast file's runtime.
     """
     yield
     if not tmp_path.exists():
