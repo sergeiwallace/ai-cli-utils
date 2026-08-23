@@ -132,6 +132,45 @@ def bash_available() -> bool:
     return shutil.which("bash") is not None
 
 
+def envrc_loads(directory: Path, timeout: int = 60) -> bool:
+    """True when direnv can actually evaluate the ``.envrc`` applying to ``directory``.
+
+    Probes with ``direnv export json`` run *in* ``directory``, which loads the
+    .envrc and prints the resulting environment diff. It exits non-zero when the
+    file is blocked or errors, which is exactly the question every caller asks.
+
+    Replaces ``direnv exec <dir> true``, which is **broken on Windows and always
+    reports failure there**: ``true`` is a shell builtin, Git for Windows ships no
+    ``true.exe``, so direnv resolves the command against PATH, finds nothing, and
+    exits 1 -- with the .envrc having loaded perfectly. Measured on a Windows
+    host, on a directory whose .envrc was approved and loading cleanly::
+
+        direnv: ai-cli-utils environment loaded
+        direnv: error command 'true' not found on PATH '...'
+
+    That false negative is the root cause of the endless "run direnv allow"
+    nagging: it made every trust probe fail on Windows regardless of the actual
+    approval state, so the worktree auto-approval refused to act and the launcher
+    warned anyway.
+
+    ``direnv status`` is not a substitute -- it exits 0 even for a blocked
+    .envrc (measured: rc=0 on a deliberately unapproved file), so it cannot
+    answer this question. ``export json`` returns rc=1 there, as required.
+    """
+    try:
+        probe = subprocess.run(
+            ["direnv", "export", "json"],
+            capture_output=True,
+            text=True,
+            cwd=directory,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
 def find_envrc(start: Path) -> Path | None:
     """Return the nearest ``.envrc`` at or above ``start``, else None.
 

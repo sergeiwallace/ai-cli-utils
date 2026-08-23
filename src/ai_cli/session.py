@@ -24,6 +24,7 @@ from .config import (
     load_project_registry,
     resolve_project_prefix,
 )
+from .direnv_setup import envrc_loads
 from .git_repair import _git_env, repair_bare_worktree_config
 
 
@@ -1243,43 +1244,29 @@ def _allow_trusted_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:
     except OSError:
         return
 
-    try:
-        # An existing worktree should not re-evaluate the root .envrc on every
-        # launch.  Besides avoiding unnecessary work, that file may load
-        # credentials from a network-backed provider.
-        worktree_usable = subprocess.run(
-            ["direnv", "exec", str(worktree_dir), "true"],
+    # An existing worktree should not re-evaluate the root .envrc on every
+    # launch.  Besides avoiding unnecessary work, that file may load
+    # credentials from a network-backed provider.
+    #
+    # Both probes go through the shared portable helper. They previously ran
+    # ``direnv exec <dir> true``, which ALWAYS fails on Windows because ``true``
+    # is a shell builtin with no ``true.exe`` to resolve -- so the root trust
+    # check below returned False on healthy setups and this function silently
+    # refused to approve anything, which is why the launcher nagged forever.
+    if envrc_loads(worktree_dir):
+        return
+    if not envrc_loads(repo_root):
+        return
+
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            ["direnv", "allow", str(worktree_dir)],
             cwd=repo_root,
             capture_output=True,
             text=True,
+            timeout=60,
             check=False,
         )
-        if worktree_usable.returncode == 0:
-            return
-
-        # ``direnv status --json`` does not reliably report whether an .envrc
-        # can actually be executed.  Use the same command as the launch path
-        # as the authoritative root trust check instead.
-        root_usable = subprocess.run(
-            ["direnv", "exec", str(repo_root), "true"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return
-
-    if root_usable.returncode != 0:
-        return
-
-    subprocess.run(
-        ["direnv", "allow", str(worktree_dir)],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
 
 
 def cleanup_worktree(ai_name: str):
