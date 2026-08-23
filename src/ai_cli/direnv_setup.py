@@ -132,6 +132,45 @@ def bash_available() -> bool:
     return shutil.which("bash") is not None
 
 
+def envrc_loads(directory: Path, timeout: int = 60) -> bool:
+    """True when direnv can actually evaluate the ``.envrc`` applying to ``directory``.
+
+    Probes with ``direnv export json`` run *in* ``directory``, which loads the
+    .envrc and prints the resulting environment diff. It exits non-zero when the
+    file is blocked or errors, which is exactly the question every caller asks.
+
+    Replaces ``direnv exec <dir> true``, which is **broken on Windows and always
+    reports failure there**: ``true`` is a shell builtin, Git for Windows ships no
+    ``true.exe``, so direnv resolves the command against PATH, finds nothing, and
+    exits 1 -- with the .envrc having loaded perfectly. Measured on a Windows
+    host, on a directory whose .envrc was approved and loading cleanly::
+
+        direnv: ai-cli-utils environment loaded
+        direnv: error command 'true' not found on PATH '...'
+
+    That false negative is the root cause of the endless "run direnv allow"
+    nagging: it made every trust probe fail on Windows regardless of the actual
+    approval state, so the worktree auto-approval refused to act and the launcher
+    warned anyway.
+
+    ``direnv status`` is not a substitute -- it exits 0 even for a blocked
+    .envrc (measured: rc=0 on a deliberately unapproved file), so it cannot
+    answer this question. ``export json`` returns rc=1 there, as required.
+    """
+    try:
+        probe = subprocess.run(
+            ["direnv", "export", "json"],
+            capture_output=True,
+            text=True,
+            cwd=directory,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
 def find_envrc(start: Path) -> Path | None:
     """Return the nearest ``.envrc`` at or above ``start``, else None.
 
@@ -147,6 +186,52 @@ def find_envrc(start: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def refresh_windows_path() -> bool:
+    """Re-read the persisted Windows PATH into this process. True if it changed.
+
+    A package manager writes the new directory to the registry, but a process
+    that is already running keeps the environment block it started with -- which
+    is why a freshly installed direnv is invisible until the shell is restarted,
+    and the symptom that prompted this module ("direnv: not a command" when
+    direnv was in fact installed).
+
+    This process does not have to wait for a restart: the persisted value can be
+    read back and merged in. A parent shell cannot be fixed from here -- no
+    process can mutate another's environment -- so :func:`remediation` prints the
+    per-shell one-liner for that instead.
+
+    Machine PATH is placed before user PATH, matching how Windows itself
+    composes them. Entries already present are preserved and not reordered, so a
+    deliberately prepended directory keeps its precedence.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+    except ImportError:
+        return False
+
+    persisted: list[str] = []
+    for root, subkey in (
+        (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+    ):
+        try:
+            with winreg.OpenKey(root, subkey) as key:
+                value, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        persisted.extend(part for part in str(value).split(os.pathsep) if part)
+
+    current = [part for part in os.environ.get("PATH", "").split(os.pathsep) if part]
+    seen = {part.rstrip("\\").lower() for part in current}
+    added = [part for part in persisted if part.rstrip("\\").lower() not in seen]
+    if not added:
+        return False
+    os.environ["PATH"] = os.pathsep.join([*current, *added])
+    return True
 
 
 def _needs_root(argv: list[str]) -> bool:
@@ -187,8 +272,13 @@ def install_direnv(timeout: int = 300) -> InstallResult:
             continue
         # Trust the executable's own verdict, then confirm the binary really
         # landed: some managers exit 0 having only staged a pending install.
-        if proc.returncode == 0 and direnv_available():
-            return InstallResult(True, tool=probe)
+        # The PATH refresh must come first -- the installer wrote its directory
+        # to the registry, not to this already-running process, so without it a
+        # perfectly good install looks like a failure.
+        if proc.returncode == 0:
+            refresh_windows_path()
+            if direnv_available():
+                return InstallResult(True, tool=probe)
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
         skipped.append(f"{probe} (exit {proc.returncode}: {detail[-1] if detail else 'no output'})")
 
@@ -218,11 +308,23 @@ def remediation(envrc: Path | None = None, result: InstallResult | None = None) 
     ]
     # The single most common "it didn't work" report: the install succeeded but
     # the shell that runs `direnv` was started before it and kept the old PATH.
-    lines += [
-        "",
-        "  Then RESTART this shell. An already-running shell keeps the PATH it started",
-        "  with, so it will still say 'direnv: command not found' after a good install.",
-    ]
+    # ai-cli-utils refreshes its OWN PATH after installing, so this is only about
+    # the operator's interactive shell, which no other process can fix for it.
+    if sys.platform == "win32":
+        lines += [
+            "",
+            "  An already-running shell keeps the PATH it started with, so it can still",
+            "  say 'direnv: command not found' after a good install. Refresh it in place:",
+            "      PowerShell:  $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine')"
+            + " + ';' + [Environment]::GetEnvironmentVariable('Path','User')",
+            '      Git Bash:    export PATH="$PATH:/c/ProgramData/chocolatey/bin:$LOCALAPPDATA/Microsoft/WinGet/Links"',
+            "  Or just open a new shell.",
+        ]
+    else:
+        lines += [
+            "",
+            "  Then open a new shell (or re-source your shell profile) so PATH picks it up.",
+        ]
 
     if sys.platform == "win32" and not bash_available():
         lines += [

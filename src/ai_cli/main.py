@@ -5,7 +5,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -102,6 +101,7 @@ from .process_manager import (  # noqa: F401
     _cmd_signal_watch_stop,
     _ensure_circusd,
 )
+from .process_probe import StartTimeMatch, probe_for
 from .session import (  # noqa: F401
     _AI_SESSION_RE,
     _checkpoint_to_chat_uuid,
@@ -232,22 +232,15 @@ def _direnv_installed() -> bool:
 
 
 def _direnv_env_usable(project_root: Path) -> bool:
-    """True when ``direnv exec <project_root>`` can actually run a command there.
+    """True when direnv can actually load the environment for ``project_root``.
 
-    Probes with a trivial command rather than reading ``direnv status``, whose
-    fields do not reliably report whether the environment will load (the same
-    reason ``_allow_trusted_worktree_envrc`` uses this check).
+    Delegates to the one portable probe so this and the worktree auto-approval in
+    ``session.py`` cannot disagree. The previous ``direnv exec <dir> true`` probe
+    always failed on Windows -- ``true`` is not an executable there -- which made
+    this report "unusable" on a perfectly healthy setup and produced the endless
+    approval nagging. See :func:`ai_cli.direnv_setup.envrc_loads`.
     """
-    try:
-        probe = subprocess.run(
-            ["direnv", "exec", str(project_root), "true"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (FileNotFoundError, OSError):
-        return False
-    return probe.returncode == 0
+    return _direnv_setup.envrc_loads(project_root)
 
 
 def _session_shell_or_exit() -> str:
@@ -323,59 +316,6 @@ def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
     return None
 
 
-#: ``/proc/<pid>/stat`` state characters for a process that has already exited and
-#: is only waiting to be reaped by its parent.
-_ENDED_PROC_STATES = frozenset({"Z", "X", "x"})
-
-#: State characters for a process that is present but is not running the session:
-#: ``T`` job-control stop, ``t`` tracing stop, plus the exited-but-unreaped states.
-#: A stopped process holds its pid, its ``/proc`` entry and its open files, never
-#: resumes on its own, and cannot even act on a ``SIGTERM`` until something
-#: continues it -- which is how an exited session kept its name reserved.
-_ABANDONED_PROC_STATES = _ENDED_PROC_STATES | frozenset({"T", "t"})
-
-
-def _proc_start_ticks(pid: int, proc_dir: Path) -> int | None:
-    """Return field 22 (``starttime``) of ``/proc/<pid>/stat``, or None if unreadable.
-
-    Field 2 is the executable name, parenthesized, and may itself contain spaces
-    and parens -- so the fields are counted from after the *last* ``)``.  Splitting
-    the whole line instead shifts every field for a process named e.g.
-    ``claude (worker) 1`` and silently compares the wrong number.
-    """
-    try:
-        line = (proc_dir / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    if ")" not in line:
-        return None
-    fields = line.rpartition(")")[2].split()
-    if len(fields) < 20:
-        return None
-    try:
-        return int(fields[19])
-    except ValueError:
-        return None
-
-
-def _proc_state(pid: int, proc_dir: Path) -> str | None:
-    """Return field 3 (``state``) of ``/proc/<pid>/stat``, or None if unreadable.
-
-    Counted from after the *last* ``)`` for the same reason
-    :func:`_proc_start_ticks` counts from there: field 2 is a parenthesized
-    executable name that may itself contain spaces and parens, so splitting the
-    whole line reads the wrong character as the state.
-    """
-    try:
-        line = (proc_dir / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    if ")" not in line:
-        return None
-    fields = line.rpartition(")")[2].split()
-    return fields[0] if fields else None
-
-
 def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     """Classify a session record as ``"live"``, ``"abandoned"``, ``"gone"``, or ``"unproven"``.
 
@@ -395,6 +335,12 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
     ``/proc/<pid>`` fully populated after a ``SIGTERM`` that returned 0.  A
     stopped process never resumes on its own, so calling it live reserved the
     session name forever.  See :func:`_reclaim_abandoned_cc_session`.
+
+    Every question about the process itself goes through
+    :func:`ai_cli.process_probe.probe_for`, which is what makes this work off
+    Linux: reading ``/proc`` here directly could answer neither the state nor the
+    identity question on macOS or Windows, so no session was ever classified
+    ``"abandoned"`` there and a recycled pid still blocked its name.
 
     The deferred import below is guarded for the same fail-open reason.  ``ai c``
     can replace this process's own installation mid-run (``ai update --force`` ->
@@ -420,24 +366,22 @@ def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
         return "unproven"
     if not _pid_is_live(pid, proc_dir):
         return "gone"
-    root = proc_dir if proc_dir is not None else Path("/proc")
+    probe = probe_for(proc_dir)
     # Checked before ``procStart``: a stopped process is abandoned whether or not
     # the record carries enough to identify it.
-    if _proc_state(pid, root) in _ABANDONED_PROC_STATES:
+    if probe.is_abandoned(pid):
         return "abandoned"
-    recorded = record.get("procStart")
-    if not isinstance(recorded, int) or isinstance(recorded, bool):
+    match = probe.start_time_match(pid, record.get("procStart"))
+    if match is StartTimeMatch.UNRECORDED:
         # The pid runs and nothing refutes its identity; keep the historical refusal.
         return "live"
-    actual = _proc_start_ticks(pid, root)
-    if actual is None:
-        return "unproven"
-    if actual == recorded:
+    if match is StartTimeMatch.MATCH:
         return "live"
-    # A recycled pid: the recorded process is gone, but the record is NOT pruned --
-    # a `procStart` in some other unit (a platform that writes an epoch, say) would
-    # mismatch too, and deleting a live session's record misleads every other tool
-    # that reads this registry.  Not blocking the launch is enough to fix the bug.
+    # A recycled pid, or a start time this platform cannot read: the recorded process
+    # may well be gone, but the record is NOT pruned -- a `procStart` in some unit
+    # this code does not recognise would fail to match too, and deleting a live
+    # session's record misleads every other tool that reads this registry.  Not
+    # blocking the launch is enough to fix the bug.
     return "unproven"
 
 
@@ -453,72 +397,6 @@ def _prune_dead_cc_session_record(entry: Path) -> None:
         entry.unlink()
 
 
-def _pid_has_ended(pid: int, proc_dir: Path) -> bool:
-    """True when ``pid`` is gone, or present only as a zombie.
-
-    The absence of ``/proc/<pid>`` is the answer -- never a kill's return code,
-    which is 0 for a stopped process that never acts on the signal.  A zombie
-    counts as ended: it has already exited and holds nothing open, and what
-    remains outstanding is its parent's ``wait()``, which a launcher that did not
-    spawn the process cannot perform (and a parent that is itself stopped never
-    will).
-    """
-    if not (proc_dir / str(pid)).exists():
-        return True
-    return _proc_state(pid, proc_dir) in _ENDED_PROC_STATES
-
-
-def _end_session_process(pid: int, timeout: float = 5.0) -> bool:
-    """SIGTERM, SIGCONT, bounded wait, SIGKILL -- then answer from ``/proc``.
-
-    The SIGCONT is part of the escalation rather than belt-and-braces: a stopped
-    process *queues* the SIGTERM and does not act on it until something continues
-    it, which is exactly how a ``kill -TERM`` that returned 0 left an exited
-    session alive in state ``T``.
-
-    Signals are aimed at the process *group*, so a wrapper's children go with it
-    instead of being orphaned.  The one exception is a group that is this
-    process's own: a group signal there would kill the launcher itself, and
-    everything else sharing its job, so the recorded pid alone is signalled.
-
-    Always reads the real ``/proc``: the signals are real, so an injected
-    directory would only make the confirmation dishonest.
-    """
-    group = 0
-    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-        try:
-            pgid = os.getpgid(pid)
-        except OSError:
-            pgid = 0
-        if pgid > 1 and pgid != os.getpgrp():
-            group = pgid
-
-    def send(sig: int) -> None:
-        # Failures are ignored on purpose -- whether the process ended is read
-        # back from /proc below, never inferred from a signal's return.
-        with contextlib.suppress(OSError):
-            if group:
-                os.killpg(group, sig)
-            else:
-                os.kill(pid, sig)
-
-    def ended_within(seconds: float) -> bool:
-        deadline = time.monotonic() + seconds
-        while True:
-            if _pid_has_ended(pid, Path("/proc")):
-                return True
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(0.05)
-
-    send(signal.SIGTERM)
-    send(signal.SIGCONT)
-    if ended_within(timeout):
-        return True
-    send(signal.SIGKILL)
-    return ended_within(timeout)
-
-
 def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
     """End a session process that stopped instead of exiting, and prune its record.
 
@@ -527,20 +405,20 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
     reclaiming one would only move the surprise.
 
     The process is signalled only when the record can prove *which* process it
-    is -- ``procStart`` must match the live ``/proc`` entry.  Killing on a pid
-    alone would eventually kill a stranger that inherited a recycled pid, and a
-    record outliving its process is this registry's known failure mode.
+    is -- ``procStart`` must match the process now holding the pid.  Killing on a
+    pid alone would eventually kill a stranger that inherited a recycled pid, and
+    a record outliving its process is this registry's known failure mode.
+
+    The probe is resolved with no injected ``/proc`` directory: the termination is
+    real, so reading anything but the real system would only make the confirmation
+    dishonest.
     """
+    probe = probe_for()
     pid = int(record.get("pid", 0))
-    state = _proc_state(pid, Path("/proc")) or "?"
+    state = probe.state(pid) or "?"
     name = str(record.get("name") or "")
     label = f"'{name}'" if name else (str(record.get("sessionId") or "")[:8] or "<unnamed>")
-    recorded = record.get("procStart")
-    identified = (
-        isinstance(recorded, int)
-        and not isinstance(recorded, bool)
-        and _proc_start_ticks(pid, Path("/proc")) == recorded
-    )
+    identified = probe.start_time_match(pid, record.get("procStart")) is StartTimeMatch.MATCH
     if not identified:
         print(
             f"Claude Code session {label} recorded pid {pid}, which is present but not running "
@@ -549,11 +427,11 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
             file=sys.stderr,
         )
         return False
-    if _end_session_process(pid):
+    if probe.end_process(pid):
         _prune_dead_cc_session_record(entry)
         print(
             f"Claude Code session {label} did not exit: pid {pid} was present in state {state}, "
-            f"not gone. Ended it and its process group, pruned the stale record, and resuming "
+            f"not gone. Ended it and everything it wrapped, pruned the stale record, and resuming "
             f"this session.",
             file=sys.stderr,
         )
@@ -561,7 +439,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
     print(
         f"Claude Code session {label} did not exit: pid {pid} is present in state {state} and "
         f"could not be ended. Resuming the session anyway; end that process by hand with "
-        f"`kill -CONT {pid}; kill -TERM {pid}`.",
+        f"{probe.manual_end_hint(pid)}.",
         file=sys.stderr,
     )
     return False

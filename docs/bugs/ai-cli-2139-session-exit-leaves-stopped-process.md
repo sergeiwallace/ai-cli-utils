@@ -181,6 +181,17 @@ All in `src/ai_cli/main.py`, commit `edebffb`:
   killed on the strength of a stale record), prunes the record once the process is gone, and
   always reports what it found and what it did.
 
+**Where this code lives now.** The four helpers above were Linux-only, and that made the whole
+feature a silent no-op on macOS and Windows: with no `/proc` to read, the state and identity
+questions had no answer, so nothing was ever classified `abandoned` and reclamation returned
+early every time. `SIGCONT`/`SIGKILL` do not exist on Windows either, so reaching the
+escalation there would have raised `AttributeError` — the missing procfs was the only thing
+hiding it. `AI-CLI-session-reclamation-linux-only-zusn` moved all four behind
+`ai_cli.process_probe.ProcessProbe`: `ProcfsProbe` keeps the exact `/proc` behaviour and signal
+escalation described above, `PsutilProbe` answers the same questions on macOS and Windows, and
+`probe_for()` picks one so no call site branches on the platform. The `/proc` semantics, the
+regression suite below, and the `proc_dir` injection seam are unchanged.
+
 Why this targets the cause rather than the symptom: the launcher's wrong decision came from a
 predicate that could not express "present but not running". The fix gives it that verdict and
 then makes the abandoned state terminal, so the name is free on the next launch and the operator
@@ -240,7 +251,14 @@ with its record intact.
   and could resume appending to the moment anything continues it. Refusing there is the safe
   answer, and the asymmetry matches the existing note in `_cc_record_liveness` about the
   worktree probe failing closed while this one fails open. Do not harmonise them without
-  re-deciding that trade.
+  re-deciding that trade. (`_pid_is_live` now shares the *mechanism* — one probe factory — while
+  keeping its own opposite fail direction; that is the harmonisation this note permits.)
+- **A fix written against one platform's kernel interface is a feature that does not exist on
+  the others.** Every helper here was correct and tested, and the whole feature was still dead
+  on macOS and Windows because `/proc` is not portable. Nothing failed loudly: the readers
+  answered "unknown", the gates read that as "do nothing", and the only symptom was a session
+  name that stayed reserved. When a fix reaches for a platform-specific interface, the question
+  to answer in the same pass is what the other platforms will silently do instead.
 
 <!-- /doc:region name="lessons_learned" -->
 

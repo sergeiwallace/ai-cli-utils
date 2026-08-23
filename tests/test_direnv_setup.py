@@ -9,8 +9,11 @@ Nothing here may touch a real package manager, so ``shutil.which`` and
 ``subprocess.run`` are stubbed at the module boundary in every install test.
 """
 
+import contextlib
+import os
 import subprocess
 import sys
+import types
 from unittest.mock import patch
 
 import pytest
@@ -21,9 +24,11 @@ from ai_cli.direnv_setup import (
     bash_available,
     direnv_available,
     ensure_direnv,
+    envrc_loads,
     find_envrc,
     install_direnv,
     is_bypassed,
+    refresh_windows_path,
     remediation,
 )
 
@@ -75,6 +80,55 @@ def test_given_bash_absent_when_probed_then_unavailable():
     """Tracked separately from direnv: on Windows the two fail independently."""
     with patch("ai_cli.direnv_setup.shutil.which", return_value=None):
         assert bash_available() is False
+
+
+# --- envrc_loads probe --------------------------------------------------------
+
+
+def test_given_loadable_envrc_when_probed_then_true(tmp_path):
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")):
+        assert envrc_loads(tmp_path) is True
+
+
+def test_given_blocked_envrc_when_probed_then_false(tmp_path):
+    """direnv exits non-zero on a blocked .envrc -- measured rc=1."""
+    blocked = subprocess.CompletedProcess([], 1, "", "direnv: error .envrc is blocked")
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=blocked):
+        assert envrc_loads(tmp_path) is False
+
+
+def test_given_probe_run_in_the_target_directory_then_cwd_is_that_directory(tmp_path):
+    """`direnv export json` has no directory argument -- it reads the cwd.
+
+    Passing the directory as cwd is what makes it equivalent to the old
+    `direnv exec <dir>` form; getting this wrong would probe the wrong .envrc.
+    """
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+        envrc_loads(tmp_path)
+
+    assert run.call_args.kwargs["cwd"] == tmp_path
+
+
+def test_given_probe_when_built_then_it_never_uses_the_true_builtin(tmp_path):
+    """Regression: `direnv exec <dir> true` always fails on Windows.
+
+    `true` is a shell builtin and Git for Windows ships no `true.exe`, so direnv
+    resolves it against PATH, finds nothing, and exits 1 even though the .envrc
+    loaded cleanly. That false negative made every trust probe fail on Windows,
+    which is what produced the endless "run direnv allow" nagging.
+    """
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+        envrc_loads(tmp_path)
+
+    argv = run.call_args[0][0]
+    assert "true" not in argv
+    assert argv[:3] == ["direnv", "export", "json"]
+
+
+@pytest.mark.parametrize("boom", [OSError("no direnv"), subprocess.TimeoutExpired("direnv", 60)])
+def test_given_probe_raising_when_called_then_false_without_raising(tmp_path, boom):
+    with patch("ai_cli.direnv_setup.subprocess.run", side_effect=boom):
+        assert envrc_loads(tmp_path) is False
 
 
 # --- .envrc discovery ---------------------------------------------------------
@@ -223,6 +277,98 @@ def test_given_first_manager_failing_when_installing_then_next_is_tried(monkeypa
     assert result.installed is True
     assert result.tool == "winget"
     assert run.call_count == 2
+
+
+# --- PATH refresh -------------------------------------------------------------
+
+
+def test_given_non_windows_when_refreshing_path_then_it_is_a_noop(monkeypatch):
+    """PATH is only stale-vs-registry on Windows; elsewhere there is nothing to reread."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    assert refresh_windows_path() is False
+    assert os.environ["PATH"] == "/usr/bin"
+
+
+def test_given_a_new_registry_entry_when_refreshing_path_then_it_is_appended(monkeypatch):
+    """The install-time fix: a manager wrote to the registry, not to this process."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\existing")
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=1,
+        HKEY_CURRENT_USER=2,
+        OpenKey=lambda *a, **k: contextlib.nullcontext("key"),
+        QueryValueEx=lambda _key, _name: (r"C:\existing;C:\brand-new", 1),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+
+    assert refresh_windows_path() is True
+    assert r"C:\brand-new" in os.environ["PATH"]
+    # existing entry keeps its position, so a deliberately prepended dir still wins
+    assert os.environ["PATH"].startswith(r"C:\existing")
+
+
+def test_given_no_new_entries_when_refreshing_path_then_unchanged(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\existing")
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=1,
+        HKEY_CURRENT_USER=2,
+        OpenKey=lambda *a, **k: contextlib.nullcontext("key"),
+        QueryValueEx=lambda _key, _name: (r"C:\existing", 1),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+
+    assert refresh_windows_path() is False
+    assert os.environ["PATH"] == r"C:\existing"
+
+
+def test_given_unreadable_registry_when_refreshing_path_then_no_raise(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\existing")
+
+    def boom(*_a, **_k):
+        raise OSError("denied")
+
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=1, HKEY_CURRENT_USER=2, OpenKey=boom, QueryValueEx=lambda *a: ("", 1)
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+
+    assert refresh_windows_path() is False
+
+
+def test_given_install_succeeding_only_after_path_refresh_then_reported_installed(monkeypatch):
+    """Regression: a good install was reported as a failure because PATH was stale.
+
+    `winget` exits 0 having added its own directory to the registry. Without the
+    refresh, `shutil.which` still cannot see direnv and the install looks failed.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    completed = subprocess.CompletedProcess(["winget"], 0, "", "")
+    state = {"refreshed": False}
+
+    def which(name):
+        if name == "winget":
+            return "/winget"
+        if name == "direnv":
+            return "/direnv" if state["refreshed"] else None
+        return None
+
+    def refresh():
+        state["refreshed"] = True
+        return True
+
+    with (
+        patch("ai_cli.direnv_setup.shutil.which", side_effect=which),
+        patch("ai_cli.direnv_setup.subprocess.run", return_value=completed),
+        patch("ai_cli.direnv_setup.refresh_windows_path", side_effect=refresh),
+    ):
+        result = install_direnv()
+
+    assert result.installed is True
+    assert result.tool == "winget"
 
 
 # --- remediation text ---------------------------------------------------------
