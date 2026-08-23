@@ -232,22 +232,15 @@ def _direnv_installed() -> bool:
 
 
 def _direnv_env_usable(project_root: Path) -> bool:
-    """True when ``direnv exec <project_root>`` can actually run a command there.
+    """True when direnv can actually load the environment for ``project_root``.
 
-    Probes with a trivial command rather than reading ``direnv status``, whose
-    fields do not reliably report whether the environment will load (the same
-    reason ``_allow_trusted_worktree_envrc`` uses this check).
+    Delegates to the one portable probe so this and the worktree auto-approval in
+    ``session.py`` cannot disagree. The previous ``direnv exec <dir> true`` probe
+    always failed on Windows -- ``true`` is not an executable there -- which made
+    this report "unusable" on a perfectly healthy setup and produced the endless
+    approval nagging. See :func:`ai_cli.direnv_setup.envrc_loads`.
     """
-    try:
-        probe = subprocess.run(
-            ["direnv", "exec", str(project_root), "true"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (FileNotFoundError, OSError):
-        return False
-    return probe.returncode == 0
+    return _direnv_setup.envrc_loads(project_root)
 
 
 def _session_shell_or_exit() -> str:

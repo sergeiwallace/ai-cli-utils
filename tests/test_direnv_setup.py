@@ -24,6 +24,7 @@ from ai_cli.direnv_setup import (
     bash_available,
     direnv_available,
     ensure_direnv,
+    envrc_loads,
     find_envrc,
     install_direnv,
     is_bypassed,
@@ -79,6 +80,55 @@ def test_given_bash_absent_when_probed_then_unavailable():
     """Tracked separately from direnv: on Windows the two fail independently."""
     with patch("ai_cli.direnv_setup.shutil.which", return_value=None):
         assert bash_available() is False
+
+
+# --- envrc_loads probe --------------------------------------------------------
+
+
+def test_given_loadable_envrc_when_probed_then_true(tmp_path):
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")):
+        assert envrc_loads(tmp_path) is True
+
+
+def test_given_blocked_envrc_when_probed_then_false(tmp_path):
+    """direnv exits non-zero on a blocked .envrc -- measured rc=1."""
+    blocked = subprocess.CompletedProcess([], 1, "", "direnv: error .envrc is blocked")
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=blocked):
+        assert envrc_loads(tmp_path) is False
+
+
+def test_given_probe_run_in_the_target_directory_then_cwd_is_that_directory(tmp_path):
+    """`direnv export json` has no directory argument -- it reads the cwd.
+
+    Passing the directory as cwd is what makes it equivalent to the old
+    `direnv exec <dir>` form; getting this wrong would probe the wrong .envrc.
+    """
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+        envrc_loads(tmp_path)
+
+    assert run.call_args.kwargs["cwd"] == tmp_path
+
+
+def test_given_probe_when_built_then_it_never_uses_the_true_builtin(tmp_path):
+    """Regression: `direnv exec <dir> true` always fails on Windows.
+
+    `true` is a shell builtin and Git for Windows ships no `true.exe`, so direnv
+    resolves it against PATH, finds nothing, and exits 1 even though the .envrc
+    loaded cleanly. That false negative made every trust probe fail on Windows,
+    which is what produced the endless "run direnv allow" nagging.
+    """
+    with patch("ai_cli.direnv_setup.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+        envrc_loads(tmp_path)
+
+    argv = run.call_args[0][0]
+    assert "true" not in argv
+    assert argv[:3] == ["direnv", "export", "json"]
+
+
+@pytest.mark.parametrize("boom", [OSError("no direnv"), subprocess.TimeoutExpired("direnv", 60)])
+def test_given_probe_raising_when_called_then_false_without_raising(tmp_path, boom):
+    with patch("ai_cli.direnv_setup.subprocess.run", side_effect=boom):
+        assert envrc_loads(tmp_path) is False
 
 
 # --- .envrc discovery ---------------------------------------------------------
