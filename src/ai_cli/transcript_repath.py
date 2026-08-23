@@ -19,6 +19,20 @@ The rewrite:
 3. Copies (never moves) rewritten files to new directory names under a destination
 4. Leaves originals untouched until resume is proven
 
+Rewrite policy
+--------------
+Only STRING VALUES in decoded JSON are rewritten. Dictionary keys, numbers, booleans,
+and null values are left untouched. A string value containing the old root as a
+substring (not necessarily at the start) is rewritten. This policy means a longer
+token embedding the prefix inside may be partially rewritten, which is accepted as
+necessary for embedded path references in message content.
+
+Malformed JSONL lines cause the entire file to be rejected with a loud error.
+
+Limitations
+-----------
+Windows paths are out of scope. The tool assumes POSIX paths only.
+
 Depends only on the standard library and the existing ``cc_migrate`` machinery.
 """
 
@@ -70,42 +84,64 @@ def _slugify_cwd(cwd: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "-", cwd)
 
 
-def _rewrite_jsonl_line(line: str, old_root: str, new_root: str) -> tuple[str, bool]:
-    """Rewrite one JSONL line, replacing all occurrences of old_root with new_root.
+def _rewrite_value(obj: object, old_root: str, new_root: str) -> tuple[object, bool]:
+    """Recursively rewrite string values in a JSON structure.
 
-    Returns (rewritten_line, changed). Only JSON objects are rewritten; malformed
-    or blank lines return unchanged. Unlike the single-session migrate which only
-    touches top-level cwd fields, this rewrites ALL string values containing the
-    old root, because transcripts embed absolute paths in message content and tool
-    results.
+    Only string values are rewritten; dict keys, numbers, booleans, and nulls are
+    left untouched. Returns (rewritten_obj, changed).
+    """
+    if isinstance(obj, str):
+        if old_root in obj:
+            return obj.replace(old_root, new_root), True
+        return obj, False
+    if isinstance(obj, dict):
+        changed = False
+        result = {}
+        for k, v in obj.items():
+            new_v, v_changed = _rewrite_value(v, old_root, new_root)
+            result[k] = new_v
+            changed = changed or v_changed
+        return result, changed
+    if isinstance(obj, list):
+        changed = False
+        result = []
+        for item in obj:
+            new_item, item_changed = _rewrite_value(item, old_root, new_root)
+            result.append(new_item)
+            changed = changed or item_changed
+        return result, changed
+    # Numbers, booleans, None - pass through
+    return obj, False
+
+
+def _rewrite_jsonl_line(line: str, old_root: str, new_root: str) -> tuple[str, bool]:
+    """Rewrite one JSONL line, replacing old_root with new_root in string values.
+
+    Returns (rewritten_line, changed). Only JSON objects are rewritten; blank lines
+    pass through unchanged. Malformed JSON raises an exception (caller must handle).
+
+    Unlike the single-session migrate which only touches top-level cwd fields, this
+    rewrites ALL string values containing the old root, because transcripts embed
+    absolute paths in message content and tool results.
+
+    Dict keys are never rewritten, only values.
     """
     stripped = line.strip()
     if not stripped:
         return line, False
 
-    try:
-        record = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        return line, False
+    # Parse JSON - let exceptions propagate to caller
+    record = json.loads(stripped)
 
     if not isinstance(record, dict):
         return line, False
 
-    # Serialize, do a string replacement, deserialize to verify it's still valid JSON
-    # This catches embedded paths in any string value at any depth
-    serialized = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-    if old_root not in serialized:
+    # Recursively rewrite string values
+    rewritten_record, changed = _rewrite_value(record, old_root, new_root)
+    if not changed:
         return line, False
 
-    rewritten = serialized.replace(old_root, new_root)
-    # Verify the replacement didn't break JSON structure
-    try:
-        json.loads(rewritten)
-    except (json.JSONDecodeError, ValueError):
-        # Replacement corrupted JSON - return original
-        return line, False
-
-    return rewritten + "\n", True
+    return json.dumps(rewritten_record, ensure_ascii=False, separators=(",", ":")) + "\n", True
 
 
 def plan_repath(
@@ -197,6 +233,67 @@ def plan_repath(
     )
 
 
+def _copy_or_rewrite_file(
+    src: Path,
+    dest: Path,
+    old_root: str,
+    new_root: str,
+    *,
+    is_jsonl: bool,
+    result: RepathResult,
+) -> None:
+    """Copy one file to dest, rewriting if it's a .jsonl file.
+
+    Raises OSError or json.JSONDecodeError on failure. Uses atomic write via temp file.
+    """
+    import os
+    import tempfile
+
+    if is_jsonl:
+        # Parse and rewrite every line
+        out_lines: list[str] = []
+        try:
+            with src.open("r", encoding="utf-8") as fh:
+                for line_num, line in enumerate(fh, start=1):
+                    result.total_lines += 1
+                    try:
+                        rewritten, changed = _rewrite_jsonl_line(line, old_root, new_root)
+                        if changed:
+                            result.lines_rewritten += 1
+                        out_lines.append(rewritten)
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        raise json.JSONDecodeError(
+                            f"malformed JSONL at line {line_num}: {exc.msg}", exc.doc, exc.pos
+                        ) from exc
+        except json.JSONDecodeError:
+            raise  # Re-raise with line number info
+
+        content = "".join(out_lines)
+        # Atomic write via temp file
+        dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".tmp_repath_", suffix=".jsonl")
+        try:
+            os.write(fd, content.encode("utf-8"))
+            os.close(fd)
+            Path(tmp_path).replace(dest)
+        except Exception:
+            os.close(fd)
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
+
+        result.bytes_written += len(content.encode("utf-8"))
+
+        # Preserve mtime
+        src_stat = src.stat()
+        os.utime(dest, (src_stat.st_atime, src_stat.st_mtime))
+
+        result.jsonl_files += 1
+    else:
+        # Copy byte-for-byte
+        dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+
+
 def repath_project_dir(
     old_dir: Path,
     new_dir: Path,
@@ -207,8 +304,12 @@ def repath_project_dir(
 ) -> RepathResult:
     """Repath one project directory from old_dir to new_dir.
 
-    Rewrites every ``*.jsonl`` file, replacing all occurrences of old_root with
-    new_root. Writes to new_dir (created if needed). Never modifies old_dir.
+    Recursively rewrites every ``*.jsonl`` file at any depth, replacing all
+    occurrences of old_root with new_root in string values. Copies all other files
+    byte-for-byte. Writes to new_dir (created if needed). Never modifies old_dir.
+
+    Malformed JSONL produces a loud error and no destination copy for that file.
+
     Returns statistics about what was rewritten.
     """
     result = RepathResult(
@@ -224,64 +325,52 @@ def repath_project_dir(
         result.errors.append(f"source directory {old_dir} does not exist")
         return result
 
-    jsonl_files = sorted(old_dir.glob("*.jsonl"))
+    # Collect all files recursively
+    all_files = sorted(old_dir.rglob("*"))
+    jsonl_files = [f for f in all_files if f.is_file() and f.suffix == ".jsonl"]
+
     if not jsonl_files:
-        return result
+        # Still copy non-jsonl files if present
+        pass
 
     if dry_run:
         # Dry run: count what would be rewritten without writing
         for jsonl in jsonl_files:
             try:
                 with jsonl.open("r", encoding="utf-8") as fh:
-                    for line in fh:
+                    for line_num, line in enumerate(fh, start=1):
                         result.total_lines += 1
-                        _, changed = _rewrite_jsonl_line(line, old_root, new_root)
-                        if changed:
-                            result.lines_rewritten += 1
+                        try:
+                            _, changed = _rewrite_jsonl_line(line, old_root, new_root)
+                            if changed:
+                                result.lines_rewritten += 1
+                        except (json.JSONDecodeError, ValueError):
+                            result.errors.append(f"{jsonl.relative_to(old_dir)}: malformed JSONL at line {line_num}")
+                            break
                 result.jsonl_files += 1
             except OSError as exc:
-                result.errors.append(f"{jsonl.name}: {exc}")
+                result.errors.append(f"{jsonl.relative_to(old_dir)}: {exc}")
         return result
 
-    # Real run: write rewritten files to new_dir
-    try:
-        new_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    except OSError as exc:
-        result.errors.append(f"could not create {new_dir}: {exc}")
+    # Real run: check for collisions first
+    if new_dir.exists():
+        result.errors.append(f"destination {new_dir} already exists - refusing to overwrite")
         return result
 
-    for jsonl in jsonl_files:
+    # Copy/rewrite all files recursively
+    for src_file in all_files:
+        if src_file.is_dir():
+            continue
+
+        rel_path = src_file.relative_to(old_dir)
+        dest_file = new_dir / rel_path
+        is_jsonl = src_file.suffix == ".jsonl"
+
         try:
-            out_lines: list[str] = []
-            with jsonl.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    result.total_lines += 1
-                    rewritten, changed = _rewrite_jsonl_line(line, old_root, new_root)
-                    if changed:
-                        result.lines_rewritten += 1
-                    out_lines.append(rewritten)
-
-            dest_jsonl = new_dir / jsonl.name
-            content = "".join(out_lines)
-            dest_jsonl.write_text(content, encoding="utf-8")
-            result.bytes_written += len(content.encode("utf-8"))
-
-            # Preserve mtime
-            src_stat = jsonl.stat()
-            import os
-
-            os.utime(dest_jsonl, (src_stat.st_atime, src_stat.st_mtime))
-
-            # Copy sidecar directory if present
-            sidecar_src = old_dir / jsonl.stem
-            if sidecar_src.is_dir():
-                sidecar_dest = new_dir / jsonl.stem
-                shutil.copytree(sidecar_src, sidecar_dest, dirs_exist_ok=True)
-
-            result.jsonl_files += 1
-
-        except OSError as exc:
-            result.errors.append(f"{jsonl.name}: {exc}")
+            _copy_or_rewrite_file(src_file, dest_file, old_root, new_root, is_jsonl=is_jsonl, result=result)
+        except (OSError, json.JSONDecodeError) as exc:
+            result.errors.append(f"{rel_path}: {exc}")
+            # Continue processing other files, but this file produced no output
 
     return result
 
@@ -300,6 +389,10 @@ def repath_all(
     Pass ``dest_base`` to write into a different location for testing (the directory
     structure under dest_base will mirror the live layout).
 
+    Detects and refuses collisions: if two distinct source directories map to the
+    same destination, or if a destination already exists, the operation fails with
+    an error.
+
     Returns one result per project directory processed.
     """
     home = claude_home if claude_home is not None else Path.home() / ".claude"
@@ -309,10 +402,29 @@ def repath_all(
     old_root_str = str(old_root.resolve())
     new_root_str = str(new_root.resolve())
 
+    # Check for destination collisions before processing anything
+    seen_destinations: dict[Path, Path] = {}
     for old_dir, new_dir in plan.project_dirs:
-        # If dest_base is given, write to that instead of the live projects dir
         if dest_base:
             new_dir = dest_base / new_dir.name
+
+        if new_dir in seen_destinations:
+            # Two source directories map to the same destination
+            result = RepathResult(
+                old_dir=old_dir,
+                new_dir=new_dir,
+                jsonl_files=0,
+                lines_rewritten=0,
+                total_lines=0,
+                bytes_written=0,
+            )
+            result.errors.append(
+                f"destination collision: {old_dir} and {seen_destinations[new_dir]} both map to {new_dir}"
+            )
+            results.append(result)
+            continue
+
+        seen_destinations[new_dir] = old_dir
 
         result = repath_project_dir(
             old_dir,

@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from ai_cli.transcript_repath import (
     _rewrite_jsonl_line,
     _slugify_cwd,
@@ -66,11 +68,10 @@ def test_rewrite_jsonl_line_blank():
 
 
 def test_rewrite_jsonl_line_malformed():
-    """Malformed JSON is unchanged."""
+    """Malformed JSON raises an exception."""
     line = "not json at all\n"
-    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
-    assert not changed
-    assert rewritten == line
+    with pytest.raises(json.JSONDecodeError):
+        _rewrite_jsonl_line(line, "/old/root", "/new/root")
 
 
 def test_rewrite_jsonl_line_nested_paths():
@@ -190,14 +191,22 @@ def test_repath_project_dir_copies_sidecar(tmp_path):
 
     sidecar = old_dir / "abc123"
     sidecar.mkdir()
-    (sidecar / "subagent.jsonl").write_text("content")
+    # Valid JSON in the sidecar .jsonl file
+    sidecar_content = json.dumps({"type": "subagent", "path": "/old/root/file"}) + "\n"
+    (sidecar / "subagent.jsonl").write_text(sidecar_content)
+    # Also a non-jsonl file
+    (sidecar / "metadata.txt").write_text("some metadata")
 
     new_dir = tmp_path / "new-proj"
     repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
 
     dest_sidecar = new_dir / "abc123"
     assert dest_sidecar.is_dir()
-    assert (dest_sidecar / "subagent.jsonl").read_text() == "content"
+    # The .jsonl was rewritten
+    rewritten = (dest_sidecar / "subagent.jsonl").read_text()
+    assert "/new/root/file" in rewritten
+    # The .txt was copied byte-for-byte
+    assert (dest_sidecar / "metadata.txt").read_text() == "some metadata"
 
 
 def test_repath_project_dir_leaves_originals_untouched(tmp_path):
@@ -258,3 +267,128 @@ def test_repath_all_with_dest_base(tmp_path):
     expected = dest_base / new_slug
     assert expected.is_dir()
     assert (expected / "test.jsonl").exists()
+
+
+def test_rewrite_jsonl_line_dict_key_untouched():
+    """Dict keys containing the prefix are left alone."""
+    line = json.dumps({"/old/root/key": "value", "cwd": "/old/root/proj"}) + "\n"
+    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    assert changed
+    record = json.loads(rewritten.strip())
+    # Key is unchanged
+    assert "/old/root/key" in record
+    # But cwd value is rewritten
+    assert record["cwd"] == "/new/root/proj"
+
+
+def test_rewrite_jsonl_line_longer_token_with_prefix():
+    """A longer token embedding the prefix is rewritten per the stated policy."""
+    # This tests that we accept partial rewriting of longer tokens
+    line = json.dumps({"id": "abc-/old/root-xyz", "cwd": "/old/root"}) + "\n"
+    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    assert changed
+    record = json.loads(rewritten.strip())
+    # The id value is rewritten because it contains the old root substring
+    assert record["id"] == "abc-/new/root-xyz"
+    assert record["cwd"] == "/new/root"
+
+
+def test_repath_project_dir_with_memory_and_nested_jsonl(tmp_path):
+    """Memory dirs and nested .jsonl files are copied/rewritten."""
+    old_dir = tmp_path / "old-proj"
+    old_dir.mkdir()
+
+    # Top-level jsonl
+    jsonl = old_dir / "session.jsonl"
+    jsonl.write_text(json.dumps({"cwd": "/old/root"}) + "\n")
+
+    # Memory directory with MEMORY.md
+    memory_dir = old_dir / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "MEMORY.md").write_text("Some memory content")
+
+    # Nested .jsonl that should also be rewritten
+    nested_jsonl = memory_dir / "nested.jsonl"
+    nested_jsonl.write_text(json.dumps({"path": "/old/root/file.txt"}) + "\n")
+
+    new_dir = tmp_path / "new-proj"
+    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+
+    # Check that both jsonl files were rewritten
+    assert result.jsonl_files == 2
+
+    # Check memory dir was copied
+    assert (new_dir / "memory" / "MEMORY.md").exists()
+    assert (new_dir / "memory" / "MEMORY.md").read_text() == "Some memory content"
+
+    # Check nested jsonl was rewritten
+    nested_content = (new_dir / "memory" / "nested.jsonl").read_text()
+    nested_record = json.loads(nested_content.strip())
+    assert nested_record["path"] == "/new/root/file.txt"
+
+
+def test_repath_project_dir_collision_refuses(tmp_path):
+    """Pre-existing destination is refused."""
+    old_dir = tmp_path / "old-proj"
+    old_dir.mkdir()
+    jsonl = old_dir / "session.jsonl"
+    jsonl.write_text(json.dumps({"cwd": "/old/root"}) + "\n")
+
+    new_dir = tmp_path / "new-proj"
+    new_dir.mkdir()  # Pre-create destination
+
+    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+
+    assert len(result.errors) > 0
+    assert "already exists" in result.errors[0]
+    assert result.jsonl_files == 0
+
+
+def test_repath_project_dir_malformed_jsonl_produces_error(tmp_path):
+    """A file with malformed JSONL produces an error and no output."""
+    old_dir = tmp_path / "old-proj"
+    old_dir.mkdir()
+    jsonl = old_dir / "session.jsonl"
+    jsonl.write_text('{"cwd": "/old/root"}\n' + "not json\n")
+
+    new_dir = tmp_path / "new-proj"
+    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+
+    # Should have an error
+    assert len(result.errors) > 0
+    assert "malformed" in result.errors[0].lower() or "json" in result.errors[0].lower()
+
+    # The destination file should not exist (no partial write)
+    assert not (new_dir / "session.jsonl").exists()
+
+
+def test_repath_all_detects_same_destination_collision(tmp_path):
+    """Two source dirs mapping to same destination produces a collision error."""
+    fake_home = tmp_path / ".claude"
+    projects = fake_home / "projects"
+    projects.mkdir(parents=True)
+
+    # Create two projects that will map to the same destination
+    # (this requires crafted slugs that differ in source but collapse in dest)
+    old_root = Path("/old/root")
+    old_slug = _slugify_cwd(str(old_root))
+
+    proj1 = projects / (old_slug + "-proj")
+    proj1.mkdir()
+    (proj1 / "test.jsonl").write_text(json.dumps({"cwd": "/old/root/proj"}) + "\n")
+
+    # Manually create a second dir that would map to the same new destination
+    # by reading cwd from a jsonl that points to the same subpath
+    proj2 = projects / (old_slug + "-other")
+    proj2.mkdir()
+    # Both have same subpath, so they map to same dest
+    (proj2 / "test.jsonl").write_text(json.dumps({"cwd": "/old/root/proj"}) + "\n")
+
+    dest_base = tmp_path / "dest"
+    dest_base.mkdir()
+
+    results = repath_all(old_root, Path("/new/root"), dest_base=dest_base, dry_run=False, claude_home=fake_home)
+
+    # At least one result should have a collision error
+    collision_errors = [r for r in results if any("collision" in e for e in r.errors)]
+    assert len(collision_errors) > 0
