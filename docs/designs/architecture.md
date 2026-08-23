@@ -52,6 +52,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `transport.py` | VPN-aware mosh/SSH loop for `ai c -R`; auto-starts Tailscale on Mac when host unreachable |
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
 | `process_manager.py` | Circus daemon bootstrap + `signal-watch` process lifecycle |
+| `process_probe.py` | Per-OS process inspection and termination behind one interface (`ProcessProbe`, resolved by `probe_for`): presence, state, start-time identity, and a bounded termination escalation. `ProcfsProbe` reads Linux `/proc`; `PsutilProbe` covers macOS and Windows. Backs the session-registry liveness check and abandoned-session reclamation, which were Linux-only before it |
 | `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop with watcher, handoff drain, iTerm2 status |
 | `gemini.py` | Gemini CLI/API wrapper with 3-tier auth fallback; defines `GeminiResult`, `AttemptLog`; handles OAuth, free-key REST, paid-key REST; writes JSONL run logs; publishes `hw.events.usage.gemini.event` to NATS |
 | `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |

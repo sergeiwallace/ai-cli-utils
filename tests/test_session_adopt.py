@@ -780,7 +780,13 @@ def test_pid_live_given_no_proc_filesystem_when_checked_then_psutil_answers(tmp_
 
 
 def test_pid_live_given_psutil_unavailable_when_checked_then_assumed_live(tmp_path, monkeypatch):
-    """Unable to tell must mean "live" — the other guess moves files under a running session."""
+    """Unable to tell must mean "live" — the other guess moves files under a running session.
+
+    ``ai_cli.process_probe`` is dropped from ``sys.modules`` as well as hiding
+    ``psutil``: it imports psutil at module scope, so a machine without psutil fails
+    at *that* import, and leaving the already-imported module cached would simulate
+    nothing.
+    """
     import builtins
 
     from ai_cli.session_adopt import _pid_is_live
@@ -792,6 +798,7 @@ def test_pid_live_given_psutil_unavailable_when_checked_then_assumed_live(tmp_pa
             raise ImportError("no psutil")
         return real_import(name, *args, **kwargs)
 
+    monkeypatch.delitem(sys.modules, "ai_cli.process_probe", raising=False)
     monkeypatch.setattr(builtins, "__import__", _no_psutil)
     assert _pid_is_live(778, tmp_path / "no-proc-here") is True
 

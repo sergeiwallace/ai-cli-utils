@@ -180,20 +180,22 @@ def _pid_is_live(pid: int, proc_dir: Path | None = None) -> bool:
     Reads ``/proc/<pid>`` on Linux rather than shelling out: a ``ps`` pipeline
     matching a pattern also matches the ``grep`` in its own pipeline, which has
     produced a backwards live/dead answer on a real machine. Where ``/proc`` does
-    not exist (macOS, Windows) ``psutil`` answers the same question.
+    not exist (macOS, Windows) ``psutil`` answers the same question. Both live
+    behind :func:`ai_cli.process_probe.probe_for`, which is the one place that
+    chooses between them for every caller in the package.
+
+    The fail direction is this function's own, and is the opposite of the
+    launcher's registry check: an unanswerable probe counts as **live** here,
+    because this guards an adoption that would move files out from under a running
+    session.
     """
     if pid <= 0:
         return False
-    proc = proc_dir if proc_dir is not None else Path("/proc")
-    if proc.is_dir():
-        return (proc / str(pid)).exists()
     try:
-        import psutil
+        from .process_probe import probe_for
 
-        return psutil.pid_exists(pid)
+        return probe_for(proc_dir).is_present(pid)
     except Exception:
-        # No way to tell — assume live, because the failure mode of guessing
-        # "dead" is moving files out from under a running session.
         return True
 
 
