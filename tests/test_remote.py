@@ -1,9 +1,11 @@
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import _run_cli_with_args
 
 from ai_cli.main import cli
+from ai_cli.session import build_session_name
 
 # --- --remote flag tests ---
 
@@ -244,9 +246,10 @@ class TestIsVpnActive:
 class TestRemoteSessionIterm2Emit:
     """Verify iTerm2 profile/color is emitted before mosh/ssh connects for remote sessions."""
 
-    def _run_remote(self, argv, transport="mosh"):
+    def _run_remote(self, argv, transport="mosh", preflight_run=None):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": transport}}
         call_order = []
+        mock_preflight_run = preflight_run or MagicMock()
 
         if transport == "mosh":
             mock_emit = MagicMock()
@@ -264,6 +267,7 @@ class TestRemoteSessionIterm2Emit:
                 patch("ai_cli.main.trigger_background_update"),
                 patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
                 patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
+                patch("ai_cli.main.subprocess.run", mock_preflight_run),
                 patch("ai_cli.transport._is_vpn_active", return_value=False),
                 patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
                 patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -286,6 +290,7 @@ class TestRemoteSessionIterm2Emit:
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
+            patch("ai_cli.main.subprocess.run", mock_preflight_run),
             patch("os.execvp", mock_exec),
         ):
             with pytest.raises(SystemExit):
@@ -307,6 +312,29 @@ class TestRemoteSessionIterm2Emit:
         slot_ai_name = mock_slot.call_args[0][0]
         assert "r" in slot_ai_name
         assert "4" in slot_ai_name
+
+    def test_given_named_remote_launch_when_previewed_then_local_identity_matches_remote_allocation(self):
+        """The client preview must use the server's canonical named-session ID."""
+        remote_allocations = []
+
+        def remote_preflight(command, **_kwargs):
+            if command[0] == "tmux":
+                return MagicMock(returncode=1, stdout="")
+            remote_allocations.append(command)
+            session_id, ai_name = build_session_name("c", "sw", "Planning", is_remote=True)
+            return MagicMock(returncode=0, stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}), stderr="")
+
+        with patch("ai_cli.session._matching_tmux_sessions", return_value=[]):
+            mock_slot, mock_emit, mock_exec, _ = self._run_remote(
+                ["ai", "c", "Planning", "--remote"], transport="ssh", preflight_run=remote_preflight
+            )
+            remote_session_id, _ = build_session_name("c", "sw", "Planning", is_remote=True)
+
+        assert mock_slot.call_args[0][0] == remote_session_id
+        assert mock_emit.call_args[0][0] == remote_session_id
+        assert mock_emit.call_args[0][2] == remote_session_id
+        assert remote_session_id in mock_exec.call_args[0][1][2]
+        assert len(remote_allocations) == 1
 
     def test_when_remote_gemini_then_emit_called_with_gemini_engine(self):
         _, mock_emit, _, _ = self._run_remote(["ai", "g", "2", "--remote"])

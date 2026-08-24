@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 import shlex
 import subprocess
@@ -427,6 +428,17 @@ def _run_cli_with_args(argv, config_override=None):
     to simulate that — otherwise execution falls through to later exec calls.
     """
     config = config_override or {}
+
+    def remote_preflight(command, **_kwargs):
+        if _command_program(command) == "tmux":
+            return make_subprocess_result(returncode=1)
+        remote_command = shlex.split(command[-1])[-1]
+        tokens = shlex.split(remote_command)
+        allocation_index = tokens.index("allocate-session-name")
+        engine, project_prefix, name = tokens[allocation_index + 1 : allocation_index + 4]
+        session_id, ai_name = _session_module.build_session_name(engine, project_prefix, name, is_remote=True)
+        return make_subprocess_result(stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}))
+
     with (
         patch("sys.argv", argv),
         patch("ai_cli.config.load_config", return_value=config),
@@ -435,6 +447,7 @@ def _run_cli_with_args(argv, config_override=None):
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main._auto_update_if_stale"),
+        patch("ai_cli.main.subprocess.run", side_effect=remote_preflight),
     ):
         from ai_cli.main import cli
 

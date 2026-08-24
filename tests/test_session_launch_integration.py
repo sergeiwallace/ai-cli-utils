@@ -8,6 +8,7 @@ test explicitly exercises production worktree creation or registry
 resolution.
 """
 
+import json
 import os
 import shlex
 import shutil
@@ -424,7 +425,23 @@ def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifa
 
 
 def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profile_name_is_lowercase_and_prefix_is_quoted():
+    """Named remote launches preflight the server for the canonical session ID
+    (AI-CLI-209) before emitting the iTerm2 profile — so a real allocation
+    response must be stubbed here rather than an actual SSH connection.
+    """
     cfg = {"remote": {"host": "example.com", "transport": "ssh"}}
+    expected_session_id = "c-r-app; printf injected-planning"
+    expected_ai_name = "app; printf injected-planning"
+    preflight_calls = []
+
+    def fake_preflight(cmd, *_args, **_kwargs):
+        preflight_calls.append(cmd)
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({"session_id": expected_session_id, "ai_name": expected_ai_name}),
+            stderr="",
+        )
+
     with (
         patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
         patch("ai_cli.main._session._resolve_is_remote", return_value=False),
@@ -432,6 +449,7 @@ def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profi
         patch("ai_cli.main._config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.main._iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.main._iterm2._emit_iterm2_profile_setup") as emit_profile,
+        patch("ai_cli.main.subprocess.run", side_effect=fake_preflight),
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as execute,
     ):
         with pytest.raises(SystemExit):
@@ -452,10 +470,11 @@ def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profi
                 config=cfg,
             )
 
+    assert len(preflight_calls) == 1
     assert emit_profile.call_args.args[:3] == (
-        "c-r-app; printf injected-planning",
+        expected_session_id,
         "c",
-        "c-r-app; printf injected-planning",
+        expected_session_id,
     )
     remote_exec = execute.call_args.args[1][-1]
     assert shlex.quote("APP; printf INJECTED") in remote_exec

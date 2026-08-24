@@ -1108,6 +1108,34 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
     return refreshed
 
 
+def _request_remote_session_allocation(
+    ssh_args: list[str], engine: str, project_prefix: str, name: str
+) -> tuple[str, str]:
+    """Return the canonical session identity allocated by the remote host."""
+    remote_command = (
+        'export PATH="$HOME/.local/bin:$PATH"; '
+        f"ai internal allocate-session-name {shlex.quote(engine)} {shlex.quote(project_prefix)} {shlex.quote(name)}"
+    )
+    result = subprocess.run(
+        [*ssh_args, f"zsh -l -c {shlex.quote(remote_command)}"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"remote session-name allocation failed{f': {detail}' if detail else ''}")
+    try:
+        allocation = json.loads(result.stdout)
+        session_id = allocation["session_id"]
+        ai_name = allocation["ai_name"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError("remote session-name allocation returned an invalid response") from exc
+    expected_prefix = f"{engine}-r-"
+    if not isinstance(session_id, str) or not isinstance(ai_name, str) or not session_id.startswith(expected_prefix):
+        raise RuntimeError("remote session-name allocation returned an invalid identity")
+    if session_id.removeprefix(expected_prefix) != ai_name:
+        raise RuntimeError("remote session-name allocation returned inconsistent identities")
+    return session_id, ai_name
+
+
 # --- `ai internal` fast-path — machine-to-machine commands ---
 
 
@@ -1169,6 +1197,17 @@ def _handle_internal(argv: list[str]) -> None:
         from . import icon_generator as _ig_cs
 
         _ig_cs.cleanup_session_files(argv[1])
+        sys.exit(0)
+    elif action == "allocate-session-name":
+        if len(argv) < 4:
+            print("Usage: ai internal allocate-session-name <engine> <project_prefix> <name>", file=sys.stderr)
+            sys.exit(1)
+        engine, project_prefix, name = argv[1], argv[2], argv[3]
+        use_tmux = config.get("session", {}).get("use_tmux", True)
+        session_id, ai_name = _session.build_session_name(
+            engine, project_prefix, name, config, is_remote=True, use_tmux=use_tmux
+        )
+        print(json.dumps({"session_id": session_id, "ai_name": ai_name}))
         sys.exit(0)
     elif action == "get-version":
         print(_pkg_version_string())
@@ -2413,31 +2452,48 @@ def _do_session_launch(
                 sys.exit(1)
         else:
             remote_prefix = project_prefix
+        # vpn_host: direct-IP host used for SSH when VPN is active (bypasses Tailscale/WireGuard
+        # which becomes unreachable when a split-tunneling VPN like Mullvad takes over routing).
+        # Falls back to host when not set.
+        vpn_host = remote_cfg.get("vpn_host", "") or host
+        ssh_args = ["ssh", "-t", "-p", port]
+        preflight_ssh_args = ["ssh", "-T", "-p", port]
+        if id_file:
+            identity_file = str(Path(id_file).expanduser())
+            ssh_args += ["-i", identity_file]
+            preflight_ssh_args += ["-i", identity_file]
+        ssh_args.append(f"{user}@{vpn_host}")
+        preflight_ssh_args.append(f"{user}@{vpn_host}")
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (zsh -l -c) that does
         # not source ~/.zshrc where the uv env PATH setup typically lives.
         remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
         if resume:
             remote_cmd += " --resume"
-        if name:
+        remote_session_id = ""
+        if name and not name.isdigit():
+            try:
+                remote_session_id, _ = _request_remote_session_allocation(
+                    preflight_ssh_args, engine, remote_prefix, name
+                )
+            except RuntimeError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+        if remote_session_id:
+            remote_cmd += f" {shlex.quote(remote_session_id)}"
+        elif name:
             remote_cmd += f" {shlex.quote(name)}"
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
         _r_engine_short = engine
-        _r_ai_name = _session._new_session_display_name(_r_engine_short, remote_prefix, name or "1", True)
+        _r_ai_name = remote_session_id or _session._new_session_display_name(
+            _r_engine_short, remote_prefix, name or "1", True
+        )
         _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
         _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 
         _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
-        # vpn_host: direct-IP host used for SSH when VPN is active (bypasses Tailscale/WireGuard
-        # which becomes unreachable when a split-tunneling VPN like Mullvad takes over routing).
-        # Falls back to host when not set.
-        vpn_host = remote_cfg.get("vpn_host", "") or host
-        ssh_args = ["ssh", "-t", "-p", port]
-        if id_file:
-            ssh_args += ["-i", str(Path(id_file).expanduser())]
-        ssh_args.append(f"{user}@{vpn_host}")
         ssh_args.append(f"zsh -l -c {shlex.quote(remote_cmd)}")
 
         # Build mosh_args unconditionally — needed for both initial connection
