@@ -4715,8 +4715,69 @@ def test_repair_worktree_cc_dir_when_dry_run_then_no_writes(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# _has_conflict_markers / _leaves_conflict_marker — line-anchored marker detection
+# ---------------------------------------------------------------------------
+
+
+def test_has_conflict_markers_when_real_markers_at_line_start_then_returns_true():
+    from ai_cli.sync import _has_conflict_markers
+
+    content = "<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n"
+    assert _has_conflict_markers(content) is True
+
+
+def test_has_conflict_markers_when_prose_quotes_marker_characters_then_returns_false():
+    """A file whose PROSE mentions marker characters (e.g. a memory note about conflict
+    hygiene, or a shell command example) must not be misclassified as conflicted — a bare
+    substring search false-positives on this and previously corrupted exactly such a file
+    when the LLM-merge path then rewrote it (AI-CLI-<merge-marker-anchor-fix>)."""
+    from ai_cli.sync import _has_conflict_markers
+
+    content = (
+        "Before staging, run `grep -c '^\\(<<<<<<<\\|=======\\|>>>>>>>\\)' .beads/*.jsonl`"
+        " and require 0. Nothing draws the eye to a `<<<<<<<` among them.\n"
+    )
+    assert _has_conflict_markers(content) is False
+
+
+def test_leaves_conflict_marker_when_prose_quotes_marker_characters_then_returns_false():
+    """The LLM-output-still-broken check must use the same line-anchored detection, or a
+    legitimately clean merge whose content happens to quote marker characters (exactly the
+    scenario that corrupted a real memory file) gets wrongly rejected as still-conflicted."""
+    from ai_cli.sync import _leaves_conflict_marker
+
+    merged = "Related: a rebase conflict shows `<<<<<<<` and `>>>>>>>` markers in the diff.\n"
+    assert _leaves_conflict_marker(merged) is False
+
+
+def test_leaves_conflict_marker_when_real_marker_present_then_returns_true():
+    from ai_cli.sync import _leaves_conflict_marker
+
+    assert _leaves_conflict_marker("<<<<<<< HEAD\nstill conflicted\n>>>>>>> main\n") is True
+
+
+# ---------------------------------------------------------------------------
 # _llm_merge_memory_conflict
 # ---------------------------------------------------------------------------
+
+
+def test_llm_merge_memory_conflict_when_content_has_no_real_markers_then_returns_unchanged():
+    """A file with no genuine conflict markers (only prose that quotes marker characters)
+    must never reach an LLM merge attempt — there is nothing to resolve, and sending it
+    anyway risks a nonsensical response corrupting the file (measured)."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    content = "See the example: `<<<<<<<` then `>>>>>>>` in a rebase.\n"
+
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict") as mock_codex,
+        patch("ai_cli.sync._gemini_merge_memory_conflict") as mock_gemini,
+    ):
+        result = _llm_merge_memory_conflict(content, "note.md")
+
+    assert result == content
+    mock_codex.assert_not_called()
+    mock_gemini.assert_not_called()
 
 
 def test_llm_merge_memory_conflict_when_no_api_key_then_returns_none(monkeypatch):

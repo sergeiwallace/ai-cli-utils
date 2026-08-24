@@ -1060,7 +1060,7 @@ def apply_pull_files(
                     continue
 
                 content = src.read_text(errors="replace")
-                has_conflict_markers = "<<<<<<<" in content and ">>>>>>>" in content
+                has_conflict_markers = _has_conflict_markers(content)
 
                 if has_conflict_markers:
                     # Attempt LLM auto-merge before saving a conflict file.
@@ -1640,6 +1640,30 @@ def is_cc_active_locally() -> bool:
 # ---------------------------------------------------------------------------
 
 
+_CONFLICT_START_RE = re.compile(r"^<<<<<<<(?:[ \t].*)?$", re.MULTILINE)
+_CONFLICT_END_RE = re.compile(r"^>>>>>>>(?:[ \t].*)?$", re.MULTILINE)
+
+
+def _has_conflict_markers(text: str) -> bool:
+    """True when text contains a real git conflict hunk: a start AND end marker, each
+    anchored to the start of its own line.
+
+    A bare substring search (``"<<<<<<<" in text``) false-positives on prose that
+    legitimately quotes marker characters — a memory file about avoiding naive marker
+    detection contained an example command with `<<<<<<<`/`>>>>>>>` mid-line, got
+    misclassified as conflicted, and its LLM-merge response corrupted it (measured). Git
+    always writes a real marker at the start of its own line, e.g. ``<<<<<<< HEAD``.
+    """
+    return bool(_CONFLICT_START_RE.search(text)) and bool(_CONFLICT_END_RE.search(text))
+
+
+def _leaves_conflict_marker(text: str) -> bool:
+    """True when text still contains ANY unresolved git conflict marker (start or end),
+    anchored to line-start. Used to reject an LLM merge response that left the file
+    still broken — see :func:`_has_conflict_markers` for why line-anchoring matters."""
+    return bool(_CONFLICT_START_RE.search(text)) or bool(_CONFLICT_END_RE.search(text))
+
+
 def _memory_merge_prompt(conflict_content: str, filename: str) -> str:
     return (
         f"You are resolving a git merge conflict in a memory file named '{filename}'.\n"
@@ -1686,7 +1710,7 @@ def _codex_merge_memory_conflict(conflict_content: str, filename: str) -> str | 
     if result.returncode != 0:
         return None
     merged = result.stdout
-    if not merged or "<<<<<<<" in merged or ">>>>>>>" in merged:
+    if not merged or _leaves_conflict_marker(merged):
         return None  # cx failed to resolve all markers
     return merged
 
@@ -1711,7 +1735,7 @@ def _gemini_merge_memory_conflict(conflict_content: str, filename: str) -> str |
         prompt = _memory_merge_prompt(conflict_content, filename)
         response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
         merged = response.text
-        if not merged or "<<<<<<<" in merged or ">>>>>>>" in merged:
+        if not merged or _leaves_conflict_marker(merged):
             return None  # LLM failed to resolve all markers
         return merged
     except Exception:
@@ -1724,7 +1748,13 @@ def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | No
     Tries Codex (``cx mechanical``) first — this fleet's standard delegation
     path, which needs no extra credentials in the invoking shell — and falls
     back to Gemini only when the Codex path is unavailable or fails.
+
+    Content with no genuine (line-anchored) conflict markers is returned
+    unchanged without ever reaching an LLM: there is nothing to resolve, and
+    sending it anyway risks a nonsensical response corrupting the file.
     """
+    if not _has_conflict_markers(conflict_content):
+        return conflict_content
     merged = _codex_merge_memory_conflict(conflict_content, filename)
     if merged is not None:
         return merged
@@ -2401,7 +2431,7 @@ def sync_resolve(flags: list[str]) -> int:
     def _resolve_memory_conflict_file(f: Path, local_cc_file: Path | None) -> str:
         """Attempt to resolve one .conflict file. Returns 'merged', 'failed', or 'no_markers'."""
         content = f.read_text(errors="replace")
-        if "<<<<<<<" not in content or ">>>>>>>" not in content:
+        if not _has_conflict_markers(content):
             if not dry_run:
                 f.unlink()
             return "no_markers"
