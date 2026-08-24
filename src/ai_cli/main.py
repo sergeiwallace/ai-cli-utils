@@ -1108,8 +1108,44 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
     return refreshed
 
 
+# Probe run on the remote host's OWN default login shell (never assumed to be
+# zsh) to pick the interpreter for the "-l -c <remote_cmd>" wrapper mosh/ssh
+# hand to the remote. Mirrors session_script.SESSION_SHELL_PREFERENCE (zsh
+# preferred, bash fallback); /bin/sh is a last-resort so a remote host with
+# neither still gets a working shell instead of a bare execvp crash.
+_REMOTE_SHELL_PROBE_CMD = "command -v zsh || command -v bash || echo /bin/sh"
+
+
+def _resolve_remote_shell(preflight_ssh_args: list[str]) -> str:
+    """Probe the remote host for an available login shell.
+
+    Hardcoding "zsh" here previously meant a remote host without it (e.g. a
+    minimal Fedora box) failed with mosh-server's own execvp error --
+    invisible to the user because mosh's terminal-restore erases it before
+    printing "[mosh is exiting.]" (AI-CLI-gg9s). Falls back to "bash" on any
+    probe failure (unreachable host, timeout) so a real connectivity problem
+    still surfaces via the normal mosh/ssh path instead of failing here.
+    """
+    try:
+        result = subprocess.run(
+            [*preflight_ssh_args, _REMOTE_SHELL_PROBE_CMD],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        stdout = result.stdout
+        if isinstance(stdout, str) and stdout.strip():
+            found = stdout.strip().splitlines()[0].strip()
+            if found:
+                return found
+    except Exception:
+        pass
+    return "bash"
+
+
 def _request_remote_session_allocation(
-    ssh_args: list[str], engine: str, project_prefix: str, name: str
+    ssh_args: list[str], engine: str, project_prefix: str, name: str, remote_shell: str
 ) -> tuple[str, str]:
     """Return the canonical session identity allocated by the remote host."""
     remote_command = (
@@ -1117,7 +1153,10 @@ def _request_remote_session_allocation(
         f"ai internal allocate-session-name {shlex.quote(engine)} {shlex.quote(project_prefix)} {shlex.quote(name)}"
     )
     result = subprocess.run(
-        [*ssh_args, f"zsh -l -c {shlex.quote(remote_command)}"], capture_output=True, text=True, check=False
+        [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
@@ -2457,16 +2496,21 @@ def _do_session_launch(
         # Falls back to host when not set.
         vpn_host = remote_cfg.get("vpn_host", "") or host
         ssh_args = ["ssh", "-t", "-p", port]
-        preflight_ssh_args = ["ssh", "-T", "-p", port]
+        # ConnectTimeout=10 bounds the shell probe + named-session allocation
+        # preflight the same way mosh_args's own ConnectTimeout does below --
+        # neither should hang silently when the host is unreachable.
+        preflight_ssh_args = ["ssh", "-T", "-p", port, "-o", "ConnectTimeout=10"]
         if id_file:
             identity_file = str(Path(id_file).expanduser())
             ssh_args += ["-i", identity_file]
             preflight_ssh_args += ["-i", identity_file]
         ssh_args.append(f"{user}@{vpn_host}")
         preflight_ssh_args.append(f"{user}@{vpn_host}")
+        remote_shell = _resolve_remote_shell(preflight_ssh_args)
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
-        # when the shell is a non-interactive login shell (zsh -l -c) that does
-        # not source ~/.zshrc where the uv env PATH setup typically lives.
+        # when the shell is a non-interactive login shell (<remote_shell> -l -c)
+        # that does not source the shell's rc file where the uv env PATH setup
+        # typically lives.
         remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
         if resume:
             remote_cmd += " --resume"
@@ -2474,7 +2518,7 @@ def _do_session_launch(
         if name and not name.isdigit():
             try:
                 remote_session_id, _ = _request_remote_session_allocation(
-                    preflight_ssh_args, engine, remote_prefix, name
+                    preflight_ssh_args, engine, remote_prefix, name, remote_shell
                 )
             except RuntimeError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
@@ -2494,7 +2538,7 @@ def _do_session_launch(
         _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 
         _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
-        ssh_args.append(f"zsh -l -c {shlex.quote(remote_cmd)}")
+        ssh_args.append(f"{remote_shell} -l -c {shlex.quote(remote_cmd)}")
 
         # Build mosh_args unconditionally — needed for both initial connection
         # and for reconnecting after a VPN drop while on SSH.
@@ -2509,7 +2553,7 @@ def _do_session_launch(
             _mosh_ssh += f" -i {shlex.quote(str(Path(id_file).expanduser()))}"
         mosh_args += ["--ssh", _mosh_ssh]
         mosh_args.append(f"{user}@{host}")
-        mosh_args += ["--", "zsh", "-l", "-c", remote_cmd]
+        mosh_args += ["--", remote_shell, "-l", "-c", remote_cmd]
 
         if transport == "mosh":
             _transport._ensure_vpn_watcher(config)

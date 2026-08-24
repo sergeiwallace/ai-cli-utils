@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import libtmux
 import pytest
 
-from ai_cli.main import _do_session_launch
+from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 
 def _tmux_runnable() -> tuple[bool, str]:
@@ -435,6 +435,8 @@ def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profi
     preflight_calls = []
 
     def fake_preflight(cmd, *_args, **_kwargs):
+        if cmd[-1] == _REMOTE_SHELL_PROBE_CMD:
+            return MagicMock(returncode=0, stdout="zsh\n", stderr="")
         preflight_calls.append(cmd)
         return MagicMock(
             returncode=0,

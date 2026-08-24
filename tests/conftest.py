@@ -14,6 +14,7 @@ import pytest
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
 from ai_cli.git_repair import _GIT_TARGETING_VARS
+from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
 _PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv"})
@@ -432,6 +433,8 @@ def _run_cli_with_args(argv, config_override=None):
     def remote_preflight(command, **_kwargs):
         if _command_program(command) == "tmux":
             return make_subprocess_result(returncode=1)
+        if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+            return make_subprocess_result(stdout="zsh\n")
         remote_command = shlex.split(command[-1])[-1]
         tokens = shlex.split(remote_command)
         allocation_index = tokens.index("allocate-session-name")
