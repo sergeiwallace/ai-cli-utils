@@ -219,6 +219,14 @@ async def _run_transport_loop(
             await nc.nc.subscribe("vpn.state.changed", cb=_on_vpn_change)
 
     force_ssh = False
+    # Bounds the "Tailscale might just be starting up" retry below to a single
+    # attempt. _ensure_tailscale_up only proves the SSH/TCP control path is
+    # reachable -- it says nothing about mosh's separate UDP data channel, so a
+    # host where that channel is blocked (e.g. firewalld not opening
+    # 60000-61000/udp for the tailscale0 interface) always reports "reachable"
+    # and mosh always fails again immediately, which retried unboundedly here
+    # before this cap (AI-CLI-gg9s).
+    tailscale_retries = 0
     try:
         while True:
             vpn_active = _is_vpn_active()
@@ -288,14 +296,29 @@ async def _run_transport_loop(
                     )
                     continue
                 # Mosh failed fast without VPN — try to bring Tailscale up first.
-                # Only fall back to SSH if Tailscale can't be recovered.
-                if tailscale_host and await _ensure_tailscale_up(tailscale_host):
+                # Only fall back to SSH if Tailscale can't be recovered, and only
+                # retry once: a second fast failure right after "Tailscale up"
+                # means the SSH/TCP control path is fine but mosh's UDP data
+                # channel specifically is blocked, not that Tailscale was down.
+                if tailscale_host and tailscale_retries < 1 and await _ensure_tailscale_up(tailscale_host):
+                    tailscale_retries += 1
                     print("\nTailscale up — retrying mosh...", file=sys.stderr)
                     continue  # retry mosh with Tailscale now reachable
-                print(
-                    f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
-                    file=sys.stderr,
-                )
+                if tailscale_retries >= 1:
+                    print(
+                        f"\nmosh failed again quickly ({elapsed:.1f}s) even though the host is "
+                        "reachable — this usually means mosh's UDP data channel (default ports "
+                        "60000-61000) is blocked (e.g. by the remote host's firewall), not that "
+                        "Tailscale is down. Falling back to SSH; to restore mosh, allow that UDP "
+                        "range to the remote host (firewalld: `firewall-cmd --add-port="
+                        "60000-61000/udp` or trust the tailscale0 interface).",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
+                        file=sys.stderr,
+                    )
                 force_ssh = True
                 continue
 

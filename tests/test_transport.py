@@ -384,6 +384,50 @@ class TestRunTransportLoop:
         assert "retrying mosh" in err
         assert "falling back to SSH" not in err
 
+    def test_when_mosh_fails_twice_with_tailscale_reachable_then_ssh_fallback_not_infinite_retry(
+        self, tmp_path, capsys
+    ):
+        # Regression for AI-CLI-gg9s: mosh fails fast, Tailscale/SSH reports
+        # reachable (as it always will when only mosh's UDP data channel is
+        # blocked, e.g. by a remote firewall), mosh is retried once and fails
+        # fast again. Must fall back to SSH instead of retrying forever.
+        mosh_fail_1 = _make_proc(returncode=1, poll_sequence=[None, 1])
+        mosh_fail_2 = _make_proc(returncode=1, poll_sequence=[None, 1])
+        ssh_ok = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+        popen_mock = MagicMock(side_effect=[mosh_fail_1, mosh_fail_2, ssh_ok])
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", popen_mock),
+                patch(
+                    "ai_cli.transport._monotonic",
+                    side_effect=[0.0, 1.0, 0.0, 1.0, 0.0, 10.0],
+                ),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport._ensure_tailscale_up", new_callable=AsyncMock, return_value=True),
+            ):
+                await _run_transport_loop(
+                    SSH_ARGS,
+                    MOSH_ARGS,
+                    CLEANUP_CMD,
+                    SESSION,
+                    CONFIG,
+                    tailscale_host="100.64.0.1",
+                )
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert popen_mock.call_count == 3
+        assert err.count("retrying mosh") == 1
+        assert "falling back to ssh" in err.lower()
+        assert "UDP" in err
+        assert "firewall" in err.lower()
+
     def test_when_mosh_fails_and_tailscale_cannot_start_then_ssh_fallback(self, tmp_path, capsys):
         # Mosh fails fast, Tailscale fails to come up → SSH fallback.
         mosh_proc = _make_proc(returncode=1, poll_sequence=[None, 1])
