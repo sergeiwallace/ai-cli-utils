@@ -1068,7 +1068,10 @@ def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_p
     conflict_content = "<<<<<<< HEAD\nlocal content\n=======\nremote content\n>>>>>>> origin/main\n"
     (staging_dir / "myproject" / "memory" / "project_current_work.md").write_text(conflict_content)
 
-    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+    with (
+        patch("ai_cli.sync.CONFLICT_DIR", conflict_dir),
+        patch("ai_cli.sync._llm_merge_memory_conflict", return_value=None),
+    ):
         result = apply_pull_files(
             staging_dir=staging_dir,
             cc_projects_dir=cc_projects_dir,
@@ -4722,7 +4725,8 @@ def test_llm_merge_memory_conflict_when_no_api_key_then_returns_none(monkeypatch
     monkeypatch.delenv("GOOGLE_API_KEY_TIER_1", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
-    result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
+    with patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
     assert result is None
 
 
@@ -4734,7 +4738,10 @@ def test_llm_merge_memory_conflict_when_api_exception_then_returns_none(monkeypa
     mock_client = MagicMock()
     mock_client.models.generate_content.side_effect = RuntimeError("network error")
 
-    with patch("google.genai.Client", return_value=mock_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
         result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
 
     assert result is None
@@ -4751,14 +4758,17 @@ def test_llm_merge_memory_conflict_when_llm_leaves_markers_then_returns_none(mon
     mock_client = MagicMock()
     mock_client.models.generate_content.return_value = mock_response
 
-    with patch("google.genai.Client", return_value=mock_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
         result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
 
     assert result is None
 
 
 def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content(monkeypatch):
-    """Successful merge: both sides preserved, no conflict markers in output."""
+    """Successful merge via the Gemini fallback: both sides preserved, no conflict markers in output."""
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "fake-key")
@@ -4771,7 +4781,10 @@ def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content
 
     conflict_content = "<<<<<<< HEAD\n- local entry\n=======\n- remote entry\n>>>>>>> main\n"
 
-    with patch("google.genai.Client", return_value=mock_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
         result = _llm_merge_memory_conflict(conflict_content, "memory.md")
 
     assert result == merged_text
@@ -4783,7 +4796,7 @@ def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content
 
 
 def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
-    """GOOGLE_API_KEY_TIER_1 should be preferred over GEMINI_API_KEY when both are set."""
+    """GOOGLE_API_KEY_TIER_1 should be preferred over GEMINI_API_KEY when both are set (Gemini fallback path)."""
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "tier1-key")
@@ -4800,10 +4813,121 @@ def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
         captured_key.append(api_key)
         return mock_client
 
-    with patch("google.genai.Client", side_effect=capture_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", side_effect=capture_client),
+    ):
         _llm_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "f.md")
 
     assert captured_key == ["tier1-key"]
+
+
+# ---------------------------------------------------------------------------
+# _codex_merge_memory_conflict / Codex-first orchestration in _llm_merge_memory_conflict
+# ---------------------------------------------------------------------------
+
+
+def test_codex_merge_memory_conflict_when_cx_unavailable_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    with patch("shutil.which", return_value=None), patch("pathlib.Path.exists", return_value=False):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_cx_exits_nonzero_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    mock_result = MagicMock(returncode=1, stdout="", stderr="codex: error")
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", return_value=mock_result),
+    ):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_output_leaves_markers_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    mock_result = MagicMock(returncode=0, stdout="<<<<<<< HEAD\nstill conflicted\n>>>>>>> main\n", stderr="")
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", return_value=mock_result),
+    ):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_subprocess_error_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", side_effect=OSError("no such file")),
+    ):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_cx_succeeds_then_returns_merged_content_via_mechanical_role():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    merged_text = "# Memory\n- local entry\n- remote entry\n"
+    mock_result = MagicMock(returncode=0, stdout=merged_text, stderr="")
+    conflict_content = "<<<<<<< HEAD\n- local entry\n=======\n- remote entry\n>>>>>>> main\n"
+
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", return_value=mock_result) as mock_run,
+    ):
+        result = _codex_merge_memory_conflict(conflict_content, "memory.md")
+
+    assert result == merged_text
+    argv = mock_run.call_args[0][0]
+    assert argv[0] == "/usr/local/bin/cx"
+    assert "mechanical" in argv
+    prompt = argv[-1]
+    assert "memory.md" in prompt
+    assert conflict_content in prompt
+
+
+def test_llm_merge_memory_conflict_when_codex_succeeds_then_gemini_not_called():
+    """Codex is the primary path — a successful Codex merge must never invoke Gemini."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    merged_text = "# Memory\n- codex merged this\n"
+    mock_genai_client = MagicMock()
+
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=merged_text) as mock_codex,
+        patch("google.genai.Client", return_value=mock_genai_client) as mock_gemini_client,
+    ):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "memory.md")
+
+    assert result == merged_text
+    mock_codex.assert_called_once()
+    mock_gemini_client.assert_not_called()
+
+
+def test_llm_merge_memory_conflict_when_codex_fails_then_falls_back_to_gemini(monkeypatch):
+    """Codex unavailable/failing must fall through to the existing Gemini path, not just give up."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    merged_text = "# Memory\n- gemini merged this\n"
+    mock_response = MagicMock()
+    mock_response.text = merged_text
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "memory.md")
+
+    assert result == merged_text
 
 
 # ---------------------------------------------------------------------------
@@ -4827,22 +4951,19 @@ def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_then_file_writt
     local_project_dir.mkdir(parents=True)
 
     merged_content = "- local note\n- remote note\n"
-    mock_response = MagicMock()
-    mock_response.text = merged_content
-    mock_client = MagicMock()
-    mock_client.models.generate_content.return_value = mock_response
 
-    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
-        with patch("google.genai.Client", return_value=mock_client):
-            with patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}):
-                result = apply_pull_files(
-                    staging_dir=staging_dir,
-                    cc_projects_dir=cc_projects_dir,
-                    local_prefix=_MAC_PREFIX,
-                    memories_only=False,
-                    verbose=False,
-                    dry_run=False,
-                )
+    with (
+        patch("ai_cli.sync.CONFLICT_DIR", conflict_dir),
+        patch("ai_cli.sync._llm_merge_memory_conflict", return_value=merged_content),
+    ):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
 
     # No conflicts — the LLM resolved it
     assert result["conflicts"] == []
@@ -4872,21 +4993,19 @@ def test_apply_pull_files_when_conflict_markers_and_llm_fails_then_conflict_file
     local_mem = local_mem_dir / "project_current_work.md"
     local_mem.write_text("original local content\n")
 
-    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
-        with patch.dict("os.environ", {}, clear=True):  # No API key → LLM returns None
-            result = apply_pull_files(
-                staging_dir=staging_dir,
-                cc_projects_dir=cc_projects_dir,
-                local_prefix=_MAC_PREFIX,
-                memories_only=False,
-                verbose=False,
-                dry_run=False,
-                # Clearing os.environ above wipes HOME/USERPROFILE too, and
-                # Path.home() requires USERPROFILE on Windows (no pwd-module
-                # fallback there) — pass an explicit root so this test's
-                # unrelated env-clearing doesn't break path resolution.
-                local_projects_root=tmp_path / "projects",
-            )
+    with (
+        patch("ai_cli.sync.CONFLICT_DIR", conflict_dir),
+        patch("ai_cli.sync._llm_merge_memory_conflict", return_value=None),
+    ):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+            local_projects_root=tmp_path / "projects",
+        )
 
     assert len(result["conflicts"]) == 1
     # Conflict file written

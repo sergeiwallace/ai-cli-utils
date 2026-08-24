@@ -1640,9 +1640,61 @@ def is_cc_active_locally() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
+def _memory_merge_prompt(conflict_content: str, filename: str) -> str:
+    return (
+        f"You are resolving a git merge conflict in a memory file named '{filename}'.\n"
+        "The file has git conflict markers (<<<<<<, =======, >>>>>>>).\n"
+        "Merge both versions, preserving ALL information from both sides.\n"
+        "Rules:\n"
+        "- Keep ALL entries from both the HEAD (<<<<<<) and incoming (>>>>>>>) sections.\n"
+        "- For duplicate keys with different values, prefer the HEAD version (local machine).\n"
+        "- Remove ALL conflict markers from the output.\n"
+        "- Preserve original structure, headings, and markdown formatting.\n"
+        "- Output ONLY the merged file content. No explanation, no preamble.\n\n"
+        f"{conflict_content}"
+    )
+
+
+def _codex_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
+    """Use Codex (``cx mechanical``) to resolve git conflict markers in a memory markdown file.
+
+    Primary merge path — no API key required, since it goes through this fleet's
+    existing Codex delegation wrapper rather than calling an LLM API directly.
+    Returns merged content without conflict markers, or None if merge fails
+    (cx unavailable, non-zero exit, subprocess error, or the output still
+    carries markers), so the caller can fall back to the Gemini path.
+    """
+    cx_path = shutil.which("cx")
+    if cx_path is None:
+        fallback = Path.home() / ".claude" / "bin" / "cx"
+        if not fallback.exists():
+            return None
+        cx_path = str(fallback)
+
+    prompt = _memory_merge_prompt(conflict_content, filename)
+    try:
+        result = subprocess.run(
+            [cx_path, "mechanical", "--effort", "low", "-C", str(Path.cwd()), prompt],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0:
+        return None
+    merged = result.stdout
+    if not merged or "<<<<<<<" in merged or ">>>>>>>" in merged:
+        return None  # cx failed to resolve all markers
+    return merged
+
+
+def _gemini_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
     """Use Gemini Flash to resolve git conflict markers in a memory markdown file.
 
+    Fallback merge path, used only when the Codex path is unavailable or fails.
     Returns merged content without conflict markers, or None if merge fails
     (no API key, network error, or LLM left markers in the output).
     """
@@ -1656,18 +1708,7 @@ def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | No
         from google import genai  # type: ignore
 
         client = genai.Client(api_key=api_key)
-        prompt = (
-            f"You are resolving a git merge conflict in a memory file named '{filename}'.\n"
-            "The file has git conflict markers (<<<<<<, =======, >>>>>>>).\n"
-            "Merge both versions, preserving ALL information from both sides.\n"
-            "Rules:\n"
-            "- Keep ALL entries from both the HEAD (<<<<<<) and incoming (>>>>>>>) sections.\n"
-            "- For duplicate keys with different values, prefer the HEAD version (local machine).\n"
-            "- Remove ALL conflict markers from the output.\n"
-            "- Preserve original structure, headings, and markdown formatting.\n"
-            "- Output ONLY the merged file content. No explanation, no preamble.\n\n"
-            f"{conflict_content}"
-        )
+        prompt = _memory_merge_prompt(conflict_content, filename)
         response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
         merged = response.text
         if not merged or "<<<<<<<" in merged or ">>>>>>>" in merged:
@@ -1675,6 +1716,19 @@ def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | No
         return merged
     except Exception:
         return None
+
+
+def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
+    """Resolve git conflict markers in a memory markdown file.
+
+    Tries Codex (``cx mechanical``) first — this fleet's standard delegation
+    path, which needs no extra credentials in the invoking shell — and falls
+    back to Gemini only when the Codex path is unavailable or fails.
+    """
+    merged = _codex_merge_memory_conflict(conflict_content, filename)
+    if merged is not None:
+        return merged
+    return _gemini_merge_memory_conflict(conflict_content, filename)
 
 
 # ---------------------------------------------------------------------------
