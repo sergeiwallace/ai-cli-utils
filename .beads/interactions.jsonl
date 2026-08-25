@@ -181,3 +181,5 @@
 {"id":"int-ff3b7b2d4665bec985667dad3756b745","kind":"field_change","created_at":"2026-08-25T01:24:26.903506Z","actor":"T","issue_id":"AI-CLI-6dhm","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
 {"id":"int-e8cd4e85509d43b58ab909acd2979f68","kind":"field_change","created_at":"2026-08-25T01:29:22.611689Z","actor":"T","issue_id":"AI-CLI-jbyo","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
 {"id":"int-0980d7f47dcd702e8b069d8b82f7ebde","kind":"field_change","created_at":"2026-08-25T01:29:41.037464Z","actor":"T","issue_id":"AI-CLI-t72a","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
+{"id":"int-7377cba231c7c1f93a7975d1f4f2eaf9","kind":"field_change","created_at":"2026-08-25T01:44:26.21239Z","actor":"T","issue_id":"AI-CLI-5o8j","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
+{"id":"int-88cacfd8382d3cb21b24d20e356c95c4","kind":"field_change","created_at":"2026-08-25T02:06:59.777125Z","actor":"T","issue_id":"AI-CLI-5o8j","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
