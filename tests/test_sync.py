@@ -5547,6 +5547,183 @@ def test_sync_pull_when_llm_merge_succeeded_then_staging_commit_and_push(tmp_pat
     assert push_called, "staging remote push was not called after LLM merge commit"
 
 
+def test_sync_pull_when_staged_file_has_conflict_markers_then_refuses_commit(tmp_path, capsys):
+    """The commit backstop must inspect the index, not trust the queued path's prior content."""
+    cfg = _make_pull_cfg(tmp_path)
+    _make_git_repo(cfg.staging_dir)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+    staging_file = cfg.staging_dir / "myproject" / "memory" / "notes.md"
+    staging_file.parent.mkdir(parents=True)
+    staging_file.write_text("<<<<<<< ours\nlocal\n=======\nremote\n>>>>>>> theirs\n")
+    push_called = []
+    real_run = subprocess.run
+
+    def skip_network_git(args, **kwargs):
+        if args[:2] in (["git", "fetch"], ["git", "merge"]):
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return real_run(args, **kwargs)
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync.is_cc_active_locally", return_value=False),
+        patch("ai_cli.sync._sync_projects_root", return_value=tmp_path / "projects"),
+        patch("ai_cli.sync.init_staging_repo"),
+        patch("ai_cli.sync._pre_pull_push_memories"),
+        patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir),
+        patch("ai_cli.sync.subprocess.run", side_effect=skip_network_git),
+        patch(
+            "ai_cli.sync.apply_pull_files",
+            return_value={
+                "conflicts": [],
+                "applied_count": 0,
+                "staging_to_overwrite": [],
+                "staging_to_commit": [staging_file],
+            },
+        ),
+        patch("ai_cli.sync.apply_task_files", return_value=0),
+        patch("ai_cli.sync.apply_history_file", return_value=0),
+        patch("ai_cli.sync.translate_history_jsonl"),
+        patch("ai_cli.sync.retranslate_project_jsonls"),
+        patch("ai_cli.sync.purge_phantom_history_entries"),
+        patch("ai_cli.sync.notify_conflicts"),
+        patch("ai_cli.sync._push_to_remote", side_effect=lambda *args, **kwargs: push_called.append(True)),
+    ):
+        result = sync_pull([])
+
+    assert result == 2
+    assert not push_called
+    assert "refusing to commit" in capsys.readouterr().err
+    assert (
+        "sync: update staging after conflict resolution"
+        not in subprocess.run(
+            ["git", "log", "-1", "--format=%s"], cwd=cfg.staging_dir, capture_output=True, text=True, check=True
+        ).stdout
+    )
+
+
+def test_given_concurrent_index_mutation_when_sync_pull_commits_then_refuses_conflicted_blobs(tmp_path, capsys):
+    """A competing sync used to inject marker-laden blobs into pull's final commit."""
+    cfg = _make_pull_cfg(tmp_path)
+    _make_git_repo(cfg.staging_dir)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+    staging_file = cfg.staging_dir / "myproject" / "memory" / "notes.md"
+    staging_file.parent.mkdir(parents=True)
+    staging_file.write_text("clean merge result\n")
+    foreign_file = cfg.staging_dir / "myproject" / "subagents" / "agent.jsonl"
+    push_called = []
+    race_triggered = False
+    real_run = subprocess.run
+
+    def interleave_competing_sync(args, **kwargs):
+        nonlocal race_triggered
+        if args[:2] in (["git", "fetch"], ["git", "merge"]):
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:2] == ["git", "add"] and not race_triggered:
+            race_triggered = True
+            markers = "<<<<<<< ours\nlocal\n=======\nremote\n>>>>>>> theirs\n"
+            staging_file.write_text(markers)
+            foreign_file.parent.mkdir(parents=True)
+            foreign_file.write_text(markers)
+            # Model the concurrent push's `git add -A`: it stages every current
+            # working-tree mutation, including paths this pull never selected.
+            real_run(["git", "add", "-A"], cwd=cfg.staging_dir, check=True)
+        return real_run(args, **kwargs)
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync.is_cc_active_locally", return_value=False),
+        patch("ai_cli.sync._sync_projects_root", return_value=tmp_path / "projects"),
+        patch("ai_cli.sync.init_staging_repo"),
+        patch("ai_cli.sync._pre_pull_push_memories"),
+        patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir),
+        patch("ai_cli.sync.subprocess.run", side_effect=interleave_competing_sync),
+        patch(
+            "ai_cli.sync.apply_pull_files",
+            return_value={
+                "conflicts": [],
+                "applied_count": 0,
+                "staging_to_overwrite": [],
+                "staging_to_commit": [staging_file],
+            },
+        ),
+        patch("ai_cli.sync.apply_task_files", return_value=0),
+        patch("ai_cli.sync.apply_history_file", return_value=0),
+        patch("ai_cli.sync.translate_history_jsonl"),
+        patch("ai_cli.sync.retranslate_project_jsonls"),
+        patch("ai_cli.sync.purge_phantom_history_entries"),
+        patch("ai_cli.sync.notify_conflicts"),
+        patch("ai_cli.sync._push_to_remote", side_effect=lambda *args, **kwargs: push_called.append(True)),
+    ):
+        result = sync_pull([])
+
+    assert race_triggered
+    assert result == 2
+    assert not push_called
+    assert "refusing to commit" in capsys.readouterr().err
+    assert subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=cfg.staging_dir, check=False).returncode == 0
+    assert (
+        "sync: update staging after conflict resolution"
+        not in subprocess.run(
+            ["git", "log", "-1", "--format=%s"], cwd=cfg.staging_dir, capture_output=True, text=True, check=True
+        ).stdout
+    )
+
+
+def test_given_sync_pull_when_staging_lock_is_held_then_git_initialization_runs_inside_it(tmp_path):
+    """All pull-side staging mutations must share one local repository lock."""
+    cfg = _make_pull_cfg(tmp_path)
+    events = []
+
+    class RecordingLock:
+        def __enter__(self):
+            events.append("acquired")
+
+        def __exit__(self, *args):
+            events.append("released")
+
+    def fail_initialization(*args):
+        events.append("init")
+        raise RuntimeError("stop after lock-scope check")
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync._staging_repo_lock", return_value=RecordingLock()),
+        patch("ai_cli.sync.init_staging_repo", side_effect=fail_initialization),
+    ):
+        assert sync_pull([]) == 1
+
+    assert events == ["acquired", "init", "released"]
+
+
+def test_given_sync_push_when_staging_lock_is_held_then_git_initialization_runs_inside_it(tmp_path):
+    """Push must use the same lock before changing the shared staging repository."""
+    cfg = _make_pull_cfg(tmp_path)
+    events = []
+
+    class RecordingLock:
+        def __enter__(self):
+            events.append("acquired")
+
+        def __exit__(self, *args):
+            events.append("released")
+
+    def fail_initialization(*args):
+        events.append("init")
+        raise RuntimeError("stop after lock-scope check")
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync._staging_repo_lock", return_value=RecordingLock()),
+        patch("ai_cli.sync.init_server_bare_repo"),
+        patch("ai_cli.sync.init_staging_repo", side_effect=fail_initialization),
+    ):
+        assert sync_push([]) == 1
+
+    assert events == ["acquired", "init", "released"]
+
+
 def test_sync_pull_when_no_staging_changes_then_no_push(tmp_path):
     """When apply_pull_files reports no staging changes, sync_pull must not call push.
     Pushing on every clean pull would add unnecessary latency."""

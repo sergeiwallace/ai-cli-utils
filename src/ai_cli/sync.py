@@ -33,6 +33,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import portalocker
+
 from .cc_migrate import _rewrite_line
 
 # ---------------------------------------------------------------------------
@@ -43,6 +45,7 @@ CONFLICT_LOG = Path.home() / ".claude-sync-conflicts.log"
 CONFLICT_DIR = Path.home() / ".claude-sync-conflicts"
 _DREAM_GUARD_TIMEOUT_SECONDS = 30.0
 _DREAM_GUARD_POLL_SECONDS = 0.1
+_STAGING_LOCK_TIMEOUT_SECONDS = 600
 
 _GIT_ENV = {
     **os.environ,
@@ -65,6 +68,22 @@ class SyncConfig:
     local_prefix: str
     remote_host: str
     source_machine: str  # "mac" or "server"
+
+
+class _StagingLockUnavailableError(Exception):
+    """Raised when another local sync holds the shared staging repository lock."""
+
+
+@contextlib.contextmanager
+def _staging_repo_lock(staging_dir: Path):
+    """Serialize local sync operations that mutate one staging working tree."""
+    lock_path = staging_dir.parent / f".{staging_dir.name}.sync.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with portalocker.Lock(str(lock_path), mode="a", timeout=_STAGING_LOCK_TIMEOUT_SECONDS):
+            yield
+    except portalocker.exceptions.LockException as exc:
+        raise _StagingLockUnavailableError(lock_path) from exc
 
 
 def _canonical_path(path: str) -> str:
@@ -1664,6 +1683,37 @@ def _leaves_conflict_marker(text: str) -> bool:
     return bool(_CONFLICT_START_RE.search(text)) or bool(_CONFLICT_END_RE.search(text))
 
 
+def _staged_paths_with_conflict_markers(staging_dir: Path) -> list[str] | None:
+    """Return staged paths containing unresolved markers, or None if the index cannot be read."""
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "-z"],
+        cwd=staging_dir,
+        capture_output=True,
+        env=_GIT_ENV,
+        check=False,
+    )
+    if staged.returncode != 0:
+        return None
+
+    marker_paths: list[str] = []
+    for raw_path in staged.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        path = os.fsdecode(raw_path)
+        blob = subprocess.run(
+            ["git", "show", f":{path}"],
+            cwd=staging_dir,
+            capture_output=True,
+            env=_GIT_ENV,
+            check=False,
+        )
+        if blob.returncode != 0:
+            return None
+        if _has_conflict_markers(blob.stdout.decode("utf-8", errors="replace")):
+            marker_paths.append(path)
+    return marker_paths
+
+
 def _memory_merge_prompt(conflict_content: str, filename: str) -> str:
     return (
         f"You are resolving a git merge conflict in a memory file named '{filename}'.\n"
@@ -2113,13 +2163,26 @@ def sync_push(flags: list[str]) -> int:
 
     Exit codes: 0 = success, 1 = fatal error, 2 = conflicts preserved
     """
-    memories_only, dry_run, verbose, force, _ = _parse_flags(flags)
-
     try:
         cfg = load_sync_config()
     except Exception as e:
         print(f"Error loading sync config: {e}", file=sys.stderr)
         return 1
+
+    if "--dry-run" in flags or "-n" in flags:
+        return _sync_push(flags, cfg)
+
+    try:
+        with _staging_repo_lock(cfg.staging_dir):
+            return _sync_push(flags, cfg)
+    except _StagingLockUnavailableError:
+        print("Error: another ai sync operation is using the staging repository; try again shortly.", file=sys.stderr)
+        return 1
+
+
+def _sync_push(flags: list[str], cfg: SyncConfig) -> int:
+    """Run a push after the caller has loaded config and acquired the staging lock."""
+    memories_only, dry_run, verbose, force, _ = _parse_flags(flags)
 
     if not dry_run:
         # Non-fatal — bare repo may already exist
@@ -2238,13 +2301,26 @@ def sync_pull(flags: list[str]) -> int:
 
     Exit codes: 0 = success, 1 = fatal error, 2 = conflicts preserved
     """
-    memories_only, dry_run, verbose, force, prefer_remote = _parse_flags(flags)
-
     try:
         cfg = load_sync_config()
     except Exception as e:
         print(f"Error loading sync config: {e}", file=sys.stderr)
         return 1
+
+    if "--dry-run" in flags or "-n" in flags:
+        return _sync_pull(flags, cfg)
+
+    try:
+        with _staging_repo_lock(cfg.staging_dir):
+            return _sync_pull(flags, cfg)
+    except _StagingLockUnavailableError:
+        print("Error: another ai sync operation is using the staging repository; try again shortly.", file=sys.stderr)
+        return 1
+
+
+def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
+    """Run a pull after the caller has loaded config and acquired the staging lock."""
+    memories_only, dry_run, verbose, force, prefer_remote = _parse_flags(flags)
 
     if not memories_only:
         try:
@@ -2347,15 +2423,36 @@ def sync_pull(flags: list[str]) -> int:
                 check=False,
             )
             if git_add.returncode == 0:
-                commit = subprocess.run(
-                    ["git", "commit", "-m", "sync: update staging after conflict resolution"],
-                    cwd=cfg.staging_dir,
-                    capture_output=True,
-                    env=_GIT_ENV,
-                    check=False,
-                )
-                if commit.returncode == 0:
-                    _push_to_remote(cfg.staging_dir, verbose=False)
+                marker_paths = _staged_paths_with_conflict_markers(cfg.staging_dir)
+                if marker_paths is None:
+                    print("Error: refusing to commit because the staging index could not be verified.", file=sys.stderr)
+                    subprocess.run(
+                        ["git", "reset"], cwd=cfg.staging_dir, capture_output=True, env=_GIT_ENV, check=False
+                    )
+                    result["conflicts"].append("staging index could not be verified before commit")
+                elif marker_paths:
+                    paths = ", ".join(marker_paths)
+                    print(
+                        f"Error: refusing to commit staged files with unresolved git conflict markers: {paths}",
+                        file=sys.stderr,
+                    )
+                    # Clear the complete shared index. A concurrent caller may have
+                    # staged paths outside staging_to_commit; leaving those staged
+                    # would let a future commit include data this pull never checked.
+                    subprocess.run(
+                        ["git", "reset"], cwd=cfg.staging_dir, capture_output=True, env=_GIT_ENV, check=False
+                    )
+                    result["conflicts"].append(f"staging conflict markers refused: {paths}")
+                else:
+                    commit = subprocess.run(
+                        ["git", "commit", "-m", "sync: update staging after conflict resolution"],
+                        cwd=cfg.staging_dir,
+                        capture_output=True,
+                        env=_GIT_ENV,
+                        check=False,
+                    )
+                    if commit.returncode == 0:
+                        _push_to_remote(cfg.staging_dir, verbose=False)
 
     if result["conflicts"]:
         if not dry_run:
