@@ -4236,6 +4236,34 @@ def cmd_reconnect(sessions):
     _do_reconnect(requested, config)
 
 
+@_cli_group.command("ssh", help="Open an interactive SSH shell on ALIAS, or the configured default when omitted")
+@click.argument("alias", required=False, default="", metavar="[ALIAS]")
+def cmd_ssh(alias):
+    """Connect to ALIAS, or the configured default remote machine."""
+    if sys.platform == "win32":
+        print("Error: SSH shells are not supported on Windows", file=sys.stderr)
+        sys.exit(1)
+
+    config = _config.load_config()
+    try:
+        remote_cfg = _config.get_remote_machine(config, alias)
+    except _config.RemoteMachineError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    host = remote_cfg.get("host", "")
+    if not host:
+        print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
+        sys.exit(1)
+    user = remote_cfg.get("user", "ubuntu")
+    port = str(remote_cfg.get("port", 22))
+    ssh_args = ["ssh", "-p", port]
+    if id_file := remote_cfg.get("identity_file", ""):
+        ssh_args += ["-i", str(Path(id_file).expanduser())]
+    ssh_args.append(f"{user}@{host}")
+    os.execvp("ssh", ssh_args)
+
+
 @_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")
 @click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")

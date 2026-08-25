@@ -16,6 +16,7 @@ source: internal
   - [ai ls](#ai-ls)
   - [ai attach](#ai-attach)
   - [ai reconnect](#ai-reconnect)
+  - [ai ssh](#ai-ssh)
 - [Daemon Commands](#daemon-commands)
   - [ai memory watch](#ai-memory-watch)
   - [ai quota watch](#ai-quota-watch)
@@ -159,6 +160,14 @@ Lists remote tmux sessions (sessions starting with `c-r-`) on the configured rem
 - `ai reconnect 1 3`: only sessions ending in `-1` or `-3`
 
 Reads `[remote] host` and `[remote] user` from `~/.config/ai-cli/config.toml`.
+
+### ai ssh
+
+```bash
+ai ssh [alias]
+```text
+
+Opens an interactive SSH shell on a configured `[remote.machines.<alias>]` host. Without an alias, uses `[remote] default` (or the sole configured alias).
 
 ---
 

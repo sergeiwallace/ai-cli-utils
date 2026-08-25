@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,6 +122,100 @@ def test_given_unknown_remote_alias_when_remote_machine_selected_then_prints_con
         cli()
     assert exc_info.value.code == 1
     assert "Remote machine 'missing' is not configured. Configured aliases: fw, hz" in capsys.readouterr().err
+
+
+def test_given_default_remote_alias_when_ssh_called_then_execs_configured_machine():
+    config = {
+        "remote": {
+            "default": "primary",
+            "machines": {
+                "primary": {
+                    "host": "primary.example.com",
+                    "user": "user",
+                    "port": 2222,
+                    "identity_file": "~/.ssh/id_primary",
+                }
+            },
+        }
+    }
+    mock_exec = _run_cli_with_args(["ai", "ssh"], config)
+
+    mock_exec.assert_called_once_with(
+        "ssh", ["ssh", "-p", "2222", "-i", str(Path("~/.ssh/id_primary").expanduser()), "user@primary.example.com"]
+    )
+
+
+def test_given_explicit_remote_alias_when_ssh_called_then_execs_selected_machine():
+    config = {
+        "remote": {
+            "default": "primary",
+            "machines": {
+                "primary": {"host": "primary.example.com"},
+                "backup": {
+                    "host": "backup.example.com",
+                    "user": "admin",
+                    "port": 2200,
+                    "identity_file": "~/.ssh/id_backup",
+                },
+            },
+        }
+    }
+    mock_exec = _run_cli_with_args(["ai", "ssh", "backup"], config)
+
+    mock_exec.assert_called_once_with(
+        "ssh", ["ssh", "-p", "2200", "-i", str(Path("~/.ssh/id_backup").expanduser()), "admin@backup.example.com"]
+    )
+
+
+def test_given_unknown_remote_alias_when_ssh_called_then_exits_without_exec(capsys):
+    config = {
+        "remote": {
+            "machines": {
+                "primary": {"host": "primary.example.com"},
+                "backup": {"host": "backup.example.com"},
+            }
+        }
+    }
+    with (
+        patch("sys.argv", ["ai", "ssh", "missing"]),
+        patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.main.os.execvp") as mock_exec,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli()
+
+    assert exc_info.value.code == 1
+    assert "Remote machine 'missing' is not configured. Configured aliases: backup, primary" in capsys.readouterr().err
+    mock_exec.assert_not_called()
+
+
+def test_given_windows_when_ssh_called_then_exits_without_exec(capsys):
+    with (
+        patch("ai_cli.main.sys.platform", "win32"),
+        patch("sys.argv", ["ai", "ssh"]),
+        patch("ai_cli.main.os.execvp") as mock_exec,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli()
+
+    assert exc_info.value.code == 1
+    assert "SSH shells are not supported on Windows" in capsys.readouterr().err
+    mock_exec.assert_not_called()
+
+
+def test_given_alias_with_no_host_when_ssh_called_then_exits_without_exec(capsys):
+    config = {"remote": {"default": "primary", "machines": {"primary": {"user": "user"}}}}
+    with (
+        patch("sys.argv", ["ai", "ssh"]),
+        patch("ai_cli.config.load_config", return_value=config),
+        patch("ai_cli.main.os.execvp") as mock_exec,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli()
+
+    assert exc_info.value.code == 1
+    assert "[remote] host not set" in capsys.readouterr().err
+    mock_exec.assert_not_called()
 
 
 def test_remote_flag_when_host_configured_then_passes_is_remote_flag():
