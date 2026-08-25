@@ -279,6 +279,57 @@ class TestRunTransportLoop:
 
         asyncio.run(run())  # Should return cleanly without looping
 
+    def test_when_mosh_exits_with_success_code_quickly_then_surfaces_diagnostic(self, tmp_path, capsys):
+        """AI-CLI-jbyo: mosh returning 0 after a fast exit is ambiguous — it can be a
+        real user detach or the remote side silently failing to start a session
+        (e.g. a transient session-name collision). The mosh-fail branch only fires on
+        a non-zero return code, so this case previously fell through to a bare, silent
+        exit with no diagnostic at all.
+        """
+        proc = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 8.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "mosh session ended after 8.0s" in err
+        assert "exit code 0" in err
+        assert "try the command again" in err
+
+    def test_when_mosh_exits_with_success_code_after_a_while_then_no_diagnostic(self, tmp_path, capsys):
+        """A genuinely long-running mosh session (elapsed >= 15s) that ends cleanly is
+        a normal user detach, not a suspicious fast failure — no diagnostic noise.
+        """
+        proc = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 20.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "mosh session ended after" not in err
+
     def test_when_mosh_fails_fast_with_vpn_then_switches_to_ssh(self, tmp_path):
         proc_mosh = _make_proc(returncode=1, poll_sequence=[None, 1])
         proc_ssh = _make_proc(returncode=0, poll_sequence=[None, 0])

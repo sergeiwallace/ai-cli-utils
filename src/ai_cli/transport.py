@@ -355,6 +355,23 @@ async def _run_transport_loop(
                 )
                 break
 
+            # A mosh session that ends quickly with a "successful" exit code is
+            # ambiguous: mosh propagates whatever the remote command exited with,
+            # so a fast, clean exit can be a real user detach OR the remote-side
+            # command (tmux/session setup) silently no-op'ing on a transient
+            # condition (e.g. a stale session-name collision) and exiting 0 without
+            # ever actually starting a session. The mosh-fail branch above only
+            # catches a non-zero return code, so this case previously fell straight
+            # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
+            if transport_type == "mosh" and elapsed < 15:
+                print(
+                    f"\nmosh session ended after {elapsed:.1f}s (exit code "
+                    f"{proc.returncode}) — if you didn't intentionally detach this "
+                    "quickly, the remote session likely failed to start (e.g. a "
+                    "transient session-name collision); try the command again.",
+                    file=sys.stderr,
+                )
+
             break  # Normal exit (user detached or session ended)
     finally:
         transport_file.unlink(missing_ok=True)
