@@ -547,6 +547,48 @@ class TestRemoteSessionIterm2Emit:
         assert remote_session_id in mock_exec.call_args[0][1][2]
         assert len(remote_allocations) == 1
 
+    def test_given_unnamed_remote_launches_when_dispatched_then_each_uses_its_own_remote_identity(self):
+        """Closing one wrapper must not clean up another wrapper's transport state."""
+        allocations = iter(["c-r-sw-1", "c-r-sw-2"])
+        transport_calls = []
+
+        def remote_preflight(command, **_kwargs):
+            if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+                return MagicMock(returncode=0, stdout="zsh\n", stderr="")
+            session_id = next(allocations)
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps({"session_id": session_id, "ai_name": session_id.removeprefix("c-r-")}),
+                stderr="",
+            )
+
+        async def fake_transport_loop(_ssh_args, _mosh_args, cleanup_cmd, session_name, _config, **_kwargs):
+            transport_calls.append((session_name, cleanup_cmd))
+
+        config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
+        with (
+            patch("sys.argv", ["ai", "c", "-R"]),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main.subprocess.run", side_effect=remote_preflight),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+            patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.transport._ensure_vpn_watcher"),
+            patch("ai_cli.transport._maybe_stop_vpn_watcher"),
+        ):
+            for _ in range(2):
+                with pytest.raises(SystemExit):
+                    cli()
+
+        assert transport_calls == [
+            ("c-r-sw-1", ["ai", "internal", "cleanup-session-files", "c-r-sw-1"]),
+            ("c-r-sw-2", ["ai", "internal", "cleanup-session-files", "c-r-sw-2"]),
+        ]
+
     def test_when_remote_gemini_then_emit_called_with_gemini_engine(self):
         _, mock_emit, _, _ = self._run_remote(["ai", "g", "2", "--remote"])
         assert mock_emit.called
