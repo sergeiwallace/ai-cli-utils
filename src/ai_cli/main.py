@@ -2496,7 +2496,7 @@ def _do_session_launch(
         # Falls back to host when not set.
         vpn_host = remote_cfg.get("vpn_host", "") or host
         ssh_args = ["ssh", "-t", "-p", port]
-        # ConnectTimeout=10 bounds the shell probe + named-session allocation
+        # ConnectTimeout=10 bounds the shell probe + session allocation
         # preflight the same way mosh_args's own ConnectTimeout does below --
         # neither should hang silently when the host is unreachable.
         preflight_ssh_args = ["ssh", "-T", "-p", port, "-o", "ConnectTimeout=10"]
@@ -2514,8 +2514,14 @@ def _do_session_launch(
         remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
         if resume:
             remote_cmd += " --resume"
+        # The local wrapper owns transport state, an iTerm profile, and its
+        # cleanup command.  It must use the exact session identity the remote
+        # launch will create.  Guessing ``...-1`` for unnamed launches made all
+        # wrappers to a host share those resources even though the remote tmux
+        # sessions were separately numbered. An explicit numeric slot is already
+        # its own canonical identity and needs no allocation preflight.
         remote_session_id = ""
-        if name and not name.isdigit():
+        if not name or not name.isdigit():
             try:
                 remote_session_id, _ = _request_remote_session_allocation(
                     preflight_ssh_args, engine, remote_prefix, name, remote_shell
@@ -2530,10 +2536,7 @@ def _do_session_launch(
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
-        _r_engine_short = engine
-        _r_ai_name = remote_session_id or _session._new_session_display_name(
-            _r_engine_short, remote_prefix, name or "1", True
-        )
+        _r_ai_name = remote_session_id or _session._new_session_display_name(engine, remote_prefix, name, True)
         _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
         _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
 
