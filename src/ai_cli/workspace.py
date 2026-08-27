@@ -39,6 +39,29 @@ def _pull_rebase(path: Path) -> tuple[int, str]:
     return rc, (stdout + stderr).strip()
 
 
+def _recover_failed_rebase(path: Path, original_branch: str, original_commit: str) -> str:
+    """Abort this pull's rebase and verify the clean starting state was restored."""
+    abort_rc, _, _ = _run(["git", "-C", str(path), "rebase", "--abort"])
+    branch_rc, branch, _ = _run(["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"])
+    commit_rc, commit, _ = _run(["git", "-C", str(path), "rev-parse", "HEAD"])
+    status_rc, status, _ = _run(["git", "-C", str(path), "status", "--porcelain"])
+    git_dir_rc, git_dir, _ = _run(["git", "-C", str(path), "rev-parse", "--absolute-git-dir"])
+    rebase_in_progress = any((Path(git_dir.strip()) / marker).exists() for marker in ("rebase-merge", "rebase-apply"))
+    restored = (
+        branch_rc == 0
+        and commit_rc == 0
+        and status_rc == 0
+        and git_dir_rc == 0
+        and branch.strip() == original_branch
+        and commit.strip() == original_commit
+        and not status.strip()
+        and not rebase_in_progress
+    )
+    if not restored:
+        return "recovery incomplete"
+    return "rebase aborted" if abort_rc == 0 else "unchanged"
+
+
 def _upstream_drift(wt: Path) -> str | None:
     """Return a warning string if a canonical worktree branch isn't tracking its
     repository's integration branch, else None (AI-CLI-128).
@@ -132,6 +155,7 @@ def ws_pull(
     total_stashed = 0
     total_dirty = 0
     total_drifted = 0
+    total_failed = 0
 
     for folder in folders:
         name = folder.name
@@ -165,6 +189,7 @@ def ws_pull(
         clean_wts: list[str] = []
         dirty_wts: list[str] = []
         drifted: list[str] = []
+        failed: list[str] = []
 
         for wt in worktrees:
             if not wt.exists():
@@ -177,7 +202,15 @@ def ws_pull(
                 total_dirty += 1
             else:
                 if not dry_run:
-                    _pull_rebase(wt)
+                    _, original_branch, _ = _run(["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"])
+                    _, original_commit, _ = _run(["git", "-C", str(wt), "rev-parse", "HEAD"])
+                    rc, out = _pull_rebase(wt)
+                    if rc != 0:
+                        recovery = _recover_failed_rebase(wt, original_branch.strip(), original_commit.strip())
+                        detail = out.splitlines()[-1] if out else f"git exited {rc}"
+                        failed.append(f"{wt.name}  (pull --rebase failed, {recovery} — {detail})")
+                        total_failed += 1
+                        continue
                 clean_wts.append(wt.name)
                 total_pulled += 1
 
@@ -196,6 +229,9 @@ def ws_pull(
         for wt_name in dirty_wts:
             print(f"  ↷  {name}/{wt_name}  (dirty, skipped)")
 
+        for msg in failed:
+            print(f"  ✗  {name}/{msg}")
+
         for msg in drifted:
             print(f"  ✗  {msg}  (not tracking origin/main — AI-CLI-128)")
             total_drifted += 1
@@ -203,4 +239,4 @@ def ws_pull(
     print(f"\nDone: {total_pulled} pulled, {total_stashed} stashed+pulled, {total_dirty} skipped (dirty)")
     if total_drifted:
         print(f"⚠  {total_drifted} worktree branch(es) not tracking origin/main — see above")
-    return 0
+    return 1 if total_failed else 0

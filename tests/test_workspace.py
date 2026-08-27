@@ -1,6 +1,7 @@
 """Tests for ai_cli.workspace — workspace file parser and ws_pull."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,6 +52,10 @@ def _worktree_porcelain(main_path: Path, linked: list[tuple[Path, str]]) -> str:
     for wt_path, branch in linked:
         blocks.append(f"worktree {wt_path}\nHEAD def456\nbranch refs/heads/{branch}")
     return "\n\n".join(blocks) + "\n\n"
+
+
+def _git(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=False)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +299,44 @@ class TestWsPull:
             result = ws_pull(ws)
 
         assert result == 0
+
+    def test_clean_worktree_when_pull_rebase_conflicts_then_aborts_and_reports_failure(self, tmp_path, capsys):
+        remote = tmp_path / "remote"
+        remote.mkdir()
+        assert _git(remote, "init", "-q", "-b", "main").returncode == 0
+        assert _git(remote, "config", "user.email", "test@example.com").returncode == 0
+        assert _git(remote, "config", "user.name", "Test User").returncode == 0
+        (remote / "conflict.txt").write_text("base\n")
+        assert _git(remote, "add", "conflict.txt").returncode == 0
+        assert _git(remote, "commit", "-q", "-m", "initial").returncode == 0
+
+        repo = tmp_path / "repo"
+        assert subprocess.run(["git", "clone", "-q", str(remote), str(repo)], check=False).returncode == 0
+        assert _git(repo, "config", "user.email", "test@example.com").returncode == 0
+        assert _git(repo, "config", "user.name", "Test User").returncode == 0
+        wt = tmp_path / "worktree"
+        assert _git(repo, "worktree", "add", "-q", "-b", "wt-branch", str(wt)).returncode == 0
+        assert _git(repo, "branch", "--set-upstream-to=origin/main", "wt-branch").returncode == 0
+
+        (wt / "conflict.txt").write_text("local change\n")
+        assert _git(wt, "commit", "-q", "-am", "local change").returncode == 0
+        original_commit = _git(wt, "rev-parse", "HEAD").stdout.strip()
+
+        (remote / "conflict.txt").write_text("remote change\n")
+        assert _git(remote, "commit", "-q", "-am", "remote change").returncode == 0
+
+        result = ws_pull(_make_workspace(tmp_path, [repo]))
+
+        out = capsys.readouterr().out
+        assert result == 1
+        assert "worktree  (pull --rebase failed, rebase aborted" in out
+        assert "Done: 1 pulled" in out
+        assert " +  worktree" not in out
+        assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "wt-branch"
+        assert _git(wt, "rev-parse", "HEAD").stdout.strip() == original_commit
+        assert _git(wt, "status", "--porcelain").stdout == ""
+        assert not Path(_git(wt, "rev-parse", "--git-path", "rebase-merge").stdout.strip()).exists()
+        assert "<<<<<<<" not in (wt / "conflict.txt").read_text()
 
 
 # ---------------------------------------------------------------------------
