@@ -306,11 +306,11 @@ def _cleanup(config, panes_output, now=None):
     return kill_calls
 
 
-def test_cleanup_when_pane_is_shell_then_kills_session():
+def test_given_unrelated_dead_shell_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     panes = _make_list_panes_output(("c-sw-1", now - 61, "bash"))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-1" in killed
+    assert killed == []
 
 
 def test_cleanup_when_pane_is_claude_and_recent_then_preserves_session():
@@ -320,12 +320,12 @@ def test_cleanup_when_pane_is_claude_and_recent_then_preserves_session():
     assert "c-sw-1" not in killed
 
 
-def test_cleanup_when_claude_abandoned_beyond_timeout_then_kills_session():
+def test_given_unrelated_detached_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("c-sw-2", now - timeout_seconds - 1, "claude"))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-2" in killed
+    assert killed == []
 
 
 def test_cleanup_when_claude_within_timeout_then_preserves_session():
@@ -343,29 +343,29 @@ def test_cleanup_when_non_ai_session_then_ignores_it():
     assert killed == []
 
 
-def test_cleanup_when_gemini_session_abandoned_then_kills_it():
+def test_given_unrelated_gemini_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("g-sw-1", now - timeout_seconds - 1, "gemini"))
     killed = _cleanup({}, panes, now)
-    assert "g-sw-1" in killed
+    assert killed == []
 
 
-def test_cleanup_when_remote_session_abandoned_then_kills_it():
+def test_given_unrelated_remote_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("c-r-sw-1", now - timeout_seconds - 1, "claude"))
     killed = _cleanup({}, panes, now)
-    assert "c-r-sw-1" in killed
+    assert killed == []
 
 
-def test_cleanup_when_custom_timeout_configured_then_uses_it():
+def test_given_unrelated_session_past_custom_timeout_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     config = {"session": {"stale_session_timeout": 5}}  # 5 minutes
     timeout_seconds = 5 * 60
     panes = _make_list_panes_output(("c-sw-1", now - timeout_seconds - 1, "claude"))
     killed = _cleanup(config, panes, now)
-    assert "c-sw-1" in killed
+    assert killed == []
 
 
 def test_cleanup_when_no_tmux_then_does_nothing():
@@ -384,12 +384,12 @@ def test_cleanup_when_session_currently_attached_then_never_kills_it():
     assert "c-sw-1" not in killed
 
 
-def test_cleanup_when_session_detached_and_abandoned_then_kills_it():
+def test_given_detached_abandoned_session_when_cleanup_runs_then_it_never_kills_it():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("c-sw-2", now - timeout_seconds - 1, "claude", 0))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-2" in killed
+    assert killed == []
 
 
 def test_cleanup_when_old_format_session_then_ignores_it():

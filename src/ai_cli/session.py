@@ -511,11 +511,12 @@ def _sweep_orphaned_claude_bg_spares(active_sessions: set[str] | None, timeout_s
 
 
 def cleanup_stale_sessions(config: dict) -> None:
-    """Kill stale ai-cli tmux sessions on each launch.
+    """Clean stale session state on each launch without ending tmux sessions.
 
-    Two cases:
-    - Dead shell: AI exited, pane shows bash/zsh (auto-resume loop stopped).
-    - Abandoned: AI still running but session unattached for > stale_session_timeout minutes.
+    This function runs while launching an arbitrary session, so it must never
+    terminate another session based on a point-in-time tmux observation.  It
+    still supplies live tmux names to reap verified orphaned ``bg-spare``
+    processes and removes stale auxiliary state.
     """
     if sys.platform == "win32":
         return
@@ -559,20 +560,6 @@ def cleanup_stale_sessions(config: dict) -> None:
         if session_name not in sessions:
             sessions[session_name] = (last_attached, currently_attached, [])
         sessions[session_name][2].append(pane_cmd.lower())
-
-    shell_cmds = {"bash", "zsh", "sh", "fish"}
-    dead_shell_grace = 60  # seconds — don't kill shell-only sessions that were recently active
-    for session_name, (last_attached, currently_attached, pane_cmds) in sessions.items():
-        all_shells = all(cmd in shell_cmds for cmd in pane_cmds)
-        # Never kill a session that currently has a client attached
-        if currently_attached:
-            continue
-        abandoned = (now - last_attached) > timeout_seconds
-        # Dead shell: all panes show a shell prompt, but grant a 60s grace period so sessions
-        # starting up (CC not yet launched) aren't killed by a concurrent session launch.
-        dead_shell = all_shells and last_attached > 0 and (now - last_attached) > dead_shell_grace
-        if dead_shell or abandoned:
-            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True, check=False)
 
     _sweep_orphaned_claude_bg_spares(set(sessions), orphan_bg_spare_timeout_seconds, now)
     _sweep_stale_iterm2_profiles()
