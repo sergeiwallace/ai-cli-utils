@@ -485,7 +485,7 @@ def get_engine_script(
 
       # On first run: synchronously drain local queue + NATS before launching CC.
       # Writes prompt_file if a pending handoff exists (local or cross-machine via NATS).
-      # CC then launches with --continue on the task — zero user input required.
+      # CC then resumes the matching task — zero user input required.
       if $first_run && [[ "$engine" == "c" && -n "$project_name" && ! -f "$prompt_file" ]]; then
         timeout 8 ai internal handoff-drain "$project_name" "$tmux_session" 2>/dev/null || true
       fi
@@ -495,7 +495,7 @@ def get_engine_script(
       # change (e.g. one written by a SessionStart hook) can influence them.
       # Writing the override here, before the agent process starts at all,
       # sidesteps that ordering entirely instead of racing it. Runs on every
-      # launch and every --continue restart, not just first run, since it sits
+      # launch and every restart, not just first run, since it sits
       # ahead of every run_agent invocation below.
       if [[ "$engine" == "c" ]]; then
         python3 -c "
@@ -514,9 +514,8 @@ with open(path, 'w') as f:
 " 2>/dev/null || true
       fi
 
-      # Resolve before every Claude Code launch.  Claude Code's bare
-      # --continue chooses the newest transcript in the directory, so it is
-      # only safe after this resolver found the exact current customTitle.
+      # Resolve before every Claude Code launch so its exact transcript UUID can
+      # be passed to --resume.
       if [[ "$engine" == "c" ]]; then
         matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
         resolve_status=$?
@@ -527,8 +526,9 @@ with open(path, 'w') as f:
         rm -f "$prompt_file"
         if [[ "$engine" == "c" ]]; then
           if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
-            touch "$matched_file" 2>/dev/null
-            run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"
+            session_id="${{matched_file##*/}}"
+            session_id="${{session_id%.jsonl}}"
+            run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name" "$resume_msg"
           else
             run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"
           fi
@@ -551,12 +551,12 @@ with open(path, 'w') as f:
       else
         if [[ "$engine" == "c" ]]; then
           # Find the most recent conversation matching $ai_name by customTitle.
-          # The shared resolver checks the session registry before allowing a
-          # touch + --continue.  A live transcript cannot be resumed safely:
-          # Claude Code may silently continue an unrelated older transcript.
+          # The shared resolver checks the session registry before returning its
+          # transcript UUID. A live transcript cannot be resumed safely.
           if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
-            touch "$matched_file" 2>/dev/null
-            run_agent claude $claude_perms_flag --continue --name "$ai_name"
+            session_id="${{matched_file##*/}}"
+            session_id="${{session_id%.jsonl}}"
+            run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name"
           else
             run_agent claude $claude_perms_flag --name "$ai_name"
           fi

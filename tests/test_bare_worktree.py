@@ -140,60 +140,46 @@ def test_given_missing_project_dir_when_searched_then_returns_none(tmp_path, mon
 # --- bare argv construction ----------------------------------------------------
 
 
-def test_given_bare_claude_when_no_prior_session_then_passes_name_without_continue(tmp_path, monkeypatch):
+def test_given_bare_claude_when_no_prior_session_then_passes_name_without_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "gemini", "--no-sandbox", [])
 
     assert argv[0] == "claude"
     assert "--name" in argv and argv[argv.index("--name") + 1] == "kg-1"
-    assert "--continue" not in argv
+    assert "--resume" not in argv
 
 
-def test_given_bare_claude_when_prior_session_exists_then_adds_continue(tmp_path, monkeypatch):
+def test_given_bare_claude_when_prior_session_exists_then_resumes_its_session_id(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     transcript = _write_transcript(_cc_project_dir(target), "eeeeeeee-0000-4000-8000-000000000005", "kg-1")
-    os.utime(transcript, (1, 1))
-
     argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" in argv
-    assert "--name" in argv
-    assert transcript.stat().st_mtime > 1
+    assert argv[-4:] == ["--resume", transcript.stem, "--name", "kg-1"]
 
 
-def test_given_two_named_transcripts_when_bare_claude_resumes_then_touches_only_exact_title(tmp_path, monkeypatch):
+def test_given_two_named_transcripts_when_bare_claude_resumes_then_uses_only_exact_title(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     project_dir = _cc_project_dir(target)
     matching = _write_transcript(project_dir, "12121212-0000-4000-8000-000000000005", "proj-1")
-    other = _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
-    os.utime(matching, (1, 1))
-    os.utime(other, (2, 2))
-
+    _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
     argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" in argv
-    assert matching.stat().st_mtime > 2
-    assert other.stat().st_mtime == 2
+    assert argv[-4:] == ["--resume", matching.stem, "--name", "proj-1"]
 
 
-def test_given_only_different_named_transcript_when_bare_claude_launches_then_does_not_continue(tmp_path, monkeypatch):
+def test_given_only_different_named_transcript_when_bare_claude_launches_then_does_not_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
-    other = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
-    os.utime(other, (2, 2))
-
+    _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
     argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" not in argv
-    assert other.stat().st_mtime == 2
+    assert "--resume" not in argv
 
 
 @pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to register a genuinely live pid")
-def test_given_live_title_matched_session_when_bare_claude_then_warns_without_touching_or_continuing(
-    tmp_path, monkeypatch, capsys
-):
+def test_given_live_title_matched_session_when_bare_claude_then_warns_without_resuming(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     session_id = "ffffffff-0000-4000-8000-000000000006"
@@ -204,7 +190,7 @@ def test_given_live_title_matched_session_when_bare_claude_then_warns_without_to
 
     argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" not in argv
+    assert "--resume" not in argv
     assert transcript.stat().st_mtime == 1
     stderr = capsys.readouterr().err
     assert "kg-1" in stderr
@@ -229,7 +215,7 @@ def test_given_registry_record_for_dead_pid_when_checked_then_not_live(tmp_path,
     assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl")) == (False, None)
 
 
-def test_given_stale_registry_record_when_bare_claude_then_still_continues(tmp_path, monkeypatch, capsys):
+def test_given_stale_registry_record_when_bare_claude_then_still_resumes(tmp_path, monkeypatch, capsys):
     """End-to-end shape of the bug: the refusal must not reach the launch argv."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
@@ -240,7 +226,7 @@ def test_given_stale_registry_record_when_bare_claude_then_still_continues(tmp_p
 
     argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" in argv
+    assert argv[-4:] == ["--resume", session_id, "--name", "kg-1"]
     assert "still running" not in capsys.readouterr().err
 
 

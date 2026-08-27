@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid as uuid_module
 from pathlib import Path
 from typing import Any, cast
 
@@ -282,10 +283,8 @@ def _cc_project_dir(cwd: Path) -> Path:
 def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
     """Return the newest CC transcript under ``cwd`` whose ``customTitle`` is ``title``.
 
-    Claude Code's ``--continue`` picks the most recently modified conversation in
-    the project directory, so callers ``touch`` the returned file to make the
-    session named for this launch win.  ``--resume <uuid>`` is deliberately not
-    used: it opens a search picker rather than resuming directly.
+    Claude Code transcript filenames are session UUIDs.  Callers pass the
+    returned stem to ``--resume <session-id>`` to resume that session directly.
     """
     project_dir = _cc_project_dir(cwd)
     if not project_dir.is_dir():
@@ -314,6 +313,17 @@ def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
         except OSError:
             continue
     return None
+
+
+def _cc_session_id(transcript: Path) -> str:
+    """Return ``transcript``'s session UUID, rejecting unexpected filenames."""
+    try:
+        session_id = uuid_module.UUID(transcript.stem)
+    except ValueError as exc:
+        raise RuntimeError(f"Matched Claude Code transcript has an invalid session UUID: {transcript}") from exc
+    if str(session_id) != transcript.stem:
+        raise RuntimeError(f"Matched Claude Code transcript has an invalid session UUID: {transcript}")
+    return transcript.stem
 
 
 def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
@@ -526,20 +536,16 @@ def _bare_engine_command(
         command = ["claude"]
         if not _is_root():
             command.append("--dangerously-skip-permissions")
-        command += ["--name", ai_name]
-        # Resume this session's own prior conversation when one exists. --continue
-        # picks by mtime, so touch the matching transcript to make it the newest.
+        # Resume this session's own prior conversation by its exact transcript UUID.
         matched = _find_cc_session_by_title(target_root, ai_name)
         if matched is not None:
+            session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
                 print(_cc_live_session_warning(ai_name, pid), file=sys.stderr)
             else:
-                try:
-                    os.utime(matched, None)
-                    command.append("--continue")
-                except OSError:
-                    pass
+                command += ["--resume", session_id]
+        command += ["--name", ai_name]
         return command + extra_args
 
     if engine == "p":
@@ -1202,6 +1208,7 @@ def _handle_internal(argv: list[str]) -> None:
             sys.exit(1)
         matched = _find_cc_session_by_title(Path(argv[1]), argv[2])
         if matched is not None:
+            _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
                 print(_cc_live_session_warning(argv[2], pid), file=sys.stderr)

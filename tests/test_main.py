@@ -249,7 +249,7 @@ class TestGetEngineScript:
         assert 'direnv exec "$direnv_root" "$@"' in script
         # Prompt and regular launches each have exact-match and fresh-session paths.
         assert script.count("run_agent claude") == 4
-        assert "--continue" in script
+        assert "--resume" in script
         # Hot-reload must exec an interpreter that exists here — a hardcoded one
         # that does not kills the pane on the session's first self-update.
         _shell = resolve_session_shell()
@@ -472,7 +472,8 @@ class TestGetEngineScript:
         assert script.index('ai internal resolve-continue-target "$PWD" "$ai_name"') < script.index(
             'if [[ -f "$prompt_file" ]];'
         )
-        assert 'run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"' in script
+        assert 'run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name" "$resume_msg"' in script
+        assert 'run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name"' in script
         assert 'run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"' in script
         assert 'find "$HOME/.claude/projects' not in script
 
@@ -502,6 +503,24 @@ def test_given_codex_bare_launch_when_resuming_then_resumes_last_session_in_work
     command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], resume=True)
 
     assert command == ["codex", "resume", "--last"]
+
+
+def test_given_matching_claude_transcript_when_bare_launching_then_resumes_its_session_id():
+    transcript = Path("/tmp/aaaaaaaa-0000-4000-8000-000000000001.jsonl")
+
+    with (
+        patch("ai_cli.main._find_cc_session_by_title", return_value=transcript),
+        patch("ai_cli.main._cc_session_is_live", return_value=(False, None)),
+    ):
+        command = _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
+
+    assert command[-4:] == ["--resume", transcript.stem, "--name", "session-1"]
+
+
+def test_given_invalid_claude_transcript_id_when_bare_launching_then_fails_loudly():
+    with patch("ai_cli.main._find_cc_session_by_title", return_value=Path("/tmp/not-a-session-id.jsonl")):
+        with pytest.raises(RuntimeError, match="invalid session UUID"):
+            _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
 
 
 def test_given_pi_missing_from_path_when_launching_then_reports_pi(capsys):
