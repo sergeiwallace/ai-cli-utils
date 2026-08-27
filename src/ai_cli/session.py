@@ -26,6 +26,7 @@ from .config import (
 )
 from .direnv_setup import envrc_loads
 from .git_repair import _git_env, repair_bare_worktree_config
+from .process_probe import probe_for
 
 
 def _checkpoint_to_chat_uuid(checkpoint_bytes: bytes) -> str:
@@ -511,12 +512,11 @@ def _sweep_orphaned_claude_bg_spares(active_sessions: set[str] | None, timeout_s
 
 
 def cleanup_stale_sessions(config: dict) -> None:
-    """Clean stale session state on each launch without ending tmux sessions.
+    """Reap only tmux sessions whose every pane leader has provably ended.
 
-    This function runs while launching an arbitrary session, so it must never
-    terminate another session based on a point-in-time tmux observation.  It
-    still supplies live tmux names to reap verified orphaned ``bg-spare``
-    processes and removes stale auxiliary state.
+    Client attachment and pane idle time say nothing about whether a remote
+    agent process is still running, so neither is used to authorize a reap.
+    A malformed or unreadable pane PID fails closed: that session is preserved.
     """
     if sys.platform == "win32":
         return
@@ -531,7 +531,7 @@ def cleanup_stale_sessions(config: dict) -> None:
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}|#{session_last_attached}|#{session_attached}|#{pane_current_command}",
+            "#{session_name}|#{pane_pid}",
         ],
         capture_output=True,
         text=True,
@@ -541,25 +541,36 @@ def cleanup_stale_sessions(config: dict) -> None:
         _sweep_orphaned_claude_bg_spares(None, orphan_bg_spare_timeout_seconds, now)
         return
 
-    # Group pane commands by session name
-    sessions = {}
+    # A session can be reaped only when every one of its pane leaders is known
+    # to be gone or a zombie.  Any unknown PID preserves the whole session.
+    sessions: dict[str, list[int | None]] = {}
     for line in res.stdout.strip().split("\n"):
         if not line:
             continue
-        parts = line.split("|", 3)
-        if len(parts) != 4:
+        parts = line.split("|", 1)
+        if len(parts) != 2:
             continue
-        session_name, last_attached_str, attached_str, pane_cmd = parts
+        session_name, pane_pid_str = parts
         if not _AI_SESSION_RE.match(session_name):
             continue
         try:
-            last_attached = int(last_attached_str)
+            pane_pid = int(pane_pid_str)
         except ValueError:
+            pane_pid = None
+        if pane_pid is not None and pane_pid <= 0:
+            pane_pid = None
+        sessions.setdefault(session_name, []).append(pane_pid)
+
+    probe = probe_for()
+    for session_name, pane_pids in sessions.items():
+        if any(pane_pid is None for pane_pid in pane_pids):
             continue
-        currently_attached = attached_str.strip() != "0"
-        if session_name not in sessions:
-            sessions[session_name] = (last_attached, currently_attached, [])
-        sessions[session_name][2].append(pane_cmd.lower())
+        try:
+            all_ended = all(probe.has_ended(pane_pid) for pane_pid in pane_pids)
+        except OSError:
+            continue
+        if all_ended:
+            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True, check=False)
 
     _sweep_orphaned_claude_bg_spares(set(sessions), orphan_bg_spare_timeout_seconds, now)
     _sweep_stale_iterm2_profiles()
