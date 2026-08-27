@@ -523,6 +523,25 @@ def test_given_live_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state
     assert state_file.exists()
 
 
+def test_given_live_remote_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(
+    tmp_path, monkeypatch, bg_spare_stand_in
+):
+    """A remote pane has c-r- prefix while Claude records only its --name value."""
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
+    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
+    panes = MagicMock(returncode=0, stdout=f"c-r-test-1|{os.getpid()}\n")
+
+    with patch(
+        "ai_cli.session.subprocess.run",
+        return_value=panes,
+    ):
+        cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
+
+    assert bg_spare_stand_in.poll() is None
+    assert state_file.exists()
+
+
 def test_given_reused_pid_when_cleanup_runs_then_removes_state_without_touching_process(
     tmp_path, monkeypatch, bg_spare_stand_in
 ):

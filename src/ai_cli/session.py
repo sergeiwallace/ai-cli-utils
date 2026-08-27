@@ -453,7 +453,14 @@ def _has_live_tmux_session(session_name: object, active_sessions: set[str]) -> b
         return False
     possible_sessions = {session_name}
     if not _AI_SESSION_RE.fullmatch(session_name):
-        possible_sessions.update({f"c-{session_name}", f"g-{session_name}"})
+        possible_sessions.update(
+            {
+                f"c-{session_name}",
+                f"c-r-{session_name}",
+                f"g-{session_name}",
+                f"g-r-{session_name}",
+            }
+        )
     return bool(possible_sessions & active_sessions)
 
 
