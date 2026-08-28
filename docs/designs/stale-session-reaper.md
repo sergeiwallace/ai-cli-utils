@@ -42,12 +42,15 @@ template_version: "design-1.0.0"
   - [D-4: Rollout mode](#d-4)
   - [D-5: Staleness threshold](#d-5)
   - [D-6: Launch-time cleanup boundary](#d-6)
+  - [D-7: Session-instance identity](#d-7)
+  - [D-8: Final reap fence](#d-8)
+  - [D-9: Staleness clock](#d-9)
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
 ## Executive Summary
 
-This design restores eventual cleanup of genuinely dead managed tmux sessions without allowing one session launch to terminate another session. A single Circus-managed watcher evaluates sessions asynchronously and authorizes a reap only when every pane leader is confirmed ended and a locally recorded heartbeat is older than a configured threshold. Every incomplete, malformed, unavailable, or contradictory observation preserves the session. The watcher is not registered automatically by session-launch commands; an operator starts it independently, and its default mode records candidates without killing them. Launch-time `cleanup_stale_sessions()` remains bookkeeping-only.
+This design restores eventual cleanup of genuinely dead managed tmux sessions without allowing one session launch to terminate another session. A single Circus-managed watcher evaluates sessions asynchronously and authorizes a reap only when every pane leader is confirmed ended and a generation-matched local heartbeat is stale by same-boot monotonic time. Every incomplete, malformed, unavailable, or contradictory observation preserves the session. The watcher is not registered automatically by session-launch commands; an operator starts it independently, and its default mode records candidates without killing them. Launch-time `cleanup_stale_sessions()` remains bookkeeping-only.
 
 ## Problem Statement
 
@@ -61,32 +64,36 @@ Managed tmux session names can remain occupied after a wrapper or host crashes. 
 
 ### Safety invariant
 
-The reaper is the only new component authorized to invoke `tmux kill-session`. In `reap` mode, it may terminate only after both of these conditions hold for the same tmux session instance:
+The reaper is the only new component authorized to invoke `tmux kill-session`. A tmux user option named `@ai_cli_session_generation` is the sole authoritative marker that a session is managed; the `_AI_SESSION_RE` name regex is never a managed-session classifier. The option holds a random, high-entropy generation token created once for each session instance. Legacy or tokenless sessions are observe-only and ineligible for reap until relaunched with a token.
 
-1. tmux returns a valid session ID and a positive leader PID for every pane, and the process probe confirms every PID has ended or is a zombie;
-2. a readable, schema-valid local heartbeat record for that session name exists and its locally recorded timestamp is older than the configured threshold.
+In `reap` mode, the reaper may terminate only after both of these conditions hold for one captured tmux session ID and the same generation token: every ledger record and every tmux metadata read must agree on that token before either gate counts as satisfied.
 
-This is conjunctive, not a score. A live process with a stale heartbeat, an ended process with a fresh heartbeat, a missing/malformed/future-dated record, an invalid PID, an empty pane list, an exception, or an unreadable tmux/state response is ineligible. `observe` mode runs exactly this predicate but never kills.
+1. tmux returns a valid session ID, generation token, pane ID, and positive leader PID for every pane, and the process probe confirms every captured pane/process identity has ended or is a zombie;
+2. a readable, schema-valid local heartbeat record with the exact session name and generation token exists, its boot generation matches the current host, and its monotonic timestamp is older than the configured threshold.
+
+This is conjunctive, not a score. A generation mismatch, missing token, or unreadable token on either side preserves the session. A live process with a stale heartbeat, an ended process with a fresh heartbeat, a missing/malformed record, a boot-generation mismatch, unavailable monotonic clock or boot identity, an invalid PID, an empty pane list, a pane or process identity mismatch, an exception, or an unreadable tmux/state response is ineligible. `observe` mode runs exactly this predicate but never kills.
 
 ### Periodic execution and lifecycle
 
-The package will provide a session-reaper management command group with `start`, `stop`, `status`, and hidden/internal `run` commands, following the existing Circus watcher pattern. `start` idempotently registers one `stale-session-reaper` watcher with the existing local Circus daemon. `run` evaluates once, sleeps 60 seconds, and repeats; Circus restarts it on unexpected exit.
+The package will provide a session-reaper management command group with `start`, `stop`, `status`, and hidden/internal `run` commands, following the existing Circus watcher pattern. `start` idempotently registers one `stale-session-reaper` watcher with the existing local Circus daemon. `run` evaluates once, sleeps 60 seconds, and repeats; a malformed candidate or evaluator exception aborts that whole interval before any kill, logs a reason, and exits so Circus can restart it.
+
+At heartbeat-watcher startup, the wrapper acquires an exclusive, generation-bound lifetime lease for its own generation token and holds it continuously until process exit. The operating system releases that hold automatically if the wrapper crashes or exits. A wrapper that cannot acquire, inherit, or verify its lease creates no usable heartbeat evidence. Before an eligible `reap` candidate receives its final gate pass, the reaper attempts to acquire that same generation-bound lease exclusively and non-blockingly. If the lease is already held, cannot be acquired, cannot be inherited, or cannot be verified, the candidate is preserved for this cycle and is not retried during the same pass. The reaper holds its lease through the final gate pass and the `tmux kill-session` attempt, then releases it whether the kill succeeds or fails.
 
 No session creation, resume, attach, `cleanup_stale_sessions()`, or `ai c`/`ai p`/`ai g`/`ai cx` path may call `start`, `run`, or the evaluator. The operator starts the watcher separately. A launch therefore cannot synchronously evaluate or terminate another session.
 
 ### Candidate evaluation and reap protocol
 
-Each interval queries tmux for managed panes using a delimiter-safe format containing `#{session_id}`, `#{session_name}`, and `#{pane_pid}`. The evaluator groups by both name and session ID, reads one ledger record per candidate, and evaluates the invariant.
+Each interval queries tmux for sessions carrying `@ai_cli_session_generation`, using a delimiter-safe format containing `#{session_id}`, `#{session_name}`, `#{pane_id}`, and `#{pane_pid}` plus the generation option. It groups by session ID, name, and generation token, then reads the corresponding ledger record and evaluates the invariant. The initial snapshot captures the complete pane-ID-to-PID mapping and each process identity exposed by the probe. The final snapshot, taken only while the reaper holds the candidate generation's lease, must match that mapping and every observable process identity; a pane replacement, PID reuse, process identity mismatch, unavailable required identity, or changed token preserves the candidate.
 
-An eligible `observe` candidate is logged with its name, opaque tmux ID, heartbeat age, and reason, without a terminating command. For an eligible `reap` candidate, the worker immediately re-queries the captured exact session ID and repeats every gate. Only then does it call `tmux kill-session -t <session-id>`, never by name. The immutable ID prevents a manually removed and recreated name from becoming the kill target. Failed revalidation, changed ID, or any tmux error preserves the candidate.
+An eligible `observe` candidate is logged with its name, opaque tmux ID, generation token, monotonic heartbeat age, and reason, without a terminating command. For an eligible `reap` candidate, the worker acquires the generation-bound lease, re-queries the captured exact session ID, verifies the generation token and pane/process identities, and repeats both gates while holding the lease. Only then does it call `tmux kill-session -t <session-id>`, never by name. The immutable ID and generation token prevent a manually removed and recreated name from becoming the kill target. Failed lease acquisition, failed revalidation, changed ID/token/pane/process identity, or any tmux or lock error preserves the candidate.
 
-After a successful kill, the worker may remove its ledger record only after tmux confirms that the captured ID no longer exists. It never removes a record after ambiguous status or failed termination. Records without a current candidate are ignored.
+After a successful kill, the worker may remove its ledger record only after tmux confirms that the captured ID no longer exists and only if the record still has the captured generation token. A wrapper may similarly clean up only its own generation's record on clean exit. It never removes a record after ambiguous status or failed termination. Records without a current candidate are ignored. A rename requires a fresh heartbeat carrying the current name before the renamed session can become eligible; until then it is preserved.
 
 ### Heartbeat recording
 
-The generated session wrapper already invokes `ai internal publish-heartbeat` about every 30 seconds. The internal command will validate its JSON, atomically write the local ledger, and then retain its current best-effort messaging publication. Message delivery, retention, and consumers never authorize a local reap.
+The generated session wrapper already invokes `ai internal publish-heartbeat` about every 30 seconds. At session start, it writes its generation token once to the tmux user option and its first heartbeat record; the token is then immutable for that session instance. At heartbeat-watcher startup it acquires and continuously holds the generation-bound lifetime lease described above. The internal command validates its JSON, atomically writes the local ledger, and then retains its current best-effort messaging publication. Message delivery, retention, and consumers never authorize a local reap.
 
-The writer makes the XDG state directory with `pathlib`, writes and flushes a complete temporary file in that directory, then atomically replaces the final file. A write error stays non-fatal to the wrapper but creates no usable record, so the evaluator preserves the session. Logs use reason codes such as `heartbeat_missing`, `heartbeat_invalid`, `heartbeat_not_stale`, `pid_invalid`, `process_unknown`, `process_live`, `tmux_read_failed`, `revalidation_failed`, and `mode_observe`; they contain no prompt or agent content.
+Each periodic heartbeat write refreshes the ledger's boot generation and monotonic timestamp; `recorded_at` remains a wall-clock field solely for operator-log readability. A generation-conditional ledger operation must refuse to replace or delete a record belonging to a different generation, and a writer that cannot verify that its token remains the session metadata token writes no record. The writer makes the XDG state directory with `pathlib`, writes and flushes a complete temporary file in that directory, then atomically replaces the final file. This guarantees atomically visible complete-file reads, not crash durability: where storage cannot establish durability, a record surviving a crash is not guaranteed. The safety protocol tolerates that loss or staleness by preserving the session and waiting for a fresh heartbeat, never by granting reap authority. After valid JSON is accepted, a local ledger-write failure is non-fatal: it logs the local failure, still attempts the existing best-effort `publish_heartbeat` call, exits non-fatally, and creates no reap authority. Logs use reason codes such as `heartbeat_missing`, `heartbeat_invalid`, `heartbeat_boot_mismatch`, `heartbeat_not_stale`, `generation_mismatch`, `lease_unavailable`, `pid_invalid`, `process_unknown`, `process_live`, `tmux_read_failed`, `revalidation_failed`, and `mode_observe`; they contain no prompt or agent content.
 
 > **Feedback Round 1:** Does this approach feel right? What's missing?
 > - <enter feedback here>
@@ -106,17 +113,17 @@ Absent configuration equals these values. Only `observe` and `reap` are valid mo
 
 ### Heartbeat ledger
 
-Records live beneath the existing XDG state home at `session-heartbeats/<encoded-session-name>.json`, where the encoding is reversible and filesystem-safe. The schema is:
+Records live beneath the existing XDG state home at `session-heartbeats/<encoded-session-name>-<encoded-generation-token>.json`, where both encodings are reversible and filesystem-safe. The schema is:
 
 ```json
-{"version": 1, "session_name": "c-session-1", "recorded_at": 1787860800}
+{"version": 1, "session_name": "session-1", "generation_token": "random-high-entropy-token", "boot_generation": "current-host-boot-generation", "monotonic_recorded_at": 123456.789, "recorded_at": 1787860800}
 ```
 
-`recorded_at` is an integer Unix timestamp written locally, not accepted from wrapper payload. The evaluator accepts a record only if it is a JSON object with this version, an exact session-name match, and a finite timestamp not later than its current clock. Every other shape fails closed.
+`generation_token`, `boot_generation`, and `monotonic_recorded_at` are required locally written fields. `recorded_at` is an integer Unix timestamp written locally for logs only, not accepted from wrapper payload and never authoritative for reaping. The evaluator accepts a record only if it is a JSON object with this version, exact session-name and generation-token matches, a boot generation matching the current host, and a finite monotonic timestamp from the available current-boot monotonic clock. A record missing any required field, a legacy/tokenless record, a boot-generation mismatch, or unavailable monotonic clock/boot identity is unavailable evidence: preserve the session; for a boot mismatch specifically, wait for a fresh heartbeat under the current boot and never immediately reap. Every other shape fails closed.
 
 ## Integration
 
-`session_script.py` continues its existing heartbeat call; the internal handler adds ledger persistence before its best-effort message publication. Existing event publication is unchanged. `process_manager.py` gains Circus registration/removal helpers beside existing watchers, using the existing XDG state directory and package-resolved executable. `main.py` dispatches the management and internal run commands.
+`session_script.py` continues its existing heartbeat call and additionally creates the generation token, writes it to `@ai_cli_session_generation`, and maintains the generation-bound lifetime lease. The internal handler adds generation-conditional ledger persistence before its best-effort message publication; a local write failure does not suppress that publication attempt. Existing event publication is otherwise unchanged. `process_manager.py` gains Circus registration/removal helpers beside existing watchers, using the existing XDG state directory and package-resolved executable. `main.py` dispatches the management and internal run commands. The metadata option, rather than any session-name pattern, is the sole authoritative managed-session marker; this includes valid indexed, custom, hyphenated, local, remote, and `cx` session names.
 
 `cleanup_stale_sessions()` remains unchanged in authority: it may list tmux names solely for orphaned background-spare cleanup and stale terminal-profile bookkeeping, but must not import/call the evaluator, start Circus, read heartbeat records, or invoke `tmux kill-session`. Conversely, the watcher must not call `cleanup_stale_sessions()`, background-spare cleanup, or terminal-profile cleanup. This prevents a scheduling overlap from granting launch-time code termination authority.
 
@@ -128,27 +135,43 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 - **Deliverables:**
   - Files created: `src/ai_cli/stale_session_reaper.py`, `tests/test_stale_session_reaper.py`.
   - Files modified: `src/ai_cli/main.py`, `src/ai_cli/session_script.py`, `src/ai_cli/config.py`.
-- **Tasks + acceptance criteria:**
+  - **Tasks + acceptance criteria:**
   - **T-1.1 Ledger persistence**
-    - [ ] When `ai internal publish-heartbeat` receives valid JSON, the system shall atomically persist a locally timestamped record matching the session argument before best-effort messaging publication.
-    - [ ] If JSON is invalid or the record cannot be written, then the system shall create no usable record and shall not terminate a tmux session.
+    - [ ] When `ai internal publish-heartbeat` receives valid JSON for a generation-marked session, the system shall atomically persist a locally timestamped record containing the exact session name, generation token, current boot generation, and current monotonic timestamp before best-effort messaging publication.
+    - [ ] When a valid local, remote, indexed, custom, hyphenated, `c`, `g`, `p`, or `cx` session is created with `@ai_cli_session_generation`, the system shall classify it as managed from that option and not from a session-name regex.
+    - [ ] When a generation-marked session exits cleanly, the system shall remove only the ledger record with its exact generation token; if it crashes instead, any remaining record shall not authorize a session with a different token.
+    - [ ] If JSON is invalid, the generation token is missing or cannot be verified against tmux metadata, or the record cannot be written, then the system shall create no usable record and shall not terminate a tmux session.
+    - [ ] If the wrapper cannot acquire, inherit, or verify its generation-bound lifetime lease, then the system shall create no usable heartbeat evidence and shall preserve the session.
+    - [ ] If local ledger persistence fails after valid JSON is accepted, then the system shall log the local failure, still attempt the existing best-effort `publish_heartbeat` call, and exit non-fatally without creating reap authority.
   - **T-1.2 Corroborated evaluator**
-    - [ ] When every pane leader is confirmed ended or zombie and a valid heartbeat is older than the threshold, the system shall mark that exact session ID eligible.
+    - [ ] When every pane leader is confirmed ended or zombie and a generation-matched current-boot heartbeat is older than the threshold, the system shall mark that exact session ID provisionally eligible for lease-held revalidation.
     - [ ] When only pane liveness or only heartbeat staleness indicates death, the system shall preserve the session and issue no kill command.
-    - [ ] If a PID, record, tmux response, process-probe response, or configuration value is missing, malformed, unreadable, future-dated, or raises an error, then the system shall preserve the candidate and log a reason.
+    - [ ] If a generation token, PID, pane ID, process identity, record, tmux response, process-probe response, monotonic clock, boot identity, or configuration value is missing, malformed, unreadable, mismatched, or raises an error, then the system shall preserve the candidate and log a reason.
+    - [ ] When a heartbeat record has a boot generation different from the current host, the system shall preserve the session, issue no kill command, and wait for a fresh heartbeat under the current boot.
+    - [ ] When a generation-marked live wrapper holds its generation lease, the system shall preserve an otherwise eligible candidate for that cycle and issue no reap attempt.
   - **T-1.3 Revalidation**
-    - [ ] When a candidate is eligible in `reap` mode, the system shall re-query its captured session ID and repeat both gates before `tmux kill-session -t <session-id>`.
-    - [ ] If its ID disappears/changes, it gains an unconfirmed pane, or either gate fails during revalidation, then the system shall issue no kill command.
-- **Exit gate:** Focused non-mocked ledger round trips and mocked tmux/process boundaries prove every criterion; `pytest tests/test_stale_session_reaper.py -q` and focused `ruff check` pass; fresh-context review confirms no launch path calls the evaluator.
+    - [ ] When a candidate is eligible in `reap` mode and its generation-bound lease is acquired exclusively and non-blockingly, the system shall re-query its captured session ID, generation token, pane IDs, PIDs, and process identities and repeat both gates while holding the lease before `tmux kill-session -t <session-id>`.
+    - [ ] If lease acquisition fails, its ID or token disappears/changes, a pane or process identity changes or is unavailable, it gains an unconfirmed pane, or either gate fails during revalidation, then the system shall issue no kill command and shall not retry the candidate in that pass.
+  - **T-1.4 Integrated safety regression coverage**
+    - [ ] When a real temporary heartbeat ledger, a generation token, and a generation-bound lease are exercised through controlled tmux and process adapters, the system shall issue exactly one ID-targeted kill only when both corroborating gates pass initially and during lease-held revalidation.
+    - [ ] When a mutation or negative control removes either the process gate or the generation-matched heartbeat gate from that integrated round trip, the system shall issue zero kill commands.
+    - [ ] When a pane is replaced, a PID is reused, a process identity changes, or a tokenless/foreign/renamed session lacks a fresh current-name heartbeat, the system shall preserve the candidate and issue zero kill commands.
+- **Exit gate:** Integrated real-temporary-ledger, generation-token, and lease round trips plus controlled tmux/process adapters prove the positive and mutation-negative controls; `pytest tests/test_stale_session_reaper.py -q` and focused `ruff check` pass; fresh-context review confirms no launch path calls the evaluator.
 
 ### Phase 2: Circus lifecycle and rollout
 
 - **Scope:** Add independently invoked Circus management, configuration validation, documentation, and non-interaction regressions.
 - **Deliverables:**
   - Files modified: `src/ai_cli/process_manager.py`, `src/ai_cli/main.py`, `src/ai_cli/config.py`, `README.md`, and focused process-manager/CLI tests.
-- **Tasks + acceptance criteria:**
+  - **Tasks + acceptance criteria:**
   - **T-2.1 Independent lifecycle**
     - [ ] When an operator runs the documented start command, the system shall register exactly one Circus watcher running the entry point at a 60-second cadence.
+    - [ ] When an operator runs the documented stop command for a registered watcher, the system shall remove that watcher and report success.
+    - [ ] If stop cannot contact Circus or remove the watcher, then the system shall report failure and shall not scan or terminate a tmux session.
+    - [ ] When an operator runs the documented status command, the system shall report whether the one registered watcher is running.
+    - [ ] If status cannot contact Circus or obtain watcher state, then the system shall report failure rather than report the watcher healthy.
+    - [ ] When an operator invokes `run` and an interval completes normally, the system shall sleep for the configured 60-second cadence before the next interval.
+    - [ ] If one malformed candidate or an evaluator exception occurs during `run`, then the system shall abort that interval before any kill, preserve all sessions, log a reason, and exit so Circus can restart the watcher without granting partial kill authority.
     - [ ] When any launch command or `cleanup_stale_sessions()` runs, the system shall neither register the watcher nor execute the evaluator.
     - [ ] If Circus is unavailable or registration fails, then the start command shall report failure and shall not fall back to synchronous scanning or termination.
   - **T-2.2 Observe-first rollout**
@@ -158,6 +181,9 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
   - **T-2.3 Authority regressions**
     - [ ] When launch-time cleanup is exercised against managed tmux listings, the system shall not invoke `tmux kill-session` or a reaper entry point.
     - [ ] When a candidate is process-live/heartbeat-stale or process-ended/heartbeat-fresh, the system shall issue zero kill commands in both cases.
+  - **T-2.4 Public documentation correction**
+    - [ ] When Phase 2 documentation is completed, the system documentation shall correct README.md's Features table and every `stale_session_timeout` configuration example so they do not claim automatic or synchronous launch-time cleanup and instead describe the reaper's independent start command, observe-first default, and explicit reap opt-in.
+    - [ ] When the public behavior correction is released, CHANGELOG.md shall contain an Unreleased entry describing the correction without rewriting released history.
 - **Exit gate:** Focused reaper, session, process-manager, and CLI tests pass; `ruff check src/ai_cli tests` and `ruff format --check src/ai_cli tests` pass; fresh-context diff review confirms only the worker owns new tmux kill authority.
 
 > **Feedback Round 1:** Does the phasing feel right — too big, too small? Should anything move earlier or later?
@@ -173,6 +199,12 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 | 4 | D-3 has no launch-path registration or execution | - [ ] | |
 | 5 | D-4/D-5 default and invalid configuration fail closed | - [ ] | |
 | 6 | D-6 preserves launch-time bookkeeping authority | - [ ] | |
+| 7 | D-7 binds the sole managed marker and every ledger record to one generation token | - [ ] | |
+| 8 | D-8 holds the generation lease through final identity/gate verification and ID-targeted kill | - [ ] | |
+| 9 | D-9 uses current-boot monotonic age and preserves on boot/clock uncertainty | - [ ] | |
+| 10 | Phase 1 integrated positive, mutation-negative, lease, and pane/process-identity ACs are covered | - [ ] | |
+| 11 | Phase 2 start/stop/status/run success and failure ACs are covered | - [ ] | |
+| 12 | Phase 1 publication-parity and Phase 2 public-documentation correction ACs are covered | - [ ] | |
 
 **Audit completed:** <!-- YYYY-MM-DD — update when all items above are checked -->
 
@@ -180,8 +212,8 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 
 | # | Risk | Impact | Mitigation |
 |---|------|--------|------------|
-| 1 | The exact liveness false-positive trigger is unconfirmed; wrapper self-reload is only correlated. | A process reading could be transiently wrong. | Independent stale ledger gate, immediate revalidation, immutable ID target, and observe-first rollout. |
-| 2 | Publisher or local storage fails. | Dead slot remains occupied. | Missing data preserves; messaging does not substitute for the ledger. |
+| 1 | The exact liveness false-positive trigger is unconfirmed; wrapper self-reload is only correlated. | A process reading could be transiently wrong. | Generation-bound ledger evidence, wrapper-held lease, final identity revalidation, immutable ID target, and observe-first rollout. |
+| 2 | Publisher or local storage fails. | Dead slot remains occupied. | Missing or non-durable data preserves; messaging does not substitute for the ledger. |
 | 3 | Prolonged host stall interrupts heartbeats. | Candidate could be observed incorrectly. | Ten-minute margin, all-pane ended gate, review observe logs, and revalidation. |
 | 4 | Circus is unavailable. | No eventual cleanup. | Existing daemon lifecycle, status command, restart supervision; never launch-time fallback. |
 
@@ -191,12 +223,15 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 
 | # | Decision | Options Considered | Recommended (AI) | Chosen | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|--------|-----------|-----------|--------|
-| D-1 | Heartbeat persistence | (a) local ledger, (b) message history, (c) tmux metadata | (a) | (a) | No | Same-host durable evidence is independent of remote delivery. | `Resolved` |
+| D-1 | Heartbeat persistence | (a) local ledger, (b) message history, (c) tmux metadata | (a) | (a) | No | Same-host atomically visible evidence is independent of remote delivery. | `Resolved` |
 | D-2 | Reap authorization | (a) two gates + ID revalidation, (b) one snapshot, (c) process retry | (a) | (a) | No | Destructive cross-session action needs corroboration and time-of-use identity. | `Resolved` |
 | D-3 | Watcher lifecycle/cadence | (a) explicit Circus/60s, (b) launch auto-start, (c) external scheduler | (a) | (a) | No | Meets required isolation using existing integration. | `Resolved` |
 | D-4 | Rollout mode | (a) observe default, (b) reap default, (c) permanently disabled | (a) | (a) | No | Creates operational evidence before kill authority. | `Resolved` |
 | D-5 | Staleness threshold | (a) 10m, (b) 5m, (c) 30m | (a) | (a) | No | Conservative margin while preserving eventual recovery. | `Resolved` |
 | D-6 | Launch boundary | (a) strict separation, (b) shared routine, (c) launch notification | (a) | (a) | No | Prevents return of launch-time authority. | `Resolved` |
+| D-7 | Session-instance identity | (a) generation token in tmux metadata and ledger, (b) tmux server generation plus session ID, (c) name-only records with clean-exit deletion | (a) | (a) | No | Binds all reap evidence and the managed marker to one session instance. | `Approved` |
+| D-8 | Final reap fence | (a) generation-bound lifetime lease plus exclusive final fence, (b) persistent two-phase claim with grace interval, (c) repeated probes and longer threshold | (a) | (a) | No | Prevents a live wrapper from publishing between final evidence read and kill. | `Approved` |
+| D-9 | Staleness clock | (a) same-boot monotonic time plus boot generation, (b) wall time plus discontinuity detector, (c) wall time only | (a) | (a) | No | Avoids wall-clock jumps and preserves after reboot until republished. | `Approved` |
 
 ### Decision Details
 
@@ -209,7 +244,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 ##### (a) Local atomic ledger under XDG state
 
 **Pros:**
-- Same-host durable evidence independent of messaging availability and retention.
+- Same-host atomically visible evidence independent of messaging availability and retention.
 - Supports schema and identity validation before a destructive decision.
 
 **Cons:**
@@ -242,7 +277,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 <!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
 <!-- decision-lineage: decision-id=stale-session-reaper/D-1; decision-topic=heartbeat-persistence; governs=artifact:local-heartbeat-ledger; normalized-proposition=Persist reap heartbeats in an atomic XDG-state ledger; applicability=scope:managed-tmux-sessions; outcome-id=local-atomic-ledger; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-1; approval-actor=Codex; approval-date=2026-08-27; approval-commit= -->
 
-Criteria 1 and 2 favor the robust host-local safety boundary. Atomic replacement and non-mocked round-trip tests mitigate write complexity; the remaining failure mode intentionally preserves the session and logs it. Confidence: high.
+The fail-closed requirement and host-local evidence boundary favor the robust host-local safety boundary. Atomic replacement and non-mocked round-trip tests mitigate write complexity; the remaining failure mode intentionally preserves the session and logs it. Confidence: high.
 
 ---
 
@@ -288,7 +323,7 @@ Criteria 1 and 2 favor the robust host-local safety boundary. Atomic replacement
 <!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
 <!-- decision-lineage: decision-id=stale-session-reaper/D-2; decision-topic=reap-authorization; governs=artifact:reap-protocol; normalized-proposition=Authorize a reap only after both gates pass twice for one tmux session ID; applicability=scope:managed-tmux-sessions; outcome-id=two-gates-id-revalidation; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-2; approval-actor=Codex; approval-date=2026-08-27; approval-commit= -->
 
-This is a one-way cross-session operation, so criteria 1 and 2 resolve toward robust revalidation. The small query cost is bounded to eligible candidates; the residual delay is safe. Confidence: high.
+This is a one-way cross-session operation, so the fail-closed requirement and exact-ID targeting requirement resolve toward robust revalidation. The small query cost is bounded to eligible candidates; the residual delay is safe. Confidence: high.
 
 ---
 
@@ -334,7 +369,7 @@ This is a one-way cross-session operation, so criteria 1 and 2 resolve toward ro
 <!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
 <!-- decision-lineage: decision-id=stale-session-reaper/D-3; decision-topic=watcher-lifecycle-cadence; governs=artifact:circus-watcher; normalized-proposition=Run an explicitly started Circus-managed reaper every 60 seconds; applicability=scope:local-host; outcome-id=explicit-circus-60-seconds; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-3; approval-actor=Codex; approval-date=2026-08-27; approval-commit= -->
 
-Criterion 2 favors an explicit lifecycle separation. Idempotent start/status commands mitigate setup; the poll is limited to one interval per minute. Confidence: high.
+The out-of-band lifecycle requirement favors an explicit lifecycle separation. Idempotent start/status commands mitigate setup; the poll is limited to one interval per minute. Confidence: high.
 
 ---
 
@@ -380,7 +415,7 @@ Criterion 2 favors an explicit lifecycle separation. Idempotent start/status com
 <!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
 <!-- decision-lineage: decision-id=stale-session-reaper/D-4; decision-topic=rollout-mode; governs=artifact:stale-session-reaper-config; normalized-proposition=Default to observe-only and require explicit configuration for reap mode; applicability=scope:initial-deployment; outcome-id=observe-default; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-4; approval-actor=Codex; approval-date=2026-08-27; approval-commit= -->
 
-Criteria 1 and 3 favor observe-first. Commands, candidate logs, and the defined `reap` value mitigate operational effort; delayed cleanup is bounded by explicit choice. Confidence: high.
+The fail-closed requirement and observe-first rollout requirement favor observe-first. Commands, candidate logs, and the defined `reap` value mitigate operational effort; delayed cleanup is bounded by explicit choice. Confidence: high.
 
 ---
 
@@ -426,7 +461,7 @@ Criteria 1 and 3 favor observe-first. Commands, candidate logs, and the defined 
 <!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
 <!-- decision-lineage: decision-id=stale-session-reaper/D-5; decision-topic=heartbeat-staleness-threshold; governs=artifact:stale-session-reaper-config; normalized-proposition=Use a ten-minute default heartbeat staleness threshold; applicability=scope:default-configuration; outcome-id=ten-minutes; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-5; approval-actor=Codex; approval-date=2026-08-27; approval-commit= -->
 
-Criteria 2 and 3 favor this conservative long-lived default. One-minute cadence/configurability mitigate delay; process corroboration and ID revalidation bound long-stall risk. Confidence: medium.
+The fail-closed requirement and eventual-recovery quality attribute favor this conservative long-lived default. One-minute cadence/configurability mitigate delay; process corroboration and ID revalidation bound long-stall risk. Confidence: medium.
 
 ---
 
@@ -472,7 +507,147 @@ Criteria 2 and 3 favor this conservative long-lived default. One-minute cadence/
 <!-- decision-record: chosen-option=(a); ai-family=codex; ai-model=gpt-5.6-terra; ai-effort=medium; ai-profile=implement -->
 <!-- decision-lineage: decision-id=stale-session-reaper/D-6; decision-topic=launch-cleanup-boundary; governs=artifact:cleanup-stale-sessions; normalized-proposition=Keep reaper execution and termination authority separate from launch-time cleanup; applicability=scope:session-launches; outcome-id=strict-separation; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-6; approval-actor=Codex; approval-date=2026-08-27; approval-commit= -->
 
-This one-way safety boundary has broad lifecycle impact, so criteria 1 and 2 resolve toward strict separation. Isolated modules and explicit no-call tests mitigate duplication; no launch-time termination path remains. Confidence: high.
+This one-way safety boundary has broad lifecycle impact, so the launch-time separation and fail-closed requirements resolve toward strict separation. Isolated modules and explicit no-call tests mitigate duplication; no launch-time termination path remains. Confidence: high.
+
+---
+
+<a id="d-7"></a>
+
+#### D-7: Session-instance identity — ✅ Approved — (a) Random generation token in tmux metadata and ledger
+
+**Context.** A name-keyed heartbeat cannot prove identity across close, rename, recreation, or tmux-server restart. The same mechanism must also define which sessions are managed.
+
+##### (a) Random generation token in tmux metadata and ledger
+
+**Pros:**
+- A high-entropy token created once per session instance is independent of name and tmux ID reuse.
+- A tmux user option can simultaneously provide an authoritative managed marker and the token the reaper reads.
+- Generation-conditional writes/deletes prevent an old wrapper or reaper from clobbering a newer instance.
+
+**Cons:**
+- Session creation and wrapper-heartbeat arguments must change together.
+- Sessions created before the feature have no token and cannot be reaped automatically.
+
+##### (b) Tmux server generation plus session ID
+
+**Pros:**
+- Uses tmux-native identity and avoids a random-token lifecycle.
+- The reaper already queries the opaque session ID.
+
+**Cons:**
+- The design must derive and persist a portable, trustworthy tmux-server generation.
+- Binding the heartbeat publisher to that generation adds tmux control-path reads to every writer startup.
+
+##### (c) Keep name-only records and delete on clean exit
+
+**Pros:**
+- Smallest change to the proposed schema.
+- Normal exits remove most stale records.
+
+**Cons:**
+- Crashes, forced exits, and EXIT-trap failures are precisely the cases this feature targets and still leave stale authority.
+- Cleanup and recreation can race, allowing an old instance to delete or authorize against a new one.
+
+##### Recommendation
+
+> **Decision:** ✅ Approved — (a) Random generation token in tmux metadata and ledger
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=stale-session-reaper/D-7; decision-topic=session-instance-identity; governs=artifact:managed-session-marker-and-heartbeat-ledger; normalized-proposition=Bind managed-session identity and heartbeat evidence to one random generation token; applicability=scope:managed-tmux-sessions; outcome-id=generation-token-metadata-ledger; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-7; approval-actor=Sergei; approval-date=2026-08-28; approval-commit= -->
+
+The approved token binds destructive evidence to an instance rather than a naming convention, and the tmux option also supplies the sole managed-session marker. A single session-creation helper and end-to-end tests mitigate the coordinated-change cost; tokenless legacy sessions remain observe-only/ineligible, so the migration limitation fails closed.
+
+---
+
+<a id="d-8"></a>
+
+#### D-8: Final reap fence — ✅ Approved — (a) Generation-bound lifetime lease plus exclusive final fence
+
+**Context.** Immediate double-checking still leaves a final heartbeat/process read-to-kill window. The protocol needs a rule for concurrent heartbeat, pane replacement, and PID reuse.
+
+##### (a) Generation-bound lifetime lease plus exclusive final fence
+
+**Pros:**
+- A live or merely stalled wrapper retains an OS-managed lease continuously, so a false process probe cannot reach the kill.
+- Process crash releases the lease automatically; the reaper can hold an exclusive lease across the final read and kill.
+- Generation binding prevents an old reaper from fencing or deleting a newly recreated session.
+
+**Cons:**
+- The current once-per-30-second subprocess must become or acquire a wrapper-lifetime lease holder.
+- Cross-platform lock acquisition, inheritance, and crash-release behavior need non-mocked tests.
+
+##### (b) Persistent two-phase reap claim with a grace interval
+
+**Pros:**
+- A claim revision plus one heartbeat interval gives an ordinary live publisher time to cancel.
+- Circus restart can conservatively abandon or resume persisted claim state.
+
+**Cons:**
+- A host/wrapper stall can exceed any finite grace and resume after the final check.
+- It adds cleanup state without fully eliminating the last observation-to-kill edge.
+
+##### (c) Rely on repeated probes and a longer threshold
+
+**Pros:**
+- Minimal new state and coordination.
+- Reduces race likelihood statistically.
+
+**Cons:**
+- Does not close the final TOCTOU; it only makes it less frequent.
+- Cannot satisfy the exact “before being reaped” heartbeat requirement under an adversarial interleaving.
+
+##### Recommendation
+
+> **Decision:** ✅ Approved — (a) Generation-bound lifetime lease plus exclusive final fence
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=stale-session-reaper/D-8; decision-topic=final-reap-fence; governs=artifact:generation-bound-lease-protocol; normalized-proposition=Require a generation-bound wrapper lifetime lease and reaper-held final exclusive fence; applicability=scope:reap-mode; outcome-id=generation-bound-lifetime-lease; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-8; approval-actor=Sergei; approval-date=2026-08-28; approval-commit= -->
+
+The approved lease closes the last read-to-kill edge because a live wrapper holds the same generation's lease continuously. A dedicated lock adapter and non-mocked cross-platform subprocess tests mitigate the lifecycle and portability costs; any failure to acquire, inherit, or verify the lease preserves the session.
+
+---
+
+<a id="d-9"></a>
+
+#### D-9: Staleness clock — ✅ Approved — (a) Same-boot monotonic time plus boot generation
+
+**Context.** A forward wall-clock correction can create artificial age. The ledger needs a portable rule for process restart and host reboot.
+
+##### (a) Same-boot monotonic time plus boot generation
+
+**Pros:**
+- Monotonic elapsed time is immune to NTP/manual wall-clock corrections and suspend-related wall jumps.
+- A boot-generation mismatch has a simple fail-closed meaning: preserve until a new heartbeat arrives.
+
+**Cons:**
+- Boot identity needs a portable abstraction across Linux, macOS, and Windows.
+- Records from before reboot cannot authorize a reap until republished.
+
+##### (b) Wall time plus a persisted clock-discontinuity detector
+
+**Pros:**
+- Keeps human-readable Unix timestamps as the primary record.
+- Can preserve across reboot when no discontinuity is detected.
+
+**Cons:**
+- Correct discontinuity detection across process restart, suspend, and manual changes is itself complex state.
+- An undetected forward step recreates the false stale signal.
+
+##### (c) Wall time only with future-date rejection
+
+**Pros:**
+- Matches the current proposed schema and is portable.
+- No boot-state dependency.
+
+**Cons:**
+- Handles backward movement only; forward movement can authorize a premature reap.
+- The safety argument depends on ordinary clock behavior rather than a fail-closed invariant.
+
+##### Recommendation
+
+> **Decision:** ✅ Approved — (a) Same-boot monotonic time plus boot generation
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=stale-session-reaper/D-9; decision-topic=staleness-clock; governs=artifact:heartbeat-ledger-clock-fields; normalized-proposition=Use same-boot monotonic elapsed time and boot generation for reap staleness; applicability=scope:heartbeat-evaluation; outcome-id=same-boot-monotonic-clock; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-9; approval-actor=Sergei; approval-date=2026-08-28; approval-commit= -->
+
+The approved clock makes wall-clock adjustments non-authoritative and assigns reboot a simple preserve-until-republished outcome. A platform clock/boot-identity adapter mitigates portability; an unavailable adapter result is UNKNOWN and therefore cannot grant reap authority.
 
 ---
 
@@ -483,11 +658,14 @@ This one-way safety boundary has broad lifecycle impact, so criteria 1 and 2 res
 > 4. D-4: <approval or feedback>
 > 5. D-5: <approval or feedback>
 > 6. D-6: <approval or feedback>
+> 7. D-7: <approval or feedback>
+> 8. D-8: <approval or feedback>
+> 9. D-9: <approval or feedback>
 > - <enter feedback here>
 
 ## Open Questions
 
-1. What exact runtime condition caused the prior pane-leader liveness observation to misidentify active wrappers as ended? Wrapper self-reload is correlated but unconfirmed. This does not block the design because it requires a second, independently persisted signal and revalidation.
+1. What exact runtime condition caused the prior pane-leader liveness observation to misidentify active wrappers as ended? Wrapper self-reload is correlated but unconfirmed. This does not block the design because generation-bound corroboration, a wrapper-held lease, and lease-held identity revalidation do not depend on that root cause being confirmed.
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <enter feedback here>
@@ -503,6 +681,9 @@ This one-way safety boundary has broad lifecycle impact, so criteria 1 and 2 res
 | 2026-08-27 | stale-session-reaper/D-4 | Codex | Observe-first rollout; fresh-authoring, high confidence. |
 | 2026-08-27 | stale-session-reaper/D-5 | Codex | Ten-minute default threshold; fresh-authoring, medium confidence. |
 | 2026-08-27 | stale-session-reaper/D-6 | Codex | Strict launch-time separation; fresh-authoring, high confidence. |
+| 2026-08-28 | stale-session-reaper/D-7 | Sergei | Approved (a) random generation token in tmux metadata and ledger; matches the AI recommendation. |
+| 2026-08-28 | stale-session-reaper/D-8 | Sergei | Approved (a) generation-bound lifetime lease plus exclusive final fence; matches the AI recommendation. |
+| 2026-08-28 | stale-session-reaper/D-9 | Sergei | Approved (a) same-boot monotonic time plus boot generation; matches the AI recommendation. |
 
 <!-- /doc:region name="overview" -->
 
