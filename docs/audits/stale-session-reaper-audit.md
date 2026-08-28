@@ -46,6 +46,13 @@ task: AI-CLI-tdm6
   - [R2.4 NEW issues surfaced](#r24-new-issues-surfaced)
   - [R2.5 Verification Matrix](#r25-verification-matrix)
   - [R2 Recommendations](#r2-recommendations)
+- [Round 3 — Resolution Verification](#round-3--resolution-verification-append-only)
+  - [R3 Summary](#r3-summary)
+  - [R3.1 Full backlog verification](#r31-full-backlog-verification)
+  - [R3.2 NEW issues surfaced](#r32-new-issues-surfaced)
+  - [R3.3 Verification Matrix](#r33-verification-matrix)
+  - [R3 Recommendations](#r3-recommendations)
+  - [Status after Round 3](#status-after-round-3)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
   - [AD-1: Bind evidence to a session instance](#ad-1)
   - [AD-2: Close the final heartbeat/process TOCTOU](#ad-2)
@@ -111,23 +118,23 @@ for this run (no Run Ledger `authority` record) — every AD-N is surfaced, not 
 
 ## Status Summary
 
-**Latest round:** Round 2 (complete)
+**Latest round:** Round 3 (complete)
 
 **Outstanding by severity / verdict (across all rounds):**
 
 | Severity | Count | Of which fixed | Of which deferred |
 |----------|-------|----------------|-------------------|
-| CRITICAL / P0 | 3 | 1 | 0 |
-| MAJOR / P1    | 9 | 4 | 0 |
+| CRITICAL / P0 | 4 | 1 | 0 |
+| MAJOR / P1    | 11 | 8 | 0 |
 | MINOR / P2    | 3 | 3 | 0 |
 | Cosmetic / P3 | 0 | 0 | 0 |
-| **Total**     | **15** | **8** | **0** |
+| **Total**     | **18** | **12** | **0** |
 
 **Ship-readiness verdict:** **Not ready for implementation.** Eight Round 1 items now PASS, but
-JA-2, JA-5, DV-1, and DV-2 remain PARTIAL. Round 2 found one new CRITICAL lease-lifecycle gap and
-two new MAJOR protocol/contract gaps. AD-1 and AD-3 are substantively applied; AD-2 is only PARTIAL
-because the design does not preserve or test lease continuity across the shipped wrapper's
-self-`exec` transitions. Round 3 must resolve N-1 through N-3 before implementation starts.
+Round 3 promotes JA-5, DV-2, N-2, and N-3 to PASS. JA-2, DV-1, N-1, and AD-2 remain PARTIAL.
+Round 3 also finds one new CRITICAL holder/wrapper partial-crash gap and two new MAJOR lifecycle/
+contract gaps (N-4 through N-6). The six unresolved MUST-fix findings are JA-2, DV-1, N-1, N-4,
+N-5, and N-6; the approved AD-2 remains only partially implemented.
 
 ## Round 1 — Main Audit
 
@@ -812,6 +819,218 @@ the PARTIAL/new-finding state.**
 - None. All three new issues affect the destructive safety protocol or its required failure
   semantics.
 
+## Round 3 — Resolution Verification (append-only)
+
+**Round 3 auditor:** Codex (`GPT-5`), fresh independent verification invocation
+
+**Round 3 date:** 2026-08-28
+
+**Round 3 scope:** Re-verified the complete Round 2 MUST-fix backlog and every dependent PARTIAL
+verdict against `docs/designs/stale-session-reaper.md` at exact commit
+`c228a9bad26a2a1e66a432d32a43399290c37c7a`. Commit `c228a9b` does not change the design; the
+actual 29-line-addition/11-line-deletion Round 3 design revision is `fe8170b`, and both commits
+contain the same design blob `978aef32522637edec5eba6b69395ee62aef327c`. The full design, audit
+history, `session_script.py`, `process_probe.py`, and `process_manager.py` were re-read. No target
+design or source edit was made; this round writes only this audit history.
+
+### R3 Summary
+
+The complete verification set is 18 items: all 12 Round 1 findings, N-1 through N-3, and AD-1
+through AD-3. No older open MUST-fix item was omitted. Fourteen verdicts are PASS and four are
+PARTIAL: JA-2, DV-1, N-1, and AD-2. N-2's typed capture contract and N-3's candidate-local semantics
+are present and consistent, promoting DV-2 and JA-5 respectively to PASS. N-1's startup ordering,
+three self-`exec` branches, fail-closed adoption path, and real-subprocess exit gate are present,
+but its separate-holder crash topology is not safe or internally consistent. Three new issues were
+reproduced: N-4 (CRITICAL) for asymmetric partial crashes, N-5 (MAJOR) for undefined holder
+cardinality across ordinary heartbeat-watcher restarts, and N-6 (MAJOR) because “authenticated
+adoption” has no falsifiable authentication contract.
+
+### R3.1 Full backlog verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| IC-1 | **PASS** | Round 2's PASS required instance-bound evidence (`docs/audits/stale-session-reaper-audit.md:644`). The design still says the tmux option is the “sole authoritative marker” and every gate agrees on the “same generation token” (`docs/designs/stale-session-reaper.md:67-74`); record paths/schema and acceptance rules remain generation-bound (`:122-128`). **Verification: CONFIRMED.** |
+| IC-2 | **PASS** | Round 2 found the stale numbered-criteria references removed (`docs/audits/stale-session-reaper-audit.md:645`). The current D-1 rationale names the “fail-closed requirement” (`docs/designs/stale-session-reaper.md:298`), and the full numbered-Criteria search still returns no match. **Verification: CONFIRMED.** |
+| JA-2 | **PARTIAL** | The two gates and ambiguity-preserves rule remain explicit (`docs/designs/stale-session-reaper.md:69-76`), but a live wrapper can lose its separate holder and leave a schema-valid record plus a free lease; the reaper has no observable holder/control field in the ledger schema (`:82-94`, `:122-128`). This does not close Round 2's fail-closed dependency (`docs/audits/stale-session-reaper-audit.md:646`); see N-4 and N-6. **Verification: CONFIRMED specification contradiction/omission; PLAUSIBLE destructive interleaving.** |
+| JA-4 | **PASS** | The integrated positive, gate-removal negative, pane/PID/token/rename, and real-subprocess race controls remain required (`docs/designs/stale-session-reaper.md:167-173`), matching Round 2's PASS (`docs/audits/stale-session-reaper-audit.md:647`). **Verification: CONFIRMED.** |
+| JA-5 | **PASS** | Candidate-local behavior now agrees in lifecycle prose, the run failure AC, and the explicit A-killed/B-throws AC: “not rolled back,” “preserve that candidate,” and “shall not affect candidate A's already-completed kill” (`docs/designs/stale-session-reaper.md:80`, `:181-190`, `:195-198`). This resolves the contradiction recorded in Round 2 (`docs/audits/stale-session-reaper-audit.md:648`). **Verification: CONFIRMED.** |
+| JA-6 | **PASS** | The holder-authorized local write still precedes best-effort messaging, and local persistence failure still logs, attempts publication, and exits non-fatally (`docs/designs/stale-session-reaper.md:100-102`, `:146`, `:154`). This preserves Round 2's PASS (`docs/audits/stale-session-reaper-audit.md:649`). **Verification: CONFIRMED.** |
+| DV-1 | **PARTIAL** | The reaper still holds the exclusive generation lease across final revalidation and kill (`docs/designs/stale-session-reaper.md:84`, `:94`, `:165-166`), but that fence protects a live wrapper only while the separate holder remains alive. Holder-only death frees the lock without making the retained record structurally unusable (`:82`, `:122-128`); see N-4. The Round 2 dependency remains open (`docs/audits/stale-session-reaper-audit.md:650`). **Verification: CONFIRMED text; PLAUSIBLE false-probe race.** |
+| DV-2 | **PASS** | The public contract now returns backend-tagged immutable identity, uses the procfs start-time field or psutil create time, maps `None` to UNKNOWN, forbids cross-backend comparison, and defines GONE/zombie matching (`docs/designs/stale-session-reaper.md:90-92`). Phase 1 scopes both implementations and the UNKNOWN/PID-reuse tests (`:140-143`, `:155-172`). This closes Round 2's interface mismatch (`docs/audits/stale-session-reaper-audit.md:651`). **Verification: CONFIRMED design contract against the current interface to be extended at `src/ai_cli/process_probe.py:114-172`, `:196-247`, `:300-339`.** |
+| DV-3 | **PASS** | Current-boot monotonic age remains authoritative, wall time remains logs-only, and boot/clock uncertainty preserves (`docs/designs/stale-session-reaper.md:71-74`, `:102`, `:125-128`, `:628-668`). **Verification: CONFIRMED; no regression from Round 2's PASS (`docs/audits/stale-session-reaper-audit.md:652`).** |
+| F-1 | **PASS** | The generation option remains the sole marker in Safety and Integration, and T-1.1 still enumerates local/remote, indexed/custom/hyphenated, and `c/g/p/cx` sessions (`docs/designs/stale-session-reaper.md:67`, `:132`, `:147`). **Verification: CONFIRMED; no regression from Round 2's PASS (`docs/audits/stale-session-reaper-audit.md:658`).** |
+| F-2 | **PASS** | T-2.4 still requires README feature/config corrections plus an Unreleased changelog correction (`docs/designs/stale-session-reaper.md:199-201`). **Verification: CONFIRMED; no regression from Round 2's PASS (`docs/audits/stale-session-reaper-audit.md:659`).** |
+| F-3 | **PASS** | Heartbeat recording still promises atomically visible complete-file reads “not crash durability,” and loss/staleness preserves rather than authorizes (`docs/designs/stale-session-reaper.md:102`); the schema continues to treat missing/invalid evidence as preserve (`:128`). **Verification: CONFIRMED; no regression from Round 2's PASS (`docs/audits/stale-session-reaper-audit.md:660`).** |
+| AD-1 | **PASS** | Approved option (a) remains reflected by the random generation token in tmux metadata and the generation-keyed ledger/schema (`docs/designs/stale-session-reaper.md:67`, `:100`, `:122-128`, `:534-575`). **Verification: CONFIRMED against the approved decision (`docs/audits/stale-session-reaper-audit.md:1044-1085`).** |
+| AD-2 | **PARTIAL** | The design implements a holder-owned exclusive final fence and honestly disclaims lock-handle inheritance across `exec` (`docs/designs/stale-session-reaper.md:76`, `:84`), but D-8 still claims a live wrapper itself retains the lease and that process crash releases it automatically (`:581-622`). A separate holder makes neither statement true for both partial-crash directions; see N-4 through N-6. **Verification: CONFIRMED mismatch with approved option (a) (`docs/audits/stale-session-reaper-audit.md:1089-1129`).** |
+| AD-3 | **PASS** | D-9, the schema, and the evaluator still implement approved same-boot monotonic time plus boot generation (`docs/designs/stale-session-reaper.md:125-128`, `:628-668`). **Verification: CONFIRMED against the approved decision (`docs/audits/stale-session-reaper-audit.md:1133-1172`).** |
+| N-1 | **PARTIAL** | The revision now orders holder readiness before first usable evidence (`docs/designs/stale-session-reaper.md:76`, `:82`, `:100`, `:149`), names all three shipped self-`exec` sites and suspends writes through adoption (`:84`, `:132`, `:152`), disclaims descriptor/handle inheritance (`:84`), and requires real wrapper/reaper subprocess races on every supported lock backend (`:171-173`). It does not maintain the promised invariant when only the holder or only the wrapper crashes, does not define holder reuse across ordinary watcher restarts, and does not define what authenticates adoption; see N-4 through N-6. This only partially resolves Round 2's CRITICAL finding (`docs/audits/stale-session-reaper-audit.md:672-714`). **Verification: CONFIRMED present fixes and remaining omissions; PLAUSIBLE destructive interleaving.** |
+| N-2 | **PASS** | `ProcessProbe.capture_identity(pid) -> ProcessIdentity | None`, backend-specific opaque values, UNKNOWN preservation, state/identity matching, and no cross-backend comparison are explicit in protocol, Integration, ACs, and the exit gate (`docs/designs/stale-session-reaper.md:90-92`, `:132`, `:157-173`). This matches the requested capture contract (`docs/audits/stale-session-reaper-audit.md:716-750`). **Verification: CONFIRMED.** |
+| N-3 | **PASS** | Candidate-local exception semantics are identical in lifecycle prose and T-2.1, while T-2.3 covers A killed before B throws (`docs/designs/stale-session-reaper.md:80`, `:188`, `:198`). This matches the requested resolution (`docs/audits/stale-session-reaper-audit.md:752-782`). **Verification: CONFIRMED.** |
+
+### R3.2 NEW issues surfaced
+
+#### N-4: Separate holder and wrapper failures do not preserve the lifetime-lease invariant — `CRITICAL` / `P0`
+
+**Location:** `docs/designs/stale-session-reaper.md:76`, `:82-84`, `:122-128`, `:149-153`,
+`:581-622`
+
+**What the Round 2 finding required:** N-1 required “gap-free transfer/adoption” or a holder whose
+lifetime is demonstrably identical to the wrapper generation, including holder/wrapper crash and
+reaper-race tests (`docs/audits/stale-session-reaper-audit.md:708-714`).
+
+**Actual state:** The new protocol says both that “The holder owns the lock handle” and that “An
+abrupt wrapper or holder crash releases the OS lease automatically” (`docs/designs/stale-session-reaper.md:82`).
+Those statements cannot both hold for a wrapper-only crash: an OS lock is released when its owning
+holder process closes/dies, not when a different supervising wrapper dies. In the opposite direction,
+a holder-only crash does release the lease while the wrapper can remain live. The retained ledger
+record contains no holder identity, lease epoch, or control-channel state (`:122-128`), so after it
+ages the reaper cannot observe the Safety section's claim that the holder/control channel is
+unavailable; it sees a schema-valid stale record and an acquirable lease (`:76`, `:84`, `:94`). D-8
+retains the old, now-inaccurate claims that “A live or merely stalled wrapper retains” the lease and
+that process crash releases it (`:588-589`, `:622`).
+
+**Why it matters:** If the holder dies while a live or stalled wrapper remains, the exact false
+process observation that motivated the design can again combine with a stale record and free lease
+to authorize a kill. If the wrapper dies while the holder survives or hangs, the holder can instead
+retain the generation lease indefinitely and prevent eventual cleanup.
+
+**Verification note:** **CONFIRMED** ownership/crash contradiction and absent observable holder
+state; **PLAUSIBLE** destructive race because implementation does not yet exist.
+
+**Verification command:**
+
+```bash
+sed -n '76p;82,84p;122,128p;149,153p;581,622p' docs/designs/stale-session-reaper.md
+```
+
+**Recommended fix (next design revision):** Specify one process topology and a cross-platform
+invariant under which no live wrapper can exist with its generation lease acquirable. Define the
+holder's mandatory response to wrapper control-channel EOF/parent death and the wrapper's mandatory
+response to holder death; do not call wrapper-crash release “automatic” when another process owns
+the lock. If holder death cannot prove wrapper termination before lock availability, add a durable
+epoch/claim mechanism that makes the retained record observably ineligible. Add separate real-
+subprocess ACs for holder-only crash, wrapper-only crash, simultaneous crash, stalled survivor,
+control-channel break, and a reaper racing each state. Reconcile D-8 and the Risk/Open Question text
+with the chosen topology.
+
+#### N-5: Holder cardinality is undefined across ordinary heartbeat-watcher restarts — `MAJOR` / `P1`
+
+**Location:** `docs/designs/stale-session-reaper.md:82`, `:140-153`, `:171-173`;
+`src/ai_cli/session_script.py:227-240`, `:449-463`
+
+**Actual state:** The design says, “At heartbeat-watcher startup, the wrapper starts one
+generation-scoped lease-holder process” (`docs/designs/stale-session-reaper.md:82`). The shipped
+wrapper's `start_watcher()` kills/replaces its heartbeat watcher (`src/ai_cli/session_script.py:227-240`)
+and is called at the top of every ordinary agent restart loop (`:449-463`), not only once per
+wrapper generation. The ACs cover wrapper startup, the three self-`exec` branches, and crashes, but
+do not say whether the existing holder is reused, adopted by the replacement heartbeat watcher,
+terminated, or duplicated on this routine path (`docs/designs/stale-session-reaper.md:149-153`,
+`:171-173`).
+
+**Why it matters:** A literal implementation can start multiple holder processes for one
+generation; exclusivity makes later holders fail while the original may become unmonitored, causing
+lost heartbeat evidence, leaked processes/leases, or permanent failure to reclaim a dead session.
+
+**Verification note:** **CONFIRMED** lifecycle ambiguity against the shipped loop; duplicate/leak
+outcomes are **PLAUSIBLE** until implementation.
+
+**Verification command:**
+
+```bash
+sed -n '82p;140,153p;167,173p' docs/designs/stale-session-reaper.md
+sed -n '227,240p;449,463p' src/ai_cli/session_script.py
+```
+
+**Recommended fix (next design revision):** Make the holder unambiguously generation-scoped and
+created once outside the replaceable heartbeat-watcher lifecycle, or define idempotent authenticated
+reuse. Specify one-holder cardinality, duplicate-start behavior, control-channel reconnection, and
+cleanup of a detected orphan. Add a real-subprocess AC that performs multiple ordinary
+`start_watcher()` cycles and proves one lock owner, continued writes through that same owner, and no
+orphan holder after wrapper exit/crash.
+
+#### N-6: “Authenticated adoption” has no authentication or replay contract — `MAJOR` / `P1`
+
+**Location:** `docs/designs/stale-session-reaper.md:67`, `:84`, `:107-128`, `:152`, `:171-173`
+
+**Actual state:** The lifecycle calls the transition an “authenticated adoption handshake” and says
+only that it is for “the same wrapper generation” (`docs/designs/stale-session-reaper.md:84`). The
+generation value itself is stored in the queryable tmux option (`:67`); the Data Model defines only
+configuration and heartbeat-record fields (`:107-128`), with no adoption capability, challenge,
+holder identity, adoption epoch, single-adopter rule, timeout, or replay/concurrent-adopter outcome.
+The AC merely requires that “the holder verifies adoption for the same generation” (`:152`), and
+the subprocess gate names generic failed adoption without defining a falsifying invalid peer
+(`:171-173`).
+
+**Why it matters:** “Authenticated” is load-bearing but not independently testable as written. An
+implementation that checks only the readable generation token, accepts a replay, or permits two
+same-generation controllers could satisfy the words while resuming writes for the wrong controller
+or revoking the record during a valid transition.
+
+**Verification note:** **CONFIRMED** specification/AC gap; exploitation likelihood is not asserted.
+
+**Verification command:**
+
+```bash
+sed -n '67p;82,84p;107,128p;149,153p;167,173p' docs/designs/stale-session-reaper.md
+rg -n 'challenge|capabilit|credential|nonce|replay|single.adopter|concurrent.adopter|adoption.*timeout' docs/designs/stale-session-reaper.md || true
+```
+
+**Recommended fix (next design revision):** Define the observable adoption contract: credential or
+OS-peer property, binding to holder/generation/replacement wrapper, single-use adoption epoch,
+write-suspension interval, timeout, and terminal outcomes for wrong generation, wrong peer, replay,
+concurrent adopter, and channel loss. The credential need not be a lock descriptor and must not
+reintroduce an fd/handle-inheritance claim. Add real-subprocess negative ACs for each invalid peer
+class and require the holder to keep or revoke evidence according to one explicit state machine.
+
+### R3.3 Verification Matrix
+
+| Finding/check | Command | Expected | Actual at `c228a9b` | Reproduced? |
+|---------------|---------|----------|----------------------|-------------|
+| Revision provenance | `git ls-tree c228a9b docs/designs/stale-session-reaper.md; git ls-tree fe8170b docs/designs/stale-session-reaper.md` | Same design blob at both commits | Both printed blob `978aef32522637edec5eba6b69395ee62aef327c`; `git diff --exit-code fe8170b c228a9b -- docs/designs/stale-session-reaper.md` exited 0. | ✅ |
+| N-1 startup/exec coverage | `sed -n '76,84p;100p;132p;149,153p;171,173p' docs/designs/stale-session-reaper.md; rg -n 'exec "\\{_session_shell\\}"' src/ai_cli/session_script.py` | Readiness-before-write, three adoption branches, no inheritance claim, real subprocess gate | Printed all claimed protocol/AC text and source execs at lines 459, 638, and 641. | ✅ |
+| N-4 partial crashes | `sed -n '76p;82,84p;122,128p;149,153p;581,622p' docs/designs/stale-session-reaper.md` | Separate holder ownership conflicts with automatic wrapper-crash release; no holder state in record | Printed holder-only ownership, both-crash automatic-release claim, five-field record schema, and stale D-8 wrapper-ownership text. | ✅ |
+| N-5 ordinary restarts | `sed -n '82p;140,153p;167,173p' docs/designs/stale-session-reaper.md; sed -n '227,240p;449,463p' src/ai_cli/session_script.py` | Holder starts at watcher startup; watcher restarts every outer loop; no ordinary-restart AC | Printed all three facts. | ✅ |
+| N-6 adoption authentication | `rg -n 'authenticated adoption|challenge|capabilit|credential|nonce|replay|single.adopter|concurrent.adopter|adoption.*timeout' docs/designs/stale-session-reaper.md` | Authentication adjective but no authenticator/replay contract | Only “authenticated adoption handshake” matched, at design line 84. | ✅ |
+| N-2 / DV-2 identity | `sed -n '90,92p;132p;155,173p' docs/designs/stale-session-reaper.md; rg -n 'capture_identity' src/ai_cli/process_probe.py || true` | Complete future contract in design; current probe has no capture method yet | Design printed typed backend/UNKNOWN/mismatch contract and ACs; source search returned no match, consistent with scoped future modification. | ✅ |
+| N-3 / JA-5 candidate-local failure | `sed -n '80p;181,198p' docs/designs/stale-session-reaper.md` | Prose and both ACs use candidate-local semantics | Printed preserve/continue behavior and A-killed/B-throws non-rollback AC. | ✅ |
+| IC-1 / F-1 regression | `sed -n '67,76p;122,132p;145,150p' docs/designs/stale-session-reaper.md` | Generation marker/schema/classifier unchanged | Printed sole-marker, same-generation, schema, Integration, and naming-variant AC text. | ✅ |
+| F-3 regression | `sed -n '102p;122,128p' docs/designs/stale-session-reaper.md` | Atomic visibility is not durability; invalid/unavailable evidence preserves | Printed both limitations and preserve behavior. | ✅ |
+| AD-3 regression | `sed -n '71,74p;102p;125,128p;628,668p' docs/designs/stale-session-reaper.md` | Same-boot monotonic throughout | Safety, writer, schema, and D-9 all use monotonic time/boot generation; wall time remains logs-only. | ✅ |
+
+**Verified: 10/10 matrix checks reproduced against commit
+`c228a9bad26a2a1e66a432d32a43399290c37c7a`. Six checks confirm resolved or non-regressed behavior;
+four reproduce N-1's PARTIAL state and N-4 through N-6.**
+
+### R3 Recommendations
+
+**MUST be fixed before implementation:**
+
+- N-4 / N-1 / JA-2 / DV-1 / AD-2: define a topology that preserves the lifetime-lease invariant
+  under holder-only and wrapper-only failure, make the reaper's ambiguity decision observable, add
+  partial-crash race ACs, and reconcile D-8's stale wrapper-ownership/automatic-release claims.
+- N-5 / N-1: define exactly one generation-scoped holder across every ordinary
+  heartbeat-watcher restart, including reuse, duplicate detection, and orphan cleanup, with a real
+  repeated-restart subprocess AC.
+- N-6 / N-1: define a falsifiable, replay-safe adoption authentication/state contract and its
+  invalid-peer subprocess cases.
+
+**SHOULD be fixed before design approval:**
+
+- None beyond the MUST items.
+
+**Can be folded into a follow-up:**
+
+- None. Each new issue affects the approved destructive fence or whether its lifecycle can be
+  implemented and tested unambiguously.
+
+### Status after Round 3
+
+The design is **not ready to proceed to implementation**. Across all rounds, 12 of 18 findings are
+fixed, but three CRITICAL findings (DV-1, N-1, N-4), three MAJOR findings (JA-2, N-5, N-6), and the
+linked AD-2 verification remain open/PARTIAL. A further append-only re-verification is required
+after the design resolves N-4 through N-6 and the remaining N-1 dependencies.
+
 <!-- /doc:region name="scope" -->
 
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
@@ -1014,6 +1233,7 @@ needs a portable rule for process restart and host reboot.
 | 2026-08-28 | AD-2 APPROVED — (a) Generation-bound lease + exclusive fence | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
 | 2026-08-28 | AD-3 APPROVED — (a) Same-boot monotonic time + boot generation | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
 | 2026-08-28 | Round 2 verification pass complete | Codex independent verifier; 8 PASS, 4 PARTIAL, 0 FAIL across the 12-item backlog; AD-1/AD-3 PASS, AD-2 PARTIAL; 3 new findings (1 CRITICAL, 2 MAJOR); 10/10 matrix checks reproduced; no target/source edits. |
+| 2026-08-28 | Round 3 resolution verification complete | Codex independent verifier; 14 PASS and 4 PARTIAL across 18 backlog/decision checks; N-4 through N-6 added (1 CRITICAL, 2 MAJOR); 10/10 matrix checks reproduced; no target/source edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -1036,6 +1256,15 @@ needs a portable rule for process restart and host reboot.
 - Round 2: canonical audit `TEMPLATE.md` and `STUB.md` from the available shared documentation
   checkout — full Round 2 structure, finding taxonomy, decision skeleton, and matrix requirements.
   The repo-local template and invocation-listed fallback were absent.
+- Round 3: `docs/designs/stale-session-reaper.md` — full read at
+  `c228a9bad26a2a1e66a432d32a43399290c37c7a`; design blob equality against the actual revision
+  commit `fe8170b` verified, and the complete `fe8170b^..fe8170b` design diff read.
+- Round 3: `docs/audits/stale-session-reaper-audit.md` — full read of Rounds 1 and 2, all 12
+  original findings, N-1 through N-3, AD-1 through AD-3, recommendations, matrices, and appendices.
+- Round 3: `src/ai_cli/session_script.py`, `src/ai_cli/process_probe.py`, and
+  `src/ai_cli/process_manager.py` — full reads at `c228a9b`; holder topology checked against all
+  three direct self-`exec` sites, ordinary heartbeat-watcher restarts, probe extension seams, and
+  Circus lifecycle ground truth.
 
 **Audit format and authoritative standards:**
 
@@ -1137,6 +1366,35 @@ git diff --check
 ```
 
 The document-structure and ToC validators both passed after the Round 2 append.
+
+**Round 3 verification commands:**
+
+```bash
+git status --short
+git rev-parse HEAD
+git show -s --format=fuller c228a9b
+git show -s --format=fuller fe8170b
+git log --oneline -- docs/designs/stale-session-reaper.md docs/audits/stale-session-reaper-audit.md
+git diff --unified=40 fe8170b^ fe8170b -- docs/designs/stale-session-reaper.md
+git diff --exit-code c228a9b:docs/designs/stale-session-reaper.md docs/designs/stale-session-reaper.md
+git ls-tree c228a9b docs/designs/stale-session-reaper.md
+git ls-tree fe8170b docs/designs/stale-session-reaper.md
+nl -ba docs/designs/stale-session-reaper.md
+nl -ba docs/audits/stale-session-reaper-audit.md
+nl -ba src/ai_cli/session_script.py
+nl -ba src/ai_cli/process_probe.py
+nl -ba src/ai_cli/process_manager.py
+rg -n 'lease|holder|control channel|adopt|lock backend|lock adapter' docs/designs/stale-session-reaper.md
+rg -n 'exec "\{_session_shell\}"|start_watcher|watcher_pid' src/ai_cli/session_script.py
+rg -n 'authenticated adoption|challenge|capabilit|credential|nonce|replay|single.adopter|concurrent.adopter|adoption.*timeout' docs/designs/stale-session-reaper.md
+# The ten exact Round 3 matrix commands are reproduced in R3.3.
+git diff --check
+```
+
+Round 3 validation passed: template/region validation reported the expected audit template and
+four regions, the ToC checker resolved all 41 links, the filled-audit checker exited 0, and
+`git diff --check` reported no whitespace errors. The exact validator invocations are omitted here
+to avoid adding environment-specific tool names and account paths to this public-package document.
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
 
