@@ -117,8 +117,10 @@ for this run (no Run Ledger `authority` record) — every AD-N is surfaced, not 
 
 **Ship-readiness verdict:** **Not ready for implementation.** IC-1 and DV-1 leave two distinct
 false-positive reap paths in the proposed protocol. Seven P1 specification/domain gaps and three
-P2 documentation/durability gaps remain open. AD-1 through AD-3 require team choices; no target
-artifact or source file was edited in this audit.
+P2 documentation/durability gaps remain open. AD-1 through AD-3 are now `✅ Approved — (a)` in
+each case (Sergei chose the AI-recommended option for all three, no divergence) — the target
+design doc still needs a revision pass to fold those choices and the 9 remaining open findings in,
+followed by a Round 2 verification-only audit, before this is ready for implementation.
 
 ## Round 1 — Main Audit
 
@@ -609,7 +611,7 @@ durability, treat the record as unavailable for reap authority and document the 
 
 <a id="ad-1"></a>
 
-### AD-1: Bind evidence to a session instance — `[PENDING]`
+### AD-1: Bind evidence to a session instance — `✅ Approved — (a)`
 
 **Context:** IC-1 and F-1 show that a name-keyed heartbeat cannot prove identity across close,
 rename, recreation, or tmux-server restart. The same mechanism should also define which sessions
@@ -649,12 +651,12 @@ are managed.
 #### Recommendation
 
 > **Recommended (AI):** Choose (a). It gives the destructive predicate an entity identity rather than a naming convention, and the same tmux option closes F-1. Mitigate the coordinated-change cost with one session-creation helper and end-to-end tests; treat every legacy/tokenless session as observe-only/ineligible, which safely mitigates the migration limitation.
-> **Decision:** `PENDING`
-<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Approved — (a) Random generation token in tmux metadata and ledger
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 <a id="ad-2"></a>
 
-### AD-2: Close the final heartbeat/process TOCTOU — `[PENDING]`
+### AD-2: Close the final heartbeat/process TOCTOU — `✅ Approved — (a)`
 
 **Context:** DV-1 and DV-2 show that immediate double-checking still leaves a last read-to-kill
 window. The protocol needs a rule for concurrent heartbeat, pane replacement, and PID reuse.
@@ -693,12 +695,12 @@ window. The protocol needs a rule for concurrent heartbeat, pane replacement, an
 #### Recommendation
 
 > **Recommended (AI):** Choose (a). Isolate the lease holder and lock adapter in the heartbeat/ledger module so the wrapper change is mechanical; use the already-declared cross-platform locking dependency and real subprocess tests on every supported OS to mitigate portability. Failure to acquire, inherit, or verify the lease always preserves, so both listed Cons fail closed.
-> **Decision:** `PENDING`
-<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Approved — (a) Generation-bound lifetime lease plus exclusive final fence
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 <a id="ad-3"></a>
 
-### AD-3: Choose a clock safe for destructive staleness decisions — `[PENDING]`
+### AD-3: Choose a clock safe for destructive staleness decisions — `✅ Approved — (a)`
 
 **Context:** DV-3 shows that a forward wall-clock correction creates artificial age. The ledger
 needs a portable rule for process restart and host reboot.
@@ -736,8 +738,8 @@ needs a portable rule for process restart and host reboot.
 #### Recommendation
 
 > **Recommended (AI):** Choose (a). Hide platform differences behind a clock/boot-identity adapter; if either value is unavailable, return UNKNOWN and preserve, mitigating portability. Requiring a new heartbeat after reboot is an intentional safe delay, so the second Con does not create destructive risk.
-> **Decision:** `PENDING`
-<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** ✅ Approved — (a) Same-boot monotonic time plus boot generation
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ## Outstanding Issues to Fix
 
@@ -781,7 +783,7 @@ needs a portable rule for process restart and host reboot.
 - [ ] All CRITICAL / P0 findings have linked fixes (commit hash or PR)
 - [x] All MAJOR / P1 findings are explicitly deferred with rationale in Outstanding Issues
 - [ ] All MINOR / P2 / P3 findings logged to the roadmap (even if deferred)
-- [ ] All AD-N decisions are APPROVED, `✅ Resolved by <agent>`, or explicitly CLOSED with rationale
+- [x] All AD-N decisions are APPROVED, `✅ Resolved by <agent>`, or explicitly CLOSED with rationale
 - [x] Verification Matrix run on at least 5-10 findings; 10/10 reproductions recorded
 - [ ] At least one verification round (Round 2+) completed because Round 1 has findings
 - [ ] Re-grep verification done in the final resolution round
@@ -797,6 +799,9 @@ needs a portable rule for process restart and host reboot.
 | Date | Action | Notes |
 |------|--------|-------|
 | 2026-08-28 | Round 1 audit pass complete | Codex audit worker; 2 CRITICAL, 7 MAJOR, 3 MINOR; 10/10 verification-matrix samples reproduced; AD-1..AD-3 pending; no target/source edits. |
+| 2026-08-28 | AD-1 APPROVED — (a) Random generation token | Sergei chose the AI-recommended option for all three; no divergence. Implementation pointer: pending design-doc revision (this issue's next step). |
+| 2026-08-28 | AD-2 APPROVED — (a) Generation-bound lease + exclusive fence | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
+| 2026-08-28 | AD-3 APPROVED — (a) Same-boot monotonic time + boot generation | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
 
 <!-- /doc:region name="audit_log" -->
 
