@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeGuard
 
 import portalocker
 import psutil
@@ -73,9 +73,11 @@ class TmuxAdapter(Protocol):
 
     def sessions(self) -> Sequence[SessionCandidate]:
         """Return token-marked sessions with their complete pane mappings."""
+        ...
 
     def kill_session(self, session_id: str) -> bool:
         """Kill one opaque tmux session ID, never a user-facing name."""
+        ...
 
 
 class SubprocessTmuxAdapter:
@@ -444,7 +446,7 @@ def _same_snapshot(initial: tuple[ProcessObservation, ...], final: tuple[Process
     return True
 
 
-def _finite_number(value: object) -> bool:
+def _finite_number(value: object) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
