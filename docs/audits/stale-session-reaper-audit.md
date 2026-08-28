@@ -21,7 +21,7 @@ task: AI-CLI-tdm6
 **Auditor:** Codex `audit` role, effort `high`; the concrete runtime model ID was not exposed to this worker (the invocation scaffold records `gpt-5.6-terra` routing). List per-round auditor in the Audit Log.
 
 **Target artifact:** `docs/designs/stale-session-reaper.md` at commit `f60d4df` (Round 1 baseline),
-re-verified through commit `035a90b` (Round 4)
+re-verified through commit `4c6359af2018b2e6f594c9a0682fcadf8679795f` (Round 5)
 
 <!-- doc:region name="scope" kind="replaceable" -->
 
@@ -62,6 +62,13 @@ re-verified through commit `035a90b` (Round 4)
   - [R4.4 Verification Matrix](#r44-verification-matrix)
   - [R4 Recommendations](#r4-recommendations)
   - [Status after Round 4](#status-after-round-4)
+- [Round 5 — Post-Revision-3 Verification](#round-5--post-revision-3-verification-append-only)
+  - [R5 Summary](#r5-summary)
+  - [R5.1 Backlog and regression verification](#r51-backlog-and-regression-verification)
+  - [R5.2 NEW issues surfaced](#r52-new-issues-surfaced)
+  - [R5.3 Verification Matrix](#r53-verification-matrix)
+  - [R5 Recommendations](#r5-recommendations)
+  - [Status after Round 5](#status-after-round-5)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
   - [AD-1: Bind evidence to a session instance](#ad-1)
   - [AD-2: Close the final heartbeat/process TOCTOU](#ad-2)
@@ -127,25 +134,26 @@ for this run (no Run Ledger `authority` record) — every AD-N is surfaced, not 
 
 ## Status Summary
 
-**Latest round:** Round 4 (complete)
+**Latest round:** Round 5 (complete)
 
 **Outstanding by severity / verdict (across all rounds):**
 
 | Severity | Count | Of which fixed | Of which deferred |
 |----------|-------|----------------|-------------------|
 | CRITICAL / P0 | 4 | 4 | 0 |
-| MAJOR / P1    | 14 | 11 | 0 |
-| MINOR / P2    | 4 | 3 | 0 |
+| MAJOR / P1    | 15 | 12 | 0 |
+| MINOR / P2    | 5 | 3 | 0 |
 | Cosmetic / P3 | 0 | 0 | 0 |
-| **Total**     | **22** | **18** | **0** |
+| **Total**     | **24** | **19** | **0** |
 
-**Ship-readiness verdict:** **Not ready for implementation.** Round 4 verifies all 25 pre-existing
-checks as PASS, including JA-2, DV-1, AD-2, and N-1/N-4/N-5/N-6: D-10 removes the separate-holder
-topology and makes the pane-leader supervisor the one lifetime lease owner. Three new MAJOR/P1
-findings block implementation: N-7 leaves signal-origin-dependent trap behavior undefined, N-8
-misstates remote fast-exit behavior, and N-9 omits the shipped watcher's per-attempt reset/rearm
-state and its existing regression suites. N-10 is a non-blocking MINOR/P2 stale-terminology
-contradiction. Eighteen of 22 historical/new findings are fixed; four Round 4 findings remain open.
+**Ship-readiness verdict:** **Not ready for implementation.** Revision 3 closes N-7, and the
+single-supervisor lease topology remains sound, but N-8 and N-9 are PARTIAL and N-10 remains
+PARTIAL. The remote fast-exit path preserves the recovery shell and lease lifecycle but silently
+changes the shipped `WORKING` heartbeat behavior without a parity decision or test (N-12). The
+monitor reset/rearm state is now specified, but Phase 1 still omits the directly affected
+`tests/test_main.py` suite (N-11). The D-8 decision summary still assigns publication to a “live
+wrapper.” Across five rounds, 19 of 24 findings are fixed; three MAJOR/P1 and two MINOR/P2 findings
+remain open.
 
 ## Round 1 — Main Audit
 
@@ -1314,6 +1322,197 @@ is nevertheless **not ready to proceed to implementation** because N-7, N-8, and
 MAJOR/P1 blockers; N-10 is an open MINOR/P2 cleanup. A further append-only re-verification is
 required after those design changes. No final implement-stage ship-readiness statement is issued.
 
+## Round 5 — Post-Revision-3 Verification (append-only)
+
+**Round 5 auditor:** Codex (`GPT-5`), fresh independent verification invocation
+
+**Round 5 date:** 2026-08-28
+
+**Round 5 scope:** Re-verified Revision 3 at exact commit
+`4c6359af2018b2e6f594c9a0682fcadf8679795f`, with no worktree drift in the design or named
+source/test inputs. The full design, full Round 1-4 audit history, `session_script.py`,
+`process_probe.py`, `process_manager.py`, and all four newly inventoried test files were read.
+Generated-script call sites were expanded through `tests/` to check inventory completeness. No
+target-design or source edit was made; this round writes only this audit history.
+
+### R5 Summary
+
+N-7 is PASS. Revision 3 removes the impossible signal-origin branch and gives every supervisor
+delivery one testable rule: `SIGINT`/`SIGWINCH` are record-only/no-relay, while supervisor-directed
+`SIGTERM` is relayed once to a live child. T-1.4/T-1.5 cover terminal Ctrl-C/resize, direct
+`SIGINT`, direct `SIGWINCH`, direct `SIGTERM`, and child exit during the `SIGTERM` relay
+(`docs/designs/stale-session-reaper.md:89`, `:174-188`).
+
+N-8 and N-9 are PARTIAL. The local/remote process and lease lifecycles are now coherent, and the
+per-child monitor reset/rearm state is explicit (`docs/designs/stale-session-reaper.md:83-85`,
+`:178-191`). Two verification gaps remain. First, shipped remote fast exit leaves the background
+heartbeat watcher alive across `exec $SHELL`, while Revision 3 says the supervisor stops its
+`WORKING` ticks and simultaneously claims existing event publication is otherwise unchanged
+(`src/ai_cli/session_script.py:230-245`, `:447`, `:602-653`; `docs/designs/stale-session-reaper.md:85`,
+`:107`, `:139`); see N-12. Second, Phase 1 omits `tests/test_main.py`, whose generated-script tests
+directly pin startup grace, signal-file action/cleanup, config grace, and remote shell continuation
+(`tests/test_main.py:283-297`, `:346-465`); see N-11.
+
+N-10 is also PARTIAL. The two Round 4 locations now correctly say “pane-leader supervisor”
+(`docs/designs/stale-session-reaper.md:103`, `:170`), but the active D-8 Decision Summary still says
+“Prevents a live wrapper from publishing” (`:271`). The remaining generic “wrapper body” use and
+D-8/D-10 historical/rejected/lineage uses are intelligible, but the active summary is the same
+ownership ambiguity N-10 required Revision 3 to remove.
+
+No prohibited personal identifier was found in either document. Commit `4c6359a` removes the prior
+name from the design Approval Log/decision lineage and audit Audit Log; the current targeted search
+returns no match in either file (`docs/designs/stale-session-reaper.md:594`, `:641`, `:687`, `:725`,
+`:762-765`; `docs/audits/stale-session-reaper-audit.md:1714-1716`).
+
+### R5.1 Backlog and regression verification
+
+| ID / check | Verdict | Evidence |
+|------------|---------|----------|
+| N-7 | **PASS** | Direct terminal signals reach the child through the shared foreground process group; supervisor `SIGINT`/`SIGWINCH` traps never relay, and only direct `SIGTERM` relays exactly once (`docs/designs/stale-session-reaper.md:89`). T-1.4 separately covers terminal Ctrl-C/resize, direct `SIGINT`/`SIGWINCH`, and direct `SIGTERM` including child exit during forwarding (`:175-177`); T-1.5 enumerates all five surfaces and exact delivery counts under zsh and Bash (`:187`). A harness can address the known supervisor PID and count child deliveries, so the rule is implementable and falsifiable. **Verification: CONFIRMED design closure; actual platform behavior remains correctly implementation-gated.** |
+| N-8 | **PARTIAL** | The shipped `< 3` stop and local `exit 0`/remote `exec $SHELL` split is at `src/ai_cli/session_script.py:578-608`, `:648-653`. Revision 3 now preserves local cleanup and remote shell child/wait/lease/record lifecycle without supervisor self-`exec` (`docs/designs/stale-session-reaper.md:85`, `:178`, `:188`). However, its instruction to stop `WORKING` ticks differs from the shipped background watcher, which is not killed before remote `exec`, and no AC tests that publication choice; see N-12. **Verification: CONFIRMED process/lease closure and publication-parity gap.** |
+| N-9 | **PARTIAL** | The lifecycle now resets startup grace, signal-file detection, and in-memory config detection at each child spawn; persisted markers survive; signal-file action stops only that child's monitor; heartbeat publication is independent; final shutdown ordering is explicit (`docs/designs/stale-session-reaper.md:83`, `:179`). The four named suites are genuinely related: watcher-loop extraction/pacing (`tests/test_runaway_loop_guards.py:41-117`), direct stable-script exec and remote-shell assertions (`tests/test_cli.py:1819-1845`), self-update regeneration (`tests/test_session_self_update.py:42-86`), and config-watch extraction/hash behavior (`tests/test_config_watch_hash.py:35-68`, `:89-155`). The inventory is incomplete because `tests/test_main.py:346-465` directly pins the moved monitor behavior; see N-11. **Verification: CONFIRMED state-machine closure; CONFIRMED incomplete inventory.** |
+| N-10 | **PARTIAL** | Candidate cleanup and the live-lease AC now name the “pane-leader supervisor” (`docs/designs/stale-session-reaper.md:103`, `:170`). Full case-insensitive grep still finds active D-8 summary ownership text: “Prevents a live wrapper from publishing” (`:271`), outside wrapper-body or historical/rejected/lineage prose. **Verification: CONFIRMED.** |
+| IC-1 spot-check | **PASS** | Generation identity remains the sole managed marker and binds the two gates, lease, record path/schema, and generation-conditional cleanup (`docs/designs/stale-session-reaper.md:68-77`, `:103`, `:129-135`). **Verification: CONFIRMED; no Revision 3 regression.** |
+| JA-2 spot-check | **PASS** | The conjunctive process/heartbeat predicate and ambiguity-preserves rule remain intact, and exclusive lease acquisition still fences repeated gates through ID-targeted kill (`docs/designs/stale-session-reaper.md:70-77`, `:91`, `:97-101`, `:163-173`). N-11/N-12 affect regression inventory/publication parity, not destructive authorization. **Verification: CONFIRMED.** |
+| JA-6 spot-check | **PASS** | The original JA-6 failure path remains explicit: after accepted JSON, a local ledger-write failure still logs, attempts existing best-effort publication, exits non-fatally, and creates no reap authority (`docs/designs/stale-session-reaper.md:109`, `:161`). N-12 is a separate remote-shell cadence claim, not a regression of this local-write failure AC. **Verification: CONFIRMED.** |
+| DV-1 spot-check | **PASS** | The stable pane-leader supervisor holds the lease for its own lifetime, child exit cannot release it, and the reaper must hold that same lease during final checks and kill (`docs/designs/stale-session-reaper.md:77`, `:83-91`, `:101`). Remote shell recovery keeps the supervisor alive and lease-held, so a stale retained record is not an abandoned/free-lease state (`:85`). **Verification: CONFIRMED design closure.** |
+| DV-2 spot-check | **PASS** | Backend-tagged process identities, exact pane-ID-to-PID equality, GONE/zombie transitions, UNKNOWN preservation, and no cross-backend comparison remain specified (`docs/designs/stale-session-reaper.md:97-101`, `:164-173`, `:190`). The extension seams still exist in `src/ai_cli/process_probe.py:114-172`, `:196-247`, `:300-339`. **Verification: CONFIRMED.** |
+| F-1 spot-check | **PASS** | The generation option remains the sole classifier in Safety and Integration and still covers local/remote, indexed/custom/hyphenated, and `c/g/p/cx` names (`docs/designs/stale-session-reaper.md:68`, `:97`, `:139`, `:154`). **Verification: CONFIRMED.** |
+| AD-2 spot-check | **PASS** | Approved lifetime lease/final fence remains implemented by the pane-leader supervisor in D-8/D-10, with real crash/update/race tests required (`docs/designs/stale-session-reaper.md:602-643`, `:695-727`, `:186-191`). **Verification: CONFIRMED.** |
+| N-1 spot-check | **PASS** | Acquisition precedes first usable evidence, all three update transitions become child fork/exec cycles under one unchanged supervisor PID/lease, and normal/crash release remains explicit (`docs/designs/stale-session-reaper.md:77`, `:83-87`, `:156-160`, `:186-191`). **Verification: CONFIRMED.** |
+| N-4 spot-check | **PASS** | Pane leader and sole lease owner remain the same supervisor process, while child crash/exit cannot release the lease (`docs/designs/stale-session-reaper.md:77`, `:83-85`, `:180`). Revision 3 adds no second holder. **Verification: CONFIRMED.** |
+| N-5 spot-check | **PASS** | The heartbeat loop remains generation-scoped in one supervisor and is not restarted per attempt; only per-child monitoring resets (`docs/designs/stale-session-reaper.md:83`, `:139`, `:159`, `:179`). **Verification: CONFIRMED; N-11 concerns test inventory, not holder cardinality.** |
+| Personal-identifier sanity check | **PASS** | No targeted personal-name match remains in either document; current approval actors are “the operator” (`docs/designs/stale-session-reaper.md:594`, `:641`, `:687`, `:725`, `:762-765`; `docs/audits/stale-session-reaper-audit.md:1714-1716`). **Verification: CONFIRMED quick check, not a claim of exhaustive named-entity recognition.** |
+
+### R5.2 NEW issues surfaced
+
+#### N-11: Phase 1 omits the suite that directly pins the moved monitor state — `MAJOR` / `P1`
+
+**Location:** `docs/designs/stale-session-reaper.md:150`, `:189-191`;
+`tests/test_main.py:346-465`
+
+**What the Round 4 finding required:** N-9 required the design to “include the existing
+generated-script suites—at minimum `test_runaway_loop_guards.py`, `test_cli.py`, and the
+self-update/session-script-focused tests—in Phase 1's modified files and test gate”
+(`docs/audits/stale-session-reaper-audit.md:1230-1234`).
+
+**Actual state:** Revision 3 names four suites, but omits `tests/test_main.py` from the modified-file
+inventory, the T-1.5 preservation AC, and the Phase 1 pytest gate
+(`docs/designs/stale-session-reaper.md:150`, `:189-191`). That file is not an incidental
+`get_engine_script()` consumer: it directly asserts stale-marker cleanup, prompt recognition,
+no-Escape/no-C-u injection, ten-second startup grace, double capture, signal-file removal after
+inject-or-skip, and config-change grace (`tests/test_main.py:346-465`). Those are the exact behaviors
+the new per-child monitor state moves and rearms.
+
+**Why it matters:** Phase 1 can satisfy its declared gate while breaking the established monitor
+regressions most directly related to N-9. Static snippets could also remain present in the generated
+script while being placed outside the per-child reset/rearm lifecycle, so the suite must be updated
+to assert the new structure rather than merely left unrun.
+
+**Verification note:** **CONFIRMED** incomplete file/test inventory against shipped tests. Other
+`get_engine_script()` consumers found by the expanded search primarily cover child-retained blocks
+or patch the generator; no claim is made that every such file must be modified.
+
+**Verification command:**
+
+```bash
+rg -n 'tests/test_(runaway_loop_guards|cli|session_self_update|config_watch_hash|main)\.py' docs/designs/stale-session-reaper.md
+rg -n 'test_(stale_signal_files|signal_file_|config_change_detection)|exec \$SHELL' tests/test_main.py
+```
+
+**Recommended fix:** Add `tests/test_main.py` to Phase 1's modified-file inventory, T-1.5
+generated-script regression AC, pytest command, and exit gate. Require its monitor assertions to be
+adapted to prove the behavior lives in per-child state and is reset/rearmed at each child spawn.
+
+#### N-12: Remote fast exit silently changes heartbeat publication without a parity AC — `MINOR` / `P2`
+
+**Location:** `docs/designs/stale-session-reaper.md:83-85`, `:107`, `:139`, `:178-191`;
+`src/ai_cli/session_script.py:230-245`, `:447`, `:602-653`
+
+**What Revision 3 claims:** The child retains “status/event publication,” the remote recovery child
+execs an interactive shell, and the supervisor “stops its `WORKING` heartbeat ticks” while waiting
+(`docs/designs/stale-session-reaper.md:85`). Integration still says, “Existing event publication is
+otherwise unchanged” (`:139`).
+
+**Actual state:** In shipped code, `start_watcher()` launches a background loop that publishes
+`WORKING` at counter zero and every 30 ticks (`src/ai_cli/session_script.py:230-245`). Fast exit
+breaks only the outer agent loop (`:602-607`). The sole watcher kill is in the parent's EXIT trap
+(`:447`), but remote recovery uses `exec $SHELL` (`:653`); Bash and zsh do not run the EXIT trap on
+that `exec`, and the background watcher survives process replacement. Revision 3 therefore chooses
+a changed remote heartbeat cadence, while T-1.4/T-1.5 require only retained lease/record and do not
+assert whether another heartbeat may be written during the interactive shell (`docs/designs/stale-session-reaper.md:178`,
+`:188`).
+
+**Why it matters:** The choice is safe for reaping because the live supervisor still holds the
+lease, but it changes observable messaging/ledger freshness and contradicts the unqualified parity
+claim. Either an implementation that keeps publishing or one that stops can currently claim support
+from a different sentence, and the integrated test need not detect the divergence.
+
+**Verification note:** **CONFIRMED** source/control-flow mismatch and missing AC. The safety impact
+is conservative; no destructive interleaving is asserted.
+
+**Verification command:**
+
+```bash
+rg -n 'exec "\{_session_shell\}"|exec \$SHELL|kill "\$watcher_pid"|start_watcher|publish-heartbeat' src/ai_cli/session_script.py
+sed -n '83,85p;107p;139p;178,191p' docs/designs/stale-session-reaper.md
+bash -c 'sleep 20 & watcher=$!; export watcher; exec bash -c '\''kill -0 "$watcher" && echo BASH_WATCHER_SURVIVED_EXEC; kill "$watcher"'\'''
+zsh -c 'sleep 20 & watcher=$!; export watcher; exec zsh -c '\''kill -0 "$watcher" && echo ZSH_WATCHER_SURVIVED_EXEC; kill "$watcher"'\'''
+```
+
+**Recommended fix:** Make the cessation of `WORKING` heartbeats during remote recovery an explicit,
+intentionally dropped parity item, narrow Integration's unchanged-publication claim, and add a
+T-1.4/T-1.5 AC proving no heartbeat write occurs after the recovery shell starts while the lease and
+record remain held. If publication is instead meant to remain shipped-compatible, remove the stop
+instruction and test continued ticks. Do not leave both outcomes admissible.
+
+### R5.3 Verification Matrix
+
+| Finding/check | Command | Expected | Actual at `4c6359a` | Reproduced? |
+|---------------|---------|----------|----------------------|-------------|
+| Revision pin | `git rev-parse HEAD; git diff --exit-code 4c6359af -- <design and named source/test files>` | Exact requested commit and no blob drift | Printed `4c6359af2018b2e6f594c9a0682fcadf8679795f`; diff exited 0. | ✅ |
+| N-7 signal closure | `sed -n '89p;174,188p' docs/designs/stale-session-reaper.md` | Uniform no-relay INT/WINCH plus exactly-once TERM; five concrete real-subprocess cases | Printed the uniform trap rule, three T-1.4 signal ACs, and T-1.5's terminal/direct-signal/child-exit matrix. | ✅ |
+| N-8 / N-12 remote parity | `sed -n '83,85p;107p;139p;178,191p' ...; rg -n 'exec ...|exec \$SHELL|kill ...|start_watcher|publish-heartbeat' src/ai_cli/session_script.py` | Local/remote split plus one unambiguous heartbeat outcome | Printed the design's stop instruction and unchanged-publication claim; source printed watcher publication, EXIT-only kill, and remote `exec $SHELL`. | ✅ |
+| N-9 / N-11 inventory | `rg -n 'tests/test_(runaway_loop_guards|cli|session_self_update|config_watch_hash|main)\.py' ...; rg -n 'test_(stale_signal_files|signal_file_|config_change_detection)' tests/test_main.py` | Every directly affected suite in inventory/gate | Design matched the four named files only; source matched ten directly relevant tests in omitted `test_main.py`. | ✅ |
+| N-10 terminology | `rg -ni '\bwrapper\b' docs/designs/stale-session-reaper.md` | Only wrapper-body or historical/rejected/lineage uses | Also printed active D-8 Decision Summary line 271: “Prevents a live wrapper from publishing.” | ✅ |
+| Prior safety regression | `sed -n '68,77p;91,109p;156,180p;598,643p;695,727p' docs/designs/stale-session-reaper.md` | Generation binding, single supervisor lease, final fence, approved D-8/D-10 remain coherent | Printed all required identity/lease/revalidation/crash rules; no second holder or supervisor self-`exec` returned. | ✅ |
+| Shell `exec` child survival | Bash/zsh background-child probe from N-12 command | Background watcher remains alive across parent shell `exec`; EXIT trap does not run | Printed `BASH_WATCHER_SURVIVED_EXEC` and `ZSH_WATCHER_SURVIVED_EXEC`; separate probes printed only replacement output, not EXIT-trap output. | ✅ |
+| Personal-identifier sanity | `rg -ni '\b(sergei|wallace)\b' <both docs>; git show 4c6359af -- <both docs> | No current match; diff shows removal only | Current search returned no output; commit diff showed only removal/replacement with “the operator.” | ✅ |
+
+**Verified: 8/8 matrix checks reproduced against commit
+`4c6359af2018b2e6f594c9a0682fcadf8679795f`. Four confirm closure or non-regression; four reproduce
+the three PARTIAL backlog verdicts and N-11/N-12.**
+
+### R5 Recommendations
+
+**MUST be fixed before implementation:**
+
+- N-9 / N-11: add `tests/test_main.py` to the Phase 1 modified-file inventory, preservation AC,
+  pytest gate, and exit gate; update it to prove monitor state is per-child and reset/rearmed.
+- N-8 / N-12: choose and test the remote-recovery heartbeat outcome. If stopping ticks is
+  intentional, record it as a deliberate parity drop and narrow the unchanged-publication claim.
+
+**SHOULD be fixed before design approval:**
+
+- N-10: replace the active D-8 Decision Summary's “live wrapper” with “live pane-leader
+  supervisor.” The historical Open Question may retain its explicitly historical wording, but it is
+  outside the strict remaining-use classification requested for this round and should also be
+  clarified if that classification is enforced literally.
+
+**Can be folded into a follow-up:**
+
+- None of N-8 through N-12. Each is a direct Revision 3 verification result. The actual
+  tmux/zsh/Bash portability outcome remains properly deferred to Phase 1's real-subprocess gate.
+
+### Status after Round 5
+
+The design is **not ready to proceed to implementation**. N-7 and the 10 spot-checked prior items
+PASS, including JA-2, DV-1, AD-2, N-1, N-4, and N-5. N-8, N-9, and N-10 remain PARTIAL; N-11 adds
+one MAJOR/P1 regression-inventory gap and N-12 adds one MINOR/P2 parity/AC gap. Across all five
+rounds, 19 of 24 findings are fixed, with **0 CRITICAL/P0, 3 MAJOR/P1, and 2 MINOR/P2 outstanding**.
+A further append-only re-verification is required after those five linked items are resolved. No
+final implement-stage ship-readiness statement is issued.
+
 <!-- /doc:region name="scope" -->
 
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
@@ -1518,6 +1717,7 @@ needs a portable rule for process restart and host reboot.
 | 2026-08-28 | Round 2 verification pass complete | Codex independent verifier; 8 PASS, 4 PARTIAL, 0 FAIL across the 12-item backlog; AD-1/AD-3 PASS, AD-2 PARTIAL; 3 new findings (1 CRITICAL, 2 MAJOR); 10/10 matrix checks reproduced; no target/source edits. |
 | 2026-08-28 | Round 3 resolution verification complete | Codex independent verifier; 14 PASS and 4 PARTIAL across 18 backlog/decision checks; N-4 through N-6 added (1 CRITICAL, 2 MAJOR); 10/10 matrix checks reproduced; no target/source edits. |
 | 2026-08-28 | Round 4 post-D-10 verification complete | Codex independent verifier; all 25 pre-existing checks PASS; N-7 through N-10 added (3 MAJOR, 1 MINOR); 10/10 matrix checks reproduced; design remains blocked; no target/source edits. |
+| 2026-08-28 | Round 5 post-Revision-3 verification complete | Codex independent verifier; N-7 PASS, N-8/N-9/N-10 PARTIAL; 10 prior items spot-checked PASS; N-11 MAJOR and N-12 MINOR added; 8/8 matrix checks reproduced; design remains blocked; no target/source edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -1607,6 +1807,30 @@ needs a portable rule for process restart and host reboot.
 - `.beads/issues.jsonl:1`, `:23` — complete tracked AI-CLI-iy53/AI-CLI-tdm6 records including descriptions, notes, close reason, and `comment_count=0`.
 - `.beads/interactions.jsonl:202-204` — all matching issue interactions; status/close events only, no comments.
 - Git commits `a223fe5`, `549abe9`, `1532f49`, `ed17415`, `f60d4df` — commit messages and relevant `session.py`/`test_session.py` diffs.
+
+**Round 5 additions:**
+
+- `docs/designs/stale-session-reaper.md` — full read at exact commit
+  `4c6359af2018b2e6f594c9a0682fcadf8679795f`, including every Revision 3 edit, all active protocol/
+  AC/decision locations, Open Questions, and Approval Log.
+- `docs/audits/stale-session-reaper-audit.md` — full read of Round 1-4 findings, all decisions,
+  matrices, recommendations, appendices, and the carried N-7 through N-10 backlog.
+- `src/ai_cli/session_script.py`, `src/ai_cli/process_probe.py`, and
+  `src/ai_cli/process_manager.py` — full reads; fast-exit/post-loop exec, watcher state, process-
+  identity seams, and Circus lifecycle ground truth.
+- `tests/test_runaway_loop_guards.py`, `tests/test_cli.py`, `tests/test_session_self_update.py`, and
+  `tests/test_config_watch_hash.py` — full reads; verified each named Phase 1 suite's relationship to
+  the supervisor/child refactor.
+- `tests/test_main.py:217-480` — expanded inventory read; direct signal/config monitor and remote-
+  shell generated-script assertions omitted by Revision 3.
+- `tests/test_cli_dispatch.py`, `tests/test_growthbook_launch_toggle.py`,
+  `tests/test_handoff.py:1390-1445`, `tests/test_iterm2.py:390-493`,
+  `tests/test_session_launch_integration.py`, and `tests/test_session_launch_shell_resolution.py` —
+  expanded `get_engine_script()` consumer review; these primarily cover retained child-body blocks
+  or patch the generator and did not add another confirmed must-modify suite.
+- Canonical audit `TEMPLATE.md` and `STUB.md` from the available shared documentation checkout —
+  full template/finding taxonomy, verification-matrix mandate, anti-patterns, and AD skeleton. The
+  repo-local and invocation-listed project-template paths were absent.
 
 `bd show` itself could not complete because the embedded database attempted to create a lock outside
 the permitted write target. The tracked JSONL records were therefore the verifiable issue snapshot;
@@ -1721,6 +1945,35 @@ rg -n '\bwrapper\b' docs/designs/stale-session-reaper.md
 # The ten exact Round 4 matrix commands and actual outcomes are recorded in R4.4.
 git diff --check
 ```
+
+**Round 5 verification commands:**
+
+```bash
+git status --short
+git rev-parse HEAD
+git show --stat --oneline 4c6359af2018b2e6f594c9a0682fcadf8679795f
+git diff --exit-code 4c6359af -- docs/designs/stale-session-reaper.md src/ai_cli/session_script.py src/ai_cli/process_probe.py src/ai_cli/process_manager.py tests/test_runaway_loop_guards.py tests/test_cli.py tests/test_session_self_update.py tests/test_config_watch_hash.py
+git diff --unified=35 4c6359af^ 4c6359af -- docs/designs/stale-session-reaper.md
+nl -ba docs/designs/stale-session-reaper.md
+nl -ba docs/audits/stale-session-reaper-audit.md
+nl -ba src/ai_cli/session_script.py
+nl -ba src/ai_cli/process_probe.py
+nl -ba src/ai_cli/process_manager.py
+nl -ba tests/test_runaway_loop_guards.py
+nl -ba tests/test_cli.py
+nl -ba tests/test_session_self_update.py
+nl -ba tests/test_config_watch_hash.py
+rg -l 'get_engine_script' tests
+rg -n 'get_engine_script|start_watcher|watcher_pid|signal_file|config_hash|config_changed|refresh-template|_exit_elapsed|exec \$SHELL|publish-heartbeat' tests src
+rg -ni '\bwrapper\b' docs/designs/stale-session-reaper.md
+rg -ni '\b(sergei|wallace)\b' docs/designs/stale-session-reaper.md docs/audits/stale-session-reaper-audit.md
+# The eight exact Round 5 matrix commands and actual outcomes are recorded in R5.3.
+git diff --check
+```
+
+Round 5 validation passed: template/region validation reported the expected audit template and
+four regions, the ToC checker resolved all 56 links, the filled-audit check exited 0, and
+`git diff --check` reported no whitespace errors.
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
 
