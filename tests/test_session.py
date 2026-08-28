@@ -306,41 +306,29 @@ def _cleanup(config, panes_output, now=None):
     return kill_calls
 
 
-def test_given_live_detached_pane_when_different_session_launches_then_preserves_session():
-    panes = MagicMock(returncode=0, stdout="c-remote-1|101\n")
-    probe = MagicMock()
-    probe.has_ended.return_value = False
+def test_given_unrelated_session_with_a_false_ended_pane_result_when_cleanup_runs_then_it_never_kills_the_session():
+    """Launch-time cleanup must not have authority to end another tmux session.
 
-    with (
-        patch("subprocess.run") as run,
-        patch("ai_cli.session.sys.platform", "linux"),
-        patch("ai_cli.session.probe_for", return_value=probe),
-        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
-    ):
-        run.return_value = panes
-        cleanup_stale_sessions({})
-
-    assert not any("kill-session" in call.args[0] for call in run.call_args_list)
-    probe.has_ended.assert_called_once_with(101)
-
-
-def test_given_dead_pane_when_cleanup_runs_then_reaps_session():
-    panes = MagicMock(returncode=0, stdout="c-crashed-1|202\n")
+    The ``probe_for`` seam deliberately reports the pane as ended.  Before this
+    regression fix, that one observation made this arbitrary launch issue
+    ``tmux kill-session -t c-r-app-1``.  It is patched with ``create=True`` so
+    the test also drives that exact old path when the structural fix is reverted.
+    """
+    panes = MagicMock(returncode=0, stdout="c-r-app-1|101\n")
     probe = MagicMock()
     probe.has_ended.return_value = True
 
     with (
         patch("subprocess.run") as run,
         patch("ai_cli.session.sys.platform", "linux"),
-        patch("ai_cli.session.probe_for", return_value=probe),
+        patch("ai_cli.session.probe_for", return_value=probe, create=True),
         patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
+        patch("ai_cli.session._sweep_stale_iterm2_profiles"),
     ):
         run.return_value = panes
         cleanup_stale_sessions({})
 
-    assert [call.args[0] for call in run.call_args_list if "kill-session" in call.args[0]] == [
-        ["tmux", "kill-session", "-t", "c-crashed-1"]
-    ]
+    assert not any("kill-session" in call.args[0] for call in run.call_args_list)
 
 
 def test_given_unrelated_dead_shell_when_cleanup_runs_then_it_never_kills_the_session():
