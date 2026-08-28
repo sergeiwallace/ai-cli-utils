@@ -254,7 +254,9 @@ class TestGetEngineScript:
         # that does not kills the pane on the session's first self-update.
         _shell = resolve_session_shell()
         assert _shell is not None and os.access(_shell, os.X_OK)
-        assert f'exec "{_shell}" "$_script_stable_path"' in script
+        assert '"$_supervisor_script" --ai-cli-child-body &' in script
+        assert "exit 78" in script
+        assert f'exec "{_shell}" "$_script_stable_path"' not in script
         assert "direnv denied or could not evaluate .envrc" in script
 
     def test_given_direnv_blocks_auto_restart_when_agent_exits_then_script_prints_recovery_command(self):
@@ -270,7 +272,8 @@ class TestGetEngineScript:
         assert "agent_direnv_blocked=false" in script
         # The main agent invocation's stdio must be untouched — it's a long-running
         # interactive process; buffering its stderr would break real-time streaming.
-        assert 'direnv exec "$direnv_root" "$@"\n' in script
+        assert 'direnv exec "$direnv_root" "$@" &\n' in script
+        assert 'wait "$active_agent_pid"' in script
         # `[.]` not `\.`: the regex lives inside a Python f-string, where `\.` is not a
         # recognised escape (SyntaxWarning today, SyntaxError in a future Python). The two
         # are equivalent in ERE — see tests/test_no_syntax_warnings.py.

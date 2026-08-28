@@ -54,6 +54,10 @@ def test_self_update_does_not_permanently_give_up_on_refresh_failure():
     assert '_template_version="$_current_ver"' not in s
     # Failure path retries rather than swallowing the update signal.
     assert "will retry on next restart" in s
+    # Reload requests return to the persistent pane-leader supervisor rather
+    # than replacing it with a fresh shell process.
+    assert "exit 78" in s
+    assert 'exec "' not in s[s.index("_need_reload") :]
 
 
 def test_write_stable_script_returns_false_without_metadata(monkeypatch, tmp_path):

@@ -245,6 +245,27 @@ class TestCliDispatch:
                     assert call_args[0] == "sess1"
                     assert call_args[1] == {"cpu": 50}
 
+    def test_given_generation_marked_session_when_heartbeat_is_published_then_ledger_is_written_first(self, tmp_path):
+        with patch(
+            "sys.argv", ["ai", "internal", "publish-heartbeat", "session-1", '{"status": "WORKING"}', "token-1"]
+        ):
+            with (
+                patch("ai_cli.config.load_config", return_value={}),
+                patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+                patch(
+                    "ai_cli.main.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout="token-1\n", stderr=""),
+                ),
+                patch("ai_cli.stale_session_reaper.write_heartbeat", return_value=True) as write_heartbeat,
+                patch("ai_cli.messaging.NATSClient") as mock_nats,
+            ):
+                mock_nats.return_value = MagicMock()
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+
+        assert exc.value.code == 0
+        write_heartbeat.assert_called_once_with(tmp_path, "session-1", "token-1")
+
     def test_cli_when_internal_publish_heartbeat_bad_json_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", "not-json"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1837,7 +1858,9 @@ class TestGetEngineScript:
         # this host: a hardcoded one that does not kills the pane on reload.
         shell = resolve_session_shell()
         assert shell is not None and os.access(shell, os.X_OK)
-        assert f'exec "{shell}" "$_script_stable_path"' in script
+        assert '"$_supervisor_script" --ai-cli-child-body &' in script
+        assert "exit 78" in script
+        assert f'exec "{shell}" "$_script_stable_path"' not in script
 
     def test_get_engine_script_includes_set_environment_after_first_run(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")

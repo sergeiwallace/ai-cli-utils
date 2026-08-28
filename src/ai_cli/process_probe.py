@@ -44,12 +44,14 @@ themselves.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import signal
 import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import ClassVar
@@ -111,6 +113,19 @@ class StartTimeMatch(Enum):
     UNPROVEN = "unproven"
 
 
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """An immutable, backend-specific process-birth identity.
+
+    ``marker`` deliberately remains in the unit supplied by the backend.  A
+    procfs start-time tick and a psutil epoch timestamp are not interchangeable,
+    so callers may compare identities only for exact equality.
+    """
+
+    backend: str
+    marker: int | float
+
+
 class ProcessProbe(ABC):
     """What the session registry needs to know about a recorded pid, per platform.
 
@@ -146,6 +161,14 @@ class ProcessProbe(ABC):
 
         ``recorded`` is a raw registry value of unknown type, because the record is
         written by another program and may carry any shape (or none).
+        """
+
+    @abstractmethod
+    def capture_identity(self, pid: int) -> ProcessIdentity | None:
+        """Capture this backend's process-birth marker, or ``None`` if unknown.
+
+        ``None`` is intentionally not synthesized from pid existence.  Consumers
+        that need a safe identity must treat it as unavailable evidence.
         """
 
     @abstractmethod
@@ -246,6 +269,18 @@ class ProcfsProbe(ProcessProbe):
             return StartTimeMatch.UNPROVEN
         return StartTimeMatch.MATCH if actual == recorded else StartTimeMatch.UNPROVEN
 
+    def capture_identity(self, pid: int) -> ProcessIdentity | None:
+        """Return procfs field 22 unchanged, or ``None`` when it cannot be read."""
+        if pid <= 0:
+            return None
+        fields = self._stat_fields(pid)
+        if len(fields) < 20:
+            return None
+        try:
+            return ProcessIdentity("procfs", int(fields[19]))
+        except ValueError:
+            return None
+
     def end_process(self, pid: int, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
         """SIGTERM, SIGCONT, bounded wait, SIGKILL -- then answer from ``/proc``.
 
@@ -337,6 +372,18 @@ class PsutilProbe(ProcessProbe):
         if abs(actual - expected) <= _START_TIME_TOLERANCE_SECONDS:
             return StartTimeMatch.MATCH
         return StartTimeMatch.UNPROVEN
+
+    def capture_identity(self, pid: int) -> ProcessIdentity | None:
+        """Return psutil's native creation timestamp without unit conversion."""
+        if pid <= 0:
+            return None
+        try:
+            marker = psutil.Process(pid).create_time()
+        except (psutil.Error, OSError):
+            return None
+        if not isinstance(marker, (int, float)) or isinstance(marker, bool) or not math.isfinite(marker):
+            return None
+        return ProcessIdentity("psutil", marker)
 
     def end_process(self, pid: int, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
         """Terminate, continue, bounded wait, kill -- then answer from psutil.

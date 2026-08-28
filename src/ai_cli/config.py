@@ -197,6 +197,14 @@ stale_session_timeout = 15
 ## device. If you only run sessions in a local terminal, false is fine.
 # use_tmux = true
 
+[stale_session_reaper]
+## The independently started reaper evaluates candidates in observe mode by default.
+## Set mode = "reap" only after reviewing observe-mode logs.
+mode = "observe"
+## A heartbeat must be older than this same-boot monotonic interval before it can
+## corroborate an ended pane-leader snapshot.
+stale_after_seconds = 600
+
 [remote]
 ## Default alias for remote AI sessions. Each machine lives under
 ## [remote.machines.<alias>]. `ai c -R` uses this machine; pass
