@@ -1512,9 +1512,9 @@ needs a portable rule for process restart and host reboot.
 | Date | Action | Notes |
 |------|--------|-------|
 | 2026-08-28 | Round 1 audit pass complete | Codex audit worker; 2 CRITICAL, 7 MAJOR, 3 MINOR; 10/10 verification-matrix samples reproduced; AD-1..AD-3 pending; no target/source edits. |
-| 2026-08-28 | AD-1 APPROVED — (a) Random generation token | Sergei chose the AI-recommended option for all three; no divergence. Implementation pointer: pending design-doc revision (this issue's next step). |
-| 2026-08-28 | AD-2 APPROVED — (a) Generation-bound lease + exclusive fence | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
-| 2026-08-28 | AD-3 APPROVED — (a) Same-boot monotonic time + boot generation | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
+| 2026-08-28 | AD-1 APPROVED — (a) Random generation token | the operator chose the AI-recommended option for all three; no divergence. Implementation pointer: pending design-doc revision (this issue's next step). |
+| 2026-08-28 | AD-2 APPROVED — (a) Generation-bound lease + exclusive fence | the operator chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
+| 2026-08-28 | AD-3 APPROVED — (a) Same-boot monotonic time + boot generation | the operator chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
 | 2026-08-28 | Round 2 verification pass complete | Codex independent verifier; 8 PASS, 4 PARTIAL, 0 FAIL across the 12-item backlog; AD-1/AD-3 PASS, AD-2 PARTIAL; 3 new findings (1 CRITICAL, 2 MAJOR); 10/10 matrix checks reproduced; no target/source edits. |
 | 2026-08-28 | Round 3 resolution verification complete | Codex independent verifier; 14 PASS and 4 PARTIAL across 18 backlog/decision checks; N-4 through N-6 added (1 CRITICAL, 2 MAJOR); 10/10 matrix checks reproduced; no target/source edits. |
 | 2026-08-28 | Round 4 post-D-10 verification complete | Codex independent verifier; all 25 pre-existing checks PASS; N-7 through N-10 added (3 MAJOR, 1 MINOR); 10/10 matrix checks reproduced; design remains blocked; no target/source edits. |
