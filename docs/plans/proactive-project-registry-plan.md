@@ -23,10 +23,10 @@ source: claude-sonnet-4-6
   6. After each round, add a line item to the Approval Log: date, round N, key decisions/approvals from that round.
 -->
 
-<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+<!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
-  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
-  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  they navigate in-window (incl. VS Code Remote-SSH). `companion toc check` validates this
+  once COMP-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
   `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
   (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
   Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
@@ -44,7 +44,7 @@ source: claude-sonnet-4-6
 
 ## Overview
 
-The current project registry flow is reactive: `validate_registry_completeness()` hard-blocks at every `ai c/g` launch and prompts interactively for any unregistered `~/projects/` directory. This creates a gap window between `copier copy` (repo creation) and the first manual `ai c` launch — automation tools (aido, handoffs) that run before the first manual session will hit the hard-block. Additionally, the package should work gracefully for anyone who installs it from PyPI, where the task prefix / roadmap doc system is optional and the hard-block is a bad first-run experience.
+The current project registry flow is reactive: `validate_registry_completeness()` hard-blocks at every `ai c/g` launch and prompts interactively for any unregistered `~/projects/` directory. This creates a gap window between `copier copy` (repo creation) and the first manual `ai c` launch — automation tools (companion, handoffs) that run before the first manual session will hit the hard-block. Additionally, the package should work gracefully for anyone who installs it from PyPI, where the task prefix / roadmap doc system is optional and the hard-block is a bad first-run experience.
 
 The goal is to: (1) add an `ai register` subcommand callable non-interactively so copier `_tasks` hooks can register projects at creation time; (2) make the registry feature opt-in so new pip users are not hard-blocked; (3) optionally support project-local config in `pyproject.toml` (`[tool.ai-cli]`) for self-describing private repos.
 
@@ -110,29 +110,29 @@ The goal is to: (1) add an `ai register` subcommand callable non-interactively s
 
 **Pros:**
 
-- Ensures registry is always complete for ai-core users who rely on it
+- Ensures registry is always complete for core-cli users who rely on it
 
 **Cons:**
 
 - Blocks new pip users who haven't configured `[project] main_project` — the feature means nothing to them
-- Non-interactive environments (CI, aido automation) will block silently if tty check fails
+- Non-interactive environments (CI, companion automation) will block silently if tty check fails
 - Can't be called from copier hooks or scripted contexts
 
 #### (b) Skip registry features if `main_project` unconfigured
 
 **Pros:**
 
-- Graceful for new users — `main_project` is an opt-in ai-core feature
-- No behavior change for existing ai-core users (they have `main_project` configured)
+- Graceful for new users — `main_project` is an opt-in core-cli feature
+- No behavior change for existing core-cli users (they have `main_project` configured)
 - Safe in non-interactive environments
 
 **Cons:**
 
-- Existing ai-core users who haven't set `main_project` lose the validation (minor — they should have it set)
+- Existing core-cli users who haven't set `main_project` lose the validation (minor — they should have it set)
 
 #### Recommendation
 
-> **Decision:** `PENDING` — Recommend **(b)**. The registry is a ai-core-specific feature; basic session management (`ai c N`, `ai ls`, etc.) should work out of the box for any pip user. The guard condition is simple: `if not config.get("project", {}).get("main_project"): return`. Zero behavior change for ai-core users.
+> **Decision:** `PENDING` — Recommend **(b)**. The registry is a core-cli-specific feature; basic session management (`ai c N`, `ai ls`, etc.) should work out of the box for any pip user. The guard condition is simple: `if not config.get("project", {}).get("main_project"): return`. Zero behavior change for core-cli users.
 <!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
@@ -230,7 +230,7 @@ project_type = "tool"
 
 #### Recommendation
 
-> **Decision:** `PENDING` — Recommend **(b)** for private Python repos (the dominant case in ai-core). Defer `.ai-project.toml` (option c) until a non-Python repo actually needs it. Defer from this scope if D5 (copier hook) is sufficient — the project-local read path is a nice-to-have, not critical path.
+> **Decision:** `PENDING` — Recommend **(b)** for private Python repos (the dominant case in core-cli). Defer `.ai-project.toml` (option c) until a non-Python repo actually needs it. Defer from this scope if D5 (copier hook) is sufficient — the project-local read path is a nice-to-have, not critical path.
 <!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ---
@@ -329,7 +329,7 @@ _tasks:
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `companion validate-doc` and must not be edited independently):
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
@@ -363,7 +363,7 @@ Guard `validate_registry_completeness()` in `config.py` with a check for `main_p
 **Acceptance criteria:**
 
 - [ ] `validate_registry_completeness()` returns immediately if `main_project` not in config
-- [ ] Existing ai-core users with `main_project` configured: no behavior change
+- [ ] Existing core-cli users with `main_project` configured: no behavior change
 - [ ] Test: `validate_registry_completeness(interactive=True)` with no `main_project` → returns, no side effects
 
 **Dependencies:** None
@@ -525,7 +525,7 @@ Update README first-time setup section. Add `ai register` to CLI reference. Docu
 
 ## Open Questions
 
-1. **Hard-block removal scope**: Should `validate_registry_completeness()` also be removed as a hard-block for *ai-core* users who have `main_project` configured but have new unregistered directories? Or should the interactive prompt survive for ai-core users (only disabled for non-ai-core users per D1b)? The current UX is useful for ensuring completeness — the gap window is the real problem, not the prompt itself.
+1. **Hard-block removal scope**: Should `validate_registry_completeness()` also be removed as a hard-block for *core-cli* users who have `main_project` configured but have new unregistered directories? Or should the interactive prompt survive for core-cli users (only disabled for non-core-cli users per D1b)? The current UX is useful for ensuring completeness — the gap window is the real problem, not the prompt itself.
 
 2. **`ai register` write target**: Should `ai register` also update `[tool.ai-cli]` in the project's `pyproject.toml` (if it exists), or only write to `myproject.toml`? Bidirectional sync vs. one-way.
 

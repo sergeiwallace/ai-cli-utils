@@ -4,7 +4,7 @@ category: audit
 tags: [audit, ai-cli-203, ai-cli-204, worktree, session-launch]
 status: converged-with-follow-up
 date: 2026-08-10
-source: "aido-stub"
+source: "companion-stub"
 template_version: "audit-1.0.0"
 delegation_provenance:
   delegated_to: codex/audit
@@ -12,7 +12,7 @@ delegation_provenance:
   model: gpt-5.6-terra
   effort: medium
   persona: none
-  worktree: /Users/sergeiwallace/projects/ai-cli-utils/.worktrees/ai-cli-1
+  worktree: /Users/user/projects/ai-cli-utils/.worktrees/ai-cli-1
   session: none
 ---
 
@@ -1016,7 +1016,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c '<AST-parse five requested source/
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q -p no:cacheprovider <five focused test node IDs>
 # Pytest was blocked before collection because its capture layer requires a writable temporary directory.
 git diff --check
-aido validate-doc docs/audits/ai-cli-203-204-worktree-launch-fix-audit.md
+companion validate-doc docs/audits/ai-cli-203-204-worktree-launch-fix-audit.md
 ```
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->

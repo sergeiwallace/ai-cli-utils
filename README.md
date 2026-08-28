@@ -2,22 +2,22 @@
 
 [![PyPI](https://img.shields.io/pypi/v/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
 [![Python](https://img.shields.io/pypi/pyversions/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
-[![License](https://img.shields.io/pypi/l/ai-cli-utils)](https://github.com/sergeiwallace/ai-cli-utils/blob/main/LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/sergeiwallace/ai-cli-utils/ci.yml?label=CI)](https://github.com/sergeiwallace/ai-cli-utils/actions)
+[![License](https://img.shields.io/pypi/l/ai-cli-utils)](https://github.com/user/ai-cli-utils/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/user/ai-cli-utils/ci.yml?label=CI)](https://github.com/user/ai-cli-utils/actions)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![codecov](https://codecov.io/gh/sergeiwallace/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/sergeiwallace/ai-cli-utils)
+[![codecov](https://codecov.io/gh/user/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/user/ai-cli-utils)
 
 Unified AI session manager and automation toolkit for Claude Code, Gemini CLI, pi, and Codex.
 
 <video src="demo/demo-20260420-053045-1cdf560.mp4" autoplay loop muted playsinline width="100%"></video>
 
-*Four iTerm2 panes: launching Claude Code (`ai c 1`), Gemini CLI (`ai g 1`), pi (`ai p 1`), and Codex (`ai cx 1`), then browsing active sessions with `ai ls`, checking token quota with `ai quota status`, and running a Gemini query with automatic auth fallback.*
+*Four iTerm2 panes: launching Claude Code (`ai c 1`), Gemini CLI (`ai g 1`), pi (`ai p 1`), and Codex (`ai cx 1`), then browsing active sessions with `ai ls` and checking token quota with `ai quota status`.*
 
-Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, resilient Gemini API access with automatic auth fallback, and persistent SSH tunnels via autossh. Every command and subcommand supports `--help` for inline usage reference.
+Run multiple AI coding sessions in parallel, each isolated in its own git worktree, with auto-resume, remote server support, cross-machine sync, and persistent SSH tunnels via autossh. Every command and subcommand supports `--help` for inline usage reference.
 
 ## What it does
 
-`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and [Codex](https://developers.openai.com/codex/cli/) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine memory sync, and session lifecycle management. It also provides `ai gemini` — a Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) that automatically retries on capacity errors, so your research prompts keep working even when one auth method is exhausted. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
+`ai-cli-utils` wraps [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and [Codex](https://developers.openai.com/codex/cli/) in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine sync, and session lifecycle management. If you run multiple AI coding sessions daily, this tool eliminates the boilerplate.
 
 ## Features
 
@@ -27,12 +27,12 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Process hygiene** | `ai ps` — inspect and clean up stale ai-cli processes and PID files |
 | **Session picker** | `ai ls` — fzf-powered session picker sorted by activity; `ai attach <name>` to attach directly |
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
-| **Remote sessions** | `ai c -R` — run sessions on a remote server via mosh or SSH; Tailscale auto-started if mosh fails (macOS) |
+| **Remote sessions** | `ai c -R -m <alias>` — run sessions on a configured remote server via mosh or SSH; `ai ssh [alias]` opens a matching shell |
 | **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory, conversations, and task lists between machines |
 | **Handoff queue** | `ai handoff post/check/claim/complete` — delegate tasks between sessions |
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
 | **Stale session cleanup** | Automatic detection and cleanup of orphaned sessions |
-| **Gemini with fallback** | `ai gemini "prompt"` — 3-tier auth fallback (OAuth → free API → paid API), auto-retry on capacity errors |
+| **Session recovery** | `ai session-audit`, `ai session-adopt`, and `ai cc-migrate` find, adopt, and move resumable Claude Code sessions safely |
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
 | **Signal-watch** | Handoff delivery via Circus-managed background process — isolated from CC session lifecycle |
@@ -198,6 +198,8 @@ unrelated project-registry discovery prompts.
 ```bash
 ai c -R/--remote <name>            # Connect to remote server (uses config)
 ai c -R -p/--project myproject <name>  # Specify remote project directory
+ai c -R -m/--remote-machine <alias> <name>  # Select a configured remote machine
+ai ssh [alias]                     # Open an interactive shell on that machine
 ```text
 
 ### Cross-machine sync
@@ -215,29 +217,14 @@ Sync includes transcripts, memory, history, and task JSON files under `~/.claude
 On pull, transcript `cwd` and `originalCwd` fields are rewritten to the receiving machine's configured
 `[project] projects_dir` (default `~/projects`) so sessions remain resumable across machines.
 
-### Gemini with auth fallback
+### Session recovery
 
 ```bash
-ai gemini "prompt" -m deep-think          # Run with 3-tier fallback, stdout + auto file
-ai gemini "prompt" -m pro -o output.md    # Specify output file
-ai gemini "prompt" -m flash -q            # File only, no stdout (-q/--quiet)
-cat prompt.txt | ai gemini -m deep-think  # Pipe from stdin
-ai gemini "prompt" -m flash -F            # Stdout only, no file (-F/--no-file)
-ai gemini "prompt" -m flash -t 120        # 120s timeout (-t/--timeout)
-ai gemini "prompt" -m deep-research       # Gemini Deep Research (Interactions API, polls until done)
-ai gemini "prompt" -m deep-think -s 2     # Skip OAuth, go straight to REST API key
-```text
-
-**Auth fallback chain (automatic on 429/capacity errors):**
-1. Gemini CLI OAuth (free — Google AI subscription)
-2. REST API with `GOOGLE_API_KEY_FREE_TIER` — **Flash/Gemma models only.** Pro, image-generation variants, and deep-research have no free quota; tier 2 is skipped automatically for ineligible models.
-3. REST API with `GOOGLE_API_KEY_TIER_1` — paid, works for all models.
-
-`deep-research` uses OAuth first and falls back directly to tier 3 — tier 2 is always skipped for it. Use `-s 2` to skip OAuth for Flash calls. For Pro/deep-think where OAuth fails, use `-s 3`.
-
-**Model aliases:** `deep-think`, `pro`, `flash`, `flash-lite`, `deep-research`, or any full Gemini model ID.
-
-**Logs:** `~/.local/state/ai-cli/gemini-logs/` (JSONL). **Auto output:** `~/.local/state/ai-cli/gemini-output/`.
+ai session-audit                    # Find titled sessions that cannot resume
+ai session-audit -a/--adopt         # Adopt every safe session
+ai session-adopt <name>             # Adopt one session into this repository
+ai cc-migrate <destination>         # Move a transcript between project roots
+```
 
 ### Session picker
 
@@ -290,6 +277,10 @@ ai signal-watch status   # List Circus-managed signal-watch processes
 ai memory watch          # Watch for Claude Code memory file changes
 ai quota watch           # Monitor API quota usage
 ai telemetry writer      # Run telemetry writer daemon
+ai doctor [-n/--dry-run] # Check required native tools and direnv
+ai register -p <path> -x <prefix>  # Register a repository and task prefix
+ai ws pull [-d/--dry-run]          # Pull/rebase repositories in a workspace
+ai upgrade            # Upgrade an installed uv tool from PyPI
 ai update [-f/--force]   # Update to latest from source; --force also reinstalls all deps
 ai update -q/--quiet     # Capture git/uv output; report one line naming the new version
 ai update -v/--verbose   # Show the full transcript even when --quiet is also passed
@@ -313,7 +304,7 @@ goes stale while a change is being tested.
 When a reinstall is needed, the launch runs it quietly and prints one line:
 
 ```text
-ai-cli-utils 0.7.0.post20260814190112 installed (cache-bypassing reinstall)
+ai-cli-utils 0.8.0.post20260814190112 installed (cache-bypassing reinstall)
 ```
 
 The version carries a `.post<timestamp>` suffix so uv cannot serve a cached build
@@ -440,4 +431,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and contr
 
 ## License
 
-[MIT](LICENSE) -- Sergei Wallace
+[MIT](LICENSE) -- Maintainer Wallace

@@ -7,10 +7,10 @@
 **Task:** AI-CLI-5 (SW-672)
 **Research:** [`docs/research/open-source-package-best-practices.md`](../research/open-source-package-best-practices.md)
 
-<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+<!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
-  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
-  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  they navigate in-window (incl. VS Code Remote-SSH). `companion toc check` validates this
+  once COMP-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
   `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
   (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
   Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
@@ -74,7 +74,7 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
 **Option B: Foundation now, polish later.** This gives us CI, automated publishing, badges, CHANGELOG, and community files — the things that matter for a professional repo — without blocking on the GIF or README rewrite. The README rewrite is better done after CI is set up (need CI URLs for badges) and after the current feature burst stabilizes.
 
 **Now (this batch):**
-- **Generalize: remove all <private-project-name>/ai-core-specific references** (prerequisite — must be done first)
+- **Generalize: remove all <private-project-name>/core-cli-specific references** (prerequisite — must be done first)
 - CI workflow (lint + test)
 - Publish workflow (PyPI on tag via Trusted Publishers)
 - Shields.io badges in README
@@ -94,7 +94,7 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `companion validate-doc` and must not be edited independently):
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
@@ -113,12 +113,12 @@ Just add CI workflows and badges. Skip community files, CHANGELOG, etc.
   • Exit gates are harness-enforced, runnable predicates (run the suite; fresh-context diff
   review against the ACs), never self-declared "done". -->
 
-### T-00: Generalize — remove <private-project-name>/ai-core-specific references
+### T-00: Generalize — remove <private-project-name>/core-cli-specific references
 
 **Size:** L
 **Batch:** 1 (DO THIS FIRST — other tasks depend on clean generic code)
 
-Remove all hardcoded references to `<private-project-name>`, `ai-core`, and personal paths so the package works for any user out of the box.
+Remove all hardcoded references to `<private-project-name>`, `core-cli`, and personal paths so the package works for any user out of the box.
 
 **Changes required:**
 
@@ -128,7 +128,7 @@ Remove all hardcoded references to `<private-project-name>`, `ai-core`, and pers
 
 3. **`DEFAULT_SERVER_HOST`**: Remove the hardcoded personal `user@host` default. If `[sync] remote_host` is not set in config.toml, sync commands should print a helpful error message pointing to config setup.
 
-4. **`ai-core` section reference**: The code reads `config.get("ai-core", {}).get("task_prefix", "SW")` for the main project. Generalize: read `config.get("project", {}).get("task_prefix")` — or better, just look up the project name in the `[[projects]]` list like all other projects.
+4. **`core-cli` section reference**: The code reads `config.get("core-cli", {}).get("task_prefix", "SW")` for the main project. Generalize: read `config.get("project", {}).get("task_prefix")` — or better, just look up the project name in the `[[projects]]` list like all other projects.
 
 5. **Comments/docstrings**: Replace personal home-dir path examples with generic `/home/user/...` and `/Users/username/...`.
 
@@ -139,7 +139,7 @@ Remove all hardcoded references to `<private-project-name>`, `ai-core`, and pers
 8. **`sync.py`**: Remove hardcoded `DEFAULT_SERVER_HOST`. Replace path examples in docstrings. The `_MAC_HOME` and `_SERVER_HOME` constants for path translation need to be derived from config or auto-detected, not hardcoded.
 
 **Acceptance criteria:**
-- [ ] `grep -rn "<private-project-name>\|ai-core" src/ai_cli/` returns 0 results (excluding test fixtures if any)
+- [ ] `grep -rn "<private-project-name>\|core-cli" src/ai_cli/` returns 0 results (excluding test fixtures if any)
 - [ ] Package works with empty config (graceful degradation for unconfigured features)
 - [ ] Package works with a minimal config (`[remote] host = ...` + `[project] main_project = ...`)
 - [ ] All existing functionality preserved for configured users
@@ -274,7 +274,7 @@ T-00 must be done first. T-01 through T-07 are independent of each other.
 
 Autonomous review of the completed work:
 
-1. **Code review:** `grep -rn "<private-project-name>\|ai-core\|sergeiwallace" src/ai_cli/` — must return 0 results
+1. **Code review:** `grep -rn "<private-project-name>\|core-cli\|user" src/ai_cli/` — must return 0 results
 2. **Config review:** verify `~/.config/ai-cli/config.toml` on both Mac and server has `main_project = "myproject"` set (since that's what makes the generic code work for our installation)
 3. **Functional test:** verify `ai c 1 -R` still works (project aliases, session naming, auto-resume)
 4. **CI verification:** push a test commit and verify GitHub Actions runs

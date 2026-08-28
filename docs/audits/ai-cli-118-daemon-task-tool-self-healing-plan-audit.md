@@ -4,7 +4,7 @@ category: audit
 tags: [audit, ai-cli-118, daemon, task-tools]
 status: draft
 date: 2026-07-22
-source: "aido-stub"
+source: "companion-stub"
 template_version: "audit-1.0.0"
 ---
 

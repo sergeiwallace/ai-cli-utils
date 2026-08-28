@@ -48,7 +48,7 @@ source: myproject
 
 ## Problem Statement
 
-The ai-core platform has adopted "event-driven over polling" as a core design principle, but most subsystems still use polling or manual triggers. Concrete symptoms: `ai sync push` requires a manual follow-up `ai sync pull` on the remote machine; fleet heartbeats exist in design but aren't wired; session lifecycle signals are implicit; telemetry and quota tracking don't exist. Each of these is solved independently by the same infrastructure: a NATS message bus with a consistent subject hierarchy.
+The core-cli platform has adopted "event-driven over polling" as a core design principle, but most subsystems still use polling or manual triggers. Concrete symptoms: `ai sync push` requires a manual follow-up `ai sync pull` on the remote machine; fleet heartbeats exist in design but aren't wired; session lifecycle signals are implicit; telemetry and quota tracking don't exist. Each of these is solved independently by the same infrastructure: a NATS message bus with a consistent subject hierarchy.
 
 This document defines the platform-wide event-driven architecture — what NATS subjects exist, which systems should publish/subscribe, which systems should stay polling/cron, and the phased rollout order.
 
@@ -94,7 +94,7 @@ Key factors that drove the decision:
 | Session lifecycle events | At-least-once | Dashboard fallback is git log |
 | auto-dream sync safety | **At-least-once** | Safety-critical; missed = unsafe sync during dream write |
 | Quota threshold alerts | **At-least-once** | Subscriber may be offline; can't miss a threshold crossing |
-| aido work queues | **Exactly-once** | Lost task = silent dropped work |
+| companion work queues | **Exactly-once** | Lost task = silent dropped work |
 | Session teleportation | **At-least-once** | Missed handoff = broken feature, not degraded |
 | Mobile notifications | **At-least-once** | Termius frequently offline |
 
@@ -147,14 +147,14 @@ graph LR
     subgraph Mac["💻 Mac"]
         SyncPush["ai sync push"]
         CCHooksMac["CC hooks"]
-        AiCoreMac["ai-core"]
+        AiCoreMac["core-cli"]
         AiCLI["ai-cli"]
     end
 
     subgraph Hetzner["🖥 Hetzner"]
         Engine["engine script"]
         CCHooksHetzner["CC hooks"]
-        Aido["aido"]
+        Companion["companion"]
         SyncWatch["ai sync watch"]
     end
 
@@ -166,7 +166,7 @@ graph LR
         DreamSubj["memory.dream.started / completed"]
         TaskSubj["task.updated"]
         QuotaSubj["quota.threshold.{pct}"]
-        AidoSubj["aido.run.started / completed"]
+        CompanionSubj["companion.run.started / completed"]
     end
 
     subgraph Subscribers["📡 Subscribers"]
@@ -185,7 +185,7 @@ graph LR
     CCHooksMac -->|auto-dream| DreamSubj --> SyncGuard
     AiCoreMac -->|task changes| TaskSubj --> CurationEngine
     AiCLI -->|quota events| QuotaSubj --> NotifMgr
-    Aido -->|run lifecycle| AidoSubj --> Digest
+    Companion -->|run lifecycle| CompanionSubj --> Digest
 
     subgraph CrossMachine["🔄 Cross-machine transport (until shared NATS cluster)"]
         direction LR
@@ -242,7 +242,7 @@ graph LR
 |---------|-----------|------------|-------------|
 | `memory.dream.started` | auto-dream hook (when available) | `ai sync push` guard | Dream write in progress — block sync push |
 | `memory.dream.completed` | auto-dream hook | `ai sync push` | Resume sync push |
-| `memory.learning.stored` | ai-core MCP `store_learning` | other CC sessions (optional refresh) | New learning available (SW-618) |
+| `memory.learning.stored` | core-cli MCP `store_learning` | other CC sessions (optional refresh) | New learning available (SW-618) |
 
 ### Phase 4 — Telemetry & Quota
 
@@ -253,13 +253,13 @@ graph LR
 | `quota.threshold.90` | quota tracker | notification manager | Usage at 90% — slow down |
 | `telemetry.action.{type}` | web UI / CLI | SQLite telemetry writer (SW-16) | User behavior event |
 
-### Phase 5 — Cross-Project / aido
+### Phase 5 — Cross-Project / companion
 
 | Subject | Publisher | Subscriber | Description |
 |---------|-----------|------------|-------------|
-| `aido.run.started` | aido CLI | digest, telemetry | Research run begun |
-| `aido.run.completed` | aido CLI | digest, telemetry | Research run done (cost, summary) |
-| `task.updated` | ai-core MCP write tools | curation engine (SW-13) | Re-run curation on task change |
+| `companion.run.started` | companion CLI | digest, telemetry | Research run begun |
+| `companion.run.completed` | companion CLI | digest, telemetry | Research run done (cost, summary) |
+| `task.updated` | core-cli MCP write tools | curation engine (SW-13) | Re-run curation on task change |
 | `health.check.completed` | health cron | digest | Test suite result available |
 
 ---
@@ -278,8 +278,8 @@ The table below assesses every current and planned platform system against the e
 | 6 | Shared memory notifications | Not built yet | **Yes (notification layer only)** | `memory.learning.stored` nudges other sessions to refresh; SQLite is still the store | 5 | SW-618 | ✅ Built | No — ephemeral nudge; SQLite is the durable store |
 | 7 | Claude quota tracking | Not built yet | **Yes** | Quota poller writes thresholds as NATS events → notification manager | 4 | SW-613 | ❌ Not built | **Yes** — quota threshold alerts shouldn't be missed; late subscriber needs to catch up |
 | 8 | User behavior telemetry | Not built yet | **Yes (write path only)** | UI/CLI publishes `telemetry.action.*`; background thread batches to SQLite | 4 | SW-16 | ❌ Not built | No — SQLite batch writer handles durability; Core is fine for the fan-out |
-| 9 | aido run visibility | JSONL only | **Yes (bridge)** | aido CLI publishes `aido.run.started/completed` on NATS; digest/telemetry subscribe | 5 | SW-647 | ✅ Built | No — JSONL already persists run history; NATS is observability only |
-| 10 | Task update → curation | Cron-only (staleness) | **Yes (additive)** | ai-core MCP write tools publish `task.updated`; curation engine reacts immediately | 5 | SW-13 | ✅ Built | Maybe — if curation engine is offline, missed events fall back to cron scan anyway |
+| 9 | companion run visibility | JSONL only | **Yes (bridge)** | companion CLI publishes `companion.run.started/completed` on NATS; digest/telemetry subscribe | 5 | SW-647 | ✅ Built | No — JSONL already persists run history; NATS is observability only |
+| 10 | Task update → curation | Cron-only (staleness) | **Yes (additive)** | core-cli MCP write tools publish `task.updated`; curation engine reacts immediately | 5 | SW-13 | ✅ Built | Maybe — if curation engine is offline, missed events fall back to cron scan anyway |
 | 11 | Health check results | Cron | **Yes (output only)** | Cron remains as trigger; publishes `health.check.completed` on finish for digest | 5 | SW-539 | ✅ Built | No — output event is nice-to-have; digest can poll SQLite results instead |
 | 12 | Fleet mobile notifications | Not built | **Yes** | Downstream subscriber to fleet events; push via Termius | P3 | SW-609 | ❌ Not built | **Yes** — Termius may not be connected; durable delivery ensures notification isn't dropped |
 | 13 | Session teleportation | Not built | **Yes** | `session.teleport.requested` event initiates handoff protocol | P3 | SW-610 | ❌ Not built | **Yes** — handoff protocol requires reliable delivery; fire-and-forget is unsafe here |
@@ -294,8 +294,8 @@ The table below assesses every current and planned platform system against the e
 | 1 | **Daily digest compilation** (SW-31) | `cron` | **Keep cron** | Digest is time-triggered by definition ("daily at session start"). The cron *trigger* is correct. Individual inputs (curation, guidance) may fire events, but the aggregation step should remain scheduled. **Pros of event-driven:** compile immediately when tasks change. **Cons:** digest becomes noisy and over-frequent; loses the "daily summary" value. Verdict: keep cron; let upstream events update the underlying data stores that digest reads from. |
 | 2 | **Config reload detection** (SW-630) | `UserPromptSubmit` hook + mtime polling | **Keep as-is** | The hook already solves this cleanly with zero added infrastructure. Adding NATS `config.changed` would add a publisher (inotify → NATS) and subscriber (session reload) for a problem that is fully solved by a 10-line shell hook. **Pros of event-driven:** push-based, no per-prompt check. **Cons:** requires inotify daemon, NATS up at all times, more moving parts than a shell script. Verdict: the mtime hook is the right tool; don't over-engineer it. |
 | 3 | **Project health check cron** (SW-539) | Not built | **Keep cron as trigger, add event output** | Health checks are time-triggered (daily), not reactive. Running them "on every push" via NATS events would be expensive and noisy for 13 projects. The cron trigger is correct. The only event-driven improvement is publishing `health.check.completed` so the digest can surface regressions immediately (already in §Candidates, Phase 5). |
-| 4 | **MCP read operations** (ai-core MCP) | Request/response | **Keep request/response** | `query_tasks`, `get_priority_guidance`, etc. are request/response reads from SQLite. Pub/sub adds no value to reads — there's no "subscriber" for a query result. Event-driven applies to the *write side* (task.updated) not the read side. |
-| 5 | **aido research queue** (aido) | Pull (manual dequeue) | **Keep pull for queue, add events for observability** | The research queue is a sequential pipeline with manual gates — converting it to event-driven would remove intentional human pacing. Only the *visibility* layer (aido.run.started/completed) should use events; queue management stays pull-based. |
+| 4 | **MCP read operations** (core-cli MCP) | Request/response | **Keep request/response** | `query_tasks`, `get_priority_guidance`, etc. are request/response reads from SQLite. Pub/sub adds no value to reads — there's no "subscriber" for a query result. Event-driven applies to the *write side* (task.updated) not the read side. |
+| 5 | **companion research queue** (companion) | Pull (manual dequeue) | **Keep pull for queue, add events for observability** | The research queue is a sequential pipeline with manual gates — converting it to event-driven would remove intentional human pacing. Only the *visibility* layer (companion.run.started/completed) should use events; queue management stays pull-based. |
 | 6 | **Backlog staleness detection** (SW-13) | Cron | **Keep cron as primary, add event trigger as supplement** | Staleness is inherently time-based ("task not touched in 7 days"). A cron is the correct primary trigger. `task.updated` events can *reset* the staleness clock in real time, but can't replace the cron scan for tasks that are stale precisely *because* nothing happened. |
 
 ---
@@ -355,7 +355,7 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 |--------|-----------|--------------|
 | Fleet Management | `docs/designs/fleet-management.md` | This doc extends the NATS Nervous System defined there. `fleet.worker.*` subjects are unchanged. |
 | CC Sync Phase 2 | `docs/designs/cc-sync-phase2.md` | `sync.pull.requested` is the first cross-machine event trigger. `memory.dream.*` subjects extend the sync safety model (SW-644). |
-| Shared Memory (SW-618) | `docs/research/shared-memory-cc-fleet.md` | NATS `memory.learning.stored` provides the push notification layer; SQLite + ai-core MCP is the store. |
+| Shared Memory (SW-618) | `docs/research/shared-memory-cc-fleet.md` | NATS `memory.learning.stored` provides the push notification layer; SQLite + core-cli MCP is the store. |
 | Fleet Management Plan | `docs/plans/fleet-management-plan.md` | Implementation sequencing for SW-501 aligns with Phase 2 here. |
 | Telemetry Research | `docs/research/telemetry-event-design-early-stage-apps.md` | SQLite WAL + background writer pattern for telemetry write path (Phase 4). |
 
@@ -408,17 +408,17 @@ CREATE INDEX idx_events_subject_ts ON events(subject, ts);
 
 **Gate:** Human review — quota alert fires at 50% threshold in dry-run before live.
 
-### Phase 5 — Cross-Project / aido / Full Fan-Out ✅ Complete (2026-03-25)
+### Phase 5 — Cross-Project / companion / Full Fan-Out ✅ Complete (2026-03-25)
 
 **Goal:** All polling-reducible patterns replaced; platform-wide observability.
 
-- [x] aido publishes `aido.run.started/completed` with cost summary via `ai internal publish` subprocess (SW-647)
-- [x] `task.updated` event from ai-core MCP write tools (update_task, toggle_task, add_task_relationship) → immediate curation trigger (additive to cron)
+- [x] companion publishes `companion.run.started/completed` with cost summary via `ai internal publish` subprocess (SW-647)
+- [x] `task.updated` event from core-cli MCP write tools (update_task, toggle_task, add_task_relationship) → immediate curation trigger (additive to cron)
 - [x] `health.check.completed` published by `save_health_run()` after each health check with pass/fail summary
 - [x] `store_learning` MCP tool publishes `memory.learning.stored` to NATS (SW-618)
 - [ ] SW-609/610/611: mobile push, teleportation protocol, fleet web UI — all downstream of Phase 2 events (P3)
 
-**Gate:** Human review after aido bridge lands.
+**Gate:** Human review after companion bridge lands.
 
 > **Feedback Round 1:** Does the phasing feel right — too big, too small? Should anything move earlier or later?
 > - its fine. I'm going to have you do all 5 phases right away anyway tbh

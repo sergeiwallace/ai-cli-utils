@@ -17,7 +17,7 @@ source: <!-- claude-opus / human / etc. -->
 ## 1. Design Philosophy
 
 <!-- Core principles that govern all architectural decisions. Reference the platform-wide
-     philosophy in ~/projects/CLAUDE.md if this is an ai-core project. -->
+     philosophy in ~/projects/CLAUDE.md if this is an core-cli project. -->
 
 ### 1.1 [Principle Name]
 

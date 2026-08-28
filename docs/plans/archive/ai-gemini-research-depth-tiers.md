@@ -5,13 +5,13 @@ tags: [ai-cli, ai-gemini, research-pipeline, depth-tiers, track-a]
 status: archived
 source: session-2026-04-04
 related_docs:
-  - ~/projects/aido/docs/research/gemini-research-pipeline-synthesis.md
-  - ~/projects/aido/docs/research/deep-research-pipeline-design.md
+  - ~/projects/companion/docs/research/gemini-research-pipeline-synthesis.md
+  - ~/projects/companion/docs/research/deep-research-pipeline-design.md
 ---
 
 # Implementation Plan — `ai gemini` Research Depth Tiers
 
-**Research basis:** `~/projects/aido/docs/research/gemini-research-pipeline-synthesis.md` (aido R-19 — migrated from myproject R-61+R-62)
+**Research basis:** `~/projects/companion/docs/research/gemini-research-pipeline-synthesis.md` (companion R-19 — migrated from myproject R-61+R-62)
 
 ## Problem
 
@@ -190,7 +190,7 @@ Order by dependency:
 
 ## Phase 2 Enhancements (Post-Shipping Phase 1)
 
-Informed by aido R-22 / myproject R-66 (2026 gap analysis, 2026-04-06). Not blocking Phase 1 implementation — ship `--depth standard` and `--depth deep` first, then evaluate these enhancements.
+Informed by companion R-22 / myproject R-66 (2026 gap analysis, 2026-04-06). Not blocking Phase 1 implementation — ship `--depth standard` and `--depth deep` first, then evaluate these enhancements.
 
 ### P2-1: IEW Voting for `--depth deep` (arXiv:2601.12707)
 
@@ -243,5 +243,5 @@ Capabilities: multimodal inputs, GCS bucket reads up to 100MB, private web data 
 | 2026-04-04 | Round 2 | OQ-1: Gemini native grounding as default; Tavily/Firecrawl/Serper as optional follow-up tasks (SW-762, SW-763). OQ-2: `quick` stays default. OQ-3: configurable `planning_model` per preset; test `pro`/`flash` vs `deep-think` after `standard` ships; mirror depth config structure. New OQ-4 added. |
 | 2026-04-05 | Round 3 | OQ-4 resolved: B + C — per-step JSON checkpointing + per-call OAuth→REST auto-fallback via `invoke_with_fallback()`. `--resume <run-id>` flag added. |
 | 2026-04-05 | Round 4 | Plan approved. Moved to ai-cli-utils project for implementation. |
-| 2026-04-06 | Round 5 | Phase 2 enhancements added based on aido R-22 / myproject R-66 (2026 gap analysis): P2-1 IEW voting for --depth deep, P2-2 hierarchical search provider, P2-3 token-level fault tolerance (confirmed no action — existing checkpointing is correct ceiling). |
+| 2026-04-06 | Round 5 | Phase 2 enhancements added based on companion R-22 / myproject R-66 (2026 gap analysis): P2-1 IEW voting for --depth deep, P2-2 hierarchical search provider, P2-3 token-level fault tolerance (confirmed no action — existing checkpointing is correct ceiling). |
 | 2026-04-06 | Round 6 | P2-4 added: --depth exhaustive via Gemini Interactions API (official async Deep Research harness). Pricing/quota research flagged as addition to SW-766 scope. |

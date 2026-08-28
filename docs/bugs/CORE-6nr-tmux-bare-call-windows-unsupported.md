@@ -17,7 +17,7 @@ template_version: "bug-1.0.0"
 
 **Created:** 2026-07-31
 
-**Task:** CORE-6nr (filed in ai-core store; ai-cli-utils store blocked by CORE-5dx)
+**Task:** CORE-6nr (filed in core-cli store; ai-cli-utils store blocked by CORE-5dx)
 
 **Related issues:**
 - CORE-5m6-ai-cli-bare-uv-popen-windows-crash (fixed; same `FileNotFoundError` class, different tool)

@@ -16,10 +16,10 @@ source: claude-sonnet-4-6
 
 **Design:** `docs/designs/claude-usage-telemetry.md`
 
-**Related (aido):**
-- `aido/docs/designs/research-graph-v2.md` — E6 mid-run quota visibility; specifies `quota.scrape.request.{machine}` trigger protocol
-- `aido/docs/plans/mid-run-quota-monitor-plan.md` — T-04 NATS scrape trigger + KV reader (consumer of this listener)
-- `aido/docs/plans/research-platform-implementation-plan.md` — cross-dependency tracking for AIDO-48 T-04
+**Related (companion):**
+- `companion/docs/designs/research-graph-v2.md` — E6 mid-run quota visibility; specifies `quota.scrape.request.{machine}` trigger protocol
+- `companion/docs/plans/mid-run-quota-monitor-plan.md` — T-04 NATS scrape trigger + KV reader (consumer of this listener)
+- `companion/docs/plans/research-platform-implementation-plan.md` — cross-dependency tracking for COMP-48 T-04
 
 <!-- FEEDBACK RULES (for AI agents):
   1. Never edit, rewrite, or remove user-written feedback. It is permanent record.
@@ -45,10 +45,10 @@ source: claude-sonnet-4-6
 
 `quota_watch` is the Circus-managed daemon that polls Claude usage and fires
 threshold alerts. This plan adds four NATS-based capabilities: an on-demand
-scrape trigger (so aido's quota monitor can request a fresh scrape without
+scrape trigger (so companion's quota monitor can request a fresh scrape without
 waiting for the poll interval), a machine-suffixed KV key for multi-machine
 disambiguation, a scrape-completion ack, and a 60-second heartbeat. Together
-these unblock AIDO-48 T-04 (aido mid-run quota monitor).
+these unblock COMP-48 T-04 (companion mid-run quota monitor).
 
 **Note: all four items are already fully implemented and tested as of
 2026-04-29.** This doc is retrospective — it captures scope, decisions, and

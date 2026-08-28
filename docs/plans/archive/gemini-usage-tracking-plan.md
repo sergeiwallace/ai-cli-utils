@@ -139,7 +139,7 @@ actionable error unless `--confirm-paid` / `-P` is explicitly provided.
 
 ### GCP Billing Configuration (confirmed 2026-04-11)
 
-- Billing account: `01AC33-5BE8AD-2F4E8A` (Sergei Wallace)
+- Billing account: `01AC33-5BE8AD-2F4E8A` (Maintainer Wallace)
 - GCP project for paid AI Studio key: `gen-lang-client-0651020461` (Tier 1)
 - BigQuery billing export: **not yet configured** — one-time human setup required
 - Service name in billing export: `"Gemini API"` (`generativelanguage.googleapis.com`)
@@ -157,7 +157,7 @@ confirmed empirically on first query.
 
 The ai-cli-utils code changes from AI-CLI-25 are complete: `quota_sync_from_remote()`
 and Slack webhook sending are implemented. Remaining items are human actions (webhook URL
-creation, Doppler config) and a separate ai-core-project task — they do not block
+creation, Doppler config) and a separate core-cli-project task — they do not block
 AI-CLI-41.
 
 ## Auth Tier Naming
@@ -454,10 +454,10 @@ Paid API spend: not available — BigQuery billing export not configured.
 
 **Size:** S
 **Batch:** 3 (after T-01–T-03 are done)
-**Repo:** ai-core — `src/ai_core/scheduling/handlers/gemini_cost_sync.py`
-**Tracking:** `HW-3` in ai-core roadmap
+**Repo:** core-cli — `src/ai_core/scheduling/handlers/gemini_cost_sync.py`
+**Tracking:** `HW-3` in core-cli roadmap
 
-Confirmed: the handler exists in ai-core. It reads a MEMORY.md cost ledger
+Confirmed: the handler exists in core-cli. It reads a MEMORY.md cost ledger
 (`project_claude_quota.md`) via regex and writes `quota.gemini.monthly` to NATS KV.
 
 Replace the regex ledger read with JSONL log parsing from
@@ -473,7 +473,7 @@ billing export query (T-03) if token-count-based cost is unavailable.
 |-------|-------|-------|------|
 | 1 | T-01, T-02 | Foundation — token extraction fix, tier naming, DR counter + paid gate | Plan approval |
 | 2 | T-03 | Surface — `ai spend gemini` command | Human review of BigQuery setup + output format |
-| 3 | T-04 | ai-core — replace MEMORY.md ledger in `gemini_cost_sync` | T-01 + T-03 done; work in ai-core repo (HW-3) |
+| 3 | T-04 | core-cli — replace MEMORY.md ledger in `gemini_cost_sync` | T-01 + T-03 done; work in core-cli repo (HW-3) |
 
 ---
 
@@ -560,6 +560,6 @@ billing export query (T-03) if token-count-based cost is unavailable.
 | 2026-04-11 | Plan revised (round 2) | T-02 redesigned with unconditional paid-run gate (`--confirm-paid` / `-P`); billing uncertainty documented; T-03 updated to show credit status hint from BigQuery data; Q5 added as P0 open question |
 | 2026-04-11 | User feedback round 2 committed | Disable `ai_studio_paid` fallback by default via `paid_fallback_enabled` config toggle; OAuth-only for now; "Vertex-only" claim confirmed baseless; email sent to GDP premium support |
 | 2026-04-11 | Plan revised (round 3) | T-02 redesigned around `paid_fallback_enabled` config toggle (default false); `-P`/`--confirm-paid` retained for when paid is re-enabled; human gate for billing credit investigation removed (not blocking); Q5 demoted to deferred |
-| 2026-04-11 | T-04 confirmed and unlocked | `gemini_cost_sync` handler confirmed in ai-core repo; T-04 added as Batch 3 (blocked on T-01+T-03); HW-3 added to ai-core roadmap |
+| 2026-04-11 | T-04 confirmed and unlocked | `gemini_cost_sync` handler confirmed in core-cli repo; T-04 added as Batch 3 (blocked on T-01+T-03); HW-3 added to core-cli roadmap |
 | 2026-04-11 | T-01 + T-02 shipped | commit 9203133 — tier naming overhaul, token fix, paid gate, DR counter; 24 new tests (102 total in test_gemini.py) |
 | 2026-04-11 | T-03 shipped | `ai spend gemini` command: src/ai_cli/spend.py + dispatch in main.py; 35 tests; docs and CHANGELOG updated |

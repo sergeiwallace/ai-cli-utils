@@ -279,20 +279,20 @@ Pull/rebase all repos and their worktrees listed in a VS Code `.code-workspace` 
 
 ```toml
 [workspace]
-local_path = "~/projects/myproject/ai-core-local.code-workspace"
-remote_path = "~/projects/myproject/ai-core-remote.code-workspace"
+local_path = "~/projects/myproject/core-cli-local.code-workspace"
+remote_path = "~/projects/myproject/core-cli-remote.code-workspace"
 ```
 
-Default falls back to `ai-core-local.code-workspace` if not configured.
+Default falls back to `core-cli-local.code-workspace` if not configured.
 
 **Example output:**
 
 ```text
-Workspace: ~/projects/myproject/ai-core-local.code-workspace (13 repos)
+Workspace: ~/projects/myproject/core-cli-local.code-workspace (13 repos)
 
   ✓  myproject          main
-  ✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
-  ⚠  ai-core         main  (stashed+pulled)
+  ✓  companion            main   +  .worktrees/sw-1   .worktrees/sw-2
+  ⚠  core-cli         main  (stashed+pulled)
   ✓  ai-cli-utils    main
   ↷  ai-cli-utils/ai-cli-1  (dirty, skipped)
 
@@ -361,7 +361,7 @@ Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `nu
 
 **JSONL fields:** in addition to tier/model/token fields, every log entry includes `id` (UUID), `occurred_at` (UTC ISO8601 with trailing `Z`), `machine` (value of `AI_HOST`), `provider` (`gemini`), and `source_quality` (`ok` when the prompt is 20+ characters, `suspected_test` otherwise).
 
-**NATS usage events:** when `[messaging] nats_servers` is configured, each call fires a fire-and-forget publish on the subject `hw.events.usage.gemini.event` with the same payload as the JSONL entry. Publishing runs in a daemon thread and never blocks the caller — if NATS is unavailable or not configured the publish silently no-ops. Downstream consumers (the ai-core `UsageConsumer`) ingest these events into Postgres for cross-provider usage reporting.
+**NATS usage events:** when `[messaging] nats_servers` is configured, each call fires a fire-and-forget publish on the subject `hw.events.usage.gemini.event` with the same payload as the JSONL entry. Publishing runs in a daemon thread and never blocks the caller — if NATS is unavailable or not configured the publish silently no-ops. Downstream consumers (the core-cli `UsageConsumer`) ingest these events into Postgres for cross-provider usage reporting.
 
 **Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
 
@@ -429,7 +429,7 @@ Scan Claude Code session JSONL files and push per-call token usage events to a c
 **Config** (`~/.config/ai-cli-utils/config.toml`):
 
 ```toml
-[ai-core]
+[core-cli]
 api_url = "https://your-backend-host"
 api_key  = "hw-api-..."
 ```text

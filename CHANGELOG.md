@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-27
+
 ### Added
+
+- `ai p` and `ai cx` launch pi and Codex CLI sessions with the same worktree
+  isolation, resume behavior, and terminal integration as existing session
+  engines. (`AI-CLI-o3gi`, `AI-CLI-z7ms`; 35c5eef, a77c453)
+- Remote sessions can select a named machine with
+  `ai c -R -m/--remote-machine <alias>`; legacy single-remote configuration
+  remains supported. `ai ssh [ALIAS]` opens an interactive shell using the same
+  remote-machine configuration. (`AI-CLI-d2cu`, `AI-CLI-fzm0`,
+  `AI-CLI-o7xq`; bb0400c, 4f133da)
+- `ai session-audit` surveys titled Claude Code sessions and can safely drive
+  adoption for sessions that `ai c` cannot resume. (`AI-CLI-168`; 0576159)
+- `ai sync` now includes Claude Code task records and rewrites transcript paths
+  for the receiving machine, so synced sessions can be resumed there.
+  (`AI-CLI-n7h7`; b1ecdd0)
+- Session recovery uses a portable process probe on macOS and Windows as well
+  as Linux. (`AI-CLI-session-reclamation-linux-only-zusn`; 46dda09)
+- Session launch can bootstrap `direnv` portably, with a clear bypass when it
+  is intentionally unavailable. (`AI-CLI-ai-cli-utils-abvz`; b3515c5)
 
 - `ai session-adopt` adopts a Claude Code session that was started **without**
   `ai c` — a plain `claude` in a repo root — so `ai c <n>` resumes it from the
@@ -42,20 +62,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING (config):** the `cc-usage push` config section is renamed from
-  `[ai-core]` to `[usage_api]`. The old name was a private platform name that did
+- **BREAKING (config):** the `cc-usage push` legacy usage configuration section
+  is renamed to `[usage_api]`. The old name was a private platform name that did
   not belong in a public package, and it did not describe what the section
   configures: a REST endpoint that CC token-usage events are POSTed to. The keys
   inside it are unchanged (`api_url`, `api_key`), and there is no fallback to the
-  old name — a populated `[ai-core]` section is now simply ignored. **If your own
-  `config.toml` has `[ai-core]` filled in, rename that one header to
+  old name — a populated legacy section is now simply ignored. **If your own
+  `config.toml` has that legacy section filled in, rename its header to
   `[usage_api]`**; nothing else in your config needs to change. If you miss it,
   `ai cc-usage push` fails with `usage_api.api_url and usage_api.api_key must be
   set in config.toml under [usage_api]` rather than pushing. A commented-out
-  `[ai-core]` block (the untouched template default) needs no action; the new
+  legacy block (the untouched template default) needs no action; the new
   template ships `[usage_api]`. (`AI-CLI-189`)
 
 ### Fixed
+
+- Remote named sessions use the identity allocated on the remote machine;
+  unnamed remote sessions no longer collide. Remote launch probes its available
+  shell, limits failed mosh retries before falling back to SSH, and reports a
+  suspicious fast mosh exit. (`AI-CLI-209`, `AI-CLI-rjxm`, `AI-CLI-gg9s`,
+  `AI-CLI-jbyo`; 999a0dd, 582017d, 8fe0796, 893fd10, ecb3dfd)
+- `ai sync` serializes staging-repository mutations, rejects real conflict
+  markers before committing, preserves marker examples in ordinary files, and
+  can use Codex before its existing fallback for memory-conflict merges.
+  (`AI-CLI-5o8j`, `AI-CLI-0wmi`, `AI-CLI-ezcr`; 5859304, ab3f264, f69f9da)
+- `ai c` resumes the exact matching transcript UUID, and session cleanup no
+  longer kills unrelated live sessions while still reaping verified dead ones,
+  including remote sessions. (`AI-CLI-7d3r`, `AI-CLI-p2qj`, `AI-CLI-7cyn`,
+  `AI-CLI-pzjy`; 061e720, a223fe5, 549abe9, 1532f49)
+- `ai ws pull` aborts and reports a failed worktree rebase instead of leaving
+  the worktree mid-rebase and reporting success. (`AI-CLI-fbz5`; 7563f6c)
+- Windows session launch and the `direnv` trust probe work without Unix-only
+  executables or administrator privileges. (`AI-CLI-worktree-envrc-auto-approval-not-vtxx`,
+  `AI-CLI-windows-test-suite-failures-nvqt`; 89e471d, 4b0f076)
+- `ai c` reuses an empty session-worktree slot and creates it at the repository
+  root rather than the caller's current directory. (`AI-CLI-ai-c-1-msxj`;
+  0165e25, c1e0c8b)
 
 - **`ai` could vanish from your shell entirely, reporting `bash: ai: command not
   found`,** for as long as an installer run took to finish. Self-update installed
@@ -287,9 +329,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
-- `ai gemini` (quick depth) is now a thin alias to `aido research -d quick`. Invocations
-  print a `DeprecationWarning` to stderr and delegate to `aido`. The `--depth standard`
-  path is unaffected. `ai gemini` will be removed in a future release (`AIDO-47`).
+- `ai gemini` (quick depth) is now a thin alias to `companion research -d quick`. Invocations
+  print a `DeprecationWarning` to stderr and delegate to `companion`. The `--depth standard`
+  path is unaffected. `ai gemini` will be removed in a future release (`COMP-47`).
 
 ## [0.6.0] - 2026-04-25
 
@@ -336,7 +378,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Programmatic API contract tests (`tests/test_public_api.py` expanded from 6 to 12 tests): version sync guard, `run_gemini()` parameter signature enforcement, and field-completeness checks for `GeminiResult`, `AttemptLog`, and `QuotaSnapshot`. These catch breaking API changes before downstream callers (e.g. aido) break (`AI-CLI-46`).
+- Programmatic API contract tests (`tests/test_public_api.py` expanded from 6 to 12 tests): version sync guard, `run_gemini()` parameter signature enforcement, and field-completeness checks for `GeminiResult`, `AttemptLog`, and `QuotaSnapshot`. These catch breaking API changes before downstream callers (e.g. companion) break (`AI-CLI-46`).
 
 ## [0.5.1] - 2026-04-21
 
@@ -413,7 +455,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ai cc-usage push [-d/--dry-run]`: scan `~/.claude/projects/` JSONL files and push per-call token usage events (input, cache-creation, cache-read, output tokens) to a configured REST API backend. Cursor-tracked — only events since the last successful push are sent, in batches of 500. Config: `[ai-core] api_url` and `api_key` in `config.toml`. (AI-CLI-23)
+- `ai cc-usage push [-d/--dry-run]`: scan `~/.claude/projects/` JSONL files and push per-call token usage events (input, cache-creation, cache-read, output tokens) to a configured REST API backend. Cursor-tracked — only events since the last successful push are sent, in batches of 500. Config: `[core-cli] api_url` and `api_key` in `config.toml`. (AI-CLI-23)
 - `ai cc-usage status`: print the number of CC sessions tracked by the push cursor and the timestamp of the last successful push.
 
 ### Fixed
@@ -540,10 +582,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale session cleanup
 - Session reconnection (`ai reconnect`)
 
-[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/sergeiwallace/ai-cli-utils/releases/tag/v0.1.0
+[Unreleased]: https://github.com/user/ai-cli-utils/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/user/ai-cli-utils/compare/v0.7.0...v0.8.0
+[0.4.1]: https://github.com/user/ai-cli-utils/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/user/ai-cli-utils/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/user/ai-cli-utils/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/user/ai-cli-utils/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/user/ai-cli-utils/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/user/ai-cli-utils/releases/tag/v0.1.0

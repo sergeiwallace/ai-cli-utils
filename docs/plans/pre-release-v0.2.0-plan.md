@@ -5,10 +5,10 @@
 **Updated:** 2026-04-05
 **Target version:** `0.2.0` (current: `0.1.1`)
 
-<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+<!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
-  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
-  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  they navigate in-window (incl. VS Code Remote-SSH). `companion toc check` validates this
+  once COMP-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
   `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
   (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
   Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
@@ -140,30 +140,30 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 | Location | Issue | Fix |
 |----------|-------|-----|
 | `src/ai_cli/gemini.py:155` | `"<private-project-name>"` hardcoded as Doppler project name | Make configurable via config key |
-| `src/ai_cli/messaging.py:18` | `"aido"` hardcoded as NATS topic | Remove or make fully configurable |
-| `src/ai_cli/messaging.py:50–55` | `"<private-project-name>"`, `"178.104.70.139"` as hardcoded defaults | Remove defaults or use `None` |
-| `src/ai_cli/main.py:443,564,566` | `sw-1`, `aido-2` in comments | Replace with generic examples (`myproject-1`, `session-2`) |
+| `src/ai_cli/messaging.py:18` | `"companion"` hardcoded as NATS topic | Remove or make fully configurable |
+| `src/ai_cli/messaging.py:50–55` | `"<private-project-name>"`, `"192.0.2.1"` as hardcoded defaults | Remove defaults or use `None` |
+| `src/ai_cli/main.py:443,564,566` | `sw-1`, `companion-2` in comments | Replace with generic examples (`myproject-1`, `session-2`) |
 | `src/ai_cli/main.py:720` | `# <private-project-name> = "purple"` commented-out personal config | Remove |
 | `tests/test_project.py` | `<private-project-name>.toml`, `"<private-project-name>"` project name, personal home-dir paths | Rename to `registry.toml`, `"myproject"`, `/home/user/` |
 | `tests/test_sync.py:50–51` | `_MAC_PREFIX`/`_SERVER_PREFIX` hardcode personal home-dir prefixes | Generalize to `-Users-user-projects-`, `-home-user-projects-` |
 | `tests/test_cli.py:378` | `{"sw": "<private-project-name>"}` alias | Generic: `{"mp": "myproject"}` |
 | `tests/test_cli.py:1059` | `<private-project-name>.toml` registry path | `registry.toml` |
-| `tests/test_cli.py:1608` | `"178.104.70.139"`, `"<private-project-name>"` in tunnel config | `"192.0.2.1"`, `"user"` |
+| `tests/test_cli.py:1608` | `"192.0.2.1"`, `"<private-project-name>"` in tunnel config | `"192.0.2.1"`, `"user"` |
 | `tests/test_cli.py:1821,1830,1837` | `ai-ide-mobile`, `"<private-project-name>"` project names | Generic names |
-| `tests/test_messaging.py:276,284,334,355,374` | `"178.104.70.139"`, `"<private-project-name>"` | `"192.0.2.1"`, `"user"` |
-| `tests/test_messaging_jetstream.py:260` | `"aido"` NATS topic in test | Generic |
+| `tests/test_messaging.py:276,284,334,355,374` | `"192.0.2.1"`, `"<private-project-name>"` | `"192.0.2.1"`, `"user"` |
+| `tests/test_messaging_jetstream.py:260` | `"companion"` NATS topic in test | Generic |
 | `tests/test_session.py:419,425` | `"<private-project-name>"` in `.gemini/tmp/` path | `"user"` |
-| `docs/bugs/` | Session names like `c-aido-2`, `c-art-2` in bug reports | Leave as-is (historical bug docs, not public API) |
+| `docs/bugs/` | Session names like `c-companion-2`, `c-art-2` in bug reports | Leave as-is (historical bug docs, not public API) |
 
-**Note on `setup.py` and `test_setup.py`:** `ai-core` appears as the feature name throughout (e.g. `_is_managed_platform()`, "managed platform detected"). **Decision (2026-04-04):** rename to generic — `_is_managed_platform()` / "managed platform detected". All references in `setup.py`, `test_setup.py`, and any docs updated accordingly.
+**Note on `setup.py` and `test_setup.py`:** `core-cli` appears as the feature name throughout (e.g. `_is_managed_platform()`, "managed platform detected"). **Decision (2026-04-04):** rename to generic — `_is_managed_platform()` / "managed platform detected". All references in `setup.py`, `test_setup.py`, and any docs updated accordingly.
 <!-- decision-record: chosen-option=N/A; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 **Audit command to verify clean:**
 ```bash
-git grep -rn "ai-core\|aido\|<private-project-name>\|sergeiwallace\|178\.104" -- src/ tests/
+git grep -rn "core-cli\|companion\|<private-project-name>\|user\|178\.104" -- src/ tests/
 ```text
 
-Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (where these names appear in their correct context as rule definitions), and `setup.py`/`test_setup.py` pending the ai-core rename decision.
+Expected residual after cleanup: only `CLAUDE.md`, `GEMINI.md`, `README.md` (where these names appear in their correct context as rule definitions), and `setup.py`/`test_setup.py` pending the core-cli rename decision.
 
 **Gate:** `git grep` returns zero hits in `src/` and `tests/`. CI green.
 
@@ -220,14 +220,14 @@ Phase 4 is split into two sub-phases: **4a (backup — Claude executes)** and **
    gh repo create ai-cli-utils-history --private \
      --description "Full git history backup of ai-cli-utils (pre-squash). See README."
    git -C /Users/user/projects-archive/ai-cli-utils-history.git \
-     remote set-url origin git@github.com:sergeiwallace/ai-cli-utils-history.git
+     remote set-url origin git@github.com:user/ai-cli-utils-history.git
    git -C /Users/user/projects-archive/ai-cli-utils-history.git push --mirror
    ```text
 
 3. **Add README to backup repo** noting its purpose (pre-squash history archive, not the active repo).
 
 **Gate (human):** User confirms both backups exist — local bare clone at
-`~/projects-archive/ai-cli-utils-history.git` and private GitHub repo `sergeiwallace/ai-cli-utils-history`.
+`~/projects-archive/ai-cli-utils-history.git` and private GitHub repo `user/ai-cli-utils-history`.
 Must give **explicit approval** before Phase 4b proceeds.
 
 #### Phase 4b — Squash (requires explicit human approval from Phase 4a gate)
@@ -261,7 +261,7 @@ After Phase 4b (squash), do a full final review before version bump. Split into 
 
 #### Step 1 — Privacy & Public Safety (Claude)
 
-- `git grep -rn "ai-core\|aido\|<private-project-name>\|sergeiwallace\|178\.104"` across entire repo (not just src/tests — also docs, configs, comments, scripts)
+- `git grep -rn "core-cli\|companion\|<private-project-name>\|user\|178\.104"` across entire repo (not just src/tests — also docs, configs, comments, scripts)
 - Grep for private email patterns and internal hostnames
 - Verify `git log --oneline` shows single "Initial release" commit — no history leakage
 
@@ -275,7 +275,7 @@ After Phase 4b (squash), do a full final review before version bump. Split into 
 
 - `version` — confirm ready to bump `0.1.1` → `0.2.0`
 - `description`, `keywords`, `classifiers` — accurate and complete for PyPI listing
-- `authors` email (`dev@sergeiwallace.com`) — public-facing, confirm intentional
+- `authors` email (`dev@user.com`) — public-facing, confirm intentional
 - `requires-python`, `dependencies` — nothing private, no overly tight pins
 - `[project.scripts]` entry points — correct
 
@@ -393,7 +393,7 @@ These tasks are intentionally deferred until after the release:
 
 ## Open Questions
 
-1. ~~**`ai-core` rename in setup.py**~~ — **Resolved 2026-04-04:** rename to `_is_managed_platform()` / "managed platform detected".
+1. ~~**`core-cli` rename in setup.py**~~ — **Resolved 2026-04-04:** rename to `_is_managed_platform()` / "managed platform detected".
 
 > **Feedback Round 1:**
 > - <enter feedback here>
@@ -406,4 +406,4 @@ These tasks are intentionally deferred until after the release:
 | 2026-04-05 | 2 | Phase 1 implementation complete (99% coverage, 1052 tests). Pragma approval for 32 lines pending. |
 | 2026-04-05 | 3 | Pragma gate resolved: no pragma added. Inline `# Not covered:` comments added at each site; full documentation added to `docs/test/unit-tests.md §Intentionally Uncovered Lines`. Phase 1 complete. |
 | 2026-04-05 | 4 | Phases 2 (process hygiene), 3 (privacy audit), 3.5 (CLAUDE/GEMINI alignment lint) complete. Proceeding to Phase 4a (backup). |
-| 2026-04-06 | 5 | Phase 4a backups confirmed (local bare clone at `~/projects-archive/ai-cli-utils-history.git` + private GitHub `sergeiwallace/ai-cli-utils-history`). Phase 4b squash approved and executed — single commit `6201c1f`. Phase 5 plan expanded and approved. |
+| 2026-04-06 | 5 | Phase 4a backups confirmed (local bare clone at `~/projects-archive/ai-cli-utils-history.git` + private GitHub `user/ai-cli-utils-history`). Phase 4b squash approved and executed — single commit `6201c1f`. Phase 5 plan expanded and approved. |

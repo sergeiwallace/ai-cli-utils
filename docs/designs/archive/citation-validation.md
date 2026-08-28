@@ -57,9 +57,9 @@ The session config already mandates: *"Citation validation required after every 
 
 ## Prior Art
 
-The aido repo contains a production-quality citation validator (`scripts/verify-research-citations.py` + `citation_validator/` package) covering the arXiv pipeline: 7-step (lychee → S2 → CrossRef → OpenAlex → S2 snippet → arXiv HTML/PDF → NLI). Its design doc (`aido/docs/designs/research-doc-validation.md`) also specifies the non-arXiv DOI/ACL extension (D7–D11 below). Both are incorporated here in full.
+The companion repo contains a production-quality citation validator (`scripts/verify-research-citations.py` + `citation_validator/` package) covering the arXiv pipeline: 7-step (lychee → S2 → CrossRef → OpenAlex → S2 snippet → arXiv HTML/PDF → NLI). Its design doc (`companion/docs/designs/research-doc-validation.md`) also specifies the non-arXiv DOI/ACL extension (D7–D11 below). Both are incorporated here in full.
 
-ai-cli-utils is a **public open-source package**. The aido validator is a private development tool and cannot be referenced or shelled out to. The full stack is ported and adapted here.
+ai-cli-utils is a **public open-source package**. The companion validator is a private development tool and cannot be referenced or shelled out to. The full stack is ported and adapted here.
 
 ---
 
@@ -85,18 +85,18 @@ ai-cli-utils is a **public open-source package**. The aido validator is a privat
 
 | Option | Description | Tradeoffs |
 |--------|-------------|-----------|
-| A: Shell out to aido script | `subprocess.run(["python3", "~/projects/aido/..."])` | Couples to private path. Breaks for all public users. Non-starter. |
+| A: Shell out to companion script | `subprocess.run(["python3", "~/projects/companion/..."])` | Couples to private path. Breaks for all public users. Non-starter. |
 | B: Separate PyPI package | `ai-citation-validator` published independently | Correct separation but ~600 lines of code doesn't warrant a new repo at this stage. |
-| **C: Port into `src/ai_cli/citation_validator/`** (recommended) | Port aido `citation_validator/` subpackage, adapted for ai-cli-utils conventions | Self-contained, testable, no new repo. Straightforward mechanical port. |
+| **C: Port into `src/ai_cli/citation_validator/`** (recommended) | Port companion `citation_validator/` subpackage, adapted for ai-cli-utils conventions | Self-contained, testable, no new repo. Straightforward mechanical port. |
 | D: Plugin hook | `[research] citation_validator_script = "/path/to/script.py"` in config.toml. If set, `validate_citations()` shells out to that script with the doc path as argument; the script is responsible for appending `## Citation Validation` to the doc. Skips the built-in pipeline entirely. | Power-user escape hatch. ~10 lines of shim code. Good for CI pipelines that run a custom validator. No default behavior for public users who don't configure it. |
 
-**Recommendation: B + D.** Shared library on PyPI (`ai-citation-validator`) used by both ai-cli-utils and aido — no drift, single source of truth. Plugin hook (D) adds a power-user escape hatch; `[research] citation_validator_script` overrides the built-in when set.
+**Recommendation: B + D.** Shared library on PyPI (`ai-citation-validator`) used by both ai-cli-utils and companion — no drift, single source of truth. Plugin hook (D) adds a power-user escape hatch; `[research] citation_validator_script` overrides the built-in when set.
 
-**Shared library:** `ai-citation-validator` is a new standalone PyPI package. Both ai-cli-utils and aido declare it as a hard dependency. All `citation_validator/` code lives in that package — neither repo vendors a copy. Changes ship to the shared package first; both repos update their pinned version. The shared package bundles the Tier 2 Python deps (`semanticscholar`, `arxiv`, `pdfplumber`, etc.) as its own hard dependencies, so ai-cli-utils and aido get them transitively. NLI extra: `ai-citation-validator[nli]` — both repos can use `ai-cli-utils[citation-nli]` / `aido[citation-nli]` which pull `ai-citation-validator[nli]`.
+**Shared library:** `ai-citation-validator` is a new standalone PyPI package. Both ai-cli-utils and companion declare it as a hard dependency. All `citation_validator/` code lives in that package — neither repo vendors a copy. Changes ship to the shared package first; both repos update their pinned version. The shared package bundles the Tier 2 Python deps (`semanticscholar`, `arxiv`, `pdfplumber`, etc.) as its own hard dependencies, so ai-cli-utils and companion get them transitively. NLI extra: `ai-citation-validator[nli]` — both repos can use `ai-cli-utils[citation-nli]` / `companion[citation-nli]` which pull `ai-citation-validator[nli]`.
 
-**Prerequisite:** Create `ai-citation-validator` package repo, publish initial version to PyPI, add as dependency to aido and ai-cli-utils. This is a separate task (AI-CLI-51 or AIDO-40 — TBD).
+**Prerequisite:** Create `ai-citation-validator` package repo, publish initial version to PyPI, add as dependency to companion and ai-cli-utils. This is a separate task (AI-CLI-51 or COMP-40 — TBD).
 
-> **Feedback:** Publish as shared library. No drift. Long-term plan: migrate to aido research as the primary research command; ai-cli-utils `--depth` config will replicate current research workflow. For now, shared library keeps both in sync.
+> **Feedback:** Publish as shared library. No drift. Long-term plan: migrate to companion research as the primary research command; ai-cli-utils `--depth` config will replicate current research workflow. For now, shared library keeps both in sync.
 
 ---
 
@@ -335,7 +335,7 @@ Step 4 never raises. All exceptions are caught and surfaced as WARNs. If no vali
 
 ### `validate_citations()` interface
 
-Code lives in the `ai-citation-validator` shared package; both ai-cli-utils and aido import from it:
+Code lives in the `ai-citation-validator` shared package; both ai-cli-utils and companion import from it:
 
 ```python
 from citation_validator import validate_citations, ValidationReport, CitationResult
@@ -466,7 +466,7 @@ tests/
   test_research.py   # updated: auto_validate config, --no-validate, --validate-strict, plugin hook
 ```
 
-### aido (existing)
+### companion (existing)
 
 ```text
 scripts/
@@ -508,7 +508,7 @@ dependencies = [
 citation-nli = ["ai-citation-validator[nli]"]
 ```
 
-### aido
+### companion
 
 ```toml
 [project]
@@ -574,11 +574,11 @@ dependencies = [
 
 ## Open Questions
 
-~~**OQ1:** S2 unauthenticated rate limit is ~1 rps. A research doc with 20 citations = ~20s for S2 alone.~~ **Resolved:** No S2 API key for now (request pending in aido roadmap; not guaranteed to be granted). Work within the 1 rps unauthenticated limit. Wall time is acceptable for a post-synthesis step — not a blocking issue.
+~~**OQ1:** S2 unauthenticated rate limit is ~1 rps. A research doc with 20 citations = ~20s for S2 alone.~~ **Resolved:** No S2 API key for now (request pending in companion roadmap; not guaranteed to be granted). Work within the 1 rps unauthenticated limit. Wall time is acceptable for a post-synthesis step — not a blocking issue.
 
 ~~**OQ2:** Gemini research docs cite inline in prose — extractor must handle both inline link format and bare `arXiv:NNNN.NNNNN`.~~ **Resolved:** This is an implementation note, not a design question. The extractor handles all formats: inline markdown links (`[title](url)`), bare `arXiv:NNNN.NNNNN`, `doi:10.XXXX/...` prefixes, and bare `10.XXXX/...` patterns. The fixture docs in `tests/fixtures/` will be seeded from real Gemini output before implementation.
 
-~~**OQ3:** Port into ai-cli-utils and diverge, or publish as shared library?~~ **Resolved:** Publish as `ai-citation-validator` shared PyPI package. Both ai-cli-utils and aido depend on it. No drift possible. See D2 and File Layout. Prerequisite: create `ai-citation-validator` repo and publish initial version (separate task).
+~~**OQ3:** Port into ai-cli-utils and diverge, or publish as shared library?~~ **Resolved:** Publish as `ai-citation-validator` shared PyPI package. Both ai-cli-utils and companion depend on it. No drift possible. See D2 and File Layout. Prerequisite: create `ai-citation-validator` repo and publish initial version (separate task).
 
 ---
 

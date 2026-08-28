@@ -10,10 +10,10 @@ template_version: "design-1.0.0"
 
 # ai-cli-utils — Architecture
 
-<!-- AIDO-128: the ToC sits ABOVE the Executive Summary (it is self-referential otherwise).
+<!-- COMP-128: the ToC sits ABOVE the Executive Summary (it is self-referential otherwise).
   D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc, with GitHub-style
   anchors (lowercase, spaces→hyphens, punctuation stripped) so they navigate in-window
-  (incl. VS Code Remote-SSH). `aido toc check` validates this once AIDO-127 lands. If
+  (incl. VS Code Remote-SSH). `companion toc check` validates this once COMP-127 lands. If
   all-`###` proves too noisy, fall back to D5 (a) "meaningful `###`" — a deterministic
   OR-rule: include a `###` when it (1) has child `####`, (2) its section body ≥ ~8-10
   lines, (3) its parent `##` is allowlisted (Design Decisions / Open Questions /
@@ -57,7 +57,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `gemini.py` | Gemini CLI/API wrapper with 3-tier auth fallback; defines `GeminiResult`, `AttemptLog`; handles OAuth, free-key REST, paid-key REST; writes JSONL run logs; publishes `hw.events.usage.gemini.event` to NATS |
 | `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
-| `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to ai-core REST API; defines `CCTokenEvent`, `PushResult` |
+| `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to core-cli REST API; defines `CCTokenEvent`, `PushResult` |
 | `messaging.py` | Async NATS client wrapper with JetStream; SSH tunnel auto-open on Mac when port 4222 is unreachable; defines `NATSClient`, stream configs, heartbeat/event helpers |
 | `sync.py` | Bidirectional CC session data sync (conversation JSONL + memory files) via bare git staging repo over SSH; defines `SyncConfig` |
 | `telemetry.py` | Event recording pipeline: caller → NATS JetStream → background writer → SQLite (`~/.ai-cli/telemetry.db`) |
@@ -99,7 +99,7 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai notifications log [-n N] [-s SINCE] [-f FROM] [-t TO] [--source TEXT] [--failed]` — query notification delivery history
 
 ### CC Token Tracking
-- `ai cc-usage push` — scan CC JSONL files, push new token events to ai-core REST API
+- `ai cc-usage push` — scan CC JSONL files, push new token events to core-cli REST API
 - `ai cc-usage status` — show cursor state and last-push summary
 
 ### Sync
@@ -152,18 +152,18 @@ The tool installs as a single `ai` command. There is no server component — all
 | `fleet.worker.{session_id}.heartbeat` | `messaging.py` | Per-session heartbeat |
 | `quota.threshold.{50\|75\|90}` | `quota.py` | Claude quota threshold alerts |
 | `quota.snapshot` | `quota.py` | Legacy cross-machine quota sync |
-| `hw.events.usage.gemini.event` | `gemini.py` | Per-Gemini-call event (ai-core ingest) |
-| `hw.events.usage.claude.snapshot` | `quota.py` | Claude quota snapshot (ai-core ingest) |
+| `hw.events.usage.gemini.event` | `gemini.py` | Per-Gemini-call event (core-cli ingest) |
+| `hw.events.usage.claude.snapshot` | `quota.py` | Claude quota snapshot (core-cli ingest) |
 | `handoff.{project}` | `handoff.py` | Cross-session task delegation |
 | `memory.dream.started/completed` | `memory.py` | Memory consolidation lifecycle |
 
 **NATS KV bucket `hw_state`:**
 - `quota.claude.current` — latest `QuotaSnapshot` JSON; written by `quota.py`, read by statusline and `ai quota status`
 
-### ai-core REST API (optional)
+### core-cli REST API (optional)
 - `POST /api/v1/usage/cc/ingest` — CC token events from `cc_usage.py`
-- `GET /api/v1/usage/claude/current` — read Claude quota tier (used by aido)
-- `GET /api/v1/usage/gemini/balance` — read Gemini quota tier (used by aido)
+- `GET /api/v1/usage/claude/current` — read Claude quota tier (used by companion)
+- `GET /api/v1/usage/gemini/balance` — read Gemini quota tier (used by companion)
 
 ### SQLite Databases
 - `~/.local/state/ai-cli/quota.db` — quota snapshots, usage records, weekly state
@@ -206,7 +206,7 @@ Note that `git worktree add -b <branch> <remote-tracking-ref>` attaches an upstr
 
 **CC session sync via bare git** — `sync.py` uses a bare git repo as the transport for CC JSONL + memory files between machines. Conflict detection is file-level mtime comparison logged to `~/.claude-sync-conflicts.log`.
 
-**Cursor-based CC token tracking** — `cc_usage.py` tracks last-seen `occurred_at` per session UUID in `cc-usage-cursor.json`. Only entries newer than the cursor are pushed. Idempotent: ai-core ingest deduplicates by `event_id`.
+**Cursor-based CC token tracking** — `cc_usage.py` tracks last-seen `occurred_at` per session UUID in `cc-usage-cursor.json`. Only entries newer than the cursor are pushed. Idempotent: core-cli ingest deduplicates by `event_id`.
 
 **Click command group dispatch** — command routing uses a `@click.group()` tree. `ai internal` is kept as a pre-Click fast path for bash hook performance (avoids Click startup overhead). Migrated from `if sys.argv[1] == ...` argparse hybrid in AI-CLI-39/47.
 

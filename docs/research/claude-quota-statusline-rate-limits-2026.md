@@ -154,16 +154,16 @@ the genuinely hard, brittle part — the all-models path (Option 1) has no such 
 
 ## Appendix: Research Prompt
 
-**Registry ID:** manual (no aido run)
+**Registry ID:** manual (no companion run)
 **Model:** `opus` (inline WebSearch/WebFetch/gh + live empirical capture)
 **Date:** 2026-07-13
 
 ```text
-Manually-authored research doc (not an aido run). Investigation performed inline by the
+Manually-authored research doc (not an companion run). Investigation performed inline by the
 aih-2 session: reviewed existing repo research/design docs (claude-usage-telemetry.md),
 WebSearch for Anthropic subscription-quota APIs + CC /usage JSON, gh issue view on the
 canonical feature requests (#13585, #44328), WebFetch of the official statusline docs, and
-a live statusLine-stdin capture on CC 2.1.207. This doc predates use of the aido prompt
+a live statusLine-stdin capture on CC 2.1.207. This doc predates use of the companion prompt
 appendix template for its authoring flow.
 ```
 
@@ -188,6 +188,6 @@ text (no quota bars). No online source (first-party runtime observation).
 ## Run History
 
 2026-07-13 — Manual authoring (opus, session aih-2). Findings from inline research + live
-CC 2.1.207 capture. No aido run.
+CC 2.1.207 capture. No companion run.
 
 <!-- /doc:region name="run_history" -->
