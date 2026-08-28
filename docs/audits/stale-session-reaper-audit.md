@@ -38,6 +38,14 @@ task: AI-CLI-tdm6
   - [Detailed Failed Checks (ordered by severity)](#detailed-failed-checks-ordered-by-severity)
   - [R1 Resolution Pass](#r1-resolution-pass)
   - [R1 Verification Matrix](#r1-verification-matrix)
+- [Round 2 — Verification Pass](#round-2--verification-pass-append-only)
+  - [R2 Summary](#r2-summary)
+  - [R2.1 Round 1 IC/JA/DV verification](#r21-round-1-icjadv-verification)
+  - [R2.2 Round 1 F-N verification](#r22-round-1-f-n-verification)
+  - [R2.3 AD-N decisions verification](#r23-ad-n-decisions-verification)
+  - [R2.4 NEW issues surfaced](#r24-new-issues-surfaced)
+  - [R2.5 Verification Matrix](#r25-verification-matrix)
+  - [R2 Recommendations](#r2-recommendations)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
   - [AD-1: Bind evidence to a session instance](#ad-1)
   - [AD-2: Close the final heartbeat/process TOCTOU](#ad-2)
@@ -103,24 +111,23 @@ for this run (no Run Ledger `authority` record) — every AD-N is surfaced, not 
 
 ## Status Summary
 
-**Latest round:** Round 1 (complete)
+**Latest round:** Round 2 (complete)
 
 **Outstanding by severity / verdict (across all rounds):**
 
 | Severity | Count | Of which fixed | Of which deferred |
 |----------|-------|----------------|-------------------|
-| CRITICAL / P0 | 2 | 0 | 2 |
-| MAJOR / P1    | 7 | 0 | 3 |
-| MINOR / P2    | 3 | 0 | 0 |
+| CRITICAL / P0 | 3 | 1 | 0 |
+| MAJOR / P1    | 9 | 4 | 0 |
+| MINOR / P2    | 3 | 3 | 0 |
 | Cosmetic / P3 | 0 | 0 | 0 |
-| **Total**     | **12** | **0** | **5** |
+| **Total**     | **15** | **8** | **0** |
 
-**Ship-readiness verdict:** **Not ready for implementation.** IC-1 and DV-1 leave two distinct
-false-positive reap paths in the proposed protocol. Seven P1 specification/domain gaps and three
-P2 documentation/durability gaps remain open. AD-1 through AD-3 are now `✅ Approved — (a)` in
-each case (Sergei chose the AI-recommended option for all three, no divergence) — the target
-design doc still needs a revision pass to fold those choices and the 9 remaining open findings in,
-followed by a Round 2 verification-only audit, before this is ready for implementation.
+**Ship-readiness verdict:** **Not ready for implementation.** Eight Round 1 items now PASS, but
+JA-2, JA-5, DV-1, and DV-2 remain PARTIAL. Round 2 found one new CRITICAL lease-lifecycle gap and
+two new MAJOR protocol/contract gaps. AD-1 and AD-3 are substantively applied; AD-2 is only PARTIAL
+because the design does not preserve or test lease continuity across the shipped wrapper's
+self-`exec` transitions. Round 3 must resolve N-1 through N-3 before implementation starts.
 
 ## Round 1 — Main Audit
 
@@ -601,6 +608,210 @@ durability, treat the record as unavailable for reap authority and document the 
 
 **Verified: 10/10 sampled findings reproduce on commit `f60d4df9e061643cc44b73f7a1227af5e8348945`.**
 
+## Round 2 — Verification Pass (append-only)
+
+**Round 2 auditor:** Codex (`GPT-5`), independent verification invocation
+
+**Round 2 date:** 2026-08-28
+
+**Round 2 scope:** Verified the complete 12-item Round 1 MUST-fix backlog and AD-1 through AD-3
+against `docs/designs/stale-session-reaper.md` at exact commit
+`383b0559fb59bdfd0f92413e835dcbccf572bbd8`. The worktree copy matches that commit. Re-read the
+full design and inspected the full shipped `session_script.py`, `process_probe.py`, and
+`process_manager.py` paths named by the verification prompt. No target-design or source edit was
+made; this round writes only this audit history.
+
+### R2 Summary
+
+The complete Round 1 backlog contains the 12 items listed in the invocation; no older open
+MUST-fix item was omitted. Verdicts are 8 PASS, 4 PARTIAL, and 0 FAIL. AD-1 and AD-3 PASS; AD-2 is
+PARTIAL. Three new issues were reproduced: N-1 (CRITICAL) leaves lease continuity unspecified over
+first evidence and the shipped wrapper's self-`exec` paths; N-2 (MAJOR) requires a pane-process
+identity that the existing probe cannot capture through its public contract; N-3 (MAJOR) promises
+whole-interval rollback while the protocol authorizes per-candidate kills.
+
+### R2.1 Round 1 IC/JA/DV verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| IC-1 | **PASS** | Round 1 required session-instance binding (`docs/audits/stale-session-reaper-audit.md:581`). The revised invariant makes `@ai_cli_session_generation` the sole marker and requires token agreement (`docs/designs/stale-session-reaper.md:67-74`); the protocol and cleanup are generation-conditional (`:86-96`); the schema includes the token (`:116-122`); Integration and T-1.1 apply it to creation, naming variants, clean exit, and crash (`:124-126`, `:139-145`). **Verification: CONFIRMED.** |
+| IC-2 | **PASS** | Round 1 required replacing undefined numbered criteria (`docs/audits/stale-session-reaper-audit.md:582`). D-1 through D-6 now name the fail-closed, exact-ID, out-of-band, observe-first, eventual-recovery, and launch-separation requirements (`docs/designs/stale-session-reaper.md:280`, `:326`, `:372`, `:418`, `:464`, `:510`); a full numbered-Criteria search returned no matches. **Verification: CONFIRMED.** |
+| JA-2 | **PARTIAL** | The dual gates and token binding are explicit (`docs/designs/stale-session-reaper.md:69-74`), and the final pass is lease-held (`:80`, `:86-88`, `:147-154`). The claimed fail-closed result is not complete because continuous lease ownership is not specified across first evidence or either shipped self-`exec` path; see N-1. This leaves the Round 1 dependency row (`docs/audits/stale-session-reaper-audit.md:583`) only partly closed. **Verification: CONFIRMED specification coverage; PLAUSIBLE permitted race.** |
+| JA-4 | **PASS** | T-1.4 requires one integrated real-temporary-ledger/token/lease round trip through controlled tmux/process adapters, exactly one ID-targeted positive kill, zero kills for mutation/negative controls, and pane/PID/token/rename negatives; the Phase 1 exit gate repeats that requirement (`docs/designs/stale-session-reaper.md:155-159`). This matches the Round 1 requested integrated positive and gate-removal controls (`docs/audits/stale-session-reaper-audit.md:584`). **Verification: CONFIRMED.** |
+| JA-5 | **PARTIAL** | Start, stop, status, and run success/failure ACs are present (`docs/designs/stale-session-reaper.md:167-176`). However, the exception AC requires an entire interval to abort “before any kill” and preserve all sessions (`:174`), while the protocol immediately kills each eligible candidate (`:88`) and defines no whole-pass preflight/commit boundary. See N-3. The Round 1 lifecycle row is at `docs/audits/stale-session-reaper-audit.md:585`. **Verification: CONFIRMED contradiction.** |
+| JA-6 | **PASS** | Heartbeat prose says a local write failure remains non-fatal, still attempts `publish_heartbeat`, and creates no reap authority (`docs/designs/stale-session-reaper.md:96`); T-1.1 repeats the parity AC verbatim (`:145`), and Integration says the failure does not suppress publication (`:126`). This closes `docs/audits/stale-session-reaper-audit.md:586`. **Verification: CONFIRMED.** |
+| DV-1 | **PARTIAL** | D-8 adds exclusive non-blocking acquisition before the final pass and holds the lease through `tmux kill-session` (`docs/designs/stale-session-reaper.md:80`, `:88`, `:153-154`, `:563-604`). That closes the final read-to-kill edge only while continuous wrapper ownership is real; N-1 shows startup and self-`exec` continuity are unspecified. The original TOCTOU row is `docs/audits/stale-session-reaper-audit.md:587`. **Verification: CONFIRMED text; PLAUSIBLE remaining interleaving.** |
+| DV-2 | **PARTIAL** | The revision captures `#{pane_id}`, the complete pane-ID-to-PID mapping, and requires both-pass pane/process identity equality (`docs/designs/stale-session-reaper.md:86`, `:149`, `:153-158`). The existing probe offers `has_ended(pid)` and `start_time_match(pid, recorded)` but no operation that captures a process identity for the first pass (`src/ai_cli/process_probe.py:143-172`, `:236-247`, `:329-339`), and Phase 1 does not list that module as modified (`docs/designs/stale-session-reaper.md:136-138`). See N-2. The Round 1 row is `docs/audits/stale-session-reaper-audit.md:588`. **Verification: CONFIRMED interface mismatch.** |
+| DV-3 | **PASS** | The invariant requires current-boot monotonic age (`docs/designs/stale-session-reaper.md:72-74`); the ledger makes wall time log-only and rejects boot/clock uncertainty (`:96`, `:116-122`); T-1.2 covers boot mismatch and unavailable clock/boot identity (`:147-151`); D-9 matches approved option (a) (`:610-650`). This closes `docs/audits/stale-session-reaper-audit.md:589`. **Verification: CONFIRMED.** |
+
+### R2.2 Round 1 F-N verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| F-1 | **PASS** | Safety and Integration both say the tmux generation option—not `_AI_SESSION_RE` or another name pattern—is the sole managed marker (`docs/designs/stale-session-reaper.md:67`, `:126`). T-1.1 explicitly covers local/remote, indexed/custom/hyphenated, and `c/g/p/cx` names (`:141`). This closes `docs/audits/stale-session-reaper-audit.md:590`. **Verification: CONFIRMED.** |
+| F-2 | **PASS** | T-2.4 requires correcting the README Features table and every legacy timeout example, documenting independent start/observe/opt-in behavior, and adding an Unreleased CHANGELOG correction without rewriting history (`docs/designs/stale-session-reaper.md:184-186`). This matches `docs/audits/stale-session-reaper-audit.md:591`. **Verification: CONFIRMED.** |
+| F-3 | **PASS** | The writer guarantee is expressly narrowed to complete-file atomic visibility, “not crash durability”; the next sentence says loss/staleness preserves and waits for a fresh heartbeat rather than granting authority (`docs/designs/stale-session-reaper.md:96`). Risk 2 repeats “Missing or non-durable data preserves” (`:216`), and D-1 now says “atomically visible,” not durable (`:247`, `:280`). This closes `docs/audits/stale-session-reaper-audit.md:592`. **Verification: CONFIRMED.** |
+
+### R2.3 AD-N decisions verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| AD-1 | **PASS** | The audit approved option (a), including a random token in tmux metadata/ledger and generation-conditional writes/deletes (`docs/audits/stale-session-reaper-audit.md:825-865`). D-7 reproduces that option and human provenance (`docs/designs/stale-session-reaper.md:516-557`); its substance appears in Safety (`:67-74`), lifecycle/protocol/heartbeat (`:80`, `:86-96`), Data Model (`:116-122`), Integration (`:126`), Phase 1 ACs (`:140-158`), the audit checklist (`:202`), risk mitigation (`:215-216`), and Approval Log (`:684`). **Verification: CONFIRMED.** |
+| AD-2 | **PARTIAL** | The audit approved a wrapper-lifetime generation lease held through the final kill and called for non-mocked inheritance/crash-release tests (`docs/audits/stale-session-reaper-audit.md:870-909`). D-8 and the final-pass protocol contain the exclusive fence (`docs/designs/stale-session-reaper.md:80`, `:88`, `:153-159`, `:563-604`), but neither the lifecycle nor an AC defines successful continuity across the direct `exec` transitions at `src/ai_cli/session_script.py:459`, `:638`, and `:641`; see N-1. **Verification: CONFIRMED omission; runtime behavior unverified pre-implementation.** |
+| AD-3 | **PASS** | The audit approved same-boot monotonic time plus boot generation (`docs/audits/stale-session-reaper-audit.md:914-952`). D-9 matches (`docs/designs/stale-session-reaper.md:610-650`), with matching Safety (`:72-74`), heartbeat/schema (`:96`, `:116-122`), Phase 1 ACs (`:140`, `:147-150`), audit checklist (`:204`), and Approval Log (`:686`). **Verification: CONFIRMED.** |
+
+### R2.4 NEW issues surfaced
+
+#### N-1: Lifetime-lease continuity is undefined at first evidence and shell self-`exec` — `CRITICAL` / `P0`
+
+**Location:** `docs/designs/stale-session-reaper.md:80`, `:94`, `:144`, `:156-159`, `:575-576`,
+`:604`, `:668`; `src/ai_cli/session_script.py:447`, `:449-460`, `:617-642`
+
+**What the Round 1 Resolution Pass claimed:** DV-1 moved the final TOCTOU protocol to approved AD-2
+(`docs/audits/stale-session-reaper-audit.md:587`), whose chosen option says a live wrapper
+retains the lease continuously and inheritance/crash-release behavior needs non-mocked tests
+(`docs/audits/stale-session-reaper-audit.md:875-884`).
+
+**Actual state:** The revision says the wrapper holds the lease “continuously until process exit”
+and that this closes the edge (`docs/designs/stale-session-reaper.md:80`, `:604`), but does not
+require acquisition to precede the first usable heartbeat (`:94`, `:140-145`). The shipped wrapper
+replaces itself directly with a new shell at three `exec` sites and has no lease handoff/adoption
+step (`src/ai_cli/session_script.py:449-460`, `:617-642`). T-1.4 exercises a lease through controlled
+adapters but never requires real subprocess acquisition, successful self-`exec` inheritance, failed
+inheritance, or crash release on supported platforms (`docs/designs/stale-session-reaper.md:155-159`),
+despite D-8 naming those non-mocked tests as necessary (`:575-576`, `:604`). “Cannot inherit” merely
+forbids new evidence (`:144`); it does not explain how an old stale record plus a now-free lease
+prevents the reaper from acquiring destructive authority.
+
+**Why it matters:** If the lease is published after the first record, closes during `exec`, or is
+held by an old helper the replacement cannot verify, the “live wrapper continuously owns the
+lease” premise is false. In the free-lease case, the same false process observation that motivated
+this design can again pass the final fence against a live wrapper.
+
+**Verification note:** **CONFIRMED** specification omission and shipped self-`exec` paths;
+**PLAUSIBLE** destructive interleaving because the lease implementation does not exist.
+
+**Verification command:**
+
+```bash
+sed -n '76,96p;139,159p;563,606p;666,669p' docs/designs/stale-session-reaper.md
+sed -n '447,460p;617,642p' src/ai_cli/session_script.py
+```
+
+**Recommended fix (Round 3):** Define one lease owner and descriptor/handle lifecycle. Require the
+lease to be acquired and verified before any usable ledger record is written; require atomic,
+gap-free transfer/adoption across both self-`exec` paths or replace those paths with a holder whose
+lifetime is demonstrably identical to the tmux wrapper generation. Add real subprocess tests for
+initial ordering, both exec paths, failed inheritance/adoption, normal exit, crash release, and a
+reaper racing each transition on every supported lock backend. Any transition that cannot prove
+continuity must revoke/delete that generation's usable record before the lease can become free.
+
+#### N-2: The required process identity has no capture contract — `MAJOR` / `P1`
+
+**Location:** `docs/designs/stale-session-reaper.md:86`, `:136-138`, `:149`, `:153-158`;
+`src/ai_cli/process_probe.py:130-172`, `:229-247`, `:316-339`
+
+**What the Round 1 Resolution Pass claimed:** DV-2 required pane/process identity and reuse/respawn
+ACs (`docs/audits/stale-session-reaper-audit.md:588`).
+
+**Actual state:** The design now requires the initial pass to capture “each process identity exposed
+by the probe” and compare it during revalidation (`docs/designs/stale-session-reaper.md:86`), but the
+public probe can only answer liveness and compare a caller-supplied recorded start value; it has no
+method that returns a pane process's start identity for capture (`src/ai_cli/process_probe.py:130-172`,
+`:236-247`, `:329-339`). Phase 1 neither defines the identity's type/UNKNOWN semantics nor lists
+`process_probe.py` among modified files (`docs/designs/stale-session-reaper.md:136-138`). The ACs name
+an identity and PID-reuse outcome (`:149`, `:153-158`) without supplying the contract that makes
+them independently implementable.
+
+**Why it matters:** An implementer can satisfy the pane-ID-to-PID mapping text while still comparing
+only recycled PID numbers, or bypass the existing platform abstraction. Either outcome leaves the
+claimed PID-reuse defense unverified or non-portable.
+
+**Verification note:** **CONFIRMED** against the complete `ProcessProbe`, `ProcfsProbe`, and
+`PsutilProbe` implementations; runtime behavior is not asserted because Phase 1 code does not exist.
+
+**Verification command:**
+
+```bash
+sed -n '84,88p;132,159p' docs/designs/stale-session-reaper.md
+sed -n '130,172p;229,247p;316,339p' src/ai_cli/process_probe.py
+```
+
+**Recommended fix (Round 3):** Add `process_probe.py` to Phase 1 scope and specify a public typed
+snapshot contract that returns state plus platform process-birth identity (or explicit UNKNOWN).
+Require initial and lease-held snapshots to match that identity before a zombie counts; define the
+safe GONE case separately; add real PID-reuse/identity-unavailable tests for procfs and psutil.
+
+#### N-3: Whole-interval exception rollback conflicts with immediate per-candidate kills — `MAJOR` / `P1`
+
+**Location:** `docs/designs/stale-session-reaper.md:78`, `:88`, `:167-176`
+
+**What the Round 1 Resolution Pass claimed:** JA-5 required run failure behavior that preserves all
+sessions and restarts under Circus (`docs/audits/stale-session-reaper-audit.md:585`).
+
+**Actual state:** Lifecycle prose and T-2.1 say one malformed candidate or evaluator exception
+aborts the whole interval “before any kill” and preserves all sessions
+(`docs/designs/stale-session-reaper.md:78`, `:174`). The candidate protocol instead acquires,
+revalidates, and immediately kills each eligible candidate (`:88`). It defines no all-candidate
+preflight or commit boundary, so an exception on candidate B cannot undo a completed kill of
+candidate A.
+
+**Why it matters:** The implementation cannot satisfy both statements. Tests may encode either
+candidate-local fail-closed behavior or whole-interval atomicity and still appear reasonable,
+leaving restart behavior and partial-pass authority undefined.
+
+**Verification note:** **CONFIRMED** internal contradiction; no runtime implementation exists.
+
+**Verification command:**
+
+```bash
+sed -n '76,90p;167,176p' docs/designs/stale-session-reaper.md
+```
+
+**Recommended fix (Round 3):** Choose and specify one boundary. Either stage and validate every
+candidate before any destructive action (including how leases are acquired/released), or narrow
+the guarantee to candidate-local preservation and state explicitly that already completed,
+fully-authorized kills are not rolled back when a later candidate fails. Add a multi-candidate AC
+where candidate A is eligible and candidate B throws.
+
+### R2.5 Verification Matrix
+
+| Finding | Command | Expected | Actual at `383b055` | Pass? |
+|---------|---------|----------|----------------------|-------|
+| IC-1 | `rg -n 'sole authoritative marker|same generation token|generation_token|generation-conditional' docs/designs/stale-session-reaper.md` | Token binding in invariant, writer, schema, Integration | Matches at design lines 67, 69, 96, 119, 122, and 126. | ✅ |
+| IC-2 | `rg -n '\\b[Cc]riteria? [123]\\b|\\b[Cc]riterion [123]\\b' docs/designs/stale-session-reaper.md` | No undefined numbered references | No output; exit 1. | ✅ |
+| JA-4 | `sed -n '155,159p' docs/designs/stale-session-reaper.md` | Integrated positive plus mutation/negative controls | Printed all three T-1.4 ACs and the matching exit gate. | ✅ |
+| JA-5 / N-3 | `sed -n '76,90p;167,176p' docs/designs/stale-session-reaper.md` | Lifecycle ACs present; interval semantics consistent | Commands are covered, but line 174's before-any-kill guarantee conflicts with line 88's immediate candidate kill. | ❌ |
+| JA-6 | `sed -n '94,96p;139,145p' docs/designs/stale-session-reaper.md` | Publication attempt survives ledger failure | Prose and T-1.1 both require the attempt and non-fatal result. | ✅ |
+| DV-1 / N-1 | `sed -n '76,96p;139,159p;563,606p' ...; sed -n '447,460p;617,642p' src/ai_cli/session_script.py` | Continuous lease specified and tested across lifecycle | Final-pass fence is present; acquisition-before-evidence and three direct `exec` transitions are not covered. | ❌ |
+| DV-2 / N-2 | `sed -n '84,88p;132,159p' ...; sed -n '130,172p;229,247p;316,339p' src/ai_cli/process_probe.py` | Two-pass identity contract supported by probe | Design requires identity; probe exposes comparison only, not capture, and is absent from Phase 1 modified files. | ❌ |
+| DV-3 | `sed -n '69,74p;94,96p;114,122p;146,151p;610,650p' docs/designs/stale-session-reaper.md` | Same-boot monotonic throughout | Invariant, writer, schema, ACs, and D-9 agree; wall time is logs-only. | ✅ |
+| F-1 | `sed -n '65,74p;124,126p;139,142p' docs/designs/stale-session-reaper.md` | One authoritative metadata classifier | Safety, Integration, and AC use only the generation option and enumerate supported names. | ✅ |
+| F-3 | `sed -n '94,96p;211,217p;240,280p' docs/designs/stale-session-reaper.md` | Atomic-visibility claim narrowed; safety independent of durability | Prose says “not crash durability” and missing/non-durable data preserves; D-1 says atomically visible. | ✅ |
+
+**Verified: 10/10 sampled backlog checks reproduced against commit
+`383b0559fb59bdfd0f92413e835dcbccf572bbd8`; 7 matched the claimed resolution and 3 reproduced
+the PARTIAL/new-finding state.**
+
+### R2 Recommendations
+
+**MUST be fixed before implementation:**
+
+- N-1 / JA-2 / DV-1 / AD-2: specify and test gap-free lease ownership from before first usable
+  heartbeat through both wrapper self-`exec` paths and final exit/crash.
+- N-2 / DV-2: define and scope the cross-platform process-identity capture/revalidation contract.
+- N-3 / JA-5: reconcile whole-interval exception semantics with per-candidate kill ordering and add
+  the multi-candidate regression AC.
+
+**SHOULD be fixed before design approval:**
+
+- None beyond the MUST items.
+
+**Can be folded into a follow-up:**
+
+- None. All three new issues affect the destructive safety protocol or its required failure
+  semantics.
+
 <!-- /doc:region name="scope" -->
 
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
@@ -785,7 +996,7 @@ needs a portable rule for process restart and host reboot.
 - [ ] All MINOR / P2 / P3 findings logged to the roadmap (even if deferred)
 - [x] All AD-N decisions are APPROVED, `✅ Resolved by <agent>`, or explicitly CLOSED with rationale
 - [x] Verification Matrix run on at least 5-10 findings; 10/10 reproductions recorded
-- [ ] At least one verification round (Round 2+) completed because Round 1 has findings
+- [x] At least one verification round (Round 2+) completed because Round 1 has findings
 - [ ] Re-grep verification done in the final resolution round
 - [x] No inline fixes were made; therefore no missing inline-fix commit hashes exist
 - [x] Already-Correct Items populated with specific evidence per row
@@ -802,6 +1013,7 @@ needs a portable rule for process restart and host reboot.
 | 2026-08-28 | AD-1 APPROVED — (a) Random generation token | Sergei chose the AI-recommended option for all three; no divergence. Implementation pointer: pending design-doc revision (this issue's next step). |
 | 2026-08-28 | AD-2 APPROVED — (a) Generation-bound lease + exclusive fence | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
 | 2026-08-28 | AD-3 APPROVED — (a) Same-boot monotonic time + boot generation | Sergei chose the AI-recommended option; no divergence. Implementation pointer: pending design-doc revision. |
+| 2026-08-28 | Round 2 verification pass complete | Codex independent verifier; 8 PASS, 4 PARTIAL, 0 FAIL across the 12-item backlog; AD-1/AD-3 PASS, AD-2 PARTIAL; 3 new findings (1 CRITICAL, 2 MAJOR); 10/10 matrix checks reproduced; no target/source edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -811,6 +1023,19 @@ needs a portable rule for process restart and host reboot.
 
 - `docs/designs/stale-session-reaper.md` — full read, including all decisions, provenance comments, open questions, feedback placeholders, and Approval Log; verified worktree content equals `f60d4df`.
 - `docs/audits/stale-session-reaper-audit.md` — full prefilled scaffold and immutable reviewer prompts.
+- Round 2: `docs/designs/stale-session-reaper.md` — full read from Git object
+  `383b0559fb59bdfd0f92413e835dcbccf572bbd8`;
+  `git diff --exit-code 383b055 -- docs/designs/stale-session-reaper.md` confirmed the current
+  worktree copy matches. The preceding `f60d4df` bullet records Round 1's historical snapshot, not
+  current state.
+- Round 2: `docs/audits/stale-session-reaper-audit.md` — full read of all 12 findings, the Resolution
+  Pass, verification matrix, AD-1 through AD-3, Outstanding Issues, Audit Log, and reviewer prompt.
+- Round 2: `src/ai_cli/session_script.py`, `src/ai_cli/process_probe.py`, and
+  `src/ai_cli/process_manager.py` — full reads; wrapper self-`exec`, process identity, and Circus
+  lifecycle ground truth. All three worktree copies match `383b055`.
+- Round 2: canonical audit `TEMPLATE.md` and `STUB.md` from the available shared documentation
+  checkout — full Round 2 structure, finding taxonomy, decision skeleton, and matrix requirements.
+  The repo-local template and invocation-listed fallback were absent.
 
 **Audit format and authoritative standards:**
 
@@ -888,6 +1113,30 @@ The focused pytest command did not execute because neither `pytest` nor
 `.venv/bin/pytest` exists in this worktree environment (`zsh: command not found: pytest`). No test
 result is claimed. `ruff` reported no Python files for the Markdown target, so that invocation is
 also not treated as validation.
+
+**Round 2 verification commands:**
+
+```bash
+git rev-parse --verify 383b055^{commit}
+git log -1 --format='%H %ad %s' --date=iso-strict 383b055
+git diff --exit-code 383b055 -- docs/designs/stale-session-reaper.md
+git show 383b055:docs/designs/stale-session-reaper.md | nl -ba
+nl -ba docs/audits/stale-session-reaper-audit.md
+nl -ba src/ai_cli/session_script.py
+nl -ba src/ai_cli/process_probe.py
+nl -ba src/ai_cli/process_manager.py
+git diff --exit-code 383b055 -- src/ai_cli/session_script.py src/ai_cli/process_probe.py src/ai_cli/process_manager.py
+rg -n 'sole authoritative marker|same generation token|generation_token|generation-conditional' docs/designs/stale-session-reaper.md
+rg -n '\b[Cc]riteria? [123]\b|\b[Cc]riterion [123]\b' docs/designs/stale-session-reaper.md
+sed -n '76,96p;139,159p;563,606p;666,669p' docs/designs/stale-session-reaper.md
+sed -n '447,460p;617,642p' src/ai_cli/session_script.py
+sed -n '84,88p;132,159p' docs/designs/stale-session-reaper.md
+sed -n '130,172p;229,247p;316,339p' src/ai_cli/process_probe.py
+sed -n '167,187p' docs/designs/stale-session-reaper.md
+git diff --check
+```
+
+The document-structure and ToC validators both passed after the Round 2 append.
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
 
