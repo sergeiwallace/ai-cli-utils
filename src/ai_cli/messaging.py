@@ -17,10 +17,8 @@ STREAM_CONFIG = {
     "memory": ["memory.>"],
     "quota": ["quota.>"],
     "telemetry": ["telemetry.>"],
-    "handoff-archive": ["handoff-archive.>"],
     "task": ["task.>"],
     "health": ["health.>"],
-    "handoff": ["handoff.>"],
 }
 
 

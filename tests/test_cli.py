@@ -122,14 +122,15 @@ class TestCliDispatch:
                         cli()
                     assert exc.value.code == 0
 
-    def test_cli_when_handoff_check_then_calls_check_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "check"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.check_handoff") as mock_check:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_check.assert_called_once()
+    def test_cli_when_handoff_is_retired_then_exits_1_with_guidance(self, capsys):
+        with patch("sys.argv", ["ai", "handoff", "post", "example"]):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "retired" in stderr
+        assert "archive/" in stderr
 
     def test_cli_when_memory_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "memory"]):
@@ -304,47 +305,6 @@ class TestCliDispatch:
                     assert subject == "test.topic"
                     assert payload == {"key": "val"}
 
-    def test_cli_when_handoff_post_then_calls_post_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "post", "--for-machine", "hetzner", "title", "P1", "proj", "msg"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.post_handoff") as mock_post:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_post.assert_called_once_with("title", "P1", "proj", "msg", for_machine="hetzner")
-
-    def test_cli_when_handoff_post_without_for_machine_then_exits_1(self):
-        with patch("sys.argv", ["ai", "handoff", "post", "title", "P1", "proj", "msg"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-                assert exc.value.code == 1
-
-    def test_cli_when_handoff_claim_then_calls_claim_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "claim", "/tmp/file.md"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.claim_handoff") as mock_claim:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_claim.assert_called_once_with("/tmp/file.md")
-
-    def test_cli_when_handoff_complete_then_calls_complete_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "complete", "/tmp/file.md"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.complete_handoff") as mock_complete:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_complete.assert_called_once_with("/tmp/file.md")
-
-    def test_cli_when_handoff_no_subcommand_then_exits_1(self):
-        with patch("sys.argv", ["ai", "handoff"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-                assert exc.value.code == 1
-
     def test_cli_when_sync_pull_then_calls_sync_pull(self):
         with patch("sys.argv", ["ai", "sync", "pull"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -460,22 +420,6 @@ class TestCliDispatch:
                         assert exc.value.code == 0
         output = capsys.readouterr().out
         assert "-p mp" in output
-
-    def test_cli_when_handoff_check_project_then_calls_function(self, capsys):
-        with (
-            patch("sys.argv", ["ai", "handoff", "check-project", "myapp"]),
-            patch("ai_cli.handoff.check_handoff_project") as mock_check,
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-        mock_check.assert_called_once_with("myapp")
-
-    def test_cli_when_handoff_check_project_no_args_then_exits(self):
-        with patch("sys.argv", ["ai", "handoff", "check-project"]):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 1
 
 
 class TestCliDispatchBranches:
@@ -1946,25 +1890,13 @@ class TestEngineScriptProjectName:
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="ai-cli-utils")
         assert 'project_name="ai-cli-utils"' in script
 
-    def test_get_engine_script_when_project_name_empty_then_signal_watch_not_started(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="")
-        assert 'project_name=""' in script
-
-    def test_get_engine_script_signal_watch_uses_project_name(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="my-project")
-        assert 'ai signal-watch start "$project_name"' in script
-
-    def test_get_engine_script_exit_trap_cleans_caught_file(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
-        assert "handoff-caught-$tmux_session" in script
-
     def test_get_engine_script_exit_trap_cleans_session_metadata(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
         assert "session-meta-$tmux_session.json" in script
 
-    def test_get_engine_script_while_loop_logs_handoff_pickup(self):
+    def test_get_engine_script_when_generated_then_has_no_handoff_integration(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
-        assert "handoff.while_loop_pickup" in script
+        assert "handoff" not in script
 
 
 # --- Deploy / update ---
@@ -2635,42 +2567,6 @@ class TestAutoUpdateIfStale:
         stamp = tmp_path / "last_update_commit.txt"
         assert stamp.exists()
         assert stamp.read_text().strip() == "deadbeef"
-
-
-# --- signal-watch CLI dispatch ---
-
-
-class TestSignalWatchCliDispatch:
-    def test_cli_signal_watch_start_dispatches(self, tmp_path):
-        with (
-            patch("sys.argv", ["ai", "signal-watch", "start", "myproject", "c-sw-1"]),
-            patch("ai_cli.process_manager._cmd_signal_watch_start") as mock_start,
-            patch("ai_cli.config.load_config", return_value={}),
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-        mock_start.assert_called_once_with("myproject", "c-sw-1")
-
-    def test_cli_signal_watch_stop_dispatches(self, tmp_path):
-        with (
-            patch("sys.argv", ["ai", "signal-watch", "stop", "c-sw-1"]),
-            patch("ai_cli.process_manager._cmd_signal_watch_stop") as mock_stop,
-            patch("ai_cli.config.load_config", return_value={}),
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-        mock_stop.assert_called_once_with("c-sw-1")
-
-    def test_cli_signal_watch_missing_args_exits_1(self):
-        with (
-            patch("sys.argv", ["ai", "signal-watch"]),
-            patch("ai_cli.config.load_config", return_value={}),
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 1
 
 
 # --- Tunnel tests ---

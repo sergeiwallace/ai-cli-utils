@@ -29,7 +29,7 @@ source: internal
 
 ## Overview
 
-NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messaging — heartbeats, session events, handoff delivery, and sync notifications. If NATS is not running, all NATS-dependent features degrade gracefully: connection failures are logged and the tool continues operating with file-based fallbacks.
+NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messaging — heartbeats, session events, quota snapshots, and sync notifications. If NATS is not running, all NATS-dependent features degrade gracefully: connection failures are logged and the tool continues operating with file-based fallbacks.
 
 ---
 
@@ -37,7 +37,6 @@ NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messa
 
 | Feature | What it does |
 |---------|-------------|
-| `ai handoff` real-time delivery | Handoffs posted via NATS are received immediately by `signal-watch` without polling |
 | `ai sync watch` | Listens for sync events (`sync.push`, `sync.pull`) to trigger automatic sync |
 | `ai memory watch` | Publishes `dream.started`/`dream.completed` events to coordinate sync pausing |
 | `ai quota watch` | Subscribes to `quota.*` events to track Claude token usage across sessions |
@@ -49,7 +48,6 @@ NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messa
 ## Features That Work Without NATS
 
 - `ai c` / `ai g` session management
-- `ai handoff post/check/claim/complete` (file-based queue always works)
 - `ai sync push/pull` (direct rsync/SSH, no NATS required)
 - `ai tunnel start/stop/status`
 - `ai gemini`
@@ -120,7 +118,7 @@ nats_servers = ["nats://server1:4222", "nats://server2:4222"]
 
 ## Enabling JetStream
 
-`ai-cli-utils` uses NATS JetStream for durable message delivery (handoffs, sync events). JetStream must be enabled on your NATS server.
+`ai-cli-utils` uses NATS JetStream for durable message delivery (sync and quota events). JetStream must be enabled on your NATS server.
 
 Start with JetStream:
 
@@ -240,6 +238,6 @@ nats-server --jetstream --addr 0.0.0.0
 nats_servers = ["nats://your-server-ip:4222"]
 ```text
 
-This enables cross-machine handoff delivery and session event coordination between your local and remote CC sessions.
+This enables session event coordination and other fleet messaging between your local and remote CC sessions.
 
 > **Security note:** NATS by default has no authentication. For a public-facing server, configure TLS and authentication. See https://docs.nats.io/running-a-nats-service/configuration/securing_nats for details. For home/private network use, the default open config is fine.

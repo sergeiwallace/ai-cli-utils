@@ -201,8 +201,7 @@ def get_engine_script(
       _supervisor_cleanup() {{
         [[ -n "$_heartbeat_pid" ]] && kill "$_heartbeat_pid" 2>/dev/null || true
         ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
-        ai signal-watch stop "$tmux_session" &>/dev/null
-        rm -f "$_ai_state_dir/handoff-caught-$tmux_session" "$_ai_state_dir/session-meta-$tmux_session.json" \\
+        rm -f "$_ai_state_dir/session-meta-$tmux_session.json" \\
           "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session"
         ai internal cleanup-worktree "$ai_name" 2>/dev/null
         ai internal release-color-slot "$ai_name" 2>/dev/null
@@ -359,7 +358,7 @@ def get_engine_script(
     tmux_session="{session}"
     # If this script was exec'd by hot-reload, AI_SESSION_STARTED is set in the tmux
     # env — skip first-run-only setup so CC relaunches cleanly without re-running
-    # handoff drain, iTerm2 fleet wait, or session-broker on each auto-restart.
+    # iTerm2 fleet wait, or session-broker on each auto-restart.
     if [[ "$(tmux show-environment -t "$tmux_session" AI_SESSION_STARTED 2>/dev/null)" == "AI_SESSION_STARTED=1" ]]; then
       first_run=false
     fi
@@ -400,7 +399,6 @@ def get_engine_script(
       prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"
     fi
     lock_file="$_ai_state_dir/ai-watcher-lock-$tmux_session"
-    handoff_pending_file="$_ai_state_dir/handoff-pending-$tmux_session"
     config_hash_file="$_ai_state_dir/config-hash-$tmux_session"
     config_changed_file="$_ai_state_dir/config-changed-$tmux_session"
     _config_reload_idle_secs={config_reload_idle_secs}
@@ -426,7 +424,6 @@ def get_engine_script(
     export AI_TMUX_SESSION="$tmux_session"
     export {env_var_prefix}_TMUX_SESSION="$tmux_session"
     watcher_pid=""
-    signal_watch_pid=""
 
     start_watcher() {{
       if [[ -n "$watcher_pid" ]]; then
@@ -556,12 +553,6 @@ def get_engine_script(
     ai sync watch &>/dev/null &
     ai memory watch &>/dev/null &
 
-    # Auto-start signal-watch for handoff auto-pickup (only for cc engine)
-    if [[ "$engine" == "c" && -n "$project_name" ]]; then
-      ai signal-watch start "$project_name" "$tmux_session" &>/dev/null
-      signal_watch_pid=""
-    fi
-
     # Auto-start quota-watch (idempotent — circusd skips if already registered).
     # Gated on [quota_watch] auto_start in config.toml (default off — see config.py).
     ai quota watch start --auto 2>/dev/null || true
@@ -682,13 +673,6 @@ def get_engine_script(
         timeout 20 python3 scripts/session-broker.py --engine "$engine" &>/dev/null &
       fi
 
-      # On first run: synchronously drain local queue + NATS before launching CC.
-      # Writes prompt_file if a pending handoff exists (local or cross-machine via NATS).
-      # CC then resumes the matching task — zero user input required.
-      if $first_run && [[ "$engine" == "c" && -n "$project_name" && ! -f "$prompt_file" ]]; then
-        timeout 8 ai internal handoff-drain "$project_name" "$tmux_session" 2>/dev/null || true
-      fi
-
       # Pre-launch settings override. Some Claude Code feature checks resolve
       # once, very early in process startup, before a same-process settings
       # change (e.g. one written by a SessionStart hook) can influence them.
@@ -806,13 +790,6 @@ with open(path, 'w') as f:
         break
       fi
       _iterm2_status "resuming" "$_session_type" "$tmux_session"
-      if [[ -f "$handoff_pending_file" ]]; then
-        pending_msg=$(cat "$handoff_pending_file")
-        rm -f "$handoff_pending_file"
-        echo "$pending_msg" > "$prompt_file"
-        printf '{{"event":"handoff.while_loop_pickup","session":"%s","ts":%s}}\n' \
-          "$tmux_session" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
-      fi
       # Self-update: if ai-cli was reinstalled/updated, exec a fresh template so new
       # changes take effect on this restart. exec replaces only this bash process
       # inside the tmux window; mosh connects to the tmux session (not this PID).

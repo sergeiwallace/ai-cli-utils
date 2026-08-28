@@ -279,11 +279,10 @@ def _strip_git_targeting_env_vars(monkeypatch):
 def _no_real_nats_connections(request, monkeypatch):
     """Never let a test open a real NATS connection (AI-CLI-121 class).
 
-    ``post_handoff`` and the fleet event publishers are fire-and-forget: they build a
-    ``NATSClient`` and ``asyncio.run(...)`` a publish, wrapped in ``except Exception:
-    pass``.  That swallows a *failure* but cannot shorten a *hang*, so on any machine with
-    no NATS server six handoff tests blocked until the suite's timeout killed them —
-    exercising the network instead of the file-writing behaviour they assert.
+    Fleet event publishers are fire-and-forget: they build a ``NATSClient`` and
+    ``asyncio.run(...)`` a publish, wrapped in ``except Exception: pass``. That
+    swallows a *failure* but cannot shorten a *hang*, so tests must not exercise
+    the network instead of their intended behavior.
 
     The block is applied to ``nats.connect`` -- the actual network boundary -- rather than
     to ``NATSClient.connect``. Overriding the latter would also neutralise the many tests

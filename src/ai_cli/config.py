@@ -248,7 +248,7 @@ stale_after_seconds = 600
 nats_servers = ["nats://localhost:4222"]
 
 [machine]
-## Identifier for this machine. Used to target handoffs to a specific host.
+## Identifier for this machine.
 ## Auto-detected from AI_HOST env var, then hostname; set manually to override.
 ## Example values: "mac", "hetzner", "work-laptop", "acn-windows"
 # host_id = ""
@@ -876,13 +876,6 @@ def _get_project_registry_path() -> Path | None:
     name = _get_main_project_name()
     path = main_dir / f"{name}.toml"
     return path if path.exists() else None
-
-
-def _get_handoff_queue_dir() -> Path | None:
-    main_dir = _get_main_project_dir()
-    if main_dir is None:
-        return None
-    return main_dir / ".handoff-queue"
 
 
 # --- Project Registry (cached, validated) ---

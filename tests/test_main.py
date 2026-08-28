@@ -10,15 +10,12 @@ from ai_cli.main import (
     _assign_iterm2_color_slot,
     _auto_update_if_stale,
     _bare_engine_command,
-    _cmd_signal_watch_start,
-    _cmd_signal_watch_status,
     _cmd_tunnel_start,
     _cmd_tunnel_status,
     _cmd_tunnel_stop,
     _find_aicli_project_path,
     _installed_source_fingerprint,
     _load_iterm2_config,
-    _log_handoff_event,
     _migrate_xdg_dir,
     _release_iterm2_color_slot,
     _resolve_is_remote,
@@ -483,9 +480,6 @@ class TestGetEngineScript:
         assert 'find "$HOME/.claude/projects' not in script
 
 
-# --- Group 8: _log_handoff_event OSError ---
-
-
 def test_given_pi_bare_launch_when_not_resuming_then_starts_named_session():
     command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [])
 
@@ -584,15 +578,6 @@ def test_given_codex_missing_from_path_when_launching_then_reports_codex(capsys)
 
     assert exc_info.value.code == 1
     assert "codex executable not found" in capsys.readouterr().err
-
-
-class TestLogHandoffEvent:
-    def test_when_log_file_write_raises_then_suppressed(self, tmp_path):
-        with (
-            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("builtins.open", side_effect=OSError("disk full")),
-        ):
-            _log_handoff_event("test.event", session="session-1")
 
 
 # --- Group 9: _find_aicli_project_path ---
@@ -802,50 +787,6 @@ class TestCmdTunnelStatus:
         assert not pid_file.exists()
 
 
-# --- Group 14: _cmd_signal_watch_start / _cmd_signal_watch_status ---
-
-
-class TestCmdSignalWatchStart:
-    def test_when_start_called_then_autostart_not_in_options(self, tmp_path):
-        """B-04: autostart is invalid for Circus add — was silently failing watcher registration."""
-        mock_client = MagicMock()
-        mock_client.send_message.return_value = {"status": "ok"}
-        with (
-            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
-            patch("circus.client.CircusClient", return_value=mock_client),
-        ):
-            _cmd_signal_watch_start("myproject", "session-1")
-        call_kwargs = mock_client.send_message.call_args_list[-1][1]
-        options = call_kwargs.get("options", {})
-        assert "autostart" not in options
-        assert call_kwargs.get("start") is True
-
-    def test_when_start_called_then_respawn_false(self, tmp_path):
-        mock_client = MagicMock()
-        mock_client.send_message.return_value = {"status": "ok"}
-        with (
-            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
-            patch("circus.client.CircusClient", return_value=mock_client),
-        ):
-            _cmd_signal_watch_start("myproject", "session-1")
-        call_kwargs = mock_client.send_message.call_args_list[-1][1]
-        assert call_kwargs["options"]["respawn"] is False
-
-
-class TestCmdSignalWatchStatus:
-    def test_when_no_sw_watchers_then_prints_no_processes(self, tmp_path, capsys):
-        mock_client = MagicMock()
-        mock_client.send_message.return_value = {"statuses": {"other-watcher": "active"}}
-        with (
-            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
-            patch("circus.client.CircusClient", return_value=mock_client),
-        ):
-            _cmd_signal_watch_status()
-        assert "No signal-watch processes running" in capsys.readouterr().out
-
-
 # --- Group 15: CLI dispatch tests ---
 
 
@@ -974,30 +915,6 @@ class TestCliDispatchExtended:
 
     def test_when_tunnel_unknown_action_exits_1(self):
         exit_code, _, _ = run_cli(["ai", "tunnel", "unknown"])
-        assert exit_code == 1
-
-    def test_when_signal_watch_start_missing_args_exits_1(self):
-        exit_code, _, _ = run_cli(["ai", "signal-watch", "start"])
-        assert exit_code == 1
-
-    def test_when_signal_watch_stop_missing_arg_exits_1(self):
-        exit_code, _, _ = run_cli(["ai", "signal-watch", "stop"])
-        assert exit_code == 1
-
-    def test_when_signal_watch_status_dispatches(self):
-        with (
-            patch("sys.argv", ["ai", "signal-watch", "status"]),
-            patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.process_manager._cmd_signal_watch_status") as mock_status,
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-            mock_status.assert_called_once()
-
-    def test_when_signal_watch_unknown_action_exits_1(self):
-        exit_code, _, _ = run_cli(["ai", "signal-watch", "bad"])
         assert exit_code == 1
 
     def test_when_copier_update_with_project_flag_then_dispatches(self, tmp_path):
