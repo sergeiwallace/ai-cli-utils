@@ -45,6 +45,7 @@ template_version: "design-1.0.0"
   - [D-7: Session-instance identity](#d-7)
   - [D-8: Final reap fence](#d-8)
   - [D-9: Staleness clock](#d-9)
+  - [D-10: Wrapper process topology](#d-10)
 - [Open Questions](#open-questions)
 - [Approval Log](#approval-log)
 
@@ -73,15 +74,21 @@ In `reap` mode, the reaper may terminate only after both of these conditions hol
 
 This is conjunctive, not a score. A generation mismatch, missing token, or unreadable token on either side preserves the session. A live process with a stale heartbeat, an ended process with a fresh heartbeat, a missing/malformed record, a boot-generation mismatch, unavailable monotonic clock or boot identity, an invalid PID, an empty pane list, a pane or process identity mismatch, an exception, or an unreadable tmux/state response is ineligible. `observe` mode runs exactly this predicate but never kills.
 
-A usable record additionally proves one uninterrupted lease epoch for its generation: the wrapper-supervised lease holder has acquired and verified the generation's exclusive lease before it writes the record, retains it while the wrapper remains live, and revokes the record while still holding the lease before any known loss of continuity. The holder is the one OS-lock owner and the only component that may authorise usable ledger writes; heartbeat subprocesses request writes from it and cannot acquire, release, or substitute for the lifetime lease. A record is unusable if the holder, its authenticated control channel, or its ownership verification is unavailable. This avoids relying on undocumented descriptor inheritance behavior.
+A usable record additionally proves one uninterrupted lease epoch for its generation: the tmux pane-leader supervisor acquired and verified the generation's exclusive OS lease before it wrote its first usable record and has held that lease continuously ever since. The supervisor is the sole lease holder and the process whose liveness the reaper is deciding. A record is authoritative exactly while that supervisor lives: at any instant, failed exclusive acquisition proves the supervisor still holds its lease; successful acquisition proves the supervisor is gone, after which retained evidence must still pass the stale-heartbeat and matching-process-state gates. There is no holder process, adoption protocol, control channel, or lease transfer. If acquisition or verification is unavailable, the supervisor writes no usable evidence and the reaper preserves the session.
 
 ### Periodic execution and lifecycle
 
 The package will provide a session-reaper management command group with `start`, `stop`, `status`, and hidden/internal `run` commands, following the existing Circus watcher pattern. `start` idempotently registers one `stale-session-reaper` watcher with the existing local Circus daemon. `run` evaluates once, sleeps 60 seconds, and repeats. A malformed candidate or exception while evaluating a candidate preserves and logs that candidate, skips its remaining work for this interval, and continues with the next candidate (or completes normally if none remain). A kill that completed all its lease-held checks for an earlier candidate is not rolled back or otherwise affected by a later candidate failure.
 
-At heartbeat-watcher startup, the wrapper starts one generation-scoped lease-holder process. The holder acquires and verifies the exclusive lease, acknowledges readiness to the wrapper, and only then accepts the first usable heartbeat write. The holder owns the lock handle for the wrapper generation; the wrapper supervises its control channel and the holder alone performs generation-conditional record writes and revocation. On normal wrapper exit, the holder first deletes or marks unusable its exact-generation record, acknowledges that revocation, and only then releases the lease. If controlled shutdown, the control channel, or adoption fails, the holder must revoke the usable record while it still owns the lease; if that cannot be proved, no usable record may be left or written. An abrupt wrapper or holder crash releases the OS lease automatically and stops further evidence writes; any retained record is evaluated only by the normal stale-heartbeat and full revalidation gates, never as proof that a live wrapper still owns the lease.
+At session creation, tmux starts one stable supervisor as the pane leader. It creates the generation token, writes it once to tmux metadata, acquires and verifies the exclusive generation lease, and only then starts its heartbeat-publishing loop and writes the first usable record. The supervisor keeps the lease for its own process lifetime. The current `start_watcher()` heartbeat tick is moved into this one supervisor loop and is never restarted per agent attempt; its non-heartbeat monitoring behavior is retained under the same supervisor rather than becoming a lease-owning process. On normal supervisor exit, it revokes only its exact-generation record before releasing the lease. If the supervisor crashes, the OS releases its lease immediately; a retained record is not evidence of a live session and can authorize reap only after the ordinary stale-heartbeat, process-identity, and lease-held revalidation gates. No second process can survive in a different lease state.
 
-The generated wrapper currently has three direct self-`exec` transitions: stable-script hot reload and the refreshed-script and stable-script branches of self-update. The holder remains the owner through an `exec` only after the replacement script completes an authenticated adoption handshake for the same wrapper generation and the holder verifies that it still owns the lease. It must suspend heartbeat writes during that handshake. This protocol deliberately makes no claim that a POSIX file descriptor or any Windows lock handle survives `exec`; supported lock backends must prove the holder/control-channel behavior in real subprocess tests. If adoption cannot be completed, the holder must revoke the generation's usable record before releasing its lease; the replacement must acquire a fresh verified holder before it may write a usable record. Before an eligible `reap` candidate receives its final gate pass, the reaper attempts to acquire that same generation-bound lease exclusively and non-blockingly. If the lease is already held, cannot be acquired, cannot be verified, or its record/control state is ambiguous, the candidate is preserved for this cycle and is not retried during the same pass. The reaper holds its lease through the final gate pass and the `tmux kill-session` attempt, then releases it whether the kill succeeds or fails.
+The existing full wrapper body becomes an executable child body. The supervisor detects a changed stable-script mtime before each spawn and the existing version/commit mismatch after a child exits. Instead of any of the three direct self-`exec` sites, it forks and execs the selected fresh script in an internal child-body mode, waits for it to exit, then rechecks update conditions before the next spawn. The child retains the current body behavior: `direnv exec` agent launch, handoff-pending pickup, status/event publication, `first_run` behavior, and the existing fast-exit stop condition. In particular, a child whose agent exits in under three seconds makes the supervisor end the session just as the current outer loop breaks; a later ordinary exit causes the existing resume/restart behavior and a new child. A child crash or exit never releases the supervisor's lease and therefore cannot create a free-lease/live-supervisor state.
+
+The supervisor code is deliberately small and stable: generation/lease setup, heartbeat scheduling and record publication, child spawn/wait, update detection, signal relay, and final cleanup. Changes to that supervisor code cannot be made live by the child-script hot-reload or self-update path; they take effect only for newly created sessions. This is an accepted tradeoff: self-replacing the lease owner would recreate the discontinuity this topology removes. Retaining the old self-`exec` mechanism for supervisor updates is rejected because it would make the pane PID and lease lifetime ambiguous again; a future supervisor update mechanism would require a separately designed, tested generation rollover, not an implicit `exec`.
+
+The child does not become a separate process-group leader: the generated-shell supervisor keeps job control disabled and runs the child in the pane's existing foreground process group. That lets the supervisor multiplex heartbeat ticks and child-exit checks directly while the child can read the same terminal. Interactive Ctrl-C and terminal resize therefore arrive directly at both foreground processes; the supervisor's `SIGINT`/`SIGWINCH` traps record the interruption without relaying it, so the child receives one terminal-delivered signal. For a signal addressed specifically to the supervisor, its `SIGTERM`, `SIGINT`, or `SIGWINCH` trap forwards one copy to the child PID; the child-body signal trap must relay that copy to its currently active agent process before exiting or resuming its normal signal behavior. The supervisor waits for child termination before final cleanup. The supervisor alone owns the existing side-effecting EXIT cleanup (watcher and signal-watch shutdown; lock, handoff, metadata, and configuration-file removal; worktree and color-slot release; session-file cleanup) plus exact-generation record revocation. The child performs none of that final cleanup, preventing duplicate release or deletion after each ordinary restart. This shared-process-group plan is an implementation-time portability risk: the generated template currently prefers zsh and falls back to Bash, so zsh/Bash background-job behavior, tmux controlling-terminal behavior, and relay delivery through `direnv exec` must be verified with real tmux subprocess tests on supported macOS, Linux, and WSL environments. If that verification cannot establish interactive input, one-delivery Ctrl-C, resize propagation, and supervisor-addressed signal forwarding, the implementation must preserve the session and disable reap evidence on that platform rather than silently use an unverified signal model. Native Windows without the tmux/shell runtime is outside this wrapper path.
+
+Before an eligible `reap` candidate receives its final gate pass, the reaper attempts to acquire that same generation-bound lease exclusively and non-blockingly. If the lease is held, cannot be acquired, or cannot be verified, the candidate is preserved for this cycle and is not retried during the same pass. The reaper holds its lease through the final gate pass and the `tmux kill-session` attempt, then releases it whether the kill succeeds or fails.
 
 No session creation, resume, attach, `cleanup_stale_sessions()`, or `ai c`/`ai p`/`ai g`/`ai cx` path may call `start`, `run`, or the evaluator. The operator starts the watcher separately. A launch therefore cannot synchronously evaluate or terminate another session.
 
@@ -97,9 +104,9 @@ After a successful kill, the worker may remove its ledger record only after tmux
 
 ### Heartbeat recording
 
-The generated session wrapper already invokes `ai internal publish-heartbeat` about every 30 seconds. At session start, it writes its generation token once to the tmux user option. It then starts and receives a verified-ready acknowledgement from the generation-scoped lease holder before the holder writes its first usable heartbeat record; the token is immutable for that session instance. The internal command validates its JSON, requests a holder-authorised atomic local-ledger write, and then retains its current best-effort messaging publication. Message delivery, retention, and consumers never authorize a local reap.
+The supervisor publishes a heartbeat about every 30 seconds. At session start, it writes its generation token once to the tmux user option, acquires and verifies its lease, and only then writes its first usable heartbeat record; the token is immutable for that session instance. The supervisor validates the heartbeat payload and performs its generation-conditional atomic local-ledger write only while its own lease remains verified, then retains the current best-effort messaging publication. Message delivery, retention, and consumers never authorize a local reap.
 
-Each periodic heartbeat write refreshes the ledger's boot generation and monotonic timestamp; `recorded_at` remains a wall-clock field solely for operator-log readability. A generation-conditional ledger operation must refuse to replace or delete a record belonging to a different generation, and the holder must refuse a write if it cannot verify its lease, its control channel, or the token's current tmux metadata. The holder makes the XDG state directory with `pathlib`, writes and flushes a complete temporary file in that directory, then atomically replaces the final file. This guarantees atomically visible complete-file reads, not crash durability: where storage cannot establish durability, a record surviving a crash is not guaranteed. The safety protocol tolerates that loss or staleness by preserving the session and waiting for a fresh heartbeat, never by granting reap authority. After valid JSON is accepted, a local ledger-write failure is non-fatal: it logs the local failure, still attempts the existing best-effort `publish_heartbeat` call, exits non-fatally, and creates no reap authority. Logs use reason codes such as `heartbeat_missing`, `heartbeat_invalid`, `heartbeat_boot_mismatch`, `heartbeat_not_stale`, `generation_mismatch`, `lease_unavailable`, `lease_adoption_failed`, `pid_invalid`, `process_unknown`, `process_identity_mismatch`, `process_live`, `tmux_read_failed`, `revalidation_failed`, and `mode_observe`; they contain no prompt or agent content.
+Each periodic heartbeat write refreshes the ledger's boot generation and monotonic timestamp; `recorded_at` remains a wall-clock field solely for operator-log readability. A generation-conditional ledger operation must refuse to replace or delete a record belonging to a different generation, and the supervisor must refuse a write if it cannot verify its lease or the token's current tmux metadata. It makes the XDG state directory with `pathlib`, writes and flushes a complete temporary file in that directory, then atomically replaces the final file. This guarantees atomically visible complete-file reads, not crash durability: where storage cannot establish durability, a record surviving a crash is not guaranteed. The safety protocol tolerates that loss or staleness by preserving the session and waiting for a fresh heartbeat, never by granting reap authority. After valid JSON is accepted, a local ledger-write failure is non-fatal: it logs the local failure, still attempts the existing best-effort `publish_heartbeat` call, exits non-fatally, and creates no reap authority. Logs use reason codes such as `heartbeat_missing`, `heartbeat_invalid`, `heartbeat_boot_mismatch`, `heartbeat_not_stale`, `generation_mismatch`, `lease_unavailable`, `pid_invalid`, `process_unknown`, `process_identity_mismatch`, `process_live`, `tmux_read_failed`, `revalidation_failed`, and `mode_observe`; they contain no prompt or agent content.
 
 > **Feedback Round 1:** Does this approach feel right? What's missing?
 > - <enter feedback here>
@@ -129,7 +136,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 
 ## Integration
 
-`session_script.py` continues its existing heartbeat call, creates the generation token, writes it to `@ai_cli_session_generation`, and starts/supervises the generation-scoped lease holder. Its stable-script hot reload and both self-update `exec` branches must run the adoption protocol above; none may bypass it. The internal handler adds holder-authorised, generation-conditional ledger persistence before its best-effort message publication; a local write failure does not suppress that publication attempt. `process_probe.py` adds the public `ProcessIdentity` type and `capture_identity()` contract, implemented by both existing probe backends. Existing event publication is otherwise unchanged. `process_manager.py` gains Circus registration/removal helpers beside existing watchers, using the existing XDG state directory and package-resolved executable. `main.py` dispatches the management and internal run commands. The metadata option, rather than any session-name pattern, is the sole authoritative managed-session marker; this includes valid indexed, custom, hyphenated, local, remote, and `cx` session names.
+`session_script.py` is structurally split into a persistent pane-leader supervisor and an internal child-body entry point. The supervisor creates the generation token, writes `@ai_cli_session_generation`, holds the lease and heartbeat loop for the generation, and replaces all three direct wrapper self-`exec` sites with child fork/exec/wait cycles. The child body retains the agent/restart behavior while the supervisor survives stable-script and self-update cycles. The internal heartbeat handler adds supervisor-authorised, generation-conditional ledger persistence before its best-effort message publication; a local write failure does not suppress that publication attempt. `process_probe.py` adds the public `ProcessIdentity` type and `capture_identity()` contract, implemented by both existing probe backends. Existing event publication is otherwise unchanged. `process_manager.py` gains Circus registration/removal helpers beside existing watchers, using the existing XDG state directory and package-resolved executable. `main.py` dispatches the management and internal run commands. The metadata option, rather than any session-name pattern, is the sole authoritative managed-session marker; this includes valid indexed, custom, hyphenated, local, remote, and `cx` session names.
 
 `cleanup_stale_sessions()` remains unchanged in authority: it may list tmux names solely for orphaned background-spare cleanup and stale terminal-profile bookkeeping, but must not import/call the evaluator, start Circus, read heartbeat records, or invoke `tmux kill-session`. Conversely, the watcher must not call `cleanup_stale_sessions()`, background-spare cleanup, or terminal-profile cleanup. This prevents a scheduling overlap from granting launch-time code termination authority.
 
@@ -137,7 +144,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 
 ### Phase 1: Fail-closed evaluator
 
-- **Scope:** Implement local heartbeat persistence, generation-scoped lease-holder/adoption behavior in `src/ai_cli/session_script.py`, the public process-identity capture contract in `src/ai_cli/process_probe.py`, and a standalone evaluator, without any launch-path integration.
+- **Scope:** Implement local heartbeat persistence, the persistent supervisor/child wrapper split (including replacement of the three direct self-`exec` sites) in `src/ai_cli/session_script.py`, the public process-identity capture contract in `src/ai_cli/process_probe.py`, and a standalone evaluator, without any launch-path integration.
 - **Deliverables:**
   - Files created: `src/ai_cli/stale_session_reaper.py`, `tests/test_stale_session_reaper.py`.
   - Files modified: `src/ai_cli/main.py`, `src/ai_cli/session_script.py`, `src/ai_cli/process_probe.py`, `src/ai_cli/config.py`.
@@ -146,11 +153,11 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
     - [ ] When `ai internal publish-heartbeat` receives valid JSON for a generation-marked session, the system shall atomically persist a locally timestamped record containing the exact session name, generation token, current boot generation, and current monotonic timestamp before best-effort messaging publication.
     - [ ] When a valid local, remote, indexed, custom, hyphenated, `c`, `g`, `p`, or `cx` session is created with `@ai_cli_session_generation`, the system shall classify it as managed from that option and not from a session-name regex.
     - [ ] When a generation-marked session exits cleanly, the system shall remove only the ledger record with its exact generation token; if it crashes instead, any remaining record shall not authorize a session with a different token.
-    - [ ] When a wrapper starts, the system shall acquire and verify its generation-scoped lease holder before the holder writes any usable heartbeat record.
+    - [ ] When a supervisor starts, the system shall acquire and verify its generation-scoped lease before it writes its first usable heartbeat record.
     - [ ] If JSON is invalid, the generation token is missing or cannot be verified against tmux metadata, or the record cannot be written, then the system shall create no usable record and shall not terminate a tmux session.
-    - [ ] If the wrapper or holder cannot acquire, verify, supervise, or adopt its generation-bound lifetime lease, then the system shall create no usable heartbeat evidence and shall preserve the session.
-    - [ ] When the generated wrapper takes its stable-script hot-reload `exec` branch or either refreshed-script or stable-script self-update `exec` branch, the system shall suspend usable heartbeat writes until the holder verifies adoption for the same generation; if verification fails, it shall revoke that generation's usable record before releasing the lease.
-    - [ ] When a wrapper exits normally or its process crashes, the system shall respectively revoke its exact-generation usable record before releasing the lease, or release the OS lease automatically and prevent any further evidence writes; a retained crash record shall receive only the normal stale-heartbeat and full revalidation evaluation.
+    - [ ] If the supervisor cannot acquire or verify its generation-bound lifetime lease, then the system shall create no usable heartbeat evidence and shall preserve the session.
+    - [ ] When stable-script hot reload or either refreshed-script or stable-script self-update condition is detected, the system shall fork and exec a new child body, keep the same supervisor PID and lease, and recheck for updates after that child exits.
+    - [ ] When a supervisor exits normally, the system shall revoke only its exact-generation usable record before releasing the lease; if it crashes, the OS shall release that lease immediately and no process shall remain able to publish evidence for that generation.
     - [ ] If local ledger persistence fails after valid JSON is accepted, then the system shall log the local failure, still attempt the existing best-effort `publish_heartbeat` call, and exit non-fatally without creating reap authority.
   - **T-1.2 Corroborated evaluator**
     - [ ] When every pane leader is confirmed ended or zombie and a generation-matched current-boot heartbeat is older than the threshold, the system shall mark that exact session ID provisionally eligible for lease-held revalidation.
@@ -164,13 +171,20 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
   - **T-1.3 Revalidation**
     - [ ] When a candidate is eligible in `reap` mode and its generation-bound lease is acquired exclusively and non-blockingly, the system shall re-query its captured session ID, generation token, pane IDs, PIDs, and process identities and repeat both gates while holding the lease before `tmux kill-session -t <session-id>`.
     - [ ] If lease acquisition fails, its ID or token disappears/changes, a pane or process identity changes or is unavailable, it gains an unconfirmed pane, or either gate fails during revalidation, then the system shall issue no kill command and shall not retry the candidate in that pass.
-  - **T-1.4 Integrated safety regression coverage**
+  - **T-1.4 Supervisor/child lifecycle and terminal control**
+    - [ ] When the supervisor receives `SIGTERM`, `SIGWINCH`, or a programmatically delivered `SIGINT` while a child is live, the system shall forward one copy to the child and retain the supervisor until the child exits or the session is terminated.
+    - [ ] When a user presses Ctrl-C or the terminal resizes while the supervisor and child share the pane foreground process group, the system shall deliver the signal to the child without duplicate supervisor forwarding and shall preserve interactive terminal input.
+    - [ ] When a child exits or crashes after a non-fast agent run, the system shall recheck update conditions and spawn the next child while retaining the supervisor PID and continuous lease; when its agent exits in under three seconds, the system shall preserve the current whole-session stop behavior.
+    - [ ] If the supervisor crashes at any point after acquiring its lease, then the system shall release that lease immediately without requiring a second process to exit and shall prevent further heartbeat writes for that generation.
+    - [ ] If the shared foreground process group or signal relay cannot be established and verified on a supported tmux/zsh-or-Bash platform, then the system shall create no usable heartbeat evidence and shall preserve the session.
+  - **T-1.5 Integrated safety regression coverage**
     - [ ] When a real temporary heartbeat ledger, a generation token, and a generation-bound lease are exercised through controlled tmux and process adapters, the system shall issue exactly one ID-targeted kill only when both corroborating gates pass initially and during lease-held revalidation.
     - [ ] When a mutation or negative control removes either the process gate or the generation-matched heartbeat gate from that integrated round trip, the system shall issue zero kill commands.
     - [ ] When a pane is replaced, a PID is reused, a process identity changes, or a tokenless/foreign/renamed session lacks a fresh current-name heartbeat, the system shall preserve the candidate and issue zero kill commands.
-    - [ ] When real wrapper and reaper subprocesses exercise startup, each of the three direct self-`exec` branches, failed adoption, normal exit, holder/wrapper crash release, and a reaper racing each transition, the system shall prove the required record-before-release ordering and zero unauthorised kill attempts on every supported lock backend.
+    - [ ] When real supervisor, child, and reaper subprocesses exercise multiple stable-script and self-update cycles, the system shall prove one unchanged supervisor PID and one continuously held generation lease throughout, with zero unauthorised kill attempts on every supported lock backend.
+    - [ ] When real tmux/generated-shell subprocesses exercise terminal resize, Ctrl-C, supervisor-directed `SIGTERM`, normal child exit, child crash, and supervisor crash, the system shall prove the specified child delivery, restart/stop parity, immediate crash release, and zero unauthorised kill attempts on every supported platform.
     - [ ] When `ProcfsProbe` and `PsutilProbe` capture a process identity, the system shall expose the documented backend-specific typed value; when either backend cannot capture it or a controlled PID-reuse case changes it, the evaluator shall preserve the candidate.
-  - **Exit gate:** Integrated real-temporary-ledger, generation-token, lease, and process-identity round trips plus controlled tmux/process adapters prove the positive and mutation-negative controls; real subprocess tests prove startup ordering, all three self-`exec` paths, failed adoption, normal exit, crash release, and reaper races on every supported lock backend; `pytest tests/test_stale_session_reaper.py -q` and focused `ruff check` pass; fresh-context review confirms no launch path calls the evaluator.
+  - **Exit gate:** Integrated real-temporary-ledger, generation-token, lease, and process-identity round trips plus controlled tmux/process adapters prove the positive and mutation-negative controls; real supervisor/child/reaper subprocess tests prove startup ordering, signal and terminal behavior, multiple update cycles with one continuous lease, normal/fast child exit parity, supervisor crash release, and reaper races on every supported lock backend; `pytest tests/test_stale_session_reaper.py -q` and focused `ruff check` pass; fresh-context review confirms no launch path calls the evaluator.
 
 ### Phase 2: Circus lifecycle and rollout
 
@@ -220,9 +234,10 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 | 10 | Phase 1 integrated positive, mutation-negative, lease, and pane/process-identity ACs are covered | - [ ] | |
 | 11 | Phase 2 start/stop/status/run success and failure ACs are covered | - [ ] | |
 | 12 | Phase 1 publication-parity and Phase 2 public-documentation correction ACs are covered | - [ ] | |
-| 13 | Lease holder acquires before first usable evidence and proves/fails closed across all three wrapper self-`exec` transitions | - [ ] | |
+| 13 | Supervisor acquires before first usable evidence and replaces all three wrapper self-`exec` transitions with child cycles | - [ ] | |
 | 14 | `ProcessProbe.capture_identity()` has typed Procfs/Psutil implementations and UNKNOWN/mismatch preservation coverage | - [ ] | |
 | 15 | Candidate-local exceptions preserve only the failed candidate and do not roll back earlier authorised kills | - [ ] | |
+| 16 | D-10 keeps one pane-leader supervisor and continuous lease through child update cycles, signal forwarding, and crash release | - [ ] | |
 
 **Audit completed:** <!-- YYYY-MM-DD — update when all items above are checked -->
 
@@ -230,10 +245,11 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 
 | # | Risk | Impact | Mitigation |
 |---|------|--------|------------|
-| 1 | The exact liveness false-positive trigger is unconfirmed; wrapper self-reload is only correlated. | A process reading could be transiently wrong. | Generation-bound ledger evidence, wrapper-held lease, final identity revalidation, immutable ID target, and observe-first rollout. |
+| 1 | The exact liveness false-positive trigger is unconfirmed; wrapper self-reload is only correlated. | A process reading could be transiently wrong. | Generation-bound ledger evidence, supervisor-held lease, final identity revalidation, immutable ID target, and observe-first rollout. |
 | 2 | Publisher or local storage fails. | Dead slot remains occupied. | Missing or non-durable data preserves; messaging does not substitute for the ledger. |
 | 3 | Prolonged host stall interrupts heartbeats. | Candidate could be observed incorrectly. | Ten-minute margin, all-pane ended gate, review observe logs, and revalidation. |
 | 4 | Circus is unavailable. | No eventual cleanup. | Existing daemon lifecycle, status command, restart supervision; never launch-time fallback. |
+| 5 | Shell/tmux terminal control differs across supported environments. | A child could lose input or receive a signal twice or not at all. | Require real tmux subprocess coverage for foreground process groups and signal relay under the preferred zsh and Bash fallback; without verified behavior, publish no usable evidence on that platform. |
 
 ## Design Decisions
 
@@ -250,6 +266,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 | D-7 | Session-instance identity | (a) generation token in tmux metadata and ledger, (b) tmux server generation plus session ID, (c) name-only records with clean-exit deletion | (a) | (a) | No | Binds all reap evidence and the managed marker to one session instance. | `Approved` |
 | D-8 | Final reap fence | (a) generation-bound lifetime lease plus exclusive final fence, (b) persistent two-phase claim with grace interval, (c) repeated probes and longer threshold | (a) | (a) | No | Prevents a live wrapper from publishing between final evidence read and kill. | `Approved` |
 | D-9 | Staleness clock | (a) same-boot monotonic time plus boot generation, (b) wall time plus discontinuity detector, (c) wall time only | (a) | (a) | No | Avoids wall-clock jumps and preserves after reboot until republished. | `Approved` |
+| D-10 | Wrapper process topology | (a) never-self-exec supervisor/child split, (b) separate lease holder with adoption | (a) | (a) | No | Makes the pane leader the one continuous lease owner and removes the adoption protocol. | `Approved` |
 
 ### Decision Details
 
@@ -585,13 +602,13 @@ The approved token binds destructive evidence to an instance rather than a namin
 ##### (a) Generation-bound lifetime lease plus exclusive final fence
 
 **Pros:**
-- A live or merely stalled wrapper retains an OS-managed lease continuously, so a false process probe cannot reach the kill.
-- Process crash releases the lease automatically; the reaper can hold an exclusive lease across the final read and kill.
+- A live or merely stalled pane-leader supervisor retains an OS-managed lease continuously, so a false process probe cannot reach the kill.
+- Supervisor crash releases the lease automatically; the reaper can hold an exclusive lease across the final read and kill.
 - Generation binding prevents an old reaper from fencing or deleting a newly recreated session.
 
 **Cons:**
-- The current once-per-30-second subprocess must become or acquire a wrapper-lifetime lease holder.
-- Cross-platform lock acquisition, inheritance, and crash-release behavior need non-mocked tests.
+- The wrapper must be restructured so its pane leader never self-replaces while holding the lease.
+- Cross-platform lock acquisition, crash-release, and terminal-control behavior need non-mocked tests.
 
 ##### (b) Persistent two-phase reap claim with a grace interval
 
@@ -619,7 +636,7 @@ The approved token binds destructive evidence to an instance rather than a namin
 <!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 <!-- decision-lineage: decision-id=stale-session-reaper/D-8; decision-topic=final-reap-fence; governs=artifact:generation-bound-lease-protocol; normalized-proposition=Require a generation-bound wrapper lifetime lease and reaper-held final exclusive fence; applicability=scope:reap-mode; outcome-id=generation-bound-lifetime-lease; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=stale-session-reaper/D-8; approval-actor=Sergei; approval-date=2026-08-28; approval-commit= -->
 
-The approved lease closes the last read-to-kill edge because a live wrapper holds the same generation's lease continuously. A dedicated lock adapter and non-mocked cross-platform subprocess tests mitigate the lifecycle and portability costs; any failure to acquire, inherit, or verify the lease preserves the session.
+The approved lease closes the last read-to-kill edge because a live pane-leader supervisor holds the same generation's lease continuously. The supervisor/child topology in D-10 removes `exec`-time lease transfer; dedicated lock and real tmux subprocess tests mitigate the remaining portability costs. Any failure to acquire or verify the lease preserves the session.
 
 ---
 
@@ -669,6 +686,44 @@ The approved clock makes wall-clock adjustments non-authoritative and assigns re
 
 ---
 
+<a id="d-10"></a>
+
+#### D-10: Wrapper process topology — ✅ Approved — (a) Never-self-exec supervisor/child split
+
+**Context.** The previous separate-holder design was introduced to keep a generation lease through the wrapper's three self-`exec` transitions. Round 3 showed that the split makes lease ownership and crash release contradictory, leaves ordinary watcher restart cardinality undefined, and requires an unspecified adoption authenticator.
+
+##### (a) Persistent pane-leader supervisor with replaceable child bodies
+
+**Pros:**
+- Exactly one process owns the generation lease from acquisition until session end, so supervisor crash and lease release have the same boundary.
+- Stable-script hot reload and both self-update paths replace only a child body; no adoption, control channel, or cross-`exec` lease continuity protocol exists.
+- The tmux pane PID remains the persistent supervisor PID, making the lease holder and pane-leader identity structurally identical.
+
+**Cons:**
+- Supervisor code changes do not take effect in existing sessions and require a new session generation.
+- The added terminal-control layer needs real tmux/Bash signal and foreground-process-group verification.
+
+##### (b) Separate lease-holder process with adoption handshake
+
+**Pros:**
+- The full wrapper body could continue self-`exec`-replacing while a second process retained the lease.
+- A dedicated helper could isolate lock operations from session-body changes.
+
+**Cons:**
+- N-4: holder-only and wrapper-only crashes contradict the claims that the holder owns the lock and either crash automatically releases it.
+- N-5: ordinary outer-loop heartbeat-watcher restarts leave holder cardinality, reuse, and orphan cleanup undefined.
+- N-6: the proposed authenticated adoption handshake specifies no authentication, replay protection, or single-adopter contract.
+
+##### Recommendation
+
+> **Decision:** ✅ Approved — (a) Never-self-exec supervisor/child split
+<!-- decision-record: chosen-option=(a); ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+<!-- decision-lineage: decision-id=stale-session-reaper/D-10; decision-topic=wrapper-process-topology; governs=artifact:generated-session-wrapper; normalized-proposition=Use one never-self-exec pane-leader supervisor to hold the generation lease while replaceable child bodies run session logic; applicability=scope:managed-tmux-sessions; outcome-id=supervisor-child-split; relation=supersedes; related-decision-id=stale-session-reaper/D-8; supersedes=artifact:separate-lease-holder-adoption-protocol; approval-log-decision-id=stale-session-reaper/D-10; approval-actor=Sergei; approval-date=2026-08-28; approval-commit= -->
+
+The approved topology makes the time-critical safety property a process-lifetime fact instead of a protocol claim. The cost is intentionally concentrated in a small supervisor that does not hot-reload; real subprocess tests must prove its lock and terminal behavior before it can publish usable evidence.
+
+---
+
 > **Feedback Round 1:** Your approval/feedback on each decision:
 > 1. D-1: <approval or feedback>
 > 2. D-2: <approval or feedback>
@@ -679,11 +734,12 @@ The approved clock makes wall-clock adjustments non-authoritative and assigns re
 > 7. D-7: <approval or feedback>
 > 8. D-8: <approval or feedback>
 > 9. D-9: <approval or feedback>
+> 10. D-10: <approval or feedback>
 > - <enter feedback here>
 
 ## Open Questions
 
-1. What exact runtime condition caused the prior pane-leader liveness observation to misidentify active wrappers as ended? Wrapper self-reload is correlated but unconfirmed. This does not block the design because generation-bound corroboration, a wrapper-held lease, and lease-held identity revalidation do not depend on that root cause being confirmed.
+1. What exact runtime condition caused the prior pane-leader liveness observation to misidentify active wrappers as ended? Wrapper self-reload is correlated but unconfirmed. This does not block the design because generation-bound corroboration, a supervisor-held lease, and lease-held identity revalidation do not depend on that root cause being confirmed.
 
 > **Feedback Round 1:** Your thoughts on the open questions:
 > 1. <enter feedback here>
@@ -702,6 +758,7 @@ The approved clock makes wall-clock adjustments non-authoritative and assigns re
 | 2026-08-28 | stale-session-reaper/D-7 | Sergei | Approved (a) random generation token in tmux metadata and ledger; matches the AI recommendation. |
 | 2026-08-28 | stale-session-reaper/D-8 | Sergei | Approved (a) generation-bound lifetime lease plus exclusive final fence; matches the AI recommendation. |
 | 2026-08-28 | stale-session-reaper/D-9 | Sergei | Approved (a) same-boot monotonic time plus boot generation; matches the AI recommendation. |
+| 2026-08-28 | stale-session-reaper/D-10 | Sergei | Approved (a) never-self-exec supervisor/child split; rejects the separate-holder/adoption topology after Round 3 findings N-4 through N-6. |
 
 <!-- /doc:region name="overview" -->
 
