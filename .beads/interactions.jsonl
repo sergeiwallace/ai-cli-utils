@@ -208,3 +208,4 @@
 {"id":"int-643c8d6ea8011843d7e111227ed73426","kind":"field_change","created_at":"2026-08-28T22:24:07.384431Z","actor":"T","issue_id":"AI-CLI-70q","extra":{"field":"status","new_value":"closed","old_value":"open"}}
 {"id":"int-0d62178422ee802bebb7db677b35b349","kind":"field_change","created_at":"2026-08-28T22:24:08.367162Z","actor":"T","issue_id":"AI-CLI-3b3","extra":{"field":"status","new_value":"closed","old_value":"open"}}
 {"id":"int-da1bf6c23953f547edbd1b1c0e3d3f99","kind":"field_change","created_at":"2026-08-28T22:24:09.309425Z","actor":"T","issue_id":"AI-CLI-0ay","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-887fcf6d14817df2e0d0ef7e31725d0d","kind":"field_change","created_at":"2026-08-28T22:28:27.256904Z","actor":"T","issue_id":"AI-CLI-fae.5","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
