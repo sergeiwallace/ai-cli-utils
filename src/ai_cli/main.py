@@ -1311,7 +1311,7 @@ def _handle_internal(argv: list[str]) -> None:
         sys.exit(0)
     elif action == "publish-heartbeat":
         if len(argv) < 3:
-            print("Usage: ai internal publish-heartbeat <session_id> <data_json>", file=sys.stderr)
+            print("Usage: ai internal publish-heartbeat <session_id> <data_json> [generation_token]", file=sys.stderr)
             sys.exit(1)
         import asyncio
 
@@ -1322,11 +1322,44 @@ def _handle_internal(argv: list[str]) -> None:
         except json.JSONDecodeError as e:
             print(f"Invalid JSON: {e}", file=sys.stderr)
             sys.exit(1)
+        # The wrapper supplies its generation token only after it has acquired its
+        # lifetime lease.  Local persistence is deliberately independent from the
+        # best-effort message publication below: a ledger failure must not suppress
+        # an existing heartbeat delivery attempt, and a tokenless caller gains no
+        # local reap evidence.
+        if len(argv) >= 4:
+            generation_token = argv[3]
+            try:
+                marker = subprocess.run(
+                    ["tmux", "show-options", "-t", argv[1], "-v", "@ai_cli_session_generation"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if marker.returncode != 0 or marker.stdout.strip() != generation_token:
+                    print("heartbeat ledger not written: generation_mismatch", file=sys.stderr)
+                else:
+                    from .stale_session_reaper import write_heartbeat
+
+                    if not write_heartbeat(_config.get_xdg_state_home(), argv[1], generation_token):
+                        print("heartbeat ledger not written: heartbeat_invalid", file=sys.stderr)
+            except Exception:
+                print("heartbeat ledger not written: heartbeat_invalid", file=sys.stderr)
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
         client = NATSClient(servers=nats_servers)
         # NATS unavailable — non-fatal
         with contextlib.suppress(Exception):
             asyncio.run(client.publish_heartbeat(argv[1], data))
+        sys.exit(0)
+    elif action == "revoke-heartbeat":
+        if len(argv) < 3:
+            print("Usage: ai internal revoke-heartbeat <session_id> <generation_token>", file=sys.stderr)
+            sys.exit(1)
+        from .stale_session_reaper import remove_heartbeat
+
+        # A clean supervisor exit may revoke only the record it created.  A failed
+        # revoke is intentionally non-fatal and cannot remove another generation.
+        remove_heartbeat(_config.get_xdg_state_home(), argv[1], argv[2])
         sys.exit(0)
     elif action == "publish-session-event":
         if len(argv) < 3:

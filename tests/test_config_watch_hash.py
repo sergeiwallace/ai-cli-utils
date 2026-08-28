@@ -96,6 +96,14 @@ def test_watch_files_line_covers_settings_json_and_mcp_json(watch_files_line):
     assert "$(pwd)/CLAUDE.md" in watch_files_line
 
 
+def test_given_child_body_when_monitoring_starts_then_its_config_baseline_is_reset(watch_files_line):
+    """Each replaceable child owns a fresh in-memory monitor baseline while the
+    persistent supervisor retains its generation lease and heartbeat loop."""
+    script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", worktree_dir="/tmp/wt")
+    assert "--ai-cli-child-body" in script
+    assert "cat $_config_watch_files 2>/dev/null | sha256sum" in script
+
+
 def test_editing_project_settings_json_changes_the_watch_hash(watch_files_line, fixture_tree):
     """The core regression: before this fix, editing .claude/settings.json's `env`
     block was invisible to the watcher (identical hash before/after) — the exact
