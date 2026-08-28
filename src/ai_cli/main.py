@@ -1309,6 +1309,25 @@ def _handle_internal(argv: list[str]) -> None:
         with contextlib.suppress(Exception):
             asyncio.run(client.publish_event(argv[1], argv[2]))
         sys.exit(0)
+    elif action == "acquire-generation-lease":
+        if len(argv) != 2:
+            print("Usage: ai internal acquire-generation-lease <file_descriptor>", file=sys.stderr)
+            sys.exit(1)
+        try:
+            import portalocker
+
+            descriptor = int(argv[1])
+            if descriptor < 0:
+                raise ValueError("file descriptor must be non-negative")
+            # The shell opened this descriptor and keeps its copy open after this
+            # short helper exits. `flock` locks belong to that shared open file
+            # description, so the shell remains the sole lifetime lease holder.
+            with os.fdopen(os.dup(descriptor), "a+") as lease_file:
+                portalocker.lock(lease_file, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except Exception as exc:
+            print(f"generation lease unavailable: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
     elif action == "publish-heartbeat":
         if len(argv) < 3:
             print("Usage: ai internal publish-heartbeat <session_id> <data_json> [generation_token]", file=sys.stderr)

@@ -254,7 +254,9 @@ class TestGetEngineScript:
         # that does not kills the pane on the session's first self-update.
         _shell = resolve_session_shell()
         assert _shell is not None and os.access(_shell, os.X_OK)
-        assert '"$_supervisor_script" --ai-cli-child-body &' in script
+        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        assert '"$_supervisor_script" --ai-cli-child-body &' not in script
+        assert "acquire-generation-lease" in script
         assert "exit 78" in script
         assert f'exec "{_shell}" "$_script_stable_path"' not in script
         assert "direnv denied or could not evaluate .envrc" in script
@@ -297,7 +299,7 @@ class TestGetEngineScript:
         assert "cd /tmp/project-worktree" in script
         assert script.index('direnv_root="$PWD"') > script.index("cd /tmp/project-worktree")
         assert script.count("run_agent gemini") == 4
-        assert "exec $SHELL" in script
+        assert '"$SHELL"; exit 79' in script
 
     def test_given_pi_engine_when_generating_script_then_launches_named_pi_session(self):
         script = get_engine_script(

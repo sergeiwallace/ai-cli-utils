@@ -1839,7 +1839,7 @@ class TestGetEngineScript:
 
     def test_get_engine_script_when_remote_then_execs_shell(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=True)
-        assert "exec $SHELL" in script
+        assert '"$SHELL"; exit 79' in script
 
     def test_get_engine_script_when_local_then_exits(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=False)
@@ -1858,7 +1858,8 @@ class TestGetEngineScript:
         # this host: a hardcoded one that does not kills the pane on reload.
         shell = resolve_session_shell()
         assert shell is not None and os.access(shell, os.X_OK)
-        assert '"$_supervisor_script" --ai-cli-child-body &' in script
+        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        assert '"$_supervisor_script" --ai-cli-child-body &' not in script
         assert "exit 78" in script
         assert f'exec "{shell}" "$_script_stable_path"' not in script
 

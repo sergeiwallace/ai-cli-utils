@@ -11,6 +11,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -226,6 +227,35 @@ def test_given_procfs_and_psutil_processes_when_identity_is_captured_then_values
     assert psutil_identity != procfs_identity
 
 
+def test_given_shell_held_descriptor_when_python_lock_helper_exits_then_lease_remains_held(tmp_path: Path):
+    lease_path = tmp_path / "generation.lock"
+    descriptor = os.open(lease_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; from ai_cli.main import _handle_internal; _handle_internal(['acquire-generation-lease', sys.argv[1]])",
+                str(descriptor),
+            ],
+            pass_fds=(descriptor,),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        with pytest.raises(portalocker.exceptions.LockException):
+            with portalocker.Lock(
+                str(lease_path), mode="a+", timeout=0, flags=portalocker.LOCK_EX | portalocker.LOCK_NB
+            ):
+                pass
+    finally:
+        os.close(descriptor)
+
+    with portalocker.Lock(str(lease_path), mode="a+", timeout=0, flags=portalocker.LOCK_EX | portalocker.LOCK_NB):
+        pass
+
+
 @pytest.fixture(params=("bash", "zsh"))
 def supported_session_shell(request: pytest.FixtureRequest) -> str:
     """Run each signal regression under every supported installed shell."""
@@ -243,15 +273,22 @@ def _write_executable(path: Path, content: str) -> None:
 
 
 def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if path.exists():
             return
         if process.poll() is not None:
-            stdout, stderr = process.communicate()
+            stdout, stderr = _communicate_supervisor(process)
             pytest.fail(f"supervisor exited before its child was ready: {stdout!r} {stderr!r}")
         time.sleep(0.02)
     pytest.fail("supervisor child did not become ready")
+
+
+def _communicate_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
+    if process.stdout is None:
+        process.wait(timeout=5)
+        return "", ""
+    return process.communicate(timeout=5)
 
 
 def _start_generated_supervisor(
@@ -261,6 +298,10 @@ def _start_generated_supervisor(
     terminal_pgid: str = "123",
     supervisor_pgid: str = "123",
     lease_acquired: bool = True,
+    is_remote: bool = False,
+    child_body: str | None = None,
+    terminal: bool = False,
+    fast_heartbeat: bool = False,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
     bin_dir = tmp_path / "bin"
@@ -272,28 +313,31 @@ def _start_generated_supervisor(
     _write_executable(
         bin_dir / "ai",
         "#!/bin/sh\n"
+        'if [ "$1" = "internal" ] && [ "$2" = "acquire-generation-lease" ]; then\n'
+        '  [ "${AI_CLI_TEST_LEASE_ACQUIRED:-0}" = "1" ] && exit 0\n'
+        "  exit 1\n"
+        "fi\n"
         'if [ "$1" = "internal" ] && [ "$2" = "publish-heartbeat" ]; then\n'
         '  printf "heartbeat\\n" >> "$AI_CLI_TEST_HEARTBEATS"\n'
         "fi\n"
         "exit 0\n",
     )
-    _write_executable(bin_dir / "flock", f"#!/bin/sh\nexit {int(not lease_acquired)}\n")
     _write_executable(
         bin_dir / "ps",
         "#!/bin/sh\n"
         'case "$*" in\n'
         '  *tpgid=*) printf " %s\\n" "$AI_CLI_TEST_TERMINAL_PGID" ;;\n'
         '  *pgid=*) printf " %s\\n" "$AI_CLI_TEST_SUPERVISOR_PGID" ;;\n'
-        "  *) exit 1 ;;\n"
+        '  *) exec /bin/ps "$@" ;;\n'
         "esac\n",
     )
 
     state_home = tmp_path / "state"
     sessions_dir = state_home / "ai-cli-utils" / "sessions"
     sessions_dir.mkdir(parents=True)
-    _write_executable(
-        sessions_dir / "test-session.sh",
-        f"""#!{shell}
+    child_script = (
+        child_body
+        or f"""#!{shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; sleep 0.4; exit 77' TERM
@@ -301,10 +345,14 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   trap 'printf "WINCH\\n" >> "$AI_CLI_TEST_EVENTS"' WINCH
   while true; do sleep 0.05; done
 fi
-""",
+"""
     )
+    _write_executable(sessions_dir / "test-session.sh", child_script)
     supervisor = tmp_path / "supervisor.sh"
-    supervisor.write_text(get_engine_script("c", "session-1", "test-session", "test-", "myproject"), encoding="utf-8")
+    script = get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=is_remote)
+    if fast_heartbeat:
+        script = script.replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
+    supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -314,14 +362,14 @@ fi
         "AI_CLI_TEST_HEARTBEATS": str(heartbeat_log),
         "AI_CLI_TEST_SUPERVISOR_PGID": supervisor_pgid,
         "AI_CLI_TEST_TERMINAL_PGID": terminal_pgid,
+        "AI_CLI_TEST_LEASE_ACQUIRED": str(int(lease_acquired)),
     }
+    kwargs: dict[str, object] = {"env": environment, "text": True}
+    kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    if terminal:
+        kwargs["stdin"] = subprocess.PIPE
     process = subprocess.Popen(
-        [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)],
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+        [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)], **kwargs
     )
     _wait_for_path(child_ready, process)
     return process, event_log, heartbeat_log
@@ -330,7 +378,8 @@ fi
 def _finish_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
     if process.poll() is None:
         os.kill(process.pid, signal.SIGTERM)
-    return process.communicate(timeout=5)
+    stdout, stderr = _communicate_supervisor(process)
+    return stdout, stderr
 
 
 def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_heartbeat(
@@ -373,7 +422,80 @@ def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_rec
     time.sleep(0.05)
     if process.poll() is None:
         os.kill(process.pid, signal.SIGTERM)
-    stdout, stderr = process.communicate(timeout=5)
+    stdout, stderr = _communicate_supervisor(process)
 
     assert process.returncode is not None, f"supervisor did not finish: {stdout!r} {stderr!r}"
     assert events.read_text(encoding="utf-8").splitlines() == ["TERM"]
+
+
+def test_given_terminal_ctrl_c_when_child_shares_foreground_process_group_then_child_receives_signal_and_stdin(
+    tmp_path: Path, supported_session_shell: str
+):
+    child_body = f"""#!{supported_session_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  trap 'printf "INT\\n" >> "$AI_CLI_TEST_EVENTS"' INT
+  IFS= read -r line
+  printf 'READ=%s\\n' "$line" >> "$AI_CLI_TEST_EVENTS"
+  while true; do sleep 0.05; done
+fi
+"""
+    process, events, _ = _start_generated_supervisor(
+        tmp_path, supported_session_shell, lease_acquired=False, child_body=child_body, terminal=True
+    )
+    assert process.stdin is not None
+    child_pid = int((tmp_path / "child-ready").read_text(encoding="utf-8"))
+    assert os.getpgid(child_pid) == process.pid
+
+    process.stdin.write("hello\n")
+    process.stdin.flush()
+    _wait_for_path(events, process)
+    os.killpg(process.pid, signal.SIGINT)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if events.exists() and "INT" in events.read_text(encoding="utf-8"):
+            break
+        time.sleep(0.02)
+
+    assert events.read_text(encoding="utf-8").splitlines() == ["READ=hello", "INT"]
+    _finish_supervisor(process)
+
+
+def test_given_child_sharing_foreground_process_group_when_terminal_signal_arrives_then_detached_ticker_continues_ticking(
+    tmp_path: Path, supported_session_shell: str
+):
+    process, events, heartbeats = _start_generated_supervisor(
+        tmp_path, supported_session_shell, terminal=True, fast_heartbeat=True
+    )
+    os.killpg(process.pid, signal.SIGINT)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if heartbeats.exists() and len(heartbeats.read_text(encoding="utf-8").splitlines()) >= 2:
+            break
+        time.sleep(0.02)
+
+    assert heartbeats.exists()
+    assert len(heartbeats.read_text(encoding="utf-8").splitlines()) >= 2
+    _finish_supervisor(process)
+
+
+def test_given_remote_normal_child_exit_when_supervisor_waits_then_next_child_starts(
+    tmp_path: Path, supported_session_shell: str
+):
+    child_body = f"""#!{supported_session_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  count_file="$AI_CLI_TEST_CHILD_READY.count"
+  count=$(cat "$count_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$count_file"
+  if (( count == 1 )); then exit 0; fi
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  while true; do sleep 0.05; done
+fi
+"""
+    process, _, _ = _start_generated_supervisor(
+        tmp_path, supported_session_shell, lease_acquired=False, is_remote=True, child_body=child_body
+    )
+
+    assert (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2"
+    _finish_supervisor(process)
