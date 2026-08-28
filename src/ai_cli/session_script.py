@@ -123,13 +123,19 @@ def get_engine_script(
     # children so a hot reload can never transfer the generation lease to a new
     # pane PID.
     _ai_cli_child_mode=false
+    if [[ "${{1:-}}" == "--ai-cli-heartbeat-ticker" ]]; then
+      shift
+      tmux_session="$1"
+      generation_token="$2"
+      while true; do
+        heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' "{project_prefix}" "{ai_name}")
+        ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" "$generation_token" 2>/dev/null || true
+        sleep 30 || exit 0
+      done
+    fi
     if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
       _ai_cli_child_mode=true
       shift
-      # A child must never inherit the supervisor's open lease descriptor.
-      if [[ -n "${{AI_CLI_SUPERVISOR_LEASE_FD:-}}" ]]; then
-        eval "exec $AI_CLI_SUPERVISOR_LEASE_FD>&-" 2>/dev/null || true
-      fi
     fi
     if ! $_ai_cli_child_mode; then
       tmux_session="{session}"
@@ -142,11 +148,8 @@ def get_engine_script(
       _reaper_lease_fd=""
       _supervisor_signal_model_reason=""
       _verify_supervisor_signal_model() {{
-        # With job control disabled, a background child inherits this shell's
-        # process group. That group must be the terminal foreground group so
-        # terminal-generated signals reach the child directly rather than via a
-        # supervisor relay. Check after `set +m`: that is the launch state that
-        # determines the child's inherited process group.
+        # The supervisor must begin in the pane foreground group so it can
+        # promote each separately grouped child to the terminal foreground.
         if ! set +m 2>/dev/null; then
           _supervisor_signal_model_reason="could not disable shell job control"
           return 1
@@ -185,29 +188,16 @@ def get_engine_script(
         _lease_session=$(printf '%s' "$tmux_session" | base64 | tr '/+' '_-' | tr -d '=\\n')
         _lease_generation=$(printf '%s' "$generation_token" | base64 | tr '/+' '_-' | tr -d '=\\n')
         _lease_path="$_ai_state_dir/session-leases/${{_lease_session}}-${{_lease_generation}}.lock"
-        # tmux wrappers run only on POSIX hosts.  If their native flock utility is
-        # unavailable, no usable reap evidence is published on that host.
-        if command -v flock >/dev/null 2>&1; then
-          exec {{_reaper_lease_fd}}>"$_lease_path"
-          if flock -n "$_reaper_lease_fd" 2>/dev/null; then
-            _reaper_evidence_enabled=true
-            export AI_CLI_SUPERVISOR_LEASE_FD="$_reaper_lease_fd"
-          fi
+        exec {{_reaper_lease_fd}}>"$_lease_path"
+        if ai internal acquire-generation-lease "$_reaper_lease_fd"; then
+          _reaper_evidence_enabled=true
+          export AI_CLI_SUPERVISOR_LEASE_FD="$_reaper_lease_fd"
+        else
+          _supervisor_signal_model_reason="generation lease backend unavailable"
+          printf '%s\n' "ai-cli: stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
         fi
       fi
       _heartbeat_pid=""
-      _supervisor_heartbeat() {{
-        # This helper deliberately does not retain a copy of the lease descriptor.
-        # The pane leader remains the sole descriptor owner for its full lifetime.
-        if [[ -n "${{AI_CLI_SUPERVISOR_LEASE_FD:-}}" ]]; then
-          eval "exec $AI_CLI_SUPERVISOR_LEASE_FD>&-" 2>/dev/null || true
-        fi
-        while $_reaper_evidence_enabled; do
-          heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' "{project_prefix}" "{ai_name}")
-          ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" "$generation_token" 2>/dev/null || true
-          sleep 30 || break
-        done
-      }}
       _supervisor_cleanup() {{
         [[ -n "$_heartbeat_pid" ]] && kill "$_heartbeat_pid" 2>/dev/null || true
         ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
@@ -217,18 +207,36 @@ def get_engine_script(
         ai internal cleanup-worktree "$ai_name" 2>/dev/null
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
-        [[ -n "$_reaper_lease_fd" ]] && eval "exec $_reaper_lease_fd>&-" 2>/dev/null || true
       }}
       _supervisor_wait_for_child() {{
-        # A trapped SIGINT/SIGWINCH interrupts `wait` in Bash and zsh. Keep
+        # `wait` is interrupted by a trapped signal in Bash and zsh. Keep
         # waiting while the child is live so record-only supervisor signals do
-        # not start a second child or orphan the first one.
+        # not start a second child or leave the first child behind.
         _child_wait_status=0
         while kill -0 "$_child_pid" 2>/dev/null; do
           wait "$_child_pid"
           _child_wait_status=$?
         done
         return "$_child_wait_status"
+      }}
+      _supervisor_promote_child() {{
+        # A terminal-backed child becomes its own process group in the exec
+        # wrapper. Promote that group before it can read terminal input.
+        [[ -t 0 ]] || return 0
+        trap '' TTOU
+        _promotion_attempt=0
+        while (( _promotion_attempt < 50 )); do
+          if python3 -c 'import os, signal, sys; pgid = int(sys.argv[1]); os.tcsetpgrp(0, pgid); os.killpg(pgid, signal.SIGCONT)' "$_child_pid" 2>/dev/null; then
+            return 0
+          fi
+          sleep 0.01
+          _promotion_attempt=$((_promotion_attempt + 1))
+        done
+        return 1
+      }}
+      _supervisor_restore_terminal() {{
+        [[ -t 0 ]] || return 0
+        python3 -c 'import os, sys; os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
       }}
       _supervisor_term() {{
         if $_supervisor_terminating; then
@@ -250,22 +258,48 @@ def get_engine_script(
       trap '_supervisor_record_winch' WINCH
       trap '_supervisor_term' TERM
       trap '_supervisor_cleanup' EXIT
-      if $_reaper_evidence_enabled; then
-        _supervisor_heartbeat &
-        _heartbeat_pid=$!
-      fi
       _supervisor_script="$0"
+      _supervisor_terminal_fd=""
+      if [[ -t 0 ]]; then
+        # zsh redirects a background command's fd 0 before its exec wrapper
+        # runs. Preserve the pane terminal on a second descriptor for that
+        # wrapper to restore after it has made the child a new process group.
+        exec 9<&0
+        _supervisor_terminal_fd=9
+        export AI_CLI_SUPERVISOR_TERMINAL_FD="$_supervisor_terminal_fd"
+      fi
+      if $_reaper_evidence_enabled; then
+        # A terminal-free companion owns only its timer. It starts a new session
+        # before execing the ticker so foreground-group changes cannot affect it.
+        python3 -c 'import os, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+          "{_session_shell}" "$_supervisor_script" --ai-cli-heartbeat-ticker "$tmux_session" "$generation_token" \
+          </dev/null >/dev/null 2>&1 &
+        _heartbeat_pid=$!
+        disown "$_heartbeat_pid" 2>/dev/null || true
+      fi
       while true; do
         if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
           _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
         fi
-        "$_supervisor_script" --ai-cli-child-body &
+        # With job control disabled, Bash backgrounds a command with SIGINT and
+        # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
+        # dispositions in a short exec wrapper before the child shell starts,
+        # retain stdin explicitly, and then wait interruptibly in this shell.
+        python3 -c 'import os, signal, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); os.isatty(0) and (os.setpgrp() or os.kill(os.getpid(), signal.SIGSTOP)); signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
+          "$_supervisor_script" --ai-cli-child-body <&0 &
         _child_pid=$!
+        if ! _supervisor_promote_child; then
+          printf '%s\n' "ai-cli: could not promote child process group to terminal foreground" >&2
+          kill -TERM "$_child_pid" 2>/dev/null || true
+          _supervisor_wait_for_child || true
+          exit 1
+        fi
         _supervisor_wait_for_child
         _child_status=$?
+        _supervisor_restore_terminal || true
         # 78 requests a refreshed child after a stable-script/self-update check;
-        # 77 is clean local final exit.  A remote recovery shell returns normally.
-        if (( _child_status == 77 )) || ([[ "{str(is_remote).lower()}" == "true" ]] && (( _child_status != 78 ))); then
+        # 77 is clean local final exit and 79 is remote recovery-shell completion.
+        if (( _child_status == 77 || _child_status == 79 )); then
           break
         fi
       done
@@ -816,5 +850,5 @@ with open(path, 'w') as f:
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
-    {('echo "Session ended. Exit shell to close tmux session."; exec $SHELL') if is_remote else "exit 77"}
+    {('echo "Session ended. Exit shell to close tmux session."; "$SHELL"; exit 79') if is_remote else "exit 77"}
     """
