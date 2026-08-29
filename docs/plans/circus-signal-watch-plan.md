@@ -9,6 +9,10 @@ source: session-2026-04-01
 
 # Circus-Managed signal-watch
 
+> **Superseded:** In v0.8.0 the handoff command, queue, NATS ingress, and
+> automatic delivery hooks were retired. This plan describes the removed system
+> and is retained only for historical context.
+
 ## Table of Contents
 
 - [Background](#background)
