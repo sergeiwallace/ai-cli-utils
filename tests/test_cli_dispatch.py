@@ -12,7 +12,6 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 - reconnect transport JSON error (875-876)
 - ``_auto_update_if_stale`` lockfile early-return + stamp-match after-lock (216-217, 221)
 - ``_deploy_cc_config_files`` copy path (185-194)
-- handoff post usage error (1052-1056)
 - session launch positional-name promotion (1101-1102)
 """
 
@@ -540,16 +539,6 @@ class TestDeployCcConfigFiles:
         with patch("ai_cli.main.Path.home", return_value=fake_home):
             _deploy_cc_config_files(project)
         assert not (fake_home / ".claude" / "statusline-command.sh").exists()
-
-
-# --- handoff post usage error (1052-1056) ---
-
-
-class TestHandoffPostUsage:
-    def test_given_too_few_post_args_when_handoff_post_then_exits_1(self):
-        exit_code, _, stderr = run_cli(["ai", "handoff", "post", "--for-machine", "mac", "only-one-arg"])
-        assert exit_code == 1
-        assert "Usage: ai handoff post" in stderr
 
 
 # --- session launch positional-name promotion (1101-1102) ---

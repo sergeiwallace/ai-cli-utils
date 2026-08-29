@@ -29,13 +29,11 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Git worktree isolation** | Each session gets its own worktree — parallel work without branch conflicts |
 | **Remote sessions** | `ai c -R -m <alias>` — run sessions on a configured remote server via mosh or SSH; `ai ssh [alias]` opens a matching shell |
 | **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory, conversations, and task lists between machines |
-| **Handoff queue** | `ai handoff post/check/claim/complete` — delegate tasks between sessions |
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
 | **Stale session cleanup** | Automatic detection and cleanup of orphaned sessions |
 | **Session recovery** | `ai session-audit`, `ai session-adopt`, and `ai cc-migrate` find, adopt, and move resumable Claude Code sessions safely |
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
-| **Signal-watch** | Handoff delivery via Circus-managed background process — isolated from CC session lifecycle |
 | **Notifications** | Multi-channel notification delivery (Discord webhook, ntfy push, OS native) with parallel dispatch, OS fallback, and persistent delivery log (`ai notifications log/list`) |
 | **iTerm2 layout system** | `ai layout <name>` — YAML-driven window/tab/pane definitions; nested splits, startup commands, per-tab profiles |
 | **iTerm2 session naming** | Automatically sets the iTerm2 Session Name and configures `allow-passthrough` + `automatic-rename off` so the session title stays correct |
@@ -248,15 +246,6 @@ ai tunnel status                  # List all active tunnels
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Host/user from `[remote]` config.
 
-### Handoff queue
-
-```bash
-ai handoff post      # Post a task for another session to pick up
-ai handoff check     # Check for pending handoffs
-ai handoff claim     # Claim a handoff
-ai handoff complete  # Mark a handoff as done
-```text
-
 ### iTerm2 layouts
 
 ```bash
@@ -273,7 +262,6 @@ Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define
 ```bash
 ai ps                    # Show ai-cli processes with health scores; flag suspect/stale ones
 ai ps --kill             # Terminate processes above the suspect threshold
-ai signal-watch status   # List Circus-managed signal-watch processes
 ai memory watch          # Watch for Claude Code memory file changes
 ai quota watch           # Monitor API quota usage
 ai telemetry writer      # Run telemetry writer daemon
@@ -373,9 +361,6 @@ remote_host = "user@host"      # for cross-machine sync
 [behavior]
 notify_on_exit = true          # desktop notifications on task completion
 
-[machine]
-# host_id = "mac"              # optional: identify this machine for targeted handoffs (ai handoff --for-machine)
-
 [update]
 # extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
 ```text
@@ -408,12 +393,6 @@ shell      = "ShellUtility"
 
 The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. Each session gets a collision-free slot via lease files. When a tab color is set, the session icon is automatically tinted with a contrasting color (180° HSL hue rotation). When no color is set, the Claude brand orange (`#da7756`) is used as fallback.
 
-Set `AI_HOST` in `~/.zshenv` (sourced by all zsh sessions, including non-interactive ones) to identify the machine. This is used when posting targeted handoffs (`ai handoff post --for-machine mac ...`):
-
-```bash
-export AI_HOST=mac    # or "hetzner", "work-laptop", etc.
-```text
-
 ## Requirements
 
 - Python 3.11+
@@ -423,7 +402,7 @@ export AI_HOST=mac    # or "hetzner", "work-laptop", etc.
 - [direnv](https://direnv.net/) (optional — when installed, sessions start under `direnv exec` so the project `.envrc` is loaded; sessions start normally without it)
 - [mosh](https://mosh.org/) (optional, for remote sessions — falls back to SSH; Linux/macOS only)
 - [autossh](https://www.harding.motd.ca/autossh/) (optional, for `ai tunnel` — `brew install autossh` / `apt install autossh`; Linux/macOS only)
-- [NATS](https://nats.io/) (optional — enables real-time handoff delivery, sync watch, and session events; see [NATS Setup Guide](docs/guides/nats-setup.md))
+- [NATS](https://nats.io/) (optional — enables fleet messaging, sync watch, and session events; see [NATS Setup Guide](docs/guides/nats-setup.md))
 
 ## Contributing
 

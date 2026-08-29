@@ -7,7 +7,7 @@ Scope: CC session data only — conversation JSONL files, memory files
 the mechanism that moves this data between machines.
 
 What sync does NOT touch:
-  - Git-tracked files (config, hooks, statusline, handoff queue) — use git.
+  - Git-tracked files (config, hooks, statusline) — use git.
   - ~/.claude/shell-snapshots/*.sh, which are ephemeral per-machine environment dumps.
   - ~/.claude.json and ~/.claude/settings.json, which contain machine-specific
     and auth-adjacent state.

@@ -21,7 +21,6 @@ import click
 # several helpers in this file.
 from . import config as _config
 from . import direnv_setup as _direnv_setup
-from . import handoff as _handoff
 from . import iterm2 as _iterm2
 from . import process_manager as _process_manager
 from . import session as _session
@@ -36,7 +35,6 @@ from .config import (  # noqa: F401
     WORKTREE_DIR,
     ProjectPrefixError,
     _find_project_dir,
-    _get_handoff_queue_dir,
     _get_main_project_dir,
     _get_main_project_name,
     _get_project_prefix_by_name,
@@ -66,17 +64,6 @@ from .git_repair import (
     repair_bare_worktree_config,
     unmerged_paths,
 )
-from .handoff import (  # noqa: F401
-    _claim_handoff_for_signal,
-    _find_best_handoff,
-    _format_handoff_summary,
-    _log_handoff_event,
-    check_handoff,
-    check_handoff_project,
-    claim_handoff,
-    complete_handoff,
-    post_handoff,
-)
 from .iterm2 import (  # noqa: F401
     _DEFAULT_ITERM2_CONFIG,
     _assign_iterm2_color_slot,
@@ -97,9 +84,6 @@ from .process_manager import (  # noqa: F401
     _cmd_quota_watch_start,
     _cmd_quota_watch_status,
     _cmd_quota_watch_stop,
-    _cmd_signal_watch_start,
-    _cmd_signal_watch_status,
-    _cmd_signal_watch_stop,
     _ensure_circusd,
 )
 from .process_probe import StartTimeMatch, probe_for
@@ -1416,19 +1400,8 @@ def _handle_internal(argv: list[str]) -> None:
         with contextlib.suppress(Exception):
             asyncio.run(client.publish(subject, payload))
         sys.exit(0)
-    elif action == "signal-watch":
-        if len(argv) < 3:
-            print("Usage: ai internal signal-watch <project> <session_id>", file=sys.stderr)
-            sys.exit(1)
-        _internal_signal_watch(argv[1], argv[2], config)
-        sys.exit(0)
     elif action == "quota-subscriber":
         _internal_quota_subscriber(config)
-        sys.exit(0)
-    elif action == "handoff-drain":
-        if len(argv) < 3:
-            sys.exit(0)
-        _internal_handoff_drain(argv[1], argv[2], config)
         sys.exit(0)
     elif action == "set-iterm2-name":
         if len(argv) < 3:
@@ -1444,110 +1417,6 @@ def _handle_internal(argv: list[str]) -> None:
     else:
         print(f"Usage: ai internal <action> [args...] (unknown action: {action})", file=sys.stderr)
         sys.exit(1)
-
-
-async def _on_handoff_signal_watch(
-    data: dict,
-    *,
-    handoff_dir: "Path | None",
-    pending_file: "Path",
-    session_id: str,
-    machine_id: str,
-) -> None:
-    """Process one inbound handoff message for signal-watch.
-
-    Extracted from the ``_on_handoff`` closure inside ``_internal_signal_watch``
-    so it can be imported and unit-tested independently of the NATS subscription.
-    """
-    handoff_id = data.get("id")
-    title = data.get("title", "")
-    priority = data.get("priority", "")
-    message = data.get("message", "")
-    for_machine = data.get("for_machine", "")
-    if not for_machine or for_machine != machine_id:
-        return
-    print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
-    if handoff_dir is None or not handoff_id:
-        return
-    content = data.get("content")
-    filename = data.get("filename")
-    if content and filename:
-        pending_dir = handoff_dir / "pending"
-        claimed_dir = handoff_dir / "claimed"
-        local_file = pending_dir / filename
-        if (claimed_dir / filename).exists():
-            return
-        if not local_file.exists():
-            pending_dir.mkdir(parents=True, exist_ok=True)
-            with contextlib.suppress(OSError):
-                local_file.write_text(content)
-    claimed = _handoff._claim_handoff_for_signal(handoff_dir, int(handoff_id), session_id)
-    if claimed is None:
-        return
-    _handoff._log_handoff_event(
-        "handoff.claimed",
-        handoff_id=handoff_id,
-        session=session_id,
-        layer="nats_realtime" if data.get("_source") != "startup_scan" else "startup_scan",
-    )
-    resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-    pending_file.parent.mkdir(parents=True, exist_ok=True)
-    pending_file.write_text(resume_msg)
-    signal_file = _config.get_xdg_state_home() / f"cc-exit-{session_id}"
-    with contextlib.suppress(OSError):
-        signal_file.touch()
-
-
-def _write_pending_if_claimed_drain(
-    data: dict,
-    *,
-    handoff_dir: "Path | None",
-    prompt_file: "Path",
-    session: str,
-    machine_id: str,
-) -> bool:
-    """Claim a handoff from drain data and write the resume prompt file.
-
-    Extracted from the ``_write_pending_if_claimed`` closure inside
-    ``_internal_handoff_drain`` so it can be unit-tested independently.
-    Returns ``True`` if a handoff was claimed and the prompt file written.
-    """
-    handoff_id = data.get("id")
-    title = data.get("title", "")
-    priority = data.get("priority", "")
-    message = data.get("message", "")
-    for_machine = data.get("for_machine", "")
-    if not for_machine or for_machine != machine_id:
-        return False
-    if handoff_dir is None or not handoff_id:
-        return False
-    content = data.get("content")
-    filename = data.get("filename")
-    if content and filename:
-        pending_dir = handoff_dir / "pending"
-        claimed_dir = handoff_dir / "claimed"
-        local_file = pending_dir / filename
-        if (claimed_dir / filename).exists():
-            return False
-        if not local_file.exists():
-            pending_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                local_file.write_text(content)
-            except OSError:
-                return False
-    claimed = _handoff._claim_handoff_for_signal(handoff_dir, int(handoff_id), session)
-    if claimed is None:
-        return False
-    _handoff._log_handoff_event(
-        "handoff.claimed",
-        handoff_id=handoff_id,
-        session=session,
-        layer="pre_launch_drain",
-    )
-    resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-    prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(resume_msg)
-    return True
 
 
 async def _on_quota_snapshot_handler(data: dict) -> None:
@@ -1567,69 +1436,6 @@ async def _on_quota_snapshot_handler(data: dict) -> None:
             extra_pct=data.get("extra_pct"),
             reset_at=data.get("reset_at"),
         )
-
-
-def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) -> None:
-    import asyncio
-
-    from .messaging import NATSClient
-
-    sw_handoff_dir = _config._get_handoff_queue_dir()
-    sw_pending_file = _config.get_xdg_state_home() / f"handoff-pending-{sw_session_id}"
-    nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-    sw_client = NATSClient(servers=nats_servers)
-
-    async def _on_handoff(data):
-        await _on_handoff_signal_watch(
-            data,
-            handoff_dir=sw_handoff_dir,
-            pending_file=sw_pending_file,
-            session_id=sw_session_id,
-            machine_id=os.environ.get("AI_HOST", ""),
-        )
-
-    # Startup scan: pick up any unclaimed files already in the pending queue
-    if sw_handoff_dir is not None:
-        pending_dir = sw_handoff_dir / "pending"
-        if pending_dir.exists():
-            for f in sorted(pending_dir.glob("*.md")):
-                try:
-                    fid = int(f.name.split("-")[0])
-                except ValueError:
-                    continue
-                try:
-                    raw = f.read_text()
-                    fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
-                    fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
-                    fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
-                    body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
-                    scan_title = fm_title.group(1).strip() if fm_title else f.stem
-                    scan_priority = fm_priority.group(1) if fm_priority else ""
-                    scan_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
-                except OSError:
-                    scan_title, scan_priority, body, scan_for_machine = f.stem, "", "", ""
-                asyncio.run(
-                    _on_handoff(
-                        {
-                            "id": fid,
-                            "title": scan_title,
-                            "priority": scan_priority,
-                            "message": body,
-                            "for_machine": scan_for_machine,
-                            "_source": "startup_scan",
-                        }
-                    )
-                )
-
-    consumer_name = f"{sw_session_id}-signal-watcher"
-
-    async def _run_subscriptions() -> None:
-        await sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff)
-
-    # Not covered: _run_subscriptions blocks indefinitely on success; exception
-    # path requires a live NATS server to fail mid-subscription.
-    with contextlib.suppress(Exception):
-        asyncio.run(_run_subscriptions())
 
 
 def _internal_quota_subscriber(config: dict) -> None:
@@ -1653,117 +1459,6 @@ def _internal_quota_subscriber(config: dict) -> None:
                 _on_quota_snapshot_handler,
             )
         )
-
-
-def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> None:
-    # Synchronous: drain pending NATS messages + local file scan, then exit.
-    # Called BEFORE CC launches so prompt_file is ready on first invocation.
-    import asyncio
-
-    from .messaging import NATSClient
-
-    hd_handoff_dir = _config._get_handoff_queue_dir()
-    hd_prompt_file = _config.get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
-    nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-    hd_client = NATSClient(servers=nats_servers)
-    _handoff._log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
-
-    def _write_pending_if_claimed(data):
-        return _write_pending_if_claimed_drain(
-            data,
-            handoff_dir=hd_handoff_dir,
-            prompt_file=hd_prompt_file,
-            session=hd_session,
-            machine_id=os.environ.get("AI_HOST", ""),
-        )
-
-    # 1. Local file scan first (fast, no network)
-    if hd_handoff_dir is not None:
-        pending_dir = hd_handoff_dir / "pending"
-        if pending_dir.exists():
-            best = _handoff._find_best_handoff(pending_dir, project_filter=hd_project)
-            if best is not None:
-                try:
-                    fid = int(best.name.split("-")[0])
-                    raw = best.read_text()
-                    fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
-                    fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
-                    fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
-                    body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
-                    local_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
-                    _handoff._log_handoff_event(
-                        "handoff.drain.local_found",
-                        session=hd_session,
-                        handoff_id=fid,
-                        for_machine=local_for_machine,
-                    )
-                    _write_pending_if_claimed(
-                        {
-                            "id": fid,
-                            "title": fm_title.group(1).strip() if fm_title else best.stem,
-                            "priority": fm_priority.group(1) if fm_priority else "",
-                            "message": body,
-                            "for_machine": local_for_machine,
-                        }
-                    )
-                except Exception:
-                    # Not covered: requires filesystem error reading a pending
-                    # handoff file that exists and was just discovered by glob.
-                    pass
-
-    # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
-    if not hd_prompt_file.exists():
-        _handoff._log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
-
-        # Not covered: _drain() is an async closure that requires a live NATS
-        # JetStream server. Inner branches (js is None, message decode error,
-        # _write_pending_if_claimed returning True, fetch timeout, subscribe
-        # failure) all require specific live-server or network-failure conditions.
-        # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
-        async def _drain():
-            try:
-                await hd_client.connect()
-            except Exception as e:
-                _handoff._log_handoff_event("handoff.drain.nats_connect_failed", session=hd_session, error=str(e))
-                return
-            if not hd_client.js:
-                _handoff._log_handoff_event("handoff.drain.nats_no_js", session=hd_session)
-                return
-            consumer_name = f"{hd_session}-pre-launch"
-            subject = f"handoff.{hd_project}"
-            try:
-                await hd_client._ensure_stream(subject)
-                sub = await hd_client.js.pull_subscribe(subject, durable=consumer_name)
-                while True:
-                    try:
-                        msgs = await sub.fetch(1, timeout=2)
-                        for msg in msgs:
-                            try:
-                                data = json.loads(msg.data.decode())
-                            except Exception:
-                                data = {}
-                            await msg.ack()
-                            if _write_pending_if_claimed(data):
-                                return
-                    except Exception:
-                        break
-            except Exception as e:
-                _handoff._log_handoff_event("handoff.drain.nats_subscribe_failed", session=hd_session, error=str(e))
-            finally:
-                await hd_client.close()
-
-        async def _drain_with_timeout():
-            try:
-                await asyncio.wait_for(_drain(), timeout=6.0)
-            except TimeoutError:
-                _handoff._log_handoff_event("handoff.drain.nats_timeout", session=hd_session)
-
-        try:
-            asyncio.run(_drain_with_timeout())
-        except Exception as e:
-            # Not covered: requires asyncio.run() itself to raise, which needs a
-            # broken event loop or NATS server in a specific failure state.
-            _handoff._log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
 
 def _has_conflict_or_unknown(repo_root) -> bool:
@@ -2348,32 +2043,6 @@ def _do_color(color_arg: str) -> None:
     sys.stdout.write(f"\033]1337;SetColors=tab={_color_no_hash_c}\007")
     sys.stdout.flush()
     print(f"Color updated to {_new_hex}")
-    sys.exit(0)
-
-
-def _do_handoff_post(remote: bool, for_machine: str, post_args: "list[str]") -> None:
-    if remote:
-        remote_cfg = _config.get_remote_machine(_config.load_config())
-        remote_host = remote_cfg.get("host", "")
-        remote_user = remote_cfg.get("user", "ubuntu")
-        if not remote_host:
-            print("Error: [remote] host not set in config", file=sys.stderr)
-            sys.exit(1)
-        ssh_args = ["ssh", f"{remote_user}@{remote_host}", "ai", "handoff", "post"]
-        # Preserve the --for-machine flag for the remote side.
-        ssh_args += ["--for-machine", for_machine]
-        ssh_args += list(post_args)
-        os.execvp("ssh", ssh_args)
-    if not for_machine:
-        print("Error: --for-machine <machine> is required", file=sys.stderr)
-        sys.exit(1)
-    if len(post_args) < 4:
-        print(
-            "Usage: ai handoff post --for-machine <machine> <title> <priority> <project> <message>",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    _handoff.post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
     sys.exit(0)
 
 
@@ -3379,51 +3048,19 @@ def cmd_doctor(dry_run):
     raise SystemExit(1)
 
 
-# --- handoff group ---
+# --- retired handoff command ---
 
 
-@_cli_group.group("handoff", help="Post and claim handoffs from the shared queue")
-def cmd_handoff_group():
-    pass
-
-
-@cmd_handoff_group.command(
-    "post",
+@_cli_group.command(
+    "handoff",
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
-    help="Post a new handoff (run ssh when --remote is passed)",
+    help="Retired command",
 )
-@click.option("-m", "--for-machine", default="", help="Machine the handoff targets (required)")
-@click.option("-R", "--remote", is_flag=True, help="Post on the remote server instead of locally")
 @click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_handoff_post(for_machine, remote, args):
-    _do_handoff_post(remote=remote, for_machine=for_machine, post_args=list(args))
-
-
-@cmd_handoff_group.command("check", help="Check for handoffs targeted at this machine")
-def cmd_handoff_check():
-    _handoff.check_handoff()
-    sys.exit(0)
-
-
-@cmd_handoff_group.command("check-project", help="Check pending handoffs for a specific project")
-@click.argument("project_name")
-def cmd_handoff_check_project(project_name):
-    _handoff.check_handoff_project(project_name)
-    sys.exit(0)
-
-
-@cmd_handoff_group.command("claim", help="Mark a handoff as claimed")
-@click.argument("file_path")
-def cmd_handoff_claim(file_path):
-    _handoff.claim_handoff(file_path)
-    sys.exit(0)
-
-
-@cmd_handoff_group.command("complete", help="Mark a handoff as complete")
-@click.argument("file_path")
-def cmd_handoff_complete(file_path):
-    _handoff.complete_handoff(file_path)
-    sys.exit(0)
+def cmd_handoff_retired(args):
+    del args
+    click.echo("This command has been retired; see archive/ for the old implementation.", err=True)
+    raise SystemExit(1)
 
 
 # --- memory group ---
@@ -4073,35 +3710,6 @@ def cmd_tunnel_stop(port):
 @cmd_tunnel_group.command("status", help="Show running SSH tunnels")
 def cmd_tunnel_status():
     _tunnel._cmd_tunnel_status()
-    sys.exit(0)
-
-
-# --- signal-watch group ---
-
-
-@_cli_group.group("signal-watch", help="Handoff signal-watch Circus daemon management")
-def cmd_signal_watch_group():
-    pass
-
-
-@cmd_signal_watch_group.command("start", help="Start signal-watch for a session")
-@click.argument("project")
-@click.argument("session")
-def cmd_signal_watch_start(project, session):
-    _process_manager._cmd_signal_watch_start(project, session)
-    sys.exit(0)
-
-
-@cmd_signal_watch_group.command("stop", help="Stop signal-watch for a session")
-@click.argument("session")
-def cmd_signal_watch_stop(session):
-    _process_manager._cmd_signal_watch_stop(session)
-    sys.exit(0)
-
-
-@cmd_signal_watch_group.command("status", help="Show signal-watch status")
-def cmd_signal_watch_status():
-    _process_manager._cmd_signal_watch_status()
     sys.exit(0)
 
 

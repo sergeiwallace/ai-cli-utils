@@ -97,7 +97,7 @@ def _ensure_nats_tunnel(config: dict) -> None:
     except SystemExit:
         return  # missing autossh or remote config — skip silently
     if not already_running:
-        # Give SSH time to establish before handoff-drain tries to connect
+        # Give SSH time to establish before dependent services try to connect.
         time.sleep(3)
 
 

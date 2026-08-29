@@ -27,11 +27,9 @@ source: internal
   - [ai gemini](#ai-gemini)
   - [ai spend gemini](#ai-spend-gemini)
   - [ai cc-usage](#ai-cc-usage)
-  - [ai handoff](#ai-handoff)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
   - [ai cdp](#ai-cdp)
-  - [ai signal-watch](#ai-signal-watch)
   - [ai tunnel](#ai-tunnel)
   - [ai update](#ai-update)
   - [ai setup](#ai-setup)
@@ -55,7 +53,7 @@ ai -V          # same, short form
 - **Linux / macOS**: full feature set.
 - **Windows (MSYS2 / Git Bash)**: core session management and sync work out of the box. Requires tmux installed via MSYS2 (`pacman -S tmux`). The following features are unavailable on Windows: remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), iTerm2 color slot management. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
 
-Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai handoff post --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
+Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota watch --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
 ### Module layout
 
@@ -67,10 +65,9 @@ Behaviour is split across focused modules so `main.py` stays thin:
 | `ai_cli.session` | session naming, worktree ops, Gemini UUID lookup |
 | `ai_cli.iterm2` | iTerm2 color slots, profile emit, tmux passthrough |
 | `ai_cli.icon_generator` | tinted PNG generation and Dynamic Profile JSON |
-| `ai_cli.handoff` | handoff queue post/claim/complete + signal helpers |
 | `ai_cli.transport` | VPN-aware mosh/SSH transport loop, Tailscale recovery |
 | `ai_cli.tunnel` | autossh SSH tunnels, CDP (Chrome DevTools) management |
-| `ai_cli.process_manager` | Circus daemon + `signal-watch` lifecycle |
+| `ai_cli.process_manager` | Circus daemon + quota-watch lifecycle |
 | `ai_cli.session_script` | bash template that wraps each session's engine loop |
 | `ai_cli.main` | CLI dispatch + session launch + update/deploy helpers |
 
@@ -232,7 +229,6 @@ Bidirectional sync of Claude Code session data between local and remote host.
 
 **Out of scope — what `ai sync` does NOT handle:**
 - Git-tracked files (config, hooks, scripts) — use `git pull/push` in the relevant repo
-- The handoff queue — `ai handoff post --remote` delivers directly; the queue lives in a git repo
 
 This boundary exists because `ai sync` is for CC session migration (conversations, memories, history) — not for config management. Files tracked in git are authoritative in git; syncing them outside git creates conflicts and dirty working trees.
 
@@ -440,19 +436,6 @@ Both `api_url` and `api_key` must be set for `push` to run.
 
 ---
 
-### ai handoff
-
-```bash
-ai handoff post [--remote] <title> <priority> <project> <message>
-ai handoff check
-ai handoff claim <file>
-ai handoff complete <file>
-```text
-
-Cross-session handoff queue. `post` writes a handoff item (add `--remote` to post to Hetzner via SSH); `check` prints the highest-priority pending file; `claim` atomically moves a file to `claimed/`; `complete` moves it to `completed/`.
-
-Queue lives at `~/projects/<main-project>/.handoff-queue/` (configured via `main_project` in config.toml). Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
-
 ### ai layout
 
 ```bash
@@ -478,16 +461,6 @@ ai color <palette-name|#hex>
 ```text
 
 Ad hoc reassignment of the current session's iTerm2 tab color. Takes a palette color name (e.g., `purple`, `teal`) or a hex value (e.g., `#5e35b1`). Updates the tab color immediately via `SetColors` escape sequence and rewrites the session's Dynamic Profile JSON.
-
-### ai signal-watch
-
-```bash
-ai signal-watch start <project> <session>
-ai signal-watch stop <session>
-ai signal-watch status
-```text
-
-Manages signal-watch processes via Circus process manager (`circusd`). Signal-watch subscribes to NATS `handoff.{project}` for a CC session and writes pending marker files on arrival.
 
 - `start` — registers a Circus watcher named `sw-{session}` and starts it. Idempotent (removes existing watcher first). Auto-starts `circusd` via `_ensure_circusd()` if not running.
 - `stop` — removes the Circus watcher. Silent if circusd is not running (EXIT trap calls this unconditionally).
@@ -649,5 +622,4 @@ Used by hooks and scripts — not for direct human use.
 | `publish-event` | `session_id event_type` | Publish fleet event |
 | `publish-heartbeat` | `session_id json` | Publish worker heartbeat |
 | `publish-session-event` | `session_id verb` | Publish session started/stopped |
-| `signal-watch` | `project session_id` | Subscribe durable to `handoff.{project}`, claim tasks, write pending-file for auto-pickup |
 | `cleanup-session-files` | `ai_name` | Remove session-specific icon PNG and Dynamic Profile JSON; called by EXIT trap on session end |

@@ -255,9 +255,7 @@ class TestStreamConfig:
             "memory",
             "quota",
             "telemetry",
-            "handoff-archive",
             "task",
             "health",
-            "handoff",
         }
         assert set(STREAM_CONFIG.keys()) == expected_streams

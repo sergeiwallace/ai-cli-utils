@@ -1255,7 +1255,7 @@ def quota_sync_from_remote() -> int:
 def _publish_quota_snapshot(snapshot: QuotaSnapshot) -> None:
     """Publish a quota snapshot to NATS for cross-machine sync.
 
-    Publishes to subject ``quota.snapshot`` so signal-watch daemons on other
+    Publishes to subject ``quota.snapshot`` so quota subscribers on other
     machines can receive and persist the latest usage data into their local
     SQLite DB. Fire-and-forget — silently no-ops if NATS is unavailable.
     """
