@@ -99,6 +99,24 @@ def _write_transcript_at(
     return path
 
 
+def _write_transcript_in_project_dir(project_dir: Path, uuid: str, title: str, recorded_cwd: Path) -> Path:
+    """Write a titled transcript directly into its physical project directory.
+
+    The directory may be a moved or legacy slug that cannot be recovered from
+    ``recorded_cwd``. This models the audit's source-of-truth boundary exactly:
+    the census found the file in ``project_dir`` even when its historical cwd is
+    stale.
+    """
+    project_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lines = [
+        _record(type="user", sessionId=uuid, cwd=str(recorded_cwd), customTitle=title),
+        _record(type="assistant", sessionId=uuid, cwd=str(recorded_cwd)),
+    ]
+    path = project_dir / f"{uuid}.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def _git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
@@ -429,16 +447,17 @@ def test_adopt_ready_given_an_adoptable_session_when_adopted_then_session_adopt_
     calls = []
 
     def _spy(repo_root, name, **kw):
-        calls.append((repo_root, name, kw.get("source_root")))
+        calls.append((repo_root, name, kw.get("source_root"), kw.get("source_project_dir")))
         raise AssertionError("stop after recording the delegation")
 
     monkeypatch.setattr(module, "adopt_session", _spy)
     with pytest.raises(AssertionError):
         adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
     assert calls, "adopt_ready must delegate to session_adopt.adopt_session"
-    repo_root, name, source_root = calls[0]
+    repo_root, name, source_root, source_project_dir = calls[0]
     assert repo_root in (fleet["myproject"], fleet["myapp"])
     assert source_root is not None, "the recorded cwd must be passed as the source root"
+    assert source_project_dir is not None, "the audit's physical project directory must be passed through"
 
 
 def test_adopt_ready_given_an_agent_worktree_session_when_adopted_then_it_resolves(fleet, audit, monkeypatch):
@@ -451,6 +470,44 @@ def test_adopt_ready_given_an_agent_worktree_session_when_adopted_then_it_resolv
     assert not isinstance(result, Exception), result
     assert result.resolved is not None, "`ai c 5` must resolve the adopted transcript"
     assert result.resolved.parent == cc_project_dir(fleet["myproject"] / ".worktrees" / "myproject-5", fleet["home"])
+
+
+def test_adopt_ready_given_root_worktree_physical_and_legacy_sources_when_adopted_then_each_resolves(fleet, audit):
+    """The audit must adopt from its discovered directory, not re-slug a recorded cwd.
+
+    The first two cases are ordinary root and agent-worktree sessions. The last
+    two deliberately live in physical project directories which cannot be
+    reconstructed from their recorded cwds: a moved directory and a historical
+    slug that preserves an underscore.
+    """
+    physical_cwd = fleet["myproject"] / "renamed-directory"
+    physical_dir = fleet["home"] / "projects" / "physical-containing-directory"
+    _write_transcript_in_project_dir(
+        physical_dir,
+        "eeeeeeee-2222-4333-8444-555555555555",
+        "myproject-6",
+        physical_cwd,
+    )
+    legacy_cwd = fleet["myproject"] / "legacy_name"
+    legacy_slug = str(legacy_cwd).replace("/", "-").replace("\\", "-").replace(".", "-")
+    legacy_dir = fleet["home"] / "projects" / legacy_slug
+    assert legacy_dir != cc_project_dir(legacy_cwd, fleet["home"])
+    _write_transcript_in_project_dir(
+        legacy_dir,
+        "ffffffff-2222-4333-8444-555555555555",
+        "myproject-7",
+        legacy_cwd,
+    )
+
+    for name in ("myproject-2", "myproject-5", "myproject-6", "myproject-7"):
+        _add_worktree(fleet["myproject"], name)
+
+    outcomes, skipped = adopt_ready(audit(), claude_home=fleet["home"], proc_dir=fleet["proc"])
+
+    assert {record.title for record, _ in skipped} == {"myapp-1"}
+    results = {record.title: result for record, result in outcomes}
+    assert set(results) == {"myproject-2", "myproject-5", "myproject-6", "myproject-7"}
+    assert all(not isinstance(result, Exception) and result.resolved is not None for result in results.values())
 
 
 def test_triage_given_an_already_adopted_session_when_triaged_then_skipped_as_done(audit):
