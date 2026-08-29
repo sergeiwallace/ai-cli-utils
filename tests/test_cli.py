@@ -247,14 +247,18 @@ class TestCliDispatch:
 
     def test_given_generation_marked_session_when_heartbeat_is_published_then_ledger_is_written_first(self, tmp_path):
         with patch(
-            "sys.argv", ["ai", "internal", "publish-heartbeat", "session-1", '{"status": "WORKING"}', "token-1"]
+            "sys.argv",
+            ["ai", "internal", "publish-heartbeat", "session-1", '{"status": "WORKING"}', "token-1", "123"],
         ):
             with (
                 patch("ai_cli.config.load_config", return_value={}),
                 patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
                 patch(
                     "ai_cli.main.subprocess.run",
-                    return_value=subprocess.CompletedProcess([], 0, stdout="token-1\n", stderr=""),
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, stdout="token-1\n", stderr=""),
+                        subprocess.CompletedProcess([], 0, stdout="123\t0\n", stderr=""),
+                    ],
                 ),
                 patch("ai_cli.stale_session_reaper.write_heartbeat", return_value=True) as write_heartbeat,
                 patch("ai_cli.messaging.NATSClient") as mock_nats,
@@ -265,6 +269,30 @@ class TestCliDispatch:
 
         assert exc.value.code == 0
         write_heartbeat.assert_called_once_with(tmp_path, "session-1", "token-1")
+
+    def test_given_dead_or_replaced_supervisor_when_heartbeat_is_published_then_ledger_is_not_written(self, tmp_path):
+        with patch(
+            "sys.argv",
+            ["ai", "internal", "publish-heartbeat", "session-1", '{"status": "WORKING"}', "token-1", "123"],
+        ):
+            with (
+                patch("ai_cli.config.load_config", return_value={}),
+                patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+                patch(
+                    "ai_cli.main.subprocess.run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, stdout="token-1\n", stderr=""),
+                        subprocess.CompletedProcess([], 0, stdout="123\t1\n", stderr=""),
+                    ],
+                ),
+                patch("ai_cli.stale_session_reaper.write_heartbeat", return_value=True) as write_heartbeat,
+                patch("ai_cli.messaging.NATSClient", return_value=MagicMock()),
+            ):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+
+        assert exc.value.code == 0
+        write_heartbeat.assert_not_called()
 
     def test_cli_when_internal_publish_heartbeat_bad_json_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", "not-json"]):
@@ -1024,6 +1052,8 @@ class TestCliSessionExecvp:
             run_calls.append(list(cmd))
             # has-session returns 1 (no existing session); new-session returns 0 (success)
             if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "set-window-option" in cmd:
                 return MagicMock(returncode=0, stdout="", stderr="")
             if "--git-common-dir" in cmd:
                 return MagicMock(returncode=1, stdout="", stderr="")
@@ -1850,7 +1880,7 @@ class TestCliSessionStablePath:
 
     def test_when_new_session_then_script_written_to_stable_path(self, tmp_path):
         # has-session → 1 (no session), new-session → 0 (success)
-        self._run_cli(tmp_path, {"has-session": 1, "new-session": 0})
+        self._run_cli(tmp_path, {"has-session": 1, "new-session": 0, "set-window-option": 0})
         script_path = tmp_path / "sessions" / "c-sw-1.sh"
         assert script_path.exists()
         assert "# script" in script_path.read_text()

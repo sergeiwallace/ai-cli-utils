@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,19 @@ HEARTBEAT_VERSION = 1
 DEFAULT_MODE = "observe"
 DEFAULT_STALE_AFTER_SECONDS = 600
 _TMUX_FORMAT = "#{session_id}\t#{session_name}\t#{@ai_cli_session_generation}\t#{pane_id}\t#{pane_pid}"
+_TMUX_FINGERPRINT_FORMAT = (
+    "#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|"
+    "#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}"
+)
+_SESSION_ID_RE = re.compile(r"^\$\d+$")
+_WINDOW_ID_RE = re.compile(r"^@\d+$")
+_PANE_ID_RE = re.compile(r"^%\d+$")
+_GENERATION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_FINGERPRINT_RE = re.compile(
+    r"^(?P<session>\$\d+)\|(?P<generation>[A-Za-z0-9_-]{1,128})\|(?P<attached>[01])\|(?P<windows>(?:@\d+\[(?:%\d+=[1-9]\d*=[01];)+\])+)$"
+)
+_WINDOW_FINGERPRINT_RE = re.compile(r"(@\d+)\[((?:%\d+=[1-9]\d*=[01];)+)\]")
+_PANE_FINGERPRINT_RE = re.compile(r"(%\d+)=([1-9]\d*)=([01]);")
 
 
 @dataclass(frozen=True)
@@ -75,17 +89,24 @@ class TmuxAdapter(Protocol):
         """Return token-marked sessions with their complete pane mappings."""
         ...
 
-    def kill_session(self, session_id: str) -> bool:
-        """Kill one opaque tmux session ID, never a user-facing name."""
+    def capture_fingerprint(self, candidate: SessionCandidate) -> str | None:
+        """Capture a validated dead-pane tmux fingerprint for one candidate."""
+        ...
+
+    def fence_and_kill(self, session_id: str, fingerprint: str) -> bool:
+        """Atomically compare a captured fingerprint and kill its exact session ID."""
         ...
 
 
 class SubprocessTmuxAdapter:
     """Tmux adapter using delimiter-safe ``list-panes`` output."""
 
+    def __init__(self, tmux_command: Sequence[str] = ("tmux",)) -> None:
+        self._tmux_command = tuple(tmux_command)
+
     def sessions(self) -> Sequence[SessionCandidate]:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", _TMUX_FORMAT],
+            [*self._tmux_command, "list-panes", "-a", "-F", _TMUX_FORMAT],
             capture_output=True,
             text=True,
             check=False,
@@ -116,9 +137,49 @@ class SubprocessTmuxAdapter:
             for (session_id, session_name, generation_token), panes in grouped.items()
         )
 
-    def kill_session(self, session_id: str) -> bool:
-        result = subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, text=True, check=False)
-        return result.returncode == 0
+    def capture_fingerprint(self, candidate: SessionCandidate) -> str | None:
+        """Capture only a canonical fingerprint whose panes are all tmux-dead."""
+        if not _valid_candidate(candidate):
+            return None
+        result = subprocess.run(
+            [*self._tmux_command, "display-message", "-p", "-t", candidate.session_id, _TMUX_FINGERPRINT_FORMAT],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        fingerprint = result.stdout.strip()
+        if not _valid_fingerprint(fingerprint, candidate, require_dead=True):
+            return None
+        return fingerprint
+
+    def fence_and_kill(self, session_id: str, fingerprint: str) -> bool:
+        """Use tmux's synchronous queue to compare-and-kill one opaque ID.
+
+        The mismatch branch prints a fixed sentinel, allowing the one-shot client
+        to distinguish a preserved session from a successful true branch without
+        another state-dependent destructive decision.
+        """
+        if not _SESSION_ID_RE.fullmatch(session_id) or not _valid_fingerprint(fingerprint, require_dead=True):
+            return False
+        predicate = f"#{{==:{_TMUX_FINGERPRINT_FORMAT},{fingerprint}}}"
+        result = subprocess.run(
+            [
+                *self._tmux_command,
+                "if-shell",
+                "-F",
+                "-t",
+                session_id,
+                predicate,
+                f"kill-session -t '{session_id}'",
+                "display-message -p __ai_cli_fence_mismatch__",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0 and "__ai_cli_fence_mismatch__" not in result.stdout
 
 
 def encode_ledger_component(value: str) -> str:
@@ -314,7 +375,8 @@ class StaleSessionReaper:
             if final is None or not self._heartbeat_is_stale(refreshed) or not _same_snapshot(initial, final):
                 self._log("revalidation_failed", candidate)
                 return False
-            if not self._tmux.kill_session(candidate.session_id):
+            fingerprint = self._tmux.capture_fingerprint(refreshed)
+            if fingerprint is None or not self._tmux.fence_and_kill(candidate.session_id, fingerprint):
                 self._log("revalidation_failed", candidate)
                 return False
         self._remove_after_confirmed_kill(candidate)
@@ -429,7 +491,38 @@ def _valid_candidate(candidate: SessionCandidate) -> bool:
     if not all((candidate.session_id, candidate.session_name, candidate.generation_token, candidate.panes)):
         return False
     pane_ids = [pane.pane_id for pane in candidate.panes]
-    return all(pane_ids) and len(pane_ids) == len(set(pane_ids))
+    return (
+        bool(_SESSION_ID_RE.fullmatch(candidate.session_id))
+        and bool(_GENERATION_TOKEN_RE.fullmatch(candidate.generation_token))
+        and all(_PANE_ID_RE.fullmatch(pane_id) for pane_id in pane_ids)
+        and all(pane.pid > 0 for pane in candidate.panes)
+        and len(pane_ids) == len(set(pane_ids))
+    )
+
+
+def _valid_fingerprint(
+    fingerprint: str, candidate: SessionCandidate | None = None, *, require_dead: bool = False
+) -> bool:
+    """Accept only the fixed tmux-format alphabet required by the final fence."""
+    if not isinstance(fingerprint, str) or len(fingerprint) > 16_384:
+        return False
+    match = _FINGERPRINT_RE.fullmatch(fingerprint)
+    if match is None:
+        return False
+    panes: dict[str, int] = {}
+    for window_match in _WINDOW_FINGERPRINT_RE.finditer(match.group("windows")):
+        if _WINDOW_ID_RE.fullmatch(window_match.group(1)) is None:
+            return False
+        for pane_match in _PANE_FINGERPRINT_RE.finditer(window_match.group(2)):
+            pane_id, raw_pid, dead = pane_match.groups()
+            if pane_id in panes or (require_dead and dead != "1"):
+                return False
+            panes[pane_id] = int(raw_pid)
+    if candidate is None:
+        return True
+    if match.group("session") != candidate.session_id or match.group("generation") != candidate.generation_token:
+        return False
+    return panes == {pane.pane_id: pane.pid for pane in candidate.panes}
 
 
 def _same_snapshot(initial: tuple[ProcessObservation, ...], final: tuple[ProcessObservation, ...]) -> bool:

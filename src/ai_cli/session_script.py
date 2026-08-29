@@ -127,9 +127,10 @@ def get_engine_script(
       shift
       tmux_session="$1"
       generation_token="$2"
+      supervisor_pid="$3"
       while true; do
         heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' "{project_prefix}" "{ai_name}")
-        ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" "$generation_token" 2>/dev/null || true
+        ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" "$generation_token" "$supervisor_pid" 2>/dev/null || true
         sleep 30 || exit 0
       done
     fi
@@ -271,7 +272,7 @@ def get_engine_script(
         # A terminal-free companion owns only its timer. It starts a new session
         # before execing the ticker so foreground-group changes cannot affect it.
         python3 -c 'import os, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
-          "{_session_shell}" "$_supervisor_script" --ai-cli-heartbeat-ticker "$tmux_session" "$generation_token" \
+          "{_session_shell}" "$_supervisor_script" --ai-cli-heartbeat-ticker "$tmux_session" "$generation_token" "$$" \
           </dev/null >/dev/null 2>&1 &
         _heartbeat_pid=$!
         disown "$_heartbeat_pid" 2>/dev/null || true

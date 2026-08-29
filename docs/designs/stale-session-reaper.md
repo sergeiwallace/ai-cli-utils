@@ -233,7 +233,7 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 | 5 | D-4/D-5 default and invalid configuration fail closed | - [ ] | |
 | 6 | D-6 preserves launch-time bookkeeping authority | - [ ] | |
 | 7 | D-7 binds the sole managed marker and every ledger record to one generation token | - [ ] | |
-| 8 | D-8 holds the generation lease through final identity/gate verification and ID-targeted kill | - [ ] | |
+| 8 | D-8 holds the generation lease through final identity/gate verification and ID-targeted kill | - [x] | The final tmux compare-and-kill holds the generation lease and requires the captured all-dead pane fingerprint. |
 | 9 | D-9 uses current-boot monotonic age and preserves on boot/clock uncertainty | - [ ] | |
 | 10 | Phase 1 integrated positive, mutation-negative, lease, and pane/process-identity ACs are covered | - [ ] | |
 | 11 | Phase 2 start/stop/status/run success and failure ACs are covered | - [ ] | |
