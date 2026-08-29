@@ -122,15 +122,14 @@ class TestCliDispatch:
                         cli()
                     assert exc.value.code == 0
 
-    def test_cli_when_handoff_is_retired_then_exits_1_with_guidance(self, capsys):
+    def test_cli_when_handoff_is_invoked_then_no_such_command(self, capsys):
+        """The handoff command was fully removed, not just stubbed -- confirm it's gone."""
         with patch("sys.argv", ["ai", "handoff", "post", "example"]):
             with pytest.raises(SystemExit) as exc:
                 cli()
 
-        assert exc.value.code == 1
-        stderr = capsys.readouterr().err
-        assert "retired" in stderr
-        assert "archive/" in stderr
+        assert exc.value.code == 2
+        assert "No such command" in capsys.readouterr().err
 
     def test_cli_when_memory_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "memory"]):
