@@ -691,6 +691,7 @@ def adopt_session(
     ai_name: str,
     *,
     source_root: Path | None = None,
+    source_project_dir: Path | None = None,
     task_namespace: str | None = None,
     new_title: str | None = None,
     on_collision: str = "gate",
@@ -720,7 +721,7 @@ def adopt_session(
             raise AdoptionError("a new title is only meaningful with on_collision='retitle'")
         retitled_from, target_title = ai_name, new_title
 
-    source_dir = cc_project_dir(source_root, home)
+    source_dir = (source_project_dir or cc_project_dir(source_root, home)).resolve()
     src_jsonl = find_transcript(source_dir, title=ai_name)
     dest_root_guess = repo_root / ".worktrees" / target_title
     already = probe_resolves(dest_root_guess, target_title, home)
@@ -786,12 +787,25 @@ def adopt_session(
         # to plan into a destination root that does not exist yet — so when the
         # worktree is still to be created, report the source instead of the plan.
         migration = (
-            migrate_session(source_root, dest_root, title=ai_name, dry_run=True, claude_home=home)
+            migrate_session(
+                source_root,
+                dest_root,
+                title=ai_name,
+                source_project_dir=source_dir,
+                dry_run=True,
+                claude_home=home,
+            )
             if dest_root.is_dir()
             else None
         )
     else:
-        migration = migrate_session(source_root, dest_root, title=ai_name, claude_home=home)
+        migration = migrate_session(
+            source_root,
+            dest_root,
+            title=ai_name,
+            source_project_dir=source_dir,
+            claude_home=home,
+        )
         if retitled_from:
             retitle_transcript(migration.dest_jsonl, retitled_from, target_title)
         # Moving the file is not enough on its own: a stale worktree binding makes
