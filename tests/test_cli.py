@@ -128,7 +128,7 @@ class TestCliDispatch:
             with pytest.raises(SystemExit) as exc:
                 cli()
 
-        assert exc.value.code == 2
+        assert exc.value.code == 1
         assert "No such command" in capsys.readouterr().err
 
     def test_cli_when_memory_bad_args_then_exits_1(self):
