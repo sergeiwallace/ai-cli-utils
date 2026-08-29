@@ -325,10 +325,10 @@ def test_given_stopped_session_in_the_callers_own_process_group_when_reclaimed_t
 # --- AC-2: the launcher resumes the session instead of naming a new one ---------
 
 
-def test_given_stopped_session_when_bare_claude_launches_then_it_continues_and_says_what_it_found(
+def test_given_stopped_session_when_bare_claude_launches_then_it_resumes_exact_transcript_and_says_what_it_found(
     tmp_path, monkeypatch, sleeper, capsys
 ):
-    """The operator-visible symptom: ``--continue`` is dropped and a fresh session starts."""
+    """A reclaimed session resumes its own transcript, never the newest arbitrary one."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     session_id = "33333333-0000-4000-8000-000000000339"
@@ -340,7 +340,8 @@ def test_given_stopped_session_when_bare_claude_launches_then_it_continues_and_s
 
     argv = _bare_engine_command("c", "myproject-3", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" in argv
+    assert argv[argv.index("--resume") + 1] == session_id
+    assert "--continue" not in argv
     stderr = capsys.readouterr().err
     assert "still running" not in stderr
     assert f"pid {pid}" in stderr, "the launcher must say what it found and what it did"
