@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The stale-session reaper now records generation-fenced heartbeats and uses
+  independently verified liveness and staleness evidence before it can reclaim
+  a session. Its default mode is observation; missing or invalid evidence
+  preserves the session. (`AI-CLI-tdm6`; 8a25e04, 268970b)
 - `ai p` and `ai cx` launch pi and Codex CLI sessions with the same worktree
   isolation, resume behavior, and terminal integration as existing session
   engines. (`AI-CLI-o3gi`, `AI-CLI-z7ms`; 35c5eef, a77c453)
@@ -62,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ai handoff` and its cross-machine queue, NATS ingress, and automatic launch
+  hooks are retired. The command now fails closed and points to the archived
+  implementation; NATS continues to support its remaining messaging features.
+  This intentionally removes the queue's offline, cross-machine, and durable
+  lifecycle semantics. (`AI-CLI-archive-retire-exjn`; 86c41d0)
 - **BREAKING (config):** the `cc-usage push` legacy usage configuration section
   is renamed to `[usage_api]`. The old name was a private platform name that did
   not belong in a public package, and it did not describe what the section
@@ -77,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The stale-session supervisor no longer kills a predecessor `mosh-server`
+  process without proving it belongs to the current session. (`AI-CLI-sdgi`;
+  4a534ff)
+- `ai cc-usage push`, quota operations, and copier updates now return distinct
+  exit codes for configuration errors (78), transient failures (75), and,
+  for copier updates, a partially mutated state requiring human resolution (3).
+  (`AI-CLI-15vn`; fe9da7b)
 - Remote named sessions use the identity allocated on the remote machine;
   unnamed remote sessions no longer collide. Remote launch probes its available
   shell, limits failed mosh retries before falling back to SSH, and reports a
@@ -582,11 +598,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale session cleanup
 - Session reconnection (`ai reconnect`)
 
-[Unreleased]: https://github.com/user/ai-cli-utils/compare/v0.8.0...HEAD
-[0.8.0]: https://github.com/user/ai-cli-utils/compare/v0.7.0...v0.8.0
-[0.4.1]: https://github.com/user/ai-cli-utils/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/user/ai-cli-utils/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/user/ai-cli-utils/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/user/ai-cli-utils/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/user/ai-cli-utils/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/user/ai-cli-utils/releases/tag/v0.1.0
+[Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.7.0...HEAD
+[0.4.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/sergeiwallace/ai-cli-utils/releases/tag/v0.1.0

@@ -8,6 +8,10 @@ source: session-2026-04-06
 
 # AI-CLI-16 — Handoff Reliability Testing
 
+> **Superseded:** In v0.8.0 the handoff command, queue, NATS ingress, and
+> automatic delivery hooks were retired. The scenarios below describe the
+> removed system and are retained only as historical test evidence.
+
 **Task:** AI-CLI-16
 **Status:** In progress — testing scenario by scenario
 

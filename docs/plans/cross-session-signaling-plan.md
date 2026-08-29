@@ -1,5 +1,9 @@
 # AI-CLI-14: Cross-Session Signaling — Implementation Plan
 
+> **Superseded:** In v0.8.0 the handoff command, queue, NATS ingress, and
+> automatic delivery hooks were retired. This plan describes the removed system
+> and is retained only for historical context.
+
 **Status:** COMPLETE
 **Created:** 2026-04-01
 **Task:** AI-CLI-14
