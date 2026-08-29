@@ -519,6 +519,27 @@ def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_hear
     assert "foreground process group" in stderr
 
 
+def test_given_shebangless_stable_script_when_generated_supervisor_starts_child_then_child_runs(
+    tmp_path: Path, supported_session_shell: str
+):
+    """The child must be run through the selected shell, not directly exec'd.
+
+    Session templates are shell source files: they are executable on disk but do
+    not carry a shebang.  The supervisor therefore has to pass its selected
+    interpreter to the Python exec wrapper, as it already does for the ticker.
+    """
+    child_body = """if [ \"${1:-}\" = \"--ai-cli-child-body\" ]; then
+  printf '%s\\n' \"$$\" > \"$AI_CLI_TEST_CHILD_READY\"
+  while :; do sleep 0.05; done
+fi
+"""
+
+    process, _, _ = _start_generated_supervisor(
+        tmp_path, supported_session_shell, lease_acquired=False, child_body=child_body
+    )
+    _finish_supervisor(process)
+
+
 def test_given_live_generated_supervisor_when_record_only_signals_arrive_then_child_receives_no_relay(
     tmp_path: Path, supported_session_shell: str
 ):

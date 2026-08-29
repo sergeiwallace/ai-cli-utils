@@ -286,7 +286,7 @@ def get_engine_script(
         # dispositions in a short exec wrapper before the child shell starts,
         # retain stdin explicitly, and then wait interruptibly in this shell.
         python3 -c 'import os, signal, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); os.isatty(0) and (os.setpgrp() or os.kill(os.getpid(), signal.SIGSTOP)); signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
-          "$_supervisor_script" --ai-cli-child-body <&0 &
+          "{_session_shell}" "$_supervisor_script" --ai-cli-child-body <&0 &
         _child_pid=$!
         if ! _supervisor_promote_child; then
           printf '%s\n' "ai-cli: could not promote child process group to terminal foreground" >&2
