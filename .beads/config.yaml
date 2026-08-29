@@ -7,7 +7,6 @@
 # If not set, bd init will auto-detect from directory name
 # Example: issue-prefix: "myproject" creates issues like "myproject-1", "myproject-2", etc.
 issue-prefix: "AI-CLI"
-
 # Use no-db mode: JSONL-only, no Dolt database
 # When true, .beads/issues.jsonl is the only local store
 # no-db: false
@@ -64,10 +63,9 @@ issue-prefix: "AI-CLI"
 # Secret keys (stored in this file but prefer env vars to avoid git exposure):
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
-
-sync.remote: "git+ssh://git@github.com/sergeiwallace/ai-cli-utils.git"
+sync.remote: "git+https://github.com/sergeiwallace/ai-cli-utils.git"
 export:
     auto: true
     git-add: true
 sync:
-    remote: "git+ssh://git@github.com/sergeiwallace/ai-cli-utils.git"
+    remote: "git+https://github.com/sergeiwallace/ai-cli-utils.git"
