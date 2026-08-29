@@ -64,14 +64,20 @@ Without this, none of the fleet management features (rolling tab colors, badges,
 
 | Action | Keys |
 |--------|------|
-| Select text in TUI (CC session) | **Hold Option** + mouse drag (bypasses TUI mouse capture) |
+| Select text in an `ai c`, `ai g`, `ai p`, or `ai cx` tmux session | Mouse drag |
 | Copy | `Cmd+C` (after selecting) |
 | Paste | `Cmd+V` |
 | Paste plain text | `Cmd+Shift+V` |
 | Clipboard history | `Cmd+Shift+H` |
 | tmux paste (fallback) | `Ctrl+Space ]` |
 
-**Note:** In Claude Code sessions, you must hold **Option** while selecting text with the mouse — otherwise mouse events go to CC's ink TUI renderer instead of iTerm2's text selection.
+New tmux sessions launched by `ai` enable mouse selection and OSC 52 clipboard output. A plain
+mouse drag enters tmux copy mode and copies the selection to the system clipboard, including for
+sessions running on a remote host. This requires tmux 3.2 or newer.
+
+In iTerm2, enable **Settings → General → Applications in terminal may access clipboard** once.
+The application controls this permission; `ai` cannot enable it. If you intentionally want native
+terminal selection instead, hold **Option** while dragging.
 
 ### Splits & Tabs
 

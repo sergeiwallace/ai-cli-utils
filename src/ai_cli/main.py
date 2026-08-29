@@ -2744,16 +2744,18 @@ def _do_session_launch(
                 print(f"  (with --): {stderr}", file=sys.stderr)
                 print(f"  (without --): {stderr2}", file=sys.stderr)
                 sys.exit(1)
-        remain_on_exit = subprocess.run(
+        tmux_options = (
             ["tmux", "set-window-option", "-t", session_id, "remain-on-exit", "on"],
-            capture_output=True,
-            check=False,
+            ["tmux", "set-option", "-t", session_id, "mouse", "on"],
+            ["tmux", "set-option", "-s", "set-clipboard", "on"],
         )
-        if remain_on_exit.returncode != 0:
-            subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
-            Path(_script_path).unlink(missing_ok=True)
-            print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
-            sys.exit(1)
+        for tmux_option in tmux_options:
+            configured = subprocess.run(tmux_option, capture_output=True, check=False)
+            if configured.returncode != 0:
+                subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+                Path(_script_path).unlink(missing_ok=True)
+                print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
+                sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
