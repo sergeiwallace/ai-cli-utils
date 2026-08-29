@@ -2103,6 +2103,10 @@ rg -ni '\b(sergei|wallace)\b' docs/designs/stale-session-reaper.md docs/audits/s
 git diff --check
 ```
 
+> **Historical correction (2026-08-29):** The preceding append-only command includes personal-name
+> literals from its original verification context. It is retained unchanged as historical evidence;
+> do not reuse it. Current public-package checks must use generic, policy-focused patterns instead.
+
 Round 5 validation passed: template/region validation reported the expected audit template and
 four regions, the ToC checker resolved all 56 links, the filled-audit check exited 0, and
 `git diff --check` reported no whitespace errors.

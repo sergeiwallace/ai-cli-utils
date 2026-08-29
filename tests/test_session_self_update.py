@@ -21,7 +21,7 @@ from ai_cli.session_script import get_engine_script
 
 def _script(engine="c", **kw):
     kw.setdefault("worktree_dir", "/tmp/wt")
-    kw.setdefault("project_name", "job-pilot")
+    kw.setdefault("project_name", "myproject")
     return get_engine_script(engine, "job-1", "c-job-1", "c-job-", "job", **kw)
 
 
@@ -78,7 +78,7 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
         "prefix": "c-job-",
         "project_prefix": "job",
         "worktree_dir": "/tmp/wt",
-        "project_name": "job-pilot",
+        "project_name": "myproject",
     }
     (state / "session-meta-c-job-1.json").write_text(json.dumps(meta))
 

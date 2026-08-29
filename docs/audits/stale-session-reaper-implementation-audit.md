@@ -225,10 +225,7 @@ design rather than accepting the race.
 ```python
 if len(argv) >= 4:
     generation_token = argv[3]
-    marker = subprocess.run(
-        ["tmux", "show-options", "-t", argv[1], "-v", "@ai_cli_session_generation"],
-        ...
-    )
+    marker = subprocess.run(["tmux", "show-options", "-t", argv[1], "-v", "@ai_cli_session_generation"], ...)
     if marker.returncode == 0 and marker.stdout.strip() == generation_token:
         write_heartbeat(_config.get_xdg_state_home(), argv[1], generation_token)
 ```
