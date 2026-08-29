@@ -60,7 +60,7 @@ uninformative.
    token *not* immediately followed by the surname (see Verification for the exact pattern):
 
    ```bash
-   git grep -n -I -P -i '<name>(?! ?wallace)' -- src/ tests/
+   git grep -n -I -P -i '<private-project-name>' -- src/ tests/
    ```
 
 3. Observe 12 matches across 6 files: 3 in `src/ai_cli/data/statusline-command.sh`, 1 in
@@ -162,15 +162,15 @@ Rewriting any of them breaks the badges or the package metadata.
 without an intervening space):
 
 ```text
-<name>(?! ?wallace)
+<private-project-name>
 ```
 
 where `<name>` is the private project name — written here as a placeholder so this document
 does not itself carry the literal it describes.
 
-Every legitimate use is account-name usage (`<name>wallace/...`, `dev@<name>wallace.com`) or
-author-name usage (`<Name> Wallace`), so all of them carry the surname; no violation does. The
-private repository names need no such exception — they have no legitimate form here.
+Published metadata and documentation must use generic organization names, email addresses, and
+repository URLs. The private repository names need no exception — they have no legitimate form
+here.
 
 **Two-way control test**, run before trusting any result:
 

@@ -51,16 +51,16 @@ Environment: `AI_HOST=acn-windows`, repo `acn-automation`, session `acn-1` that 
 
 ```
 $ ai session-adopt acn-1
-Error: no transcript titled 'acn-1' in C:\Users\user.wallace\.claude\projects\
-C--Users-user-wallace-Projects-acn-automation — nothing to adopt
+Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
+C--Users-user-Projects-acn-automation — nothing to adopt
 (check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
 
 $ ai session-adopt -s .worktrees/acn-1
 Error: NAME is required (or use -a/--all)
 
 $ ai session-adopt acn-1 -s .worktrees/acn-1
-Error: no transcript titled 'acn-1' in C:\Users\user.wallace\.claude\projects\
-C--Users-user-wallace-Projects-acn-automation--worktrees-acn-1 — nothing to adopt
+Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
+C--Users-user-Projects-acn-automation--worktrees-acn-1 — nothing to adopt
 (check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
 ```
 
@@ -128,16 +128,16 @@ Three sequential reproduction attempts, captured 2026-08-12 on `acn-windows`:
 
 ```
 $ ai session-adopt acn-1
-Error: no transcript titled 'acn-1' in C:\Users\user.wallace\.claude\projects\
-C--Users-user-wallace-Projects-acn-automation — nothing to adopt
+Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
+C--Users-user-Projects-acn-automation — nothing to adopt
 (check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
 
 $ ai session-adopt -s .worktrees/acn-1
 Error: NAME is required (or use -a/--all)
 
 $ ai session-adopt acn-1 -s .worktrees/acn-1
-Error: no transcript titled 'acn-1' in C:\Users\user.wallace\.claude\projects\
-C--Users-user-wallace-Projects-acn-automation--worktrees-acn-1 — nothing to adopt
+Error: no transcript titled 'acn-1' in C:\Users\user\.claude\projects\
+C--Users-user-Projects-acn-automation--worktrees-acn-1 — nothing to adopt
 (check the title with `ai cc-migrate --dry-run`, or pass -s/--source)
 ```
 
