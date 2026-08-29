@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -102,7 +103,7 @@ def test_conflict_files_returns_empty_when_none(tmp_path):
 
 
 def _make_answers(proj_dir: Path, src_path: str = "/projects/project-template") -> None:
-    (proj_dir / ".copier-answers.yml").write_text(f"_src_path: {src_path}\n")
+    (proj_dir / ".copier-answers.yml").write_text(f"_src_path: {src_path}\n_commit: previous\n")
 
 
 def test_run_copier_update_projects_dir_not_found(tmp_path):
@@ -360,8 +361,9 @@ def test_do_update_nochange(tmp_path):
     """copier ok + empty porcelain → nochange."""
     runner = _wt_runner(porcelain="")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._conflict_files", return_value=[]):
-            status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
+        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+            with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+                status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "nochange"
 
 
@@ -369,8 +371,9 @@ def test_do_update_copier_failure(tmp_path):
     """Non-zero copier exit → failed, with stderr surfaced."""
     runner = _wt_runner(copier_rc=1)
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
-    assert status == "failed"
+        with patch("ai_cli.copier_update._run_copier_update", return_value=("copier boom", None, None)):
+            status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
+    assert status != "ok"
     assert "boom" in detail
 
 
@@ -380,6 +383,7 @@ def test_do_update_conflict(tmp_path):
     runner = _wt_runner(porcelain=" M docs/x.py\n")
     with (
         patch("ai_cli.copier_update.subprocess.run", side_effect=runner),
+        patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))),
         patch(
             "ai_cli.copier_update._conflict_files",
             return_value=[str(wt / "docs" / "x.py")],
@@ -397,8 +401,9 @@ def test_do_update_ok_push(tmp_path):
     """Clean changes + push → ok; pushes HEAD:main and rebases the main tree."""
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._conflict_files", return_value=[]):
-            status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
+        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+            with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+                status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "ok"
     assert any("push" in c and "HEAD:main" in c for c in runner.calls)
     assert any("pull" in c and "--rebase" in c for c in runner.calls)
@@ -408,19 +413,173 @@ def test_do_update_ok_no_push(tmp_path):
     """push=False commits but never pushes or rebases."""
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._conflict_files", return_value=[]):
-            status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", False)
+        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+            with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+                status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", False)
     assert status == "ok"
     assert any("commit" in c for c in runner.calls)
     assert not any("push" in c for c in runner.calls)
+
+
+def test_given_stored_answers_when_updating_then_passes_them_to_copier(tmp_path):
+    """Stored answers override defaults, including non-default project choices."""
+    template = tmp_path / "template"
+    template.mkdir()
+    subprocess.run(["git", "init"], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=template, check=True)
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    template_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    answers = tmp_path / ".copier-answers.yml"
+    answers.write_text(f"_src_path: {template}\n_commit: {template_commit}\nfeature_enabled: true\n")
+    runner = _wt_runner(porcelain=" M file\n")
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
+        with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+            _do_update_in_worktree(tmp_path, tmp_path / "root", "/usr/bin/copier", False)
+
+    copier_command = next(command for command in runner.calls if command[0] == "/usr/bin/copier")
+    assert "--data-file" in copier_command
+    assert copier_command[copier_command.index("--data-file") + 1] == str(answers)
+
+
+def test_given_drifted_template_hunk_when_copier_exits_cleanly_then_update_fails_closed(tmp_path):
+    """A clean copier exit must not commit when a template hunk was not applied."""
+    template = tmp_path / "template"
+    template.mkdir()
+    subprocess.run(["git", "init"], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=template, check=True)
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    old_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "message.txt").write_text("updated\n")
+    subprocess.run(["git", "commit", "-am", "update message"], cwd=template, check=True, capture_output=True)
+
+    wt_dir = tmp_path / "project"
+    wt_dir.mkdir()
+    (wt_dir / "message.txt").write_text("custom project content\n")
+    (wt_dir / ".copier-answers.yml").write_text(
+        f"_src_path: {template}\n_commit: {old_commit}\nfeature_enabled: true\n"
+    )
+    real_run = subprocess.run
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "/usr/bin/copier":
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[-1:] == ["--porcelain"]:
+            return MagicMock(returncode=0, stdout=" M .copier-answers.yml\n", stderr="")
+        if "commit" in command:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+            status, detail = _do_update_in_worktree(wt_dir, tmp_path / "root", "/usr/bin/copier", False)
+
+    assert status != "ok"
+    assert "parity" in detail
+    assert not any("commit" in command for command in calls)
+
+
+def test_given_non_default_answer_when_copier_resets_it_then_update_fails_closed(tmp_path):
+    """A successful subprocess cannot replace a stored non-default answer."""
+    template = tmp_path / "template"
+    template.mkdir()
+    subprocess.run(["git", "init"], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=template, check=True)
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    template_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    answers = tmp_path / ".copier-answers.yml"
+    answers.write_text(f"_src_path: {template}\n_commit: {template_commit}\nfeature_enabled: true\n")
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            answers.write_text(f"_src_path: {template}\n_commit: {template_commit}\nfeature_enabled: false\n")
+        return MagicMock(returncode=0, stdout=" M .copier-answers.yml\n", stderr="")
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        status, detail = _do_update_in_worktree(tmp_path, tmp_path / "root", "/usr/bin/copier", False)
+
+    assert status != "ok"
+    assert "stored Copier answers" in detail
+
+
+def test_given_relative_source_when_isolating_then_passes_absolute_source_to_worktree(tmp_path):
+    """Relative Copier sources are resolved before the isolated cwd changes."""
+    (tmp_path / ".copier-answers.yml").write_text("_src_path: ../template\n_commit: previous\n")
+    ok = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("ai_cli.copier_update._repo_root", return_value=tmp_path):
+        with patch("ai_cli.copier_update.subprocess.run", return_value=ok):
+            with patch("ai_cli.copier_update._cleanup_worktree"):
+                with patch("ai_cli.copier_update._do_update_in_worktree", return_value=("nochange", "")) as update:
+                    _update_one_isolated(tmp_path, "/usr/bin/copier")
+
+    assert update.call_args.args[-1] == str((tmp_path / "../template").resolve())
+
+
+def test_given_applied_template_hunk_when_verifying_parity_then_update_commits(tmp_path):
+    """A matching template hunk is accepted rather than treated as a conflict."""
+    template = tmp_path / "template"
+    project = tmp_path / "project"
+    for directory in (template, project):
+        directory.mkdir()
+        subprocess.run(["git", "init"], cwd=directory, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=directory, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=directory, check=True)
+
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    old_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "message.txt").write_text("updated\n")
+    subprocess.run(["git", "commit", "-am", "update message"], cwd=template, check=True, capture_output=True)
+
+    (project / "message.txt").write_text("original\n")
+    (project / ".copier-answers.yml").write_text(
+        f"_src_path: {template}\n_commit: {old_commit}\nfeature_enabled: true\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "initial project"], cwd=project, check=True, capture_output=True)
+
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            (project / "message.txt").write_text("updated\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        status, detail = _do_update_in_worktree(project, tmp_path / "root", "/usr/bin/copier", False)
+
+    assert (status, detail) == ("ok", "")
 
 
 def test_do_update_pushfail(tmp_path):
     """Push rejected → pushfail with git stderr, worktree/commit preserved by caller."""
     runner = _wt_runner(porcelain=" M file\n", push_rc=1)
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._conflict_files", return_value=[]):
-            status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
+        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+            with patch("ai_cli.copier_update._conflict_files", return_value=[]):
+                status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "pushfail"
     assert "rejected" in detail
 
@@ -435,6 +594,7 @@ def test_update_one_isolated_not_a_repo(tmp_path):
 
 def test_update_one_isolated_cleans_up_on_ok(tmp_path):
     """On ok, the temp worktree is torn down (stale-clear + teardown = 2 cleanups)."""
+    _make_answers(tmp_path)
     ok = MagicMock(returncode=0, stdout="", stderr="")
     with patch("ai_cli.copier_update._repo_root", return_value=tmp_path):
         with patch("ai_cli.copier_update.subprocess.run", return_value=ok):
@@ -447,6 +607,7 @@ def test_update_one_isolated_cleans_up_on_ok(tmp_path):
 
 def test_update_one_isolated_leaves_worktree_on_conflict(tmp_path):
     """On conflict, the temp worktree is left in place (only the stale-clear cleanup runs)."""
+    _make_answers(tmp_path)
     ok = MagicMock(returncode=0, stdout="", stderr="")
     with patch("ai_cli.copier_update._repo_root", return_value=tmp_path):
         with patch("ai_cli.copier_update.subprocess.run", return_value=ok):
@@ -624,5 +785,6 @@ def test_do_update_ignores_unchanged_marker_files(tmp_path):
         return r
 
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
-        status, _ = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", False)
+        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+            status, _ = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", False)
     assert status == "ok"  # NOT "conflict"
