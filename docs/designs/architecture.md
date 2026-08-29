@@ -52,9 +52,9 @@ The tool installs as a single `ai` command. There is no server component — all
 | `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
 | `transport.py` | VPN-aware mosh/SSH loop for `ai c -R`; auto-starts Tailscale on Mac when host unreachable |
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
-| `process_manager.py` | Circus daemon bootstrap + `signal-watch` process lifecycle |
+| `process_manager.py` | Circus daemon bootstrap and quota-watch lifecycle |
 | `process_probe.py` | Per-OS process inspection and termination behind one interface (`ProcessProbe`, resolved by `probe_for`): presence, state, start-time identity, and a bounded termination escalation. `ProcfsProbe` reads Linux `/proc`; `PsutilProbe` covers macOS and Windows. Backs the session-registry liveness check and abandoned-session reclamation, which were Linux-only before it |
-| `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop with watcher, handoff drain, iTerm2 status |
+| `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop; its in-shell watcher handles exit signals, config-change restarts, and Gemini reload/restart signals |
 | `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
 | `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to core-cli REST API; defines `CCTokenEvent`, `PushResult` |
@@ -65,7 +65,7 @@ The tool installs as a single `ai` command. There is no server component — all
 | `memory.py` | inotify/FSEvents-based memory file watcher; debounces MEMORY.md writes; publishes `memory.dream.*` NATS events |
 | `notifications.py` | Unified notification delivery: `Notifier` class fires all configured channels in parallel (Discord webhook, ntfy push, OS native); `NotificationResult` per-channel result tracking; OS fallback fires when all primaries fail; `NotificationManager` for iTerm2 badge updates via OSC escape sequences |
 | `vpn_watch.py` | Circus-managed daemon; polls VPN state; publishes `vpn.state.changed` to NATS |
-| `process_hygiene.py` | Orphaned process detection and cleanup for mosh-server, signal-watch, autossh, circusd, nats-server |
+| `process_hygiene.py` | Orphaned process detection and cleanup for mosh-server, session watchers, autossh, circusd, and nats-server |
 | `layout.py` | iTerm2 YAML layout templating; generates Dynamic Profiles; builds windows/panes via iTerm2 Python API |
 | `icon_generator.py` | Runtime iTerm2 icon tinting via Pillow; computes complementary HSL tint from tab color |
 | `copier_update.py` | Runs `copier update` across all `project-template`-based projects; scans for conflict markers |
@@ -116,9 +116,6 @@ The tool installs as a single `ai` command. There is no server component — all
 ### Sync
 - `ai sync push/pull/conflicts/watch [-m/-f]` — sync CC session data between machines via bare git repo
 - `ai ws pull` — pull/rebase the repositories and worktrees in a workspace file
-
-### Retired Handoff Command
-- `ai handoff` — retained only to report that the handoff queue is retired
 
 ### Daemons / Process Management
 - `ai ps [clean]` — inspect and clean up stale ai-cli processes and PID files
@@ -181,7 +178,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 ### External Processes / Services
 - **tmux** (via `libtmux`) — session creation, attachment, hidden quota-scrape windows
-- **Circus** — process supervisor for `signal-watch`, `vpn-watch`, `telemetry writer` daemons
+- **Circus** — process supervisor for the quota-watch and VPN-watch daemons
 - **SSH/mosh** — remote session launch; SSH tunnels for NATS access on Mac
 - **Gemini CLI** (`gemini` binary) — launches Gemini tmux sessions through `ai g`
 - **GCP BigQuery** (optional) — historical billing data for `ai spend gemini`

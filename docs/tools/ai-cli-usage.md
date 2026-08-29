@@ -51,7 +51,7 @@ ai -V          # same, short form
 ### Platform support
 
 - **Linux / macOS**: full feature set.
-- **Windows (MSYS2 / Git Bash)**: core session management and sync work out of the box. Requires tmux installed via MSYS2 (`pacman -S tmux`). The following features are unavailable on Windows: remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), iTerm2 color slot management. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
+- **Windows (MSYS2 / Git Bash)**: experimental. The Windows-specific session-launch paths exist, but real tmux-server integration is unverified and its integration suite is skipped after a Windows CI hang. Requires tmux installed via MSYS2 (`pacman -S tmux`). Remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), and iTerm2 color slot management are unavailable. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
 
 Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota watch --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
@@ -67,8 +67,8 @@ Behaviour is split across focused modules so `main.py` stays thin:
 | `ai_cli.icon_generator` | tinted PNG generation and Dynamic Profile JSON |
 | `ai_cli.transport` | VPN-aware mosh/SSH transport loop, Tailscale recovery |
 | `ai_cli.tunnel` | autossh SSH tunnels, CDP (Chrome DevTools) management |
-| `ai_cli.process_manager` | Circus daemon + quota-watch lifecycle |
-| `ai_cli.session_script` | bash template that wraps each session's engine loop |
+| `ai_cli.process_manager` | Circus daemon bootstrap and quota-watch lifecycle |
+| `ai_cli.session_script` | bash template that wraps each session's engine loop and runs its in-shell watcher |
 | `ai_cli.main` | CLI dispatch + session launch + update/deploy helpers |
 
 ---
@@ -383,12 +383,6 @@ ai color <palette-name|#hex>
 ```text
 
 Ad hoc reassignment of the current session's iTerm2 tab color. Takes a palette color name (e.g., `purple`, `teal`) or a hex value (e.g., `#5e35b1`). Updates the tab color immediately via `SetColors` escape sequence and rewrites the session's Dynamic Profile JSON.
-
-- `start` — registers a Circus watcher named `sw-{session}` and starts it. Idempotent (removes existing watcher first). Auto-starts `circusd` via `_ensure_circusd()` if not running.
-- `stop` — removes the Circus watcher. Silent if circusd is not running (EXIT trap calls this unconditionally).
-- `status` — lists all `sw-*` watchers and their status.
-
-Circus uses IPC (not TCP) at `~/.local/state/ai-cli/circus.endpoint`. Config written to `~/.local/state/ai-cli/circus.ini`. Launched automatically by the bash session template at session start; stopped at EXIT.
 
 ### ai vpn-watch
 
