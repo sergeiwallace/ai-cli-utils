@@ -233,7 +233,7 @@ class TestGetEngineScript:
             )
         assert "unknown" in result
 
-    def test_given_no_worktree_when_generating_script_then_all_agent_starts_use_direnv(self):
+    def test_given_no_worktree_when_generating_script_then_all_agent_starts_reuse_direnv_environment(self):
         script = get_engine_script(
             engine="c",
             ai_name="session-1",
@@ -243,7 +243,10 @@ class TestGetEngineScript:
         )
 
         assert 'direnv_root="$PWD"' in script
-        assert 'direnv exec "$direnv_root" "$@"' in script
+        assert "agent_direnv_initialized=false" in script
+        assert '"$(direnv export bash)"' in script
+        assert 'eval "$_direnv_exports"' in script
+        assert 'direnv exec "$direnv_root" "$@"' not in script
         # Prompt and regular launches each have exact-match and fresh-session paths.
         assert script.count("run_agent claude") == 4
         assert "--resume" in script
@@ -256,9 +259,9 @@ class TestGetEngineScript:
         assert "acquire-generation-lease" in script
         assert "exit 78" in script
         assert f'exec "{_shell}" "$_script_stable_path"' not in script
-        assert "direnv denied or could not evaluate .envrc" in script
+        assert "starting without the project environment" in script
 
-    def test_given_direnv_blocks_auto_restart_when_agent_exits_then_script_prints_recovery_command(self):
+    def test_given_direnv_cannot_load_when_agent_starts_then_script_continues_without_project_environment(self):
         script = get_engine_script(
             engine="c",
             ai_name="session-1",
@@ -268,19 +271,15 @@ class TestGetEngineScript:
             worktree_dir="/tmp/project-worktree",
         )
 
-        assert "agent_direnv_blocked=false" in script
-        # The main agent invocation's stdio must be untouched — it's a long-running
-        # interactive process; buffering its stderr would break real-time streaming.
-        assert 'direnv exec "$direnv_root" "$@" &\n' in script
+        assert "agent_direnv_initialized=false" in script
+        assert 'if _direnv_exports="$(direnv export bash)"; then' in script
+        assert 'eval "$_direnv_exports"' in script
+        # The main agent invocation's stdio remains untouched — it is a long-running
+        # interactive process, so only the one-time export is captured.
+        assert '"$@" &\n' in script
         assert 'wait "$active_agent_pid"' in script
-        # `[.]` not `\.`: the regex lives inside a Python f-string, where `\.` is not a
-        # recognised escape (SyntaxWarning today, SyntaxError in a future Python). The two
-        # are equivalent in ERE — see tests/test_no_syntax_warnings.py.
-        assert "direnv: error.*[.]envrc is blocked" in script
-        assert "\\.envrc" not in script, "an invalid Python escape must not be reintroduced"
-        assert "direnv status --json" not in script
-        assert "AI CLI stopped because direnv blocked $direnv_root/.envrc" in script
-        assert "direnv allow $direnv_root" in script
+        assert "Warning: direnv could not load $direnv_root/.envrc" in script
+        assert 'direnv exec "$direnv_root" "$@"' not in script
 
     def test_given_worktree_when_generating_script_then_direnv_uses_worktree_cwd(self):
         script = get_engine_script(
