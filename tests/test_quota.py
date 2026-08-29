@@ -982,7 +982,13 @@ class TestQuotaRecord:
 
 
 class TestQuotaScrape:
-    def test_given_no_output_when_scrape_runs_then_returns_ex_tempfail(self, capsys):
+    @pytest.fixture
+    def scrape_prerequisites_available(self):
+        """Make scraper-result tests independent of executables on the test runner's PATH."""
+        with patch("ai_cli.quota.shutil.which", return_value="/test/bin"):
+            yield
+
+    def test_given_no_output_when_scrape_runs_then_returns_ex_tempfail(self, scrape_prerequisites_available, capsys):
         with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
             result = quota_scrape()
         assert result == EX_TEMPFAIL
@@ -1003,7 +1009,7 @@ class TestQuotaScrape:
         assert missing_binary in capsys.readouterr().err
         scrape.assert_not_called()
 
-    def test_given_format_mismatch_when_scrape_runs_then_returns_ex_config(self):
+    def test_given_format_mismatch_when_scrape_runs_then_returns_ex_config(self, scrape_prerequisites_available):
         def format_mismatch() -> None:
             import ai_cli.quota as quota
 
@@ -1014,7 +1020,9 @@ class TestQuotaScrape:
 
         assert result == EX_CONFIG
 
-    def test_given_stale_mismatch_flag_when_scrape_has_no_output_then_returns_ex_tempfail(self):
+    def test_given_stale_mismatch_flag_when_scrape_has_no_output_then_returns_ex_tempfail(
+        self, scrape_prerequisites_available
+    ):
         import ai_cli.quota as quota
 
         quota._last_scrape_had_format_mismatch = True
@@ -1023,7 +1031,9 @@ class TestQuotaScrape:
 
         assert result == EX_TEMPFAIL
 
-    def test_when_scrape_succeeds_then_stores_snapshot_and_returns_0(self, tmp_path, capsys):
+    def test_when_scrape_succeeds_then_stores_snapshot_and_returns_0(
+        self, scrape_prerequisites_available, tmp_path, capsys
+    ):
         import ai_cli.quota_db as qdb
 
         qdb.set_db_path(tmp_path / "quota.db")
@@ -1048,7 +1058,7 @@ class TestQuotaScrape:
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 
-    def test_when_scrape_fails_then_lock_file_cleaned_up(self, tmp_path):
+    def test_when_scrape_fails_then_lock_file_cleaned_up(self, scrape_prerequisites_available, tmp_path):
         """quota_scrape must always remove the lock file, even on failure."""
         lock_path = tmp_path / "quota-scrape.lock"
         lock_path.touch()
@@ -1059,7 +1069,7 @@ class TestQuotaScrape:
             quota_scrape()
         assert not lock_path.exists()
 
-    def test_when_scrape_succeeds_then_lock_file_cleaned_up(self, tmp_path, capsys):
+    def test_when_scrape_succeeds_then_lock_file_cleaned_up(self, scrape_prerequisites_available, tmp_path, capsys):
         """quota_scrape removes the lock file on success too."""
         import ai_cli.quota_db as qdb
 
