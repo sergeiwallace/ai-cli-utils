@@ -307,8 +307,10 @@ def get_engine_script(
     fi
     {cd_cmd}
     direnv_root="$PWD"
-    agent_direnv_blocked=false
-    agent_used_direnv=false
+    # A managed session can restart its agent after a normal exit. Load the
+    # project environment into this persistent shell once, rather than running
+    # `direnv exec` for every replacement agent (and re-emitting .envrc output).
+    agent_direnv_initialized=false
     active_agent_pid=""
     _child_term() {{
       # The supervisor relays only a supervisor-directed SIGTERM to this child.
@@ -322,35 +324,26 @@ def get_engine_script(
     }}
     trap '_child_term' TERM
     run_agent() {{
-      # direnv is an enhancement, never a precondition for starting a session —
-      # the same invariant the bare launch path (`_exec_with_direnv`) documents and
-      # enforces. Unguarded, `direnv exec` on a host without direnv makes every
-      # launch exit 127 before the agent runs, which the elapsed<3 guard below then
-      # reports as an .envrc *approval* problem — pointing at a trust prompt when
-      # the binary simply is not installed.
-      if command -v direnv >/dev/null 2>&1; then
-        agent_used_direnv=true
-        direnv exec "$direnv_root" "$@" &
-      else
-        agent_used_direnv=false
-        "$@" &
+      if ! $agent_direnv_initialized; then
+        agent_direnv_initialized=true
+        # `direnv export bash` is the same shell integration mechanism used by
+        # direnv's hook.  Evaluating it here gives every restarted agent the
+        # initial environment without re-evaluating .envrc or reprinting its
+        # banner.  direnv remains optional: a failed export leaves the agent
+        # runnable, just as the bare launch path does.
+        if command -v direnv >/dev/null 2>&1; then
+          if _direnv_exports="$(direnv export bash)"; then
+            eval "$_direnv_exports"
+          else
+            echo "Warning: direnv could not load $direnv_root/.envrc — starting without the project environment." >&2
+          fi
+        fi
       fi
+      "$@" &
       active_agent_pid=$!
       wait "$active_agent_pid"
       agent_exit_code=$?
       active_agent_pid=""
-      if (( agent_exit_code != 0 )) && $agent_used_direnv; then
-        # A cheap, isolated re-probe (not a redirect on the command above) — that
-        # command is a long-running interactive process (claude/gemini), and
-        # capturing its stderr for later inspection would buffer it instead of
-        # streaming to the terminal in real time. direnv's block state is
-        # deterministic given .envrc + approval state, so this probe reflects
-        # the same outcome the failed launch just hit, without touching its I/O.
-        if direnv exec "$direnv_root" true 2>&1 | grep -qE 'direnv: error.*[.]envrc is blocked'; then
-          agent_direnv_blocked=true
-        fi
-        echo "Error: agent command did not complete successfully under direnv for $direnv_root. If direnv denied or could not evaluate .envrc, run 'direnv allow $direnv_root' and correct the reported error." >&2
-      fi
       return "$agent_exit_code"
     }}
     first_run=true
@@ -774,9 +767,6 @@ with open(path, 'w') as f:
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
-        if $agent_direnv_blocked; then
-          echo "AI CLI stopped because direnv blocked $direnv_root/.envrc. Run 'direnv allow $direnv_root' in another terminal, then run 'ai $engine $ai_name' to relaunch."
-        fi
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi

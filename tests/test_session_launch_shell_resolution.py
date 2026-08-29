@@ -292,7 +292,7 @@ def _invoke_run_agent(tmp_path: Path, bin_dir: Path, agent_marker: Path) -> subp
     harness = tmp_path / "run_agent_harness.sh"
     harness.write_text(
         f'direnv_root="{tmp_path}"\n'
-        f"agent_direnv_blocked=false\n"
+        f"agent_direnv_initialized=false\n"
         f'. "{body}"\n'
         f'run_agent touch "{agent_marker}"\n'
         f'echo "RUN_AGENT_RC=$?"\n'
@@ -334,7 +334,7 @@ def test_given_direnv_on_path_when_run_agent_invoked_then_the_agent_runs_under_d
     direnv_used = tmp_path / "direnv-was-used"
     fake_direnv = bin_dir / "direnv"
     fake_direnv.write_text(
-        f'#!/bin/sh\nif [ "$1" = "exec" ]; then\n  echo used > "{direnv_used}"\n  shift 2\n  exec "$@"\nfi\nexit 0\n'
+        f'#!/bin/sh\nif [ "$1" = "export" ]; then\n  echo used > "{direnv_used}"\n  echo "export DIRENV_TEST_VALUE=loaded"\n  exit 0\nfi\nif [ "$1" = "exec" ]; then\n  echo used > "{direnv_used}"\n  shift 2\n  exec "$@"\nfi\nexit 0\n'
     )
     fake_direnv.chmod(0o755)
 
@@ -346,6 +346,64 @@ def test_given_direnv_on_path_when_run_agent_invoked_then_the_agent_runs_under_d
     )
     assert direnv_used.exists(), "direnv was on PATH but the agent was not run under it"
     assert agent_marker.exists(), "the agent command was never executed"
+
+
+def test_given_restarting_agent_when_direnv_is_available_then_environment_loads_once(tmp_path):
+    """A managed-session restart must reuse its first direnv environment.
+
+    The generated function runs against a real shell and executable stand-ins.
+    On the unfixed template, each non-zero agent exit reaches ``direnv exec``
+    again, so the observable .envrc banner occurs twice.  The agent itself is
+    deliberately made to fail twice after confirming the exported environment
+    exists: this exercises the retry-shaped boundary without mistaking a
+    successful agent for a fixed restart path.
+    """
+    bin_dir = _clean_bin(tmp_path)
+    fake_direnv = bin_dir / "direnv"
+    fake_direnv.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "export" ]; then\n'
+        "  echo 'direnv: loading test/.envrc' >&2\n"
+        "  echo 'direnv: test environment loaded' >&2\n"
+        "  echo 'export DIRENV_TEST_VALUE=loaded'\n"
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = "exec" ]; then\n'
+        "  echo 'direnv: loading test/.envrc' >&2\n"
+        "  echo 'direnv: test environment loaded' >&2\n"
+        "  shift 2\n"
+        "  export DIRENV_TEST_VALUE=loaded\n"
+        '  exec "$@"\n'
+        "fi\n"
+        "exit 1\n"
+    )
+    fake_direnv.chmod(0o755)
+
+    body = tmp_path / "run_agent_body.sh"
+    body.write_text(_run_agent_body())
+    first_marker = tmp_path / "first-agent-ran"
+    second_marker = tmp_path / "second-agent-ran"
+    harness = tmp_path / "restart_harness.sh"
+    harness.write_text(
+        f'direnv_root="{tmp_path}"\n'
+        "agent_direnv_initialized=false\n"
+        f'. "{body}"\n'
+        f'run_agent sh -c \'test "$DIRENV_TEST_VALUE" = loaded && touch "{first_marker}"; exit 4\'\n'
+        f'run_agent sh -c \'test "$DIRENV_TEST_VALUE" = loaded && touch "{second_marker}"; exit 4\'\n'
+    )
+
+    bash = shutil.which("bash") or "/bin/bash"
+    result = subprocess.run(
+        [bash, str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "PATH": str(bin_dir)},
+        check=False,
+    )
+
+    assert first_marker.exists() and second_marker.exists(), "each retry must inherit the loaded environment"
+    assert result.stderr.count("direnv: loading test/.envrc") == 1, result.stderr
 
 
 # --- `ai c --once` launch path ---------------------------------------------------
