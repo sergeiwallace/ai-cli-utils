@@ -499,3 +499,32 @@ fi
 
     assert (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2"
     _finish_supervisor(process)
+
+
+def test_given_generated_session_script_when_rendered_then_it_never_signals_any_mosh_server():
+    """AI-CLI-sdgi: the generated script used to `kill` any `mosh-server` process anywhere
+    on the host whose command line matched this session's own --project-prefix and was older
+    than 60s, on every session launch AND every child-body restart (self-update, /memory
+    reload, etc). Two sibling sessions sharing a project prefix (e.g. both launched with
+    --project-prefix aih) would kill each other's mosh-server the next time either one
+    restarted -- observed 2026-08-28 taking down c-r-aih-1, c-r-aih-2, and p-r-aih-1 together.
+    No script this function generates may contain a `kill` targeting a `mosh-server` process,
+    for any engine/prefix/project combination.
+    """
+    for engine in ("c", "g", "p", "cx"):
+        for is_remote in (False, True):
+            script = get_engine_script(
+                engine,
+                "test-ai-name",
+                "test-session",
+                "test-",
+                "aih",
+                is_remote=is_remote,
+                project_name="ai-harness",
+            )
+            assert "mosh-server" not in script, (
+                f"engine={engine} is_remote={is_remote}: generated script references "
+                "mosh-server at all -- if this is intentional (e.g. a safe, session-scoped "
+                "check), update this test's assertion; a bare 'kill'-adjacent mosh-server "
+                "reference is what caused AI-CLI-sdgi"
+            )
