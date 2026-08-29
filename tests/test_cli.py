@@ -1053,7 +1053,7 @@ class TestCliSessionExecvp:
             # has-session returns 1 (no existing session); new-session returns 0 (success)
             if "new-session" in cmd:
                 return MagicMock(returncode=0, stdout="", stderr="")
-            if "set-window-option" in cmd:
+            if "set-window-option" in cmd or "set-option" in cmd:
                 return MagicMock(returncode=0, stdout="", stderr="")
             if "--git-common-dir" in cmd:
                 return MagicMock(returncode=1, stdout="", stderr="")
@@ -1082,6 +1082,42 @@ class TestCliSessionExecvp:
                                             assert any("new-session" in c for c in run_calls)
                                             assert "attach-session" in mock_exec.call_args[0][1]
                                             mock_rename.assert_called_once_with("c-sw-1", "sw-1")
+
+    def test_given_new_session_when_created_then_enables_mouse_and_osc52_clipboard(self, tmp_path):
+        run_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if "has-session" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.argv", ["ai", "c", "1"]):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                ):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                            # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
+                                            # comment: the blanket subprocess.run mock incidentally
+                                            # answers AI-CLI-99's unrelated detect_repo_root()
+                                            # repair-backstop call too, tripping its worktree-nesting
+                                            # guard when run from a worktree.
+                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                                with patch("subprocess.run", side_effect=fake_run):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+
+        assert ["tmux", "set-window-option", "-t", "c-sw-1", "remain-on-exit", "on"] in run_calls
+        assert ["tmux", "set-option", "-t", "c-sw-1", "mouse", "on"] in run_calls
+        assert ["tmux", "set-option", "-s", "set-clipboard", "on"] in run_calls
 
 
 @pytest.mark.usefixtures("tmux_available")
@@ -1880,7 +1916,10 @@ class TestCliSessionStablePath:
 
     def test_when_new_session_then_script_written_to_stable_path(self, tmp_path):
         # has-session → 1 (no session), new-session → 0 (success)
-        self._run_cli(tmp_path, {"has-session": 1, "new-session": 0, "set-window-option": 0})
+        self._run_cli(
+            tmp_path,
+            {"has-session": 1, "new-session": 0, "set-window-option": 0, "set-option": 0},
+        )
         script_path = tmp_path / "sessions" / "c-sw-1.sh"
         assert script_path.exists()
         assert "# script" in script_path.read_text()
