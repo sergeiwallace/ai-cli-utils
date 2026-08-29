@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import portalocker
 import pytest
@@ -24,6 +25,7 @@ from ai_cli.stale_session_reaper import (
     Pane,
     SessionCandidate,
     StaleSessionReaper,
+    SubprocessTmuxAdapter,
     generation_lease_path,
     heartbeat_path,
     write_heartbeat,
@@ -38,7 +40,10 @@ class _ControlledTmux:
     def sessions(self) -> list[SessionCandidate]:
         return [] if self.kills else list(self.candidates)
 
-    def kill_session(self, session_id: str) -> bool:
+    def capture_fingerprint(self, candidate: SessionCandidate) -> str | None:
+        return "$1|generation-token|0|@1[%1=9001=1;]"
+
+    def fence_and_kill(self, session_id: str, fingerprint: str) -> bool:
         self.kills.append(session_id)
         return True
 
@@ -90,6 +95,120 @@ def _reaper(
         boot_generation=lambda: "boot-1",
         monotonic_clock=lambda: now,
     )
+
+
+def _tmux_run(socket: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["tmux", "-S", socket, *args], capture_output=True, text=True, check=False)
+
+
+@pytest.fixture
+def real_tmux_socket(tmp_path: Path) -> str:
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux binary not available on PATH")
+    socket = str(tmp_path / "tmux.sock")
+    probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
+    if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
+        pytest.skip(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
+    try:
+        yield socket
+    finally:
+        _tmux_run(socket, "kill-server")
+
+
+def _wait_for_dead_pane(socket: str, session_id: str) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        result = _tmux_run(socket, "list-panes", "-t", session_id, "-F", "#{pane_dead}")
+        if result.returncode == 0 and result.stdout.strip() == "1":
+            return
+        time.sleep(0.05)
+    pytest.fail("tmux pane did not become dead")
+
+
+def _create_dead_managed_session(socket: str, session_id: str, generation: str = "generation-token") -> None:
+    created = _tmux_run(socket, "new-session", "-d", "-s", session_id, "sh", "-c", "read ignored; exit 0")
+    assert created.returncode == 0, created.stderr
+    assert _tmux_run(socket, "set-window-option", "-t", session_id, "remain-on-exit", "on").returncode == 0
+    assert _tmux_run(socket, "set-option", "-t", session_id, "@ai_cli_session_generation", generation).returncode == 0
+    assert _tmux_run(socket, "send-keys", "-t", session_id, "done", "Enter").returncode == 0
+    _wait_for_dead_pane(socket, session_id)
+
+
+@pytest.mark.real_tmux
+def test_given_managed_pane_with_remain_on_exit_when_process_exits_then_tmux_marks_it_dead(real_tmux_socket: str):
+    _create_dead_managed_session(real_tmux_socket, "managed-pane")
+
+    pane_dead = _tmux_run(real_tmux_socket, "list-panes", "-t", "managed-pane", "-F", "#{pane_dead}")
+
+    assert pane_dead.returncode == 0
+    assert pane_dead.stdout.strip() == "1"
+
+
+@pytest.mark.real_tmux
+def test_given_matching_dead_managed_session_when_fence_runs_then_it_kills_the_exact_session(real_tmux_socket: str):
+    _create_dead_managed_session(real_tmux_socket, "fence-positive")
+    adapter = SubprocessTmuxAdapter(("tmux", "-S", real_tmux_socket))
+    candidate = adapter.sessions()[0]
+    fingerprint = adapter.capture_fingerprint(candidate)
+
+    assert fingerprint is not None
+    assert adapter.fence_and_kill(candidate.session_id, fingerprint)
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", candidate.session_id).returncode != 0
+
+
+@pytest.mark.real_tmux
+def test_given_respawn_before_atomic_fence_when_fence_runs_then_live_session_survives(real_tmux_socket: str):
+    _create_dead_managed_session(real_tmux_socket, "fence-mutation")
+    adapter = SubprocessTmuxAdapter(("tmux", "-S", real_tmux_socket))
+    candidate = adapter.sessions()[0]
+    fingerprint = adapter.capture_fingerprint(candidate)
+    assert fingerprint is not None
+    respawned = _tmux_run(real_tmux_socket, "respawn-pane", "-k", "-t", candidate.panes[0].pane_id, "sleep", "30")
+    assert respawned.returncode == 0, respawned.stderr
+
+    assert not adapter.fence_and_kill(candidate.session_id, fingerprint)
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", candidate.session_id).returncode == 0
+
+
+@pytest.mark.real_tmux
+def test_given_hostile_generation_token_when_fence_fingerprint_is_captured_then_session_is_preserved(
+    real_tmux_socket: str,
+):
+    _create_dead_managed_session(real_tmux_socket, "fence-hostile")
+    hostile = "bad,#{==:1,1}"
+    assert (
+        _tmux_run(
+            real_tmux_socket, "set-option", "-t", "fence-hostile", "@ai_cli_session_generation", hostile
+        ).returncode
+        == 0
+    )
+    adapter = SubprocessTmuxAdapter(("tmux", "-S", real_tmux_socket))
+    candidate = adapter.sessions()[0]
+
+    assert adapter.capture_fingerprint(candidate) is None
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", candidate.session_id).returncode == 0
+
+
+def test_given_valid_fingerprint_when_atomic_fence_runs_then_it_uses_one_argv_if_shell_command():
+    fingerprint = "$1|generation-token|0|@1[%1=9001=1;]"
+    adapter = SubprocessTmuxAdapter()
+    expected = [
+        "tmux",
+        "if-shell",
+        "-F",
+        "-t",
+        "$1",
+        "#{==:#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]},$1|generation-token|0|@1[%1=9001=1;]}",
+        "kill-session -t '$1'",
+        "display-message -p __ai_cli_fence_mismatch__",
+    ]
+    with patch(
+        "ai_cli.stale_session_reaper.subprocess.run",
+        return_value=subprocess.CompletedProcess(expected, 0, stdout="", stderr=""),
+    ) as run:
+        assert adapter.fence_and_kill("$1", fingerprint)
+
+    run.assert_called_once_with(expected, capture_output=True, text=True, check=False)
 
 
 def test_given_stale_generation_matched_heartbeat_and_ended_panes_when_revalidated_then_kills_exact_id(
