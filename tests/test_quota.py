@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ai_cli.quota import (
+    EX_CONFIG,
+    EX_TEMPFAIL,
     QuotaSnapshot,
     _get_claude_usage_snapshot,
     _get_usage_via_print_mode,
@@ -980,11 +982,46 @@ class TestQuotaRecord:
 
 
 class TestQuotaScrape:
-    def test_when_scrape_returns_none_then_returns_1(self, capsys):
+    def test_given_no_output_when_scrape_runs_then_returns_ex_tempfail(self, capsys):
         with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
             result = quota_scrape()
-        assert result == 1
+        assert result == EX_TEMPFAIL
         assert "Could not extract" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("missing_binary", ["tmux", "claude"])
+    def test_given_missing_prerequisite_when_scrape_runs_then_returns_ex_config(self, missing_binary, capsys):
+        with (
+            patch(
+                "ai_cli.quota.shutil.which",
+                side_effect=lambda binary: None if binary == missing_binary else f"/bin/{binary}",
+            ),
+            patch("ai_cli.quota._scrape_usage_hidden_pane") as scrape,
+        ):
+            result = quota_scrape()
+
+        assert result == EX_CONFIG
+        assert missing_binary in capsys.readouterr().err
+        scrape.assert_not_called()
+
+    def test_given_format_mismatch_when_scrape_runs_then_returns_ex_config(self):
+        def format_mismatch() -> None:
+            import ai_cli.quota as quota
+
+            quota._last_scrape_had_format_mismatch = True
+
+        with patch("ai_cli.quota._scrape_usage_hidden_pane", side_effect=format_mismatch):
+            result = quota_scrape()
+
+        assert result == EX_CONFIG
+
+    def test_given_stale_mismatch_flag_when_scrape_has_no_output_then_returns_ex_tempfail(self):
+        import ai_cli.quota as quota
+
+        quota._last_scrape_had_format_mismatch = True
+        with patch("ai_cli.quota._scrape_usage_hidden_pane", return_value=None):
+            result = quota_scrape()
+
+        assert result == EX_TEMPFAIL
 
     def test_when_scrape_succeeds_then_stores_snapshot_and_returns_0(self, tmp_path, capsys):
         import ai_cli.quota_db as qdb
@@ -2480,19 +2517,19 @@ class TestQuotaSyncFromRemote:
             }
         }
 
-    def test_when_no_remote_host_then_returns_1(self, capsys):
-        """Missing host/user in config → returns 1 without running SSH."""
+    def test_when_no_remote_host_then_returns_ex_config(self, capsys):
+        """Missing host/user in config → returns EX_CONFIG without running SSH."""
         with (
             patch("ai_cli.quota.subprocess.run") as mock_run,
             patch("ai_cli.config.load_config", return_value={"remote": {}}),
         ):
             result = quota_sync_from_remote()
 
-        assert result == 1
+        assert result == EX_CONFIG
         mock_run.assert_not_called()
 
-    def test_when_ssh_fails_then_returns_1(self, capsys):
-        """SSH non-zero exit → returns 1 with error message."""
+    def test_when_ssh_fails_then_returns_ex_tempfail(self, capsys):
+        """SSH non-zero exit → returns EX_TEMPFAIL with error message."""
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stderr = "Connection refused"
@@ -2502,19 +2539,19 @@ class TestQuotaSyncFromRemote:
         ):
             result = quota_sync_from_remote()
 
-        assert result == 1
+        assert result == EX_TEMPFAIL
         out = capsys.readouterr()
         assert "remote command failed" in out.err
 
-    def test_when_ssh_raises_then_returns_1(self, capsys):
-        """SSH raises (e.g. timeout) → returns 1 with error message."""
+    def test_when_ssh_raises_then_returns_ex_tempfail(self, capsys):
+        """SSH raises (e.g. timeout) → returns EX_TEMPFAIL with error message."""
         with (
             patch("ai_cli.quota.subprocess.run", side_effect=TimeoutError("timed out")),
             patch("ai_cli.config.load_config", return_value=self._make_config()),
         ):
             result = quota_sync_from_remote()
 
-        assert result == 1
+        assert result == EX_TEMPFAIL
         out = capsys.readouterr()
         assert "SSH failed" in out.err
 
@@ -2608,12 +2645,12 @@ class TestQuotaSyncFromRemote:
         call_args = mock_run.call_args[0][0]
         assert "-i" in call_args
 
-    def test_when_config_load_fails_then_returns_1(self, capsys):
-        """Exception loading config → returns 1."""
+    def test_when_config_load_fails_then_returns_ex_config(self, capsys):
+        """Exception loading config → returns EX_CONFIG."""
         with patch("ai_cli.config.load_config", side_effect=RuntimeError("no config")):
             result = quota_sync_from_remote()
 
-        assert result == 1
+        assert result == EX_CONFIG
         out = capsys.readouterr()
         assert "could not load config" in out.err
 

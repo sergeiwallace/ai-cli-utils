@@ -3269,12 +3269,16 @@ def cmd_cc_usage_group():
 @cmd_cc_usage_group.command("push", help="Scan JSONL session files and push new events")
 @click.option("-d", "--dry-run", is_flag=True, help="Parse but do not push")
 def cmd_cc_usage_push(dry_run):
-    from .cc_usage import scan_and_push
+    from .cc_usage import EX_CONFIG, EX_TEMPFAIL, scan_and_push
 
     config = _config.load_config()
     result = scan_and_push(config=config, dry_run=dry_run)
     if result.error:
         print(f"Error: {result.error}", file=sys.stderr)
+        if result.error_kind == "config":
+            sys.exit(EX_CONFIG)
+        if result.error_kind == "transient":
+            sys.exit(EX_TEMPFAIL)
         sys.exit(1)
     if dry_run:
         print(f"Dry run: {result.new_events} new events across {result.scanned_sessions} sessions (not pushed)")

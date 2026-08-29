@@ -8,9 +8,13 @@ from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import run_cli
 
 from ai_cli.cc_usage import (
+    EX_CONFIG,
+    EX_TEMPFAIL,
     CCTokenEvent,
+    PushResult,
     _decode_project_path,
     _extract_event,
     _load_cursor,
@@ -406,6 +410,7 @@ class TestScanAndPush:
         section = next(iter(self._CONFIG_MISSING))
         result = scan_and_push(config=self._CONFIG_MISSING)
         assert result.error is not None
+        assert result.error_kind == "config"
         assert "api_url" in result.error or "api_key" in result.error
         assert f"[{section}]" in result.error
 
@@ -497,6 +502,21 @@ class TestScanAndPush:
 
         mock_save.assert_not_called()
         assert result.error == "network error"
+        assert result.error_kind == "transient"
+
+    def test_given_config_error_when_push_command_runs_then_exits_with_ex_config(self):
+        result = PushResult(error="missing API configuration", error_kind="config")
+        with patch("ai_cli.cc_usage.scan_and_push", return_value=result):
+            exit_code, _, _ = run_cli(["ai", "cc-usage", "push"])
+
+        assert exit_code == EX_CONFIG
+
+    def test_given_transient_error_when_push_command_runs_then_exits_with_ex_tempfail(self):
+        result = PushResult(error="network error", error_kind="transient")
+        with patch("ai_cli.cc_usage.scan_and_push", return_value=result):
+            exit_code, _, _ = run_cli(["ai", "cc-usage", "push"])
+
+        assert exit_code == EX_TEMPFAIL
 
     def test_scan_and_push_batches_large_event_sets(self):
         events = [

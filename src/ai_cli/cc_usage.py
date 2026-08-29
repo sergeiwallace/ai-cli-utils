@@ -32,6 +32,9 @@ _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "ai-cli-utils"
 _CURSOR_FILE = _STATE_DIR / "cc-usage-cursor.json"
 
+EX_CONFIG = 78
+EX_TEMPFAIL = 75
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -65,6 +68,7 @@ class PushResult:
     inserted: int = 0
     skipped: int = 0
     error: str | None = None
+    error_kind: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +309,7 @@ def scan_and_push(
             "usage_api.api_url and usage_api.api_key must be set in config.toml "
             "under [usage_api] to push CC usage events."
         )
+        result.error_kind = "config"
         return result
 
     cursor = _load_cursor()
@@ -324,6 +329,7 @@ def scan_and_push(
             result.skipped += skipped
     except Exception as exc:
         result.error = str(exc)
+        result.error_kind = "transient"
         return result
 
     _save_cursor(new_cursor)

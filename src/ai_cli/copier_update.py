@@ -26,6 +26,10 @@ import yaml
 
 from .git_repair import _git_env, repair_bare_worktree_config
 
+EX_CONFIG = 78
+EX_TEMPFAIL = 75
+EX_PARTIAL_MUTATION = 3
+
 
 def _find_copier_projects(projects_dir: Path) -> list[Path]:
     """Return project dirs under projects_dir that use project-template via copier."""
@@ -156,6 +160,7 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
         check=False,
     )
     if cu.returncode != 0:
+        # A copier invocation failure is retried as transient; the isolated target is discarded.
         return "failed", (cu.stderr.strip() or "copier update failed")
 
     status = subprocess.run(
@@ -184,6 +189,7 @@ def _do_update_in_worktree(wt_dir: Path, root: Path, copier_bin: str, push: bool
         check=False,
     )
     if commit.returncode != 0:
+        # A commit failure is retried as transient; the isolated target is discarded.
         return "failed", (commit.stderr.strip() or "commit failed")
 
     if push:
@@ -211,6 +217,7 @@ def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) 
     """
     root = _repo_root(project_dir)
     if root is None:
+        # This is a deterministic prerequisite failure: the project is not a Git repository.
         return "failed", "not a git repository"
 
     wt_dir = root / ".worktrees" / _WT_NAME
@@ -244,6 +251,7 @@ def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) 
     repair_bare_worktree_config(root)
     if add.returncode != 0:
         _cleanup_worktree(root, wt_dir, branch)
+        # The required isolated worktree cannot be created, so retrying without repair will not help.
         return "failed", f"worktree add failed: {add.stderr.strip()}"
 
     status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push)
@@ -278,7 +286,7 @@ def run_copier_update(
 
     if not projects_dir.exists():
         print(f"Error: projects directory not found: {projects_dir}", file=sys.stderr)
-        return 1
+        return EX_CONFIG
 
     copier_bin = shutil.which("copier")
     if copier_bin is None:
@@ -286,7 +294,7 @@ def run_copier_update(
             "Error: copier not found in PATH. Install with: uv tool install copier",
             file=sys.stderr,
         )
-        return 1
+        return EX_CONFIG
 
     projects = _find_copier_projects(projects_dir)
     if not projects:
@@ -300,7 +308,7 @@ def run_copier_update(
                 f"Error: project '{project_filter}' not found or not copier-managed.",
                 file=sys.stderr,
             )
-            return 1
+            return EX_CONFIG
 
     if dry_run:
         mode = "isolated worktree → main" if isolate else "direct (main tree)"
@@ -320,6 +328,9 @@ def _run_isolated(projects: list[Path], copier_bin: str, push: bool) -> int:
     print(f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
     failed = 0
     changed = 0
+    has_partial_mutation = False
+    has_config_failure = False
+    has_transient_failure = False
     for project_dir in projects:
         print(f"  {project_dir.name}... ", end="", flush=True)
         status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
@@ -333,27 +344,43 @@ def _run_isolated(projects: list[Path], copier_bin: str, push: bool) -> int:
             for rel in detail:
                 print(f"    conflict: {rel}")
             failed += 1
+            has_partial_mutation = True
         elif status == "pushfail":
             print("✗ PUSH FAILED — commit is ready in the temp worktree; push manually")
             print(f"    {detail}")
             failed += 1
+            has_partial_mutation = True
         else:  # failed
             print("✗ FAILED")
             print(f"    {detail}")
             failed += 1
+            if detail == "not a git repository" or (
+                isinstance(detail, str) and detail.startswith("worktree add failed:")
+            ):
+                has_config_failure = True
+            else:
+                has_transient_failure = True
 
     print()
     if failed:
         print(f"{failed} project(s) had errors or conflicts — resolve before continuing.")
     else:
         print(f"All projects up to date ({changed} updated).")
-    return 1 if failed else 0
+    if has_partial_mutation:
+        return EX_PARTIAL_MUTATION
+    if has_config_failure:
+        return EX_CONFIG
+    if has_transient_failure:
+        return EX_TEMPFAIL
+    return 0
 
 
 def _run_direct(projects: list[Path], copier_bin: str) -> int:
     """Legacy direct-to-main-tree flow (--no-isolate). Returns exit code."""
     print(f"Updating {len(projects)} project(s) [direct — main tree]:\n")
     failed = 0
+    has_partial_mutation = False
+    has_transient_failure = False
     for project_dir in projects:
         print(f"  {project_dir.name}... ", end="", flush=True)
         result = subprocess.run(
@@ -367,11 +394,13 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
             check=False,
         )
         if result.returncode != 0:
+            # A direct copier failure is retried as transient; no conflict result was reported.
             print("✗ FAILED")
             if result.stderr.strip():
                 for line in result.stderr.strip().splitlines():
                     print(f"    {line}", file=sys.stderr)
             failed += 1
+            has_transient_failure = True
             continue
 
         porcelain = subprocess.run(
@@ -383,10 +412,12 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
         )
         conflicts = _conflict_files(project_dir, _changed_paths(porcelain.stdout, project_dir))
         if conflicts:
+            # In --no-isolate mode, unresolved markers mutate the live main tree, not a temp worktree.
             print(f"✗ CONFLICTS ({len(conflicts)} file(s))")
             for c in conflicts:
                 print(f"    conflict: {c}")
             failed += 1
+            has_partial_mutation = True
         else:
             print("✓")
 
@@ -395,4 +426,8 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
         print(f"{failed} project(s) had errors or conflicts — resolve before continuing.")
     else:
         print("All projects updated successfully.")
-    return 1 if failed else 0
+    if has_partial_mutation:
+        return EX_PARTIAL_MUTATION
+    if has_transient_failure:
+        return EX_TEMPFAIL
+    return 0

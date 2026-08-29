@@ -6,6 +6,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from ai_cli.copier_update import (
+    EX_CONFIG,
+    EX_PARTIAL_MUTATION,
+    EX_TEMPFAIL,
     _changed_paths,
     _conflict_files,
     _do_update_in_worktree,
@@ -103,17 +106,17 @@ def _make_answers(proj_dir: Path, src_path: str = "/projects/project-template") 
 
 
 def test_run_copier_update_projects_dir_not_found(tmp_path):
-    """Returns 1 when projects_dir does not exist."""
+    """Returns EX_CONFIG when projects_dir does not exist."""
     missing = tmp_path / "no-such-dir"
     result = run_copier_update(projects_dir=missing)
-    assert result == 1
+    assert result == EX_CONFIG
 
 
 def test_run_copier_update_copier_not_in_path(tmp_path):
-    """Returns 1 when copier binary is not in PATH."""
+    """Returns EX_CONFIG when copier binary is not in PATH."""
     with patch("shutil.which", return_value=None):
         result = run_copier_update(projects_dir=tmp_path)
-    assert result == 1
+    assert result == EX_CONFIG
 
 
 def test_run_copier_update_no_projects_found(tmp_path):
@@ -170,7 +173,7 @@ def test_run_copier_update_project_filter_found(tmp_path, capsys):
 
 
 def test_run_copier_update_project_filter_not_found(tmp_path, capsys):
-    """--project with unknown name returns 1."""
+    """--project with unknown name returns EX_CONFIG."""
     d = tmp_path / "alpha"
     d.mkdir()
     _make_answers(d)
@@ -178,7 +181,7 @@ def test_run_copier_update_project_filter_not_found(tmp_path, capsys):
     with patch("shutil.which", return_value="/usr/bin/copier"):
         result = run_copier_update(projects_dir=tmp_path, project_filter="nonexistent")
 
-    assert result == 1
+    assert result == EX_CONFIG
 
 
 def test_run_copier_update_success(tmp_path, capsys):
@@ -227,7 +230,7 @@ def test_run_copier_update_uses_vcs_ref_head(tmp_path):
 
 
 def test_run_copier_update_copier_failure(tmp_path, capsys):
-    """Returns 1 when copier exits non-zero."""
+    """Returns EX_TEMPFAIL when copier exits non-zero."""
     d = tmp_path / "myproj"
     d.mkdir()
     _make_answers(d)
@@ -240,13 +243,13 @@ def test_run_copier_update_copier_failure(tmp_path, capsys):
         with patch("subprocess.run", return_value=mock_result):
             result = run_copier_update(projects_dir=tmp_path, isolate=False)
 
-    assert result == 1
+    assert result == EX_TEMPFAIL
     out = capsys.readouterr().out
     assert "✗" in out
 
 
 def test_run_copier_update_conflict_markers(tmp_path, capsys):
-    """Returns 1 when conflict markers are found after update."""
+    """Returns EX_PARTIAL_MUTATION when conflict markers are found after update."""
     d = tmp_path / "myproj"
     d.mkdir()
     _make_answers(d)
@@ -263,13 +266,13 @@ def test_run_copier_update_conflict_markers(tmp_path, capsys):
             ):
                 result = run_copier_update(projects_dir=tmp_path, isolate=False)
 
-    assert result == 1
+    assert result == EX_PARTIAL_MUTATION
     out = capsys.readouterr().out
     assert "CONFLICTS" in out
 
 
 def test_run_copier_update_partial_failure(tmp_path, capsys):
-    """Returns 1 when at least one project fails; success count still shown."""
+    """Returns EX_TEMPFAIL when at least one project fails; success count still shown."""
     for name in ("ok-proj", "bad-proj"):
         dd = tmp_path / name
         dd.mkdir()
@@ -290,7 +293,7 @@ def test_run_copier_update_partial_failure(tmp_path, capsys):
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 result = run_copier_update(projects_dir=tmp_path, isolate=False)
 
-    assert result == 1
+    assert result == EX_TEMPFAIL
     out = capsys.readouterr().out
     assert "errors or conflicts" in out
 
@@ -458,7 +461,7 @@ def test_update_one_isolated_leaves_worktree_on_conflict(tmp_path):
 
 
 def test_run_isolated_mixed_results(tmp_path, capsys):
-    """_run_isolated aggregates: any conflict → exit 1; ok/nochange are non-fatal."""
+    """_run_isolated aggregates: any conflict → EX_PARTIAL_MUTATION."""
     projects = [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
 
     def fake(pd, cb, push=True):
@@ -466,7 +469,7 @@ def test_run_isolated_mixed_results(tmp_path, capsys):
 
     with patch("ai_cli.copier_update._update_one_isolated", side_effect=fake):
         rc = _run_isolated(projects, "/usr/bin/copier", True)
-    assert rc == 1
+    assert rc == EX_PARTIAL_MUTATION
     out = capsys.readouterr().out
     assert "CONFLICTS" in out
     assert "no changes" in out
@@ -484,6 +487,34 @@ def test_run_isolated_all_clean(tmp_path, capsys):
         rc = _run_isolated(projects, "/usr/bin/copier", True)
     assert rc == 0
     assert "up to date" in capsys.readouterr().out
+
+
+def test_given_prerequisite_failure_when_isolated_updates_run_then_returns_ex_config(tmp_path):
+    with patch("ai_cli.copier_update._update_one_isolated", return_value=("failed", "not a git repository")):
+        rc = _run_isolated([tmp_path / "project"], "/usr/bin/copier", True)
+
+    assert rc == EX_CONFIG
+
+
+def test_given_transient_failure_when_isolated_updates_run_then_returns_ex_tempfail(tmp_path):
+    with patch("ai_cli.copier_update._update_one_isolated", return_value=("failed", "copier update failed")):
+        rc = _run_isolated([tmp_path / "project"], "/usr/bin/copier", True)
+
+    assert rc == EX_TEMPFAIL
+
+
+def test_given_partial_and_clean_failures_when_isolated_updates_run_then_partial_takes_precedence(tmp_path):
+    projects = [tmp_path / "partial", tmp_path / "config"]
+
+    def fake(project_dir, copier_bin, push=True):
+        if project_dir.name == "partial":
+            return "pushfail", "push rejected"
+        return "failed", "worktree add failed: branch already exists"
+
+    with patch("ai_cli.copier_update._update_one_isolated", side_effect=fake):
+        rc = _run_isolated(projects, "/usr/bin/copier", True)
+
+    assert rc == EX_PARTIAL_MUTATION
 
 
 def test_run_copier_update_isolated_is_default(tmp_path):

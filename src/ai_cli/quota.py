@@ -32,6 +32,13 @@ __all__ = ["QuotaSnapshot", "read_latest_snapshot"]
 
 _STATUSLINE_RESET = "\033[0m"
 
+EX_CONFIG = 78
+EX_TEMPFAIL = 75
+
+# Reset at the start of every hidden-pane attempt so historical metadata cannot
+# turn a later timeout or empty capture into a format-mismatch failure.
+_last_scrape_had_format_mismatch = False
+
 
 @dataclass(frozen=True)
 class QuotaProviderAdapter:
@@ -466,6 +473,9 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     user's session). Uses the session name as the target throughout — unambiguous,
     never accidentally targets the user's active session.
     """
+    global _last_scrape_had_format_mismatch
+
+    _last_scrape_had_format_mismatch = False
     window_name = "ai-quota-scrape"
     try:
         # Kill any stale scrape session left by a previous failed run
@@ -615,6 +625,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
                     _clear_scrape_format_mismatch()
                     break
                 _record_scrape_format_mismatch(cap.stdout)
+                _last_scrape_had_format_mismatch = True
 
         # Dismiss the dialog
         subprocess.run(
@@ -1115,12 +1126,19 @@ def quota_scrape() -> int:
     """Scrape /usage from a hidden CC session and store in local SQLite."""
     from .quota_db import record_quota_snapshot
 
-    print("Scraping /usage from Claude Code session (hidden tmux window)...")
     try:
+        missing = [binary for binary in ("tmux", "claude") if shutil.which(binary) is None]
+        if missing:
+            print(f"quota scrape: required binary not found: {', '.join(missing)}", file=sys.stderr)
+            return EX_CONFIG
+
+        print("Scraping /usage from Claude Code session (hidden tmux window)...")
+        global _last_scrape_had_format_mismatch
+        _last_scrape_had_format_mismatch = False
         snapshot = _scrape_usage_hidden_pane()
         if snapshot is None:
             print("Could not extract usage percentage.", file=sys.stderr)
-            return 1
+            return EX_CONFIG if _last_scrape_had_format_mismatch else EX_TEMPFAIL
 
         print(f"Scraped: weekly all-models {snapshot.weekly_all_models_pct:.1f}%", end="")
         if snapshot.weekly_sonnet_pct is not None:
@@ -1171,11 +1189,11 @@ def quota_sync_from_remote() -> int:
         identity = remote.get("identity_file", "")
     except Exception as exc:
         print(f"quota sync: could not load config: {exc}", file=sys.stderr)
-        return 1
+        return EX_CONFIG
 
     if not host or not user:
         print("quota sync: no remote host configured in [remote]", file=sys.stderr)
-        return 1
+        return EX_CONFIG
 
     sql = (
         "SELECT usage_percent, session_pct, weekly_sonnet_pct, extra_pct,"
@@ -1195,11 +1213,11 @@ def quota_sync_from_remote() -> int:
         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15, check=False)
     except Exception as exc:
         print(f"quota sync: SSH failed: {exc}", file=sys.stderr)
-        return 1
+        return EX_TEMPFAIL
 
     if result.returncode != 0:
         print(f"quota sync: remote command failed: {result.stderr.strip()}", file=sys.stderr)
-        return 1
+        return EX_TEMPFAIL
 
     rows = []
     for line in result.stdout.strip().splitlines():
