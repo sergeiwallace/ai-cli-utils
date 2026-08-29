@@ -6,9 +6,12 @@ Depends on: config.py.
 import contextlib
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .config import _pid_alive, get_xdg_state_home
+
+_STALE_SESSION_REAPER_WATCHER = "stale-session-reaper"
 
 
 def _ensure_circusd() -> str:
@@ -141,3 +144,83 @@ def _cmd_quota_watch_status() -> None:
         print(f"quota-watch: {qw_status}")
     except Exception:
         print("circusd not running.")
+
+
+def _cmd_stale_session_reaper_start() -> bool:
+    """Register the independently managed stale-session reaper watcher.
+
+    The reaper is never run as a fallback from this lifecycle command.  Failure
+    to reach Circus therefore leaves every tmux session untouched.
+    """
+    try:
+        endpoint = _ensure_circusd()
+        from circus.client import CircusClient
+
+        state_dir = get_xdg_state_home()
+        ai_bin = shutil.which("ai") or "ai"
+        client = CircusClient(endpoint=endpoint, timeout=5.0)
+        with contextlib.suppress(Exception):
+            client.send_message("rm", name=_STALE_SESSION_REAPER_WATCHER)
+        result = client.send_message(
+            "add",
+            name=_STALE_SESSION_REAPER_WATCHER,
+            cmd=f"{ai_bin} session-reaper run",
+            options={
+                "copy_env": True,
+                "respawn": True,
+                "singleton": True,
+                "stdout_stream": {
+                    "class": "FileStream",
+                    "filename": str(state_dir / "stale-session-reaper.log"),
+                },
+                "stderr_stream": {
+                    "class": "FileStream",
+                    "filename": str(state_dir / "stale-session-reaper.log"),
+                },
+            },
+            start=True,
+        )
+        if isinstance(result, dict) and result.get("status") not in {None, "ok"}:
+            raise RuntimeError("Circus rejected watcher registration")
+    except Exception as exc:
+        print(f"stale-session-reaper: failed to start ({exc})", file=sys.stderr)
+        return False
+    print("stale-session-reaper: running")
+    return True
+
+
+def _cmd_stale_session_reaper_stop() -> bool:
+    """Remove the stale-session reaper watcher without starting Circus."""
+    state_dir = get_xdg_state_home()
+    endpoint = f"ipc://{state_dir}/circus.endpoint"
+    try:
+        from circus.client import CircusClient
+
+        result = CircusClient(endpoint=endpoint, timeout=2.0).send_message("rm", name=_STALE_SESSION_REAPER_WATCHER)
+        if isinstance(result, dict) and result.get("status") not in {None, "ok"}:
+            raise RuntimeError("Circus rejected watcher removal")
+    except Exception as exc:
+        print(f"stale-session-reaper: failed to stop ({exc})", file=sys.stderr)
+        return False
+    print("stale-session-reaper: stopped")
+    return True
+
+
+def _cmd_stale_session_reaper_status() -> bool:
+    """Report whether the stale-session reaper watcher is running."""
+    state_dir = get_xdg_state_home()
+    endpoint = f"ipc://{state_dir}/circus.endpoint"
+    try:
+        from circus.client import CircusClient
+
+        result = CircusClient(endpoint=endpoint, timeout=2.0).send_message("status")
+        if not isinstance(result, dict) or not isinstance(result.get("statuses"), dict):
+            raise RuntimeError("invalid Circus status response")
+        statuses = result["statuses"]
+        watcher = statuses.get(_STALE_SESSION_REAPER_WATCHER)
+    except Exception as exc:
+        print(f"stale-session-reaper: failed to query status ({exc})", file=sys.stderr)
+        return False
+    active = bool(watcher.get("active")) if isinstance(watcher, dict) else watcher in {"running", "active"}
+    print(f"stale-session-reaper: {'running' if active else 'not running'}")
+    return True

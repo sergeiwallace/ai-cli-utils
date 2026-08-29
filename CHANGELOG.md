@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Corrected stale-session documentation: launch-time housekeeping does not
+  terminate tmux sessions. Start the independent reaper with
+  `ai session-reaper start`; it observes by default and requires explicit
+  `mode = "reap"` opt-in before it can reclaim an eligible session.
+
 ## [0.8.0] - 2026-08-27
 
 ### Added

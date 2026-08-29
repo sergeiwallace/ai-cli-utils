@@ -30,7 +30,7 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 | **Remote sessions** | `ai c -R -m <alias>` — run sessions on a configured remote server via mosh or SSH; `ai ssh [alias]` opens a matching shell |
 | **Cross-machine sync** | `ai sync push/pull` — sync Claude Code memory, conversations, and task lists between machines |
 | **Fleet messaging** | NATS-based heartbeats, events, and sync notifications |
-| **Stale session cleanup** | Automatic detection and cleanup of orphaned sessions |
+| **Stale-session reaper** | `ai session-reaper start` runs independent, heartbeat-corroborated checks in observe mode; set `mode = "reap"` explicitly to enable reaping |
 | **Session recovery** | `ai session-audit`, `ai session-adopt`, and `ai cc-migrate` find, adopt, and move resumable Claude Code sessions safely |
 | **CC token tracking** | `ai cc-usage push/status` — scan CC session JSONL and push per-call token events to a usage-tracking backend |
 | **SSH tunnels** | `ai tunnel start/stop/status` — persistent reverse tunnels via autossh (auto-reconnects on drop) |
@@ -358,7 +358,14 @@ enabled = true                 # git worktree isolation per session
 # myproject = "workspace"
 
 [session]
-stale_session_timeout = 15     # minutes before cleanup considers a session stale
+# Limits launch-time auxiliary-state housekeeping only; it never ends tmux sessions.
+stale_session_timeout = 15
+
+[stale_session_reaper]
+# Start independently with `ai session-reaper start`; observe is the safe default.
+mode = "observe"
+# Set `mode = "reap"` only after reviewing observe-mode logs.
+stale_after_seconds = 600
 
 [sync]
 remote_host = "user@host"      # for cross-machine sync

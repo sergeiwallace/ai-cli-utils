@@ -1680,6 +1680,40 @@ class TestCliRegistryValidation:
 
 
 class TestCliDaemonDispatch:
+    def test_given_session_reaper_start_when_invoked_then_registers_watcher(self):
+        with (
+            patch("sys.argv", ["ai", "session-reaper", "start"]),
+            patch("ai_cli.process_manager._cmd_stale_session_reaper_start", return_value=True) as start,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        start.assert_called_once_with()
+
+    def test_given_session_reaper_stop_failure_when_invoked_then_exits_nonzero(self):
+        with (
+            patch("sys.argv", ["ai", "session-reaper", "stop"]),
+            patch("ai_cli.process_manager._cmd_stale_session_reaper_stop", return_value=False) as stop,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 1
+        stop.assert_called_once_with()
+
+    def test_given_session_reaper_run_when_invoked_then_runs_the_worker(self):
+        with (
+            patch("sys.argv", ["ai", "session-reaper", "run"]),
+            patch("ai_cli.stale_session_reaper.run_stale_session_reaper", return_value=0) as run,
+            patch("ai_cli.config.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        run.assert_called_once_with({})
+
     def test_cli_when_memory_watch_then_calls_memory_watch(self):
         with patch("sys.argv", ["ai", "memory", "watch"]):
             with patch("ai_cli.config.load_config", return_value={}):

@@ -3139,6 +3139,33 @@ def cmd_quota_watch_run(poll_interval):
     sys.exit(quota_watch(poll_interval))
 
 
+@_cli_group.group("session-reaper", help="Independently managed stale-session reaper")
+def cmd_session_reaper_group():
+    pass
+
+
+@cmd_session_reaper_group.command("start", help="Register the stale-session reaper with Circus")
+def cmd_session_reaper_start():
+    sys.exit(0 if _process_manager._cmd_stale_session_reaper_start() else 1)
+
+
+@cmd_session_reaper_group.command("stop", help="Stop the stale-session reaper")
+def cmd_session_reaper_stop():
+    sys.exit(0 if _process_manager._cmd_stale_session_reaper_stop() else 1)
+
+
+@cmd_session_reaper_group.command("status", help="Show stale-session reaper status")
+def cmd_session_reaper_status():
+    sys.exit(0 if _process_manager._cmd_stale_session_reaper_status() else 1)
+
+
+@cmd_session_reaper_group.command("run", hidden=True)
+def cmd_session_reaper_run():
+    from .stale_session_reaper import run_stale_session_reaper
+
+    sys.exit(run_stale_session_reaper(_config.load_config()))
+
+
 @cmd_quota_group.command("status", help="Print current quota snapshot")
 def cmd_quota_status():
     from .quota import quota_status
