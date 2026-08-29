@@ -1327,8 +1327,9 @@ def _handle_internal(argv: list[str]) -> None:
         # best-effort message publication below: a ledger failure must not suppress
         # an existing heartbeat delivery attempt, and a tokenless caller gains no
         # local reap evidence.
-        if len(argv) >= 4:
+        if len(argv) >= 5:
             generation_token = argv[3]
+            supervisor_pid = argv[4]
             try:
                 marker = subprocess.run(
                     ["tmux", "show-options", "-t", argv[1], "-v", "@ai_cli_session_generation"],
@@ -1336,7 +1337,24 @@ def _handle_internal(argv: list[str]) -> None:
                     text=True,
                     check=False,
                 )
-                if marker.returncode != 0 or marker.stdout.strip() != generation_token:
+                pane = subprocess.run(
+                    ["tmux", "list-panes", "-t", argv[1], "-F", "#{pane_pid}\t#{pane_dead}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                live_supervisor = any(
+                    fields == [supervisor_pid, "0"]
+                    for fields in (line.split("\t") for line in pane.stdout.splitlines())
+                )
+                if (
+                    marker.returncode != 0
+                    or marker.stdout.strip() != generation_token
+                    or pane.returncode != 0
+                    or not supervisor_pid.isdecimal()
+                    or int(supervisor_pid) <= 0
+                    or not live_supervisor
+                ):
                     print("heartbeat ledger not written: generation_mismatch", file=sys.stderr)
                 else:
                     from .stale_session_reaper import write_heartbeat
@@ -2726,6 +2744,16 @@ def _do_session_launch(
                 print(f"  (with --): {stderr}", file=sys.stderr)
                 print(f"  (without --): {stderr2}", file=sys.stderr)
                 sys.exit(1)
+        remain_on_exit = subprocess.run(
+            ["tmux", "set-window-option", "-t", session_id, "remain-on-exit", "on"],
+            capture_output=True,
+            check=False,
+        )
+        if remain_on_exit.returncode != 0:
+            subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+            Path(_script_path).unlink(missing_ok=True)
+            print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
+            sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
