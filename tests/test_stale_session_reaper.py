@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -102,7 +103,7 @@ def _tmux_run(socket: str, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.fixture
-def real_tmux_socket(tmp_path: Path) -> str:
+def real_tmux_socket(tmp_path: Path) -> Iterator[str]:
     if shutil.which("tmux") is None:
         pytest.skip("tmux binary not available on PATH")
     socket = str(tmp_path / "tmux.sock")
@@ -487,12 +488,14 @@ fi
         "AI_CLI_TEST_TERMINAL_PGID": terminal_pgid,
         "AI_CLI_TEST_LEASE_ACQUIRED": str(int(lease_acquired)),
     }
-    kwargs: dict[str, object] = {"env": environment, "text": True}
-    kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-    if terminal:
-        kwargs["stdin"] = subprocess.PIPE
     process = subprocess.Popen(
-        [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)], **kwargs
+        [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)],
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE if terminal else None,
+        start_new_session=True,
     )
     _wait_for_path(child_ready, process)
     return process, event_log, heartbeat_log

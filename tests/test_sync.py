@@ -112,6 +112,7 @@ def test_denormalize_project_name_when_server_prefix_then_correct():
 def test_denormalize_normalize_roundtrip():
     cc_dir = "-Users-user-projects-myproject--worktrees-sw-3"
     bare = normalize_project_path(cc_dir, _MAC_PREFIX)
+    assert bare is not None
     assert denormalize_project_name(bare, _MAC_PREFIX) == cc_dir
 
 
@@ -1627,7 +1628,7 @@ def test_push_to_remote_when_stale_rebase_merge_then_aborts_before_rebase(tmp_pa
 
     def fake_run(cmd, **kwargs):
         run_calls.append(cmd)
-        result = type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+        result = subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "push"] and len(run_calls) == 1:
             result.returncode = 1
             result.stderr = "rejected (non-fast-forward)"
@@ -1656,7 +1657,7 @@ def test_push_to_remote_when_no_stale_rebase_then_skips_abort(tmp_path):
 
     def fake_run(cmd, **kwargs):
         run_calls.append(cmd)
-        result = type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+        result = subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "push"] and len(run_calls) == 1:
             result.returncode = 1
             result.stderr = "rejected (non-fast-forward)"
