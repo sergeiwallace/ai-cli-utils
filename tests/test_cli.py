@@ -2909,6 +2909,13 @@ class TestSelfUpdatePreservesEditableInstall:
         # -e must precede the target, or uv reads the path as a plain requirement.
         assert cmd.index("-e") < cmd.index(str(tmp_path))
 
+    def test_given_editable_install_when_self_update_runs_then_confirms_preservation(self, tmp_path, capsys):
+        venv = self._tool_venv(tmp_path, marker=True, receipt=None)
+
+        self._run_update(tmp_path, venv)
+
+        assert "Preserving editable install" in capsys.readouterr().out
+
     def test_given_copied_install_when_self_update_runs_then_command_omits_editable(self, tmp_path):
         """Positive control for the test above: the flag is conditional, not constant."""
         venv = self._tool_venv(tmp_path, marker=False, receipt=None)
@@ -2946,7 +2953,16 @@ class TestSelfUpdatePreservesEditableInstall:
         python = _venv_python(venv)
 
         def markers():
-            return sorted(p.name for p in venv.glob("lib/python*/site-packages/*editable*"))
+            return sorted(
+                {
+                    marker.name
+                    for pattern in (
+                        "lib/python*/site-packages/*editable*",
+                        "Lib/site-packages/*editable*",
+                    )
+                    for marker in venv.glob(pattern)
+                }
+            )
 
         subprocess.run(
             [uv, "pip", "install", "--python", str(python), "-e", str(pkg)],
@@ -2989,4 +3005,12 @@ class TestSelfUpdatePreservesEditableInstall:
                 capture_output=True,
             )
 
-        assert sorted(p.name for p in venv.glob("lib/python*/site-packages/*editable*"))
+        markers = {
+            marker.name
+            for pattern in (
+                "lib/python*/site-packages/*editable*",
+                "Lib/site-packages/*editable*",
+            )
+            for marker in venv.glob(pattern)
+        }
+        assert sorted(markers)

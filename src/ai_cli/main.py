@@ -1751,7 +1751,10 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             # Keep an editable install editable.  Dropping ``-e`` here is what
             # hands the environment back and forth with the fleet installer, and
             # its repair path is destructive — see `_install_is_editable`.
-            if _install_is_editable(self_venv):
+            editable_install = _install_is_editable(self_venv)
+            if editable_install:
+                if not quiet:
+                    print("Preserving editable install.")
                 uv_cmd.append("-e")
             uv_cmd.append(str(project_path))
             if force_reinstall:
