@@ -1,9 +1,8 @@
 name: CI
 
+# GitHub Actions CI is retired; see docs/procedures/github-actions-retirement.md.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
