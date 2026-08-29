@@ -2,10 +2,10 @@
 
 [![PyPI](https://img.shields.io/pypi/v/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
 [![Python](https://img.shields.io/pypi/pyversions/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
-[![License](https://img.shields.io/pypi/l/ai-cli-utils)](https://github.com/user/ai-cli-utils/blob/main/LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/user/ai-cli-utils/ci.yml?label=CI)](https://github.com/user/ai-cli-utils/actions)
+[![License](https://img.shields.io/pypi/l/ai-cli-utils)](https://github.com/sergeiwallace/ai-cli-utils/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/sergeiwallace/ai-cli-utils/ci.yml?label=CI)](https://github.com/sergeiwallace/ai-cli-utils/actions)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![codecov](https://codecov.io/gh/user/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/user/ai-cli-utils)
+[![codecov](https://codecov.io/gh/sergeiwallace/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/sergeiwallace/ai-cli-utils)
 
 Unified AI session manager and automation toolkit for Claude Code, Gemini CLI, pi, and Codex.
 
@@ -139,7 +139,7 @@ ai c -R 1
 
 # Sync Claude Code memory to another machine
 ai sync push
-```text
+```
 
 ## Usage
 
@@ -156,7 +156,7 @@ ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
 ai c -s/--sandbox      # Explicitly enable sandboxing
 ai c -W/--no-worktree  # Disable git worktree isolation
-```text
+```
 
 #### What a new worktree tracks
 
@@ -198,7 +198,7 @@ ai c -R/--remote <name>            # Connect to remote server (uses config)
 ai c -R -p/--project myproject <name>  # Specify remote project directory
 ai c -R -m/--remote-machine <alias> <name>  # Select a configured remote machine
 ai ssh [alias]                     # Open an interactive shell on that machine
-```text
+```
 
 ### Cross-machine sync
 
@@ -207,7 +207,7 @@ ai sync push [-m] [-n] [-v] [-f]   # Push state to remote; aborts if remote has 
 ai sync pull [-m] [-n] [-v] [-f]   # Pull remote state to local
 ai sync conflicts                   # Show unresolved sync conflicts
 ai sync watch [-v]                  # Watch for sync events via NATS
-```text
+```
 
 Flags: `-m`/`--memories-only`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force`
 
@@ -230,7 +230,7 @@ ai cc-migrate <destination>         # Move a transcript between project roots
 ai ls              # Interactive fzf session picker (installs fzf via apt if absent)
 ai ls -a/--all     # Show all tmux sessions, not just ai-cli sessions
 ai attach <name>   # Attach directly to a named tmux session
-```text
+```
 
 ### SSH tunnels
 
@@ -242,7 +242,7 @@ ai tunnel start 9222 9223         # Different remote port
 ai tunnel start 9222 -L/--forward # Forward tunnel instead of reverse
 ai tunnel stop 9222               # Stop the tunnel
 ai tunnel status                  # List all active tunnels
-```text
+```
 
 Requires `autossh` (`brew install autossh` / `apt install autossh`). Host/user from `[remote]` config.
 
@@ -253,7 +253,7 @@ ai layout list                   # List available layouts in ~/.config/iterm2/la
 ai layout validate <name>        # Validate YAML schema
 ai layout profiles <name>        # Regenerate Dynamic Profiles without relaunching window
 ai layout <name>                 # Apply layout: open new iTerm2 window with tabs/panes as defined
-```text
+```
 
 Layout files live at `~/.config/iterm2/layouts/<name>.yaml`. Each tab can define a base profile, tab color, icon tint, and a root pane with optional nested vertical/horizontal splits, each with a startup directory and command.
 
@@ -273,7 +273,7 @@ ai update [-f/--force]   # Update to latest from source; --force also reinstalls
 ai update -q/--quiet     # Capture git/uv output; report one line naming the new version
 ai update -v/--verbose   # Show the full transcript even when --quiet is also passed
 ai reconnect             # Print reconnect commands for remote sessions
-```text
+```
 
 ### Staying current at session launch
 
@@ -291,7 +291,7 @@ goes stale while a change is being tested.
 
 When a reinstall is needed, the launch runs it quietly and prints one line:
 
-```text
+```
 ai-cli-utils 0.8.0.post20260814190112 installed (cache-bypassing reinstall)
 ```
 
@@ -322,7 +322,7 @@ After installing, run `ai setup` once to automatically detect your environment a
 
 ```bash
 ai setup
-```text
+```
 
 `ai setup` checks for a shared `~/projects/CLAUDE.md`. If found, it confirms the lean `CLAUDE.md` is correct and takes no action. If not found, it copies `CLAUDE-full.md` → `CLAUDE.md` and marks the file as `assume-unchanged` in git so it won't show as locally modified.
 
@@ -363,7 +363,7 @@ notify_on_exit = true          # desktop notifications on task completion
 
 [update]
 # extra_venvs = []             # optional: additional venv paths to reinstall into after 'ai update'
-```text
+```
 
 To add another machine, give it a short alias and select it for one launch with
 `ai c -R -m alias` (or `ai c --remote --remote-machine alias`). `-R` alone uses
@@ -389,7 +389,7 @@ shell      = "ShellUtility"
 [iterm2.icon_color_overrides]
 # Override auto-contrast icon tint per palette color slot
 # purple = "#da7756"
-```text
+```
 
 The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. Each session gets a collision-free slot via lease files. When a tab color is set, the session icon is automatically tinted with a contrasting color (180° HSL hue rotation). When no color is set, the Claude brand orange (`#da7756`) is used as fallback.
 
