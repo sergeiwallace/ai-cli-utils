@@ -558,12 +558,11 @@ def _make_tmp_path_deletable(tmp_path: Path):
     a live git repo named after the test function -- which any editor that adopts
     nearby repositories then lists as a project.
 
-    Eighty such repos accumulated on bms-windows-sem-kg before the mechanism was
-    traced (CORE-196; same defect as ai-harness AIH-612).
+    Such repositories can accumulate on Windows before the mechanism is traced.
 
     Deliberately unconditional rather than a ``sys.platform`` branch -- POSIX
     ``rmtree`` only needs write on the parent directory, so this is a no-op cost
-    on Linux and macOS instead of a platform special case (AIH-824).
+    on Linux and macOS instead of a platform special case.
 
     The Windows DACL problem that used to need a repair here is prevented
     upstream instead -- see :func:`_stop_pytest_protecting_temp_dirs`, which stops

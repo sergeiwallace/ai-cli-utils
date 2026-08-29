@@ -510,7 +510,7 @@ class TestDeployCcConfigFiles:
             assert mode & stat.S_IXOTH
 
     def test_given_existing_symlink_at_dst_when_deploy_then_symlink_preserved(self, tmp_path):
-        # ai-harness install.sh owns symlinked files — ai update must not overwrite them.
+        # An externally managed symlink must be preserved by ai update.
         project = tmp_path / "project"
         (project / "src" / "ai_cli" / "data").mkdir(parents=True)
         src = project / "src" / "ai_cli" / "data" / "statusline-command.sh"
