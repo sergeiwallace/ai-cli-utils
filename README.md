@@ -422,4 +422,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and contr
 
 ## License
 
-[MIT](LICENSE) -- Maintainer Wallace
+[MIT](LICENSE) -- AI CLI Utils Contributors

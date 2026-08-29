@@ -1,24 +1,10 @@
 """Standing guard for the public-package naming rule (BUG-005).
 
 ``CLAUDE.md`` forbids private project names, personal identifiers, and
-proprietary names anywhere in this repository's code, docs, comments and tests.
-A one-off scrub enforced that once, in April 2026; with nothing standing behind
-it, the same private project name walked back into four test files and one
-docstring over the following months, unnoticed by review.
-
-The scan is deliberately narrow in two ways so it stays trustworthy rather than
-noisy:
-
-* **Scope is ``src/`` and ``tests/``** — the shipped package and its suite. The
-  ``docs/`` tree legitimately quotes real repository URLs and preserves
-  historical records, so a docs-wide scan would cry wolf.
-* **The pattern discriminates by role.** The forbidden token is also the first
-  half of the project's real GitHub account name, which appears correctly in
-  badge, CI, coverage and package-metadata URLs and in the author/copyright
-  lines. Only the token *not* followed by the surname is a violation: every
-  legitimate use is account-name or author-name usage and therefore carries it;
-  no violation does. ``test_given_the_real_repository_url_...`` pins that
-  distinction, and ``test_given_a_line_that_uses_...`` proves the scan can fail.
+proprietary names in public code, metadata, and documentation. This guard
+checks the shipped package, its tests, root metadata, project configuration,
+and current documentation. Historical records are excluded by directory, not
+by allowing any identifier pattern.
 """
 
 from __future__ import annotations
@@ -26,12 +12,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_SCANNED_DIRS = ("src", "tests")
+_SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
+_HISTORICAL_DOC_DIRS = {"archive", "audits", "conversations", "plans", "research"}
 
 # Assembled from fragments so this guard file does not itself contain the
 # literals it forbids. That keeps the scan free of self-exclusions, which would
 # otherwise leave a hole in exactly the file most likely to carry them.
 _PRIVATE_PROJECT_NAME = "ser" + "gei"
+_PERSONAL_IDENTIFIERS = (_PRIVATE_PROJECT_NAME, "wall" + "ace")
 _PRIVATE_REPO_NAMES = ("bms-" + "semantic-knowledge-graph", "sw-" + "bms" + "-workspace")
 
 # Proprietary platform names. ``CLAUDE.md`` forbids these alongside the personal
@@ -48,9 +36,7 @@ _PRIVATE_PLATFORM_NAMES = ("ai" + "do", "ai-" + "core")
 _FORBIDDEN = re.compile(
     "|".join(
         [
-            # The private project name, except where it opens the real GitHub
-            # account name (`<name>wallace`) or the author's full name.
-            rf"{_PRIVATE_PROJECT_NAME}(?! ?wallace)",
+            *(rf"\b{re.escape(name)}\b" for name in _PERSONAL_IDENTIFIERS),
             *(re.escape(name) for name in _PRIVATE_REPO_NAMES),
             # Word-bounded: the bare tool name is a substring of ordinary English
             # ("aid", "aiding") and of unrelated identifiers, so an unbounded
@@ -74,9 +60,15 @@ def scan_for_private_names(root: Path) -> list[str]:
     the scan needs no extension allowlist that a new file type could slip past.
     """
     findings: list[str] = []
-    for scanned_dir in _SCANNED_DIRS:
-        for path in sorted((root / scanned_dir).rglob("*")):
+    for scanned_path in _SCANNED_PATHS:
+        candidate = root / scanned_path
+        if not candidate.exists():
+            continue
+        paths = candidate.rglob("*") if candidate.is_dir() else (candidate,)
+        for path in sorted(paths):
             if not path.is_file():
+                continue
+            if scanned_path == "docs" and _HISTORICAL_DOC_DIRS.intersection(path.relative_to(candidate).parts):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
@@ -107,22 +99,15 @@ def test_given_a_line_that_uses_the_private_name_as_a_project_name_when_scanned_
     assert line == "1"
 
 
-def test_given_the_real_repository_url_when_scanned_then_it_is_not_flagged(tmp_path):
-    """Negative control: badge, metadata and author lines must not trip the scan.
+def test_given_root_metadata_with_a_personal_identifier_when_scanned_then_it_is_flagged(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(f'authors = [{{ name = "{_PERSONAL_IDENTIFIERS[0]}" }}]\n')
 
-    A naive substring search flags all of these, which is why "no hits" from one
-    would be unreachable and "hits" uninformative.
-    """
-    (tmp_path / "src").mkdir()
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "src" / "legitimate.py").write_text(
-        f'URL = "https://github.com/{_PRIVATE_PROJECT_NAME}wallace/ai-cli-utils"\n'
-        f'BADGE = "https://codecov.io/gh/{_PRIVATE_PROJECT_NAME}wallace/ai-cli-utils/graph/badge.svg"\n'
-        f'AUTHOR = "{_PRIVATE_PROJECT_NAME.capitalize()} Wallace"\n'
-        f'EMAIL = "dev@{_PRIVATE_PROJECT_NAME}wallace.com"\n'
-    )
+    findings = scan_for_private_names(tmp_path)
 
-    assert scan_for_private_names(tmp_path) == []
+    assert len(findings) == 1
+    path, line, _ = findings[0].split(":", 2)
+    assert Path(path) == Path("pyproject.toml")
+    assert line == "1"
 
 
 def test_given_a_private_repository_name_when_scanned_then_it_is_flagged(tmp_path):
