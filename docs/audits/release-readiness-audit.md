@@ -21,7 +21,8 @@ delegation_provenance:
 
 **Auditor:** gpt-5.6-sol
 
-**Target artifact:** working tree at `c9841e3eb6bfc5f0043c144655a8e77cc3bcb6c7`; package version `0.8.0`
+**Target artifact:** Round 1 working tree at `c9841e3eb6bfc5f0043c144655a8e77cc3bcb6c7`;
+Round 2 re-verification at `6cf82b5d020769c18d7021b60c04e84ccf407088`; package version `0.8.0`
 
 <!-- doc:region name="scope" kind="replaceable" -->
 
@@ -43,6 +44,12 @@ delegation_provenance:
   - [Detailed findings](#detailed-findings)
   - [R1 Resolution Pass](#r1-resolution-pass)
   - [R1 Verification Matrix](#r1-verification-matrix)
+- [Round 2 — Current-Tree Re-verification](#round-2--current-tree-re-verification)
+  - [R2 Summary](#r2-summary)
+  - [R2.1 Finding Status Verification](#r21-finding-status-verification)
+  - [R2.2 AD-1 Verification](#r22-ad-1-verification)
+  - [R2.3 Verification Matrix](#r23-verification-matrix)
+  - [R2 Recommendations](#r2-recommendations)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
   - [AD-1: Handoff retirement strategy](#ad-1)
 - [Outstanding Issues to Fix](#outstanding-issues-to-fix)
@@ -61,7 +68,11 @@ delegation_provenance:
 
 This audit surveyed the unreleased `0.8.0` tree, 550 commits after tag `v0.7.0`, for release blockers, quick wins, stale backlog, structural feature health, handoff retirement, and test health. Every QUICK WIN and RELEASE-BLOCKING classification was checked against current source, tests, or git history rather than accepted from an issue title.
 
-The snapshot differs materially from older issue descriptions: update-stamp ordering, editable-install preservation, quiet install, stopped-session handling, line endings, and icon lint are already fixed. Conversely, handoff is automatically started and drained during ordinary Claude-session launch, not merely invoked manually.
+The Round 1 snapshot differed materially from older issue descriptions: update-stamp ordering,
+editable-install preservation, quiet install, stopped-session handling, line endings, and icon lint
+were already fixed. At that snapshot, handoff was automatically started and drained during
+ordinary Claude-session launch, not merely invoked manually. Round 2 confirms those handoff paths
+have since been retired; their current status is recorded under F-02 and AD-1.
 
 ## Scope
 
@@ -81,21 +92,25 @@ The snapshot differs materially from older issue descriptions: update-stamp orde
 
 ## Methodology
 
-**Approach:** Round 1 cross-referenced every supplied record with code/history, traced handoff call sites, mapped major modules to tests and recent commits, attempted the exact requested test commands, and reproduced safe checks under the write-restricted worker. **CONFIRMED** means reproduced from artifacts; **PLAUSIBLE** marks environment-dependent judgment. The canonical audit scaffold/template was read first. No implementation fix was applied.
+**Approach:** Round 1 cross-referenced every supplied record with code/history, traced handoff call sites, mapped major modules to tests and recent commits, attempted the exact requested test commands, and reproduced safe checks under the write-restricted worker. Round 2 independently re-ran every finding's current-state check against source, docs, tests, tracked issue records, and git history. **CONFIRMED** means reproduced from artifacts; **PLAUSIBLE** marks environment-dependent judgment. The canonical audit scaffold/template was read first. No implementation fix was applied.
 
 ## Status Summary
 
-**Latest round:** Round 1
+**Latest round:** Round 2
 
 | Severity | Count | Of which fixed | Of which deferred |
 |----------|-------|----------------|-------------------|
 | P0 | 1 | 0 | 0 |
-| P1 | 9 | 0 | 0 |
-| P2 | 1 | 0 | 1 |
+| P1 | 9 | 2 | 0 |
+| P2 | 1 | 1 | 0 |
 | P3 | 0 | 0 | 0 |
-| **Total** | **11** | **0** | **1** |
+| **Total** | **11** | **3** | **0** |
 
-**Ship-readiness verdict:** **Not ready.** Close the in-flight P0, remove or fix reachable handoff traversal, make tests executable and green, repair adoption, resolve Windows support claims, make copier fail closed, and correct public docs/hygiene before publication.
+**Ship-readiness verdict:** **Not ready.** Three findings are resolved (F-02, F-08, F-11), but
+one P0 and seven P1 findings remain open or reframed-open. The stale-session safety gate has not
+passed, the authoritative local verification gate is not green, and adoption, Windows attestation,
+public docs/hygiene, dev dependencies, and copier semantic safety remain unresolved. AD-1 is also
+still formally pending even though the current runtime behavior matches immediate removal.
 
 <!-- /doc:region name="scope" -->
 
@@ -296,11 +311,23 @@ Line-count comparison found no obviously abandoned large module: `main`, `sync`,
 
 #### F-01: In-flight stale-session topology remains a release gate — `P0`
 
+**Current status (2026-08-29): STILL OPEN — CONFIRMED.** The separate implementation audit remains
+`findings-pending-fix`, says reap mode is not safe to enable, and records two unfixed P0s
+(`docs/audits/stale-session-reaper-implementation-audit.md:5,56-58,104,181,219`). The requested live
+`bd show AI-CLI-tdm6.1` could not open the embedded database in this single-file sandbox; the tracked
+JSONL does not contain that child, so the supplied live-state note that it remains open is not
+silently upgraded to repository-confirmed evidence.
+
 **Location:** `src/ai_cli/session_script.py:516-529`; `docs/audits/stale-session-reaper-implementation-audit.md`
 
 **Evidence:** launch executes automatic cleanup then starts watchers; the supplied backlog identifies a separately audited P0. **Verification:** `git log -1 --oneline --` those paths. **Impact:** ordinary sessions execute process/destructive authority. **Recommendation:** require the separate audit to pass on the exact release commit.
 
 #### F-02: Inbound handoff payloads can escape the queue — `P1`
+
+**Current status (2026-08-29): RESOLVED — CONFIRMED.** Commit `86c41d0` removed both inbound handlers,
+the drain/watch internal actions, automatic launch hooks, and watcher lifecycle. Current source has
+no vulnerable handler symbol or handoff integration; `src/ai_cli/main.py:3051-3063` retains only an
+exit-1 retirement stub, and `archive/handoff.py` is outside the shipped package.
 
 **Location:** `src/ai_cli/main.py:1453-1464,1505-1517`
 
@@ -308,11 +335,24 @@ Line-count comparison found no obviously abandoned large module: `main`, `sync`,
 
 #### F-03: Test gate is red and complete result unverified — `P1`
 
+**Current status (2026-08-29): REFRAMED, STILL OPEN — CONFIRMED.** Commits `8894668` and `cdbcbf1`
+repair the two originally cited test defects (`tests/test_process_probe.py:372-388` and
+`tests/test_session.py:1178-1207`). GitHub-hosted CI is now explicitly non-authoritative because
+billing prevents code execution (`docs/procedures/github-actions-retirement.md:10-30`). However, the
+replacement local gate is not green: Ruff check/format pass, while Pyright 1.1.411 reports 81 errors
+with the existing environment (including unresolved relative imports in `archive/handoff.py:13,63`),
+and pytest cannot initialize because this audit sandbox exposes no writable temporary directory.
+The original red-test causes are fixed; a complete authoritative green result is still absent.
+
 **Location:** `tests/test_process_probe.py:373-389`; `tests/test_session.py:1176-1203`; `tests/conftest.py:385-390`
 
 **Evidence:** focused run returns `1 failed`; direnv test mocks an obsolete command versus `direnv_setup.py:150-171`; full totals unavailable. **Verification:** exact full commands plus named focused tests in a writable checkout. **Impact:** no healthy release-suite evidence. **Recommendation:** fix/deduplicate both failures and require zero failures on supported platforms with counts attached.
 
 #### F-04: Published dev extra cannot run configured pytest — `P1`
+
+**Current status (2026-08-29): STILL OPEN — CONFIRMED.** The public `dev` extra still omits xdist and
+timeout at `pyproject.toml:71-78`, while the separate dependency group contains them at `:80-95` and
+configured pytest still requires `-n auto` at `:97-110`.
 
 **Location:** `pyproject.toml:71-89,97-110`
 
@@ -320,11 +360,21 @@ Line-count comparison found no obviously abandoned large module: `main`, `sync`,
 
 #### F-05: Audit and adoption disagree on transcript source — `P1`
 
+**Current status (2026-08-29): STILL OPEN — CONFIRMED.** The auditor records the physical containing
+directory (`session_audit.py:289-299`) but `adopt_ready()` still passes the transcript-recorded cwd as
+`source_root` (`:348-377`); the adopter re-slugifies that cwd at
+`session_adopt.py:712-724`. No physical-project-directory handoff or legacy-slug regression closes
+the mismatch.
+
 **Location:** `session_audit.py:277-303,348-378`; `session_adopt.py:712-763`
 
 **Evidence:** audit knows physical `project_dir`; batch passes cwd; adopter slugifies it and may report no transcript. **Verification:** `rg -n 'project_dir=project_dir|source_root=Path\(record.cwd\)|source_dir = cc_project_dir'` in both modules. **Impact:** an “adoptable” session is rejected. **Recommendation:** pass physical path/transcript UUID explicitly and test root/worktree/legacy slugs.
 
 #### F-06: Windows support lacks release attestation — `P1`
+
+**Current status (2026-08-29): STILL OPEN — CONFIRMED support gap; PLAUSIBLE behavior risk.** README
+still promises MSYS2/Git Bash support (`README.md:65-78`), while the real-tmux integration suite
+still skips Windows because that behavior is unverified (`tests/test_session_launch_integration.py:57-68`).
 
 **Location:** `README.md:67-80`; `main.py:516-574`; `test_session_launch_integration.py:55-85`
 
@@ -332,11 +382,21 @@ Line-count comparison found no obviously abandoned large module: `main`, `sync`,
 
 #### F-07: Active docs advertise removed modules/commands — `P1`
 
+**Current status (2026-08-29): PARTIAL, STILL OPEN — CONFIRMED.** Commit `f3e181d` correctly turns the
+removed Gemini wrapper/modules into historical removal notes (`docs/tools/ai-cli-usage.md:300-306`)
+and those modules remain absent. But the same active architecture document still says
+`process_manager.py` owns `signal-watch` and `session_script.py` performs a handoff drain
+(`docs/designs/architecture.md:55,57`), contradicting the current source and the retired-command note
+at `:120-121`. The broad finding is therefore not fully resolved.
+
 **Location:** `docs/designs/architecture.md:35-39,43-74,87-89`; `docs/tools/ai-cli-usage.md:306-378`
 
 **Evidence:** two listed modules do not exist and a removed wrapper remains documented. **Verification:** module existence check in matrix. **Impact:** public users receive invalid commands/architecture. **Recommendation:** regenerate from Click registrations, archive obsolete sections, scrub private examples, and smoke-test documented `--help`.
 
 #### F-08: README fences break rendered instructions — `P1`
+
+**Current status (2026-08-29): RESOLVED — CONFIRMED.** Commit `7bfa7a5` repaired the closers, added
+`tests/test_readme_fences.py`, and the current regression parser returns `[]` for `README.md`.
 
 **Location:** `README.md:119-180,198-222`
 
@@ -344,17 +404,33 @@ Line-count comparison found no obviously abandoned large module: `main`, `sync`,
 
 #### F-09: Public identity rules remain violated — `P1`
 
+**Current status (2026-08-29): STILL OPEN — CONFIRMED.** Commit `f41eb4d` scrubbed other occurrences
+but did not touch the cited metadata or exemption. `pyproject.toml:8-10` still has populated personal
+author fields, while `tests/test_public_repo_hygiene.py:9-21,29,110-125` intentionally excludes docs
+and treats repository/author identity as allowed, contradicting the repository's stated rule.
+
 **Location:** `pyproject.toml:8-10`; `tests/test_public_repo_hygiene.py:46-63,110-125`
 
 **Evidence:** personal metadata exists and tests exempt it; values intentionally omitted. **Verification:** sanitized metadata-presence check. **Impact:** publication makes prohibited identifiers durable. **Recommendation:** generic/omitted author metadata, remove exemptions, scan root metadata/active docs.
 
 #### F-10: Copier can report success after semantic loss — `P1`
 
+**Current status (2026-08-29): STILL OPEN — CONFIRMED.** Both update paths still force `--defaults`
+(`copier_update.py:155-161,386-395`), and the isolated path still returns `ok` after only status,
+marker, commit, and optional push checks (`:166-209`). No stored-answer or intended-hunk parity gate
+was added.
+
 **Location:** `src/ai_cli/copier_update.py:141-203,353-375`
 
 **Evidence:** both paths force `--defaults`; success proves only exit/no markers/commit, not answers or intended hunks. **Verification:** `rg -n '\[copier_bin, "update"|--defaults|_conflict_files|return "ok"'`. **Impact:** incomplete changes can be committed/pushed as success. **Recommendation:** preserve answers, resolve source before isolation, and fail closed on drifted-anchor fixtures.
 
 #### F-11: Live messaging is not durable-queue parity — `P2`
+
+**Current status (2026-08-29): RESOLVED — CONFIRMED as intentional retirement, not parity.** The
+runtime queue is retired and the changelog explicitly says this intentionally removes offline,
+cross-machine, and durable lifecycle semantics (`CHANGELOG.md:69-73`). This closes the disclosure
+risk identified here; it does not claim native messaging provides queue parity. AD-1 remains
+formally pending as a separate governance record.
 
 **Location:** `handoff.py:28-82,90-223`; `messaging.py:205-220,263-292`; `handoff-reliability-testing.md:31-42,97-183`
 
@@ -364,19 +440,20 @@ Line-count comparison found no obviously abandoned large module: `main`, `sync`,
 
 | Finding | Status | How resolved |
 |---------|--------|--------------|
-| F-01 | OPEN | Separate verification required. |
-| F-02 | TEAM INPUT NEEDED | Disable ingress under AD-1 or secure all reachable paths. |
-| F-03 | OPEN | Fix tests and obtain unrestricted totals. |
-| F-04 | OPEN | Align public dev extra. |
-| F-05 | OPEN | Correct source-directory contract. |
-| F-06 | TEAM INPUT NEEDED | Pass Windows UAT or narrow claim. |
-| F-07 | OPEN | Reconcile docs/CLI/modules. |
-| F-08 | OPEN | Repair/render-check README. |
-| F-09 | OPEN | Remove identifiers/exemptions. |
-| F-10 | OPEN | Make copier fail closed. |
-| F-11 | TEAM INPUT NEEDED | Decide intentional loss in AD-1. |
+| F-01 | STILL OPEN | Separate implementation audit remains `findings-pending-fix` with two P0s. |
+| F-02 | RESOLVED (`86c41d0`) | Inbound handlers/hooks removed; CLI fails closed through retirement stub. |
+| F-03 | REFRAMED — STILL OPEN | Original two pytest defects fixed; hosted CI is non-authoritative, but local Pyright reports 81 errors and full pytest is unverified here. |
+| F-04 | STILL OPEN | Public dev extra still omits xdist/timeout. |
+| F-05 | STILL OPEN | Audit still passes recorded cwd instead of the known physical project directory. |
+| F-06 | STILL OPEN | Windows is still advertised while real-tmux Windows coverage remains skipped as unverified. |
+| F-07 | PARTIAL — STILL OPEN (`f3e181d`) | Removed Gemini docs fixed; active architecture still advertises retired signal-watch/handoff-drain behavior. |
+| F-08 | RESOLVED (`7bfa7a5`) | README fence regression parser returns no errors. |
+| F-09 | STILL OPEN | Metadata and explicit hygiene exemptions remain. |
+| F-10 | STILL OPEN | Both copier paths still use `--defaults`; no semantic parity gate exists. |
+| F-11 | RESOLVED (`86c41d0`) | Changelog explicitly declares intentional loss of offline/cross-machine/durable semantics. |
 
-No implementation fixes were applied.
+No implementation fixes were applied by either audit round; the resolved rows cite independently
+verified changes already present in the current tree.
 
 ### R1 Verification Matrix
 
@@ -395,13 +472,104 @@ No implementation fixes were applied.
 
 **Verified: 10/10 selected claims reproduce at `c9841e3eb6bfc5f0043c144655a8e77cc3bcb6c7`.** This does not turn the blocked full suite into a pass.
 
+## Round 2 — Current-Tree Re-verification
+
+**Round 2 auditor:** gpt-5.6-sol, independent current-tree verification
+
+**Round 2 date:** 2026-08-29
+
+**Round 2 scope:** Verify every F-01 through F-11 finding and AD-1 against current source, docs,
+tests, tracked issue records, and git history at `6cf82b5d020769c18d7021b60c04e84ccf407088`.
+No implementation or decision resolution was authorized.
+
+### R2 Summary
+
+Three findings are resolved: F-02, F-08, and F-11. F-03 is reframed but remains open: its two
+original pytest defects are repaired and hosted CI is not a code signal, but the documented local
+gate is not green. F-07 is partial because its original Gemini material is corrected while the
+active architecture still advertises retired handoff behavior. F-01, F-04, F-05, F-06, F-09, and
+F-10 remain open. AD-1 remains pending; shipped behavior matches option (b) in practice.
+
+The repository-local canonical `docs/audits/TEMPLATE.md` referenced by `docs/audits/README.md` is
+absent. The canonical harness copy was read before this round. The requested `bd show` commands
+could not open the embedded database because the write-target sandbox forbids its lock file; the
+tracked JSONL confirms AI-CLI-fae is in progress and AI-CLI-pt9n is closed, but does not contain
+AI-CLI-tdm6.1. Those limitations are not treated as proof of issue absence or closure.
+
+### R2.1 Finding Status Verification
+
+| ID | Current verdict | Evidence and verification note |
+|----|-----------------|--------------------------------|
+| F-01 | **STILL OPEN** | Separate implementation audit is `findings-pending-fix` and records two unfixed P0s. **CONFIRMED repository artifact; live child-issue state unavailable in sandbox.** |
+| F-02 | **RESOLVED** | Vulnerable handlers, drain/watch actions, hooks, and managed watcher are absent; `cmd_handoff_retired` exits 1. **CONFIRMED.** |
+| F-03 | **REFRAMED — STILL OPEN** | Original failing tests were corrected; hosted CI is billing-blocked, but Pyright 1.1.411 reports 81 errors and pytest cannot initialize here. Ruff lint/format pass. **CONFIRMED commands.** |
+| F-04 | **STILL OPEN** | Public `.[dev]`: `xdist=False`, `timeout=False`; addopts remains `-n auto`. **CONFIRMED.** |
+| F-05 | **STILL OPEN** | Physical `project_dir` is recorded, but `adopt_ready` passes `Path(record.cwd)` and adopter re-slugifies it. **CONFIRMED.** |
+| F-06 | **STILL OPEN** | Windows support remains public; real-tmux Windows integration remains explicitly skipped as unverified. **CONFIRMED support gap; behavior PLAUSIBLE.** |
+| F-07 | **PARTIAL — STILL OPEN** | Removed Gemini command/module prose is historical and correct; architecture still claims signal-watch lifecycle and handoff drain. **CONFIRMED.** |
+| F-08 | **RESOLVED** | Current README fence parser returns `[]`; regression test exists. **CONFIRMED.** |
+| F-09 | **STILL OPEN** | Populated personal author fields and explicit repository/author exemptions remain; scan excludes docs. **CONFIRMED without repeating values.** |
+| F-10 | **STILL OPEN** | Both copier paths still force `--defaults`; success still lacks answer/hunk parity. **CONFIRMED.** |
+| F-11 | **RESOLVED** | Handoff is retired and changelog explicitly declares the intended loss of offline/cross-machine/durable semantics. **CONFIRMED; no parity claim made.** |
+
+### R2.2 AD-1 Verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| AD-1 | **PENDING; implementation matches (b) in practice** | `86c41d0` implements full archival with no compatibility window: inbound paths/hooks/lifecycle are removed, old code is under `archive/`, and the only public command is a fail-closed stub (`main.py:3051-3063`). This is not option (a), whose safe read/export compatibility cycle is absent. Per the audit authority, `chosen-option=PENDING` is unchanged. |
+
+**Post-R2 addendum (2026-08-29, same day, after this round's snapshot commit):** Sergei explicitly
+chose full removal over stubbing ("we should fully remove them, not just stub them"). PR #87
+(squash `83d2578`) removed `cmd_handoff_retired` and its Click registration entirely -- `ai handoff`
+is no longer a recognized command at all, not even a fail-closed stub -- and deleted
+`archive/handoff.py`. AD-1 should be recorded as **Resolved by human: (b) immediate removal** the
+next time this doc's decision record is updated; this round intentionally left `chosen-option`
+untouched per its own authority boundary, so that update is left for a follow-up pass rather than
+made here.
+
+### R2.3 Verification Matrix
+
+| Finding | Command/check | Expected current state | Actual | Status verified? |
+|---------|---------------|------------------------|--------|------------------|
+| F-01 | Re-grep implementation-audit status/P0 rows | Open safety gate | `findings-pending-fix`; 2 P0 / 0 fixed | ✅ |
+| F-02 | Handler/hook/watcher symbol grep | Only retirement stub | Only `cmd_handoff_retired` matched | ✅ |
+| F-03 | Ruff, Pyright, pytest attempts + fix-diff read | Mixed gate stated exactly | Ruff passes; Pyright 81 errors; pytest no usable temp dir; cited test fixes present | ✅ |
+| F-04 | Parse `pyproject.toml` public dev/addopts | Missing xdist/timeout; `-n auto` | `xdist False timeout False addopts -n auto` | ✅ |
+| F-05 | Source-selection grep | Recorded cwd still re-slugified | Physical dir recorded; `Path(record.cwd)` passed; `cc_project_dir(source_root)` used | ✅ |
+| F-06 | Windows claim/skip grep | Claim plus unverified skip | README support line and Windows skip both matched | ✅ |
+| F-07 | Module existence + active-doc grep | Gemini fixed; handoff claims stale | Modules absent; historical note present; two stale architecture rows matched | ✅ |
+| F-08 | Invoke README fence regression parser | Empty error list | `[]` | ✅ |
+| F-09 | Sanitized metadata/scan check | Identity fields and exemptions remain | `authors 1 name_field True email_field True scans_docs False explicit_exemption True` | ✅ |
+| F-10 | Copier invocation/success grep | `--defaults` twice; parity absent | Lines 156/390 plus marker checks and `return "ok"` | ✅ |
+| F-11 | Changelog/retirement grep | Intentional semantic loss declared | Changelog line 72 and retirement stub matched | ✅ |
+| AD-1 | `git show 86c41d0` + current source | Immediate archive/removal behavior | Old module archived; runtime/hooks removed; fail-closed stub retained | ✅ |
+
+**Verified: 12/12 statuses reproduce at `6cf82b5d020769c18d7021b60c04e84ccf407088`.**
+This verifies the status classification; it does not convert the blocked pytest run or failing
+Pyright gate into a pass.
+
+### R2 Recommendations
+
+**MUST be fixed before release:** F-01, F-03, F-04, F-05, F-06, F-07, F-09, F-10, and formal
+reconciliation of AD-1 with the already-shipped option-(b) behavior.
+
+**SHOULD be fixed before the next release gate:** none beyond the MUST list.
+
+**Can be folded into a follow-up:** the existing Nice-to-have items below; none changes this
+ship-readiness verdict.
+
 ## Decisions Requiring Team Input
 
 <a id="ad-1"></a>
 
 ### AD-1: Handoff retirement strategy — `[PENDING]`
 
-**Context:** Handoff is active in normal launch, contains reachable traversal, and offers partial durable/offline semantics absent from scope-supplied native live messaging. Moving code while keeping commands “working” leaves security/launch ambiguity.
+**Context:** Round 1 found handoff active in normal launch, with reachable traversal and partial
+durable/offline semantics absent from scope-supplied native live messaging. Current-tree fact:
+`86c41d0` has already removed ingress/hooks/watcher lifecycle, archived the old module, and left an
+exit-1 command stub. That shipped behavior matches **(b) immediate removal** in practice, not (a):
+there is no safe read/claim/complete/export compatibility cycle. This implementation fact does not
+constitute the required human decision, so the decision record remains pending.
 
 #### (a) Staged deactivation plus one-release compatibility archive
 
@@ -446,8 +614,8 @@ No implementation fixes were applied.
 #### Recommendation
 
 > **Recommended (AI):** Choose **(a)**. Disable automatic/NATS ingress before release, secure any compatibility path, preserve read-only local migration for one cycle, then archive implementation/history. Close AI-CLI-70q, AI-CLI-3b3, and AI-CLI-0ay only after deactivation. Close AI-CLI-2qu without a fix only if every vulnerable write path is demonstrably unreachable; otherwise fix it first.
-> **Decision:** `PENDING`
-<!-- decision-record: chosen-option=PENDING; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Decision:** `(b) Immediate removal` -- resolved by Sergei 2026-08-29, diverging from the AI recommendation: "we should fully remove them, not just stub them." Implemented in PR #87 (squash `83d2578`): `cmd_handoff_retired` and its Click registration removed entirely (`ai handoff` is no longer a recognized command, not even a fail-closed stub), `archive/handoff.py` deleted. AI-CLI-70q, AI-CLI-3b3, AI-CLI-0ay, and AI-CLI-2qu (referenced in the AI recommendation above) were not independently re-checked as part of this resolution -- confirm before closing.
+<!-- decision-record: chosen-option=b; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
 
 ## Outstanding Issues to Fix
 
@@ -455,13 +623,14 @@ No implementation fixes were applied.
 
 | Order | Action | Exit condition |
 |-------|--------|----------------|
-| 1 | Finish P0 topology | Separate audit passes exact release commit. |
-| 2 | Decide AD-1; remove/secure ingress | No unvalidated network write; no retired launch hook. |
-| 3 | Fix tests/dev dependencies | Exact full run in clean writable environment; actual counts recorded, zero failures. |
-| 4 | Fix audit/adopt resolution | Root/worktree/legacy-slug E2E pass. |
-| 5 | Resolve Windows contract | Supported E2E passes or claims narrowed. |
-| 6 | Make copier fail closed/remove support | Drifted-hunk/non-default-answer fixtures cannot false-pass. |
-| 7 | Repair docs/README/hygiene | Render/doc/hygiene checks pass; documented commands exist. |
+| 1 | Finish F-01 P0 topology (`AI-CLI-tdm6.1`, external `AI-CLI-stale-session-reaper-wkmj`) | Separate implementation audit passes the exact release commit. |
+| 2 | Close F-03 local gate and F-04 dependency split | Ruff, Pyright, and full pytest pass from the public dev install with actual counts attached. |
+| 3 | Fix F-05 audit/adopt resolution | Root/worktree/physical-directory/legacy-slug E2E pass. |
+| 4 | Resolve F-06 Windows contract | Supported MSYS2/Git Bash E2E passes or public claims are narrowed. |
+| 5 | Finish F-07 active-doc reconciliation | Architecture has no signal-watch/handoff-drain claims; documented commands match Click registrations. |
+| 6 | Fix F-09 public-repo hygiene | Metadata and guard scope/exemptions comply with the repository rule. |
+| 7 | Fix F-10 copier semantic safety or remove support | Drifted-hunk/non-default-answer fixtures cannot false-pass. |
+| 8 | Obtain the AD-1 human decision | Pending record is reconciled with the already-shipped option-(b) behavior. |
 
 ### Nice to have before release
 
@@ -477,12 +646,18 @@ No implementation fixes were applied.
 - ✅ Update stamp is post-success (`main.py:835-880`).
 - ✅ Editable installs are preserved (`main.py:1783-1813,2037-2047`).
 - ✅ Quiet install uses fingerprints (`main.py:792-815`).
-- ✅ LF policy and ruff `0.16.4` pins agree.
+- ✅ LF policy and current ruff `0.16.5` pins agree.
 - ✅ Icon script passes pinned ruff.
 - ✅ Stopped processes require identity verification before reclamation (`main.py:341-447`).
 - ✅ Inspected skips have documented premises; no xfail/removed-module test import found.
-- ✅ Handoff has real tests/docs; retirement is not based on claiming no implementation.
+- ✅ Round 1 verified substantive handoff implementation/tests/docs before retirement; retirement
+  is not based on claiming the feature never existed.
 - ✅ Shared messaging has non-handoff consumers and must remain supported.
+- ✅ F-02 — vulnerable handoff ingress and automatic launch/watcher paths are absent; the retired
+  command fails closed (`src/ai_cli/main.py:3051-3063`).
+- ✅ F-08 — README fence regression parser returns no errors (`tests/test_readme_fences.py`).
+- ✅ F-11 — release history explicitly declares the intentional durable/offline semantic loss
+  (`CHANGELOG.md:69-73`).
 
 ## Anti-Patterns to Watch For
 
@@ -500,10 +675,10 @@ No implementation fixes were applied.
 
 - [ ] All P0 fixes independently verified.
 - [ ] All P1 fixed or public feature/support claim removed with rationale.
-- [x] P2/P3 recommendations recorded.
-- [ ] AD-1 approved/implemented.
+- [x] P2/P3 resolved or recommendations recorded (F-11 resolved by explicit retirement disclosure).
+- [ ] AD-1 human decision recorded and reconciled with the already-shipped behavior.
 - [x] Verification Matrix 10/10 reproduced.
-- [ ] Verification round completed after fixes.
+- [x] Round 2 re-verification completed; 12/12 current statuses reproduced.
 - [ ] Final re-grep and unrestricted full test run complete.
 - [x] No inline implementation fixes.
 - [x] Already-Correct and Anti-Patterns populated.
@@ -518,6 +693,7 @@ No implementation fixes were applied.
 | Date | Action | Notes |
 |------|--------|-------|
 | 2026-08-28 | Round 1 complete | 80 classified; 11 findings; 10/10 matrix; no implementation edits. |
+| 2026-08-29 | Round 2 current-tree re-verification complete | 3 resolved, 1 reframed-open, 1 partial-open, 6 still open; AD-1 pending with shipped behavior matching option (b); 12/12 status matrix. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -530,6 +706,14 @@ No implementation fixes were applied.
 **Session/process:** `session.py`, `session_audit.py`, `session_adopt.py`, `cc_migrate.py`, `process_probe.py`, `process_hygiene.py`, `stale_session_reaper.py`, `direnv_setup.py`; their dedicated tests plus stopped/bare/runaway tests.
 
 **Features/docs:** top-level module inventory; detailed `sync`, `quota`, `cc_usage`, `transport`, `tunnel`, `notifications`, `layout`, `iterm2`, `icon_generator`, `copier_update`, `telemetry`, `trust`, `workspace`, `git_repair`; architecture/statusline/usage/docket docs; dedicated feature tests. Targeted issue mirror records were read; no task-store command ran.
+
+**Round 2 current-tree verification:** full current audit doc; canonical harness audit STUB/TEMPLATE;
+`docs/audits/README.md`; `docs/audits/stale-session-reaper-implementation-audit.md`; tracked
+AI-CLI-fae/AI-CLI-pt9n records and interactions; PR/commit diffs for `86c41d0`, `66c6456`,
+`7bfa7a5`, `f3e181d`, `f41eb4d`, `8894668`, and `cdbcbf1`; current `main.py`,
+`session_script.py`, `process_manager.py`, `session_audit.py`, `session_adopt.py`,
+`copier_update.py`, `pyproject.toml`, `README.md`, `CHANGELOG.md`, architecture/usage/NATS/CI-retirement
+docs, and the cited regression tests.
 
 ## Appendix: Commands Run
 
@@ -548,9 +732,25 @@ PYTHONDONTWRITEBYTECODE=1 <existing-venv>/bin/python -c '<direct collection, no 
 PYTHONDONTWRITEBYTECODE=1 <existing-venv>/bin/python -c '<focused process-probe test, no conftest>'
 python3 -c '<sanitized tomllib/module/CRLF/fence checks>'
 <existing-venv>/bin/ruff check --no-cache scripts/generate_iterm2_icons.py
+# Round 2
+bd show AI-CLI-fae
+bd show AI-CLI-pt9n
+bd show AI-CLI-tdm6.1
+git show --stat --oneline <relevant-commit>
+rg -n '<finding-specific symbols>' <cited current files>
+python3 -c '<sanitized TOML metadata/dev-extra checks>'
+<existing-venv>/bin/ruff check --no-cache src tests
+<existing-venv>/bin/ruff format --no-cache --check src tests
+<existing-venv>/bin/pyright --venvpath <repository-root>
+PYTHONDONTWRITEBYTECODE=1 <existing-venv>/bin/pytest -p no:cacheprovider -q <focused tests>
 ```
 
-The exact uv commands failed before pytest while creating the uv cache. Direct full pytest could not create the autouse temp directory because this audit file was the worker's sole writable path.
+The Round 1 exact uv commands failed before pytest while creating the uv cache. Round 2's focused
+pytest attempt also failed before collection because no writable temporary directory exists under
+the single-file write policy. The three `bd show` commands could not open the embedded database
+because it must create/open a lock file; tracked JSONL was read as the repository fallback. Ruff
+completed successfully. Pyright was rerun with the existing environment explicitly selected and
+reported 81 errors.
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
 
