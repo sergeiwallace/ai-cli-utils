@@ -67,10 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `ai handoff` and its cross-machine queue, NATS ingress, and automatic launch
-  hooks are retired. The command now fails closed and points to the archived
-  implementation; NATS continues to support its remaining messaging features.
-  This intentionally removes the queue's offline, cross-machine, and durable
-  lifecycle semantics. (`AI-CLI-archive-retire-exjn`; 86c41d0)
+  hooks are removed entirely; the command no longer exists. NATS continues to
+  support its remaining messaging features. This intentionally removes the
+  queue's offline, cross-machine, and durable lifecycle semantics.
+  (`AI-CLI-archive-retire-exjn`; 86c41d0)
 - **BREAKING (config):** the `cc-usage push` legacy usage configuration section
   is renamed to `[usage_api]`. The old name was a private platform name that did
   not belong in a public package, and it did not describe what the section

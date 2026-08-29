@@ -3048,21 +3048,6 @@ def cmd_doctor(dry_run):
     raise SystemExit(1)
 
 
-# --- retired handoff command ---
-
-
-@_cli_group.command(
-    "handoff",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
-    help="Retired command",
-)
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_handoff_retired(args):
-    del args
-    click.echo("This command has been retired; see archive/ for the old implementation.", err=True)
-    raise SystemExit(1)
-
-
 # --- memory group ---
 
 
