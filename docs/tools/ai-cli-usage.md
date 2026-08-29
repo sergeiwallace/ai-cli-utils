@@ -24,7 +24,7 @@ source: internal
   - [ai notifications](#ai-notifications)
 - [Sync Commands](#ai-sync)
 - [Utility Commands](#utility-commands)
-  - [ai gemini](#ai-gemini)
+  - [Removed ai gemini command](#removed-ai-gemini-command)
   - [ai spend gemini](#ai-spend-gemini)
   - [ai cc-usage](#ai-cc-usage)
   - [ai layout](#ai-layout)
@@ -299,79 +299,11 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Utility Commands
 
-### ai gemini
+### Removed ai gemini command
 
-```bash
-ai gemini "prompt" [-m MODEL] [-d DEPTH] [-o OUTPUT_FILE] [--quiet] [--verbose]
-             [--timeout N] [--no-file] [--resume RUN_ID] [--planning-model MODEL]
-```text
+`ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
 
-Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) and research depth tiers. See `src/ai_cli/gemini.py` and `src/ai_cli/research.py`.
-
-**Depth tiers** (`-d`/`--depth`):
-- `quick` (default) -- single-shot call, current behavior
-- `standard` -- Planner-Executor: query generation -> concurrent grounded search -> synthesis (~2x tokens, 2+ model calls)
-
-**Model aliases** (`-m`/`--model`):
-- `deep-think` (default) — Gemini 3.1 Pro with HIGH thinking via 3-tier fallback
-- `pro`, `flash`, `flash-lite` — standard Gemini models via 3-tier fallback
-- `deep-research` — Gemini Deep Research via Interactions API. Async, polls until complete, cancels on Ctrl-C. Uses `GOOGLE_API_KEY_TIER_1` (tier 3) directly — free-tier key (tier 2) is skipped, deep-research has no free quota.
-- Any full Gemini model ID
-
-**Auth tier notes** (see [pricing](https://ai.google.dev/gemini-api/docs/pricing)):
-- **Tier 1 (OAuth):** free via gemini CLI credentials. Works for all models.
-- **Tier 2 (free API key):** free quota for Flash text/multimodal models (2.0, 2.5, 3.x — including `gemini-3.1-flash-live-preview`), Gemma 4, and Gemini Embedding only. Returns a billing error — not a 429 — for Pro models, image-generation variants (`gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`), and deep-research. The fallback chain skips tier 2 automatically for ineligible models.
-- **Tier 3 (paid API key):** covers all models. Use `-s 3` when OAuth is unavailable and the model is not free-tier eligible.
-
-**Flags:**
-- `-m`/`--model` -- Model alias or full model ID (see above)
-- `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). For Flash models: `-s 2` skips OAuth. For Pro/deep-research: `-s 3` (free-tier key has no quota for these).
-- `-d`/`--depth` -- Research depth: `quick` or `standard`
-- `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
-- `--resume RUN_ID` -- Resume a standard run from last completed step
-- `-o`/`--output` -- Output file path (auto-generated if omitted)
-- `--quiet`/`-q` -- Suppress stderr progress output
-- `--verbose`/`-v` -- Show detailed tier/model info
-- `-t`/`--timeout` -- Timeout in seconds (default: 600)
-- `-F`/`--no-file` -- Stdout only, no file written
-
-**Paid tier for deep-research:**
-
-Deep Research (`-m deep-research`) draws from the paid AI Studio key (`GOOGLE_API_KEY_TIER_1`) and requires one opt-in:
-
-`paid_fallback_enabled = true` in `~/.config/ai-cli/config.toml` under `[gemini]` (disabled by default).
-
-If absent, the run exits with an actionable error message. After a successful run, the daily paid run count is printed to stderr. A warning is printed when paid run count reaches the configurable budget alert threshold (`DEEP_RESEARCH_DAILY_WARNING = 18`, alert at `DEEP_RESEARCH_DAILY_LIMIT = 20`). There is no Google-imposed hard daily limit — these are local budget-awareness constants only. Daily counts are persisted to `~/.local/state/ai-cli/dr-daily.json` and reset at midnight.
-
-**Auth tier names** (used in JSONL logs):
-
-| Tier | Name | Key |
-|------|------|-----|
-| 1 | `oauth` | gemini CLI credentials |
-| 2 | `ai_studio_free` | `GOOGLE_API_KEY_FREE_TIER` |
-| 3 | `ai_studio_paid` | `GOOGLE_API_KEY_TIER_1` |
-
-Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `null` when usage metadata is absent from the API response (distinguishable from a model that returned zero tokens).
-
-**Logs:** `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — one entry per run. Daily Deep Research counter: `~/.local/state/ai-cli/dr-daily.json`.
-
-**JSONL fields:** in addition to tier/model/token fields, every log entry includes `id` (UUID), `occurred_at` (UTC ISO8601 with trailing `Z`), `machine` (value of `AI_HOST`), `provider` (`gemini`), and `source_quality` (`ok` when the prompt is 20+ characters, `suspected_test` otherwise).
-
-**NATS usage events:** when `[messaging] nats_servers` is configured, each call fires a fire-and-forget publish on the subject `hw.events.usage.gemini.event` with the same payload as the JSONL entry. Publishing runs in a daemon thread and never blocks the caller — if NATS is unavailable or not configured the publish silently no-ops. Downstream consumers (the core-cli `UsageConsumer`) ingest these events into Postgres for cross-provider usage reporting.
-
-**Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
-
-**Checkpoints:** `~/.local/state/ai-cli/research-runs/<run-id>/` -- JSON snapshots after each step. Use `--resume <run-id>` to restart from last completed step.
-
-**AI Studio billing model:** The Interactions API requires an AI Studio project
-with a prepayment balance (mandatory as of March 2026 — all accounts are prepay-only;
-postpay unlocks at \$1,000 cumulative spend). The prepay balance is a "financial
-handshake" anti-abuse mechanism, not the primary funding source: API spend deducts
-from any GCP credit balance first (e.g. monthly credits from a Google AI Ultra
-subscription), only drawing from the prepay balance once credits are exhausted.
-There is no OAuth path that routes Interactions API requests through a consumer
-Ultra subscription quota — Ultra gives GCP credits that offset project-level
-billing, not a separate quota pool.
+The historical implementation used API-key fallback, research-depth orchestration, and JSONL logging. Those behaviors and their configuration options are no longer provided by `ai-cli-utils`. This note preserves the removal context; the release history records the complete retired interface.
 
 ### ai spend gemini
 
@@ -379,18 +311,9 @@ billing, not a separate quota pool.
 ai spend gemini
 ```text
 
-Print today's and this month's Gemini API usage summary, combining local JSONL logs with GCP BigQuery billing export data.
+Print a cost summary from historical local Gemini run logs, optionally supplemented with a GCP BigQuery billing export. It does not invoke Gemini or create new logs.
 
-**Today's section** shows:
-- Deep Research paid run count for today
-- Per-model run counts for other models
-
-**This month's section** shows:
-- Monthly Deep Research OAuth and paid run totals
-- Per-model run counts
-- Actual billed amount from GCP billing export (when configured), with Ultra credit status hint
-
-**BigQuery setup** (one-time, required for paid spend data):
+**BigQuery setup** (one-time, optional historical billing data):
 
 1. Enable detailed billing export in Cloud Console → Billing → Billing export → Detailed usage cost
 2. Add to `~/.config/ai-cli/config.toml`:
@@ -403,11 +326,10 @@ billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX
 
 3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
 
-Data appears in BigQuery within 24–48 hours. When not configured, `ai spend gemini` prints an actionable setup message and continues gracefully.
+When BigQuery is not configured, `ai spend gemini` reports the local historical logs that are available.
 
 **State files:**
-- `~/.local/state/ai-cli/dr-daily.json` — daily DR run counter (resets at midnight)
-- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — per-run log
+- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — historical per-run log, if retained from a version before v0.7.0
 
 ### ai cc-usage
 

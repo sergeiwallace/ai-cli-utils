@@ -1,7 +1,7 @@
 ---
 title: ai-cli-utils — Architecture
 category: design
-tags: [architecture, cli, gemini, quota, sync, nats, circus]
+tags: [architecture, cli, quota, sync, nats, circus]
 status: active
 source: claude-sonnet-4-6 2026-04-18
 template_version: "design-1.0.0"
@@ -34,7 +34,7 @@ template_version: "design-1.0.0"
 
 ## Overview
 
-`ai-cli-utils` is the unified AI session manager and automation toolkit for Claude Code and Gemini CLI. It wraps both tools in tmux sessions with production workflow features: numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine memory sync, and session lifecycle management. It also provides `ai gemini` — a Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) that automatically retries on capacity errors.
+`ai-cli-utils` is a session manager and automation toolkit for Claude Code, Gemini CLI, Pi, and Codex. It wraps those tools in tmux sessions with numbered sessions, git worktree isolation, mosh/SSH remote access, cross-machine memory sync, and session lifecycle management.
 
 The tool installs as a single `ai` command. There is no server component — all state is local SQLite, local files, and optionally NATS for cross-machine events.
 
@@ -46,23 +46,22 @@ The tool installs as a single `ai` command. There is no server component — all
 |------|-------------|
 | `main.py` | CLI entrypoint (`ai` command); command dispatch, session-launch plumbing, update/deploy helpers. Thin after AI-CLI-39 refactor — most subsystems now live in dedicated modules below |
 | `config.py` | XDG path helpers, `load_config`, session map read/write, project registry (loaded from `myproject.toml`) |
+| `direnv_setup.py` | Portable checks and approval helpers for project `.envrc` files |
+| `git_repair.py` | Detects and repairs missing tracked symlinks, phantom deletions, and bare-worktree configuration |
 | `session.py` | Session naming (`c-myproject-1` etc.), worktree creation/cleanup, Gemini UUID/checkpoint lookup |
 | `iterm2.py` | iTerm2 color-slot leases, profile emit escape sequences, tmux `allow-passthrough` config |
-| `handoff.py` | Handoff queue (`post`, `check`, `claim`, `complete`) + signal-watch helper `_claim_handoff_for_signal` |
 | `transport.py` | VPN-aware mosh/SSH loop for `ai c -R`; auto-starts Tailscale on Mac when host unreachable |
 | `tunnel.py` | autossh SSH tunnels (`ai tunnel`) and CDP/Chrome debug server (`ai cdp`) |
 | `process_manager.py` | Circus daemon bootstrap + `signal-watch` process lifecycle |
 | `process_probe.py` | Per-OS process inspection and termination behind one interface (`ProcessProbe`, resolved by `probe_for`): presence, state, start-time identity, and a bounded termination escalation. `ProcfsProbe` reads Linux `/proc`; `PsutilProbe` covers macOS and Windows. Backs the session-registry liveness check and abandoned-session reclamation, which were Linux-only before it |
 | `session_script.py` | `get_engine_script` — bash template that wraps each session's engine loop with watcher, handoff drain, iTerm2 status |
-| `gemini.py` | Gemini CLI/API wrapper with 3-tier auth fallback; defines `GeminiResult`, `AttemptLog`; handles OAuth, free-key REST, paid-key REST; writes JSONL run logs; publishes `hw.events.usage.gemini.event` to NATS |
 | `quota.py` | Claude quota scraper and watcher; polls `/usage` via hidden tmux window; publishes NATS threshold events and `hw.events.usage.claude.snapshot`; stores snapshots in SQLite and NATS KV; statusline reads KV first, falls back to SQLite; threshold alerts delivered via `Notifier` |
 | `quota_db.py` | SQLite persistence for quota tracking (`~/.local/state/ai-cli/quota.db`); stores usage records, snapshots, weekly reset anchors, and `notification_log` (full delivery history with per-channel success/failure) |
 | `cc_usage.py` | CC JSONL scanner for per-call token data; cursor-tracked incremental push to core-cli REST API; defines `CCTokenEvent`, `PushResult` |
 | `messaging.py` | Async NATS client wrapper with JetStream; SSH tunnel auto-open on Mac when port 4222 is unreachable; defines `NATSClient`, stream configs, heartbeat/event helpers |
 | `sync.py` | Bidirectional CC session data sync (conversation JSONL + memory files) via bare git staging repo over SSH; defines `SyncConfig` |
 | `telemetry.py` | Event recording pipeline: caller → NATS JetStream → background writer → SQLite (`~/.ai-cli/telemetry.db`) |
-| `research.py` | Multi-step research depth orchestration (Planner-Executor); per-step checkpointing under `~/.local/state/ai-cli/research-runs/` |
-| `spend.py` | Gemini cost reporting; aggregates local JSONL logs + optional GCP BigQuery billing export |
+| `spend.py` | Historical Gemini CLI cost reporting from local run logs, with optional GCP BigQuery billing export |
 | `memory.py` | inotify/FSEvents-based memory file watcher; debounces MEMORY.md writes; publishes `memory.dream.*` NATS events |
 | `notifications.py` | Unified notification delivery: `Notifier` class fires all configured channels in parallel (Discord webhook, ntfy push, OS native); `NotificationResult` per-channel result tracking; OS fallback fires when all primaries fail; `NotificationManager` for iTerm2 badge updates via OSC escape sequences |
 | `vpn_watch.py` | Circus-managed daemon; polls VPN state; publishes `vpn.state.changed` to NATS |
@@ -71,6 +70,12 @@ The tool installs as a single `ai` command. There is no server component — all
 | `icon_generator.py` | Runtime iTerm2 icon tinting via Pillow; computes complementary HSL tint from tab color |
 | `copier_update.py` | Runs `copier update` across all `project-template`-based projects; scans for conflict markers |
 | `setup.py` | Detects managed vs. standalone environment; switches `CLAUDE.md` variant accordingly |
+| `cc_migrate.py` | Safely moves a Claude Code transcript between project roots |
+| `session_adopt.py` | Adopts an externally started Claude Code session into a managed session slot |
+| `session_audit.py` | Surveys titled Claude Code sessions and identifies sessions that cannot be resumed by `ai c` |
+| `stale_session_reaper.py` | Fail-closed stale tmux session evaluation and explicit reaping |
+| `trust.py` | Claude Code workspace-trust registration and backfill |
+| `workspace.py` | Workspace-wide git pull/rebase operations across repositories and worktrees |
 | `data/statusline-command.sh` | Shell script deployed by `ai update`; called by the iTerm2 statusline |
 
 ---
@@ -80,13 +85,19 @@ The tool installs as a single `ai` command. There is no server component — all
 ### Session Management
 - `ai c [N] [-p PROJECT] [-R]` — launch or resume Claude Code tmux session with git worktree isolation
 - `ai g [N] [-p PROJECT]` — launch or resume Gemini CLI tmux session
+- `ai p [N] [-p PROJECT]` — launch or resume a Pi tmux session
+- `ai cx [N] [-p PROJECT]` — launch or resume a Codex tmux session
 - `ai ls [-a]` — fzf-powered session picker sorted by activity
 - `ai attach SESSION` — attach to named tmux session
-- `ai reconnect [-p PROJECT] [-f]` — reconnect to most recent matching session
+- `ai reconnect [N ...]` — print reconnect commands for matching remote sessions
+- `ai cc-migrate DEST` — move a Claude Code transcript to another project root
+- `ai session-adopt [NAME]` — adopt a session that was started outside `ai c`
+- `ai session-audit` — survey titled sessions and identify sessions that cannot be resumed
 
-### Gemini / Research
-- `ai gemini PROMPT [-m MODEL] [-o FILE] [-d DEPTH] [-s TIER] [--resume RUN_ID]` — run Gemini with 3-tier auth fallback and optional research depth orchestration
-- `ai spend gemini` — Gemini cost report (JSONL logs + optional BigQuery)
+### Historical Gemini Spend
+- `ai spend gemini` — report historical Gemini CLI run logs and optional BigQuery billing data; it does not invoke Gemini
+
+> **Removed in v0.7.0:** `ai gemini` and the `gemini.py` and `research.py` modules were removed. The historical `ai spend gemini` command remains only to report logs created before that removal.
 
 ### Quota Tracking
 - `ai quota watch start|stop|status` — manage quota-watch Circus daemon lifecycle
@@ -104,13 +115,13 @@ The tool installs as a single `ai` command. There is no server component — all
 
 ### Sync
 - `ai sync push/pull/conflicts/watch [-m/-f]` — sync CC session data between machines via bare git repo
+- `ai ws pull` — pull/rebase the repositories and worktrees in a workspace file
 
-### Handoff Queue
-- `ai handoff post/check/claim/complete` — delegate tasks between sessions and machines
+### Retired Handoff Command
+- `ai handoff` — retained only to report that the handoff queue is retired
 
 ### Daemons / Process Management
 - `ai ps [clean]` — inspect and clean up stale ai-cli processes and PID files
-- `ai signal-watch start|stop|status` — Circus-managed NATS handoff subscriber per CC session
 - `ai vpn-watch` — Circus-managed VPN state daemon
 - `ai memory watch` — start memory file watcher
 - `ai telemetry writer` — start NATS-to-SQLite telemetry writer
@@ -125,7 +136,11 @@ The tool installs as a single `ai` command. There is no server component — all
 - `ai update` / `ai deploy` — reinstall package in all configured venvs + deploy statusline script
 - `ai upgrade` — pull latest from git and redeploy
 - `ai setup` — configure CLAUDE.md variant for the current environment
+- `ai doctor [-d]` — check required native binaries and install supported missing tools
+- `ai register PROJECT [-p PREFIX] [-t TYPE]` — register a repository root and task prefix
 - `ai copier-update [--project NAME]` — propagate project-template changes to all downstream projects
+- `ai ssh [ALIAS]` — open an SSH shell to a configured remote machine
+- `ai trust-backfill [-r ROOT]` — register Claude Code workspace trust for repositories under a root
 - `ai internal publish SUBJECT PAYLOAD` — raw NATS publish (used by hooks)
 
 ---
@@ -134,8 +149,6 @@ The tool installs as a single `ai` command. There is no server component — all
 
 | Type | Module | Key Fields |
 |------|--------|------------|
-| `GeminiResult` | `gemini.py` | `content`, `model`, `tier` (1/2/3), `success`, `error`, `duration_ms`, `input_tokens`, `output_tokens`, `total_tokens`, `event_id`, `machine` |
-| `AttemptLog` | `gemini.py` | Per-attempt log within a `GeminiResult` |
 | `QuotaSnapshot` | `quota.py` | `weekly_all_models_pct`, `session_pct`, `weekly_sonnet_pct`, `extra_pct`, `reset_at` |
 | `CCTokenEvent` | `cc_usage.py` | `id`, `session_id`, `project_path`, `machine`, `model`, `input_tokens`, `cache_creation_tokens`, `cache_read_tokens`, `output_tokens`, `occurred_at` |
 | `PushResult` | `cc_usage.py` | Push outcome summary (event count, errors) |
@@ -152,18 +165,15 @@ The tool installs as a single `ai` command. There is no server component — all
 | `fleet.worker.{session_id}.heartbeat` | `messaging.py` | Per-session heartbeat |
 | `quota.threshold.{50\|75\|90}` | `quota.py` | Claude quota threshold alerts |
 | `quota.snapshot` | `quota.py` | Legacy cross-machine quota sync |
-| `hw.events.usage.gemini.event` | `gemini.py` | Per-Gemini-call event (core-cli ingest) |
 | `hw.events.usage.claude.snapshot` | `quota.py` | Claude quota snapshot (core-cli ingest) |
-| `handoff.{project}` | `handoff.py` | Cross-session task delegation |
 | `memory.dream.started/completed` | `memory.py` | Memory consolidation lifecycle |
 
 **NATS KV bucket `hw_state`:**
 - `quota.claude.current` — latest `QuotaSnapshot` JSON; written by `quota.py`, read by statusline and `ai quota status`
 
-### core-cli REST API (optional)
+### REST API (optional)
 - `POST /api/v1/usage/cc/ingest` — CC token events from `cc_usage.py`
 - `GET /api/v1/usage/claude/current` — read Claude quota tier (used by companion)
-- `GET /api/v1/usage/gemini/balance` — read Gemini quota tier (used by companion)
 
 ### SQLite Databases
 - `~/.local/state/ai-cli/quota.db` — quota snapshots, usage records, weekly state
@@ -173,24 +183,22 @@ The tool installs as a single `ai` command. There is no server component — all
 - **tmux** (via `libtmux`) — session creation, attachment, hidden quota-scrape windows
 - **Circus** — process supervisor for `signal-watch`, `vpn-watch`, `telemetry writer` daemons
 - **SSH/mosh** — remote session launch; SSH tunnels for NATS access on Mac
-- **Gemini CLI** (`gemini` binary) — tier-1 OAuth auth in the fallback chain
-- **Google AI Studio REST API** — tiers 2 (free key) and 3 (paid key) via `google-genai` SDK
-- **GCP BigQuery** (optional) — billing data for `ai spend gemini`
+- **Gemini CLI** (`gemini` binary) — launches Gemini tmux sessions through `ai g`
+- **GCP BigQuery** (optional) — historical billing data for `ai spend gemini`
 - **watchdog** — inotify/FSEvents for memory file watching and sync watch
 - **fzf** — interactive session picker in `ai ls`
 - **copier** — project template propagation in `ai copier-update`
 
 ### Files on Disk
 - `~/.claude/projects/` — CC session JSONL files (scanned by `cc_usage.py`, synced by `sync.py`)
-- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — per-Gemini-call run logs
+- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — historical Gemini run logs, if retained from a version before v0.7.0
 - `~/.local/state/ai-cli-utils/cc-usage-cursor.json` — per-session JSONL scan cursors
-- `~/.local/state/ai-cli/research-runs/<run-id>/` — research depth step checkpoints
 
 ---
 
 ## Key Design Decisions
 
-**3-tier Gemini auth fallback** — `gemini.py` tries OAuth (Gemini CLI binary) → free API key (`GOOGLE_API_KEY_FREE_TIER`, Flash/Gemma/Embedding models only) → paid API key (`GOOGLE_API_KEY_TIER_1`). Paid tier disabled by default (`paid_fallback_enabled = false`). Automatic retry on capacity errors at each tier before falling to the next.
+**Removed Gemini API wrapper** — v0.7.0 removed `ai gemini`, `gemini.py`, and `research.py`. `ai g` still launches an installed Gemini CLI in a tmux session; `ai spend gemini` only reports pre-removal local logs.
 
 **Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without requiring a local scrape on every machine.
 
@@ -224,10 +232,9 @@ Note that `git worktree add -b <branch> <remote-tracking-ref>` attaches an upstr
 | `circus>=0.18.0` | Process supervisor for daemon management |
 | `libtmux>=0.30.0` | tmux session/window/pane control |
 | `watchdog>=4.0.0` | inotify/FSEvents for file watching |
-| `google-genai>=1.0.0` | Google AI Studio REST API (tiers 2 and 3) |
 | `pyyaml>=6.0` | Layout YAML parsing |
 | `pillow>=10.0` | iTerm2 icon tinting |
-| `google-cloud-bigquery` | (optional) GCP billing for `ai spend gemini` |
+| `google-cloud-bigquery` | (optional) historical GCP billing data for `ai spend gemini` |
 | `pydantic` | (optional) Layout file schema validation |
 
 <!-- /doc:region name="overview" -->
