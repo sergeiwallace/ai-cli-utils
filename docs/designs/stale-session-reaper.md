@@ -236,8 +236,8 @@ Records live beneath the existing XDG state home at `session-heartbeats/<encoded
 | 8 | D-8 holds the generation lease through final identity/gate verification and ID-targeted kill | - [x] | The final tmux compare-and-kill holds the generation lease and requires the captured all-dead pane fingerprint. |
 | 9 | D-9 uses current-boot monotonic age and preserves on boot/clock uncertainty | - [ ] | |
 | 10 | Phase 1 integrated positive, mutation-negative, lease, and pane/process-identity ACs are covered | - [ ] | |
-| 11 | Phase 2 start/stop/status/run success and failure ACs are covered | - [ ] | |
-| 12 | Phase 1 publication-parity and Phase 2 public-documentation correction ACs are covered | - [ ] | |
+| 11 | Phase 2 start/stop/status/run success and failure ACs are covered | - [x] | Focused process-manager, CLI, and reaper-loop tests cover lifecycle outcomes and interval cadence. |
+| 12 | Phase 1 publication-parity and Phase 2 public-documentation correction ACs are covered | - [x] | README, default configuration, and changelog now describe independent observe-first operation and explicit reap opt-in. |
 | 13 | Supervisor acquires before first usable evidence and replaces all three direct self-`exec` transitions with child cycles | - [ ] | |
 | 14 | `ProcessProbe.capture_identity()` has typed Procfs/Psutil implementations and UNKNOWN/mismatch preservation coverage | - [ ] | |
 | 15 | Candidate-local exceptions preserve only the failed candidate and do not roll back earlier authorised kills | - [ ] | |

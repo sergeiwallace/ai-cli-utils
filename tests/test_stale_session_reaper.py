@@ -29,6 +29,7 @@ from ai_cli.stale_session_reaper import (
     SubprocessTmuxAdapter,
     generation_lease_path,
     heartbeat_path,
+    run_stale_session_reaper,
     write_heartbeat,
 )
 
@@ -330,6 +331,112 @@ def test_given_observe_mode_when_every_reap_gate_passes_then_does_not_kill(
 
     assert _reaper(reaper_state, tmux, probe, mode="observe").evaluate_once() == []
     assert tmux.kills == []
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"mode": "unsafe", "stale_after_seconds": 60},
+        {"mode": "observe", "stale_after_seconds": 0},
+    ],
+)
+def test_given_invalid_reaper_configuration_when_evaluated_then_logs_and_preserves_all_sessions(
+    reaper_state: Path, candidate: SessionCandidate, caplog: pytest.LogCaptureFixture, settings: dict[str, object]
+):
+    tmux = _ControlledTmux([candidate])
+    probe = _Probe({9001: (False, None, None)})
+    reaper = StaleSessionReaper(
+        {"stale_session_reaper": settings},
+        state_home=reaper_state,
+        tmux=tmux,
+        process_probe=probe,
+    )
+
+    assert reaper.evaluate_once() == []
+    assert tmux.kills == []
+    assert "configuration_invalid" in caplog.text
+
+
+def test_given_reaper_configuration_is_absent_when_every_gate_passes_then_observes_without_killing(
+    reaper_state: Path, candidate: SessionCandidate, caplog: pytest.LogCaptureFixture
+):
+    assert write_heartbeat(
+        reaper_state,
+        candidate.session_name,
+        candidate.generation_token,
+        boot_generation="boot-1",
+        monotonic_clock=lambda: 1,
+    )
+    tmux = _ControlledTmux([candidate])
+    probe = _Probe({9001: (False, None, None)})
+    reaper = StaleSessionReaper(
+        {},
+        state_home=reaper_state,
+        tmux=tmux,
+        process_probe=probe,
+        boot_generation=lambda: "boot-1",
+        monotonic_clock=lambda: 1000,
+    )
+
+    assert reaper.evaluate_once() == []
+    assert tmux.kills == []
+    assert "mode_observe" in caplog.text
+
+
+def test_given_first_candidate_is_killed_when_second_candidate_raises_then_first_kill_remains_and_second_is_preserved(
+    reaper_state: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    first = SessionCandidate("$1", "session-1", "generation-1", (Pane("%1", 9001),))
+    second = SessionCandidate("$2", "session-2", "generation-2", (Pane("%2", 9002),))
+    for item in (first, second):
+        assert write_heartbeat(
+            reaper_state,
+            item.session_name,
+            item.generation_token,
+            boot_generation="boot-1",
+            monotonic_clock=lambda: 1,
+        )
+
+    class CandidateErrorReaper(StaleSessionReaper):
+        def _evaluate_candidate(self, item: SessionCandidate) -> bool:
+            if item.session_id == second.session_id:
+                raise RuntimeError("malformed candidate")
+            return super()._evaluate_candidate(item)
+
+    tmux = _ControlledTmux([first, second])
+    probe = _Probe({9001: (False, None, None), 9002: (False, None, None)})
+    reaper = CandidateErrorReaper(
+        {"stale_session_reaper": {"mode": "reap", "stale_after_seconds": 60}},
+        state_home=reaper_state,
+        tmux=tmux,
+        process_probe=probe,
+        boot_generation=lambda: "boot-1",
+        monotonic_clock=lambda: 1000,
+    )
+
+    assert reaper.evaluate_once() == [first.session_id]
+    assert tmux.kills == [first.session_id]
+    assert heartbeat_path(reaper_state, second.session_name, second.generation_token).exists()
+    assert "candidate_error" in caplog.text
+
+
+def test_given_reaper_run_when_an_interval_completes_then_sleeps_for_sixty_seconds(tmp_path: Path):
+    class Reaper:
+        def evaluate_once(self) -> list[str]:
+            return []
+
+    def stop_after_first_interval(seconds: int) -> None:
+        assert seconds == 60
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_stale_session_reaper(
+            {},
+            state_home=tmp_path,
+            reaper_factory=lambda _config, **_kwargs: Reaper(),
+            sleep=stop_after_first_interval,
+        )
 
 
 def test_given_procfs_and_psutil_processes_when_identity_is_captured_then_values_are_backend_specific(tmp_path: Path):

@@ -331,6 +331,23 @@ def test_given_unrelated_session_with_a_false_ended_pane_result_when_cleanup_run
     assert not any("kill-session" in call.args[0] for call in run.call_args_list)
 
 
+def test_given_managed_tmux_listing_when_launch_cleanup_runs_then_it_never_starts_or_runs_the_reaper():
+    panes = MagicMock(returncode=0, stdout="c-myproject-1\n")
+    with (
+        patch("subprocess.run", return_value=panes) as run,
+        patch("ai_cli.session.sys.platform", "linux"),
+        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
+        patch("ai_cli.session._sweep_stale_iterm2_profiles"),
+        patch("ai_cli.process_manager._cmd_stale_session_reaper_start") as start,
+        patch("ai_cli.stale_session_reaper.run_stale_session_reaper") as run_reaper,
+    ):
+        cleanup_stale_sessions({})
+
+    start.assert_not_called()
+    run_reaper.assert_not_called()
+    assert not any("kill-session" in call.args[0] for call in run.call_args_list)
+
+
 def test_given_unrelated_dead_shell_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     panes = _make_list_panes_output(("c-sw-1", now - 61, "bash"))

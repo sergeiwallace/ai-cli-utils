@@ -31,6 +31,7 @@ LOGGER = logging.getLogger(__name__)
 HEARTBEAT_VERSION = 1
 DEFAULT_MODE = "observe"
 DEFAULT_STALE_AFTER_SECONDS = 600
+REAPER_CADENCE_SECONDS = 60
 _TMUX_FORMAT = "#{session_id}\t#{session_name}\t#{@ai_cli_session_generation}\t#{pane_id}\t#{pane_pid}"
 _TMUX_FINGERPRINT_FORMAT = (
     "#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|"
@@ -485,6 +486,28 @@ class StaleSessionReaper:
                 candidate.session_name,
                 candidate.generation_token,
             )
+
+
+def run_stale_session_reaper(
+    config: Mapping[str, object],
+    *,
+    state_home: Path | None = None,
+    reaper_factory: Callable[..., StaleSessionReaper] = StaleSessionReaper,
+    sleep: Callable[[float], None] | None = None,
+) -> int:
+    """Run the independent worker once per minute until Circus stops it."""
+    if state_home is None:
+        from .config import get_xdg_state_home
+
+        state_home = get_xdg_state_home()
+    reaper = reaper_factory(config, state_home=state_home)
+    pause = sleep or time.sleep
+    while True:
+        try:
+            reaper.evaluate_once()
+        except Exception:
+            LOGGER.exception("stale_session_reaper reason=interval_error")
+        pause(REAPER_CADENCE_SECONDS)
 
 
 def _valid_candidate(candidate: SessionCandidate) -> bool:

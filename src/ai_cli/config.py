@@ -188,6 +188,8 @@ enabled = true
 
 [session]
 ## Session names: c-{project}-{n} or c-r-{project}-{n} for remote sessions
+## Limits launch-time auxiliary-state housekeeping only; it never ends a tmux
+## session. Start `ai session-reaper start` for independent stale-session checks.
 stale_session_timeout = 15
 ## Wrap sessions in tmux? Default true. Set false to make bare mode the default
 ## (equivalent to always passing -b/--bare). tmux is a C binary and cannot be
