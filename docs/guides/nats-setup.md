@@ -50,7 +50,7 @@ NATS is an optional dependency. `ai-cli-utils` uses it for real-time fleet messa
 - `ai c` / `ai g` session management
 - `ai sync push/pull` (direct rsync/SSH, no NATS required)
 - `ai tunnel start/stop/status`
-- `ai gemini`
+- `ai spend gemini` (historical local-log reporting)
 - `ai update`
 - `ai ls`, `ai attach`, `ai reconnect`
 
