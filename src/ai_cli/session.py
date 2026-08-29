@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal, overload
 
 from .config import (
     WORKTREE_DIR,
@@ -1069,6 +1070,24 @@ def _initialize_worktree(
 
     ensure_workspace_trusted([repo_root, worktree_path])
     _allow_trusted_worktree_envrc(repo_root, worktree_path)
+
+
+@overload
+def create_worktree(
+    ai_name: str, *, with_status: Literal[False] = False, repo_root: Path | None = None
+) -> Path | None: ...
+
+
+@overload
+def create_worktree(
+    ai_name: str, *, with_status: Literal[True], repo_root: Path | None = None
+) -> tuple[Path, bool] | None: ...
+
+
+@overload
+def create_worktree(
+    ai_name: str, *, with_status: bool, repo_root: Path | None = None
+) -> Path | tuple[Path, bool] | None: ...
 
 
 def create_worktree(
