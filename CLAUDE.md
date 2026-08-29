@@ -1,5 +1,9 @@
 # lean config
 
+## Continuous Integration
+
+- GitHub Actions CI is retired; use the local verification gate and follow `docs/procedures/github-actions-retirement.md` before interpreting or changing CI workflows.
+
 ## Public Open-Source Package Standards
 
 This is a **public open-source package**. All code, docs, comments, tests, and commit messages must be written for a general audience.
