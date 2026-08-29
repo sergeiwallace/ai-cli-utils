@@ -227,6 +227,10 @@ def test_given_procfs_and_psutil_processes_when_identity_is_captured_then_values
     assert psutil_identity != procfs_identity
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="requires POSIX pass_fds and shared open-file-description lock semantics",
+)
 def test_given_shell_held_descriptor_when_python_lock_helper_exits_then_lease_remains_held(tmp_path: Path):
     lease_path = tmp_path / "generation.lock"
     descriptor = os.open(lease_path, os.O_WRONLY | os.O_CREAT, 0o600)
