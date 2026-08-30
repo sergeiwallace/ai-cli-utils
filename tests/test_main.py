@@ -14,6 +14,7 @@ from ai_cli.main import (
     _cmd_tunnel_status,
     _cmd_tunnel_stop,
     _find_aicli_project_path,
+    _handle_internal,
     _installed_source_fingerprint,
     _load_iterm2_config,
     _migrate_xdg_dir,
@@ -519,6 +520,40 @@ def test_given_invalid_claude_transcript_id_when_bare_launching_then_fails_loudl
     with patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[Path("/tmp/not-a-session-id.jsonl")]):
         with pytest.raises(RuntimeError, match="invalid session UUID"):
             _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
+
+
+def test_given_resolve_continue_target_with_lone_mismatch_confirmed_then_prints_it(capsys):
+    """AI-CLI-8xvd: `ai internal resolve-continue-target` must honor the same
+    lone-mismatched-title confirm path `_bare_engine_command` does, since the
+    tmux session script resolves through this CLI action, not that function."""
+    transcript = Path("/tmp/aaaaaaaa-0000-4000-8000-00000000000f.jsonl")
+
+    with (
+        patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[]),
+        patch("ai_cli.main._find_lone_mismatched_cc_session", return_value=transcript),
+        patch("ai_cli.main._confirm_mismatched_title_resume", return_value=True),
+        patch("ai_cli.main._cc_session_is_live", return_value=(False, None)),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _handle_internal(["resolve-continue-target", "/tmp", "session-1"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == str(transcript)
+
+
+def test_given_resolve_continue_target_with_lone_mismatch_declined_then_prints_nothing(capsys):
+    transcript = Path("/tmp/aaaaaaaa-0000-4000-8000-000000000010.jsonl")
+
+    with (
+        patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[]),
+        patch("ai_cli.main._find_lone_mismatched_cc_session", return_value=transcript),
+        patch("ai_cli.main._confirm_mismatched_title_resume", return_value=False),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _handle_internal(["resolve-continue-target", "/tmp", "session-1"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_given_pi_missing_from_path_when_launching_then_reports_pi(capsys):

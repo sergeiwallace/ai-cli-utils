@@ -21,9 +21,11 @@ from ai_cli.main import (
     _cc_project_dir,
     _cc_record_liveness,
     _cc_session_is_live,
+    _confirm_mismatched_title_resume,
     _do_session_launch,
     _find_cc_session_by_title,
     _find_cc_session_candidates_by_title,
+    _find_lone_mismatched_cc_session,
 )
 from ai_cli.session import build_session_name, find_next_index
 
@@ -220,6 +222,143 @@ def test_given_only_different_named_transcript_when_bare_claude_launches_then_do
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--resume" not in argv
+
+
+# --- AI-CLI-8xvd: lone mismatched-title session prompt --------------------------
+
+
+class _FakeStdin:
+    """Minimal stand-in for ``sys.stdin`` in the interactive-confirm path."""
+
+    def __init__(self, isatty: bool, line: str = ""):
+        self._isatty = isatty
+        self._line = line
+
+    def isatty(self) -> bool:
+        return self._isatty
+
+    def readline(self) -> str:
+        return self._line
+
+
+def test_given_no_transcripts_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert _find_lone_mismatched_cc_session(Path("/repo/wt"), "proj-1") is None
+
+
+def test_given_one_matching_transcript_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    """An exact title match is the multi-candidate path's job, not this one's."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    _write_transcript(_cc_project_dir(cwd), "9990aaaa-0000-4000-8000-000000000009", "proj-1")
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") is None
+
+
+def test_given_one_mismatched_transcript_when_finding_lone_mismatch_then_returns_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    want = _write_transcript(_cc_project_dir(cwd), "9990aaaa-0000-4000-8000-00000000000a", "proj-1-2")
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") == want
+
+
+def test_given_two_mismatched_transcripts_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    """Two candidates is ambiguous — never guess which one the user meant."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    project_dir = _cc_project_dir(cwd)
+    _write_transcript(project_dir, "9990aaaa-0000-4000-8000-00000000000b", "other-1")
+    _write_transcript(project_dir, "9990aaaa-0000-4000-8000-00000000000c", "other-2")
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") is None
+
+
+def test_given_bg_bridge_only_transcript_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    bridge = _write_transcript(_cc_project_dir(cwd), "9990aaaa-0000-4000-8000-00000000000d", "proj-1-2")
+    _write_session_registry(tmp_path, 9002, bridge.stem)
+    sessions_dir = tmp_path / ".claude" / "sessions"
+    record = json.loads((sessions_dir / "9002.json").read_text())
+    record["kind"] = "bg"
+    (sessions_dir / "9002.json").write_text(json.dumps(record))
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") is None
+
+
+def test_given_noninteractive_stdin_when_confirming_mismatch_then_defaults_no(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=False))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000001.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is False
+    assert "Non-interactive session" in capsys.readouterr().err
+
+
+def test_given_interactive_yes_when_confirming_mismatch_then_returns_true(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="y\n"))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000002.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is True
+
+
+def test_given_interactive_no_when_confirming_mismatch_then_returns_false(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="n\n"))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000003.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is False
+
+
+def test_given_interactive_empty_answer_when_confirming_mismatch_then_defaults_no(tmp_path, monkeypatch):
+    """An empty line (bare Enter) must default to "no", matching the [y/N] prompt."""
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="\n"))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000004.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is False
+
+
+def test_given_lone_mismatched_transcript_and_interactive_yes_when_bare_claude_launches_then_resumes_it(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="y\n"))
+    target = tmp_path / "wt"
+    transcript = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000006", "proj-1-2")
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert argv[-4:] == ["--resume", transcript.stem, "--name", "proj-1"]
+
+
+def test_given_lone_mismatched_transcript_and_interactive_no_when_bare_claude_launches_then_does_not_resume(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="n\n"))
+    target = tmp_path / "wt"
+    _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000007", "proj-1-2")
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--resume" not in argv
+
+
+def test_given_two_mismatched_transcripts_when_bare_claude_launches_then_does_not_prompt(tmp_path, monkeypatch):
+    """Ambiguous (>1 candidate, none title-matched) must never trigger the y/n prompt."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="y\n"))
+    target = tmp_path / "wt"
+    project_dir = _cc_project_dir(target)
+    _write_transcript(project_dir, "56565656-0000-4000-8000-000000000008", "other-1")
+    _write_transcript(project_dir, "56565656-0000-4000-8000-000000000009", "other-2")
+
     argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
 
     assert "--resume" not in argv

@@ -562,6 +562,59 @@ def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
     )
 
 
+def _find_lone_mismatched_cc_session(cwd: Path, title: str) -> "Path | None":
+    """Return ``cwd``'s one eligible transcript when no candidate matches ``title``.
+
+    Scoped deliberately narrow: only returns a candidate when exactly one
+    non-background transcript exists for ``cwd`` and its current title differs
+    from ``title`` (an exact match is already handled by
+    :func:`_find_cc_session_candidates_by_title`). Two or more eligible
+    transcripts is the ambiguous case that warning already covers, so this
+    returns ``None`` rather than guessing among them (AI-CLI-8xvd).
+    """
+    project_dir = _cc_project_dir(cwd)
+    if not project_dir.is_dir():
+        return None
+    try:
+        transcripts = list(project_dir.glob("*.jsonl"))
+    except OSError:
+        return None
+    eligible = [path for path in transcripts if _cc_registered_kind(path.stem) != "bg"]
+    if len(eligible) != 1:
+        return None
+    candidate = eligible[0]
+    if _cc_transcript_current_title(candidate) == title:
+        return None
+    return candidate
+
+
+def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
+    """Ask whether to resume into a lone transcript whose title doesn't match.
+
+    The prompt and its answer must never touch stdout: callers of ``ai internal
+    resolve-continue-target`` capture stdout via command substitution, so a
+    prompt written there would be swallowed into the resolved path instead of
+    shown to the user. Defaults to "no" whenever stdin is not an interactive
+    terminal — an unattended auto-restart cycle must never silently attach to a
+    transcript the caller never confirmed (AI-CLI-8xvd AC3).
+    """
+    current_title = _cc_transcript_current_title(candidate) or "(untitled)"
+    print(
+        f"Note: this worktree has one Claude Code transcript ({candidate.stem}), "
+        f"but its current title is '{current_title}', not '{title}'.",
+        file=sys.stderr,
+    )
+    if not sys.stdin.isatty():
+        print("Non-interactive session — starting fresh instead of resuming it.", file=sys.stderr)
+        return False
+    print("Resume into it anyway? [y/N] ", end="", file=sys.stderr, flush=True)
+    try:
+        answer = sys.stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    return answer.strip().lower() in ("y", "yes")
+
+
 def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
     """Warn that more than one eligible transcript currently carries ``title``.
 
@@ -608,6 +661,10 @@ def _bare_engine_command(
         if len(candidates) > 1:
             print(_cc_multi_candidate_warning(ai_name, candidates), file=sys.stderr)
         matched = candidates[0] if candidates else None
+        if matched is None:
+            lone = _find_lone_mismatched_cc_session(target_root, ai_name)
+            if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
+                matched = lone
         if matched is not None:
             session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
@@ -1277,6 +1334,10 @@ def _handle_internal(argv: list[str]) -> None:
         if len(candidates) > 1:
             print(_cc_multi_candidate_warning(argv[2], candidates), file=sys.stderr)
         matched = candidates[0] if candidates else None
+        if matched is None:
+            lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
+            if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):
+                matched = lone
         if matched is not None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
