@@ -100,6 +100,7 @@ class TestParseUsageOutput:
     def test_when_all_models_label_not_mistaken_for_secondary(self):
         # The "all models" aggregate must never be captured as the secondary model line.
         snap = _parse_usage_output(self._REAL_FABLE_OUTPUT)
+        assert snap is not None
         assert snap.weekly_model_name != "all models"
 
     def test_when_all_fields_present_then_all_parsed(self):

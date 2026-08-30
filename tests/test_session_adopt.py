@@ -34,6 +34,7 @@ from conftest import run_cli
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
 from ai_cli.session_adopt import (
     AdoptionError,
+    AdoptionResult,
     InsufficientSpaceError,
     LiveSessionError,
     TitleCollision,
@@ -1231,7 +1232,9 @@ def test_adopt_all_given_one_collision_when_run_then_the_batch_continues(world, 
 
     outcomes = dict(adopt_all(world["repo"], claude_home=world["home"], proc_dir=world["proc"]))
     assert isinstance(outcomes["myproject-2"], TitleCollision)
-    assert outcomes["myproject-3"].resolved is not None, "the rest of the batch must still be adopted"
+    adopted = outcomes["myproject-3"]
+    assert isinstance(adopted, AdoptionResult)
+    assert adopted.resolved is not None, "the rest of the batch must still be adopted"
 
 
 def test_adopt_all_given_no_titled_sessions_when_run_then_empty(tmp_path):

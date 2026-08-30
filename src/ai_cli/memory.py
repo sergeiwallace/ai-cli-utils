@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from watchdog.events import FileModifiedEvent, FileSystemEventHandler
+from watchdog.events import FileModifiedEvent, FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 
@@ -32,7 +32,7 @@ class MemoryFileHandler(FileSystemEventHandler):
     def dreaming(self):
         return self._dreaming
 
-    def on_modified(self, event):
+    def on_modified(self, event: FileSystemEvent) -> None:
         if not isinstance(event, FileModifiedEvent):
             return
         if not str(event.src_path).endswith("MEMORY.md"):

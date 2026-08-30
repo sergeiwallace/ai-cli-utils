@@ -326,8 +326,11 @@ class TestCliErrorPaths:
 
     def test_given_click_exception_when_cli_then_uses_exit_code(self, capsys):
         """Lines 1943-1944: ``ClickException`` prints and uses its exit code."""
-        exc_obj = click.exceptions.ClickException("boom")
-        exc_obj.exit_code = 3
+
+        class ExitThree(click.exceptions.ClickException):
+            exit_code = 3
+
+        exc_obj = ExitThree("boom")
         with (
             patch("sys.argv", ["ai", "c"]),
             patch("ai_cli.config.load_config", return_value={}),

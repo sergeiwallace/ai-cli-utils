@@ -431,6 +431,7 @@ class TestGenerateSessionIcon:
             patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
         ):
             result = generate_session_icon("test-session", "#5e35b1", "cc")
+        assert result is not None
         img = Image.open(result)
         assert img.format == "PNG"
         assert img.mode == "RGBA"
@@ -445,6 +446,7 @@ class TestGenerateSessionIcon:
             patch("ai_cli.icon_generator._source_logo_path", return_value=logo_path),
         ):
             result = generate_session_icon("test-session", "#5e35b1", "cc")
+        assert result is not None
         img = Image.open(result)
         assert img.size == (128, 128)
 

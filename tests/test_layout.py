@@ -199,14 +199,7 @@ class TestGenerateLayoutProfiles:
     def test_tab_color_set_in_profile(self, tmp_path):
         layout = Layout(
             name="t",
-            tabs=[
-                {
-                    "name": "x",
-                    "session_type": "cc",
-                    "colors": {"tab_color": "#ff0000"},
-                    "root": {"dir": "~"},
-                }
-            ],
+            tabs=[Tab(name="x", session_type="cc", colors=TabColors(tab_color="#ff0000"), root=Pane(dir="~"))],
         )
         with (
             patch("ai_cli.layout._dynamic_profile_dir", return_value=tmp_path),
@@ -254,9 +247,9 @@ class TestGenerateLayoutProfiles:
         layout = Layout(
             name="multi",
             tabs=[
-                {"name": "a", "session_type": "cc", "root": {"dir": "~"}},
-                {"name": "b", "session_type": "gemini", "root": {"dir": "~"}},
-                {"name": "c", "session_type": "shell", "root": {"dir": "~"}},
+                Tab(name="a", session_type="cc", root=Pane(dir="~")),
+                Tab(name="b", session_type="gemini", root=Pane(dir="~")),
+                Tab(name="c", session_type="shell", root=Pane(dir="~")),
             ],
         )
         with (
@@ -553,7 +546,7 @@ class TestGenerateLayoutProfilesExtended:
 
     def test_invalid_session_type_rejected(self):
         with pytest.raises(ValidationError):
-            Layout(name="t", tabs=[{"name": "x", "session_type": "bogus", "root": {"dir": "~"}}])
+            Layout.model_validate({"name": "t", "tabs": [{"name": "x", "session_type": "bogus", "root": {"dir": "~"}}]})
 
     def test_background_color_included_when_set(self, tmp_path):
         """line 214: bg_hex present → profile has 'Background Color' key."""

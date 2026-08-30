@@ -351,6 +351,16 @@ class PsutilProbe(ProcessProbe):
     def is_present(self, pid: int) -> bool:
         return psutil.pid_exists(pid)
 
+    def has_ended(self, pid: int) -> bool:
+        """Use a process handle to avoid a stale ``pid_exists`` result on macOS."""
+        try:
+            proc = psutil.Process(pid)
+            return not proc.is_running() or proc.status() in self.ended_states
+        except psutil.AccessDenied:
+            return False
+        except (psutil.NoSuchProcess, OSError):
+            return True
+
     def state(self, pid: int) -> str | None:
         try:
             return psutil.Process(pid).status()
@@ -416,9 +426,15 @@ class PsutilProbe(ProcessProbe):
         """
         try:
             proc = psutil.Process(pid)
-            found = [proc, *proc.children(recursive=True)]
         except (psutil.Error, OSError):
             return []
+        try:
+            found = [proc, *proc.children(recursive=True)]
+        except (psutil.Error, OSError):
+            # Process enumeration can be denied even when the recorded process
+            # itself remains signalable. Reclaim that process rather than turning
+            # an unavailable descendant scan into a complete no-op.
+            found = [proc]
         return [target for target in found if target.pid != os.getpid()]
 
     def manual_end_hint(self, pid: int) -> str:

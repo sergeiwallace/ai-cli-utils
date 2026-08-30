@@ -695,7 +695,7 @@ def test_adopt_ready_given_a_collision_when_run_then_it_is_skipped_and_the_batch
 def test_adopt_ready_given_an_adoption_error_when_run_then_recorded_and_the_batch_continues(fleet, audit, monkeypatch):
     """AC-7: an unexpected refusal from the adopter is recorded against its session."""
     import ai_cli.session_audit as module
-    from ai_cli.session_adopt import AdoptionError
+    from ai_cli.session_adopt import AdoptionError, AdoptionResult
     from ai_cli.session_adopt import adopt_session as real_adopt
 
     def _flaky(repo_root, name, **kw):
@@ -710,7 +710,9 @@ def test_adopt_ready_given_an_adoption_error_when_run_then_recorded_and_the_batc
 
     results = {record.title: result for record, result in outcomes}
     assert isinstance(results["myproject-2"], AdoptionError)
-    assert results["myproject-5"].resolved is not None
+    adopted = results["myproject-5"]
+    assert isinstance(adopted, AdoptionResult)
+    assert adopted.resolved is not None
 
 
 # ---- AC-8: both gates remain in force through the new path ------------------

@@ -541,6 +541,7 @@ class TestRemoteSessionIterm2Emit:
             )
             remote_session_id, _ = build_session_name("c", "sw", "Planning", is_remote=True)
 
+        assert mock_exec is not None
         assert mock_slot.call_args[0][0] == remote_session_id
         assert mock_emit.call_args[0][0] == remote_session_id
         assert mock_emit.call_args[0][2] == remote_session_id
