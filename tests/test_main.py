@@ -507,7 +507,7 @@ def test_given_matching_claude_transcript_when_bare_launching_then_resumes_its_s
     transcript = Path("/tmp/aaaaaaaa-0000-4000-8000-000000000001.jsonl")
 
     with (
-        patch("ai_cli.main._find_cc_session_by_title", return_value=transcript),
+        patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[transcript]),
         patch("ai_cli.main._cc_session_is_live", return_value=(False, None)),
     ):
         command = _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
@@ -516,7 +516,7 @@ def test_given_matching_claude_transcript_when_bare_launching_then_resumes_its_s
 
 
 def test_given_invalid_claude_transcript_id_when_bare_launching_then_fails_loudly():
-    with patch("ai_cli.main._find_cc_session_by_title", return_value=Path("/tmp/not-a-session-id.jsonl")):
+    with patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[Path("/tmp/not-a-session-id.jsonl")]):
         with pytest.raises(RuntimeError, match="invalid session UUID"):
             _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
 

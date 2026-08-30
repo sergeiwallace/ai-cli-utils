@@ -23,6 +23,7 @@ from ai_cli.main import (
     _cc_session_is_live,
     _do_session_launch,
     _find_cc_session_by_title,
+    _find_cc_session_candidates_by_title,
 )
 from ai_cli.session import build_session_name, find_next_index
 
@@ -104,15 +105,23 @@ def test_given_matching_title_when_searched_then_returns_that_transcript(tmp_pat
     assert _find_cc_session_by_title(cwd, "kg-1") == want
 
 
-def test_given_later_different_title_when_searched_then_first_title_remains_the_session_identity(tmp_path, monkeypatch):
+def test_given_renamed_session_when_searched_then_latest_title_is_the_session_identity(tmp_path, monkeypatch):
+    """AI-CLI-p3fg: a rename must be honored, not just the session's original title.
+
+    Claude Code appends a fresh ``custom-title`` record on rename rather than
+    rewriting the first one, so the title in effect is whichever record was
+    written last. Reading only the first record made a renamed session keep
+    matching its old name forever — exactly what let ``ai c`` resolve into a
+    session the user had already renamed away from.
+    """
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     cwd = Path("/repo/wt")
     transcript = _write_transcript(_cc_project_dir(cwd), "cccccccc-0000-4000-8000-000000000003", "proj-1-2")
     with transcript.open("a") as handle:
         handle.write(json.dumps({"type": "custom-title", "customTitle": "proj-1", "sessionId": transcript.stem}) + "\n")
 
-    assert _find_cc_session_by_title(cwd, "proj-1") is None
-    assert _find_cc_session_by_title(cwd, "proj-1-2") == transcript
+    assert _find_cc_session_by_title(cwd, "proj-1") == transcript
+    assert _find_cc_session_by_title(cwd, "proj-1-2") is None
 
 
 def test_given_no_matching_title_when_searched_then_returns_none(tmp_path, monkeypatch):
@@ -135,6 +144,44 @@ def test_given_untitled_transcript_when_searched_then_ignored(tmp_path, monkeypa
 def test_given_missing_project_dir_when_searched_then_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     assert _find_cc_session_by_title(Path("/nope"), "kg-1") is None
+
+
+def test_given_bg_bridge_shares_title_when_searched_then_interactive_transcript_wins(tmp_path, monkeypatch):
+    """AI-CLI-p3fg root cause: a /remote-control bridge inherits its parent's
+    customTitle via --fork-session, and can out-mtime the real interactive
+    session by staying alive and writing to its own transcript for days. A
+    transcript registered with kind "bg" must never be picked as the target
+    of an interactive ai c resume, however recent its mtime.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    project_dir = _cc_project_dir(cwd)
+    interactive = _write_transcript(project_dir, "aaaaaaaa-0000-4000-8000-00000000000a", "ai-cli-1")
+    bridge = _write_transcript(project_dir, "bbbbbbbb-0000-4000-8000-00000000000b", "ai-cli-1")
+    os.utime(interactive, (1, 1))
+    os.utime(bridge, (2, 2))  # newer mtime than the interactive transcript
+    _write_session_registry(tmp_path, 9001, bridge.stem)
+    sessions_dir = tmp_path / ".claude" / "sessions"
+    record = json.loads((sessions_dir / "9001.json").read_text())
+    record["kind"] = "bg"
+    (sessions_dir / "9001.json").write_text(json.dumps(record))
+
+    assert _find_cc_session_by_title(cwd, "ai-cli-1") == interactive
+
+
+def test_given_two_eligible_titled_transcripts_when_searched_then_candidates_lists_both(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    project_dir = _cc_project_dir(cwd)
+    older = _write_transcript(project_dir, "cccccccc-0000-4000-8000-00000000000c", "ai-cli-1")
+    newer = _write_transcript(project_dir, "dddddddd-0000-4000-8000-00000000000d", "ai-cli-1")
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    candidates = _find_cc_session_candidates_by_title(cwd, "ai-cli-1")
+
+    assert candidates == [newer, older]
+    assert _find_cc_session_by_title(cwd, "ai-cli-1") == newer
 
 
 # --- bare argv construction ----------------------------------------------------
@@ -176,6 +223,27 @@ def test_given_only_different_named_transcript_when_bare_claude_launches_then_do
     argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
 
     assert "--resume" not in argv
+
+
+def test_given_two_eligible_transcripts_when_bare_claude_resumes_then_warns_and_picks_newest(
+    tmp_path, monkeypatch, capsys
+):
+    """AI-CLI-p3fg AC1/AC5: flag the ambiguity, but still resolve deterministically
+    to the most recently active eligible transcript (not most-recent-PID)."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    project_dir = _cc_project_dir(target)
+    older = _write_transcript(project_dir, "77777777-0000-4000-8000-000000000007", "kg-1")
+    newer = _write_transcript(project_dir, "88888888-0000-4000-8000-000000000008", "kg-1")
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert argv[-4:] == ["--resume", newer.stem, "--name", "kg-1"]
+    stderr = capsys.readouterr().err
+    assert "2 Claude Code transcripts" in stderr
+    assert older.stem in stderr and newer.stem in stderr
 
 
 @pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to register a genuinely live pid")

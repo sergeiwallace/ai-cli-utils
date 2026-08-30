@@ -264,39 +264,104 @@ def _cc_project_dir(cwd: Path) -> Path:
     return Path.home() / ".claude" / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
 
 
-def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
-    """Return the newest CC transcript under ``cwd`` whose ``customTitle`` is ``title``.
+def _cc_transcript_current_title(path: Path) -> str | None:
+    """Return ``path``'s CURRENT ``customTitle``, honoring a later rename.
 
-    Claude Code transcript filenames are session UUIDs.  Callers pass the
-    returned stem to ``--resume <session-id>`` to resume that session directly.
+    Claude Code appends a fresh ``custom-title`` record every time a session is
+    renamed rather than rewriting the first one, so the title in effect is
+    whichever record was written *last* — not the first.  Stopping at the
+    first non-empty record (the prior behavior here) made a renamed session
+    match its original name forever, which is exactly the AI-CLI-p3fg defect:
+    a session renamed away from ``ai-cli-1`` kept being resolved as
+    ``ai-cli-1`` because only its very first title was ever read.
+    """
+    current: str | None = None
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                found = record.get("customTitle")
+                if found:
+                    current = found
+    except OSError:
+        return None
+    return current
+
+
+def _cc_registered_kind(session_id: str) -> str | None:
+    """Return the ``kind`` Claude Code recorded for ``session_id`` (e.g. ``"bg"``
+    or ``"interactive"``), or ``None`` if no registry entry names it.
+
+    Best-effort like :func:`_cc_session_is_live` — a missing or unreadable
+    registry must not block resolution, so callers only act on a positive
+    match and never treat ``None`` as meaning "not a background session".
+    """
+    sessions_dir = Path.home() / ".claude" / "sessions"
+    if not sessions_dir.is_dir():
+        return None
+    try:
+        for entry in sessions_dir.glob("*.json"):
+            try:
+                with entry.open(encoding="utf-8") as fh:
+                    record = json.load(fh)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            if record.get("sessionId") == session_id:
+                kind = record.get("kind")
+                return kind if isinstance(kind, str) else None
+    except OSError:
+        pass
+    return None
+
+
+def _find_cc_session_candidates_by_title(cwd: Path, title: str) -> list[Path]:
+    """Return every transcript under ``cwd`` currently titled ``title``, newest first.
+
+    Excludes any transcript whose registered session ``kind`` is ``"bg"``
+    (background — e.g. a Remote Control computer-use bridge forked from an
+    interactive session via ``--fork-session``).  A fork inherits its
+    parent's ``customTitle`` at fork time, so without this exclusion a
+    long-lived background bridge can shadow the real interactive session it
+    was forked from: it keeps writing to its own transcript and can end up
+    with a newer mtime than the actual interactive session, so a naive
+    "newest transcript with this title" pick lands on the bridge instead
+    (AI-CLI-p3fg — root cause of ``ai c`` attaching to an unfamiliar
+    transcript when a ``/remote-control`` bridge shared the session name).
     """
     project_dir = _cc_project_dir(cwd)
     if not project_dir.is_dir():
-        return None
+        return []
     try:
         candidates = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
-        return None
+        return []
+    matches = []
     for path in candidates:
-        try:
-            with path.open("rb") as fh:
-                for raw in fh:
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-                    try:
-                        record = json.loads(raw)
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-                    found = record.get("customTitle", "")
-                    if found:
-                        # Only the first titled record matters — later ones repeat it.
-                        if found == title:
-                            return path
-                        break
-        except OSError:
+        if _cc_transcript_current_title(path) != title:
             continue
-    return None
+        if _cc_registered_kind(path.stem) == "bg":
+            continue
+        matches.append(path)
+    return matches
+
+
+def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
+    """Return the newest eligible CC transcript under ``cwd`` whose ``customTitle`` is ``title``.
+
+    Claude Code transcript filenames are session UUIDs.  Callers pass the
+    returned stem to ``--resume <session-id>`` to resume that session directly.
+    See :func:`_find_cc_session_candidates_by_title` for eligibility rules.
+    """
+    matches = _find_cc_session_candidates_by_title(cwd, title)
+    return matches[0] if matches else None
 
 
 def _cc_session_id(transcript: Path) -> str:
@@ -497,6 +562,24 @@ def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
     )
 
 
+def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
+    """Warn that more than one eligible transcript currently carries ``title``.
+
+    ``ai c`` always resolves to ``candidates[0]`` (the newest by mtime — see
+    :func:`_find_cc_session_candidates_by_title`), so this is informational,
+    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of
+    silently picking one of several same-titled transcripts.
+    """
+    lines = [f"Note: {len(candidates)} Claude Code transcripts are currently titled '{title}':"]
+    for path in candidates:
+        is_live, pid = _cc_session_is_live(path)
+        status = f"live (pid {pid})" if is_live else "not live"
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+        lines.append(f"  {path.stem}  last active {mtime}  {status}")
+    lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+    return "\n".join(lines)
+
+
 def _bare_engine_command(
     engine: str,
     ai_name: str,
@@ -521,7 +604,10 @@ def _bare_engine_command(
         if not _is_root():
             command.append("--dangerously-skip-permissions")
         # Resume this session's own prior conversation by its exact transcript UUID.
-        matched = _find_cc_session_by_title(target_root, ai_name)
+        candidates = _find_cc_session_candidates_by_title(target_root, ai_name)
+        if len(candidates) > 1:
+            print(_cc_multi_candidate_warning(ai_name, candidates), file=sys.stderr)
+        matched = candidates[0] if candidates else None
         if matched is not None:
             session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
@@ -1187,7 +1273,10 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) < 3:
             print("Usage: ai internal resolve-continue-target <cwd> <ai_name>", file=sys.stderr)
             sys.exit(1)
-        matched = _find_cc_session_by_title(Path(argv[1]), argv[2])
+        candidates = _find_cc_session_candidates_by_title(Path(argv[1]), argv[2])
+        if len(candidates) > 1:
+            print(_cc_multi_candidate_warning(argv[2], candidates), file=sys.stderr)
+        matched = candidates[0] if candidates else None
         if matched is not None:
             _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
