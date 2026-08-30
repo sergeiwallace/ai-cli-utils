@@ -65,7 +65,7 @@ def _get_reset_anchor_utc() -> datetime:
 _DB_PATH_OVERRIDE: Path | None = None
 
 
-def set_db_path(path: Path) -> None:
+def set_db_path(path: Path | None) -> None:
     """Override DB path — used in tests."""
     global _DB_PATH_OVERRIDE
     _DB_PATH_OVERRIDE = path

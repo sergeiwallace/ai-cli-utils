@@ -422,11 +422,11 @@ def test_given_first_candidate_is_killed_when_second_candidate_raises_then_first
 
 
 def test_given_reaper_run_when_an_interval_completes_then_sleeps_for_sixty_seconds(tmp_path: Path):
-    class Reaper:
+    class Reaper(StaleSessionReaper):
         def evaluate_once(self) -> list[str]:
             return []
 
-    def stop_after_first_interval(seconds: int) -> None:
+    def stop_after_first_interval(seconds: float) -> None:
         assert seconds == 60
         raise KeyboardInterrupt
 
@@ -434,7 +434,7 @@ def test_given_reaper_run_when_an_interval_completes_then_sleeps_for_sixty_secon
         run_stale_session_reaper(
             {},
             state_home=tmp_path,
-            reaper_factory=lambda _config, **_kwargs: Reaper(),
+            reaper_factory=lambda config, **kwargs: Reaper(config, **kwargs),
             sleep=stop_after_first_interval,
         )
 

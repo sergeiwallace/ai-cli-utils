@@ -3,6 +3,7 @@
 import json
 import urllib.error
 import urllib.request
+from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -236,7 +237,7 @@ class TestSendDiscord:
         assert r.status_code == 200
 
     def test_when_urlopen_raises_http_error_then_returns_failure_with_status(self):
-        err = urllib.error.HTTPError("url", 403, "Forbidden", {}, None)
+        err = urllib.error.HTTPError("url", 403, "Forbidden", Message(), None)
         with (
             patch("urllib.request.Request"),
             patch.object(urllib.request, "urlopen", side_effect=err),
@@ -315,7 +316,7 @@ class TestSendNtfy:
         assert r.channel == "ntfy"
 
     def test_when_http_error_then_returns_failure_with_status(self):
-        err = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+        err = urllib.error.HTTPError("url", 401, "Unauthorized", Message(), None)
         with (
             patch("urllib.request.Request"),
             patch.object(urllib.request, "urlopen", side_effect=err),

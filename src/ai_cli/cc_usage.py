@@ -76,8 +76,10 @@ class PushResult:
 # ---------------------------------------------------------------------------
 
 
-def _parse_iso(ts: str) -> datetime | None:
+def _parse_iso(ts: str | None) -> datetime | None:
     """Parse an ISO 8601 timestamp string to a timezone-aware datetime."""
+    if ts is None:
+        return None
     try:
         dt = datetime.fromisoformat(ts.rstrip("Z"))
         if dt.tzinfo is None:

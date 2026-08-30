@@ -118,6 +118,8 @@ pythonPlatform = "Linux"
 typeCheckingMode = "basic"
 venvPath = "."
 venv = ".venv"
+include = ["src", "tests"]
+extraPaths = ["src", "scripts"]
 
 [tool.ruff]
 line-length = 120
