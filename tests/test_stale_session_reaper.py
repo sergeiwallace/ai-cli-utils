@@ -7,6 +7,7 @@ asserts that no ID-targeted kill is issued.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import signal
@@ -18,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import portalocker
+import psutil
 import pytest
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
@@ -522,6 +524,40 @@ def _communicate_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
     return process.communicate(timeout=5)
 
 
+_SPAWNED_SUPERVISORS: list[subprocess.Popen[str]] = []
+
+
+@pytest.fixture(autouse=True)
+def _reap_leaked_supervisors() -> Iterator[None]:
+    """Guarantee every supervisor spawned via ``_start_generated_supervisor`` is
+    killed at test end, even on assertion failure or timeout (AI-CLI-1xg0).
+
+    Without this, a failure between spawn and the test's own
+    ``_finish_supervisor`` call left the whole process tree running forever —
+    63 such orphaned ``supervisor.sh``/heartbeat-ticker processes (some 1+ day
+    old) were found accumulating from this exact file across prior runs, and
+    are a concrete explanation for this file's own "supervisor child did not
+    become ready" flakiness: a fresh run competes with dozens of leaked
+    processes for PTY/process-table resources. Walks the real process tree via
+    psutil rather than the OS process group, since the generated supervisor's
+    heartbeat ticker deliberately ``os.setsid()``s itself out of the original
+    group (mirroring the /remote-control bridge-leak shape found elsewhere
+    this session) while remaining a psutil-visible descendant.
+    """
+    yield
+    while _SPAWNED_SUPERVISORS:
+        process = _SPAWNED_SUPERVISORS.pop()
+        if process.poll() is not None:
+            continue
+        with contextlib.suppress(psutil.NoSuchProcess):
+            root = psutil.Process(process.pid)
+            for descendant in [*root.children(recursive=True), root]:
+                with contextlib.suppress(psutil.NoSuchProcess):
+                    descendant.kill()
+        with contextlib.suppress(Exception):
+            process.wait(timeout=5)
+
+
 def _start_generated_supervisor(
     tmp_path: Path,
     shell: str,
@@ -604,6 +640,7 @@ fi
         stdin=subprocess.PIPE if terminal else None,
         start_new_session=True,
     )
+    _SPAWNED_SUPERVISORS.append(process)
     _wait_for_path(child_ready, process)
     return process, event_log, heartbeat_log
 
