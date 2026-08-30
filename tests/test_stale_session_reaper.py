@@ -569,6 +569,8 @@ def _start_generated_supervisor(
     child_body: str | None = None,
     terminal: bool = False,
     fast_heartbeat: bool = False,
+    child_group_delay: float = 0,
+    pseudo_terminal: bool = False,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
     bin_dir = tmp_path / "bin"
@@ -617,6 +619,14 @@ fi
     _write_executable(sessions_dir / "test-session.sh", child_script)
     supervisor = tmp_path / "supervisor.sh"
     script = get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=is_remote)
+    if child_group_delay:
+        script = script.replace(
+            "import os, signal, sys;",
+            "import os, signal, sys, time;",
+        ).replace(
+            "os.setpgrp()",
+            f"time.sleep({child_group_delay}) or os.setpgrp()",
+        )
     if fast_heartbeat:
         script = script.replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
     supervisor.write_text(script, encoding="utf-8")
@@ -631,8 +641,14 @@ fi
         "AI_CLI_TEST_TERMINAL_PGID": terminal_pgid,
         "AI_CLI_TEST_LEASE_ACQUIRED": str(int(lease_acquired)),
     }
+    command = [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)]
+    if pseudo_terminal:
+        script_bin = shutil.which("script")
+        if script_bin is None:
+            pytest.skip("script binary unavailable for terminal process-group test")
+        command = [script_bin, "-q", "/dev/null", *command]
     process = subprocess.Popen(
-        [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)],
+        command,
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
@@ -789,6 +805,31 @@ fi
     )
 
     assert (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2"
+    _finish_supervisor(process)
+
+
+def test_given_delayed_child_process_group_when_supervisor_promotes_then_it_waits_for_readiness(
+    tmp_path: Path, supported_session_shell: str
+):
+    """The child must not be killed merely because its process-group setup is slow.
+
+    A stable-script hot reload starts a second child through this path.  Exercise
+    the generated supervisor against a real pseudo-terminal and delay the child's
+    actual ``setpgrp`` beyond the former 500 ms polling budget.
+    """
+    if Path(supported_session_shell).name != "zsh":
+        pytest.skip("bash closes the saved terminal descriptor for background children on macOS")
+
+    process, _, _ = _start_generated_supervisor(
+        tmp_path,
+        supported_session_shell,
+        lease_acquired=False,
+        child_group_delay=12.0,
+        pseudo_terminal=True,
+    )
+
+    assert process.poll() is None
+    assert (tmp_path / "child-ready").exists()
     _finish_supervisor(process)
 
 

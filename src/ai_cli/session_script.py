@@ -201,6 +201,7 @@ def get_engine_script(
       _heartbeat_pid=""
       _supervisor_cleanup() {{
         [[ -n "$_heartbeat_pid" ]] && kill "$_heartbeat_pid" 2>/dev/null || true
+        [[ -n "${{_supervisor_child_ready_path:-}}" ]] && rm -f "$_supervisor_child_ready_path"
         ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
         rm -f "$_ai_state_dir/session-meta-$tmux_session.json" \\
           "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session"
@@ -221,13 +222,20 @@ def get_engine_script(
       }}
       _supervisor_promote_child() {{
         # A terminal-backed child becomes its own process group in the exec
-        # wrapper. Promote that group before it can read terminal input.
+        # wrapper. Wait for its explicit readiness acknowledgement before
+        # promoting that group, rather than racing its setpgrp() with a fixed
+        # polling window.
         [[ -t 0 ]] || return 0
         trap '' TTOU
         _promotion_attempt=0
-        while (( _promotion_attempt < 50 )); do
-          if python3 -c 'import os, signal, sys; pgid = int(sys.argv[1]); os.tcsetpgrp(0, pgid); os.killpg(pgid, signal.SIGCONT)' "$_child_pid" 2>/dev/null; then
-            return 0
+        while (( _promotion_attempt < 3000 )); do
+          if [[ -s "$_supervisor_child_ready_path" ]]; then
+            if python3 -c 'import os, signal, sys; pgid = int(sys.argv[1]); os.tcsetpgrp(0, pgid); os.killpg(pgid, signal.SIGCONT)' "$_child_pid" 2>/dev/null; then
+              rm -f "$_supervisor_child_ready_path"
+              return 0
+            fi
+          elif ! kill -0 "$_child_pid" 2>/dev/null; then
+            return 1
           fi
           sleep 0.01
           _promotion_attempt=$((_promotion_attempt + 1))
@@ -281,22 +289,26 @@ def get_engine_script(
         if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
           _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
         fi
+        _supervisor_child_ready_path=$(mktemp "$_ai_state_dir/child-ready.XXXXXX") || exit 1
+        export AI_CLI_SUPERVISOR_CHILD_READY_PATH="$_supervisor_child_ready_path"
         # With job control disabled, Bash backgrounds a command with SIGINT and
         # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
         # dispositions in a short exec wrapper before the child shell starts,
         # retain stdin explicitly, and then wait interruptibly in this shell.
-        python3 -c 'import os, signal, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); os.isatty(0) and (os.setpgrp() or os.kill(os.getpid(), signal.SIGSTOP)); signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
+        python3 -c 'import os, signal, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); ready_path = os.environ.get("AI_CLI_SUPERVISOR_CHILD_READY_PATH"); os.isatty(0) and (os.setpgrp(), open(ready_path, "w").write("ready"), os.kill(os.getpid(), signal.SIGSTOP)); signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
           "{_session_shell}" "$_supervisor_script" --ai-cli-child-body <&0 &
         _child_pid=$!
         if ! _supervisor_promote_child; then
           printf '%s\n' "ai-cli: could not promote child process group to terminal foreground" >&2
           kill -TERM "$_child_pid" 2>/dev/null || true
           _supervisor_wait_for_child || true
+          rm -f "$_supervisor_child_ready_path"
           exit 1
         fi
         _supervisor_wait_for_child
         _child_status=$?
         _supervisor_restore_terminal || true
+        rm -f "$_supervisor_child_ready_path"
         # 78 requests a refreshed child after a stable-script/self-update check;
         # 77 is clean local final exit and 79 is remote recovery-shell completion.
         if (( _child_status == 77 || _child_status == 79 )); then
