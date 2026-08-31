@@ -1009,7 +1009,12 @@ def _auto_update_if_stale(config: dict) -> bool:
         # Do not make a failed installation look current.  The caller must re-exec
         # after a successful installation because this process still has the old
         # template generator imported.
-        stamp_file.write_text(fingerprint)
+        # `ai update` pulls before installing, so the source can change after the
+        # fingerprint above was calculated. Stamp the post-update tree: a lock
+        # loser that observed the pulled source must re-exec after this install,
+        # rather than continuing while its imported files have been replaced.
+        installed_fingerprint = _installed_source_fingerprint(project_path) or fingerprint
+        stamp_file.write_text(installed_fingerprint)
         summary = (result.stdout or "").strip()
         if summary:
             print(summary)
