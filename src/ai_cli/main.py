@@ -4262,7 +4262,17 @@ def cli() -> None:
     exit contract matches the argparse/sys.argv dispatcher it replaces.
     """
     if len(sys.argv) > 1 and sys.argv[1] == "internal":
-        _handle_internal(sys.argv[2:])
+        try:
+            _handle_internal(sys.argv[2:])
+        except KeyboardInterrupt:
+            # `_handle_internal` always calls sys.exit (raising SystemExit, not
+            # caught here), so this only fires when Ctrl+C lands mid-startup --
+            # e.g. during module import or config load. Bash callers invoke this
+            # path many times per launch (session_script.py); an unhandled
+            # KeyboardInterrupt here would print a raw traceback on every one of
+            # them instead of exiting quietly like the Click path below already
+            # does (AI-CLI-s5cs).
+            sys.exit(1)
         return
     try:
         _cli_group(standalone_mode=False)

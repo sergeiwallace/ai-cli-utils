@@ -778,6 +778,56 @@ fi
     assert "Ctrl+C again within" in stderr
 
 
+def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wrapper_survives_and_double_press_exits_cleanly(
+    tmp_path: Path, supported_session_shell: str
+):
+    """Regression for AI-CLI-s5cs.
+
+    Before this fix the child body trapped only TERM. A lone terminal Ctrl+C
+    (delivered to the child's whole foreground process group, same as any
+    preflight subprocess it runs) killed this wrapper outright via bash's
+    default SIGINT disposition. The supervisor then treated that abrupt death
+    like any other crash and immediately spawned a fresh child -- re-running
+    preflight (direnv init, `ai internal ...`) from scratch. If the user kept
+    pressing Ctrl+C, each fresh child died the same way before it could ever
+    register a deliberate exit, producing an unbreakable crash-restart loop.
+
+    Exercises the REAL ``get_engine_script`` output (not a hand-rolled
+    stand-in), so this fails without the production fix: a single Ctrl+C
+    must not kill the wrapper -- only whatever synchronous preflight command
+    happens to be running dies, exactly as ``ai internal
+    resolve-continue-target`` does today. A second Ctrl+C within the window
+    must cleanly abort the whole session (exit 77, supervisor exits 0)
+    instead of triggering another restart.
+    """
+    real_script = get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=False)
+    marker = "trap '_child_record_int' INT"
+    assert real_script.count(marker) == 1, "expected exactly one child-level INT trap installation"
+    # A readiness marker written the instant the new trap is installed --
+    # before any preflight `ai internal ...` call -- so the test can send
+    # Ctrl+C into that exact preflight window without racing a fixed sleep.
+    patched_script = real_script.replace(
+        marker,
+        marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
+        1,
+    )
+    process, _, _ = _start_generated_supervisor(
+        tmp_path, supported_session_shell, lease_acquired=False, child_body=patched_script, terminal=True
+    )
+    child_pid = int((tmp_path / "child-ready").read_text(encoding="utf-8"))
+    assert os.getpgid(child_pid) == process.pid
+
+    os.killpg(process.pid, signal.SIGINT)
+    time.sleep(0.5)
+    assert process.poll() is None, "a single Ctrl+C during preflight killed the child wrapper (AI-CLI-s5cs)"
+
+    os.killpg(process.pid, signal.SIGINT)
+    stdout, stderr = _communicate_supervisor(process)
+
+    assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
+    assert "Ctrl+C again within" in stderr
+
+
 def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_receives_one_relay(
     tmp_path: Path, supported_session_shell: str
 ):

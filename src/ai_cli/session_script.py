@@ -352,6 +352,35 @@ def get_engine_script(
       exit 143
     }}
     trap '_child_term' TERM
+    _child_int_count=0
+    _child_int_deadline=0
+    # A lone Ctrl+C reaches whatever is running in this foreground process
+    # group directly (the active agent handles its own single-press UX; a
+    # synchronous preflight command like `ai internal resolve-continue-target`
+    # below just dies and is retried on the next line). Without a trap here,
+    # bash's default SIGINT disposition kills THIS WRAPPER outright on that
+    # same first Ctrl+C -- and the supervisor's restart-unless-clean-exit loop
+    # then spawns a brand new child, re-running direnv init and every
+    # preflight step from scratch. If the user is still pressing Ctrl+C (as
+    # when trying to interrupt a stuck launch), each fresh child dies the same
+    # way before it can ever register a deliberate exit, producing an
+    # unbreakable crash-restart loop -- visible as the direnv "blocked"
+    # warning repeating and Ctrl+C landing inside random Python subprocess
+    # startups (AI-CLI-s5cs). Mirrors the supervisor's own double-press window
+    # (AI-CLI-56br) so a second Ctrl+C within 3s reliably exits instead.
+    _child_record_int() {{
+      if (( _child_int_count == 1 && SECONDS <= _child_int_deadline )); then
+        if [[ -n "$active_agent_pid" ]] && kill -0 "$active_agent_pid" 2>/dev/null; then
+          kill -TERM "$active_agent_pid" 2>/dev/null || true
+          wait "$active_agent_pid" 2>/dev/null || true
+        fi
+        exit 77
+      fi
+      _child_int_count=1
+      _child_int_deadline=$((SECONDS + 3))
+      printf '%s\n' "ai-cli: Ctrl+C again within 3s to exit" >&2
+    }}
+    trap '_child_record_int' INT
     run_agent() {{
       if ! $agent_direnv_initialized; then
         agent_direnv_initialized=true
