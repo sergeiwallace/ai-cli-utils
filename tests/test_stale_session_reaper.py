@@ -720,6 +720,45 @@ def test_given_live_generated_supervisor_when_record_only_signals_arrive_then_ch
     _finish_supervisor(process)
 
 
+def test_given_supervisor_after_child_restart_when_two_ints_arrive_quickly_then_it_terminates_child_and_exits(
+    tmp_path: Path, supported_session_shell: str
+):
+    child_body = f"""#!{supported_session_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  count_file="$AI_CLI_TEST_CHILD_READY.count"
+  count=$(cat "$count_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$count_file"
+  if (( count == 1 )); then
+    printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+    sleep 0.2
+    exit 0
+  fi
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
+  while true; do sleep 0.05; done
+fi
+"""
+    process, events, _ = _start_generated_supervisor(
+        tmp_path, supported_session_shell, lease_acquired=False, child_body=child_body
+    )
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2":
+            break
+        time.sleep(0.02)
+    assert (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2"
+    os.kill(process.pid, signal.SIGINT)
+    time.sleep(0.1)
+    os.kill(process.pid, signal.SIGINT)
+    stdout, stderr = _communicate_supervisor(process)
+
+    assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
+    assert events.read_text(encoding="utf-8").splitlines() == ["TERM"]
+    assert "Ctrl+C again within" in stderr
+
+
 def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_receives_one_relay(
     tmp_path: Path, supported_session_shell: str
 ):
