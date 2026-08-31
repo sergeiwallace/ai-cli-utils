@@ -562,6 +562,15 @@ def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
     )
 
 
+class _LiveClaudeSessionError(RuntimeError):
+    """A bare launch found a live Claude Code process it cannot reattach to."""
+
+    def __init__(self, title: str, pid: int | str | None, transcript: Path):
+        self.title = title
+        self.pid = pid
+        self.transcript = transcript
+
+
 def _find_lone_mismatched_cc_session(cwd: Path, title: str) -> "Path | None":
     """Return ``cwd``'s one eligible transcript when no candidate matches ``title``.
 
@@ -669,9 +678,8 @@ def _bare_engine_command(
             session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
-                print(_cc_live_session_warning(ai_name, pid), file=sys.stderr)
-            else:
-                command += ["--resume", session_id]
+                raise _LiveClaudeSessionError(ai_name, pid, matched)
+            command += ["--resume", session_id]
         command += ["--name", ai_name]
         return command + extra_args
 
@@ -2721,10 +2729,33 @@ def _do_session_launch(
             # Pin the task-list namespace to ai_name, matching the tmux session
             # script, so the CC task panel survives process restarts.
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
-        command = _bare_engine_command(
-            engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args, resume=resume
-        )
-        _exec_with_direnv(target_root, command)
+        try:
+            command = _bare_engine_command(
+                engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args, resume=resume
+            )
+        except _LiveClaudeSessionError as exc:
+            # tmux can reattach only when it already owns the live process. A
+            # raw bare process has no shared terminal to attach to, so refuse
+            # rather than silently fork another Claude Code session.
+            tmux_session = (
+                subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+                if shutil.which("tmux")
+                else None
+            )
+            if tmux_session is not None and tmux_session.returncode == 0:
+                bare = False
+            else:
+                pid_detail = f" (pid {exc.pid})" if exc.pid is not None else ""
+                print(
+                    f"Error: session '{exc.title}' is still running{pid_detail}; bare mode cannot reattach "
+                    f"to {exc.transcript}.\n"
+                    "Launch aborted to avoid starting a duplicate Claude Code process. "
+                    "Return to the terminal running the existing session.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            _exec_with_direnv(target_root, command)
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
     # so _iterm2_fleet_setup inside the bash script would silently no-op without them.

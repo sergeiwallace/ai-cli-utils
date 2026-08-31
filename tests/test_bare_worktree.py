@@ -26,6 +26,7 @@ from ai_cli.main import (
     _find_cc_session_by_title,
     _find_cc_session_candidates_by_title,
     _find_lone_mismatched_cc_session,
+    _LiveClaudeSessionError,
 )
 from ai_cli.session import build_session_name, find_next_index
 
@@ -385,23 +386,83 @@ def test_given_two_eligible_transcripts_when_bare_claude_resumes_then_warns_and_
     assert older.stem in stderr and newer.stem in stderr
 
 
-@pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to register a genuinely live pid")
-def test_given_live_title_matched_session_when_bare_claude_then_warns_without_resuming(tmp_path, monkeypatch, capsys):
+def test_given_live_title_matched_session_when_bare_claude_then_refuses_duplicate_launch(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     session_id = "ffffffff-0000-4000-8000-000000000006"
     transcript = _write_transcript(_cc_project_dir(target), session_id, "kg-1")
     os.utime(transcript, (1, 1))
-    pid = os.getpid()
-    _write_session_registry(tmp_path, pid, session_id, proc_start=_self_proc_start())
+    pid = 4242
+    monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, pid))
 
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    with pytest.raises(_LiveClaudeSessionError) as exc_info:
+        _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--resume" not in argv
-    assert transcript.stat().st_mtime == 1
+    assert exc_info.value.title == "kg-1"
+    assert exc_info.value.pid == pid
+    assert exc_info.value.transcript == transcript
+
+
+def test_given_live_bare_claude_when_no_matching_tmux_session_then_launch_aborts(
+    real_repo, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(real_repo)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "abababab-0000-4000-8000-000000000006"
+    transcript = _write_transcript(_cc_project_dir(real_repo), session_id, "kg-1")
+    monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, 4242))
+
+    with (
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.main.shutil.which", return_value=None),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(**_launch_kwargs(no_worktree=True))
+
+    assert exc_info.value.code == 1
     stderr = capsys.readouterr().err
-    assert "kg-1" in stderr
-    assert f"pid {pid}" in stderr
+    assert "Launch aborted to avoid starting a duplicate" in stderr
+    assert str(transcript) in stderr
+
+
+def test_given_live_claude_when_matching_tmux_session_then_bare_launch_reattaches(real_repo, tmp_path, monkeypatch):
+    monkeypatch.chdir(real_repo)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "bcbcbcbc-0000-4000-8000-000000000006"
+    _write_transcript(_cc_project_dir(real_repo), session_id, "kg-1")
+    monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, 4242))
+    execs: list[tuple[str, list[str]]] = []
+    real_run = subprocess.run
+
+    def fake_run(command, *args, **kwargs):
+        if command[0] != "tmux":
+            return real_run(command, *args, **kwargs)
+        if command[:2] == ["tmux", "list-panes"]:
+            return subprocess.CompletedProcess(command, 0, stdout="0\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    def fake_execvp(file, args):
+        execs.append((file, list(args)))
+        raise SystemExit(0)
+
+    with (
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.main.shutil.which", return_value="tmux"),
+        patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+        patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_launch_kwargs(no_worktree=True))
+
+    assert execs == [("tmux", ["tmux", "attach-session", "-d", "-t", "c-kg-1"])]
 
 
 # --- session-registry liveness (AI-CLI-cc-session-live-mvht) --------------------
