@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -106,10 +107,11 @@ def _tmux_run(socket: str, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.fixture
-def real_tmux_socket(tmp_path: Path) -> Iterator[str]:
+def real_tmux_socket() -> Iterator[str]:
     if shutil.which("tmux") is None:
         pytest.skip("tmux binary not available on PATH")
-    socket = str(tmp_path / "tmux.sock")
+    socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir="/tmp"))
+    socket = str(socket_dir / "socket")
     probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
     if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
         pytest.skip(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
@@ -117,6 +119,7 @@ def real_tmux_socket(tmp_path: Path) -> Iterator[str]:
         yield socket
     finally:
         _tmux_run(socket, "kill-server")
+        shutil.rmtree(socket_dir, ignore_errors=True)
 
 
 def _wait_for_dead_pane(socket: str, session_id: str) -> None:
@@ -138,6 +141,59 @@ def _create_dead_managed_session(socket: str, session_id: str, generation: str =
     _wait_for_dead_pane(socket, session_id)
 
 
+def _wait_for_missing_session(socket: str, session_id: str) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        result = _tmux_run(socket, "has-session", "-t", session_id)
+        if result.returncode != 0:
+            return
+        time.sleep(0.05)
+    pytest.fail("tmux session did not terminate")
+
+
+@pytest.mark.real_tmux
+def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_removed(
+    real_tmux_socket: str, tmp_path: Path
+):
+    """A deliberate child exit must detach clients instead of leaving a dead pane."""
+    session_id = "clean-child-exit"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(
+        bin_dir / "tmux",
+        '#!/bin/sh\nexec tmux -S "$AI_CLI_TEST_TMUX_SOCKET" "$@"\n',
+    )
+    _write_executable(bin_dir / "ai", "#!/bin/sh\nexit 0\n")
+    state_home = tmp_path / "state"
+    sessions_dir = state_home / "ai-cli-utils" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / f"{session_id}.sh").write_text(
+        'if [[ "${1:-}" == "--ai-cli-child-body" ]]; then\n  exit 77\nfi\n', encoding="utf-8"
+    )
+    supervisor = tmp_path / "supervisor.sh"
+    supervisor.write_text(
+        get_engine_script("c", session_id, "test-session", "test-", "myproject", is_remote=False), encoding="utf-8"
+    )
+    environment = {
+        **os.environ,
+        "AI_CLI_TEST_TMUX_SOCKET": real_tmux_socket,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "XDG_STATE_HOME": str(state_home),
+    }
+
+    created = subprocess.run(
+        ["tmux", "-S", real_tmux_socket, "new-session", "-d", "-s", session_id, "bash", str(supervisor)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert created.returncode == 0, created.stderr
+    assert _tmux_run(real_tmux_socket, "set-window-option", "-t", session_id, "remain-on-exit", "on").returncode == 0
+    _wait_for_missing_session(real_tmux_socket, session_id)
+
+
 @pytest.mark.real_tmux
 def test_given_managed_pane_with_remain_on_exit_when_process_exits_then_tmux_marks_it_dead(real_tmux_socket: str):
     _create_dead_managed_session(real_tmux_socket, "managed-pane")
@@ -146,6 +202,7 @@ def test_given_managed_pane_with_remain_on_exit_when_process_exits_then_tmux_mar
 
     assert pane_dead.returncode == 0
     assert pane_dead.stdout.strip() == "1"
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", "managed-pane").returncode == 0
 
 
 @pytest.mark.real_tmux
@@ -578,7 +635,12 @@ def _start_generated_supervisor(
     event_log = tmp_path / "events.log"
     heartbeat_log = tmp_path / "heartbeats.log"
     child_ready = tmp_path / "child-ready"
-    _write_executable(bin_dir / "tmux", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        bin_dir / "tmux",
+        "#!/bin/sh\n"
+        '[ -z "${AI_CLI_TEST_TMUX_EVENTS:-}" ] || printf "%s\\n" "$*" >> "$AI_CLI_TEST_TMUX_EVENTS"\n'
+        "exit 0\n",
+    )
     _write_executable(
         bin_dir / "ai",
         "#!/bin/sh\n"
@@ -637,6 +699,7 @@ fi
         "AI_CLI_TEST_CHILD_READY": str(child_ready),
         "AI_CLI_TEST_EVENTS": str(event_log),
         "AI_CLI_TEST_HEARTBEATS": str(heartbeat_log),
+        "AI_CLI_TEST_TMUX_EVENTS": str(tmp_path / "tmux-events.log"),
         "AI_CLI_TEST_SUPERVISOR_PGID": supervisor_pgid,
         "AI_CLI_TEST_TERMINAL_PGID": terminal_pgid,
         "AI_CLI_TEST_LEASE_ACQUIRED": str(int(lease_acquired)),
@@ -776,6 +839,24 @@ fi
     assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
     assert events.read_text(encoding="utf-8").splitlines() == ["TERM"]
     assert "Ctrl+C again within" in stderr
+
+
+def test_given_clean_child_exit_when_supervisor_finishes_then_it_kills_its_tmux_session(
+    tmp_path: Path, supported_session_shell: str
+):
+    child_body = """if [[ \"${1:-}\" == \"--ai-cli-child-body\" ]]; then
+  printf '%s\\n' \"$$\" > \"$AI_CLI_TEST_CHILD_READY\"
+  exit 77
+fi
+"""
+    process, _, _ = _start_generated_supervisor(
+        tmp_path, supported_session_shell, lease_acquired=False, child_body=child_body
+    )
+
+    stdout, stderr = _communicate_supervisor(process)
+
+    assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
+    assert "kill-session -t test-session" in (tmp_path / "tmux-events.log").read_text(encoding="utf-8")
 
 
 def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wrapper_survives_and_double_press_exits_cleanly(

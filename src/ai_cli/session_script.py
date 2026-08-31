@@ -332,6 +332,7 @@ def get_engine_script(
           break
         fi
       done
+      tmux kill-session -t "$tmux_session" 2>/dev/null || true
       exit 0
     fi
     {cd_cmd}
