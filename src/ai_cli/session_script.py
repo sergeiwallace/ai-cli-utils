@@ -139,6 +139,10 @@ def get_engine_script(
       shift
     fi
     if ! $_ai_cli_child_mode; then
+      # These descriptors belong only to the supervisor that exported them.
+      # A nested launch can inherit stale values from another session; establish
+      # this supervisor's descriptors below instead of using those values.
+      unset AI_CLI_SUPERVISOR_LEASE_FD AI_CLI_SUPERVISOR_TERMINAL_FD AI_CLI_SUPERVISOR_CHILD_READY_PATH
       tmux_session="{session}"
       ai_name="{ai_name}"
       engine="{engine}"

@@ -682,6 +682,25 @@ def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_hear
     assert "foreground process group" in stderr
 
 
+def test_given_inherited_supervisor_descriptors_when_new_supervisor_starts_then_child_becomes_ready(
+    tmp_path: Path, supported_session_shell: str, monkeypatch: pytest.MonkeyPatch
+):
+    """A nested launch must not reuse descriptors a parent session already owns.
+
+    AI_CLI_SUPERVISOR_LEASE_FD/TERMINAL_FD are only meaningful to the supervisor
+    that exported them. A new supervisor started inside an environment that
+    still carries stale values from an earlier session used those invalid
+    descriptors and crashed with "Bad file descriptor" before ever writing its
+    child-ready marker (AI-CLI-1xg0).
+    """
+    monkeypatch.setenv("AI_CLI_SUPERVISOR_LEASE_FD", "999999")
+    monkeypatch.setenv("AI_CLI_SUPERVISOR_TERMINAL_FD", "999999")
+
+    process, _, _ = _start_generated_supervisor(tmp_path, supported_session_shell, lease_acquired=False)
+
+    _finish_supervisor(process)
+
+
 def test_given_shebangless_stable_script_when_generated_supervisor_starts_child_then_child_runs(
     tmp_path: Path, supported_session_shell: str
 ):
