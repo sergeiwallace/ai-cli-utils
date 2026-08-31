@@ -833,6 +833,40 @@ def test_given_delayed_child_process_group_when_supervisor_promotes_then_it_wait
     _finish_supervisor(process)
 
 
+def test_given_reload_exit_when_supervisor_starts_second_child_then_it_is_promoted(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A reload must promote the replacement child, not leave its wrapper stopped."""
+    if Path(supported_session_shell).name != "zsh":
+        pytest.skip("bash closes the saved terminal descriptor for background children on macOS")
+
+    child_body = f"""#!{supported_session_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  count_file="$AI_CLI_TEST_CHILD_READY.count"
+  count=$(cat "$count_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$count_file"
+  if (( count == 1 )); then
+    exit 78
+  fi
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  while true; do sleep 0.05; done
+fi
+"""
+    process, _, _ = _start_generated_supervisor(
+        tmp_path,
+        supported_session_shell,
+        lease_acquired=False,
+        child_body=child_body,
+        pseudo_terminal=True,
+    )
+
+    second_child = int((tmp_path / "child-ready").read_text(encoding="utf-8"))
+    assert (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2"
+    assert psutil.Process(second_child).status() != psutil.STATUS_STOPPED
+    _finish_supervisor(process)
+
+
 def test_given_generated_session_script_when_rendered_then_it_never_signals_any_mosh_server():
     """The generated script used to `kill` any `mosh-server` process anywhere
     on the host whose command line matched this session's own --project-prefix and was older

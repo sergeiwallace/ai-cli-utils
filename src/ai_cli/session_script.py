@@ -230,7 +230,7 @@ def get_engine_script(
         _promotion_attempt=0
         while (( _promotion_attempt < 3000 )); do
           if [[ -s "$_supervisor_child_ready_path" ]]; then
-            if python3 -c 'import os, signal, sys; pgid = int(sys.argv[1]); os.tcsetpgrp(0, pgid); os.killpg(pgid, signal.SIGCONT)' "$_child_pid" 2>/dev/null; then
+            if python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); pgid = int(sys.argv[1]); os.tcsetpgrp(0, pgid); os.killpg(pgid, signal.SIGCONT)' "$_child_pid" 2>/dev/null; then
               rm -f "$_supervisor_child_ready_path"
               return 0
             fi
@@ -244,7 +244,8 @@ def get_engine_script(
       }}
       _supervisor_restore_terminal() {{
         [[ -t 0 ]] || return 0
-        python3 -c 'import os, sys; os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
+        trap '' TTOU
+        python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
       }}
       _supervisor_term() {{
         if $_supervisor_terminating; then
