@@ -2851,6 +2851,21 @@ def _do_session_launch(
         # Explicit sandbox flag — kill old session so it recreates with new settings
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+    if existing.returncode == 0:
+        # A supervisor crash (e.g. AI-CLI-t8h5) leaves the tmux session alive with
+        # a dead pane and no process to react to a fresh script. Reattaching to it
+        # just shows the frozen final output forever instead of relaunching, so
+        # treat an all-dead-pane session as absent and let it recreate below.
+        pane_check = subprocess.run(
+            ["tmux", "list-panes", "-t", session_id, "-F", "#{pane_dead}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pane_states = [line for line in pane_check.stdout.splitlines() if line]
+        if pane_check.returncode == 0 and pane_states and all(state == "1" for state in pane_states):
+            subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+            existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
