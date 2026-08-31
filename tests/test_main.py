@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -765,6 +766,48 @@ class TestAutoUpdateIfStaleLockContention:
             patch("time.sleep", side_effect=AssertionError("must not wait when nothing is stale")),
         ):
             assert _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}}) is False
+
+    def test_given_peer_pulls_new_source_when_loser_waits_then_loser_requests_reexec(self, tmp_path):
+        """A peer may pull after taking the lock, changing the fingerprint a loser sees."""
+        (tmp_path / "src" / "demo").mkdir(parents=True)
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
+        source = tmp_path / "src" / "demo" / "value.py"
+        source.write_text('VALUE = "before"\n')
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        peer_pulled = threading.Event()
+        finish_peer = threading.Event()
+        updates: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            if len(cmd) >= 2 and cmd[1] == "update":
+                updates.append(list(cmd))
+                source.write_text('VALUE = "after"\n')
+                peer_pulled.set()
+                assert finish_peer.wait(timeout=1)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def finish_update(*_args, **_kwargs):
+            finish_peer.set()
+
+        config = {"deploy": {"project_path": str(tmp_path)}}
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            winner = threading.Thread(target=_auto_update_if_stale, args=(config,))
+            winner.start()
+            assert peer_pulled.wait(timeout=1)
+            with patch("time.sleep", side_effect=finish_update):
+                loser_reexec = _auto_update_if_stale(config)
+            winner.join(timeout=1)
+
+        assert not winner.is_alive()
+        assert updates and len(updates) == 1
+        assert loser_reexec is True, "the loser must restart after its peer replaced the installed files"
 
 
 # --- Group 11: _cmd_tunnel_start no remote host ---
