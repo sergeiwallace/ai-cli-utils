@@ -379,6 +379,43 @@ class TestRunTransportLoop:
         err = capsys.readouterr().err
         assert "falling back to SSH" in err
 
+    def test_when_mosh_fast_exit_has_remote_error_then_prints_it_without_reexecuting_command(self, tmp_path, capsys):
+        """A diagnostic read must only tail the failed attempt's saved stderr."""
+        proc = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+        diagnostic_ssh_args = ["ssh", "-T", "-o", "BatchMode=yes", "user@host"]
+        diagnostic_result = MagicMock(returncode=0, stdout="create_worktree: refusing to delete it\n", stderr="")
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0]),
+                patch("subprocess.run", side_effect=[diagnostic_result, MagicMock()]) as mock_run,
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(
+                    SSH_ARGS,
+                    MOSH_ARGS,
+                    CLEANUP_CMD,
+                    SESSION,
+                    CONFIG,
+                    diagnostic_ssh_args=diagnostic_ssh_args,
+                    remote_diagnostic_file=".local/state/ai-cli-utils/transport-errors/failed.stderr",
+                )
+                return mock_run.call_args_list
+
+        calls = asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "create_worktree: refusing to delete it" in err
+        assert "Transport exited too quickly" in err
+        diagnostic_command = calls[0].args[0]
+        assert diagnostic_command[: len(diagnostic_ssh_args)] == diagnostic_ssh_args
+        assert "tail -n 50" in diagnostic_command[-1]
+        assert " ai " not in diagnostic_command[-1]
+
     def test_when_mosh_and_ssh_both_fail_without_vpn_then_gives_up(self, tmp_path, capsys):
         # Mosh fails fast, SSH also fails fast → SSH retry backoff → give up.
         mosh_proc = _make_proc(returncode=1, poll_sequence=[None, 1])

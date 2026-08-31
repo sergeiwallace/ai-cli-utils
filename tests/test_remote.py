@@ -506,6 +506,38 @@ class TestRemoteSessionIterm2Emit:
         assert "/usr/bin/bash" in captured["mosh_args"]
         assert "zsh" not in captured["mosh_args"]
 
+    def test_when_remote_mosh_command_fails_then_saves_stderr_for_read_only_diagnostic(self):
+        config = {"remote": {"host": "server.example.com", "user": "dev", "transport": "mosh"}}
+        captured = {}
+
+        async def fake_transport_loop(_ssh_args, mosh_args, *_args, **kwargs):
+            captured["mosh_args"] = mosh_args
+            captured["diagnostic_ssh_args"] = kwargs["diagnostic_ssh_args"]
+            captured["remote_diagnostic_file"] = kwargs["remote_diagnostic_file"]
+
+        with (
+            patch("sys.argv", ["ai", "c", "1", "--remote"]),
+            patch("ai_cli.config.load_config", return_value=config),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.config.get_project_aliases", return_value={}),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.main.subprocess.run", return_value=MagicMock(stdout="/bin/bash\n", returncode=0)),
+            patch("ai_cli.transport._is_vpn_active", return_value=False),
+            patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
+            patch("ai_cli.transport._ensure_vpn_watcher"),
+            patch("ai_cli.transport._maybe_stop_vpn_watcher"),
+        ):
+            with pytest.raises(SystemExit):
+                cli()
+
+        remote_command = captured["mosh_args"][-1]
+        assert '2>"$diagnostic_file"' in remote_command
+        assert 'rm -f "$diagnostic_file"' in remote_command
+        assert captured["remote_diagnostic_file"].endswith(".stderr")
+        assert captured["diagnostic_ssh_args"][-1] == "dev@server.example.com"
+
     def test_when_remote_mosh_then_emit_called_before_execvp(self):
         _, mock_emit, _, call_order = self._run_remote(["ai", "c", "4", "--remote"], transport="mosh")
         assert mock_emit.called

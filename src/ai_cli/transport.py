@@ -181,6 +181,27 @@ async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
     return False
 
 
+def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> None:
+    """Print and remove stderr saved by the failed mosh command, if available."""
+    diagnostic_command = (
+        f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+        'if test -f "$diagnostic_file"; then '
+        'tail -n 50 "$diagnostic_file" && rm -f "$diagnostic_file"; fi'
+    )
+    try:
+        result = subprocess.run(
+            [*diagnostic_ssh_args, diagnostic_command],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if diagnostic := result.stdout.strip():
+        print(f"\nRemote command error:\n{diagnostic}", file=sys.stderr)
+
+
 async def _run_transport_loop(
     ssh_args: list[str],
     mosh_args: list[str],
@@ -188,6 +209,8 @@ async def _run_transport_loop(
     session_name: str,
     config: dict,
     tailscale_host: str = "",
+    diagnostic_ssh_args: list[str] | None = None,
+    remote_diagnostic_file: str = "",
 ) -> None:
     """Run the mosh/SSH transport loop with VPN-aware switching.
 
@@ -289,6 +312,8 @@ async def _run_transport_loop(
             # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
             # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
             if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
+                if diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                 if _is_vpn_active():
                     print(
                         f"\nmosh failed ({elapsed:.1f}s), VPN detected — switching to SSH...",
@@ -349,6 +374,8 @@ async def _run_transport_loop(
                 break
 
             if elapsed < 3:
+                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                 print(
                     f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.",
                     file=sys.stderr,
@@ -364,6 +391,8 @@ async def _run_transport_loop(
             # catches a non-zero return code, so this case previously fell straight
             # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
             if transport_type == "mosh" and elapsed < 15:
+                if diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                 print(
                     f"\nmosh session ended after {elapsed:.1f}s (exit code "
                     f"{proc.returncode}) — if you didn't intentionally detach this "

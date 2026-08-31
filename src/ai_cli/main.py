@@ -2437,6 +2437,20 @@ def _do_session_launch(
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
             remote_cmd += f" {shlex.quote(name)}"
+        # Mosh restores the terminal after a remote command exits, erasing its
+        # stderr before it prints its own exit message. Save the real command's
+        # stderr during this one attempt so the local loop can retrieve it with
+        # a read-only SSH command if mosh exits immediately.
+        remote_diagnostic_file = f".local/state/ai-cli-utils/transport-errors/{uuid_module.uuid4().hex}.stderr"
+        mosh_remote_cmd = (
+            f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+            'mkdir -p "$(dirname "$diagnostic_file")"; '
+            f'{remote_cmd} 2>"$diagnostic_file"; '
+            "status=$?; "
+            'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
+            'else cat "$diagnostic_file" >&2; fi; '
+            'exit "$status"'
+        )
         # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
         # mosh blocks all \033]1337; sequences from the remote side, so this
         # is the only opportunity to set the profile and tab color.
@@ -2446,6 +2460,11 @@ def _do_session_launch(
 
         _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
         ssh_args.append(f"{remote_shell} -l -c {shlex.quote(remote_cmd)}")
+
+        diagnostic_ssh_args = ["ssh", "-T", "-p", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+        if id_file:
+            diagnostic_ssh_args += ["-i", str(Path(id_file).expanduser())]
+        diagnostic_ssh_args.append(f"{user}@{host}")
 
         # Build mosh_args unconditionally — needed for both initial connection
         # and for reconnecting after a VPN drop while on SSH.
@@ -2460,7 +2479,7 @@ def _do_session_launch(
             _mosh_ssh += f" -i {shlex.quote(str(Path(id_file).expanduser()))}"
         mosh_args += ["--ssh", _mosh_ssh]
         mosh_args.append(f"{user}@{host}")
-        mosh_args += ["--", remote_shell, "-l", "-c", remote_cmd]
+        mosh_args += ["--", remote_shell, "-l", "-c", mosh_remote_cmd]
 
         if transport == "mosh":
             _transport._ensure_vpn_watcher(config)
@@ -2469,7 +2488,14 @@ def _do_session_launch(
             try:
                 _asyncio.run(
                     _transport._run_transport_loop(
-                        ssh_args, mosh_args, _cleanup_cmd, _r_ai_name, config, tailscale_host=host
+                        ssh_args,
+                        mosh_args,
+                        _cleanup_cmd,
+                        _r_ai_name,
+                        config,
+                        tailscale_host=host,
+                        diagnostic_ssh_args=diagnostic_ssh_args,
+                        remote_diagnostic_file=remote_diagnostic_file,
                     )
                 )
             finally:
