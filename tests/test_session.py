@@ -1609,19 +1609,16 @@ class TestCleanupWorktree:
             cleanup_worktree("nonexistent")
 
     def test_cleanup_worktree_when_dirty_then_skips_remove(self, tmp_path):
-        """Covers lines 469-472: diff returns nonzero, so no removal."""
+        """Covers lines 469-472: status --porcelain returns nonzero, so no removal."""
         wt_dir = tmp_path / ".worktrees" / "sw-7"
         wt_dir.mkdir(parents=True)
         calls = []
 
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
-            m = MagicMock()
-            if "diff" in cmd and "--cached" not in cmd:
-                m.returncode = 1  # dirty
-            else:
-                m.returncode = 0
-            return m
+            if "status" in cmd:
+                return MagicMock(returncode=1, stdout="")
+            return MagicMock(returncode=0, stdout="")
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
@@ -1629,21 +1626,59 @@ class TestCleanupWorktree:
         remove_calls = [c for c in calls if "remove" in c]
         assert len(remove_calls) == 0
 
+    def test_cleanup_worktree_when_untracked_files_present_then_skips_remove(self, tmp_path):
+        """A worktree with only untracked files (no tracked diff) must not be treated as clean --
+        `git status --porcelain` reports them even though `git diff`/`git diff --cached` do not."""
+        wt_dir = tmp_path / ".worktrees" / "sw-9"
+        wt_dir.mkdir(parents=True)
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "status" in cmd:
+                return MagicMock(returncode=0, stdout="?? MEMORY.md\n")
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                cleanup_worktree("sw-9")
+        remove_calls = [c for c in calls if "remove" in c]
+        assert len(remove_calls) == 0
+
     def test_cleanup_worktree_when_clean_then_removes(self, tmp_path):
-        """Covers lines 471-472: both diffs clean, calls worktree remove."""
+        """Covers lines 471-472: status --porcelain is empty, calls worktree remove."""
         wt_dir = tmp_path / ".worktrees" / "sw-8"
         wt_dir.mkdir(parents=True)
         calls = []
 
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="")
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 cleanup_worktree("sw-8")
         remove_calls = [c for c in calls if "remove" in c]
         assert len(remove_calls) == 1
+
+    def test_cleanup_worktree_when_remove_fails_then_prints_warning(self, tmp_path, capsys):
+        """A refused `git worktree remove` (e.g. a race) must not be silently swallowed."""
+        wt_dir = tmp_path / ".worktrees" / "sw-10"
+        wt_dir.mkdir(parents=True)
+
+        def mock_run(cmd, **kwargs):
+            if "status" in cmd:
+                return MagicMock(returncode=0, stdout="")
+            if "remove" in cmd:
+                return MagicMock(returncode=128, stdout="", stderr="fatal: contains untracked files")
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                cleanup_worktree("sw-10")
+        captured = capsys.readouterr()
+        assert "sw-10" in captured.err
+        assert "fatal: contains untracked files" in captured.err
 
 
 # --- find_next_index ---

@@ -1280,11 +1280,29 @@ def cleanup_worktree(ai_name: str):
     if not wt_dir.exists():
         return
 
-    # Only remove if clean
-    diff = subprocess.run(["git", "-C", str(wt_dir), "diff", "--quiet"], env=_git_env(), check=False)
-    cached = subprocess.run(["git", "-C", str(wt_dir), "diff", "--cached", "--quiet"], env=_git_env(), check=False)
-    if diff.returncode == 0 and cached.returncode == 0:
-        subprocess.run(["git", "worktree", "remove", str(wt_dir)], capture_output=True, env=_git_env(), check=False)
+    # Only remove if clean. `git status --porcelain` (unlike `git diff`) also
+    # flags untracked files, so a worktree holding an uncommitted scratch file
+    # (a session MEMORY.md, a stray brief, etc.) is correctly treated as dirty
+    # instead of silently skipped past by git's own untracked-files refusal.
+    status = subprocess.run(
+        ["git", "-C", str(wt_dir), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    if status.returncode == 0 and not status.stdout.strip():
+        removed = subprocess.run(
+            ["git", "worktree", "remove", str(wt_dir)], capture_output=True, text=True, env=_git_env(), check=False
+        )
+        if removed.returncode != 0:
+            # Previously swallowed entirely — a refused removal (e.g. a race
+            # against another process) left no trace, making a stuck worktree
+            # indistinguishable from a successfully cleaned-up one.
+            print(
+                f"ai-cli: cleanup_worktree: git worktree remove {wt_dir} failed: {removed.stderr.strip()}",
+                file=sys.stderr,
+            )
         # Backstop repair after teardown — worktree remove is the other
         # documented trigger for the core.bare/core.worktree corruption class.
         repair_bare_worktree_config(repo_root)
