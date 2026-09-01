@@ -41,3 +41,14 @@ def test_given_the_readme_when_checked_then_all_code_fences_are_balanced():
     readme = Path(__file__).resolve().parent.parent / "README.md"
 
     assert _fence_errors(readme.read_text(encoding="utf-8")) == []
+
+
+def test_given_the_readme_when_checked_then_windows_limitations_are_disclosed():
+    readme = Path(__file__).resolve().parent.parent / "README.md"
+
+    text = readme.read_text(encoding="utf-8")
+
+    assert "### Windows (experimental)" in text
+    assert "the interactive launch lifecycle (keyboard interrupts, bare-mode display, and" in text
+    assert "stale-worktree recovery) are not verified on Windows." in text
+    assert "unverified; automated coverage is skipped" in text

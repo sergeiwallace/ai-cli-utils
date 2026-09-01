@@ -65,9 +65,11 @@ pipx install ai-cli-utils
 ### Windows (experimental)
 
 Windows use via [MSYS2](https://www.msys2.org/) + Git Bash is experimental. The
-Windows-specific session-launch paths exist, but real tmux-server integration is
-not yet verified on Windows: that integration suite is skipped after it hung in
-Windows CI. Use the following setup with that limitation in mind. Before installing:
+Windows-specific session-launch paths exist, but real tmux-server integration and
+the interactive launch lifecycle (keyboard interrupts, bare-mode display, and
+stale-worktree recovery) are not verified on Windows. That integration suite is
+skipped after it hung in Windows CI. Use the following setup with that limitation
+in mind. Before installing:
 
 1. Install [MSYS2](https://www.msys2.org/) and add it to your PATH.
 2. Install tmux inside MSYS2: `pacman -S tmux`
@@ -112,7 +114,8 @@ uv tool install "ai-cli-utils[notify-win]"
 
 **Unavailable or unverified on Windows:**
 
-- Real tmux-server session integration (unverified; automated coverage is skipped)
+- Real tmux-server session integration, including keyboard interrupts, bare-mode
+  display, and stale-worktree recovery (unverified; automated coverage is skipped)
 - `ai c -R` / remote sessions (requires SSH + mosh)
 - `ai tunnel` (requires autossh)
 - iTerm2 color slot management (macOS-only)
