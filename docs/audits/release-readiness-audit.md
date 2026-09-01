@@ -22,7 +22,8 @@ delegation_provenance:
 **Auditor:** gpt-5.6-sol
 
 **Target artifact:** Round 1 working tree at `c9841e3eb6bfc5f0043c144655a8e77cc3bcb6c7`;
-Round 2 re-verification at `6cf82b5d020769c18d7021b60c04e84ccf407088`; package version `0.8.0`
+Round 2 re-verification at `6cf82b5d020769c18d7021b60c04e84ccf407088`; Round 3 security and
+backlog reconciliation at `30521555df0b2695b9e69a90d7028cfc09d79c4c`; package version `0.8.0`
 
 <!-- doc:region name="scope" kind="replaceable" -->
 
@@ -50,6 +51,12 @@ Round 2 re-verification at `6cf82b5d020769c18d7021b60c04e84ccf407088`; package v
   - [R2.2 AD-1 Verification](#r22-ad-1-verification)
   - [R2.3 Verification Matrix](#r23-verification-matrix)
   - [R2 Recommendations](#r2-recommendations)
+- [Round 3 — Security Hardening + Backlog Reconciliation](#round-3--security-hardening--backlog-reconciliation)
+  - [R3 Summary](#r3-summary)
+  - [R3.1 Backlog Reconciliation](#r31-backlog-reconciliation)
+  - [R3.2 Security Findings](#r32-security-findings)
+  - [R3 Verification Matrix](#r3-verification-matrix)
+  - [R3 Recommendations](#r3-recommendations)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
   - [AD-1: Handoff retirement strategy](#ad-1)
 - [Outstanding Issues to Fix](#outstanding-issues-to-fix)
@@ -63,6 +70,7 @@ Round 2 re-verification at `6cf82b5d020769c18d7021b60c04e84ccf407088`; package v
 - [Appendix: Commands Run](#appendix-commands-run)
 - [Appendix: Reviewer Prompts](#appendix-reviewer-prompts)
   - [Round 1 Reviewer Prompt](#round-1-reviewer-prompt)
+  - [Round 3 Reviewer Prompt](#round-3-reviewer-prompt)
 
 ## What Was Audited
 
@@ -92,25 +100,28 @@ have since been retired; their current status is recorded under F-02 and AD-1.
 
 ## Methodology
 
-**Approach:** Round 1 cross-referenced every supplied record with code/history, traced handoff call sites, mapped major modules to tests and recent commits, attempted the exact requested test commands, and reproduced safe checks under the write-restricted worker. Round 2 independently re-ran every finding's current-state check against source, docs, tests, tracked issue records, and git history. **CONFIRMED** means reproduced from artifacts; **PLAUSIBLE** marks environment-dependent judgment. The canonical audit scaffold/template was read first. No implementation fix was applied.
+**Approach:** Round 1 cross-referenced every supplied record with code/history, traced handoff call sites, mapped major modules to tests and recent commits, attempted the exact requested test commands, and reproduced safe checks under the write-restricted worker. Round 2 independently re-ran every finding's current-state check against source, docs, tests, tracked issue records, and git history. Round 3 re-derived the remaining MUST list, checked each shipped claim at its source/test location, resolved AD-1 through the decision framework, reproduced the seven CodeQL source patterns, and traced fresh security sources to sinks across process, filesystem, credential, and publication boundaries. **CONFIRMED** means reproduced from artifacts; **PLAUSIBLE** marks environment-dependent judgment. The canonical audit scaffold/template was read first. No implementation fix was applied.
 
 ## Status Summary
 
-**Latest round:** Round 2
+**Latest round:** Round 3
 
-| Severity | Count | Of which fixed | Of which deferred |
-|----------|-------|----------------|-------------------|
-| P0 | 1 | 0 | 0 |
-| P1 | 9 | 2 | 0 |
-| P2 | 1 | 1 | 0 |
-| P3 | 0 | 0 | 0 |
-| **Total** | **11** | **3** | **0** |
+| Severity/disposition | Count | Resolved or non-finding | Partial | Open |
+|----------------------|-------|-------------------------|---------|------|
+| Prior P0 | 1 | 0 | 1 | 0 |
+| Prior P1 | 9 | 5 | 4 | 0 |
+| Prior P2 | 1 | 1 | 0 | 0 |
+| Round 3 CRITICAL | 4 | 0 | 0 | 4 |
+| Round 3 MAJOR | 4 | 0 | 0 | 4 |
+| Round 3 CodeQL non-findings | 7 | 7 | 0 | 0 |
+| **Total** | **26** | **13** | **5** | **8** |
 
-**Ship-readiness verdict:** **Not ready.** Three findings are resolved (F-02, F-08, F-11), but
-one P0 and seven P1 findings remain open or reframed-open. The stale-session safety gate has not
-passed, the authoritative local verification gate is not green, and adoption, Windows attestation,
-public docs/hygiene, dev dependencies, and copier semantic safety remain unresolved. AD-1 is also
-still formally pending even though the current runtime behavior matches immediate removal.
+**Ship-readiness verdict:** **Not ready.** The old implementation backlog is substantially shipped:
+F-04, F-06, and F-07 pass this round, while F-02, F-08, and F-11 had already passed Round 2.
+F-01, F-03, F-05, F-09, and F-10 remain partial because their literal audit/test or public-hygiene
+exit conditions were not independently satisfied at the current HEAD. AD-1 is now resolved as
+immediate removal. Independently of that progress, Round 3 found four CRITICAL and four MAJOR
+security blockers (F-19 through F-26). **The v0.8.0 PyPI publish is a NO-GO.**
 
 <!-- /doc:region name="scope" -->
 
@@ -558,18 +569,586 @@ reconciliation of AD-1 with the already-shipped option-(b) behavior.
 **Can be folded into a follow-up:** the existing Nice-to-have items below; none changes this
 ship-readiness verdict.
 
+## Round 3 — Security Hardening + Backlog Reconciliation
+
+**Round 3 auditor:** Codex (`gpt-5.6-sol`, high effort), independent application-security audit
+
+**Round 3 date:** 2026-09-01
+
+**Round 3 scope:** Reconcile only the Round 2 MUST-fix backlog and AD-1, then conduct a fresh
+public-release security pass over credential handling, command construction, filesystem trust
+boundaries, insecure defaults, and release supply-chain controls at
+`30521555df0b2695b9e69a90d7028cfc09d79c4c`. Source, tests, configuration, and prior audit rounds
+were read-only; only this audit document was changed.
+
+### R3 Summary
+
+The stale backlog and the current security posture point in different directions. The code and
+documentation fixes for F-04, F-06, and F-07 are present and correct; F-02, F-08, and F-11 were
+already resolved in Round 2. F-01, F-03, F-05, F-09, and F-10 remain **PARTIAL**, however: the
+separate reaper audit still fails its literal release-commit exit condition, the current full test
+gate could not be reproduced, two behavior claims have present source/tests but no independently
+executed E2E result, and the public-hygiene guard still encodes prohibited identifiers while
+excluding whole documentation categories. A closed issue is not accepted as proof for any of
+those items.
+
+AD-1's implementation claim is **CONFIRMED**. The old inbound handlers, drain action, launch
+markers/hooks, command registration, runtime module, and archived module are absent. The remaining
+`signal-watch` strings in `process_hygiene.py:6,327-346,426-427,577-578` only identify legacy
+processes for cleanup; they do not register or start a watcher. The handoff-removal test at
+`tests/test_cli.py:125-134` expects Click's `No such command` failure. This is immediate removal,
+option (b), not a compatibility archive.
+
+The prompt's tracker snapshot was stale in one material respect: `.beads/issues.jsonl:106` still
+records the retired handoff traversal issue as `status:"open"`, even though the vulnerable runtime
+paths are absent. That tracking mismatch does not restore reachability, but it should be reconciled.
+
+The seven supplied CodeQL locations all still match the named query patterns at the current HEAD,
+but independent live GitHub state verification was unavailable: seven `gh api` requests returned
+`error connecting to api.github.com`. Each alert therefore has a source-side disposition below,
+while its live open/dismissed state is explicitly **UNVERIFIED**. The code review finds all seven
+to be non-security uses or test-only matches. The fresh sweep, by contrast, found four CRITICAL and
+four MAJOR issues outside that supplied list.
+
+For completeness only, the prompt reports 46 Dependabot alerts all fixed and zero secret-scanning
+alerts. Per instruction, those two surfaces were not re-audited, and their live GitHub state was not
+independently asserted.
+
+### R3.1 Backlog Reconciliation
+
+This table re-derives the scope from the eight rows under the document's own **Must do before
+release** section (`release-readiness-audit.md:622-633` before this round): F-01; the combined
+F-03/F-04 gate; F-05; F-06; F-07; F-09; F-10; and AD-1.
+
+| Item | Verdict | Current evidence and independent verification |
+|------|---------|-----------------------------------------------|
+| F-01 stale-session safety topology | **PARTIAL** | The tracked resolution cites `5b1aaf0`/`9bc126f9`. The shipped code now sets `remain-on-exit`, captures a dead-pane fingerprint, performs `if-shell -F` compare-and-kill, and checks a live supervisor before persisting a heartbeat (`main.py:1515-1528,3036`; `stale_session_reaper.py:141-183,367-383`). But the required separate audit still says `status: findings-pending-fix`, reports `2 P0 / 0 fixed`, and targets old commit `6668a46` (`stale-session-reaper-implementation-audit.md:5,20,104,181-219`). The literal exit condition, “Separate implementation audit passes the exact release commit,” is not met. |
+| F-03 authoritative local gate | **PARTIAL** | The tracked resolution cites `8f9cacd` and 2,521 passing tests. At current HEAD, `ruff check --no-cache src tests scripts` returned `All checks passed!`; `ruff format --no-cache --check src tests scripts` returned `115 files already formatted`. Current `pytest` and Pyright could not be rerun: `python3 -m pytest` returned `No module named pytest`, and `pyright` returned `command not found`. The older issue's count is not evidence for later HEAD `3052155`. |
+| F-04 public dev dependencies | **PASS** | The tracked resolution cites `f101371f`. `pyproject.toml:71-90` contains both `pytest-xdist>=3` and `pytest-timeout>=2.4.0` in the public dev extra/dependency group while `addopts` remains `-n auto`. `tomllib` produced `pytest-xdist= pytest-xdist>=3`, `pytest-timeout= pytest-timeout>=2.4.0`, `addopts= -n auto`. |
+| F-05 audit/adopt source resolution | **PARTIAL** | The tracked resolution cites `6810e78`. The implementation passes the physical directory with `source_project_dir=record.project_dir` (`session_audit.py:358-376`), and the regression asserts that delegation (`test_session_audit.py:443-460`). The named root/worktree/physical-directory/legacy-slug E2E was not executable without pytest, so the source fix is confirmed but the stated E2E exit condition is not. |
+| F-06 Windows contract | **PASS** | The tracked resolution cites `38e75f7`. The public claim is now explicitly experimental and says the real tmux lifecycle is unverified and skipped after a CI hang (`README.md:65-71`; `docs/tools/ai-cli-usage.md:54`). Narrowing the claim was one of the row's two accepted exit paths. |
+| F-07 active documentation | **PASS** | The tracked resolution claims no stale active references. The active architecture's module/command maps at `docs/designs/architecture.md:43-79,83-112` no longer advertise handoff drain or signal-watch. `rg -n 'signal-watch|handoff-drain' docs/designs/architecture.md` returned no matches (exit 1), and runtime-symbol grep likewise returned no handler/drain matches. Historical/superseded documents were not misclassified as active behavior. |
+| F-09 public-repository hygiene | **PARTIAL** | The tracked resolution cites `f101371f`. Author metadata is generic (`pyproject.toml:8-10`) and the guard now scans active docs (`test_public_repo_hygiene.py:1-16,56-80`). But it deliberately reconstructs the prohibited identifiers from fragments (`:18-45`) and excludes all `archive`, `audits`, `conversations`, `plans`, and `research` docs (`:16,71-72`). Sanitized verification printed `scans_docs=True`, `excludes_historical_docs=True`, `assembles_forbidden_tokens=True`; that is not full compliance with the repository's no-identifiers-in-any-doc-or-test rule. |
+| F-10 Copier semantic parity | **PARTIAL** | The tracked resolution cites `25cddd6`. Both paths now call `_verify_update_parity`, preserve stored answers, and return the distinct fail-closed `parityfail` result (`copier_update.py:224-280,283-336,381-421,654-677`). The drifted-hunk and non-default-answer regressions are present (`test_copier_update.py:450-520`) but were not executable without pytest, so their required non-false-pass behavior was not independently run at this HEAD. |
+| AD-1 handoff retirement | **PASS** | Commits `86c41d0` and `83d2578` removed ingress/hooks/lifecycle, then deleted the stub and archive. Current grep finds none of `_on_handoff_signal_watch`, `_write_pending_if_claimed_drain`, `handoff-drain`, `cmd_handoff`, or `handoff_pending`; neither `src/ai_cli/handoff.py` nor `archive/handoff.py` exists. Legacy cleanup recognition in `process_hygiene.py` is non-ingress compatibility hygiene. |
+| Status Summary, navigation, and global outstanding list | **FAIL — fixed inline** | The Round 2 counts/verdict, ToC, and global MUST list were stale. They were updated to the Round 3 cross-round state in this document; **resolution: doc-only, this round**. |
+| AD-1 pending label/record | **FAIL — fixed inline** | The heading and decision record contradicted the already-shipped option (b). The existing block is replaced below with the required resolved skeleton; **resolution: doc-only, this round**. |
+
+### R3.2 Security Findings
+
+Findings are ordered by severity. F-12 through F-18 retain the invocation order of the seven
+supplied CodeQL alerts; they appear after the release blockers because independent triage found no
+security boundary at those sites.
+
+#### F-19: Remote sync content can traverse symlinks into local files — `CRITICAL`
+
+**Classification:** **CONFIRMED** source-to-sink; a malicious or compromised sync Git remote is a
+reachable external-input source.
+
+**File:** `src/ai_cli/sync.py:2353-2373,995-1016,1025-1034,1097-1102,1120-1122`
+
+**Exact evidence:**
+
+> `for src in staging_project_dir.rglob("*"):`
+>
+> `if not src.is_file():`
+>
+> `shutil.copy2(src, dst)`
+
+The staging tree is fetched and merged from `origin/main` immediately before this walk. Python's
+`Path.is_file()` follows a symlink; the reproduced platform check returned
+`is_symlink= True is_file= True` for a known symlink. Reads, `copy2`, `_write_jsonl_translated`, and
+the conflict-path `src.write_text(...)` can consequently dereference a Git-controlled symlink.
+
+**Why it matters:** A remote can place an allowed-name symlink (for example a JSONL or memory file)
+that reads a victim-local file into synchronized state or causes a conflict-resolution write through
+the link. That violates confidentiality/integrity at the local user's privileges and can feed the
+dereferenced content into a later push.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/sync.py | sed -n '995,1036p;1117,1125p'
+python3 -c "import pathlib; p=pathlib.Path('/etc/localtime'); print('is_symlink=',p.is_symlink(),'is_file=',p.is_file())"
+```
+
+**Recommended fix:** Before any staging read or write, reject a leaf or ancestor whose `lstat()` is
+a symlink, require `src.resolve(strict=True).is_relative_to(staging_dir.resolve(strict=True))`, and
+open the verified file with no-follow semantics (`openat`/`O_NOFOLLOW` on POSIX; the equivalent
+reparse-point check on Windows) so validation and use cannot race. Apply the same helper to project,
+task, history, memory, overwrite, and commit paths. Add relative- and absolute-symlink regressions for
+JSONL, `MEMORY.md`, tasks, and conflict writes; each must fail closed without reading, writing, or
+staging the target.
+
+#### F-20: Predictable shared temporary file permits arbitrary clobber during setup — `CRITICAL`
+
+**Classification:** **CONFIRMED** local symlink-clobber primitive on multi-user Unix hosts.
+
+**File:** `setup.sh:168-198,219`
+
+**Exact evidence:**
+
+> `)" > /tmp/vision_expanded.md 2>/dev/null`
+>
+> `expanded = open('/tmp/vision_expanded.md').read().strip()`
+>
+> `rm -f /tmp/vision_expanded.md`
+
+**Why it matters:** A local attacker can pre-create the predictable path as a symlink to any file
+the victim can write. Shell redirection follows the link and truncates that target before the script
+checks whether generated output is valid, producing reachable data loss under the victim account.
+
+**Verification command:**
+
+```bash
+nl -ba setup.sh | sed -n '168,198p;216,221p'
+```
+
+**Recommended fix:** Allocate the file with `mktemp "${TMPDIR:-/tmp}/ai-cli-vision.XXXXXX"`, fail if
+creation fails, immediately set mode `0600`, install `trap 'rm -f -- "$vision_tmp"' EXIT HUP INT TERM`,
+and pass the quoted variable to both redirection and Python. Never reopen a fixed shared-directory
+pathname.
+
+#### F-21: Generated session shell interpolates untrusted paths and repository metadata — `CRITICAL`
+
+**Classification:** **CONFIRMED** unsafe shell construction; exploit execution was not attempted.
+
+**File:** `src/ai_cli/config.py:436-447`; `src/ai_cli/session_script.py:73-79,126-131,340-347,474-478`;
+`src/ai_cli/main.py:2944-2955`
+
+**Exact evidence:**
+
+> `prefix = metadata.get("task_prefix")`
+>
+> `return prefix.strip(), str(metadata.get("project_type", "tool"))`
+>
+> `cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"`
+>
+> `project_prefix="{project_prefix}"`
+
+**Why it matters:** A checkout path containing shell metacharacters, or repository-controlled
+`[tool.ai-cli] task_prefix` containing a quote/substitution, is embedded into a script that the CLI
+then runs. Launching a session from such a checkout can execute attacker-chosen shell code as the
+user.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/config.py | sed -n '436,450p'
+nl -ba src/ai_cli/session_script.py | sed -n '73,80p;126,132p;340,348p;474,480p'
+```
+
+**Recommended fix:** At the render boundary, apply `shlex.quote()` to every scalar that becomes
+shell syntax (path, session/name, prefix, project, version/commit, UUID, commands), or preferably
+stop embedding data and pass it as positional arguments/environment to a constant script. Enforce
+one conservative prefix grammar at every source (`[A-Za-z0-9][A-Za-z0-9_-]{0,63}`). Add tests with
+spaces, quotes, semicolons, newlines, `$()`, and backticks in both the checkout path and metadata;
+execute the rendered script against stub binaries and assert no marker command runs.
+
+#### F-22: Notification text is compiled as AppleScript source — `CRITICAL`
+
+**Classification:** Interpolation is **CONFIRMED**; command execution is **PLAUSIBLE** because the
+restricted runner could render the injected program but its `osascript` Standard Additions calls
+failed before a live notification test. Even the baseline notification probe returned
+`syntax error: A identifier can’t go after this identifier. (-2740)` in this environment.
+
+**File:** `src/ai_cli/notifications.py:229-243`; `src/ai_cli/sync.py:1058-1105,1819-1840,2457-2459`
+
+**Exact evidence:**
+
+> `["osascript", "-e", f'display notification "{body}" with title "{title}"']`
+>
+> `f'display notification "{summary}" with title "ai sync: conflict detected" '`
+
+The sync summary includes Git-controlled project/file names. Rendering a quote-bearing value
+produced the following source, demonstrating that data becomes program text even though no shell is
+passed to `subprocess.run`:
+
+> `display notification "x" & (do shell script "printf APPLESCRIPT_INJECTION") & "" with title "t"`
+
+**Why it matters:** On macOS, a malicious synchronized filename or any caller-controlled title/body
+can break out of the string literal and add AppleScript commands, including `do shell script`, under
+the user's account.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/notifications.py | sed -n '229,244p'
+nl -ba src/ai_cli/sync.py | sed -n '1819,1840p'
+python3 -c "body='x\" & (do shell script \"printf APPLESCRIPT_INJECTION\") & \"'; title='t'; print(f'display notification \"{body}\" with title \"{title}\"')"
+```
+
+**Recommended fix:** Use one constant AppleScript handler (`on run argv`) and pass title/body as
+`osascript` arguments, reading them with `item 1/2 of argv`; never interpolate them into `-e` source.
+Route sync conflict notifications through that same helper. Add quote, backslash, newline, Unicode,
+and AppleScript-expression tests that assert the program source remains byte-for-byte constant and
+all data appears only in argv.
+
+#### F-23: Secret-bearing configuration is created with ambient world-readable permissions — `MAJOR`
+
+**Classification:** **CONFIRMED** on POSIX defaults; Windows ACL behavior was not exercised.
+
+**File:** `src/ai_cli/config.py:289-305`; `src/ai_cli/notifications.py:104-110,156-175`
+
+**Exact evidence:**
+
+> `# api_key = "ua-api-..."`
+>
+> `config_dir.mkdir(parents=True, exist_ok=True)`
+>
+> `config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")`
+>
+> `ntfy_token = os.environ.get("NTFY_TOKEN", "") or self._cfg.get("ntfy", {}).get("token", "")`
+
+The current shell's reproduced umask is `022`; ordinary `mkdir`/`write_text` therefore create the
+directory/file as approximately `0755`/`0644` unless a parent or prior file is stricter.
+
+**Why it matters:** The documented config can contain API keys, webhook URLs, and bearer tokens.
+On a shared host, ambient modes can expose them to other local users, and existing broad modes are
+never detected or repaired.
+
+**Verification command:**
+
+```bash
+umask
+nl -ba src/ai_cli/config.py | sed -n '289,311p'
+nl -ba src/ai_cli/notifications.py | sed -n '104,111p;156,175p'
+```
+
+**Recommended fix:** Create the config directory as `0700` and the file atomically as `0600`; on
+every load, reject symlinks/non-regular files, verify ownership, and either repair group/other bits
+to `0600` with a warning or refuse to load secrets. Preserve modes across every rewrite. On Windows,
+create an owner-only ACL. Add tests under umask `022` for first creation, existing broad files,
+symlinks, replacement races, and rewrites.
+
+#### F-24: Credential-bearing clients accept plaintext and redirectable endpoint URLs — `MAJOR`
+
+**Classification:** **CONFIRMED** for request construction; no credential was transmitted during
+verification.
+
+**File:** `src/ai_cli/cc_usage.py:263-275,303-315`; `src/ai_cli/notifications.py:104-110,186-226`
+
+**Exact evidence:**
+
+> `url = api_url.rstrip("/") + "/api/v1/usage/cc/ingest"`
+>
+> `"Authorization": f"Bearer {api_key}",`
+>
+> `req = urllib.request.Request(ntfy_url, data=body.encode(), headers=headers, method="POST")`
+
+There is no parsed scheme/hostname validation before either request. A safe no-network probe built
+the same request shape and returned `scheme=http authorization_header=True`.
+
+**Why it matters:** A typo, stale configuration, or attacker-modified config can send API keys,
+ntfy bearer tokens, or credential-bearing webhook URLs over cleartext HTTP; default redirect
+handling also lacks an explicit same-origin credential policy.
+
+**Verification command:**
+
+```bash
+python3 -c "from urllib.request import Request; from urllib.parse import urlsplit; u='http://example.invalid/api/v1/usage/cc/ingest'; r=Request(u,headers={'Authorization':'Bearer placeholder'},method='POST'); print('scheme='+urlsplit(r.full_url).scheme, 'authorization_header='+str(r.has_header('Authorization')))"
+rg -n 'urlsplit|urlparse|Authorization|urlopen' src/ai_cli/cc_usage.py src/ai_cli/notifications.py
+```
+
+**Recommended fix:** Parse before request construction and require `https`, a non-empty hostname,
+and no URL userinfo for every credential-bearing endpoint. Disable automatic redirects or implement
+a handler that revalidates every hop and strips credentials unless scheme and origin are unchanged.
+If tokenless self-hosted ntfy over HTTP must remain, permit it only with an explicit insecure config
+opt-in and categorically reject sending a token on that path. Add HTTP, userinfo, Unicode hostname,
+scheme-relative, redirect, and same-origin HTTPS tests.
+
+#### F-25: Remediation text recommends executing mutable network scripts directly — `MAJOR`
+
+**Classification:** **CONFIRMED** public supply-chain guidance.
+
+**File:** `src/ai_cli/direnv_setup.py:72-82`; `README.md:43-51`
+
+**Exact evidence:**
+
+> `"curl -sfL https://direnv.net/install.sh | bash    # any Unix, no root",`
+>
+> `curl -LsSf https://astral.sh/uv/install.sh | sh`
+
+**Why it matters:** Users following the CLI's own remediation or README execute whatever bytes the
+remote endpoint serves at that moment without a version pin, digest/signature check, or inspection
+step. TLS protects transport, not a compromised origin, mutable installer, or DNS/account takeover.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/direnv_setup.py | sed -n '72,86p'
+nl -ba README.md | sed -n '43,57p'
+```
+
+**Recommended fix:** Prefer OS package-manager commands. Where a direct installer is unavoidable,
+name one immutable release artifact, download it to a file, verify a repository-pinned SHA-256 or
+publisher signature, then execute it as a separate explicit step. Remove every `curl | sh/bash`
+variant from generated remediation and public installation instructions.
+
+#### F-26: PyPI publication grants OIDC to mutable action tags — `MAJOR`
+
+**Classification:** **CONFIRMED** release supply-chain weakness.
+
+**File:** `.github/workflows/publish.yml:12-24,26-44`; `.github/workflows/ci.yml:14-15,35-43,59-63`
+
+**Exact evidence:**
+
+> `permissions:`
+>
+> `id-token: write`
+>
+> `- uses: astral-sh/setup-uv@v10.0.1`
+>
+> `- uses: pypa/gh-action-pypi-publish@release/v1`
+
+**Why it matters:** The publish job runs third-party code selected by movable tags while holding a
+PyPI trusted-publishing identity. If an upstream tag or action repository is compromised, the job
+can build or publish attacker-controlled artifacts without any change to this repository.
+
+**Verification command:**
+
+```bash
+nl -ba .github/workflows/publish.yml | sed -n '1,48p'
+rg -n 'uses: .*@(v[0-9]|release/)' .github/workflows/*.yml
+```
+
+**Recommended fix:** Pin every action in publish and CI workflows to an audited full 40-character
+commit SHA, retaining the human-readable release tag in a comment; enable Dependabot updates for
+the `github-actions` ecosystem. Keep `id-token: write` only on the single publish step/job, build
+once, verify the wheel/sdist contents, and publish that exact immutable artifact.
+
+#### F-12: CodeQL #17 weak-sensitive-data-hashing is non-security color partitioning — `NOT A SECURITY FINDING`
+
+**Classification:** **CONFIRMED** source match; live alert state **UNVERIFIED**.
+
+**File:** `src/ai_cli/iterm2.py:217-233`
+
+**Exact evidence:**
+
+> `_fallback_idx = int(_hashlib.md5(ai_name.encode()).hexdigest(), 16) % len(palette)`
+
+**Why it matters:** The digest selects a deterministic UI color only after all color slots are
+occupied. No password, credential, signature, integrity decision, or attacker-controlled security
+boundary depends on collision resistance; treating it as a vulnerability dilutes alert triage.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/iterm2.py | sed -n '217,233p'
+```
+
+**Recommended fix:** Dismiss CodeQL #17 as `false positive / non-cryptographic deterministic
+partitioning`, citing these lines. If a zero-alert policy forbids dismissal, replace MD5 with
+`sha256(ai_name.encode()).digest()` and derive the integer from the digest; document that the hash
+remains non-security UI behavior.
+
+#### F-13: CodeQL #16 URL-substring alert is a test assertion — `NOT A SECURITY FINDING`
+
+**Classification:** **CONFIRMED** test-only match; live alert state **UNVERIFIED**.
+
+**File:** `tests/test_direnv_setup.py:394-409`
+
+**Exact evidence:**
+
+> `assert "git-scm.com" in text`
+
+**Why it matters:** This assertion checks that Windows remediation prose names an installation
+site. It neither accepts a URL nor sanitizes/authorizes a hostname, so the URL-security query has no
+production data flow here.
+
+**Verification command:**
+
+```bash
+nl -ba tests/test_direnv_setup.py | sed -n '394,409p'
+```
+
+**Recommended fix:** Dismiss CodeQL #16 as `used in tests / no sanitization boundary`; do not weaken
+the regression merely to silence the analyzer.
+
+#### F-14: CodeQL #15 reports intentional workspace-path stdout, not credential logging — `NOT A SECURITY FINDING`
+
+**Classification:** **CONFIRMED** source match; live alert state **UNVERIFIED**.
+
+**File:** `src/ai_cli/main.py:4326-4341`
+
+**Exact evidence:**
+
+> `print(f"  + {key}")`
+
+**Why it matters:** `key` is a workspace key returned by an explicitly invoked trust-backfill
+command and is printed as the command's direct result. It is not a secret or unattended log sink;
+the user requested the path enumeration.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/main.py | sed -n '4326,4341p'
+```
+
+**Recommended fix:** Dismiss CodeQL #15 as `false positive / intentional CLI result containing no
+credential`. If path-minimizing output is desired as a privacy feature, print the count by default
+and add paired `-v/--verbose` output for full paths, but that is not a release-blocking security fix.
+
+#### F-15: CodeQL #14 mistakes one payload-classification operand for URL validation — `NOT A SECURITY FINDING`
+
+**Classification:** **CONFIRMED** first distinct operand; live alert state **UNVERIFIED**.
+
+**File:** `src/ai_cli/notifications.py:186-199`
+
+**Exact evidence:**
+
+> `is_discord = "discord.com" in webhook_url or "discordapp.com" in webhook_url`
+
+For #14, the independently identified instance is the first operand, `"discord.com" in
+webhook_url`.
+
+**Why it matters:** The boolean only chooses Discord's `{"content": ...}` versus Slack's
+`{"text": ...}` payload. It does not authorize the destination; arbitrary configured webhook
+hosts are supported. A deceptive hostname can select the wrong JSON shape, a correctness issue,
+but cannot bypass a host allowlist because none exists.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/notifications.py | sed -n '184,199p'
+```
+
+**Recommended fix:** Parse once with `urlsplit`; classify Discord only when the lowercase hostname
+is exactly `discord.com` or ends in `.discord.com` (and likewise for the second domain below). Add
+tests for userinfo, suffix-confusion, uppercase, ports, and subdomains, then close #14 as fixed.
+
+#### F-16: CodeQL #13 is the second payload-classification operand on the same line — `NOT A SECURITY FINDING`
+
+**Classification:** **CONFIRMED** second distinct operand; live alert state **UNVERIFIED**.
+
+**File:** `src/ai_cli/notifications.py:186-199`
+
+**Exact evidence:**
+
+> `is_discord = "discord.com" in webhook_url or "discordapp.com" in webhook_url`
+
+For #13, the independently identified instance is the second operand, `"discordapp.com" in
+webhook_url`; it is not a duplicate of #14's first substring expression.
+
+**Why it matters:** As with #14, the value controls payload schema only, not permission to contact a
+host. The current expression can misclassify a suffix-confusion URL, but no security allowlist is
+bypassed.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/notifications.py | sed -n '184,199p'
+```
+
+**Recommended fix:** In the same `urlsplit` change as F-15, accept this branch only when hostname is
+exactly `discordapp.com` or ends in `.discordapp.com`; add the same boundary tests and close #13.
+
+#### F-17: CodeQL #8 reports an explicit non-secret GCP project identifier — `NOT A SECURITY FINDING`
+
+**Classification:** **CONFIRMED** source match; live alert state **UNVERIFIED**.
+
+**File:** `src/ai_cli/spend.py:299-309`
+
+**Exact evidence:**
+
+> `print(f"    GCP project: {gcp_project}")`
+
+**Why it matters:** A project ID is an identifier, not an authentication credential, and this is
+direct output from an explicitly invoked local spend report. It can be privacy-sensitive in shared
+terminal transcripts, but the sink is not a background log.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/spend.py | sed -n '299,309p'
+```
+
+**Recommended fix:** Dismiss CodeQL #8 as `false positive / non-secret explicit CLI output`. If the
+product wants identifier minimization, show it only under a paired `-v/--verbose` option; do not
+classify that optional UX change as credential remediation.
+
+#### F-18: CodeQL #7 mistakes an OAuth usage count for OAuth credential material — `NOT A SECURITY FINDING`
+
+**Classification:** **CONFIRMED** source match; live alert state **UNVERIFIED**.
+
+**File:** `src/ai_cli/spend.py:283-292`
+
+**Exact evidence:**
+
+> `dr_monthly = f"{m_oauth_dr} OAuth"`
+>
+> `print(f"  Deep Research:  {dr_monthly}")`
+
+**Why it matters:** `m_oauth_dr` is an integer count of runs, not a token, authorization header,
+client secret, or session identifier. The alert is driven by the label “OAuth,” not sensitive data
+flow.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/spend.py | sed -n '283,292p'
+```
+
+**Recommended fix:** Dismiss CodeQL #7 as `false positive / aggregate count, no credential data`.
+
+### R3 Verification Matrix
+
+The following ten checks were rerun during finalization; outputs are reproduced, not inferred from
+issue close reasons.
+
+| Finding/claim | Re-run command | Actual output | Verified? |
+|---------------|----------------|---------------|-----------|
+| F-19 symlink predicate | `python3 -c '<Path(/etc/localtime) checks>'` | `is_symlink= True is_file= True` | ✅ |
+| F-20 fixed temp pathname | `nl -ba setup.sh \| sed -n '168,198p;216,221p'` | Redirection/read/removal all name `/tmp/vision_expanded.md` | ✅ |
+| F-21 generated-shell interpolation | `nl -ba config.py/session_script.py` at cited ranges | Unvalidated metadata return; raw `cd {worktree_dir}` and quoted-but-unescaped prefix | ✅ |
+| F-22 AppleScript source construction | Python render probe from F-22 | `display notification "x" & (do shell script "printf APPLESCRIPT_INJECTION") & "" with title "t"` | ✅ |
+| F-23 ambient file modes | `umask` plus cited config write | `022`; write uses no explicit mode | ✅ |
+| F-24 plaintext credential request | Safe `urllib.request.Request` construction, no I/O | `scheme=http authorization_header=True` | ✅ |
+| F-25 pipe-to-shell guidance | `nl -ba direnv_setup.py README.md` | Both mutable installer pipelines reproduced | ✅ |
+| F-26 mutable release actions | `rg -n 'uses: .*@(v[0-9]\|release/)' .github/workflows/*.yml` | Mutable tags in publish and CI; publish job has `id-token: write` | ✅ |
+| F-12 CodeQL weak hash context | `nl -ba iterm2.py \| sed -n '217,233p'` | MD5 result used only modulo palette length | ✅ |
+| F-15/F-16 distinct same-line instances | `nl -ba notifications.py \| sed -n '184,199p'` | First `discord.com` and second `discordapp.com` operands both reproduced | ✅ |
+
+**Verified: 10/10 matrix rows reproduce at
+`30521555df0b2695b9e69a90d7028cfc09d79c4c`.** This matrix does not claim a green full test suite
+or live GitHub alert status.
+
+### R3 Recommendations
+
+**MUST be fixed before the v0.8.0 PyPI publish:**
+
+1. Fix F-19 through F-22 before any release candidate: reject sync symlinks safely, remove the
+   predictable temp path, eliminate shell-template interpolation, and pass notification text as
+   AppleScript argv rather than source.
+2. Fix F-23 through F-26: enforce owner-only secret storage, HTTPS/same-origin credential transport,
+   remove pipe-to-shell guidance, and SHA-pin all publication actions.
+3. Complete F-01's exact-HEAD independent reaper audit and run the F-03 public-dev gate (Ruff,
+   Pyright, and full pytest) with actual counts in a writable test environment.
+4. Execute the named F-05 and F-10 regressions/E2E at the release HEAD and close the remaining F-09
+   public-hygiene gaps rather than treating issue closure as proof.
+
+**SHOULD be completed before publish:** Resolve or dismiss all seven GitHub CodeQL alerts with the
+specific source-side rationales above; implement the hostname-boundary correctness improvement for
+CodeQL #13 and #14; reconcile the still-open retired-handoff tracker record; and attach the final build hash and
+artifact-inspection evidence to the release record.
+
+**Can defer without changing the security verdict:** Optional path/project-ID redaction for explicit
+CLI output (F-14/F-17), changing the non-security palette hash (F-12), and any code change for the
+test-only F-13 alert. Their alert dispositions should still be recorded so the public dashboard is
+not misleading.
+
+**v0.8.0 ship-readiness:** **NO-GO.** Backlog progress does not offset the four confirmed/reachable
+CRITICAL paths and four MAJOR hardening gaps in the current release tree.
+
 ## Decisions Requiring Team Input
 
 <a id="ad-1"></a>
 
-### AD-1: Handoff retirement strategy — `[PENDING]`
+### AD-1: Handoff retirement strategy — `✅ Resolved by Codex gpt-5.6-sol/high — (b)`
 
-**Context:** Round 1 found handoff active in normal launch, with reachable traversal and partial
-durable/offline semantics absent from scope-supplied native live messaging. Current-tree fact:
-`86c41d0` has already removed ingress/hooks/watcher lifecycle, archived the old module, and left an
-exit-1 command stub. That shipped behavior matches **(b) immediate removal** in practice, not (a):
-there is no safe read/claim/complete/export compatibility cycle. This implementation fact does not
-constitute the required human decision, so the decision record remains pending.
+**Context:** Current code contains no handoff ingress, launch hook, watcher lifecycle, command, live
+module, or archive; commits `86c41d0` and `83d2578` therefore implement immediate removal. Legacy
+`signal-watch` recognition remains only to identify old processes for hygiene cleanup.
 
 #### (a) Staged deactivation plus one-release compatibility archive
 
@@ -598,24 +1177,11 @@ constitute the required human decision, so the decision record remains pending.
 - No deprecation window.
 - Repository grep cannot prove no external users.
 
-#### (c) Retain and complete queue v2
-
-**Pros:**
-
-- Preserves offline/durable/cross-machine semantics.
-- Could add leases/reconciliation/dead letters.
-
-**Cons:**
-
-- Conflicts with stated product direction.
-- Greatly expands release scope and operational ownership.
-- Still requires immediate security remediation.
-
 #### Recommendation
 
-> **Recommended (AI):** Choose **(a)**. Disable automatic/NATS ingress before release, secure any compatibility path, preserve read-only local migration for one cycle, then archive implementation/history. Close AI-CLI-70q, AI-CLI-3b3, and AI-CLI-0ay only after deactivation. Close AI-CLI-2qu without a fix only if every vulnerable write path is demonstrably unreachable; otherwise fix it first.
-> **Decision:** `(b) Immediate removal` -- resolved by Sergei 2026-08-29, diverging from the AI recommendation: "we should fully remove them, not just stub them." Implemented in PR #87 (squash `83d2578`): `cmd_handoff_retired` and its Click registration removed entirely (`ai handoff` is no longer a recognized command, not even a fail-closed stub), `archive/handoff.py` deleted. AI-CLI-70q, AI-CLI-3b3, AI-CLI-0ay, and AI-CLI-2qu (referenced in the AI recommendation above) were not independently re-checked as part of this resolution -- confirm before closing.
-<!-- decision-record: chosen-option=b; ai-family=N/A; ai-model=N/A; ai-effort=N/A; ai-profile=N/A -->
+> **Recommended (AI):** Confirm **(b) immediate removal** because it is the shipped state and leaves no reachable vulnerable compatibility path. Mitigate stranded local queue entries by documenting a manual read/export route from preserved local files and Git history; mitigate the missing deprecation window with an explicit v0.8.0 breaking-change notice and the hard `No such command` failure; mitigate unprovable external callers by naming the removal and rollback/migration route in release notes rather than claiming repository grep proves absence.
+> **Decision:** `(b)`
+<!-- decision-record: chosen-option=(b); ai-family=codex; ai-model=gpt-5.6-sol; ai-effort=high; ai-profile=audit -->
 
 ## Outstanding Issues to Fix
 
@@ -623,14 +1189,13 @@ constitute the required human decision, so the decision record remains pending.
 
 | Order | Action | Exit condition |
 |-------|--------|----------------|
-| 1 | Finish F-01 P0 topology (`AI-CLI-tdm6.1`, external `AI-CLI-stale-session-reaper-wkmj`) | Separate implementation audit passes the exact release commit. |
-| 2 | Close F-03 local gate and F-04 dependency split | Ruff, Pyright, and full pytest pass from the public dev install with actual counts attached. |
-| 3 | Fix F-05 audit/adopt resolution | Root/worktree/physical-directory/legacy-slug E2E pass. |
-| 4 | Resolve F-06 Windows contract | Supported MSYS2/Git Bash E2E passes or public claims are narrowed. |
-| 5 | Finish F-07 active-doc reconciliation | Architecture has no signal-watch/handoff-drain claims; documented commands match Click registrations. |
-| 6 | Fix F-09 public-repo hygiene | Metadata and guard scope/exemptions comply with the repository rule. |
-| 7 | Fix F-10 copier semantic safety or remove support | Drifted-hunk/non-default-answer fixtures cannot false-pass. |
-| 8 | Obtain the AD-1 human decision | Pending record is reconciled with the already-shipped option-(b) behavior. |
+| 1 | Complete F-01's independent release gate | Separate stale-session implementation audit passes the exact release commit. |
+| 2 | Complete F-03's authoritative local gate | Ruff, Pyright, and full pytest pass from the public dev install with actual counts attached. |
+| 3 | Execute F-05 and F-10 at release HEAD | Root/worktree/physical-directory/legacy-slug E2E and drifted-hunk/non-default-answer fixtures pass without false success. |
+| 4 | Finish F-09 public-repository hygiene | The guard contains no prohibited identifiers and covers every public documentation category without exemptions that contradict repository policy. |
+| 5 | Fix F-19 through F-22 | Symlink-safe sync, safe temporary creation, constant-data shell generation, and argv-only AppleScript handling pass adversarial regressions. |
+| 6 | Fix F-23 through F-26 | Owner-only secret storage, HTTPS/same-origin credential transport, verified installers, and immutable action SHAs are enforced and tested. |
+| — | AD-1 | **Resolved in Round 3; not outstanding:** option (b), immediate removal; doc-only, this round. |
 
 ### Nice to have before release
 
@@ -676,9 +1241,10 @@ constitute the required human decision, so the decision record remains pending.
 - [ ] All P0 fixes independently verified.
 - [ ] All P1 fixed or public feature/support claim removed with rationale.
 - [x] P2/P3 resolved or recommendations recorded (F-11 resolved by explicit retirement disclosure).
-- [ ] AD-1 human decision recorded and reconciled with the already-shipped behavior.
+- [x] AD-1 decision recorded and reconciled with the already-shipped option-(b) behavior.
 - [x] Verification Matrix 10/10 reproduced.
 - [x] Round 2 re-verification completed; 12/12 current statuses reproduced.
+- [x] Round 3 security/backlog verification completed; 10/10 matrix checks reproduced.
 - [ ] Final re-grep and unrestricted full test run complete.
 - [x] No inline implementation fixes.
 - [x] Already-Correct and Anti-Patterns populated.
@@ -694,6 +1260,7 @@ constitute the required human decision, so the decision record remains pending.
 |------|--------|-------|
 | 2026-08-28 | Round 1 complete | 80 classified; 11 findings; 10/10 matrix; no implementation edits. |
 | 2026-08-29 | Round 2 current-tree re-verification complete | 3 resolved, 1 reframed-open, 1 partial-open, 6 still open; AD-1 pending with shipped behavior matching option (b); 12/12 status matrix. |
+| 2026-09-01 | Round 3 security hardening + backlog reconciliation complete | Current HEAD `3052155`; old MUST backlog: 3 PASS, 5 PARTIAL, AD-1 resolved as (b); 4 CRITICAL + 4 MAJOR fresh blockers; 7 CodeQL source matches independently triaged as non-findings, live alert state unavailable; 10/10 verification matrix; doc-only updates to this audit. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -714,6 +1281,12 @@ AI-CLI-fae/AI-CLI-pt9n records and interactions; PR/commit diffs for `86c41d0`, 
 `session_script.py`, `process_manager.py`, `session_audit.py`, `session_adopt.py`,
 `copier_update.py`, `pyproject.toml`, `README.md`, `CHANGELOG.md`, architecture/usage/NATS/CI-retirement
 docs, and the cited regression tests.
+
+**Round 3 security/reconciliation:** full audit doc plus canonical audit and decision procedures;
+current tracked issue JSONL and shipped commit diffs; reaper implementation/audit/tests; handoff
+runtime, legacy cleanup, and removal tests; `config.py`, `cc_usage.py`, `notifications.py`, `sync.py`,
+`session_script.py`, `main.py`, `spend.py`, `iterm2.py`, `direnv_setup.py`, `setup.sh`; public hygiene,
+adoption, Copier, and dependency tests; README/architecture/usage docs; PyPI publish and CI workflows.
 
 ## Appendix: Commands Run
 
@@ -743,6 +1316,19 @@ python3 -c '<sanitized TOML metadata/dev-extra checks>'
 <existing-venv>/bin/ruff format --no-cache --check src tests
 <existing-venv>/bin/pyright --venvpath <repository-root>
 PYTHONDONTWRITEBYTECODE=1 <existing-venv>/bin/pytest -p no:cacheprovider -q <focused tests>
+# Round 3
+git show --stat --oneline 83d2578 86c41d0 5b1aaf0 9bc126f9 f101371f 6810e78 25cddd6
+rg -n '<handoff ingress/hook/watcher symbols>' src tests docs
+ruff check --no-cache src tests scripts
+ruff format --no-cache --check src tests scripts
+ruff check --no-cache --select S src tests scripts
+python3 -m pytest --version
+pyright --version
+python3 -c '<sanitized dev-extra, hygiene, URL-request, and symlink checks>'
+nl -ba <security finding files> | sed -n '<cited ranges>'
+gh api 'repos/<owner>/<repo>/code-scanning/alerts/<number>'
+markdownlint docs/audits/release-readiness-audit.md
+aido validate-doc docs/audits/release-readiness-audit.md
 ```
 
 The Round 1 exact uv commands failed before pytest while creating the uv cache. Round 2's focused
@@ -750,7 +1336,12 @@ pytest attempt also failed before collection because no writable temporary direc
 the single-file write policy. The three `bd show` commands could not open the embedded database
 because it must create/open a lock file; tracked JSONL was read as the repository fallback. Ruff
 completed successfully. Pyright was rerun with the existing environment explicitly selected and
-reported 81 errors.
+reported 81 errors. In Round 3, Ruff lint and format passed, while pytest and Pyright were absent
+from the constrained environment. The ad hoc Ruff security selector returned `Found 4751 errors`
+(mostly generic subprocess/test-assert checks); relevant source-to-sink results were manually traced
+rather than counted as findings. All seven live CodeQL API attempts failed at network connection;
+current source locations were still independently reproduced. Markdownlint and canonical document
+validation passed after the Round 3 write.
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
 
@@ -767,6 +1358,27 @@ Independently audit release readiness against current code/history. Classify all
 assess handoff retirement and semantic parity; structurally spot-check features; run requested test
 commands and report only actual results. Write only this audit, use canonical structure, cite lines,
 distinguish CONFIRMED from PLAUSIBLE, run a verification matrix, and expose no private identifiers.
+```
+
+### Round 3 Reviewer Prompt
+
+**Model:** Codex (`cx audit --write-target`, effort: xhigh)
+
+**Date:** 2026-09-01
+
+```text
+Two-part round: (A) reconcile the doc's stale "Not ready" Status Summary against what Beads shows
+already shipped since Round 2 (F-01..F-11, handoff retirement) -- re-verify each claim against
+current code/tests rather than trusting the close-reason, then resolve AD-1 (handoff retirement
+strategy) via /decision-framework per the shipped reality. (B) fresh security-hardening audit
+dimension for the public PyPI/GitHub release: verify and produce F-N findings for 7 known-open
+GitHub CodeQL alerts (weak hashing in iterm2.py:221; incomplete URL substring sanitization in
+test_direnv_setup.py:401 and notifications.py:188 x2; clear-text logging of sensitive data in
+main.py:4339, spend.py:307, spend.py:292), plus a genuine fresh sweep for credential/secret
+logging, command injection, path traversal, insecure defaults, and supply-chain issues beyond
+Dependabot's already-clean 46/46-fixed alerts. Full prompt archived at
+/tmp/aicli-fae-r3-security-audit-prompt.txt (session e949692e) and in the cx launch command
+recorded in this round's Audit Log entry.
 ```
 
 <!-- /doc:region name="appendix_reviewer_prompt" -->
