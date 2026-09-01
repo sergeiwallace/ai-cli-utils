@@ -349,7 +349,7 @@ class TestSshTunnel:
         )
         assert client._tunnel_proc is mock_proc
 
-    def test_when_mac_and_tunnel_never_comes_up_then_exits_gracefully(self, monkeypatch):
+    def test_when_mac_and_tunnel_never_comes_up_then_prints_selinux_diagnostic(self, monkeypatch, capsys):
         monkeypatch.setenv("AI_HOST", "mac")
         client = NATSClient()
         mock_proc = MagicMock()
@@ -363,6 +363,9 @@ class TestSshTunnel:
         ):
             asyncio.run(client._open_ssh_tunnel())
         assert client._tunnel_proc is mock_proc  # proc stored even if port never came up
+        err = capsys.readouterr().err
+        assert "SSH tunnel to the remote NATS server did not become available" in err
+        assert "sshd-session" in err
 
     def test_when_tunnel_up_then_ssh_f_parent_is_reaped(self, monkeypatch):
         """AI-CLI-86: the `ssh -f` foreground parent exits after auth and must be

@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import time
 
 import nats
@@ -87,6 +88,12 @@ class NATSClient:
                         return
                 except OSError:
                     pass
+            print(
+                "SSH tunnel to the remote NATS server did not become available. "
+                "On a Fedora host with SELinux, check whether sshd-session was denied "
+                "outbound access to port 4222.",
+                file=sys.stderr,
+            )
         finally:
             await self._reap_tunnel_parent()
 
