@@ -330,6 +330,28 @@ class TestRunTransportLoop:
         err = capsys.readouterr().err
         assert "mosh session ended after" not in err
 
+    def test_when_mosh_fails_outside_named_diagnostic_windows_then_prints_fallback(self, tmp_path, capsys):
+        proc = _make_proc(returncode=1, poll_sequence=[None, 1])
+        nc = _mock_nats_client()
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 60.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "mosh exited without a recognized diagnostic branch" in err
+        assert "returncode=1, elapsed=60.0s" in err
+        assert "please retry and report if it recurs" in err
+
     def test_when_mosh_fails_fast_with_vpn_then_switches_to_ssh(self, tmp_path):
         proc_mosh = _make_proc(returncode=1, poll_sequence=[None, 1])
         proc_ssh = _make_proc(returncode=0, poll_sequence=[None, 0])

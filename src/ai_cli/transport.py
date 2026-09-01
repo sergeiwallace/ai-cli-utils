@@ -401,6 +401,21 @@ async def _run_transport_loop(
                     file=sys.stderr,
                 )
 
+            # A non-zero mosh exit outside the fast-failure windows is neither
+            # a normal detach nor explained by one of the named diagnostics
+            # above. Preserve its exact values so a transient recurrence is
+            # actionable.
+            elif transport_type == "mosh" and proc.returncode not in (0, None):
+                if diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                print(
+                    "\nmosh exited without a recognized diagnostic branch "
+                    f"(returncode={proc.returncode}, elapsed={elapsed:.1f}s) — this is an "
+                    "unexplained transient failure; please retry and report if it recurs "
+                    "with these exact numbers.",
+                    file=sys.stderr,
+                )
+
             break  # Normal exit (user detached or session ended)
     finally:
         transport_file.unlink(missing_ok=True)
