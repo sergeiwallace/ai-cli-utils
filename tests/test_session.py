@@ -1278,18 +1278,38 @@ class TestCreateWorktree:
 
 
 class TestCreateWorktreeEdgeCases:
-    def test_create_worktree_when_unregistered_dir_then_refuses_to_delete(self, tmp_path):
+    def test_given_a_plain_populated_worktree_slot_when_created_then_it_is_recovered_and_recreated(
+        self, tmp_path, capsys
+    ):
         wt_dir = tmp_path / ".worktrees" / "sw-3"
         wt_dir.mkdir(parents=True)
         (wt_dir / "leftover.txt").write_text("do not remove\n")
+        add_calls = []
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "worktree", "add"]:
+                add_calls.append(cmd)
+                wt_dir.mkdir()
+            return MagicMock(returncode=0, stdout="")
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
             patch("ai_cli.session.registered_worktrees", return_value=[]),
+            patch("ai_cli.session.time.time_ns", return_value=1_725_143_900_123_456_789),
+            _stub_worktree_base(),
+            patch("subprocess.run", side_effect=mock_run),
         ):
-            with pytest.raises(RuntimeError, match="refusing to delete"):
-                create_worktree("sw-3")
-        assert (wt_dir / "leftover.txt").read_text() == "do not remove\n"
+            result = create_worktree("sw-3")
+
+        recovered = wt_dir.with_name("sw-3-orphaned-1725143900123456789")
+        assert result == wt_dir
+        assert (recovered / "leftover.txt").read_text() == "do not remove\n"
+        assert wt_dir.is_dir()
+        assert add_calls == [["git", "worktree", "add", str(wt_dir), "-b", "wt-sw-3", "refs/remotes/origin/main"]]
+        assert (
+            f"[launch] Recovered orphaned directory: moved {wt_dir} -> {recovered} (not deleted; review manually)"
+            in capsys.readouterr().err
+        )
 
 
 class TestCreateWorktreeEdgeCases2:

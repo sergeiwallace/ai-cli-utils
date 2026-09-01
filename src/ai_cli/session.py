@@ -1132,7 +1132,7 @@ def create_worktree(
 
             if wt_dir.exists() and not _is_empty_dir(wt_dir):
                 # A non-registered directory might hold files or git data that the
-                # launcher cannot safely evaluate. Never recycle it automatically.
+                # launcher cannot safely evaluate.
                 #
                 # An *empty* one is excluded above rather than refused: it holds
                 # nothing to protect, and `git worktree add` writes into an
@@ -1153,10 +1153,22 @@ def create_worktree(
                         f"`git worktree move {holder} {wt_dir.parent / (wt_dir.name + '-agents')}/{holder.name}` "
                         f"for each one (a plain `mv` would leave git's registration pointing at the old path)."
                     )
-                raise RuntimeError(
-                    f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root} — refusing to delete it. "
-                    f"Remove or relocate it only after verifying it contains no needed files; if it is empty, run "
-                    f"`rmdir {wt_dir}` and re-run."
+                recovered_path = wt_dir.with_name(f"{wt_dir.name}-orphaned-{time.time_ns()}")
+                collision = 1
+                while recovered_path.exists():
+                    recovered_path = wt_dir.with_name(f"{wt_dir.name}-orphaned-{time.time_ns()}-{collision}")
+                    collision += 1
+                try:
+                    wt_dir.rename(recovered_path)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"create_worktree: could not recover orphaned directory {wt_dir} by moving it to "
+                        f"{recovered_path}: {exc}"
+                    ) from exc
+                print(
+                    f"[launch] Recovered orphaned directory: moved {wt_dir} -> {recovered_path} "
+                    "(not deleted; review manually)",
+                    file=sys.stderr,
                 )
 
             branch = f"wt-{ai_name}"
