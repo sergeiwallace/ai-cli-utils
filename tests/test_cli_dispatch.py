@@ -54,7 +54,6 @@ class TestInternalRefreshTemplate:
             "project_name": "myproject",
             "iterm2_slot": "",
             "iterm2_cfg": {},
-            "config_reload_idle_secs": 90,
             "gemini_cmd": "gemini",
         }
 

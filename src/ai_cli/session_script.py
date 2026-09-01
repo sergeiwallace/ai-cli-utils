@@ -68,7 +68,6 @@ def get_engine_script(
     project_name: str = "",
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
-    config_reload_idle_secs: int = 90,
     gemini_cmd: str = "gemini",
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
@@ -113,7 +112,6 @@ def get_engine_script(
             "project_name": project_name,
             "iterm2_slot": iterm2_slot or "",
             "iterm2_cfg": iterm2_cfg or {},
-            "config_reload_idle_secs": config_reload_idle_secs,
             "gemini_cmd": gemini_cmd,
         }
     )
@@ -443,36 +441,13 @@ def get_engine_script(
     fi
 
     if [[ "$engine" == "c" ]]; then
-      signal_file="$_ai_state_dir/cc-exit-$tmux_session"
       prompt_file="$_ai_state_dir/cc-resume-prompt-$tmux_session"
     else
-      signal_file="$_ai_state_dir/gg-exit-$tmux_session"
       reload_file="$_ai_state_dir/gg-reload-$tmux_session"
       restart_file="$_ai_state_dir/gg-restart-$tmux_session"
       prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"
     fi
     lock_file="$_ai_state_dir/ai-watcher-lock-$tmux_session"
-    config_hash_file="$_ai_state_dir/config-hash-$tmux_session"
-    config_changed_file="$_ai_state_dir/config-changed-$tmux_session"
-    _config_reload_idle_secs={config_reload_idle_secs}
-
-    # Files whose CHANGE should trigger an idle-restart. CLAUDE.md content is
-    # re-injected every turn (a genuinely live reload), but .claude/settings.json's
-    # `env` block is read ONLY at CC process startup — a `/compact` never re-reads it,
-    # so an override left there (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) silently stays
-    # baked into an already-running session forever unless this watcher also tracks
-    # settings.json (AI-CLI-115 — confirmed live: a session ran 2+ days past a
-    # settings.json fix with the stale env still active, because only CLAUDE.md was
-    # hashed here).
-    _config_watch_files="$HOME/projects/CLAUDE.md $(pwd)/CLAUDE.md $HOME/.claude/settings.json $(pwd)/.claude/settings.json $(pwd)/.mcp.json"
-
-    # Write initial config hash baseline for change detection
-    cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1 > "$config_hash_file"
-
-    # Clean up any stale exit signals from a previous killed session.
-    # Without this, a leftover signal_file causes the watcher to inject /exit
-    # while CC is still showing its startup UI on the very next launch.
-    rm -f "$signal_file" "$config_changed_file"
 
     export AI_TMUX_SESSION="$tmux_session"
     export {env_var_prefix}_TMUX_SESSION="$tmux_session"
@@ -491,78 +466,6 @@ def get_engine_script(
       while true; do
         (( counter++ ))
 
-        if [[ -f "$signal_file" ]]; then
-          # Only inject /exit when CC is at the idle empty prompt (❯ alone on the
-          # last visible line). Four layers of protection against false positives:
-          #
-          # 1. Grace period (counter < 10): skip the first 10s after watcher start.
-          #    When CC restarts with --continue, the pane still shows the previous
-          #    conversation's ❯ for 1-3s while CC loads. Without this guard, the
-          #    watcher fires injection into CC's startup TUI, causing the rewind menu.
-          #    counter resets to 0 every time start_watcher is called (top of each
-          #    while-loop iteration), which is always right before CC launches.
-          #
-          # 2. Double capture-pane: verify ❯ is stable across two back-to-back
-          #    samples before acting. A transient ❯ during startup or state
-          #    transition will fail the second check and be skipped.
-          #
-          # 3. /exit pane guard: before injecting, scan the full visible pane for
-          #    '/exit' text. If present, a prior watcher subshell (SIGTERMed between
-          #    send-keys and rm -f) already queued /exit — skip re-injection. CC will
-          #    exit from the already-queued /exit. signal_file is still cleaned up.
-          #
-          # 4. signal_file deleted after double-verify (regardless of whether /exit
-          #    was sent): rm and break are outside the /exit guard so they fire on
-          #    both inject and skip paths. Prevents signal_file from persisting when
-          #    the guard fires.
-          #
-          # C-u removed: the guard already confirms an empty prompt; C-u is
-          # redundant and has unknown behavior in CC's React/Ink TUI.
-          if (( counter >= 10 )); then
-            _sig_last=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-            if echo "$_sig_last" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-              _sig_verify=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-              if echo "$_sig_verify" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-                if ! tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -qF '/exit'; then
-                  if [[ "$engine" == "g" ]]; then
-                    tmux send-keys -t "$tmux_session" "/resume save $ai_name" C-m
-                    sleep 2
-                  fi
-                  tmux send-keys -t "$tmux_session" '/exit' C-m
-                fi
-                rm -f "$signal_file"
-                break
-              fi
-            fi
-          fi
-          # CC not at idle prompt, or within startup grace period — keep signal_file, retry next cycle
-        fi
-
-        # Config change detection (CC only, every 10s)
-        if [[ "$engine" == "c" ]] && (( counter % 10 == 0 )); then
-          _current_hash=$(cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1)
-          _last_hash=$(cat "$config_hash_file" 2>/dev/null || echo "")
-          if [[ -n "$_current_hash" && "$_current_hash" != "$_last_hash" && ! -f "$config_changed_file" ]]; then
-            date +%s > "$config_changed_file"
-          fi
-        fi
-
-        # Auto-restart when config changed and session has been idle long enough.
-        # Same grace period as signal_file path: skip first 10s to avoid acting
-        # on stale pane content from before CC finished launching.
-        if [[ -f "$config_changed_file" && ! -f "$signal_file" ]] && (( counter >= 10 )); then
-          _changed_at=$(cat "$config_changed_file" 2>/dev/null || echo 0)
-          _idle_secs=$(( $(date +%s) - _changed_at ))
-          if (( _idle_secs >= _config_reload_idle_secs )); then
-            _last_line=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-            if echo "$_last_line" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-              _new_hash=$(cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1)
-              echo "$_new_hash" > "$config_hash_file"
-              rm -f "$config_changed_file"
-              touch "$signal_file"
-            fi
-          fi
-        fi
         if [[ "$engine" == "g" && -f "$reload_file" ]]; then
           rm -f "$reload_file"
           tmux send-keys -t "$tmux_session" Escape

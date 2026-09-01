@@ -346,126 +346,19 @@ class TestGetEngineScript:
         script = self._make_script()
         assert "ai ps cron" in script
 
-    def test_stale_signal_files_cleaned_on_session_start(self):
-        """Stale signal_file/config_changed_file from a previous killed session
-        must be removed at startup — otherwise the watcher immediately injects
-        /exit while CC is showing its startup UI (conversation rewind options)."""
+    def test_given_exit_signal_when_generating_script_then_never_auto_injects_exit(self):
+        """Exit signals and idle-composer detection must not send commands to a live pane."""
         script = self._make_script()
-        assert 'rm -f "$signal_file" "$config_changed_file"' in script
+        assert "signal_file" not in script
+        assert "cc-exit-" not in script
+        assert "gg-exit-" not in script
+        assert "send-keys -t \"$tmux_session\" '/exit' C-m" not in script
 
-    def test_signal_file_processing_uses_correct_prompt_character(self):
-        """The signal_file idle check must use CC's actual prompt character (❯),
-        not '>'. Using '>' caused injection to fire in all states because the
-        pattern never matched CC's prompt, triggering the rewind menu via Escape."""
+    def test_given_agent_exit_when_generating_script_then_session_teardown_is_preserved(self):
+        """A user-initiated client exit still reaches the normal supervisor teardown path."""
         script = self._make_script()
-        # Positive idle check: inject ONLY when at idle empty prompt
-        assert "❯" in script
-        assert "'^[[:space:]]*❯[[:space:]]*$'" in script
-
-    def test_signal_file_injection_does_not_send_escape(self):
-        """The injection sequence must not send Escape before /exit.
-        Escape at an empty CC prompt triggers the conversation rewind menu."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        assert 'send-keys -t "$tmux_session" Escape' not in injection_sequence
-
-    def test_signal_file_injection_does_not_send_ctrl_u(self):
-        """C-u must not be sent before /exit. CC uses React/Ink TUI — C-u behavior
-        is undocumented and potentially harmful. The idle guard already confirms
-        the prompt is empty, making C-u redundant."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        assert 'send-keys -t "$tmux_session" C-u' not in injection_sequence
-
-    def test_signal_file_injection_has_startup_grace_period(self):
-        """Injection must be skipped during the first 10 watcher cycles (10s).
-        When CC restarts with --continue, the pane still shows the previous
-        conversation's ❯ for 1-3s during startup. Without a grace period the
-        watcher fires into CC's initialization TUI, triggering the rewind menu."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        assert "counter >= 10" in injection_sequence
-
-    def test_signal_file_injection_double_verifies_prompt(self):
-        """Injection must perform two back-to-back capture-pane checks before
-        firing. A transient ❯ during startup or state transition fails the second
-        check and prevents injection."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        # Two distinct capture-pane calls must appear
-        assert injection_sequence.count("capture-pane") >= 2
-
-    def test_signal_file_deleted_after_injection_not_before(self):
-        """signal_file must be deleted AFTER send-keys, not before.
-        Deleting before injection loses the signal if the watcher is killed
-        mid-sequence, preventing retry on the next watcher start."""
-        script = self._make_script()
-        exit_pos = script.find("'/exit' C-m")
-        rm_pos = script.find('rm -f "$signal_file"', exit_pos)
-        assert exit_pos != -1, "/exit injection not found"
-        assert rm_pos != -1, "rm signal_file not found after /exit"
-
-    def test_signal_file_injection_skips_when_exit_already_in_pane(self):
-        """The watcher must not inject /exit if /exit is already visible in the
-        pane. A concurrent watcher subshell SIGTERMed mid-sequence may have
-        already injected /exit before it could clean up signal_file. Without
-        this guard, the new watcher re-injects, causing 2+ /exit submissions."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        injection_pos = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert injection_pos != -1
-        # The section BEFORE the /exit injection must contain a grep or check
-        # using the literal '/exit' string (not just a comment mentioning it).
-        # Discriminator: comments have /exit without quotes; the guard has '/exit'.
-        pre_injection = script[sig_block_start:injection_pos]
-        assert "'/exit'" in pre_injection, (
-            "No pane content guard for '/exit' found before injection — "
-            "watcher can inject duplicate /exit when pane already has one"
-        )
-
-    def test_signal_file_cleanup_fires_even_when_injection_skipped(self):
-        """signal_file must be removed and the watcher must break even when the
-        /exit pane guard fires (injection skipped). If signal_file persisted after
-        a skip, the next watcher cycle would inject anyway — defeating the guard.
-        Structural check: a `fi` must appear between the injection line and the
-        rm, proving rm is OUTSIDE the guard's if-block."""
-        script = self._make_script()
-        injection_pos = script.find("'/exit' C-m")
-        rm_pos = script.find('rm -f "$signal_file"', injection_pos)
-        assert injection_pos != -1, "/exit injection not found"
-        assert rm_pos != -1, "rm signal_file not found after injection"
-        between = script[injection_pos:rm_pos]
-        assert "fi" in between, (
-            "rm signal_file is inside the /exit guard's if-block — "
-            "cleanup won't fire when injection is skipped due to pane guard"
-        )
-
-    def test_config_change_detection_has_startup_grace_period(self):
-        """Config change auto-restart must also skip the first 10s.
-        Same stale-pane problem: config_changed_file from a prior run can
-        exist when the watcher starts, and the pane shows old ❯ content."""
-        script = self._make_script()
-        config_block_start = script.find('if [[ -f "$config_changed_file"')
-        assert config_block_start != -1
-        config_block = script[config_block_start : config_block_start + 200]
-        assert "counter >= 10" in config_block
+        assert '(ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &' in script
+        assert "exit 77" in script
 
     def test_given_claude_script_when_generated_then_uses_shared_continue_target_resolver(self):
         """Every Claude Code continuation must first resolve an exact title."""

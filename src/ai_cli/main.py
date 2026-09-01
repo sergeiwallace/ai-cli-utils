@@ -1105,7 +1105,6 @@ def _engine_script_from_meta(meta: dict) -> str:
         project_name=meta.get("project_name", ""),
         iterm2_slot=meta.get("iterm2_slot") or None,
         iterm2_cfg=meta.get("iterm2_cfg") or None,
-        config_reload_idle_secs=meta.get("config_reload_idle_secs", 90),
         gemini_cmd=meta.get("gemini_cmd", "gemini"),
     )
 
@@ -2944,7 +2943,6 @@ def _do_session_launch(
     _iterm2_cfg = _iterm2._load_iterm2_config()
     _iterm2_slot = _iterm2._assign_iterm2_color_slot(ai_name, engine, project_name=current_project_name)
 
-    _config_reload_idle_secs = int(config.get("session", {}).get("config_reload_idle_secs", 90))
     script = _session_script.get_engine_script(
         engine,
         ai_name,
@@ -2959,7 +2957,6 @@ def _do_session_launch(
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
-        config_reload_idle_secs=_config_reload_idle_secs,
         gemini_cmd=gemini_cmd,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
