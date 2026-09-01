@@ -628,6 +628,7 @@ def _start_generated_supervisor(
     fast_heartbeat: bool = False,
     child_group_delay: float = 0,
     pseudo_terminal: bool = False,
+    extra_commands: dict[str, str] | None = None,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
     bin_dir = tmp_path / "bin"
@@ -662,6 +663,8 @@ def _start_generated_supervisor(
         '  *) exec /bin/ps "$@" ;;\n'
         "esac\n",
     )
+    for command, body in (extra_commands or {}).items():
+        _write_executable(bin_dir / command, body)
 
     state_home = tmp_path / "state"
     sessions_dir = state_home / "ai-cli-utils" / "sessions"
@@ -901,6 +904,63 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     os.killpg(process.pid, signal.SIGINT)
     time.sleep(0.5)
     assert process.poll() is None, "a single Ctrl+C during preflight killed the child wrapper (AI-CLI-s5cs)"
+
+    os.killpg(process.pid, signal.SIGINT)
+    stdout, stderr = _communicate_supervisor(process)
+
+    assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
+    assert "Ctrl+C again within" in stderr
+
+
+def test_given_agent_exits_on_first_ctrl_c_when_child_restarts_then_second_ctrl_c_exits_session(
+    tmp_path: Path, supported_session_shell: str
+):
+    """The escape window must survive an agent-triggered child restart.
+
+    A terminal SIGINT reaches both the wrapper and its foreground agent.  If the
+    agent exits in response, the wrapper restarts it before the user can send
+    the documented second Ctrl+C.  The replacement must inherit the active
+    escape window instead of treating that press as a new first press.
+    """
+    launches = tmp_path / "claude-launches"
+    agent = f"""#!/usr/bin/env python3
+import os
+import signal
+import time
+
+with open({str(launches)!r}, "a", encoding="utf-8") as stream:
+    stream.write(f"{{os.getpid()}}\\n")
+def stop(*_):
+    raise SystemExit(130)
+signal.signal(signal.SIGINT, stop)
+while True:
+    time.sleep(0.05)
+"""
+    real_script = get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=False)
+    marker = "trap '_child_record_int' INT"
+    real_script = real_script.replace(
+        marker,
+        marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
+        1,
+    )
+    process, _, _ = _start_generated_supervisor(
+        tmp_path,
+        supported_session_shell,
+        lease_acquired=False,
+        child_body=real_script,
+        terminal=True,
+        extra_commands={"claude": agent},
+    )
+
+    _wait_for_path(launches, process)
+    time.sleep(3.1)
+    os.killpg(process.pid, signal.SIGINT)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if launches.exists() and len(launches.read_text(encoding="utf-8").splitlines()) >= 2:
+            break
+        time.sleep(0.02)
+    assert len(launches.read_text(encoding="utf-8").splitlines()) >= 2, "first Ctrl+C did not restart the agent"
 
     os.killpg(process.pid, signal.SIGINT)
     stdout, stderr = _communicate_supervisor(process)

@@ -146,6 +146,10 @@ def get_engine_script(
       engine="{engine}"
       _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
       mkdir -p "$_ai_state_dir/session-leases" "$_ai_state_dir/session-heartbeats"
+      # A new supervisor starts a new Ctrl+C gesture. Replaceable children
+      # below share these files only for this supervisor's lifetime.
+      rm -f "$_ai_state_dir/session-int-escape-$tmux_session" \
+        "$_ai_state_dir/session-int-exit-$tmux_session"
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
       _reaper_evidence_enabled=false
       _reaper_lease_fd=""
@@ -206,7 +210,8 @@ def get_engine_script(
         [[ -n "${{_supervisor_child_ready_path:-}}" ]] && rm -f "$_supervisor_child_ready_path"
         ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
         rm -f "$_ai_state_dir/session-meta-$tmux_session.json" \\
-          "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session"
+          "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session" \\
+          "$_ai_state_dir/session-int-escape-$tmux_session" "$_ai_state_dir/session-int-exit-$tmux_session"
         ai internal cleanup-worktree "$ai_name" 2>/dev/null
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
@@ -324,6 +329,9 @@ def get_engine_script(
         _child_status=$?
         _supervisor_restore_terminal || true
         rm -f "$_supervisor_child_ready_path"
+        if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
+          break
+        fi
         # 78 requests a refreshed child after a stable-script/self-update check;
         # 77 is clean local final exit and 79 is remote recovery-shell completion.
         if (( _child_status == 77 || _child_status == 79 )); then
@@ -335,6 +343,9 @@ def get_engine_script(
     fi
     {cd_cmd}
     direnv_root="$PWD"
+    tmux_session="{session}"
+    _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
+    mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
     # A managed session can restart its agent after a normal exit. Load the
     # project environment into this persistent shell once, rather than running
     # `direnv exec` for every replacement agent (and re-emitting .envrc output).
@@ -351,8 +362,23 @@ def get_engine_script(
       exit 143
     }}
     trap '_child_term' TERM
-    _child_int_count=0
     _child_int_deadline=0
+    _child_int_escape_file="$_ai_state_dir/session-int-escape-$tmux_session"
+    _child_int_exit_file="$_ai_state_dir/session-int-exit-$tmux_session"
+    _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+    _child_int_now=$(date +%s)
+    if [[ "$_child_saved_int_deadline" == "pending" ]]; then
+      :
+    elif [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]]; then
+      # The foreground agent may exit from the first Ctrl+C, causing this
+      # replaceable child to restart before the user can send the second one.
+      # Keep the escape window in session state so a restart or hot reload does
+      # not turn that second Ctrl+C into another first press.
+      _child_int_deadline=$((_child_int_now + 3))
+      printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
+    else
+      rm -f "$_child_int_escape_file"
+    fi
     # A lone Ctrl+C reaches whatever is running in this foreground process
     # group directly (the active agent handles its own single-press UX; a
     # synchronous preflight command like `ai internal resolve-continue-target`
@@ -368,15 +394,24 @@ def get_engine_script(
     # startups (AI-CLI-s5cs). Mirrors the supervisor's own double-press window
     # (AI-CLI-56br) so a second Ctrl+C within 3s reliably exits instead.
     _child_record_int() {{
-      if (( _child_int_count == 1 && SECONDS <= _child_int_deadline )); then
+      _child_int_now=$(date +%s)
+      _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+      if [[ "$_child_saved_int_deadline" == "pending" ]] || \
+        ( [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]] && (( _child_int_now <= _child_saved_int_deadline )) ); then
+        rm -f "$_child_int_escape_file"
+        # zsh does not reliably honor `exit` or retain trap-local state when a
+        # trap races background-job startup or interrupts `wait`. Record the
+        # request in session state so ordinary child flow and the stable
+        # supervisor can both finish independently of child exit status.
+        printf '%s\n' "exit" > "$_child_int_exit_file"
         if [[ -n "$active_agent_pid" ]] && kill -0 "$active_agent_pid" 2>/dev/null; then
           kill -TERM "$active_agent_pid" 2>/dev/null || true
           wait "$active_agent_pid" 2>/dev/null || true
         fi
-        exit 77
+        return
       fi
-      _child_int_count=1
-      _child_int_deadline=$((SECONDS + 3))
+      _child_int_deadline=$((_child_int_now + 3))
+      printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
       printf '%s\n' "ai-cli: Ctrl+C again within 3s to exit" >&2
     }}
     trap '_child_record_int' INT
@@ -396,17 +431,40 @@ def get_engine_script(
           fi
         fi
       fi
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
+      fi
       "$@" &
       active_agent_pid=$!
       wait "$active_agent_pid"
       agent_exit_code=$?
       active_agent_pid=""
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
+      fi
+      _child_int_now=$(date +%s)
+      _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+      if [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]] && \
+        (( agent_exit_code == 130 || _child_int_now <= _child_saved_int_deadline )); then
+        # Restart/reload work is not an opportunity for the user to address a
+        # live agent. In particular, zsh may spend the entire original window
+        # unwinding a SIGINT-exited agent (status 130). Give the replacement a
+        # complete escape window, while normal later exits still expire stale
+        # first presses below.
+        if (( agent_exit_code == 130 )); then
+          printf '%s\n' "pending" > "$_child_int_escape_file"
+        else
+          _child_int_deadline=$((_child_int_now + 3))
+          printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
+        fi
+      elif [[ -n "$_child_saved_int_deadline" ]]; then
+        rm -f "$_child_int_escape_file"
+      fi
       return "$agent_exit_code"
     }}
     first_run=true
     ai_name="{ai_name}"
     engine="{engine}"
-    tmux_session="{session}"
     # If this script was exec'd by hot-reload, AI_SESSION_STARTED is set in the tmux
     # env — skip first-run-only setup so CC relaunches cleanly without re-running
     # iTerm2 fleet wait, or session-broker on each auto-restart.
@@ -418,8 +476,6 @@ def get_engine_script(
     uuid="{session_id_uuid or ""}"
     project_prefix="{project_prefix}"
     project_name="{project_name}"
-    _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
-    mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
     # Stable script path — written by `ai c` on every launch/re-attach.
     # Mtime changes when a new version is installed and `ai c` re-attaches.
     _script_stable_path="$_ai_state_dir/sessions/$tmux_session.sh"
@@ -583,6 +639,14 @@ def get_engine_script(
     trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
 
     while true; do
+      _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+      if [[ "$_child_saved_int_deadline" == "pending" ]]; then
+        :
+      elif [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]]; then
+        _child_int_now=$(date +%s)
+        _child_int_deadline=$((_child_int_now + 3))
+        printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
+      fi
       # Hot-reload: if `ai c` wrote a fresh script to the stable path (e.g. after
       # `ai update`), exec it now so new template takes effect on this CC restart.
       # Runs at loop top so the running CC process is undisturbed; takes effect on
@@ -702,6 +766,12 @@ with open(path, 'w') as f:
           else run_agent codex resume --last
           fi
         fi
+      fi
+
+      # Keep final-exit control flow outside the INT trap. In zsh, an exit
+      # requested by a trap interrupting `wait` can be deferred indefinitely.
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
       fi
 
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
