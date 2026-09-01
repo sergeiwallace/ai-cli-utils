@@ -80,6 +80,7 @@ from .iterm2 import (  # noqa: F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
+from .launch_reporter import InstallOrigin, LaunchReporter
 from .process_manager import (  # noqa: F401
     _cmd_quota_watch_start,
     _cmd_quota_watch_status,
@@ -736,6 +737,11 @@ def _announce_worktree_isolation(worktree_path: Path, created: bool) -> None:
         print(f"Using existing worktree: {worktree_path}", file=sys.stderr)
 
 
+def _engine_display_name(engine: str) -> str:
+    """Return the public engine name used in launch progress output."""
+    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+
+
 def _find_aicli_project_path(config: dict) -> "Path | None":
     """Locate the ai-cli-utils source tree regardless of cwd.
 
@@ -855,6 +861,7 @@ def _await_peer_update(
 
 
 UPDATE_VERBOSE_ENV = "AI_CLI_UPDATE_VERBOSE"
+_LAUNCH_REEXEC_ENV = "AI_CLI_LAUNCH_REEXEC"
 
 
 def _update_verbose_requested() -> bool:
@@ -1705,6 +1712,16 @@ def _install_is_editable(venv: "Path") -> bool:
     return "editable" in receipt
 
 
+def _launch_install_origin() -> InstallOrigin:
+    """Classify installation origin only when the available evidence supports it."""
+    venv = _running_uv_tool_venv()
+    if venv is not None and _install_is_editable(venv):
+        return InstallOrigin.EDITABLE_CHECKOUT
+    # An ordinary copied environment may have come from PyPI, another index, a
+    # wheel, or a direct URL. Do not call it PyPI without source metadata.
+    return InstallOrigin.UNKNOWN
+
+
 def _tool_env_can_import(venv: "Path", module: str = "ai_cli") -> bool:
     """Whether a *fresh* interpreter from ``venv`` can import ``module``.
 
@@ -2247,6 +2264,7 @@ def _do_session_launch(
     config: dict,
     remote_machine: str = "",
     no_direnv: bool = False,
+    reporter: LaunchReporter | None = None,
 ) -> None:
     # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
     # only the client library, so tmux can never be auto-installed by pip/uv and
@@ -2415,7 +2433,10 @@ def _do_session_launch(
             preflight_ssh_args += ["-i", identity_file]
         ssh_args.append(f"{user}@{vpn_host}")
         preflight_ssh_args.append(f"{user}@{vpn_host}")
-        remote_shell = _resolve_remote_shell(preflight_ssh_args)
+        with reporter.phase("Remote", "probing configured host") if reporter is not None else contextlib.nullcontext():
+            remote_shell = _resolve_remote_shell(preflight_ssh_args)
+        if reporter is not None:
+            reporter.phase("Remote").outcome("host ready")
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (<remote_shell> -l -c)
         # that does not source the shell's rc file where the uv env PATH setup
@@ -2432,12 +2453,19 @@ def _do_session_launch(
         remote_session_id = ""
         if not name or not name.isdigit():
             try:
-                remote_session_id, _ = _request_remote_session_allocation(
-                    preflight_ssh_args, engine, remote_prefix, name, remote_shell
-                )
+                with (
+                    reporter.phase("Session", "allocating remote session")
+                    if reporter is not None
+                    else contextlib.nullcontext()
+                ):
+                    remote_session_id, _ = _request_remote_session_allocation(
+                        preflight_ssh_args, engine, remote_prefix, name, remote_shell
+                    )
             except RuntimeError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
                 sys.exit(1)
+        if reporter is not None:
+            reporter.phase("Session").outcome(f"resolved {remote_session_id or name}")
         if remote_session_id:
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
@@ -2487,10 +2515,14 @@ def _do_session_launch(
         mosh_args += ["--", remote_shell, "-l", "-c", mosh_remote_cmd]
 
         if transport == "mosh":
+            if reporter is not None:
+                reporter.phase("Transport").outcome("mosh selected")
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
             try:
+                if reporter is not None:
+                    reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
                 _asyncio.run(
                     _transport._run_transport_loop(
                         ssh_args,
@@ -2511,6 +2543,10 @@ def _do_session_launch(
             if sys.platform == "win32":
                 print("Error: remote SSH transport is not supported on Windows", file=sys.stderr)
                 sys.exit(1)
+            if reporter is not None:
+                reporter.phase("Transport").outcome("SSH selected")
+            if reporter is not None:
+                reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
             os.execvp("zsh", ["zsh", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
 
     # When running as the remote side of an --remote session, cd into the project directory
@@ -2563,6 +2599,8 @@ def _do_session_launch(
         if not session:
             print(f"No matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=session)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
@@ -2578,6 +2616,8 @@ def _do_session_launch(
     except _session.SessionSlotAmbiguityError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+    if reporter is not None:
+        reporter.phase("Session").outcome(f"resolved {ai_name}")
 
     # Worktree setup
     worktree_path = None
@@ -2591,7 +2631,12 @@ def _do_session_launch(
         if _repair_root:
             repair_bare_worktree_config(_repair_root)
         try:
-            worktree_result = _session.create_worktree(ai_name, with_status=True)
+            with (
+                reporter.phase("Worktree", "creating isolated worktree")
+                if reporter is not None
+                else contextlib.nullcontext()
+            ):
+                worktree_result = _session.create_worktree(ai_name, with_status=True)
         except RuntimeError as exc:
             print(
                 f"Error: could not create or reuse the isolated session worktree; refusing to launch in the "
@@ -2612,7 +2657,11 @@ def _do_session_launch(
                 file=sys.stderr,
             )
             sys.exit(1)
-        _announce_worktree_isolation(worktree_path, worktree_created)
+        if reporter is not None:
+            outcome = "created" if worktree_created else "reusing"
+            reporter.phase("Worktree").outcome(f"{outcome} {worktree_path}")
+        else:
+            _announce_worktree_isolation(worktree_path, worktree_created)
         if worktree_path:
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
@@ -2648,7 +2697,8 @@ def _do_session_launch(
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
-            pull, stranded = pull_rebase_autostash(worktree_path)
+            with reporter.phase("Worktree", "synchronizing") if reporter is not None else contextlib.nullcontext():
+                pull, stranded = pull_rebase_autostash(worktree_path)
             if pull.returncode != 0 and not stranded and not _conflicted_before:
                 # Reset only when the tree was clean beforehand, so this cleanup can
                 # only ever undo work THIS launch started. Doing it unconditionally
@@ -2731,6 +2781,8 @@ def _do_session_launch(
                     f"`git -C {worktree_path} checkout -- <path>` before committing.",
                     file=sys.stderr,
                 )
+            if reporter is not None:
+                reporter.phase("Worktree").outcome("ready")
 
     # For Gemini, always check the chats directory for the latest session — the
     # session map may be stale if the user exited and restarted directly via gemini CLI.
@@ -2786,6 +2838,8 @@ def _do_session_launch(
                 )
                 sys.exit(1)
         else:
+            if reporter is not None:
+                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_with_direnv(target_root, command)
 
     # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
@@ -2810,6 +2864,8 @@ def _do_session_launch(
             if not _is_root():
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
+            if reporter is not None:
+                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             os.execvp(
                 "tmux",
                 [
@@ -2828,6 +2884,8 @@ def _do_session_launch(
             command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
             if uuid:
                 command += ["-r", uuid]
+                if reporter is not None:
+                    reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
                 os.execvp(
                     "tmux",
                     [
@@ -2844,6 +2902,8 @@ def _do_session_launch(
                 )
             else:
                 command += ["-i", f"/resume load {ai_name}"]
+                if reporter is not None:
+                    reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
                 os.execvp(
                     "tmux",
                     [
@@ -2862,6 +2922,8 @@ def _do_session_launch(
             command = ["pi", "--name", ai_name]
         else:
             command = ["codex"]
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp(
             "tmux",
             [
@@ -2943,6 +3005,8 @@ def _do_session_launch(
         # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
@@ -2985,6 +3049,8 @@ def _do_session_launch(
                 sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
 
 
@@ -3016,14 +3082,30 @@ def _session_command(engine: str):
         project,
         is_remote,
         project_prefix,
+        quiet,
+        verbose,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
         # Startup hooks happen only when launching a new session.
+        reporter = LaunchReporter(quiet=quiet, verbose=verbose)
+        mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
+        reporter.start(
+            engine=_engine_display_name(engine),
+            mode=mode,
+            continuing=os.environ.pop(_LAUNCH_REEXEC_ENV, "") == "1",
+        )
         config = _config.load_config()
+        reporter.detail("Request", "configuration loaded")
         trigger_background_update()
-        if _auto_update_if_stale(config) is True:
+        with reporter.phase("Install", "checking installed version") as install_phase:
+            reexec = _auto_update_if_stale(config) is True
+            origin = _launch_install_origin()
+            decision = "reinstalled; restarting" if reexec else "current"
+            install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
+        if reexec:
             ai_bin = shutil.which("ai") or "ai"
+            os.environ[_LAUNCH_REEXEC_ENV] = "1"
             os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
         _tunnel._ensure_nats_tunnel(config)
         _do_session_launch(
@@ -3043,6 +3125,7 @@ def _session_command(engine: str):
             config=config,
             remote_machine=remote_machine,
             no_direnv=no_direnv,
+            reporter=reporter,
         )
 
     _impl.__name__ = f"cmd_session_{engine}"
@@ -3077,6 +3160,8 @@ def _session_options(func):
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
     func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
+    func = click.option("-q", "--quiet", is_flag=True, help="Suppress launch progress output")(func)
+    func = click.option("-v", "--verbose", is_flag=True, help="Show additional launch progress details")(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
@@ -3106,6 +3191,8 @@ def cmd_c(
     project,
     is_remote,
     project_prefix,
+    quiet,
+    verbose,
 ):
     _session_command("c")(
         ctx,
@@ -3122,6 +3209,8 @@ def cmd_c(
         project,
         is_remote,
         project_prefix,
+        quiet,
+        verbose,
     )
 
 
@@ -3142,6 +3231,8 @@ def cmd_g(
     project,
     is_remote,
     project_prefix,
+    quiet,
+    verbose,
 ):
     _session_command("g")(
         ctx,
@@ -3158,6 +3249,8 @@ def cmd_g(
         project,
         is_remote,
         project_prefix,
+        quiet,
+        verbose,
     )
 
 
@@ -3178,6 +3271,8 @@ def cmd_p(
     project,
     is_remote,
     project_prefix,
+    quiet,
+    verbose,
 ):
     _session_command("p")(
         ctx,
@@ -3194,6 +3289,8 @@ def cmd_p(
         project,
         is_remote,
         project_prefix,
+        quiet,
+        verbose,
     )
 
 
@@ -3214,6 +3311,8 @@ def cmd_cx(
     project,
     is_remote,
     project_prefix,
+    quiet,
+    verbose,
 ):
     _session_command("cx")(
         ctx,
@@ -3230,6 +3329,8 @@ def cmd_cx(
         project,
         is_remote,
         project_prefix,
+        quiet,
+        verbose,
     )
 
 
