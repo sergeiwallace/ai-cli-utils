@@ -17,7 +17,7 @@ from ai_cli.git_repair import _GIT_TARGETING_VARS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv"})
+_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"})
 
 # Short directory name for the relocated Windows temp root -- see
 # _windows_temproot for why the length itself is the point.
@@ -138,7 +138,7 @@ def _command_program(command):
 
 
 def _reject_real_agent_process(command, allowed_binaries=frozenset()):
-    """Fail loudly when a test reaches a real agent or tmux process boundary."""
+    """Fail loudly when a test reaches a real agent, transport, or tmux boundary."""
     program = _command_program(command)
     if program in _PROTECTED_TEST_BINARIES - allowed_binaries:
         raise RuntimeError(
