@@ -969,6 +969,49 @@ while True:
     assert "Ctrl+C again within" in stderr
 
 
+def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skips_direnv_and_exits(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A replacement child must honor an earlier double-Ctrl+C before preflight.
+
+    The escape request survives child replacement in session state.  Previously
+    ``run_agent`` evaluated ``direnv export bash`` before checking that state,
+    so a replacement could visibly enter (or stall in) direnv despite an
+    already-recorded request to exit.
+    """
+    exit_file = tmp_path / "state" / "ai-cli-utils" / "session-int-exit-test-session"
+    direnv_called = tmp_path / "direnv-called"
+    real_script = get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=False)
+    marker = "trap '_child_record_int' INT"
+    assert real_script.count(marker) == 1, "expected exactly one child-level INT trap installation"
+    instrumented_script = real_script.replace(
+        marker,
+        marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
+        1,
+    )
+    loop_start = '    trap \'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"\' EXIT\n\n'
+    assert loop_start in instrumented_script, "expected the child launch loop"
+    instrumented_script = instrumented_script.replace(
+        loop_start,
+        f"    printf '%s\\n' exit > {str(exit_file)!r}\n" + loop_start,
+        1,
+    )
+    direnv = f"#!/bin/sh\nprintf '%s\\n' called > {str(direnv_called)!r}\nprintf '%s\\n' 'export TEST_DIRENV=1'\n"
+    process, _, _ = _start_generated_supervisor(
+        tmp_path,
+        supported_session_shell,
+        lease_acquired=False,
+        child_body=instrumented_script,
+        extra_commands={"direnv": direnv},
+    )
+
+    stdout, stderr = _communicate_supervisor(process)
+
+    assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
+    assert not direnv_called.exists(), "an already-requested exit must not start direnv"
+    assert "kill-session -t test-session" in (tmp_path / "tmux-events.log").read_text(encoding="utf-8")
+
+
 def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_receives_one_relay(
     tmp_path: Path, supported_session_shell: str
 ):

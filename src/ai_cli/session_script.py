@@ -651,6 +651,11 @@ def get_engine_script(
     trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
 
     while true; do
+      # A double Ctrl+C can be recorded by a prior replaceable child. Honor it
+      # before any per-launch preflight, especially direnv initialization.
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
+      fi
       _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
       if [[ "$_child_saved_int_deadline" == "pending" ]]; then
         :
