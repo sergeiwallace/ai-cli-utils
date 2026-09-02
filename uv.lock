@@ -29,6 +29,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "fleet-testkit" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -42,6 +43,7 @@ notify-win = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fleet-testkit" },
     { name = "freezegun" },
     { name = "google-genai" },
     { name = "pre-commit" },
@@ -58,6 +60,7 @@ dev = [
 requires-dist = [
     { name = "circus", specifier = ">=0.18.0" },
     { name = "click", specifier = ">=8.1" },
+    { name = "fleet-testkit", marker = "extra == 'dev'", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" },
     { name = "libtmux", specifier = ">=0.30.0" },
     { name = "nats-py", specifier = ">=2.9.0" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -79,6 +82,7 @@ provides-extras = ["notify-win", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fleet-testkit", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" },
     { name = "freezegun", specifier = ">=1.5" },
     { name = "google-genai", specifier = ">=1.0" },
     { name = "pre-commit", specifier = ">=4" },
@@ -618,6 +622,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/6d/30/03b03951873a1a0ff
 wheels = [
     { url = "https://files.pythonhosted.org/packages/01/a4/9b63d595d748e3aff8812b65eacc1a2c4bd90b7c2012e08e72373b4835eb/filelock-3.32.4-py3-none-any.whl", hash = "sha256:22e58ca3b1ae3b98993b762d7338367ae64fe50252bf78d59da3bfebcdf1cedd", size = 99864, upload-time = "2026-08-23T17:37:53.913Z" },
 ]
+
+[[package]]
+name = "fleet-testkit"
+version = "0.1.0"
+source = { git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe#1741cb32935f569dc47665c20102a16708e7d1fe" }
 
 [[package]]
 name = "freezegun"
