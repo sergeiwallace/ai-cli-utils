@@ -71,6 +71,7 @@ exclude = [".direnv", ".venv", ".worktrees"]
 [project.optional-dependencies]
 notify-win = ["plyer>=2.1"]
 dev = [
+    "fleet-testkit",
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-xdist>=3",
@@ -81,6 +82,7 @@ dev = [
 
 [dependency-groups]
 dev = [
+    "fleet-testkit",
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-xdist>=3",
@@ -97,6 +99,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+testkit_enabled = false
 # CORE-196: discard a passing test's tmp_path directory immediately, keeping only
 # a failing one's -- the only case the directory is evidence. Complements (never
 # substitutes for) conftest.py's `_make_tmp_path_deletable`: this policy controls
@@ -111,6 +114,9 @@ markers = [
     "real_tmux: test owns an isolated tmux socket and explicitly opts in to tmux subprocess calls",
     "real_nats: test drives NATSClient.connect itself (opts out of the conftest connection block)",
 ]
+
+[tool.uv.sources]
+fleet-testkit = { git = "https://github.com/sergeiwallace/ai-harness.git", rev = "1741cb32935f569dc47665c20102a16708e7d1fe", subdirectory = "packages/fleet-testkit" }
 
 [tool.pyright]
 pythonVersion = "3.11"
