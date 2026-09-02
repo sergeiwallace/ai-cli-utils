@@ -95,25 +95,25 @@ structure and finding taxonomy.
 
 ## Status Summary
 
-**Latest round:** Round 1 (complete)
+**Latest round:** Round 2 (current-HEAD P0 re-verification complete)
 
 **Outstanding by severity / verdict (across all rounds):**
 
 | Severity | Count | Of which fixed | Of which deferred |
 |----------|-------|----------------|-------------------|
-| P0 | 2 | 0 | 0 |
+| P0 | 2 | 2 | 0 |
 | P1 | 3 | 0 | 0 |
 | P2 | 2 | 0 | 0 |
 | P3 | 0 | 0 | 0 |
-| **Total** | **7** | **0** | **0** |
+| **Total** | **7** | **2** | **0** |
 
-**Ship-readiness verdict:** **Not safe to proceed to Phase 2.** Reap-mode activation must remain
-unreachable. DV-1 and DV-2 leave plausible paths to killing a session that is live or whose record
-does not prove the required lease epoch. DV-3 shows that the signal verification gate enables
-evidence for a shell topology that does not satisfy the verified signal/input model. JA-1 confirms
-that the mandated real-subprocess exit gate was not implemented, and F-1 is a shipped remote-session
-lifecycle regression. The approved default remains `observe`, but observe-first is not a substitute
-for closing safety invariants before adding Phase 2 execution.
+**Ship-readiness verdict:** **P0 re-verification passed; this audit remains findings-pending-fix.**
+Round 2 confirms that DV-1 and DV-2 are addressed at the current target: the tmux command queue now
+compares the complete dead-pane fingerprint before killing the exact session, and local heartbeat
+persistence requires a matching live supervisor pane. The remaining Round 1 P1/P2 findings require
+a complete independent re-audit before a Phase 2 sign-off; a sandbox restriction prevented the
+requested audit worker from starting, and this machine cannot create the isolated tmux sockets used
+by the live fence tests.
 
 <!-- /doc:region name="scope" -->
 
@@ -430,6 +430,37 @@ collection because of sandbox filesystem restrictions. No test result is claimed
 
 <!-- /doc:region name="round_1_findings" -->
 
+## Round 2 — Current-HEAD P0 Re-verification
+
+**Round 2 date:** 2026-09-02
+
+**Target artifact:** commit `3b084f67178810736a3c6e12ab6ed00df73cd251`.
+
+**Method:** The requested audit worker was invoked with the existing document as its write target,
+but macOS denied its launcher-auth process enumeration before the worker started. The equivalent
+direct audit below therefore reads the current implementation and executes the relevant tests in the
+repository virtual environment. This is not a claim that the unavailable worker ran.
+
+### R2 P0 Resolution
+
+| Finding | Current result | Evidence |
+|---------|----------------|----------|
+| DV-1 final tmux action race | **RESOLVED** | `SubprocessTmuxAdapter.fence_and_kill()` uses one synchronous `tmux if-shell -F` command to compare the captured complete fingerprint and then kill only the opaque session ID (`src/ai_cli/stale_session_reaper.py:159-183`). The deterministic command-shape and evaluator tests pass. The two isolated-socket live-tmux fence tests are skipped because this environment rejects socket creation. |
+| DV-2 unauthorised heartbeat persistence | **RESOLVED** | The supervisor starts the ticker only after it has acquired the generation lease (`src/ai_cli/session_script.py:207-217,313-320`); the handler requires the generation marker and an undecayed pane whose PID equals the supplied supervisor PID before calling `write_heartbeat()` (`src/ai_cli/main.py:1481-1534`). |
+
+### R2 Verification Matrix
+
+| Check | Command | Actual result |
+|-------|---------|---------------|
+| Target revision | `git rev-parse HEAD` | `3b084f67178810736a3c6e12ab6ed00df73cd251` |
+| Atomic-fence and lease tests | `python -m pytest -n 0 --timeout=30` with the two real fence tests plus deterministic evaluator and lease tests | **2 passed, 2 skipped, 0 failed, 0 errors**; the skips are the real-tmux isolated-socket cases. |
+| Supervisor/signal/remote lifecycle regressions | `python -m pytest -n 0 --timeout=30` with the candidate-isolation, signal, terminal, and remote-normal-exit tests | **9 passed, 0 skipped, 0 failed, 0 errors**. |
+| Current source review | Read the adapter, supervisor, and heartbeat handler named above | Both previous P0 mechanisms are absent from the current control flow. |
+
+**R2 conclusion:** The two P0 findings that made this document stale are fixed and tested at the
+current target. The document intentionally remains `findings-pending-fix` because this bounded
+re-verification does not replace a full independent disposition of the earlier P1/P2 findings.
+
 ## Decisions Requiring Team Input
 
 None. The findings require safety fixes and missing verification, not an unresolved product choice.
@@ -440,8 +471,8 @@ before `reap` mode can exist; this audit does not pre-select a weaker safety inv
 
 | ID | Priority | Issue | Linked finding(s) | Owner | Target |
 |----|----------|-------|-------------------|-------|--------|
-| I-01 | P0 | Fence exact tmux pane mapping atomically with ID-targeted kill | DV-1 | Implementation/design owner | Before Phase 2 |
-| I-02 | P0 | Make usable ledger writes prove the generation lease epoch | DV-2 | Implementation/design owner | Before Phase 2 |
+| I-01 | RESOLVED | Fence exact tmux pane mapping atomically with ID-targeted kill | DV-1 | — | Resolved in R2 |
+| I-02 | RESOLVED | Make usable ledger writes prove the generation lease epoch | DV-2 | — | Resolved in R2 |
 | I-03 | P1 | Replace or genuinely verify shell terminal/signal topology | DV-3 | Implementation owner | Before Phase 2 |
 | I-04 | P1 | Implement complete real-subprocess Phase 1 safety exit gate | JA-1 | Test/implementation owner | Before Phase 2 |
 | I-05 | P1 | Restore remote normal-exit restart/lease parity | F-1 | Implementation owner | Before Phase 2 |
@@ -500,7 +531,7 @@ before `reap` mode can exist; this audit does not pre-select a weaker safety inv
 
 ## Sign-Off Checklist
 
-- [ ] All P0 findings have linked fixes
+- [x] All P0 findings have linked fixes
 - [ ] All P1 findings fixed or explicitly deferred with approved rationale
 - [ ] All P2 findings dispositioned
 - [x] No AD-N decision is pending
@@ -520,6 +551,7 @@ before `reap` mode can exist; this audit does not pre-select a weaker safety inv
 | Date | Action | Notes |
 |------|--------|-------|
 | 2026-08-28 | Round 1 implementation audit complete | Independent pass at `6668a46`; 2 P0, 3 P1, 2 P2; 16 checklist rows: 8 PASS, 4 PARTIAL, 2 FAIL, 2 N/A; pytest blocked before collection by sandbox; no non-audit edits. |
+| 2026-09-02 | Round 2 current-HEAD P0 re-verification | Commit `3b084f6`; DV-1/DV-2 resolved by direct source and test review after the requested audit worker could not start under macOS process-enumeration restrictions. |
 
 <!-- /doc:region name="audit_log" -->
 

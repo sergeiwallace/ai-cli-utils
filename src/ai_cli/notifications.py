@@ -212,7 +212,9 @@ def _send_discord(webhook_url: str, title: str, body: str, priority: str) -> Not
         _validate_https_endpoint(webhook_url)
     except ValueError as exc:
         return NotificationResult(channel="discord", success=False, error=str(exc))
-    hostname = urlsplit(webhook_url).hostname.lower()
+    hostname = urlsplit(webhook_url).hostname
+    assert hostname is not None  # _validate_https_endpoint() rejects URLs without a hostname.
+    hostname = hostname.lower()
     is_discord = hostname in {"discord.com", "discordapp.com"} or hostname.endswith((".discord.com", ".discordapp.com"))
     emoji = "\U0001f6a8" if priority == "urgent" else "⚠️" if priority == "high" else "ℹ️"
     text = f"{emoji} **{title}**\n{body}"

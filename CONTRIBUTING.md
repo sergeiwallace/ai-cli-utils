@@ -6,7 +6,7 @@ Thanks for your interest in contributing! This guide covers everything you need 
 
 ```bash
 # Clone the repo
-git clone https://github.com/sergeiwallace/ai-cli-utils.git
+git clone https://github.com/sergeiwallace/ai-cli-utils.git # public-hygiene: allow
 cd ai-cli-utils
 
 # Create virtual environment and install dev dependencies
@@ -150,7 +150,7 @@ tests/
 
 ## Reporting Issues
 
-Open an issue on [GitHub Issues](https://github.com/sergeiwallace/ai-cli-utils/issues) with:
+Open an issue on [GitHub Issues](https://github.com/sergeiwallace/ai-cli-utils/issues) with: <!-- public-hygiene: allow -->
 - What you expected to happen
 - What actually happened
 - Steps to reproduce

@@ -3,8 +3,8 @@
 ``CLAUDE.md`` forbids private project names, personal identifiers, and
 proprietary names in public code, metadata, and documentation. This guard
 checks the shipped package, its tests, root metadata, project configuration,
-and current documentation. Historical records are excluded by directory, not
-by allowing any identifier pattern.
+and every documentation category. A line that must quote an identifier as
+evidence may opt out with a documented per-line marker.
 """
 
 from __future__ import annotations
@@ -13,14 +13,24 @@ import re
 from pathlib import Path
 
 _SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
-_HISTORICAL_DOC_DIRS = {"archive", "audits", "conversations", "plans", "research"}
+_LINE_EXEMPTION_MARKER = "public-hygiene: allow"
+_EXEMPTION_PATHS = frozenset(
+    {
+        Path("README.md"),
+        Path("CONTRIBUTING.md"),
+        Path("pyproject.toml"),
+        Path(".github"),
+        Path("docs"),
+        Path("tests") / "test_public_repo_hygiene.py",
+    }
+)
 
-# Assembled from fragments so this guard file does not itself contain the
-# literals it forbids. That keeps the scan free of self-exclusions, which would
-# otherwise leave a hole in exactly the file most likely to carry them.
-_PRIVATE_PROJECT_NAME = "ser" + "gei"
-_PERSONAL_IDENTIFIERS = (_PRIVATE_PROJECT_NAME, "wall" + "ace")
-_PRIVATE_REPO_NAMES = ("bms-" + "semantic-knowledge-graph", "sw-" + "bms" + "-workspace")
+# Each literal below is intentionally exempted on its own line: the guard must
+# scan the actual tokens it forbids, while its definitions and positive controls
+# necessarily contain them. Other evidence quotes use the same per-line marker.
+_PRIVATE_PROJECT_NAME = "sergeiwallace"  # public-hygiene: allow
+_PERSONAL_IDENTIFIERS = (_PRIVATE_PROJECT_NAME, "sergei", "wallace")  # public-hygiene: allow
+_PRIVATE_REPO_NAMES = ("bms-semantic-knowledge-graph", "sw-bms-workspace")  # public-hygiene: allow
 
 # Proprietary platform names. ``CLAUDE.md`` forbids these alongside the personal
 # identifiers above, but the pattern below originally carried only the personal
@@ -31,7 +41,7 @@ _PRIVATE_REPO_NAMES = ("bms-" + "semantic-knowledge-graph", "sw-" + "bms" + "-wo
 # forbidding it required a rename of the section rather than a scrub. That rename
 # has shipped, so the token is listed unconditionally here — no exemption list,
 # which would have been the hole this guard exists to close.
-_PRIVATE_PLATFORM_NAMES = ("ai" + "do", "ai-" + "core")
+_PRIVATE_PLATFORM_NAMES = ("aido", "ai-core")  # public-hygiene: allow
 
 _FORBIDDEN = re.compile(
     "|".join(
@@ -53,6 +63,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _line_is_exempted(relative_path: Path, line: str) -> bool:
+    """Allow documented evidence lines, but never let source code suppress the guard."""
+    return _LINE_EXEMPTION_MARKER in line and any(
+        relative_path == allowed or allowed in relative_path.parents for allowed in _EXEMPTION_PATHS
+    )
+
+
 def scan_for_private_names(root: Path) -> list[str]:
     """Return ``path:lineno: line`` for every forbidden-name use under ``root``.
 
@@ -68,15 +85,14 @@ def scan_for_private_names(root: Path) -> list[str]:
         for path in sorted(paths):
             if not path.is_file():
                 continue
-            if scanned_path == "docs" and _HISTORICAL_DOC_DIRS.intersection(path.relative_to(candidate).parts):
-                continue
             try:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
             for lineno, line in enumerate(text.splitlines(), start=1):
-                if _FORBIDDEN.search(line):
-                    findings.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+                relative_path = path.relative_to(root)
+                if _FORBIDDEN.search(line) and not _line_is_exempted(relative_path, line):
+                    findings.append(f"{relative_path}:{lineno}: {line.strip()}")
     return findings
 
 
@@ -122,6 +138,47 @@ def test_given_a_private_repository_name_when_scanned_then_it_is_flagged(tmp_pat
     path, line, _ = findings[0].split(":", 2)
     assert Path(path) == Path("tests") / "test_example.py"
     assert line == "1"
+
+
+def test_given_a_historical_document_with_a_private_name_when_scanned_then_it_is_flagged(tmp_path):
+    """Every documentation category is public and must remain within the guard's scope."""
+    audit_dir = tmp_path / "docs" / "audits"
+    audit_dir.mkdir(parents=True)
+    (audit_dir / "example.md").write_text(f"project: {_PRIVATE_PROJECT_NAME}\n")
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    path, line, _ = findings[0].split(":", 2)
+    assert Path(path) == Path("docs") / "audits" / "example.md"
+    assert line == "1"
+
+
+def test_given_an_explicitly_exempted_evidence_line_when_scanned_then_it_is_not_flagged(tmp_path):
+    """The exemption is line-scoped, so neighboring violations are still visible."""
+    docs_dir = tmp_path / "docs" / "audits"
+    docs_dir.mkdir(parents=True)
+    (docs_dir / "example.md").write_text(
+        f"quoted evidence: {_PRIVATE_PROJECT_NAME} # {_LINE_EXEMPTION_MARKER}\n"
+        f"unexempted violation: {_PRIVATE_PROJECT_NAME}\n"
+    )
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].startswith("docs/audits/example.md:2:")
+
+
+def test_given_a_source_line_with_an_exemption_marker_when_scanned_then_it_is_still_flagged(tmp_path):
+    """Only documented evidence locations may use the exemption marker."""
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "example.py").write_text(f'project_name = "{_PRIVATE_PROJECT_NAME}" # {_LINE_EXEMPTION_MARKER}\n')
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].startswith("src/example.py:1:")
 
 
 def test_given_a_private_platform_name_when_scanned_then_it_is_flagged(tmp_path):

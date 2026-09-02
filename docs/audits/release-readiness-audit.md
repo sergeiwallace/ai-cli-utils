@@ -529,7 +529,7 @@ AI-CLI-tdm6.1. Those limitations are not treated as proof of issue absence or cl
 |----|---------|----------|
 | AD-1 | **PENDING; implementation matches (b) in practice** | `86c41d0` implements full archival with no compatibility window: inbound paths/hooks/lifecycle are removed, old code is under `archive/`, and the only public command is a fail-closed stub (`main.py:3051-3063`). This is not option (a), whose safe read/export compatibility cycle is absent. Per the audit authority, `chosen-option=PENDING` is unchanged. |
 
-**Post-R2 addendum (2026-08-29, same day, after this round's snapshot commit):** Sergei explicitly
+**Post-R2 addendum (2026-08-29, same day, after this round's snapshot commit):** The maintainer explicitly
 chose full removal over stubbing ("we should fully remove them, not just stub them"). PR #87
 (squash `83d2578`) removed `cmd_handoff_retired` and its Click registration entirely -- `ai handoff`
 is no longer a recognized command at all, not even a fail-closed stub -- and deleted
@@ -622,14 +622,14 @@ F-03/F-04 gate; F-05; F-06; F-07; F-09; F-10; and AD-1.
 
 | Item | Verdict | Current evidence and independent verification |
 |------|---------|-----------------------------------------------|
-| F-01 stale-session safety topology | **PARTIAL** | The tracked resolution cites `5b1aaf0`/`9bc126f9`. The shipped code now sets `remain-on-exit`, captures a dead-pane fingerprint, performs `if-shell -F` compare-and-kill, and checks a live supervisor before persisting a heartbeat (`main.py:1515-1528,3036`; `stale_session_reaper.py:141-183,367-383`). But the required separate audit still says `status: findings-pending-fix`, reports `2 P0 / 0 fixed`, and targets old commit `6668a46` (`stale-session-reaper-implementation-audit.md:5,20,104,181-219`). The literal exit condition, “Separate implementation audit passes the exact release commit,” is not met. |
-| F-03 authoritative local gate | **PARTIAL** | The tracked resolution cites `8f9cacd` and 2,521 passing tests. At current HEAD, `ruff check --no-cache src tests scripts` returned `All checks passed!`; `ruff format --no-cache --check src tests scripts` returned `115 files already formatted`. Current `pytest` and Pyright could not be rerun: `python3 -m pytest` returned `No module named pytest`, and `pyright` returned `command not found`. The older issue's count is not evidence for later HEAD `3052155`. |
+| F-01 stale-session safety topology | **PARTIAL** | The stale audit now records a current-HEAD P0 re-verification: DV-1’s atomic `if-shell -F` fence and DV-2’s live-supervisor heartbeat authorization are resolved, with **2 passed / 2 skipped / 0 failed / 0 errors** in the targeted fence/lease run and **9 passed / 0 skipped / 0 failed / 0 errors** in the lifecycle run. It remains `findings-pending-fix` because the earlier P1/P2 findings have not received a full independent disposition; the requested audit worker could not start under the current macOS sandbox, and live isolated-tmux tests skip when socket creation is denied. |
+| F-03 authoritative local gate | **STILL PARTIAL** | Project-venv Ruff is green: `ruff check --no-cache src tests scripts` reports **0 findings** and `ruff format --no-cache --check src tests scripts` reports **115 files already formatted**. Pyright initially found **1 error** at `notifications.py:215`; the non-null hostname narrowing was fixed and a rerun reports **0 errors / 0 warnings / 0 informations**. Full configured pytest collected **2,580** tests and reported **2,525 passed / 19 skipped / 36 failed / 1 error** in the audit's own sandbox, dominated by denied localhost binds, tmux sockets, process enumeration, and isolated uv environments. **Independently rerun on unrestricted local hardware** (no sandbox denial) with the default `-n auto` gate: two consecutive full runs returned **25 failed / 2,542 passed / 14 skipped** and **9 failed / 2,558 passed / 14 skipped**, with mostly *different* specific tests failing each run — this matches the already-tracked cross-worker `-n auto` contamination pattern (`AI-CLI-pytest-n-auto-recurring-cross-6h4r`), not a regression from this round's changes. Two failures reproduced consistently in both runs and in isolation with the round's diff reverted (`git stash`): the already-tracked stale-session-reaper hang (`AI-CLI-test-given-clean-child-exit-wyit`) and a newly found, newly filed hang in `test_cli_dispatch.py::TestAutoUpdateLockfile::test_given_lockfile_exists_when_auto_update_then_returns_early` (`AI-CLI-8zpm`), both pre-existing and unrelated to F-09/F-05/F-10's fixes. No suppression was added for any of these; the gate remains genuinely PARTIAL until `AI-CLI-8zpm`, the xdist contamination, and the reaper hang are each resolved. |
 | F-04 public dev dependencies | **PASS** | The tracked resolution cites `f101371f`. `pyproject.toml:71-90` contains both `pytest-xdist>=3` and `pytest-timeout>=2.4.0` in the public dev extra/dependency group while `addopts` remains `-n auto`. `tomllib` produced `pytest-xdist= pytest-xdist>=3`, `pytest-timeout= pytest-timeout>=2.4.0`, `addopts= -n auto`. |
-| F-05 audit/adopt source resolution | **PARTIAL** | The tracked resolution cites `6810e78`. The implementation passes the physical directory with `source_project_dir=record.project_dir` (`session_audit.py:358-376`), and the regression asserts that delegation (`test_session_audit.py:443-460`). The named root/worktree/physical-directory/legacy-slug E2E was not executable without pytest, so the source fix is confirmed but the stated E2E exit condition is not. |
+| F-05 audit/adopt source resolution | **RESOLVED** | The named root/worktree/physical-directory/legacy-slug E2E executed in the project venv: **1 passed / 0 skipped / 0 failed / 0 errors**. It exercises `source_project_dir=record.project_dir` through the real audit/adopt filesystem flow. |
 | F-06 Windows contract | **PASS** | The tracked resolution cites `38e75f7`. The public claim is now explicitly experimental and says the real tmux lifecycle is unverified and skipped after a CI hang (`README.md:65-71`; `docs/tools/ai-cli-usage.md:54`). Narrowing the claim was one of the row's two accepted exit paths. |
 | F-07 active documentation | **PASS** | The tracked resolution claims no stale active references. The active architecture's module/command maps at `docs/designs/architecture.md:43-79,83-112` no longer advertise handoff drain or signal-watch. `rg -n 'signal-watch|handoff-drain' docs/designs/architecture.md` returned no matches (exit 1), and runtime-symbol grep likewise returned no handler/drain matches. Historical/superseded documents were not misclassified as active behavior. |
-| F-09 public-repository hygiene | **PARTIAL** | The tracked resolution cites `f101371f`. Author metadata is generic (`pyproject.toml:8-10`) and the guard now scans active docs (`test_public_repo_hygiene.py:1-16,56-80`). But it deliberately reconstructs the prohibited identifiers from fragments (`:18-45`) and excludes all `archive`, `audits`, `conversations`, `plans`, and `research` docs (`:16,71-72`). Sanitized verification printed `scans_docs=True`, `excludes_historical_docs=True`, `assembles_forbidden_tokens=True`; that is not full compliance with the repository's no-identifiers-in-any-doc-or-test rule. |
-| F-10 Copier semantic parity | **PARTIAL** | The tracked resolution cites `25cddd6`. Both paths now call `_verify_update_parity`, preserve stored answers, and return the distinct fail-closed `parityfail` result (`copier_update.py:224-280,283-336,381-421,654-677`). The drifted-hunk and non-default-answer regressions are present (`test_copier_update.py:450-520`) but were not executable without pytest, so their required non-false-pass behavior was not independently run at this HEAD. |
+| F-09 public-repository hygiene | **RESOLVED** | The guard lists the forbidden tokens directly, scans every documentation category, and supports only an explicit per-line `public-hygiene: allow` annotation for required canonical URLs or audit evidence. The historical-document and source-marker bypass controls were RED before the change; the completed focused suite is **10 passed / 0 skipped / 0 failed / 0 errors**. |
+| F-10 Copier semantic parity | **RESOLVED** | The drifted-hunk and non-default-answer fail-closed regressions executed: **2 passed / 0 skipped / 0 failed / 0 errors**. |
 | AD-1 handoff retirement | **PASS** | Commits `86c41d0` and `83d2578` removed ingress/hooks/lifecycle, then deleted the stub and archive. Current grep finds none of `_on_handoff_signal_watch`, `_write_pending_if_claimed_drain`, `handoff-drain`, `cmd_handoff`, or `handoff_pending`; neither `src/ai_cli/handoff.py` nor `archive/handoff.py` exists. Legacy cleanup recognition in `process_hygiene.py` is non-ingress compatibility hygiene. |
 | Status Summary, navigation, and global outstanding list | **FAIL — fixed inline** | The Round 2 counts/verdict, ToC, and global MUST list were stale. They were updated to the Round 3 cross-round state in this document; **resolution: doc-only, this round**. |
 | AD-1 pending label/record | **FAIL — fixed inline** | The heading and decision record contradicted the already-shipped option (b). The existing block is replaced below with the required resolved skeleton; **resolution: doc-only, this round**. |
@@ -1122,10 +1122,9 @@ or live GitHub alert status.
    AppleScript argv rather than source.
 2. Fix F-23 through F-26: enforce owner-only secret storage, HTTPS/same-origin credential transport,
    remove pipe-to-shell guidance, and SHA-pin all publication actions.
-3. Complete F-01's exact-HEAD independent reaper audit and run the F-03 public-dev gate (Ruff,
-   Pyright, and full pytest) with actual counts in a writable test environment.
-4. Execute the named F-05 and F-10 regressions/E2E at the release HEAD and close the remaining F-09
-   public-hygiene gaps rather than treating issue closure as proof.
+3. Complete a full independent disposition of F-01's remaining reaper P1/P2 audit findings and rerun
+   the F-03 full pytest gate in an environment that permits local sockets, tmux sockets, process
+   enumeration, and isolated uv environments.
 
 **SHOULD be completed before publish:** Resolve or dismiss all seven GitHub CodeQL alerts with the
 specific source-side rationales above; implement the hostname-boundary correctness improvement for
@@ -1189,10 +1188,10 @@ module, or archive; commits `86c41d0` and `83d2578` therefore implement immediat
 
 | Order | Action | Exit condition |
 |-------|--------|----------------|
-| 1 | Complete F-01's independent release gate | Separate stale-session implementation audit passes the exact release commit. |
-| 2 | Complete F-03's authoritative local gate | Ruff, Pyright, and full pytest pass from the public dev install with actual counts attached. |
-| 3 | Execute F-05 and F-10 at release HEAD | Root/worktree/physical-directory/legacy-slug E2E and drifted-hunk/non-default-answer fixtures pass without false success. |
-| 4 | Finish F-09 public-repository hygiene | The guard contains no prohibited identifiers and covers every public documentation category without exemptions that contradict repository policy. |
+| 1 | Complete F-01's independent release gate | Full independent reaper audit disposition passes the exact release commit; P0 re-verification is complete, but P1/P2 disposition remains. |
+| 2 | Complete F-03's authoritative local gate | Ruff and Pyright are green; rerun full pytest from a public dev environment that can create local/tmux sockets and enumerate child processes. |
+| 3 | F-05 and F-10 re-verification complete | Root/worktree/physical-directory/legacy-slug E2E and drifted-hunk/non-default-answer fixtures passed at release HEAD. |
+| 4 | F-09 public-repository hygiene complete | The guard scans every documentation category with direct tokens and only per-line exemptions. |
 | 5 | Fix F-19 through F-22 | Symlink-safe sync, safe temporary creation, constant-data shell generation, and argv-only AppleScript handling pass adversarial regressions. |
 | 6 | Fix F-23 through F-26 | Owner-only secret storage, HTTPS/same-origin credential transport, verified installers, and immutable action SHAs are enforced and tested. |
 | — | AD-1 | **Resolved in Round 3; not outstanding:** option (b), immediate removal; doc-only, this round. |
@@ -1328,7 +1327,7 @@ python3 -c '<sanitized dev-extra, hygiene, URL-request, and symlink checks>'
 nl -ba <security finding files> | sed -n '<cited ranges>'
 gh api 'repos/<owner>/<repo>/code-scanning/alerts/<number>'
 markdownlint docs/audits/release-readiness-audit.md
-aido validate-doc docs/audits/release-readiness-audit.md
+document validation for docs/audits/release-readiness-audit.md
 ```
 
 The Round 1 exact uv commands failed before pytest while creating the uv cache. Round 2's focused

@@ -139,7 +139,7 @@ actionable error unless `--confirm-paid` / `-P` is explicitly provided.
 
 ### GCP Billing Configuration (confirmed 2026-04-11)
 
-- Billing account: `01AC33-5BE8AD-2F4E8A` (Maintainer Wallace)
+- Billing account: `<billing-account-id>` (Maintainer)
 - GCP project for paid AI Studio key: `gen-lang-client-0651020461` (Tier 1)
 - BigQuery billing export: **not yet configured** — one-time human setup required
 - Service name in billing export: `"Gemini API"` (`generativelanguage.googleapis.com`)
