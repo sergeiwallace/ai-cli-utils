@@ -1059,6 +1059,21 @@ def test_apply_pull_files_when_clean_memory_file_then_applied(tmp_path):
     assert expected.read_text() == "# Profile\nUser"
 
 
+def test_given_staging_memory_symlink_when_pulling_then_target_is_not_read_or_written(tmp_path):
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    target = tmp_path / "secret.txt"
+    target.write_text("do not copy")
+    memory_dir = staging_dir / "myproject" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        apply_pull_files(staging_dir, cc_projects_dir, _MAC_PREFIX, False, False, False)
+
+    assert target.read_text() == "do not copy"
+
+
 def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_path):
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"

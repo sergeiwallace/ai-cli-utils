@@ -8,9 +8,7 @@ test explicitly exercises production worktree creation or registry
 resolution.
 """
 
-import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -519,25 +517,19 @@ def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifa
     assert emit_profile.call_args.args[:3] == ("app-1", "c", "c-app-1")
 
 
-def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profile_name_is_lowercase_and_prefix_is_quoted():
-    """Named remote launches preflight the server for the canonical session ID
-    (AI-CLI-209) before emitting the iTerm2 profile — so a real allocation
-    response must be stubbed here rather than an actual SSH connection.
-    """
+def test_given_shell_metacharacter_prefix_when_remote_session_launches_then_rejected_before_any_side_effect():
+    """A `--project-prefix` containing shell metacharacters must be rejected by
+    `validate_task_prefix()` (AI-CLI-fae.13 F-21) before the launch reaches remote
+    preflight, the iTerm2 profile, or exec — reject-outright is the intended
+    behavior, not sanitize-and-proceed (superseded AI-CLI-209 expectation)."""
     cfg = {"remote": {"host": "example.com", "transport": "ssh"}}
-    expected_session_id = "c-r-app; printf injected-planning"
-    expected_ai_name = "app; printf injected-planning"
     preflight_calls = []
 
     def fake_preflight(cmd, *_args, **_kwargs):
         if cmd[-1] == _REMOTE_SHELL_PROBE_CMD:
             return MagicMock(returncode=0, stdout="zsh\n", stderr="")
         preflight_calls.append(cmd)
-        return MagicMock(
-            returncode=0,
-            stdout=json.dumps({"session_id": expected_session_id, "ai_name": expected_ai_name}),
-            stderr="",
-        )
+        return MagicMock(returncode=0, stdout="{}", stderr="")
 
     with (
         patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
@@ -549,7 +541,7 @@ def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profi
         patch("ai_cli.main.subprocess.run", side_effect=fake_preflight),
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as execute,
     ):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc_info:
             _do_session_launch(
                 engine="c",
                 name="Planning",
@@ -567,14 +559,10 @@ def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profi
                 config=cfg,
             )
 
-    assert len(preflight_calls) == 1
-    assert emit_profile.call_args.args[:3] == (
-        expected_session_id,
-        "c",
-        expected_session_id,
-    )
-    remote_exec = execute.call_args.args[1][-1]
-    assert shlex.quote("APP; printf INJECTED") in remote_exec
+    assert exc_info.value.code == 1
+    assert preflight_calls == []
+    emit_profile.assert_not_called()
+    execute.assert_not_called()
 
 
 def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propagated(

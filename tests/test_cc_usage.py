@@ -348,13 +348,13 @@ class TestPushToApi:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("ai_cli.cc_usage._open_no_redirect", return_value=mock_response):
             inserted, skipped = _push_to_api([self._make_event()], "https://example.com", "hw-api-key")
         assert inserted == 3
         assert skipped == 1
 
     def test_push_when_network_error_then_raises(self):
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")):
+        with patch("ai_cli.cc_usage._open_no_redirect", side_effect=urllib.error.URLError("timeout")):
             with pytest.raises(urllib.error.URLError):
                 _push_to_api([self._make_event()], "https://example.com", "hw-api-key")
 
@@ -369,7 +369,7 @@ class TestPushToApi:
             mock_resp.__exit__ = MagicMock(return_value=False)
             return mock_resp
 
-        with patch("urllib.request.urlopen", fake_urlopen):
+        with patch("ai_cli.cc_usage._open_no_redirect", fake_urlopen):
             _push_to_api([self._make_event()], "https://example.com", "mykey")
 
         assert captured["auth"] == "Bearer mykey"
@@ -385,10 +385,17 @@ class TestPushToApi:
             mock_resp.__exit__ = MagicMock(return_value=False)
             return mock_resp
 
-        with patch("urllib.request.urlopen", fake_urlopen):
+        with patch("ai_cli.cc_usage._open_no_redirect", fake_urlopen):
             _push_to_api([self._make_event()], "https://example.com///", "k")
 
         assert captured["url"] == "https://example.com/api/v1/usage/cc/ingest"
+
+    def test_given_plaintext_or_userinfo_url_when_pushing_then_request_is_not_constructed(self):
+        for api_url in ("http://example.com", "https://key@example.com", "https://éxample.com"):
+            with patch("urllib.request.Request") as request:
+                with pytest.raises(ValueError):
+                    _push_to_api([self._make_event()], api_url, "mykey")
+            request.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ Depends on: nothing (self-contained).
 
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 
@@ -75,7 +76,18 @@ def get_engine_script(
         session_id_uuid = ""
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
     sandbox_flag = "-s" if sandbox else "--no-sandbox"
-    cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
+        raise ValueError("project_prefix has an invalid format")
+    shell = {
+        "ai_name": shlex.quote(ai_name),
+        "session": shlex.quote(session),
+        "engine": shlex.quote(engine),
+        "prefix": shlex.quote(prefix),
+        "project_prefix": shlex.quote(project_prefix),
+        "uuid": shlex.quote(session_id_uuid or ""),
+        "project_name": shlex.quote(project_name),
+    }
+    cd_cmd = f"cd -- {shlex.quote(worktree_dir)}" if worktree_dir else ":"
     notify_cmd = 'ai internal notify "$tmux_session" "Agent Finished Task" 2>/dev/null || true' if notify else "true"
     try:
         from importlib.metadata import version as _pkg_version
@@ -127,7 +139,7 @@ def get_engine_script(
       generation_token="$2"
       supervisor_pid="$3"
       while true; do
-        heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' "{project_prefix}" "{ai_name}")
+        heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' {shell["project_prefix"]} {shell["ai_name"]})
         ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" "$generation_token" "$supervisor_pid" 2>/dev/null || true
         sleep 30 || exit 0
       done
@@ -141,9 +153,9 @@ def get_engine_script(
       # A nested launch can inherit stale values from another session; establish
       # this supervisor's descriptors below instead of using those values.
       unset AI_CLI_SUPERVISOR_LEASE_FD AI_CLI_SUPERVISOR_TERMINAL_FD AI_CLI_SUPERVISOR_CHILD_READY_PATH
-      tmux_session="{session}"
-      ai_name="{ai_name}"
-      engine="{engine}"
+      tmux_session={shell["session"]}
+      ai_name={shell["ai_name"]}
+      engine={shell["engine"]}
       _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
       mkdir -p "$_ai_state_dir/session-leases" "$_ai_state_dir/session-heartbeats"
       # A new supervisor starts a new Ctrl+C gesture. Replaceable children
@@ -300,7 +312,7 @@ def get_engine_script(
         # A terminal-free companion owns only its timer. It starts a new session
         # before execing the ticker so foreground-group changes cannot affect it.
         python3 -c 'import os, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
-          "{_session_shell}" "$_supervisor_script" --ai-cli-heartbeat-ticker "$tmux_session" "$generation_token" "$$" \
+          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-heartbeat-ticker "$tmux_session" "$generation_token" "$$" \
           </dev/null >/dev/null 2>&1 &
         _heartbeat_pid=$!
         disown "$_heartbeat_pid" 2>/dev/null || true
@@ -316,7 +328,7 @@ def get_engine_script(
         # dispositions in a short exec wrapper before the child shell starts,
         # retain stdin explicitly, and then wait interruptibly in this shell.
         python3 -c 'import os, signal, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); ready_path = os.environ.get("AI_CLI_SUPERVISOR_CHILD_READY_PATH"); os.isatty(0) and (os.setpgrp(), open(ready_path, "w").write("ready"), os.kill(os.getpid(), signal.SIGSTOP)); signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
-          "{_session_shell}" "$_supervisor_script" --ai-cli-child-body <&0 &
+          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body <&0 &
         _child_pid=$!
         if ! _supervisor_promote_child; then
           printf '%s\n' "ai-cli: could not promote child process group to terminal foreground" >&2
@@ -343,7 +355,7 @@ def get_engine_script(
     fi
     {cd_cmd}
     direnv_root="$PWD"
-    tmux_session="{session}"
+    tmux_session={shell["session"]}
     _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
     mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
     # A managed session can restart its agent after a normal exit. Load the
@@ -463,24 +475,24 @@ def get_engine_script(
       return "$agent_exit_code"
     }}
     first_run=true
-    ai_name="{ai_name}"
-    engine="{engine}"
+    ai_name={shell["ai_name"]}
+    engine={shell["engine"]}
     # If this script was exec'd by hot-reload, AI_SESSION_STARTED is set in the tmux
     # env — skip first-run-only setup so CC relaunches cleanly without re-running
     # iTerm2 fleet wait, or session-broker on each auto-restart.
     if [[ "$(tmux show-environment -t "$tmux_session" AI_SESSION_STARTED 2>/dev/null)" == "AI_SESSION_STARTED=1" ]]; then
       first_run=false
     fi
-    _template_version="{_template_version}"
-    _template_commit="{_template_commit}"
-    uuid="{session_id_uuid or ""}"
-    project_prefix="{project_prefix}"
-    project_name="{project_name}"
+    _template_version={shlex.quote(_template_version)}
+    _template_commit={shlex.quote(_template_commit)}
+    uuid={shell["uuid"]}
+    project_prefix={shell["project_prefix"]}
+    project_name={shell["project_name"]}
     # Stable script path — written by `ai c` on every launch/re-attach.
     # Mtime changes when a new version is installed and `ai c` re-attaches.
     _script_stable_path="$_ai_state_dir/sessions/$tmux_session.sh"
     _script_start_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
-    printf '%s' {json.dumps(_meta)} > "$_ai_state_dir/session-meta-$tmux_session.json"
+    printf '%s' {shlex.quote(_meta)} > "$_ai_state_dir/session-meta-$tmux_session.json"
 
     # iTerm2 slot assigned by Python at launch time (collision-free lease system).
     # These variables are constant for the lifetime of this session.
@@ -727,8 +739,8 @@ with open(path, 'w') as f:
           fi
         elif [[ "$engine" == "g" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
-          else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
+      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
@@ -754,8 +766,8 @@ with open(path, 'w') as f:
             run_agent claude $claude_perms_flag --name "$ai_name"
           fi
         elif [[ "$engine" == "g" ]]; then
-          if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
-          else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
+      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         elif [[ "$engine" == "p" ]]; then
           if $first_run; then run_agent pi --name "$ai_name"

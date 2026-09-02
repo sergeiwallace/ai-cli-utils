@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -43,6 +44,74 @@ from .cc_migrate import _rewrite_line
 
 CONFLICT_LOG = Path.home() / ".claude-sync-conflicts.log"
 CONFLICT_DIR = Path.home() / ".claude-sync-conflicts"
+
+
+def _assert_safe_staging_path(path: Path, staging_dir: Path, *, require_exists: bool = True) -> None:
+    """Reject a staging path that is a symlink or resolves outside its root."""
+    try:
+        relative = path.relative_to(staging_dir)
+    except ValueError:
+        raise ValueError(f"Path is outside the sync staging directory: {path}") from None
+    root: Path | None = None
+    try:
+        root_info = staging_dir.lstat()
+    except FileNotFoundError:
+        # The staging root itself may not exist yet on a first run -- the
+        # per-file mkdir(parents=True) calls create it fresh, so there is
+        # nothing pre-existing here that could be a symlink.
+        root_info = None
+    if root_info is not None:
+        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+            raise ValueError(f"Sync staging root is not a real directory: {staging_dir}")
+        root = staging_dir.resolve(strict=True)
+    current = staging_dir
+    for part in relative.parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            # Nothing from here down exists yet, so nothing remains to inspect for a
+            # pre-existing symlink; a not-yet-created directory is what every
+            # first-time staging write looks like (dst.parent.mkdir(parents=True)
+            # runs after this check).
+            break
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"Refusing symlink in sync staging tree: {current}")
+    if require_exists and not path.exists():
+        raise ValueError(f"Missing staging file: {path}")
+    if path.exists() and root is not None and not path.resolve(strict=True).is_relative_to(root):
+        raise ValueError(f"Staging path escapes its root: {path}")
+
+
+def _read_staging_bytes(path: Path, staging_dir: Path) -> bytes:
+    _assert_safe_staging_path(path, staging_dir)
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
+def _copy_staging_file(src: Path, dst: Path, staging_dir: Path) -> None:
+    """Copy a verified staging file without reopening it through a symlink."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(_read_staging_bytes(src, staging_dir))
+
+
+def _copy_to_staging(src: Path, dst: Path, staging_dir: Path) -> None:
+    """Write to a verified staging destination without following a symlink."""
+    _assert_safe_staging_path(dst, staging_dir, require_exists=False)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(src.read_bytes())
+
+
+def _write_staging_text(path: Path, text: str, staging_dir: Path) -> None:
+    _assert_safe_staging_path(path, staging_dir)
+    fd = os.open(path, os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 _DREAM_GUARD_TIMEOUT_SECONDS = 30.0
 _DREAM_GUARD_POLL_SECONDS = 0.1
 _STAGING_LOCK_TIMEOUT_SECONDS = 600
@@ -578,6 +647,7 @@ def stage_project_files(
             "jsonl_count": jsonl_count,
         }
 
+    _assert_safe_staging_path(staging_dir, staging_dir, require_exists=False)
     for cc_dir in sorted(cc_projects_dir.iterdir()):
         if not cc_dir.is_dir():
             continue
@@ -609,11 +679,14 @@ def stage_project_files(
             dst = staging_project_dir / rel
 
             if not dry_run:
-                dst.parent.mkdir(parents=True, exist_ok=True)
+                _assert_safe_staging_path(dst, staging_dir, require_exists=False)
                 # Skip copy if content is identical — avoids creating new git blobs
                 # for unchanged files, which is the primary driver of pack bloat.
-                if not dst.exists() or file_hash(src) != file_hash(dst):
-                    shutil.copy2(src, dst)
+                if (
+                    not dst.exists()
+                    or file_hash(src) != hashlib.sha256(_read_staging_bytes(dst, staging_dir)).hexdigest()
+                ):
+                    _copy_to_staging(src, dst, staging_dir)
                 else:
                     continue  # unchanged — exclude from staged_files too
 
@@ -639,6 +712,7 @@ def stage_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
     staged_files: list[tuple[Path, Path]] = []
     if not cc_tasks_dir.is_dir():
         return staged_files
+    _assert_safe_staging_path(staging_dir, staging_dir, require_exists=False)
 
     for namespace in sorted(cc_tasks_dir.iterdir()):
         if not namespace.is_dir() or namespace.name.startswith("."):
@@ -646,10 +720,10 @@ def stage_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
         for src in sorted(namespace.glob("*.json")):
             dst = staging_dir / "tasks" / namespace.name / src.name
             if not dry_run:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                if dst.exists() and file_hash(src) == file_hash(dst):
+                _assert_safe_staging_path(dst, staging_dir, require_exists=False)
+                if dst.exists() and file_hash(src) == hashlib.sha256(_read_staging_bytes(dst, staging_dir)).hexdigest():
                     continue
-                shutil.copy2(src, dst)
+                _copy_to_staging(src, dst, staging_dir)
             staged_files.append((src, dst))
             if verbose:
                 print(f"  stage task: {namespace.name}/{src.name}")
@@ -662,11 +736,16 @@ def stage_history_file(staging_dir: Path, history_path: Path, dry_run: bool) -> 
     """Stage the CC resume-history index when it exists."""
     if not history_path.is_file():
         return []
+    _assert_safe_staging_path(staging_dir, staging_dir, require_exists=False)
     dst = staging_dir / "history.jsonl"
     if not dry_run:
-        if dst.exists() and file_hash(history_path) == file_hash(dst):
+        _assert_safe_staging_path(dst, staging_dir, require_exists=False)
+        if (
+            dst.exists()
+            and file_hash(history_path) == hashlib.sha256(_read_staging_bytes(dst, staging_dir)).hexdigest()
+        ):
             return []
-        shutil.copy2(history_path, dst)
+        _copy_to_staging(history_path, dst, staging_dir)
     return [(history_path, dst)]
 
 
@@ -714,10 +793,13 @@ def git_commit_staged(
 # ---------------------------------------------------------------------------
 
 
-def _write_jsonl_translated(src: Path, dst: Path, local_projects_root: Path | None = None) -> None:
+def _write_jsonl_translated(
+    src: Path, dst: Path, local_projects_root: Path | None = None, staging_dir: Path | None = None
+) -> None:
     """Write a transcript with cwd fields rooted at this machine's projects directory."""
     projects_root = local_projects_root or Path.home() / "projects"
-    content = rewrite_transcript_for_local_projects(src.read_bytes(), projects_root)
+    raw = _read_staging_bytes(src, staging_dir) if staging_dir is not None else src.read_bytes()
+    content = rewrite_transcript_for_local_projects(raw, projects_root)
     dst.write_bytes(content)
 
 
@@ -992,12 +1074,12 @@ def apply_pull_files(
     updated_bare_names: set[str] = set()
     local_projects_root = local_projects_root or Path.home() / "projects"
 
+    _assert_safe_staging_path(staging_dir, staging_dir)
     for staging_project_dir in sorted(staging_dir.iterdir()):
-        if (
-            not staging_project_dir.is_dir()
-            or staging_project_dir.name.startswith(".")
-            or staging_project_dir.name == "tasks"
-        ):
+        if staging_project_dir.name.startswith(".") or staging_project_dir.name == "tasks":
+            continue
+        _assert_safe_staging_path(staging_project_dir, staging_dir)
+        if not staging_project_dir.is_dir():
             continue
 
         bare_name = staging_project_dir.name
@@ -1010,6 +1092,7 @@ def apply_pull_files(
         wt_name = _wt_name_from_bare_name(bare_name)
 
         for src in staging_project_dir.rglob("*"):
+            _assert_safe_staging_path(src, staging_dir)
             if not src.is_file():
                 continue
             rel = src.relative_to(staging_project_dir)
@@ -1031,7 +1114,7 @@ def apply_pull_files(
                 if divergence == "fast_forward_remote":
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        _write_jsonl_translated(src, dst, local_projects_root)
+                        _write_jsonl_translated(src, dst, local_projects_root, staging_dir)
                     applied_count += 1
                     updated_bare_names.add(bare_name)
                     if verbose:
@@ -1043,7 +1126,7 @@ def apply_pull_files(
                     if prefer_remote:
                         if not dry_run:
                             dst.parent.mkdir(parents=True, exist_ok=True)
-                            _write_jsonl_translated(src, dst, local_projects_root)
+                            _write_jsonl_translated(src, dst, local_projects_root, staging_dir)
                         applied_count += 1
                         updated_bare_names.add(bare_name)
                         if verbose:
@@ -1054,7 +1137,7 @@ def apply_pull_files(
                         conflict_path = CONFLICT_DIR / bare_name / conflict_name
                         if not dry_run:
                             conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, conflict_path)
+                            _copy_staging_file(src, conflict_path, staging_dir)
                         conflict_str = f"jsonl  {bare_name}/{rel.name} — remote saved as {conflict_path}"
                         conflicts.append(conflict_str)
                         conflict_events.append(
@@ -1078,7 +1161,7 @@ def apply_pull_files(
                 if dst.exists() and file_hash(src) == file_hash(dst):
                     continue
 
-                content = src.read_text(errors="replace")
+                content = _read_staging_bytes(src, staging_dir).decode(errors="replace")
                 has_conflict_markers = _has_conflict_markers(content)
 
                 if has_conflict_markers:
@@ -1087,7 +1170,7 @@ def apply_pull_files(
                     if merged is not None:
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         dst.write_text(merged, encoding="utf-8")
-                        src.write_text(merged, encoding="utf-8")  # Update staging file
+                        _write_staging_text(src, merged, staging_dir)  # Update staging file
                         staging_to_commit.append(src)  # Track for git commit+push
                         applied_count += 1
                         updated_bare_names.add(bare_name)
@@ -1097,7 +1180,7 @@ def apply_pull_files(
                         conflict_path = CONFLICT_DIR / bare_name / rel.with_suffix(rel.suffix + ".conflict")
                         if not dry_run:
                             conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, conflict_path)
+                            _copy_staging_file(src, conflict_path, staging_dir)
                         conflict_str = f"memory {bare_name}/{rel} — .conflict file written"
                         conflicts.append(conflict_str)
                         conflict_events.append(
@@ -1119,7 +1202,7 @@ def apply_pull_files(
                 else:
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dst)
+                        _copy_staging_file(src, dst, staging_dir)
                     applied_count += 1
                     updated_bare_names.add(bare_name)
                     if verbose:
@@ -1832,8 +1915,13 @@ def notify_conflicts(conflicts: list[str], events: list[dict[str, str]] | None =
             [
                 "osascript",
                 "-e",
-                f'display notification "{summary}" with title "ai sync: conflict detected" '
-                f'subtitle "Review .conflict files or check ~/.claude-sync-conflicts.log"',
+                "on run argv\n"
+                "display notification (item 3 of argv) with title (item 1 of argv) "
+                "subtitle (item 2 of argv)\n"
+                "end run",
+                "ai sync: conflict detected",
+                "Review .conflict files or check ~/.claude-sync-conflicts.log",
+                summary,
             ],
             capture_output=True,
             check=False,

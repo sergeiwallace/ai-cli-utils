@@ -27,6 +27,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "ai-cli-utils"
@@ -261,6 +262,15 @@ def _push_to_api(events: list[CCTokenEvent], api_url: str, api_key: str) -> tupl
         ]
     }
     data = json.dumps(payload).encode("utf-8")
+    parsed = urlsplit(api_url)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or not parsed.hostname.isascii()
+    ):
+        raise ValueError("usage_api.api_url must be HTTPS with an ASCII hostname and no userinfo")
     url = api_url.rstrip("/") + "/api/v1/usage/cc/ingest"
     req = urllib.request.Request(
         url,
@@ -271,7 +281,7 @@ def _push_to_api(events: list[CCTokenEvent], api_url: str, api_key: str) -> tupl
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _open_no_redirect(req, timeout=30) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     return body.get("inserted", 0), body.get("skipped", 0)
 
@@ -282,6 +292,17 @@ def _push_to_api(events: list[CCTokenEvent], api_url: str, api_key: str) -> tupl
 
 
 _BATCH_SIZE = 500
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Reject redirects so bearer credentials cannot reach another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+def _open_no_redirect(request: urllib.request.Request, timeout: int):
+    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
 def scan_and_push(

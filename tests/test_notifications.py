@@ -200,7 +200,7 @@ class TestSendDiscord:
         captured, FakeReq = self._make_request_capture()
         with (
             patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
+            patch("ai_cli.notifications._open_no_redirect"),
         ):
             _send_discord("https://discord.com/api/webhooks/1/x", "Title", "Body", "default")
         assert captured and "content" in captured[0]["payload"]
@@ -210,7 +210,7 @@ class TestSendDiscord:
         captured, FakeReq = self._make_request_capture()
         with (
             patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
+            patch("ai_cli.notifications._open_no_redirect"),
         ):
             _send_discord("https://discordapp.com/api/webhooks/1/x", "Title", "Body", "default")
         assert captured and "content" in captured[0]["payload"]
@@ -220,7 +220,7 @@ class TestSendDiscord:
         captured, FakeReq = self._make_request_capture()
         with (
             patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
+            patch("ai_cli.notifications._open_no_redirect"),
         ):
             _send_discord("https://hooks.slack.com/test", "Title", "Body", "default")
         assert captured and "text" in captured[0]["payload"]
@@ -230,7 +230,7 @@ class TestSendDiscord:
         mock_resp.status = 200
         with (
             patch("urllib.request.Request"),
-            patch.object(urllib.request, "urlopen", return_value=mock_resp),
+            patch("ai_cli.notifications._open_no_redirect", return_value=mock_resp),
         ):
             r = _send_discord("https://discord.com/api/webhooks/1/x", "Title", "Body", "default")
         assert r.success is True
@@ -240,7 +240,7 @@ class TestSendDiscord:
         err = urllib.error.HTTPError("url", 403, "Forbidden", Message(), None)
         with (
             patch("urllib.request.Request"),
-            patch.object(urllib.request, "urlopen", side_effect=err),
+            patch("ai_cli.notifications._open_no_redirect", side_effect=err),
         ):
             r = _send_discord("https://discord.com/api/webhooks/1/x", "Title", "Body", "default")
         assert r.success is False
@@ -249,7 +249,7 @@ class TestSendDiscord:
     def test_when_network_error_then_returns_failure(self):
         with (
             patch("urllib.request.Request"),
-            patch.object(urllib.request, "urlopen", side_effect=OSError("network")),
+            patch("ai_cli.notifications._open_no_redirect", side_effect=OSError("network")),
         ):
             r = _send_discord("https://discord.com/api/webhooks/1/x", "Title", "Body", "default")
         assert r.success is False
@@ -259,7 +259,7 @@ class TestSendDiscord:
         captured, FakeReq = self._make_request_capture()
         with (
             patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
+            patch("ai_cli.notifications._open_no_redirect"),
         ):
             _send_discord("https://discord.com/api/webhooks/1/x", "Title", "Body", "default")
         assert captured[0]["headers"].get("User-Agent") == "ai-cli-utils/1.0"
@@ -275,7 +275,7 @@ class TestSendNtfy:
 
         with (
             patch("urllib.request.Request", side_effect=FakeReq),
-            patch.object(urllib.request, "urlopen"),
+            patch("ai_cli.notifications._open_no_redirect"),
         ):
             _send_ntfy(url, token, title, body, priority, tags)
         return captured
@@ -309,7 +309,7 @@ class TestSendNtfy:
         mock_resp.status = 200
         with (
             patch("urllib.request.Request"),
-            patch.object(urllib.request, "urlopen", return_value=mock_resp),
+            patch("ai_cli.notifications._open_no_redirect", return_value=mock_resp),
         ):
             r = _send_ntfy("https://ntfy.example.com/alerts", "", "Title", "Body", "default", [])
         assert r.success is True
@@ -319,7 +319,7 @@ class TestSendNtfy:
         err = urllib.error.HTTPError("url", 401, "Unauthorized", Message(), None)
         with (
             patch("urllib.request.Request"),
-            patch.object(urllib.request, "urlopen", side_effect=err),
+            patch("ai_cli.notifications._open_no_redirect", side_effect=err),
         ):
             r = _send_ntfy("https://ntfy.example.com/alerts", "bad_token", "Title", "Body", "default", [])
         assert r.success is False
@@ -328,7 +328,7 @@ class TestSendNtfy:
     def test_when_network_error_then_returns_failure(self):
         with (
             patch("urllib.request.Request"),
-            patch.object(urllib.request, "urlopen", side_effect=OSError("timeout")),
+            patch("ai_cli.notifications._open_no_redirect", side_effect=OSError("timeout")),
         ):
             r = _send_ntfy("https://ntfy.example.com/alerts", "", "Title", "Body", "default", [])
         assert r.success is False
@@ -345,6 +345,23 @@ class TestSendOsNotification:
         mock_run.assert_called_once()
         assert mock_run.call_args[0][0][0] == "osascript"
         assert r.success is True
+
+    def test_given_applescript_expression_when_darwin_then_data_is_only_argv(self):
+        body = 'x" & (do shell script "touch marker") & "'
+        with patch("sys.platform", "darwin"), patch("subprocess.run") as mock_run:
+            _send_os_notification("Title", body)
+        command = mock_run.call_args.args[0]
+        assert command[2] == "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run"
+        assert command[-2:] == ["Title", body]
+        assert body not in command[2]
+
+
+def test_given_plaintext_or_userinfo_endpoint_when_sending_then_request_is_not_constructed():
+    for endpoint in ("http://example.com/hook", "https://token@example.com/hook", "https://éxample.com/hook"):
+        with patch("urllib.request.Request") as request:
+            result = _send_ntfy(endpoint, "secret", "Title", "Body", "default", [])
+        assert result.success is False
+        request.assert_not_called()
 
     def test_when_linux_then_calls_notify_send(self):
         with (

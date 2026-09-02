@@ -294,8 +294,8 @@ class TestGetEngineScript:
             is_remote=True,
         )
 
-        assert "cd /tmp/project-worktree" in script
-        assert script.index('direnv_root="$PWD"') > script.index("cd /tmp/project-worktree")
+        assert "cd -- /tmp/project-worktree" in script
+        assert script.index('direnv_root="$PWD"') > script.index("cd -- /tmp/project-worktree")
         assert script.count("run_agent gemini") == 4
         assert '"$SHELL"; exit 79' in script
 

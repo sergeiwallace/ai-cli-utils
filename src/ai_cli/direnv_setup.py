@@ -78,7 +78,7 @@ _MANUAL_HINTS: dict[str, tuple[str, ...]] = {
         "sudo dnf install direnv        # Fedora/RHEL",
         "sudo pacman -S direnv          # Arch",
         "sudo zypper install direnv     # openSUSE",
-        "curl -sfL https://direnv.net/install.sh | bash    # any Unix, no root",
+        "Use your distribution package manager to install direnv.",
     ),
 }
 

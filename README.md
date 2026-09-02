@@ -44,10 +44,15 @@ Run multiple AI coding sessions in parallel, each isolated in its own git worktr
 
 ### macOS and Linux
 
-Install [uv](https://docs.astral.sh/uv/) first:
+Install [uv](https://docs.astral.sh/uv/) with your OS package manager first:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# macOS
+brew install uv
+# Debian/Ubuntu
+sudo apt install uv
+# Fedora
+sudo dnf install uv
 ```
 
 Then install the package:
