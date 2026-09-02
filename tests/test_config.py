@@ -14,9 +14,35 @@ from ai_cli.config import (
     get_xdg_cache_home,
     get_xdg_config_home,
     get_xdg_state_home,
+    load_config,
     register_project,
     resolve_project_prefix,
 )
+
+
+def test_given_umask_022_when_config_created_then_owner_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    previous = os.umask(0o022)
+    try:
+        load_config()
+    finally:
+        os.umask(previous)
+    config_dir = tmp_path / "xdg" / "ai-cli-utils"
+    config_path = config_dir / "config.toml"
+    assert config_dir.stat().st_mode & 0o777 == 0o700
+    assert config_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_given_config_symlink_when_loading_then_refuses_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    config_dir = tmp_path / "xdg" / "ai-cli-utils"
+    config_dir.mkdir(parents=True)
+    target = tmp_path / "target.toml"
+    target.write_text("[notifications]\nos_fallback = false\n")
+    (config_dir / "config.toml").symlink_to(target)
+    assert load_config() == {}
+    assert target.read_text() == "[notifications]\nos_fallback = false\n"
+
 
 # ---------------------------------------------------------------------------
 # Windows path helpers (sys.platform == "win32")

@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -1830,19 +1831,30 @@ class TestGetEngineScript:
     def test_get_engine_script_when_claude_then_contains_claude_commands(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "claude" in script
-        assert 'engine="c"' in script
-        assert 'ai_name="sw-1"' in script
+        assert "engine=c" in script
+        assert "ai_name=sw-1" in script
         assert "CC_TMUX_SESSION" in script
 
     def test_get_engine_script_when_gemini_then_contains_gemini_commands(self):
         script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw")
         assert "gemini" in script
-        assert 'engine="g"' in script
+        assert "engine=g" in script
         assert "GG_TMUX_SESSION" in script
 
     def test_get_engine_script_when_worktree_then_cds(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt")
-        assert "cd /tmp/wt" in script
+        assert "cd -- /tmp/wt" in script
+
+    def test_given_shell_metacharacters_when_rendering_then_worktree_is_shell_quoted(self):
+        marker = "/tmp/marker"
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir=f"/tmp/project; touch {marker}")
+        assert f"cd -- '/tmp/project; touch {marker}'" in script
+        # The raw value also appears once more inside the session-meta JSON blob
+        # (pre-existing metadata capture, unrelated to shell-quoting safety); that
+        # occurrence sits inside a JSON string value, and the whole blob is itself
+        # shell-quoted via shlex.quote() for its printf argument, so it is not an
+        # executable-context duplicate of the guarded cd command above.
+        assert script.count("touch /tmp/marker") == 2
 
     def test_get_engine_script_when_no_worktree_then_noop_cd(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -1868,11 +1880,11 @@ class TestGetEngineScript:
     def test_get_engine_script_when_valid_uuid_then_includes_it(self):
         valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", session_id_uuid=valid_uuid)
-        assert f'uuid="{valid_uuid}"' in script
+        assert f"uuid={valid_uuid}" in script
 
     def test_get_engine_script_when_invalid_uuid_then_clears_it(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", session_id_uuid="../../evil; rm -rf /")
-        assert 'uuid=""' in script
+        assert "uuid=''" in script
 
     def test_get_engine_script_uses_xdg_state_dir_not_tmp(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -1990,7 +2002,7 @@ class TestGetEngineScriptSelfUpdate:
 class TestEngineScriptProjectName:
     def test_get_engine_script_when_project_name_set_then_included_in_template(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="ai-cli-utils")
-        assert 'project_name="ai-cli-utils"' in script
+        assert f"project_name={shlex.quote('ai-cli-utils')}" in script
 
     def test_get_engine_script_exit_trap_cleans_session_metadata(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")

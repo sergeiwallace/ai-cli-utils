@@ -2338,7 +2338,11 @@ def _do_session_launch(
         sys.exit(1)
 
     if project_prefix_override:
-        project_prefix = project_prefix_override
+        try:
+            project_prefix = _config.validate_task_prefix(project_prefix_override)
+        except _config.ProjectPrefixError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif project:
         # An explicit project always derives its prefix from that project's
         # registered root, whether the session is local or remote.

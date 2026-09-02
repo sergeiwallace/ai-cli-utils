@@ -16,6 +16,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 @dataclass
@@ -26,6 +27,28 @@ class NotificationResult:
     success: bool
     status_code: int | None = None
     error: str | None = None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+def _validate_https_endpoint(url: str) -> None:
+    """Reject malformed or non-TLS endpoints before sending notification data."""
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or not parsed.hostname.isascii()
+    ):
+        raise ValueError("Notification endpoint must be HTTPS with an ASCII hostname and no userinfo")
+
+
+def _open_no_redirect(request: urllib.request.Request, timeout: int):
+    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
 class Notifier:
@@ -185,7 +208,12 @@ class Notifier:
 
 def _send_discord(webhook_url: str, title: str, body: str, priority: str) -> NotificationResult:
     """POST to a Discord or Slack incoming webhook."""
-    is_discord = "discord.com" in webhook_url or "discordapp.com" in webhook_url
+    try:
+        _validate_https_endpoint(webhook_url)
+    except ValueError as exc:
+        return NotificationResult(channel="discord", success=False, error=str(exc))
+    hostname = urlsplit(webhook_url).hostname.lower()
+    is_discord = hostname in {"discord.com", "discordapp.com"} or hostname.endswith((".discord.com", ".discordapp.com"))
     emoji = "\U0001f6a8" if priority == "urgent" else "⚠️" if priority == "high" else "ℹ️"
     text = f"{emoji} **{title}**\n{body}"
     payload = json.dumps({"content": text} if is_discord else {"text": text}).encode()
@@ -196,7 +224,7 @@ def _send_discord(webhook_url: str, title: str, body: str, priority: str) -> Not
             headers={"Content-Type": "application/json", "User-Agent": "ai-cli-utils/1.0"},
             method="POST",
         )
-        resp = urllib.request.urlopen(req, timeout=5)
+        resp = _open_no_redirect(req, timeout=5)
         return NotificationResult(channel="discord", success=True, status_code=resp.status)
     except urllib.error.HTTPError as exc:
         return NotificationResult(channel="discord", success=False, status_code=exc.code, error=str(exc))
@@ -206,6 +234,10 @@ def _send_discord(webhook_url: str, title: str, body: str, priority: str) -> Not
 
 def _send_ntfy(ntfy_url: str, token: str, title: str, body: str, priority: str, tags: list[str]) -> NotificationResult:
     """POST to a self-hosted or public ntfy server."""
+    try:
+        _validate_https_endpoint(ntfy_url)
+    except ValueError as exc:
+        return NotificationResult(channel="ntfy", success=False, error=str(exc))
     tags_str = ",".join(tags) if tags else ("rotating_light" if priority == "urgent" else "warning")
     headers: dict[str, str] = {
         "Title": title,
@@ -218,7 +250,7 @@ def _send_ntfy(ntfy_url: str, token: str, title: str, body: str, priority: str, 
         headers["Authorization"] = f"Bearer {token}"
     try:
         req = urllib.request.Request(ntfy_url, data=body.encode(), headers=headers, method="POST")
-        resp = urllib.request.urlopen(req, timeout=5)
+        resp = _open_no_redirect(req, timeout=5)
         return NotificationResult(channel="ntfy", success=True, status_code=resp.status)
     except urllib.error.HTTPError as exc:
         return NotificationResult(channel="ntfy", success=False, status_code=exc.code, error=str(exc))
@@ -236,7 +268,13 @@ def _send_os_notification(title: str, body: str) -> NotificationResult:
     try:
         if sys.platform == "darwin":
             subprocess.run(
-                ["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+                [
+                    "osascript",
+                    "-e",
+                    "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run",
+                    title,
+                    body,
+                ],
                 capture_output=True,
                 timeout=5,
                 check=False,

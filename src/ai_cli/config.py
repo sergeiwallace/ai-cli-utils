@@ -4,13 +4,19 @@ Foundation module — must not import from any other ai_cli submodule.
 All other modules depend on this one.
 """
 
+import contextlib
 import json
 import os
+import re
 import socket
+import stat
 import sys
+import tempfile
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+
+TASK_PREFIX_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 _OS_TYPE_MAP = {
     "win32": "windows",
@@ -79,7 +85,7 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
         lines.append("\n[machine]\n")
         lines.extend(additions)
 
-    config_path.write_text("".join(lines), encoding="utf-8")
+    _write_secure_config(config_path, "".join(lines))
     print(
         f"Machine profile registered: {profile['host_id']} ({profile['os_type']})",
         file=sys.stderr,
@@ -93,6 +99,60 @@ def get_xdg_config_home() -> Path:
         return Path(base) / "ai-cli-utils"
     base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
+
+
+def validate_task_prefix(prefix: str) -> str:
+    """Return a conservative task prefix or reject unsafe metadata."""
+    cleaned = prefix.strip()
+    if not TASK_PREFIX_RE.fullmatch(cleaned):
+        raise ProjectPrefixError(
+            "Task prefix must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}. Register it with: ai register -p . -x PREFIX"
+        )
+    return cleaned
+
+
+def _secure_config_file(config_path: Path) -> None:
+    """Create and validate the secret-bearing config file with owner-only modes."""
+    config_dir = config_path.parent
+    config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if sys.platform != "win32":
+        dir_stat = config_dir.lstat()
+        if stat.S_ISLNK(dir_stat.st_mode) or not stat.S_ISDIR(dir_stat.st_mode):
+            raise OSError(f"Config directory is not a real directory: {config_dir}")
+        if hasattr(os, "getuid") and dir_stat.st_uid != os.getuid():
+            raise OSError(f"Config directory is not owned by the current user: {config_dir}")
+        config_dir.chmod(0o700)
+
+    try:
+        fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(DEFAULT_CONFIG)
+
+    if sys.platform != "win32":
+        file_stat = config_path.lstat()
+        if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+            raise OSError(f"Config file is not a regular file: {config_path}")
+        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
+            raise OSError(f"Config file is not owned by the current user: {config_path}")
+        config_path.chmod(0o600)
+
+
+def _write_secure_config(config_path: Path, content: str) -> None:
+    """Atomically replace a validated config file without relaxing its mode."""
+    _secure_config_file(config_path)
+    fd, temp_name = tempfile.mkstemp(prefix=".config-", dir=config_path.parent, text=True)
+    try:
+        Path(temp_name).chmod(0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        Path(temp_name).replace(config_path)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            Path(temp_name).unlink()
+        raise
 
 
 def get_xdg_state_home() -> Path:
@@ -300,11 +360,8 @@ def load_config():
     config_dir = get_xdg_config_home()
     config_path = config_dir / "config.toml"
 
-    if not config_path.exists():
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
-
     try:
+        _secure_config_file(config_path)
         with config_path.open("rb") as f:
             cfg = tomllib.load(f)
     except Exception as e:
@@ -414,7 +471,7 @@ def _registry_entries(config: dict | None = None) -> dict[str, dict[str, str]]:
                 f"Invalid prefix registry entry for {root!r}. Run: ai register -p {root!s} -x PREFIX"
             )
         normalized = os.path.normcase(str(_project_root(Path(root))))
-        entry = {"prefix": value["prefix"].strip(), "type": str(value.get("type", "tool"))}
+        entry = {"prefix": validate_task_prefix(value["prefix"]), "type": str(value.get("type", "tool"))}
         existing = entries.get(normalized)
         # Several keys legitimately collapse onto one root: every worktree path
         # under a repository normalizes to the repository itself. Those duplicates
@@ -444,7 +501,7 @@ def _read_local_project_metadata(root: Path) -> tuple[str, str] | None:
         metadata = data.get("tool", {}).get("ai-cli", {})
         prefix = metadata.get("task_prefix")
         if isinstance(prefix, str) and prefix.strip():
-            return prefix.strip(), str(metadata.get("project_type", "tool"))
+            return validate_task_prefix(prefix), str(metadata.get("project_type", "tool"))
     except (OSError, tomllib.TOMLDecodeError):
         return None
     return None
@@ -472,7 +529,7 @@ def _write_registry_entry(config_path: Path, root: Path, prefix: str, project_ty
             break
     else:
         lines.insert(end, replacement)
-    config_path.write_text("".join(lines), encoding="utf-8")
+    _write_secure_config(config_path, "".join(lines))
 
 
 def _set_beads_prefix(root: Path, prefix: str) -> None:
@@ -498,16 +555,13 @@ def register_project(project: str | Path, prefix: str, project_type: str = "tool
         candidate = _find_project_dir(str(project))
     if not candidate.is_dir():
         raise ProjectPrefixError(f"Project path does not exist: {project}")
-    if not prefix.strip():
-        raise ProjectPrefixError("Prefix must not be empty. Run: ai register -p . -x PREFIX")
+    prefix = validate_task_prefix(prefix)
 
     root = _project_root(candidate)
     config_path = _config_path()
-    if not config_path.exists():
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
-    _write_registry_entry(config_path, root, prefix.strip(), project_type.strip() or "tool")
-    _set_beads_prefix(root, prefix.strip())
+    _secure_config_file(config_path)
+    _write_registry_entry(config_path, root, prefix, project_type.strip() or "tool")
+    _set_beads_prefix(root, prefix)
     return root
 
 
@@ -589,13 +643,14 @@ def _projects_table_entries(path: Path) -> dict[str, dict[str, str]]:
         key = name.strip().lower()
         if key in entries:
             raise ProjectPrefixError(f"Duplicate project name {name!r} in the project registry {path}.")
-        if prefix.strip().lower() in prefixes_seen:
+        prefix = validate_task_prefix(prefix)
+        if prefix.lower() in prefixes_seen:
             raise ProjectPrefixError(
-                f"Duplicate task_prefix {prefix.strip()!r} in the project registry {path}: already used by "
-                f"{prefixes_seen[prefix.strip().lower()]!r}."
+                f"Duplicate task_prefix {prefix!r} in the project registry {path}: already used by "
+                f"{prefixes_seen[prefix.lower()]!r}."
             )
-        prefixes_seen[prefix.strip().lower()] = name.strip()
-        entries[key] = {"prefix": prefix.strip(), "type": str(project.get("type", "tool"))}
+        prefixes_seen[prefix.lower()] = name.strip()
+        entries[key] = {"prefix": prefix, "type": str(project.get("type", "tool"))}
     return entries
 
 
@@ -728,9 +783,10 @@ def _prompt_and_persist_prefix(root: Path) -> str:
         raise ProjectPrefixError(
             f"No task prefix was entered for repository {root}. Register it with: ai register -p {root} -x PREFIX"
         )
-    writer(target, root, answer)
-    print(f'Registered "{root.name}" with prefix "{answer}" in {target}')
-    return answer
+    prefix = validate_task_prefix(answer)
+    writer(target, root, prefix)
+    print(f'Registered "{root.name}" with prefix "{prefix}" in {target}')
+    return prefix
 
 
 def resolve_project_prefix(path: Path | None = None) -> str:
@@ -989,7 +1045,7 @@ def validate_registry_completeness(*, interactive: bool = True) -> bool:
 
         prefix = answer if answer and answer.lower() != "y" else suggested_prefix
 
-        entries.append((name, _normalized_registry_project_path(project_path), prefix))
+        entries.append((name, _normalized_registry_project_path(project_path), validate_task_prefix(prefix)))
 
     # Commit all prompted registrations at once so cancellation or rejection
     # cannot leave a partially updated registry behind.
@@ -1038,7 +1094,7 @@ def get_project_prefix_overrides() -> dict[str, str]:
     table = load_config().get("project_prefixes", {})
     if not isinstance(table, dict):
         return {}
-    return {str(name): str(prefix) for name, prefix in table.items()}
+    return {str(name): validate_task_prefix(str(prefix)) for name, prefix in table.items()}
 
 
 def _get_project_prefix_by_name(project_name: str) -> str:
