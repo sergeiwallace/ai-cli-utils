@@ -360,6 +360,24 @@ def _reset_registry_cache():
 
 
 @pytest.fixture(autouse=True)
+def _restore_process_working_directory():
+    """Keep one test's temporary CLI directory from leaking to the next test."""
+    checkout_root = Path(__file__).resolve().parent.parent
+    try:
+        original_cwd = Path.cwd()
+    except OSError:
+        original_cwd = checkout_root
+        os.chdir(original_cwd)
+
+    yield
+
+    try:
+        os.chdir(original_cwd)
+    except OSError:
+        os.chdir(checkout_root)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_quota_state(request, tmp_path_factory, monkeypatch):
     """Hermetic quota/statusline tests — never touch real user quota state (AI-CLI-97).
 
