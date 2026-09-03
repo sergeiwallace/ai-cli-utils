@@ -384,8 +384,8 @@ class TestReconnectTransportError:
 
 
 class TestAutoUpdateLockfile:
-    def test_given_lockfile_exists_when_auto_update_then_returns_early(self, tmp_path):
-        """A pre-existing lockfile → O_CREAT|O_EXCL raises OSError → return."""
+    def test_given_lockfile_exists_when_auto_update_then_waits_for_peer_without_updating(self, tmp_path, capsys):
+        """A pre-existing lock belongs to a peer, so wait briefly without updating."""
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -400,12 +400,17 @@ class TestAutoUpdateLockfile:
             patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("subprocess.run", side_effect=fake_run) as mock_run,
             patch("shutil.which", return_value="/usr/bin/ai"),
+            patch("ai_cli.main._PEER_UPDATE_WAIT_SECONDS", 0.05),
+            patch("ai_cli.main._PEER_UPDATE_POLL_SECONDS", 0.01),
         ):
-            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
-        # The source is unstamped (so stale), but the update subprocess must NOT run
+            updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+        # The source is unstamped (so stale), but this worker must not run the
+        # update while a peer owns the lock.
         calls = [c.args[0] for c in mock_run.call_args_list]
         update_calls = [c for c in calls if len(c) >= 2 and c[1] == "update"]
+        assert updated is False
         assert not update_calls
+        assert "Warning" in capsys.readouterr().err
 
     def test_given_stamp_matches_after_lock_when_auto_update_then_skips_update(self, tmp_path):
         """After acquiring the lock, a now-matching stamp returns before the update."""
