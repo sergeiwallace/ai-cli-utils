@@ -2845,14 +2845,16 @@ def _do_session_launch(
                 reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_with_direnv(target_root, command)
 
-    # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
-    # so _iterm2_fleet_setup inside the bash script would silently no-op without them.
-    # The pane is renamed by live client tty (not a stored GUID), so ITERM_SESSION_ID
-    # no longer needs to be propagated or reconciled — only the terminal-type flags.
-    _iterm_env_flags: list[str] = []
-    for _var in ("LC_TERMINAL", "TERM_PROGRAM"):
-        if _val := os.environ.get(_var):
-            _iterm_env_flags += ["-e", f"{_var}={_val}"]
+    # tmux panes inherit their session environment from the long-lived server,
+    # not the process that runs `tmux new-session`. Carry the launch context so
+    # a server created before this launch cannot select a stale script or agent.
+    # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
+    # excluded.
+    _tmux_env_flags: list[str] = []
+    for _var in ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM"):
+        _val = os.environ.get(_var)
+        if _val or _var == "XDG_STATE_HOME":
+            _tmux_env_flags += ["-e", f"{_var}={_val or ''}"]
 
     if once:
         target_root = worktree_path or Path.cwd()
@@ -2876,7 +2878,7 @@ def _do_session_launch(
                     "new-session",
                     "-s",
                     session_id,
-                    *_iterm_env_flags,
+                    *_tmux_env_flags,
                     "--",
                     _session_shell,
                     "-c",
@@ -2896,7 +2898,7 @@ def _do_session_launch(
                         "new-session",
                         "-s",
                         session_id,
-                        *_iterm_env_flags,
+                        *_tmux_env_flags,
                         "--",
                         _session_shell,
                         "-c",
@@ -2914,7 +2916,7 @@ def _do_session_launch(
                         "new-session",
                         "-s",
                         session_id,
-                        *_iterm_env_flags,
+                        *_tmux_env_flags,
                         "--",
                         _session_shell,
                         "-c",
@@ -2934,7 +2936,7 @@ def _do_session_launch(
                 "new-session",
                 "-s",
                 session_id,
-                *_iterm_env_flags,
+                *_tmux_env_flags,
                 "--",
                 _session_shell,
                 "-c",
@@ -3015,7 +3017,7 @@ def _do_session_launch(
         # so Claude Code gets a proper PTY once we attach immediately after.
         _session_shell = _session_shell_or_exit()
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", _session_shell, _script_path],
+            ["tmux", "new-session", "-d", "-s", session_id, *_tmux_env_flags, "--", _session_shell, _script_path],
             capture_output=True,
             check=False,
         )
@@ -3024,7 +3026,7 @@ def _do_session_launch(
             stderr = _decode_tmux_stderr(raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, _session_shell, _script_path],
+                ["tmux", "new-session", "-d", "-s", session_id, *_tmux_env_flags, _session_shell, _script_path],
                 capture_output=True,
                 check=False,
             )

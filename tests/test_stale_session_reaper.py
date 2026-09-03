@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -106,6 +107,19 @@ def _tmux_run(socket: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["tmux", "-S", socket, *args], capture_output=True, text=True, check=False)
 
 
+def _tmux_new_session(
+    socket: str,
+    session_id: str,
+    command: list[str],
+    environment: dict[str, str],
+    pane_environment: tuple[str, ...],
+) -> subprocess.CompletedProcess[str]:
+    argv = ["tmux", "-S", socket, "new-session", "-d", "-s", session_id]
+    for name in pane_environment:
+        argv += ["-e", f"{name}={environment[name]}"]
+    return subprocess.run([*argv, *command], env=environment, capture_output=True, text=True, check=False)
+
+
 @pytest.fixture
 def real_tmux_socket() -> Iterator[str]:
     if shutil.which("tmux") is None:
@@ -151,6 +165,16 @@ def _wait_for_missing_session(socket: str, session_id: str) -> None:
     pytest.fail("tmux session did not terminate")
 
 
+def _wait_for_lines(path: Path, count: int) -> list[str]:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        if len(lines) >= count:
+            return lines
+        time.sleep(0.05)
+    raise AssertionError(f"{path.name} did not contain {count} lines")
+
+
 @pytest.mark.real_tmux
 def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_removed(
     real_tmux_socket: str, tmp_path: Path
@@ -159,10 +183,7 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
     session_id = "clean-child-exit"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_executable(
-        bin_dir / "tmux",
-        '#!/bin/sh\nexec tmux -S "$AI_CLI_TEST_TMUX_SOCKET" "$@"\n',
-    )
+    _write_isolated_tmux_wrapper(bin_dir / "tmux")
     _write_executable(bin_dir / "ai", "#!/bin/sh\nexit 0\n")
     state_home = tmp_path / "state"
     sessions_dir = state_home / "ai-cli-utils" / "sessions"
@@ -172,7 +193,7 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
     )
     supervisor = tmp_path / "supervisor.sh"
     supervisor.write_text(
-        get_engine_script("c", session_id, "test-session", "test-", "myproject", is_remote=False), encoding="utf-8"
+        get_engine_script("c", "test-session", session_id, "test-", "myproject", is_remote=False), encoding="utf-8"
     )
     environment = {
         **os.environ,
@@ -181,17 +202,137 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
         "XDG_STATE_HOME": str(state_home),
     }
 
-    created = subprocess.run(
-        ["tmux", "-S", real_tmux_socket, "new-session", "-d", "-s", session_id, "bash", str(supervisor)],
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
+    created = _tmux_new_session(
+        real_tmux_socket,
+        session_id,
+        ["bash", "-c", 'exec bash "$1" </dev/null', "--", str(supervisor)],
+        environment,
+        ("PATH", "XDG_STATE_HOME", "AI_CLI_TEST_TMUX_SOCKET"),
     )
 
     assert created.returncode == 0, created.stderr
     assert _tmux_run(real_tmux_socket, "set-window-option", "-t", session_id, "remain-on-exit", "on").returncode == 0
     _wait_for_missing_session(real_tmux_socket, session_id)
+
+
+@pytest.mark.real_tmux
+def test_given_real_tmux_child_when_terminal_and_direct_signals_arrive_then_delivery_follows_topology(
+    real_tmux_socket: str, tmp_path: Path, supported_session_shell: str
+):
+    """A terminal Ctrl+C targets the child, while direct supervisor signals do not."""
+    shell_name = Path(supported_session_shell).name
+    session_id = f"signal-topology-{shell_name}"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    events = tmp_path / "events.log"
+    launches = tmp_path / "agent-launches.log"
+    interrupt_state = tmp_path / "first-interrupt"
+    state_home = tmp_path / "state"
+    exit_request = state_home / "ai-cli-utils" / f"session-int-exit-{session_id}"
+    _write_isolated_tmux_wrapper(bin_dir / "tmux")
+    _write_executable(bin_dir / "ai", "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        bin_dir / "claude",
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import signal\n"
+        "import time\n"
+        "\n"
+        "def record(path, value):\n"
+        "    with open(path, 'a', encoding='utf-8') as stream:\n"
+        "        stream.write(value + '\\n')\n"
+        "\n"
+        "events = os.environ['AI_CLI_TEST_EVENTS']\n"
+        "interrupt_state = os.environ['AI_CLI_TEST_INT_STATE']\n"
+        "exit_request = os.environ['AI_CLI_TEST_EXIT_REQUEST']\n"
+        "def on_int(*_):\n"
+        "    record(events, 'INT')\n"
+        "    if os.path.exists(interrupt_state):\n"
+        "        open(exit_request, 'w', encoding='utf-8').close()\n"
+        "        raise SystemExit(77)\n"
+        "    open(interrupt_state, 'w', encoding='utf-8').close()\n"
+        "    raise SystemExit(130)\n"
+        "def on_winch(*_):\n"
+        "    record(events, 'WINCH')\n"
+        "def on_term(*_):\n"
+        "    record(events, 'TERM')\n"
+        "    raise SystemExit(143)\n"
+        "signal.signal(signal.SIGINT, on_int)\n"
+        "signal.signal(signal.SIGWINCH, on_winch)\n"
+        "signal.signal(signal.SIGTERM, on_term)\n"
+        "record(os.environ['AI_CLI_TEST_LAUNCHES'], 'START')\n"
+        "while True:\n"
+        "    time.sleep(0.05)\n",
+    )
+    sessions_dir = state_home / "ai-cli-utils" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    child_script = """#!/bin/sh
+if [ "${1:-}" = "--ai-cli-child-body" ]; then
+  exec claude
+fi
+"""
+    with patch("ai_cli.session_script.resolve_session_shell", return_value=supported_session_shell):
+        supervisor_script = get_engine_script(
+            "c",
+            "test-session",
+            session_id,
+            "test-",
+            "myproject",
+            is_remote=False,
+            worktree_dir=str(tmp_path),
+        )
+    (sessions_dir / f"{session_id}.sh").write_text(child_script, encoding="utf-8")
+    supervisor = tmp_path / "supervisor.sh"
+    supervisor.write_text(supervisor_script, encoding="utf-8")
+    environment = {
+        **os.environ,
+        "AI_CLI_TEST_EVENTS": str(events),
+        "AI_CLI_TEST_EXIT_REQUEST": str(exit_request),
+        "AI_CLI_TEST_INT_STATE": str(interrupt_state),
+        "AI_CLI_TEST_LAUNCHES": str(launches),
+        "AI_CLI_TEST_TMUX_SOCKET": real_tmux_socket,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "XDG_STATE_HOME": str(state_home),
+    }
+
+    created = _tmux_new_session(
+        real_tmux_socket,
+        session_id,
+        [supported_session_shell, str(supervisor)],
+        environment,
+        (
+            "PATH",
+            "XDG_STATE_HOME",
+            "AI_CLI_TEST_EVENTS",
+            "AI_CLI_TEST_EXIT_REQUEST",
+            "AI_CLI_TEST_INT_STATE",
+            "AI_CLI_TEST_LAUNCHES",
+            "AI_CLI_TEST_TMUX_SOCKET",
+        ),
+    )
+
+    assert created.returncode == 0, created.stderr
+    _wait_for_lines(launches, 1)
+    pane = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}")
+    assert pane.returncode == 0, pane.stderr
+    supervisor_pid = int(pane.stdout.strip())
+
+    os.kill(supervisor_pid, signal.SIGINT)
+    os.kill(supervisor_pid, signal.SIGINT)
+    os.kill(supervisor_pid, signal.SIGWINCH)
+    time.sleep(0.2)
+
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", session_id).returncode == 0
+    assert _wait_for_lines(launches, 1) == ["START"]
+    assert not events.exists(), "direct supervisor signals must not reach the foreground agent"
+
+    assert _tmux_run(real_tmux_socket, "send-keys", "-t", session_id, "C-c").returncode == 0
+    assert _wait_for_lines(launches, 2) == ["START", "START"]
+    assert events.read_text(encoding="utf-8").splitlines() == ["INT"]
+
+    assert _tmux_run(real_tmux_socket, "send-keys", "-t", session_id, "C-c").returncode == 0
+    _wait_for_missing_session(real_tmux_socket, session_id)
+    assert events.read_text(encoding="utf-8").splitlines() == ["INT", "INT"]
 
 
 @pytest.mark.real_tmux
@@ -562,8 +703,40 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o700)
 
 
-def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
-    deadline = time.monotonic() + 15
+def _write_isolated_tmux_wrapper(path: Path) -> None:
+    tmux_binary = shutil.which("tmux")
+    assert tmux_binary is not None, "tmux binary not available on PATH"
+    _write_executable(
+        path,
+        f'#!/bin/sh\nexec {shlex.quote(tmux_binary)} -S "$AI_CLI_TEST_TMUX_SOCKET" "$@"\n',
+    )
+
+
+@pytest.mark.real_tmux
+def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it_executes_system_tmux(tmp_path: Path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_isolated_tmux_wrapper(bin_dir / "tmux")
+
+    result = subprocess.run(
+        [str(bin_dir / "tmux"), "-V"],
+        env={
+            **os.environ,
+            "AI_CLI_TEST_TMUX_SOCKET": str(tmp_path / "socket"),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=2,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("tmux ")
+
+
+def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float = 15) -> None:
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
             return
@@ -628,6 +801,7 @@ def _start_generated_supervisor(
     fast_heartbeat: bool = False,
     child_group_delay: float = 0,
     pseudo_terminal: bool = False,
+    ready_timeout: float = 15,
     extra_commands: dict[str, str] | None = None,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
@@ -723,7 +897,7 @@ fi
         start_new_session=True,
     )
     _SPAWNED_SUPERVISORS.append(process)
-    _wait_for_path(child_ready, process)
+    _wait_for_path(child_ready, process, timeout=ready_timeout)
     return process, event_log, heartbeat_log
 
 
@@ -805,7 +979,7 @@ def test_given_live_generated_supervisor_when_record_only_signals_arrive_then_ch
     _finish_supervisor(process)
 
 
-def test_given_supervisor_after_child_restart_when_two_ints_arrive_quickly_then_it_terminates_child_and_exits(
+def test_given_supervisor_after_child_restart_when_two_direct_ints_arrive_then_child_remains_undisturbed(
     tmp_path: Path, supported_session_shell: str
 ):
     child_body = f"""#!{supported_session_shell}
@@ -833,15 +1007,21 @@ fi
         if (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2":
             break
         time.sleep(0.02)
-    assert (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2"
-    os.kill(process.pid, signal.SIGINT)
-    time.sleep(0.1)
-    os.kill(process.pid, signal.SIGINT)
-    stdout, stderr = _communicate_supervisor(process)
+    try:
+        assert (tmp_path / "child-ready.count").read_text(encoding="utf-8").strip() == "2"
+        os.kill(process.pid, signal.SIGINT)
+        time.sleep(0.1)
+        os.kill(process.pid, signal.SIGINT)
+        time.sleep(0.1)
 
-    assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
-    assert events.read_text(encoding="utf-8").splitlines() == ["TERM"]
-    assert "Ctrl+C again within" in stderr
+        assert process.poll() is None, "a direct supervisor SIGINT must not terminate the session"
+        os.kill(int((tmp_path / "child-ready").read_text(encoding="utf-8")), 0)
+        assert not events.exists(), "a direct supervisor SIGINT must not be relayed to the child"
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            _communicate_supervisor(process)
 
 
 def test_given_clean_child_exit_when_supervisor_finishes_then_it_kills_its_tmux_session(
@@ -912,63 +1092,6 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     assert "Ctrl+C again within" in stderr
 
 
-def test_given_agent_exits_on_first_ctrl_c_when_child_restarts_then_second_ctrl_c_exits_session(
-    tmp_path: Path, supported_session_shell: str
-):
-    """The escape window must survive an agent-triggered child restart.
-
-    A terminal SIGINT reaches both the wrapper and its foreground agent.  If the
-    agent exits in response, the wrapper restarts it before the user can send
-    the documented second Ctrl+C.  The replacement must inherit the active
-    escape window instead of treating that press as a new first press.
-    """
-    launches = tmp_path / "claude-launches"
-    agent = f"""#!/usr/bin/env python3
-import os
-import signal
-import time
-
-with open({str(launches)!r}, "a", encoding="utf-8") as stream:
-    stream.write(f"{{os.getpid()}}\\n")
-def stop(*_):
-    raise SystemExit(130)
-signal.signal(signal.SIGINT, stop)
-while True:
-    time.sleep(0.05)
-"""
-    real_script = get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=False)
-    marker = "trap '_child_record_int' INT"
-    real_script = real_script.replace(
-        marker,
-        marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
-        1,
-    )
-    process, _, _ = _start_generated_supervisor(
-        tmp_path,
-        supported_session_shell,
-        lease_acquired=False,
-        child_body=real_script,
-        terminal=True,
-        extra_commands={"claude": agent},
-    )
-
-    _wait_for_path(launches, process)
-    time.sleep(3.1)
-    os.killpg(process.pid, signal.SIGINT)
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        if launches.exists() and len(launches.read_text(encoding="utf-8").splitlines()) >= 2:
-            break
-        time.sleep(0.02)
-    assert len(launches.read_text(encoding="utf-8").splitlines()) >= 2, "first Ctrl+C did not restart the agent"
-
-    os.killpg(process.pid, signal.SIGINT)
-    stdout, stderr = _communicate_supervisor(process)
-
-    assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
-    assert "Ctrl+C again within" in stderr
-
-
 def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skips_direnv_and_exits(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -1027,7 +1150,7 @@ def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_rec
     assert events.read_text(encoding="utf-8").splitlines() == ["TERM"]
 
 
-def test_given_terminal_ctrl_c_when_child_shares_foreground_process_group_then_child_receives_signal_and_stdin(
+def test_given_shared_supervisor_process_group_when_direct_group_signal_arrives_then_child_receives_signal_and_stdin(
     tmp_path: Path, supported_session_shell: str
 ):
     child_body = f"""#!{supported_session_shell}
@@ -1060,12 +1183,10 @@ fi
     _finish_supervisor(process)
 
 
-def test_given_child_sharing_foreground_process_group_when_terminal_signal_arrives_then_detached_ticker_continues_ticking(
+def test_given_shared_supervisor_process_group_when_direct_group_signal_arrives_then_detached_ticker_continues_ticking(
     tmp_path: Path, supported_session_shell: str
 ):
-    process, events, heartbeats = _start_generated_supervisor(
-        tmp_path, supported_session_shell, terminal=True, fast_heartbeat=True
-    )
+    process, events, heartbeats = _start_generated_supervisor(tmp_path, supported_session_shell, fast_heartbeat=True)
     os.killpg(process.pid, signal.SIGINT)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -1109,15 +1230,13 @@ def test_given_delayed_child_process_group_when_supervisor_promotes_then_it_wait
     the generated supervisor against a real pseudo-terminal and delay the child's
     actual ``setpgrp`` beyond the former 500 ms polling budget.
     """
-    if Path(supported_session_shell).name != "zsh":
-        pytest.skip("bash closes the saved terminal descriptor for background children on macOS")
-
     process, _, _ = _start_generated_supervisor(
         tmp_path,
         supported_session_shell,
         lease_acquired=False,
         child_group_delay=12.0,
         pseudo_terminal=True,
+        ready_timeout=30,
     )
 
     assert process.poll() is None
@@ -1129,9 +1248,6 @@ def test_given_reload_exit_when_supervisor_starts_second_child_then_it_is_promot
     tmp_path: Path, supported_session_shell: str
 ):
     """A reload must promote the replacement child, not leave its wrapper stopped."""
-    if Path(supported_session_shell).name != "zsh":
-        pytest.skip("bash closes the saved terminal descriptor for background children on macOS")
-
     child_body = f"""#!{supported_session_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
   count_file="$AI_CLI_TEST_CHILD_READY.count"

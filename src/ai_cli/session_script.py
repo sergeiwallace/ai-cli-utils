@@ -279,20 +279,8 @@ def get_engine_script(
       }}
       _supervisor_terminating=false
       _supervisor_int_count=0
-      _supervisor_int_deadline=0
-      # Three seconds is long enough to read and act on the confirmation hint,
-      # while making a stray earlier Ctrl+C harmless.
-      _supervisor_int_window_seconds=3
       _supervisor_winch_count=0
-      _supervisor_record_int() {{
-        if (( _supervisor_int_count == 1 && SECONDS <= _supervisor_int_deadline )); then
-          _supervisor_term
-          return
-        fi
-        _supervisor_int_count=1
-        _supervisor_int_deadline=$((SECONDS + _supervisor_int_window_seconds))
-        printf '%s\n' "ai-cli: Ctrl+C again within ${{_supervisor_int_window_seconds}}s to exit" >&2
-      }}
+      _supervisor_record_int() {{ _supervisor_int_count=$((_supervisor_int_count + 1)); }}
       _supervisor_record_winch() {{ _supervisor_winch_count=$((_supervisor_winch_count + 1)); }}
       trap '_supervisor_record_int' INT
       trap '_supervisor_record_winch' WINCH

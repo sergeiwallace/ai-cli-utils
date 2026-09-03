@@ -661,9 +661,13 @@ class TestCliSessionSetupBranches:
 
     def test_cli_when_iterm2_env_set_then_passes_terminal_flags_to_tmux_new_session(self, tmp_path):
         # Env vars are passed to `new-session` (subprocess.run), not `attach-session` (execvp).
-        # Only the terminal-type flags are propagated — ITERM_SESSION_ID is NOT, since the
-        # pane is renamed by live client tty, not a stored GUID (AI-CLI-59 final).
+        # The generated supervisor must receive its current state directory and
+        # executable path even when the tmux server predates this launch.
+        # ITERM_SESSION_ID is NOT propagated because the pane is renamed by the
+        # live client tty.
         run_calls = []
+        state_home = tmp_path / "state"
+        path = os.environ["PATH"]
 
         def fake_run(cmd, *args, **kwargs):
             run_calls.append(list(cmd))
@@ -689,6 +693,8 @@ class TestCliSessionSetupBranches:
                                                 "ITERM_SESSION_ID": "w0t1p0:abc",
                                                 "LC_TERMINAL": "iTerm2",
                                                 "TERM_PROGRAM": "iTerm.app",
+                                                "PATH": path,
+                                                "XDG_STATE_HOME": str(state_home),
                                             },
                                             clear=False,
                                         ):
@@ -701,6 +707,8 @@ class TestCliSessionSetupBranches:
         assert "-e" in new_session_cmd
         assert any("LC_TERMINAL=iTerm2" in a for a in new_session_cmd)
         assert any("TERM_PROGRAM=iTerm.app" in a for a in new_session_cmd)
+        assert f"PATH={path}" in new_session_cmd
+        assert f"XDG_STATE_HOME={state_home}" in new_session_cmd
         # ITERM_SESSION_ID must NOT be propagated (tty-based rename, no stored GUID).
         assert not any("ITERM_SESSION_ID" in a for a in new_session_cmd)
 
