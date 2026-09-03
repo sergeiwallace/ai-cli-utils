@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -175,6 +175,233 @@ def _wait_for_lines(path: Path, count: int) -> list[str]:
     raise AssertionError(f"{path.name} did not contain {count} lines")
 
 
+def _wait_for_condition(description: str, predicate: Callable[[], bool], timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.05)
+    pytest.fail(f"timed out waiting for {description}")
+
+
+def _start_real_tmux_supervisor(
+    socket: str,
+    tmp_path: Path,
+    shell: str,
+    *,
+    is_remote: bool,
+    child_body: str | None = None,
+    agent_body: str | None = None,
+) -> tuple[str, Path, Path]:
+    """Run a generated supervisor through real tmux, locks, and heartbeat writes."""
+    session_id = "test-session"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_isolated_tmux_wrapper(bin_dir / "tmux")
+    _write_executable(
+        bin_dir / "ai",
+        '#!/bin/sh\nexec "$AI_CLI_TEST_PYTHON" -m ai_cli.main "$@"\n',
+    )
+    ready = tmp_path / "child-ready"
+    launches = tmp_path / "launches"
+    _write_executable(
+        bin_dir / "claude",
+        agent_body
+        or (
+            "#!/bin/sh\n"
+            'printf "%s\\n" "$$" >> "$AI_CLI_TEST_LAUNCHES"\n'
+            'printf "%s\\n" "$$" > "$AI_CLI_TEST_CHILD_READY"\n'
+            "sleep 4\n"
+            "exit 0\n"
+        ),
+    )
+    recovery_shell = bin_dir / "recovery-shell"
+    _write_executable(
+        recovery_shell,
+        '#!/bin/sh\nprintf "recovery\\n" > "$AI_CLI_TEST_RECOVERY_READY"\nIFS= read -r _\n',
+    )
+    state_root = tmp_path / "state"
+    state_home = state_root / "ai-cli-utils"
+    if child_body is not None:
+        sessions_dir = state_home / "sessions"
+        sessions_dir.mkdir(parents=True)
+        _write_executable(sessions_dir / f"{session_id}.sh", child_body)
+    supervisor = tmp_path / "supervisor.sh"
+    script = get_engine_script(
+        "c",
+        "session-1",
+        session_id,
+        "test-",
+        "myproject",
+        is_remote=is_remote,
+        worktree_dir=str(tmp_path),
+    ).replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
+    supervisor.write_text(script, encoding="utf-8")
+    environment = {
+        **os.environ,
+        "AI_CLI_TEST_CHILD_READY": str(ready),
+        "AI_CLI_TEST_LAUNCHES": str(launches),
+        "AI_CLI_TEST_PYTHON": sys.executable,
+        "AI_CLI_TEST_RECOVERY_READY": str(tmp_path / "recovery-ready"),
+        "AI_CLI_TEST_TMUX_SOCKET": socket,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "SHELL": str(recovery_shell),
+        "XDG_STATE_HOME": str(state_root),
+    }
+    created = _tmux_new_session(
+        socket,
+        session_id,
+        [shell, str(supervisor)],
+        environment,
+        (
+            "AI_CLI_TEST_CHILD_READY",
+            "AI_CLI_TEST_LAUNCHES",
+            "AI_CLI_TEST_PYTHON",
+            "AI_CLI_TEST_RECOVERY_READY",
+            "AI_CLI_TEST_TMUX_SOCKET",
+            "PATH",
+            "SHELL",
+            "XDG_STATE_HOME",
+        ),
+    )
+    assert created.returncode == 0, created.stderr
+    return session_id, state_home, launches
+
+
+def _tmux_generation(socket: str, session_id: str) -> str:
+    marker = _tmux_run(socket, "show-options", "-t", session_id, "-v", "@ai_cli_session_generation")
+    assert marker.returncode == 0, marker.stderr
+    assert marker.stdout.strip()
+    return marker.stdout.strip()
+
+
+def _assert_generation_lease_is_held(state_home: Path, session_id: str, generation: str) -> None:
+    lease = generation_lease_path(state_home, session_id, generation)
+    with pytest.raises(portalocker.exceptions.LockException):
+        with portalocker.Lock(str(lease), mode="a+", timeout=0, flags=portalocker.LOCK_EX | portalocker.LOCK_NB):
+            pass
+
+
+@pytest.mark.real_tmux
+@pytest.mark.parametrize("is_remote", [False, True], ids=("local", "remote"))
+def test_given_real_normal_child_restart_when_supervisor_recovers_then_pid_lease_and_record_stay_continuous(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str, is_remote: bool
+):
+    """Normal local and remote exits must restart only the child body."""
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  count_file="$AI_CLI_TEST_LAUNCHES"
+  count=$(cat "$count_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$count_file"
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  if (( count == 1 )); then sleep 4; exit 0; fi
+  while true; do sleep 0.05; done
+fi
+"""
+    session_id, state_home, launches = _start_real_tmux_supervisor(
+        real_tmux_socket, tmp_path, real_supervisor_shell, is_remote=is_remote, child_body=child_body
+    )
+    _wait_for_condition("the first child", lambda: launches.exists())
+    pane = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}")
+    assert pane.returncode == 0, pane.stderr
+    supervisor_pid = pane.stdout.strip()
+    generation = _tmux_generation(real_tmux_socket, session_id)
+    record = heartbeat_path(state_home, session_id, generation)
+    _wait_for_condition("the first heartbeat record", record.exists)
+    _assert_generation_lease_is_held(state_home, session_id, generation)
+    _wait_for_condition(
+        "the replacement child", lambda: launches.read_text(encoding="utf-8").strip() == "2", timeout=15
+    )
+
+    assert (
+        _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}").stdout.strip()
+        == supervisor_pid
+    )
+    assert record.exists(), "normal child replacement must retain the exact-generation record"
+    _assert_generation_lease_is_held(state_home, session_id, generation)
+
+    assert _tmux_run(real_tmux_socket, "kill-session", "-t", session_id).returncode == 0
+    _wait_for_condition("the final heartbeat revocation", lambda: not record.exists())
+
+
+@pytest.mark.real_tmux
+def test_given_real_remote_fast_exit_when_recovery_shell_runs_then_lease_record_and_heartbeat_continue(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
+):
+    """Remote recovery retains the supervisor state until its distinct completion."""
+    finish_recovery = tmp_path / "finish-recovery"
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  printf 'recovery\\n' > "$AI_CLI_TEST_RECOVERY_READY"
+  while [[ ! -f {str(finish_recovery)!r} ]]; do sleep 0.05; done
+  exit 79
+fi
+"""
+    session_id, state_home, _ = _start_real_tmux_supervisor(
+        real_tmux_socket, tmp_path, real_supervisor_shell, is_remote=True, child_body=child_body
+    )
+    recovery = tmp_path / "recovery-ready"
+    _wait_for_condition("the remote recovery child", recovery.exists)
+    pane = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}")
+    assert pane.returncode == 0, pane.stderr
+    supervisor_pid = pane.stdout.strip()
+    generation = _tmux_generation(real_tmux_socket, session_id)
+    record = heartbeat_path(state_home, session_id, generation)
+    _wait_for_condition("the remote recovery heartbeat", record.exists)
+    first_mtime = record.stat().st_mtime_ns
+    _assert_generation_lease_is_held(state_home, session_id, generation)
+    _wait_for_condition(
+        "a further recovery heartbeat", lambda: record.exists() and record.stat().st_mtime_ns > first_mtime
+    )
+
+    assert (
+        _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}").stdout.strip()
+        == supervisor_pid
+    )
+    assert record.exists(), "the recovery shell must not revoke the exact-generation record"
+    finish_recovery.touch()
+    _wait_for_missing_session(real_tmux_socket, session_id)
+    _wait_for_condition("remote recovery heartbeat revocation", lambda: not record.exists())
+
+
+@pytest.mark.real_tmux
+def test_given_real_supervisor_crash_when_lease_and_ticker_exist_then_lease_releases_and_heartbeats_stop(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
+):
+    """A crashed pane leader cannot leave a holder or ticker behind."""
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  while true; do sleep 0.05; done
+fi
+"""
+    session_id, state_home, _ = _start_real_tmux_supervisor(
+        real_tmux_socket, tmp_path, real_supervisor_shell, is_remote=False, child_body=child_body
+    )
+    _wait_for_condition("the live child", lambda: (tmp_path / "child-ready").exists())
+    generation = _tmux_generation(real_tmux_socket, session_id)
+    record = heartbeat_path(state_home, session_id, generation)
+    _wait_for_condition("the initial heartbeat", record.exists)
+    _assert_generation_lease_is_held(state_home, session_id, generation)
+    pane = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}")
+    assert pane.returncode == 0, pane.stderr
+    os.kill(int(pane.stdout.strip()), signal.SIGKILL)
+    _wait_for_missing_session(real_tmux_socket, session_id)
+    final_mtime = record.stat().st_mtime_ns
+    time.sleep(0.2)
+
+    with portalocker.Lock(
+        str(generation_lease_path(state_home, session_id, generation)),
+        mode="a+",
+        timeout=0,
+        flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+    ):
+        pass
+    assert record.stat().st_mtime_ns == final_mtime, "a crashed supervisor must stop its detached ticker"
+
+
 @pytest.mark.real_tmux
 def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_removed(
     real_tmux_socket: str, tmp_path: Path
@@ -326,13 +553,17 @@ fi
     assert _wait_for_lines(launches, 1) == ["START"]
     assert not events.exists(), "direct supervisor signals must not reach the foreground agent"
 
+    resized = _tmux_run(real_tmux_socket, "resize-window", "-t", session_id, "-x", "100", "-y", "40")
+    assert resized.returncode == 0, resized.stderr
+    assert _wait_for_lines(events, 1) == ["WINCH"]
+
     assert _tmux_run(real_tmux_socket, "send-keys", "-t", session_id, "C-c").returncode == 0
     assert _wait_for_lines(launches, 2) == ["START", "START"]
-    assert events.read_text(encoding="utf-8").splitlines() == ["INT"]
+    assert events.read_text(encoding="utf-8").splitlines() == ["WINCH", "INT"]
 
     assert _tmux_run(real_tmux_socket, "send-keys", "-t", session_id, "C-c").returncode == 0
     _wait_for_missing_session(real_tmux_socket, session_id)
-    assert events.read_text(encoding="utf-8").splitlines() == ["INT", "INT"]
+    assert events.read_text(encoding="utf-8").splitlines() == ["WINCH", "INT", "INT"]
 
 
 @pytest.mark.real_tmux
@@ -501,6 +732,66 @@ def test_given_unknown_zombie_identity_when_heartbeat_is_stale_then_preserves_se
 
     assert _reaper(reaper_state, tmux, probe).evaluate_once() == []
     assert tmux.kills == []
+
+
+def test_given_real_pid_with_changed_identity_during_revalidation_then_evaluator_preserves_session(
+    reaper_state: Path, candidate: SessionCandidate
+):
+    """A controlled reuse mutation must reject a real live process boundary."""
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+    class IdentityChangesDuringRevalidation(ProcessProbe):
+        ended_states = frozenset({"Z"})
+        abandoned_states = ended_states
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_present(self, pid: int) -> bool:
+            return pid == process.pid
+
+        def state(self, pid: int) -> str | None:
+            return "Z" if pid == process.pid else None
+
+        def capture_identity(self, pid: int) -> ProcessIdentity | None:
+            assert pid == process.pid
+            identity = PsutilProbe().capture_identity(pid)
+            assert identity is not None
+            self.calls += 1
+            if self.calls == 1:
+                return identity
+            return ProcessIdentity(identity.backend, identity.marker + 1)
+
+        def start_time_match(self, pid: int, recorded: object):  # type: ignore[no-untyped-def]
+            raise AssertionError("not used by the reaper")
+
+        def end_process(self, pid: int, timeout: float = 5.0) -> bool:
+            raise AssertionError("the reaper has no process-kill authority")
+
+        def manual_end_hint(self, pid: int) -> str:
+            return ""
+
+    reused_candidate = SessionCandidate(
+        candidate.session_id,
+        candidate.session_name,
+        candidate.generation_token,
+        (Pane(candidate.panes[0].pane_id, process.pid),),
+    )
+    try:
+        assert write_heartbeat(
+            reaper_state,
+            reused_candidate.session_name,
+            reused_candidate.generation_token,
+            boot_generation="boot-1",
+            monotonic_clock=lambda: 1,
+        )
+        tmux = _ControlledTmux([reused_candidate])
+
+        assert _reaper(reaper_state, tmux, IdentityChangesDuringRevalidation()).evaluate_once() == []
+        assert tmux.kills == []
+    finally:
+        process.kill()
+        process.wait()
 
 
 def test_given_token_or_name_mismatch_when_heartbeat_is_stale_then_preserves_session(
@@ -695,6 +986,14 @@ def supported_session_shell(request: pytest.FixtureRequest) -> str:
         pytest.skip(f"{request.param} is not installed")
     if os.name == "nt" or not hasattr(signal, "SIGWINCH"):
         pytest.skip("generated tmux session signals require a POSIX shell")
+    return shell
+
+
+@pytest.fixture
+def real_supervisor_shell() -> str:
+    shell = shutil.which("bash")
+    if shell is None:
+        pytest.skip("bash is required for real supervisor continuity coverage")
     return shell
 
 
@@ -1142,6 +1441,30 @@ def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_rec
 
     os.kill(process.pid, signal.SIGTERM)
     time.sleep(0.05)
+    if process.poll() is None:
+        os.kill(process.pid, signal.SIGTERM)
+    stdout, stderr = _communicate_supervisor(process)
+
+    assert process.returncode is not None, f"supervisor did not finish: {stdout!r} {stderr!r}"
+    assert events.read_text(encoding="utf-8").splitlines() == ["TERM"]
+
+
+def test_given_child_exits_during_term_relay_when_supervisor_receives_term_then_it_relays_only_once(
+    tmp_path: Path, supported_session_shell: str
+):
+    child_body = f"""#!{supported_session_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
+  while true; do sleep 0.05; done
+fi
+"""
+    process, events, _ = _start_generated_supervisor(
+        tmp_path, supported_session_shell, lease_acquired=False, child_body=child_body
+    )
+
+    os.kill(process.pid, signal.SIGTERM)
+    _wait_for_path(events, process)
     if process.poll() is None:
         os.kill(process.pid, signal.SIGTERM)
     stdout, stderr = _communicate_supervisor(process)
