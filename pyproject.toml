@@ -71,7 +71,6 @@ exclude = [".direnv", ".venv", ".worktrees"]
 [project.optional-dependencies]
 notify-win = ["plyer>=2.1"]
 dev = [
-    "fleet-testkit",
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-xdist>=3",
@@ -79,10 +78,15 @@ dev = [
     "ruff==0.16.5",
     "pre-commit>=4",
 ]
+# Optional, fleet-internal-only: structural containment for test-spawned
+# processes. Sourced from a private repo, so it is deliberately NOT part of
+# the "dev" extra above -- a public contributor must be able to
+# `uv sync --extra dev` and run the full test suite without needing access
+# to any private repository. See AI-CLI-qrkr.
+internal-testkit = ["fleet-testkit"]
 
 [dependency-groups]
 dev = [
-    "fleet-testkit",
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-xdist>=3",
@@ -97,6 +101,8 @@ dev = [
     # sync.py imports it lazily and degrades to a .conflict file without it.
     "google-genai>=1.0",
 ]
+# Optional, fleet-internal-only: see [project.optional-dependencies].internal-testkit above.
+internal-testkit = ["fleet-testkit"]
 
 [tool.pytest.ini_options]
 testkit_enabled = false
@@ -116,7 +122,8 @@ markers = [
 ]
 
 [tool.uv.sources]
-fleet-testkit = { git = "https://github.com/sergeiwallace/ai-harness.git", rev = "1741cb32935f569dc47665c20102a16708e7d1fe", subdirectory = "packages/fleet-testkit" }
+# Deliberately optional and fleet-internal-only -- see internal-testkit above. # public-hygiene: allow
+fleet-testkit = { git = "https://github.com/sergeiwallace/ai-harness.git", rev = "1741cb32935f569dc47665c20102a16708e7d1fe", subdirectory = "packages/fleet-testkit" } # public-hygiene: allow
 
 [tool.pyright]
 pythonVersion = "3.11"
