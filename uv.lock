@@ -29,7 +29,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "fleet-testkit" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -37,13 +36,15 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
+internal-testkit = [
+    { name = "fleet-testkit" },
+]
 notify-win = [
     { name = "plyer" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "fleet-testkit" },
     { name = "freezegun" },
     { name = "google-genai" },
     { name = "pre-commit" },
@@ -55,12 +56,15 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
+internal-testkit = [
+    { name = "fleet-testkit" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "circus", specifier = ">=0.18.0" },
     { name = "click", specifier = ">=8.1" },
-    { name = "fleet-testkit", marker = "extra == 'dev'", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" },
+    { name = "fleet-testkit", marker = "extra == 'internal-testkit'", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" },
     { name = "libtmux", specifier = ">=0.30.0" },
     { name = "nats-py", specifier = ">=2.9.0" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -78,11 +82,10 @@ requires-dist = [
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2025.2" },
     { name = "watchdog", specifier = ">=4.0.0" },
 ]
-provides-extras = ["notify-win", "dev"]
+provides-extras = ["notify-win", "dev", "internal-testkit"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "fleet-testkit", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" },
     { name = "freezegun", specifier = ">=1.5" },
     { name = "google-genai", specifier = ">=1.0" },
     { name = "pre-commit", specifier = ">=4" },
@@ -94,6 +97,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3" },
     { name = "ruff", specifier = "==0.16.5" },
 ]
+internal-testkit = [{ name = "fleet-testkit", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" }]
 
 [[package]]
 name = "annotated-types"
