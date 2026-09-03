@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -357,7 +358,7 @@ def test_remote_flag_when_host_not_configured_then_exits_with_error():
         patch("ai_cli.config.load_config", return_value=config),
         patch("ai_cli.session.get_project_prefix", return_value="test-project"),
         patch("ai_cli.main.trigger_background_update"),
-        patch("sys.stderr"),
+        patch("sys.stderr", io.StringIO()),
     ):
         with pytest.raises(SystemExit) as exc_info:
             cli()
