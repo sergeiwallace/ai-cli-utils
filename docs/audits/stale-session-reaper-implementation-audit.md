@@ -971,7 +971,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -p no:cacheprovider \
 uv run pytest -q
 tmux -L codex-r3-0f3ee3 new-session -d -s probe 'sleep 30'
 markdownlint docs/audits/stale-session-reaper-implementation-audit.md
-aido validate-doc docs/audits/stale-session-reaper-implementation-audit.md
+# structured-doc region-marker + template_version validation
 git diff --check
 git show -s --format='%H%n%P%n%cd%n%s' --date=iso-strict HEAD
 git diff --name-status 0f3ee3d9f363d4f843d4c476dfe0a41c2622464d..HEAD
