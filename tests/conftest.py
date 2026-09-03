@@ -13,6 +13,7 @@ import pytest
 
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
+import ai_cli.trust as _trust_module
 from ai_cli.git_repair import _GIT_TARGETING_VARS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 
@@ -253,6 +254,21 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
     the isolation empirically (`XDG_STATE_HOME=$(mktemp -d)` made the full suite deterministic).
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg_state_home")))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workspace_trust_registry(monkeypatch, tmp_path_factory):
+    """Keep workspace-trust registration out of the real home directory.
+
+    ``create_worktree()`` registers its newly-created checkout in Claude Code's
+    home-level trust registry. Under xdist, otherwise-isolated test repositories
+    concurrently read and replace that one file. Seed a distinct registry for
+    each test so the real integration path stays exercised without sharing
+    state across workers or with the user.
+    """
+    trust_registry = tmp_path_factory.mktemp("claude_trust") / ".claude.json"
+    trust_registry.write_text('{"projects": {}}\n')
+    monkeypatch.setattr(_trust_module, "_claude_json_path", lambda: trust_registry)
 
 
 @pytest.fixture(autouse=True)
