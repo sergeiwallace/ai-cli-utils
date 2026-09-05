@@ -28,6 +28,7 @@ from ai_cli.main import (
     get_xdg_state_home,
     load_config,
 )
+from ai_cli.native_deps import InstallResult
 from ai_cli.session_script import resolve_session_shell
 
 # --- XDG helpers ---
@@ -1059,8 +1060,10 @@ class TestDoSessionLaunchTmuxGuard:
 
     Originally Windows-only (T-09). Broadened in 55ace53 because every non-Windows
     machine without tmux was crashing with a raw FileNotFoundError from deep inside
-    cleanup_stale_sessions() instead of this message. The guard now fires on all
-    platforms, with a platform-appropriate install hint and the use_tmux opt-out.
+    cleanup_stale_sessions(). It still fires on all platforms with a
+    platform-appropriate hint, but since AI-CLI-yrpa the outcome is one
+    unattended install attempt and then bare mode — never an exit. tmux is an
+    enhancement, so its absence degrades a launch instead of blocking it.
     """
 
     def _base_kwargs(self):
@@ -1125,18 +1128,21 @@ class TestDoSessionLaunchTmuxGuard:
         # confirming the guard was passed
         assert exc_info.value.code != 1 or "tmux not found" not in (capsys.readouterr().err)
 
-    def test_when_non_windows_and_tmux_not_found_then_guard_exits_with_platform_hint(self, capsys):
-        """The guard DOES fire on Linux/macOS — that is the point of 55ace53.
+    def test_when_non_windows_and_tmux_unavailable_then_falls_back_to_bare_not_exit_1(self, capsys):
+        """A missing tmux must degrade the launch to bare mode, never block it.
 
-        This previously asserted the opposite, encoding the very bug 55ace53 fixed:
-        without the guard, a non-Windows machine lacking tmux died on a raw
-        FileNotFoundError inside cleanup_stale_sessions() with no actionable message.
+        This asserted the opposite until AI-CLI-yrpa: the guard printed
+        remediation and exited 1 on every non-Windows host without tmux, so an
+        *enhancement* (detach/reattach, surviving a dropped SSH connection) was a
+        launch precondition. The remediation text is still required — the operator
+        should know what bare mode costs them — but the launch continues.
         """
         from ai_cli.main import _do_session_launch
 
         with (
             patch("sys.platform", "linux"),
             patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(False, detail="no manager")),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.get_project_prefix", return_value="test"),
@@ -1144,21 +1150,84 @@ class TestDoSessionLaunchTmuxGuard:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _do_session_launch(**self._base_kwargs())
-        assert exc_info.value.code == 1
+        assert exc_info.value.code != 1, "a missing tmux must fall back to bare mode, not exit 1"
         err = capsys.readouterr().err
-        assert "tmux not found" in err
-        # Platform-appropriate install hint, not the MSYS2/pacman one.
+        assert "launching in bare mode instead" in err
+        # Platform-appropriate install hint, not the Windows/WSL one.
         assert "apt install tmux" in err
-        # Both escape hatches must be named so the user can choose.
-        assert "-b" in err
+        # The permanent opt-out must be named so the notice can be silenced.
         assert "use_tmux = false" in err
 
-    def test_when_darwin_and_tmux_not_found_then_hint_is_homebrew(self, capsys):
+    def test_when_tmux_missing_then_one_unattended_install_is_attempted_first(self):
+        """Falling back to bare is the last resort, not the first response.
+
+        Without this, "never fatal" could be satisfied by never trying to install
+        tmux at all, which would quietly strip detach/reattach from every host
+        that merely needed one `brew install`.
+        """
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "linux"),
+            patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(False, detail="x")) as install,
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**self._base_kwargs())
+        assert install.call_count == 1
+
+    def test_when_win32_and_tmux_missing_then_no_install_is_attempted(self):
+        """Windows has no native tmux, so an install attempt there is pure noise."""
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "win32"),
+            patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux") as install,
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**self._base_kwargs())
+        install.assert_not_called()
+
+    def test_when_auto_install_succeeds_then_the_launch_stays_in_tmux_mode(self, capsys):
+        """The install must actually be believed — otherwise it buys nothing.
+
+        `bare` has to come back False after a successful install, which is only
+        observable through the notice: an install that reported success and still
+        launched bare would look identical to no install at all.
+        """
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "linux"),
+            patch("ai_cli.tmux_setup.tmux_present", return_value=False),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(True, tool="brew")),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**self._base_kwargs())
+        err = capsys.readouterr().err
+        assert "installed tmux via brew" in err
+        assert "launching in bare mode instead" not in err
+
+    def test_when_darwin_and_tmux_unavailable_then_hint_is_homebrew(self, capsys):
         from ai_cli.main import _do_session_launch
 
         with (
             patch("sys.platform", "darwin"),
             patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(False, detail="no manager")),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.get_project_prefix", return_value="test"),
@@ -1166,7 +1235,7 @@ class TestDoSessionLaunchTmuxGuard:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _do_session_launch(**self._base_kwargs())
-        assert exc_info.value.code == 1
+        assert exc_info.value.code != 1
         assert "brew install tmux" in capsys.readouterr().err
 
     def test_when_use_tmux_false_and_tmux_absent_then_guard_is_skipped(self):

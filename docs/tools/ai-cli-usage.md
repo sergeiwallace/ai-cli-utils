@@ -92,6 +92,16 @@ Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remot
 
 Auto-runs `git pull --rebase --autostash` at session start to keep worktree current.
 
+**How the launcher decides between tmux and bare.** In order: `[session] use_tmux`
+wins outright if the machine sets it; with no setting tmux is the default rather than
+an opt-in; a missing tmux gets one unattended install attempt (rootless managers
+first, then the system ones when running as root); and if tmux still is not there the
+launch continues in bare mode with a notice naming what was lost. It is never fatal —
+tmux is an enhancement, and a missing enhancement must not block a launch. Windows
+skips the install attempt because no native tmux exists there. `ai doctor` reports
+`tmux` by running `tmux -V`, not merely by finding it on PATH, so a build that
+resolves and then dies on a missing shared library reads as unusable instead of `OK`.
+
 **Bare mode (`-b`, or `[session] use_tmux = false`):** worktree isolation, `--name`,
 and conversation resume all still apply — tmux is not a prerequisite for any of them.
 A bare launch creates `.worktrees/<project>-N` on branch `wt-<project>-N`, `cd`s into
