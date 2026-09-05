@@ -25,6 +25,7 @@ from . import iterm2 as _iterm2
 from . import process_manager as _process_manager
 from . import session as _session
 from . import session_script as _session_script
+from . import tmux_setup as _tmux_setup
 from . import transport as _transport
 from . import tunnel as _tunnel
 
@@ -1399,7 +1400,7 @@ def _handle_internal(argv: list[str]) -> None:
             print("Usage: ai internal allocate-session-name <engine> <project_prefix> <name>", file=sys.stderr)
             sys.exit(1)
         engine, project_prefix, name = argv[1], argv[2], argv[3]
-        use_tmux = config.get("session", {}).get("use_tmux", True)
+        use_tmux = not _tmux_setup.config_opts_out(config)
         session_id, ai_name = _session.build_session_name(
             engine, project_prefix, name, config, is_remote=True, use_tmux=use_tmux
         )
@@ -2269,42 +2270,24 @@ def _do_session_launch(
     # only the client library, so tmux can never be auto-installed by pip/uv and
     # must be preflighted here.
     #
-    # `[session] use_tmux = false` opts a machine out of tmux entirely (equivalent
-    # to always passing -b/--bare). tmux exists to keep sessions alive for detach
-    # /reattach -- remote access from a phone, surviving a dropped SSH connection,
-    # `ai ls`/`ai attach`. On a machine that only ever runs sessions in a local
-    # terminal, it buys nothing and its absence should not be fatal.
-    if not config.get("session", {}).get("use_tmux", True):
+    # Resolution order (AI-CLI-yrpa): the per-machine `[session] use_tmux`
+    # setting wins outright; with no setting tmux is the default rather than an
+    # opt-in; a missing tmux is installed unattended where a package manager can
+    # do it; and if it is still missing the launch continues in bare mode.
+    #
+    # That last step is the whole point. tmux exists to keep sessions alive for
+    # detach/reattach -- remote access from a phone, surviving a dropped SSH
+    # connection, `ai ls`/`ai attach`. It is an enhancement, so its absence must
+    # degrade the launch, never block it: this used to exit 1 on every non-Windows
+    # host without tmux, which made a missing enhancement fatal.
+    if _tmux_setup.config_opts_out(config):
         bare = True
 
-    if not bare and not shutil.which("tmux"):
-        if sys.platform == "win32":
-            # tmux is not standard on Windows; bare mode is the correct default.
-            # Set [session] use_tmux = false in config.toml to suppress this notice.
-            bare = True
-        else:
-            # Previously this check was gated on sys.platform == "win32", so every
-            # non-Windows machine without tmux crashed with a raw FileNotFoundError
-            # from deep inside cleanup_stale_sessions() instead of this message.
-            if sys.platform == "darwin":
-                _hint = "  brew install tmux"
-            else:
-                _hint = "  sudo apt install tmux     (or: dnf/yum/pacman/conda install tmux)"
-            print(
-                "Error: tmux not found, and it is required for the default session mode.\n"
-                f"{_hint}\n"
-                "\n"
-                "Or run without tmux:\n"
-                "  ai <engine> -b            one-off bare launch (no tmux)\n"
-                "  [session] use_tmux = false     in ~/.config/ai-cli-utils/config.toml\n"
-                "                            to make bare the default on this machine\n"
-                "\n"
-                "tmux provides detach/reattach (ai ls, ai attach), sessions that survive a\n"
-                "dropped SSH connection, and remote access from another device. If you only\n"
-                "run sessions in a local terminal, use_tmux = false is a fine permanent choice.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    if not bare and not _tmux_setup.tmux_present():
+        # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
+        # so fall straight through to bare without a notice; every other platform
+        # gets one install attempt and then the same fallback, loudly.
+        bare = not (sys.platform != "win32" and _tmux_setup.ensure_tmux().installed)
 
     # direnv preflight, alongside tmux above for the same reason: it is a native
     # binary that pip/uv can never supply. Unlike tmux it is never fatal — the
@@ -3388,11 +3371,17 @@ def cmd_doctor(dry_run):
     config = _config.load_config()
     root = Path.cwd()
 
-    # tmux is reported, never installed: `[session] use_tmux = false` and -b/--bare
-    # are both legitimate permanent answers, so its absence is not a defect.
+    # tmux is reported, never installed here: `[session] use_tmux = false` and
+    # -b/--bare are both legitimate permanent answers, so its absence is not a
+    # defect. Being on PATH is reported separately from actually running, because
+    # a tmux that resolves and then dies on a missing shared library used to read
+    # as `OK tmux` while no session could start.
+    tmux_note = "optional; -b/--bare and use_tmux=false opt out"
+    if _tmux_setup.tmux_present() and not _tmux_setup.tmux_runs():
+        tmux_note = "on PATH but `tmux -V` fails; launches fall back to bare mode"
     for label, present, note in (
         ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
-        ("tmux", shutil.which("tmux") is not None, "optional; -b/--bare and use_tmux=false opt out"),
+        ("tmux", _tmux_setup.tmux_runs(), tmux_note),
     ):
         click.echo(f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 

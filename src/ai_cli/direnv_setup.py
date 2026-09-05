@@ -21,8 +21,9 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
+
+from .native_deps import Candidate, InstallResult, attempt_installs
 
 BYPASS_ENV = "AI_CLI_SKIP_DIRENV"
 
@@ -30,7 +31,7 @@ BYPASS_ENV = "AI_CLI_SKIP_DIRENV"
 # ``probe`` is the executable that must exist on PATH for the entry to apply.
 # Only non-interactive invocations belong here — an installer that can block on a
 # password or a UAC prompt would hang a session launch instead of failing it.
-_INSTALLERS: dict[str, list[tuple[str, list[str]]]] = {
+_INSTALLERS: dict[str, list[Candidate]] = {
     "win32": [
         # scoop first: it is per-user and never raises UAC. winget is direnv's
         # documented Windows route but can prompt for elevation.
@@ -89,20 +90,6 @@ _HOOKS: tuple[tuple[str, str, str], ...] = (
     ("fish", "~/.config/fish/config.fish", "direnv hook fish | source"),
     ("pwsh", "$PROFILE", 'Invoke-Expression "$(direnv hook pwsh)"'),
 )
-
-
-@dataclass(frozen=True)
-class InstallResult:
-    """Outcome of one bootstrap attempt.
-
-    ``installed`` is the only success signal. ``tool`` names the package manager
-    that ran (None when none applied), and ``detail`` carries the failure text
-    worth surfacing — a non-zero installer's stderr, or why nothing ran.
-    """
-
-    installed: bool
-    tool: str | None = None
-    detail: str = ""
 
 
 def is_bypassed(config: dict | None = None) -> bool:
@@ -234,58 +221,20 @@ def refresh_windows_path() -> bool:
     return True
 
 
-def _needs_root(argv: list[str]) -> bool:
-    """True when ``argv`` is a system package manager and we are not root.
-
-    Attempting one of these unprivileged either prompts for a password (hanging
-    a launch) or fails on permissions, so they are skipped rather than tried.
-    """
-    if argv[0] not in ("apt-get", "dnf", "pacman", "zypper"):
-        return False
-    return getattr(os, "geteuid", lambda: 0)() != 0
-
-
 def install_direnv(timeout: int = 300) -> InstallResult:
     """Attempt one unattended direnv install, returning the outcome.
 
     Never raises: a bootstrap helper that throws would take down the caller it
-    exists to keep running. Tries each candidate for this platform in order and
-    stops at the first that reports success.
+    exists to keep running. The attempt loop itself is shared with the tmux
+    bootstrap in :mod:`ai_cli.native_deps`; what is direnv-specific is the
+    candidate list, the re-probe, and the Windows PATH refresh.
     """
-    candidates = _INSTALLERS.get(sys.platform, [])
-    if not candidates:
-        return InstallResult(False, detail=f"no unattended installer is known for platform {sys.platform!r}")
-
-    skipped: list[str] = []
-    attempted: list[str] = []
-    for probe, argv in candidates:
-        if shutil.which(probe) is None:
-            continue
-        if _needs_root(argv):
-            skipped.append(f"{probe} (needs root; re-run with sudo or install manually)")
-            continue
-        attempted.append(probe)
-        try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            skipped.append(f"{probe} ({type(exc).__name__})")
-            continue
-        # Trust the executable's own verdict, then confirm the binary really
-        # landed: some managers exit 0 having only staged a pending install.
-        # The PATH refresh must come first -- the installer wrote its directory
-        # to the registry, not to this already-running process, so without it a
-        # perfectly good install looks like a failure.
-        if proc.returncode == 0:
-            refresh_windows_path()
-            if direnv_available():
-                return InstallResult(True, tool=probe)
-        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        skipped.append(f"{probe} (exit {proc.returncode}: {detail[-1] if detail else 'no output'})")
-
-    if not attempted and not skipped:
-        managers = ", ".join(probe for probe, _ in candidates)
-        return InstallResult(False, detail=f"none of these package managers are on PATH: {managers}")
-    return InstallResult(False, detail="; ".join(skipped))
+    return attempt_installs(
+        _INSTALLERS.get(sys.platform, []),
+        verify=direnv_available,
+        timeout=timeout,
+        before_verify=refresh_windows_path,
+    )
 
 
 def remediation(envrc: Path | None = None, result: InstallResult | None = None) -> str:

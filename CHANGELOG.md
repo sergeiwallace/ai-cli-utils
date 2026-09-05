@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A missing tmux no longer blocks a launch. The launcher now attempts one
+  unattended install (rootless managers first: micromamba/conda/brew, then the
+  system ones when running as root) and falls back to bare mode with a notice
+  naming what was lost. Previously every non-Windows host without tmux printed
+  remediation and exited 1, making an enhancement a launch precondition.
+  Resolution order is unchanged where it was already right: `[session] use_tmux`
+  wins outright, and with no setting tmux is the default. (`AI-CLI-yrpa`)
+- `ai doctor` reports tmux by running `tmux -V` rather than only finding it on
+  PATH, and says so explicitly when tmux resolves but cannot execute. A tmux that
+  died on a missing shared library previously read as `OK tmux` while no session
+  could start.
+
 - Corrected stale-session documentation: launch-time housekeeping does not
   terminate tmux sessions. Start the independent reaper with
   `ai session-reaper start`; it observes by default and requires explicit
