@@ -14,7 +14,7 @@ from ai_cli import tmux_setup
 from ai_cli.native_deps import InstallResult
 
 
-def _completed(returncode=0, stdout="tmux 3.4\n", stderr=""):
+def _completed(returncode=0, stdout="tmux 3.6\n", stderr=""):
     return subprocess.CompletedProcess(args=["tmux", "-V"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
