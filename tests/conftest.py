@@ -138,9 +138,40 @@ def _command_program(command):
     return os.path.basename(os.fspath(command))  # noqa: PTH119
 
 
+def _tmux_argv_is_read_only(command) -> bool:
+    """True for a tmux invocation that cannot create a session, server or window.
+
+    The guard below matches on program NAME, which cannot tell `tmux new-session`
+    from `tmux -V`. That coarseness is fine until production code legitimately
+    needs to ASK tmux something during a launch: the launcher now reports the
+    client and the running server's version so an operator can see which tmux a
+    session is under, and neither query creates anything at all -- `-V` never
+    contacts a server, and `display-message` fails cleanly when none is running.
+    Rejecting those made a read-only diagnostic look like the hazard the guard
+    exists for, which is a live session leaking out of a test.
+
+    Deliberately an allowlist of exact subcommands, not a denylist: an unknown
+    tmux subcommand stays rejected, so this cannot silently widen.
+    """
+    if isinstance(command, str):
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return False
+    elif isinstance(command, (list, tuple)):
+        argv = [str(part) for part in command]
+    else:
+        return False
+    if len(argv) < 2:
+        return False
+    return argv[1] in {"-V", "display-message"}
+
+
 def _reject_real_agent_process(command, allowed_binaries=frozenset()):
     """Fail loudly when a test reaches a real agent, transport, or tmux boundary."""
     program = _command_program(command)
+    if program == "tmux" and _tmux_argv_is_read_only(command):
+        return
     if program in _PROTECTED_TEST_BINARIES - allowed_binaries:
         raise RuntimeError(
             f"test attempted to spawn a real `{program}` process — "
