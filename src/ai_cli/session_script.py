@@ -476,10 +476,37 @@ def get_engine_script(
     uuid={shell["uuid"]}
     project_prefix={shell["project_prefix"]}
     project_name={shell["project_name"]}
+    # One mtime probe, GNU form FIRST, validated to be an integer.
+    #
+    # The old inline chain was `stat -f "%m" p || stat -c "%Y" p || echo 0`, a
+    # macOS-first idiom that misbehaves on GNU coreutils: there `-f` means
+    # FILESYSTEM status and `%m` is not a token, so `%m` is consumed as a
+    # filename. Measured on Linux 2026-09-06, that single command prints a
+    # multi-line filesystem report FOR THE REAL FILE on stdout, errors about
+    # `%m` on stderr, and exits 1. The non-zero exit is what made it dangerous
+    # rather than merely wrong: the `||` then ran the GNU branch too, so the
+    # captured value was the report CONCATENATED with the real mtime -- and the
+    # report embeds the live `Blocks: ... Free:` / `Inodes: ... Free:` counters.
+    # Two probes seconds apart therefore differed whenever anything on the box
+    # allocated or freed a block, so the loop-top comparison below fired on
+    # essentially every iteration: reload, exit 78, relaunch, forever.
+    #
+    # Returns a bare integer, or EMPTY when it cannot tell. Empty rather than
+    # "0" on purpose: "0" is a value, and a value compares unequal to a real
+    # mtime, which is the same false-positive that caused the loop.
+    _file_mtime() {{
+      local _fm_path="$1" _fm=""
+      _fm=$(stat -c "%Y" "$_fm_path" 2>/dev/null) || _fm=""
+      if [[ ! "$_fm" =~ ^[0-9]+$ ]]; then
+        _fm=$(stat -f "%m" "$_fm_path" 2>/dev/null) || _fm=""
+      fi
+      [[ "$_fm" =~ ^[0-9]+$ ]] || _fm=""
+      printf '%s' "$_fm"
+    }}
     # Stable script path — written by `ai c` on every launch/re-attach.
     # Mtime changes when a new version is installed and `ai c` re-attaches.
     _script_stable_path="$_ai_state_dir/sessions/$tmux_session.sh"
-    _script_start_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
+    _script_start_mtime=$(_file_mtime "$_script_stable_path")
     printf '%s' {shlex.quote(_meta)} > "$_ai_state_dir/session-meta-$tmux_session.json"
 
     # iTerm2 slot assigned by Python at launch time (collision-free lease system).
@@ -658,8 +685,10 @@ def get_engine_script(
       # the restart after CC exits.  AI_SESSION_STARTED guard in the new script
       # ensures first_run=false so no duplicate setup runs.
       if [[ -f "$_script_stable_path" ]]; then
-        _cur_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
-        if [[ "$_cur_mtime" != "$_script_start_mtime" && "$_cur_mtime" != "0" ]]; then
+        _cur_mtime=$(_file_mtime "$_script_stable_path")
+        # Fail CLOSED: an unknown mtime on either side means "do not reload".
+        # Reading an unmeasurable probe as "changed" is what looped forever.
+        if [[ -n "$_cur_mtime" && -n "$_script_start_mtime" && "$_cur_mtime" != "$_script_start_mtime" ]]; then
           echo "ai-cli session script updated — reloading..."
           exit 78
         fi
