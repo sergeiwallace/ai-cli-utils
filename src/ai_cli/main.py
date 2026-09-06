@@ -2775,9 +2775,12 @@ def _do_session_launch(
                 worktree_result = _session.create_worktree(ai_name, with_status=True)
         except RuntimeError as exc:
             print(
+                # Deliberately does NOT offer -W/--no-worktree as the way out: it
+                # launches in the repository root, which is the exact outcome this
+                # message is refusing, so advertising it here talks the user into
+                # breaking session isolation to escape a message about isolation.
                 f"Error: could not create or reuse the isolated session worktree; refusing to launch in the "
-                f"repository root. {exc} Re-run after resolving the git worktree error, or explicitly use "
-                f"--no-worktree.",
+                f"repository root. {exc} Re-run once the git worktree error above is resolved.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2788,8 +2791,10 @@ def _do_session_launch(
             worktree_path, worktree_created = worktree_result, False
         if not worktree_path:
             print(
+                # Same reasoning as the RuntimeError branch above: -W/--no-worktree
+                # is not the escape hatch from a refusal to use the repository root.
                 "Error: could not create or reuse the isolated session worktree; refusing to launch in the "
-                "repository root. Re-run after resolving the git worktree error, or explicitly use --no-worktree.",
+                "repository root. Re-run once the git worktree error above is resolved.",
                 file=sys.stderr,
             )
             sys.exit(1)
