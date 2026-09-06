@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ai c --dry-run` (and `ai g`/`ai p`/`ai cx`) now genuinely does nothing. The
+  flag was documented but never declared, and because the session commands set
+  `ignore_unknown_options` so engine flags can be forwarded, it was silently
+  passed to the engine and the launch ran for real -- creating a worktree, a
+  branch, registering workspace trust, reinstalling the CLI, and starting a
+  session. It now prints the resolved plan (engine, tmux-vs-bare after config and
+  preflight, session name, worktree path, branch, sandbox) and exits above every
+  write. (`AI-CLI-wepi`)
+
 ### Changed
 
 - A missing tmux no longer blocks a launch. The launcher now attempts one
