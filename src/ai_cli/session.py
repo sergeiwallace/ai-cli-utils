@@ -1027,6 +1027,91 @@ def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | N
     return None
 
 
+def _worktree_holding_branch(repo_root: Path, branch: str) -> Path | None:
+    """Return the worktree that has ``branch`` checked out, or None.
+
+    ``git worktree add`` refuses a branch that is checked out somewhere else, and
+    names the holder only inside its error text. Parsing the porcelain listing
+    turns that holder into a path the launcher can act on, which is the whole
+    difference between a dead end and a repair: the branch is this session's own
+    ``wt-<name>``, so a holder at a non-canonical path is a misplaced slot rather
+    than a conflict with a different session.
+
+    Paired line-wise, not searched as text — porcelain emits ``branch`` as a
+    property of the preceding ``worktree`` record, so a bare grep for the ref
+    cannot say which worktree it belongs to.
+    """
+    res = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+        env=_git_env(),
+        check=False,
+    )
+    if res.returncode != 0:
+        return None
+    wanted = f"branch refs/heads/{branch}"
+    current: Path | None = None
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree ") :].strip())
+        elif line.strip() == wanted and current is not None:
+            return current
+    return None
+
+
+def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> None:
+    """Move the worktree at ``holder`` onto this session's slot path ``wt_dir``.
+
+    ``git worktree move`` is the only safe way to do this: it relocates the
+    checkout *and* rewrites git's registration, so uncommitted changes, unpushed
+    commits and the current HEAD all survive, and nothing is deleted. A plain
+    ``mv`` would leave the registration pointing at the old path.
+
+    Raises ``RuntimeError`` naming the exact manual command whenever the move
+    cannot be made safely, so a refusal still hands over a next step that works.
+    """
+    manual = f"git -C {repo_root} worktree move {holder} {wt_dir}"
+
+    if _worktree_has_live_session(holder):
+        raise RuntimeError(
+            f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and an engine "
+            f"process is still running there — refusing to move a live session's checkout. Exit that "
+            f"session, then re-run, or move it by hand: {manual}"
+        )
+
+    if wt_dir.exists():
+        # git worktree move requires an absent destination. Only an empty
+        # directory can be cleared here, and rmdir is what enforces that: a slot
+        # holding anything at all was already recovered or refused above.
+        try:
+            wt_dir.rmdir()
+        except OSError as exc:
+            raise RuntimeError(
+                f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and {wt_dir} "
+                f"could not be cleared to make room for the move: {exc}. Move it by hand: {manual}"
+            ) from exc
+
+    res = subprocess.run(
+        ["git", "worktree", "move", str(holder), str(wt_dir)],
+        capture_output=True,
+        cwd=repo_root,
+        env=_git_env(),
+        check=False,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and moving it "
+            f"failed: {_git_stderr(res)}. Move it by hand: {manual}"
+        )
+    print(
+        f"[launch] Relocated session worktree: moved {holder} -> {wt_dir} "
+        "(checkout, uncommitted changes and unpushed commits preserved)",
+        file=sys.stderr,
+    )
+
+
 def _initialize_worktree(
     repo_root: Path,
     worktree_path: Path,
@@ -1216,6 +1301,30 @@ def create_worktree(
                     _initialize_worktree(repo_root, registered, branch, upstream, reused=True)
                     result = (registered, False)
                     return result if with_status else registered
+
+                # Third strategy: this session's own branch is checked out at a
+                # different path. Neither add above can ever succeed — the first
+                # because the branch exists, the second because git allows one
+                # checkout per branch — so without this the launch dead-ends on a
+                # state the launcher itself produced (a slot directory lost while
+                # its registration survived, or a worktree relocated by hand).
+                # Recovering it is a move, never a delete: the wanted checkout
+                # already exists and is merely in the wrong place.
+                branch_holder = _worktree_holding_branch(repo_root, branch)
+                if branch_holder is not None and not _same_worktree_path(branch_holder, wt_dir):
+                    _relocate_worktree_to_slot(repo_root, branch_holder, wt_dir)
+                    registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
+                    if registered is not None:
+                        moved_branch = _current_branch(registered)
+                        _, upstream = _resolve_worktree_target(repo_root) if moved_branch is not None else (None, None)
+                        _initialize_worktree(repo_root, registered, moved_branch, upstream, reused=True)
+                        result = (registered, False)
+                        return result if with_status else registered
+                    raise RuntimeError(
+                        f"moved {branch_holder} onto this session's slot {wt_dir}, but git does not report a "
+                        f"worktree there afterwards"
+                    )
+
                 raise RuntimeError(
                     f"git worktree add failed for {wt_dir}. First attempt: {_git_stderr(first_add)}. "
                     f"Retry with existing branch: {_git_stderr(res)}"
