@@ -289,3 +289,53 @@ def test_an_unprobed_report_does_not_claim_a_broken_binary(monkeypatch) -> None:
     assert "does not run" not in text
     assert "--bare requested" in text
     assert "inside tmux" not in text
+
+
+# --------------------------------------------------------------------------
+# A mismatched client/server must REFUSE, not create an unattachable session.
+# --------------------------------------------------------------------------
+
+
+def test_the_refusal_message_names_both_versions_and_the_way_out() -> None:
+    """The message has to carry the mechanism, because the failure is silent.
+
+    Measured 2026-09-06: a 3.7c client against a live 3.4 server accepted
+    `new-session -d` and then failed the attach with `open terminal failed: not
+    a terminal`, leaving five sessions the operator could not enter and had to
+    find and kill by hand. A warning next to a successful-looking launch is
+    exactly the shape that produced that.
+    """
+    import inspect
+
+    from ai_cli import main as ai_main
+
+    source = inspect.getsource(ai_main._do_session_launch)
+    assert "versions_disagree" in source, "the launch must consult the mismatch"
+    # The refusal must EXIT, not warn: after the session exists the damage is done.
+    guard = source[source.index("versions_disagree") :]
+    assert "sys.exit(1)" in guard.split("\n\n")[0] or "sys.exit(1)" in guard[:2000]
+    assert "open terminal failed" in guard, "name the symptom the operator saw"
+    assert "LAST session" in guard, "explain why exiting all sessions is the fix"
+    # Deliberately NOT "LAST session exits": the formatter may break a long
+    # message across adjacent string literals, and an assertion that spans
+    # such a break tests ruff's line wrapping rather than the wording.
+    assert "--bare" in guard, "offer the escape hatch that needs no tmux at all"
+
+
+def test_the_refusal_is_reached_only_through_the_disagreement(fake_tmux) -> None:
+    """Agreement, and a bare launch, must both pass straight through."""
+    fake_tmux["server"] = "3.7c"
+    assert tmux_setup.probe().versions_disagree is False
+
+    fake_tmux["server"] = None
+    assert tmux_setup.probe().versions_disagree is False, (
+        "no running server is the normal case and must never refuse a launch"
+    )
+
+    fake_tmux["server"] = "3.4"
+    assert tmux_setup.probe(query_versions=False).versions_disagree is False, (
+        "a bare launch does not probe, so it can never trip the guard"
+    )
+    assert tmux_setup.probe().versions_disagree is True, (
+        "positive control: the mismatch this guard exists for IS detected"
+    )
