@@ -24,6 +24,7 @@ bare mode is the correct permanent answer there.
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 
 from .native_deps import Candidate, InstallResult, attempt_installs
 
@@ -159,6 +160,140 @@ def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult
     if not quiet:
         print(remediation(result), file=sys.stderr)
     return InstallResult(False, tool=result.tool, detail=result.detail)
+
+
+@dataclass(frozen=True)
+class TmuxReport:
+    """What a launch actually established about tmux on this machine.
+
+    ``client_version`` and ``server_version`` are deliberately separate fields
+    rather than one "tmux version". They are two different processes: a running
+    server keeps its own version until every session on it exits, so they
+    disagree for the whole duration of an upgrade — and any consumer that parses
+    tmux's output is answered by the SERVER. Collapsing them into one number is
+    how a mixed install reads as a working one.
+    """
+
+    present: bool
+    path: str | None = None
+    client_version: str | None = None
+    server_version: str | None = None
+    # False when the caller asked for no version query at all, which is a
+    # different state from "asked and got no answer": a bare launch must reach no
+    # tmux process whatsoever, so it cannot report a version and must not imply
+    # the binary is broken by printing that it has none.
+    versions_probed: bool = True
+
+    @property
+    def runs(self) -> bool:
+        """Present AND able to report its own version. Not the same as present."""
+        return self.client_version is not None
+
+    @property
+    def versions_disagree(self) -> bool:
+        """True only when both are known and differ.
+
+        No running server is the normal state of a fresh machine, so an unknown
+        server version is not a mismatch — claiming one would make the common
+        case look broken.
+        """
+        return (
+            self.client_version is not None
+            and self.server_version is not None
+            and self.client_version != self.server_version
+        )
+
+
+def _probe_output(argv: list[str], timeout: int) -> str | None:
+    """Run one bounded probe, returning stripped stdout or None. Never raises."""
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    value = (proc.stdout or "").strip()
+    return value or None
+
+
+def probe(timeout: int = 10, *, query_versions: bool = True) -> TmuxReport:
+    """Detect tmux without changing anything. A diagnostic must never block a launch.
+
+    Every failure mode collapses to a missing field rather than an exception: a
+    binary on PATH that dies on a missing shared library, a hung invocation, no
+    running server. Each is a real state this fleet has hit.
+
+    ``query_versions=False`` reports presence alone and spawns nothing. A bare
+    launch must not invoke tmux at all — not even to ask its version — because
+    bare mode is precisely the mode that has decided tmux is not involved.
+    """
+    # Presence through this module's own predicate, not a second `shutil.which`
+    # call: one source for "is there a tmux" means the launcher and the report can
+    # never disagree, and a caller that has already decided tmux is absent is not
+    # made to spawn a probe anyway. A bare launch on a machine that happens to
+    # have tmux must still reach no tmux process at all.
+    if not tmux_present():
+        return TmuxReport(present=False, versions_probed=query_versions)
+    path = shutil.which("tmux")
+    if not query_versions:
+        return TmuxReport(present=True, path=path, versions_probed=False)
+
+    client = _probe_output(["tmux", "-V"], timeout)
+    if client is not None:
+        # `tmux -V` prints "tmux 3.7c"; keep only the version token.
+        parts = client.split()
+        client = parts[-1] if parts else None
+
+    server = _probe_output(["tmux", "display-message", "-p", "#{version}"], timeout)
+
+    return TmuxReport(present=True, path=path, client_version=client, server_version=server)
+
+
+def report_lines(
+    *,
+    report: TmuxReport,
+    bare: bool,
+    reason: str,
+    auto_installed: str | None = None,
+) -> list[str]:
+    """The launch-time tmux block, as lines.
+
+    Answers the operator's actual questions in order: is this session inside
+    tmux, which tmux, and did anything get installed on my machine just now.
+    """
+    lines: list[str] = []
+    if auto_installed:
+        lines.append(f"ai-cli: tmux was auto-installed via {auto_installed}.")
+
+    if not report.present:
+        lines.append(f"ai-cli: tmux not found on PATH — launching bare ({reason}).")
+        return lines
+
+    if not report.versions_probed:
+        # Presence only. Saying "version unavailable" here would report a broken
+        # binary when nothing was ever asked.
+        lines.append(f"ai-cli: tmux found at {report.path} (version not queried)")
+        lines.append(f"ai-cli: launching bare, not under tmux ({reason}).")
+        return lines
+
+    detail = report.client_version or "version unavailable (binary does not run)"
+    lines.append(f"ai-cli: tmux {detail} at {report.path}")
+
+    if report.server_version:
+        lines.append(f"ai-cli: running tmux server reports {report.server_version}")
+    if report.versions_disagree:
+        lines.append(
+            f"ai-cli: WARNING — client {report.client_version} but the running "
+            f"server is {report.server_version}. The server answers every "
+            f"format query, so it decides compatibility; relaunch every session "
+            f"to converge."
+        )
+
+    if bare:
+        lines.append(f"ai-cli: launching bare, not under tmux ({reason}).")
+    else:
+        lines.append(f"ai-cli: launching inside tmux ({reason}).")
+    return lines
 
 
 def config_opts_out(config: dict | None = None) -> bool:

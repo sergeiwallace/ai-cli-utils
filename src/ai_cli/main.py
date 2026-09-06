@@ -2315,14 +2315,43 @@ def _do_session_launch(
     # connection, `ai ls`/`ai attach`. It is an enhancement, so its absence must
     # degrade the launch, never block it: this used to exit 1 on every non-Windows
     # host without tmux, which made a missing enhancement fatal.
+    # Track WHY the mode was chosen, not just what it is: the report below is
+    # useless if it can only say "bare" without naming the decision that got
+    # there. An operator seeing bare mode cannot otherwise tell a config opt-out
+    # from a missing binary from a failed install.
+    tmux_reason = "tmux is the default session mode"
+    tmux_auto_installed: str | None = None
+    if bare:
+        tmux_reason = "--bare requested"
     if _tmux_setup.config_opts_out(config):
         bare = True
+        tmux_reason = "[session] use_tmux = false in config.toml"
 
     if not bare and not _tmux_setup.tmux_present():
         # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
         # so fall straight through to bare without a notice; every other platform
         # gets one install attempt and then the same fallback, loudly.
-        bare = not (sys.platform != "win32" and _tmux_setup.ensure_tmux().installed)
+        if sys.platform == "win32":
+            bare = True
+            tmux_reason = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+        else:
+            _tmux_install = _tmux_setup.ensure_tmux()
+            bare = not _tmux_install.installed
+            if _tmux_install.installed:
+                tmux_auto_installed = _tmux_install.tool
+            else:
+                tmux_reason = "tmux is absent and could not be installed unattended"
+
+    # The report itself is emitted further down, AFTER input validation: a launch
+    # rejected for a bad --project-prefix must reach no probe at all, which is the
+    # no-side-effect-before-rejection contract test_session_launch_integration
+    # pins. On Windows with no tmux the fallback is deliberately silent (see
+    # above), so suppress it there rather than adding a notice to the one path
+    # that is documented not to have one.
+    # Not for a remote dispatch either: the tmux that will host the session lives
+    # on the REMOTE host, so reporting the local binary's version would state a
+    # fact about the wrong machine.
+    tmux_report_wanted = not remote and not (sys.platform == "win32" and not _tmux_setup.tmux_present())
 
     # direnv preflight, alongside tmux above for the same reason: it is a native
     # binary that pip/uv can never supply. Unlike tmux it is never fatal — the
@@ -2394,6 +2423,24 @@ def _do_session_launch(
         except _config.ProjectPrefixError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
+    # One block per launch, now that the inputs are known good: presence, path,
+    # client version, the running server's version, the resolved mode and its
+    # reason. stderr so it never contaminates anything parsing stdout. Client and
+    # server are separate lines on purpose -- the server answers every format
+    # query, so a client-only version would state a compatibility that may not
+    # hold mid-upgrade.
+    if tmux_report_wanted:
+        for _tmux_line in _tmux_setup.report_lines(
+            # A bare launch queries no version: it must invoke tmux zero times,
+            # which test_bare_worktree pins and which is the right contract --
+            # bare mode has already decided tmux is not part of this session.
+            report=_tmux_setup.probe(query_versions=not bare),
+            bare=bare,
+            reason=tmux_reason,
+            auto_installed=tmux_auto_installed,
+        ):
+            print(_tmux_line, file=sys.stderr)
+
     engine_short = engine
     remote_seg = "-r" if is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"

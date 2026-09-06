@@ -1185,7 +1185,20 @@ fi
         script_bin = shutil.which("script")
         if script_bin is None:
             pytest.skip("script binary unavailable for terminal process-group test")
-        command = [script_bin, "-q", "/dev/null", *command]
+        if sys.platform == "darwin":
+            # BSD script: `script [-q] file [command ...]` — the trailing words
+            # are the command and are not re-parsed as script's own options.
+            command = [script_bin, "-q", "/dev/null", *command]
+        else:
+            # util-linux script has NO trailing-command form; the command must go
+            # through `-c`. Measured on util-linux 2.39.3: passing it as trailing
+            # words let script consume the SHELL's `-o NO_BG_NICE` as its own
+            # `--output-limit`, and it died with "failed to parse output limit
+            # size: 'NO_BG_NICE'" before the supervisor ever started. The test
+            # then reported "supervisor exited before its child was ready",
+            # blaming the code under test for an argv-parsing collision in its
+            # own harness.
+            command = [script_bin, "-q", "-c", shlex.join(command), "/dev/null"]
     process = subprocess.Popen(
         command,
         env=environment,
