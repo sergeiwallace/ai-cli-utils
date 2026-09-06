@@ -951,29 +951,51 @@ def test_adopt_given_worktree_creation_fails_when_adopted_then_raises_without_mo
 # of a "worktree to create" line.
 
 
-def test_adopt_given_a_destination_that_is_not_a_worktree_when_adopted_then_refused(world, adopt):
-    """A plain directory in the slot must stop adoption, not be adopted into.
+def test_adopt_given_a_destination_of_mere_debris_when_adopted_then_the_slot_is_self_healed(world, adopt):
+    """A plain directory of debris is MOVED ASIDE and adoption proceeds.
 
-    Discriminating: the destination exists and ``is_dir()`` is true, so the old
-    check passed it. Only a registration lookup can tell it apart. If the
-    directory *were* a real worktree this would not raise, which is the control
-    immediately below.
+    This asserted ``AdoptionError`` until 2026-09-06. That contract was superseded
+    deliberately by ``56ca234`` — *"feat(AI-CLI-self-healing-nypb): self-heal orphaned
+    worktree slots instead of refusing"* — so the refusal it asserted is the behaviour
+    the fleet chose to remove, not a guard that regressed. The earlier revision of this
+    docstring records the same thing happening once before, at ``0165e25`` for the EMPTY
+    slot; debris was added to keep it reaching the guard. Self-healing has since
+    subsumed the debris case too.
 
-    The directory must hold CONTENT. An *empty* slot is deliberately reused now
-    rather than refused (``session.py``, shipped in 0165e25 after this test was
-    written), so an empty fixture stopped reaching this guard at all and silently
-    asserted behaviour the fleet had already replaced. Verified by perturbation:
-    drop the write below and this test fails again.
+    Discriminating, and this is why the test is still worth having: self-healing is
+    scoped to slots holding nothing of value. The very next test puts NESTED AGENT
+    WORKTREES carrying unpushed commits in the same slot and still requires
+    ``AdoptionError``. So the pair asserts the real contract — recover what is
+    disposable, refuse what would endanger work — rather than either half alone.
+
+    Asserted by CONTENT, not by absence of an exception: the debris must be findable
+    in the timestamped sibling afterwards. A self-heal that deleted the directory
+    would satisfy "adoption succeeded" and is exactly the failure worth catching.
+
+    The transcript is asserted to have ARRIVED, not to have been left alone. The
+    superseded refusal version checked ``src_dir`` was untouched, which was right for a
+    refusal and is wrong here: a successful adoption is supposed to move the transcript,
+    so the old assertion would now pass only if adoption had silently done nothing.
     """
     plain = world["repo"] / ".worktrees" / "myproject-2"
     plain.mkdir(parents=True)
     (plain / "debris.txt").write_text("not a checkout", encoding="utf-8")
 
-    with pytest.raises(AdoptionError, match="not a worktree"):
-        adopt()
+    result = adopt()
 
-    assert (world["src_dir"] / f"{UUID}.jsonl").is_file(), "the source transcript must be untouched"
-    assert not cc_project_dir(plain, world["home"]).exists(), "nothing may be written into the collided slot"
+    recovered = [p for p in (world["repo"] / ".worktrees").iterdir() if p.name.startswith("myproject-2-orphaned-")]
+    assert len(recovered) == 1, (
+        "the debris slot must be moved aside exactly once, not deleted and not left "
+        f"in place; found: {sorted(p.name for p in (world['repo'] / '.worktrees').iterdir())}"
+    )
+    assert (recovered[0] / "debris.txt").read_text(encoding="utf-8") == "not a checkout", (
+        "the recovered directory must still hold its contents — self-healing relocates, it does not discard"
+    )
+    dest = cc_project_dir(plain, world["home"]) / f"{UUID}.jsonl"
+    assert result.migration.dest_jsonl == dest and dest.is_file(), (
+        "adoption must actually complete into the healed slot, not merely decline to "
+        f"raise; dest_jsonl={result.migration.dest_jsonl}"
+    )
 
 
 def test_adopt_given_a_destination_holding_nested_agent_worktrees_when_adopted_then_refused(world, adopt):
