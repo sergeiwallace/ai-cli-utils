@@ -2247,6 +2247,40 @@ def _do_color(color_arg: str) -> None:
 # --- Session launch (default command — `ai c NAME`, `ai g NAME`) ---
 
 
+def _print_launch_plan(
+    *,
+    engine: str,
+    session_id: str,
+    ai_name: str,
+    bare: bool,
+    remote: bool,
+    worktree_enabled: bool,
+    sandbox: bool,
+    extra_args: "list[str]",
+) -> None:
+    """Report what a launch would do, having done none of it.
+
+    Deliberately reports the RESOLVED values, not the requested ones: the session
+    index, the tmux-vs-bare decision after config and the tmux preflight, and the
+    worktree path. Those are the answers a dry run is asked for, and none of them
+    is visible from the command line alone.
+    """
+    repo_root = _session.detect_repo_root()
+    worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
+    lines = [
+        "ai-cli-utils: dry run -- nothing was created, started, or reaped.",
+        f"  engine     {_engine_display_name(engine)}",
+        f"  mode       {'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}",
+        f"  session    {ai_name}   (tmux target: {session_id})",
+        f"  worktree   {worktree or 'disabled for this launch'}",
+        f"  branch     {'wt-' + ai_name if worktree else 'n/a'}",
+        f"  sandbox    {'on' if sandbox else 'off'}",
+    ]
+    if extra_args:
+        lines.append(f"  engine args {' '.join(extra_args)}")
+    print("\n".join(lines))
+
+
 def _do_session_launch(
     engine: str,
     name: str,
@@ -2265,6 +2299,7 @@ def _do_session_launch(
     remote_machine: str = "",
     no_direnv: bool = False,
     reporter: LaunchReporter | None = None,
+    dry_run: bool = False,
 ) -> None:
     # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
     # only the client library, so tmux can never be auto-installed by pip/uv and
@@ -2554,6 +2589,43 @@ def _do_session_launch(
         _local_project_dir = _config._find_project_dir(_local_project)
         if _local_project_dir.exists():
             os.chdir(_local_project_dir)
+
+    # THE dry-run exit, and it belongs here rather than lower down: the next
+    # statement registers workspace trust, which writes. Everything from this
+    # point on mutates something -- trust state, the stale-session sweep, the
+    # worktree and its branch, session records, and finally an exec into the
+    # engine -- so a dry run that returned "after resolving the plan" would
+    # already have done two of those. Resolving the session name is read-only, so
+    # the plan is still reported with real values.
+    #
+    # It is deliberately ONE return placed above every write, not a `not dry_run`
+    # condition bolted onto each of them: guards added per-call are exactly how
+    # one gets missed, and a missed one here means a flag that promises to do
+    # nothing quietly doing something.
+    if dry_run:
+        try:
+            session_id, ai_name = _session.build_session_name(
+                engine,
+                project_prefix,
+                name,
+                config,
+                is_remote=is_remote,
+                use_tmux=not bare,
+            )
+        except _session.SessionSlotAmbiguityError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        _print_launch_plan(
+            engine=engine,
+            session_id=session_id,
+            ai_name=ai_name,
+            bare=bare,
+            remote=remote,
+            worktree_enabled=(config.get("worktree", {}).get("enabled", True) and not no_worktree),
+            sandbox=use_sandbox,
+            extra_args=extra_args,
+        )
+        return
 
     # Register workspace trust for the launch directory before starting Claude
     # Code. With ~/projects trusted as an ancestor, CC suppresses the trust
@@ -3070,6 +3142,7 @@ def _session_command(engine: str):
         project_prefix,
         quiet,
         verbose,
+        dry_run=False,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
@@ -3083,17 +3156,22 @@ def _session_command(engine: str):
         )
         config = _config.load_config()
         reporter.detail("Request", "configuration loaded")
-        trigger_background_update()
-        with reporter.phase("Install", "checking installed version") as install_phase:
-            reexec = _auto_update_if_stale(config) is True
-            origin = _launch_install_origin()
-            decision = "reinstalled; restarting" if reexec else "current"
-            install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
-        if reexec:
-            ai_bin = shutil.which("ai") or "ai"
-            os.environ[_LAUNCH_REEXEC_ENV] = "1"
-            os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
-        _tunnel._ensure_nats_tunnel(config)
+        # A dry run must not reinstall this CLI or start a tunnel either. Both
+        # sit above _do_session_launch, so its own dry-run exit cannot cover
+        # them: measured, `ai c 98 --dry-run` re-installed the tool and re-exec'd
+        # itself before printing a plan that claimed nothing had happened.
+        if not dry_run:
+            trigger_background_update()
+            with reporter.phase("Install", "checking installed version") as install_phase:
+                reexec = _auto_update_if_stale(config) is True
+                origin = _launch_install_origin()
+                decision = "reinstalled; restarting" if reexec else "current"
+                install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
+            if reexec:
+                ai_bin = shutil.which("ai") or "ai"
+                os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
+            _tunnel._ensure_nats_tunnel(config)
         _do_session_launch(
             engine=engine,
             name=name,
@@ -3112,6 +3190,7 @@ def _session_command(engine: str):
             remote_machine=remote_machine,
             no_direnv=no_direnv,
             reporter=reporter,
+            dry_run=dry_run,
         )
 
     _impl.__name__ = f"cmd_session_{engine}"
@@ -3148,6 +3227,18 @@ def _session_options(func):
     func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
     func = click.option("-q", "--quiet", is_flag=True, help="Suppress launch progress output")(func)
     func = click.option("-v", "--verbose", is_flag=True, help="Show additional launch progress details")(func)
+    # MUST be a declared option, not merely handled. SESSION_CONTEXT sets
+    # ignore_unknown_options, so an undeclared --dry-run is swallowed into
+    # ctx.args and forwarded verbatim to the engine -- the launch proceeds for
+    # real, creates a worktree and a branch, and starts a session. A flag whose
+    # entire promise is "do nothing" silently doing everything is the worst
+    # available failure, and docs/tools/ai-cli-usage.md has advertised this flag
+    # for `ai c`/`ai g` the whole time (AI-CLI-wepi).
+    func = click.option(
+        "--dry-run",
+        is_flag=True,
+        help="Print the resolved launch plan and exit; creates and starts nothing",
+    )(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
@@ -3162,162 +3253,42 @@ def _session_options(func):
 
 @_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
 @_session_options
-def cmd_c(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-    quiet,
-    verbose,
-):
-    _session_command("c")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-        quiet,
-        verbose,
-    )
+def cmd_c(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("c")(ctx, **options)
 
 
 @_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
 @_session_options
-def cmd_g(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-    quiet,
-    verbose,
-):
-    _session_command("g")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-        quiet,
-        verbose,
-    )
+def cmd_g(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("g")(ctx, **options)
 
 
 @_cli_group.command("p", context_settings=SESSION_CONTEXT, help="Launch a Pi session")
 @_session_options
-def cmd_p(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-    quiet,
-    verbose,
-):
-    _session_command("p")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-        quiet,
-        verbose,
-    )
+def cmd_p(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("p")(ctx, **options)
 
 
 @_cli_group.command("cx", context_settings=SESSION_CONTEXT, help="Launch a Codex session")
 @_session_options
-def cmd_cx(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-    quiet,
-    verbose,
-):
-    _session_command("cx")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-        quiet,
-        verbose,
-    )
+def cmd_cx(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("cx")(ctx, **options)
 
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")

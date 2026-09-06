@@ -86,7 +86,11 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
 - `N` — session number (default: auto-assigned). Creates worktree `.worktrees/sw-N` on branch `wt-sw-N`.
 - `-p PROJECT` — project alias (from `~/.config/ai-cli/config.toml` `[projects]` section)
 - `-R` — remote session: mosh + tmux on the configured remote host (auto-switches to SSH when VPN is active)
-- `--dry-run` — print what would happen without executing
+- `--dry-run` — print the resolved launch plan and exit. Reports the values you cannot
+  read off the command line: the session index actually free, the tmux-vs-bare decision
+  after config and the tmux preflight, the worktree path and branch. It returns above
+  every write, so it creates no worktree or branch, registers no workspace trust, reaps
+  no stale sessions, and does not auto-update the CLI.
 
 Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remote).
 
