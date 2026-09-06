@@ -2444,10 +2444,17 @@ def _do_session_launch(
 
         # REFUSE before creating anything when the client and the running server
         # are different versions (AI-CLI-tmuxmix). Measured 2026-09-06: with a
-        # 3.7c client against a live 3.4 server, `new-session -d` SUCCEEDED and
-        # the attach then died with `open terminal failed: not a terminal`, so
-        # five sessions were created that the operator could not enter. Every one
-        # had to be found and killed by hand.
+        # NEWER client against an OLDER live server, `new-session -d` SUCCEEDED
+        # and the attach then died with `open terminal failed: not a terminal`,
+        # so five sessions were created that the operator could not enter. Every
+        # one had to be found and killed by hand.
+        #
+        # Deliberately version-agnostic, and kept that way on purpose: the check
+        # is client != server, never a named pair. The harness replaced its own
+        # exact-version tmux allowlist with a floor on 2026-09-06 because naming
+        # builds in code is precisely what kept locking hosts out of the compact
+        # send path -- an allowlist that recurred four times across two
+        # subsystems. Do not reintroduce a version literal here.
         #
         # Refusing is strictly better than warning, and it has to happen HERE:
         # once the session exists, the damage (an unreachable session holding a

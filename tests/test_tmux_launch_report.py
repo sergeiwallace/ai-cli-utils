@@ -11,9 +11,15 @@ The one non-obvious requirement, and the reason this is not simply `tmux -V`:
 tmux server keeps its own version until every session on it exits, so during an
 upgrade the two genuinely disagree — and consumers that parse tmux's output are
 answered by the SERVER. A report that printed only `tmux -V` would state a
-compatibility that does not hold. Measured on this fleet 2026-09-06: client 3.7c
-against a live 3.4 server, at which point the auto-compact transport was refused
-by the server's version while the client claimed to be enrolled.
+compatibility that does not hold. Measured on this fleet 2026-09-06: a NEWER
+client against an OLDER live server, at which point the auto-compact transport was
+refused by the server's version while the client looked usable.
+
+Versions below are the two module constants ``OLDER_SERVER`` / ``NEWER_CLIENT``,
+never literals. This file used to hard-code the exact pair measured that day; the
+older of the two has since been removed from the fleet entirely, and what these
+cases actually assert is that the probe separates two DIFFERENT versions -- not
+anything about which two.
 """
 
 from __future__ import annotations
@@ -21,6 +27,21 @@ from __future__ import annotations
 import pytest
 
 from ai_cli import tmux_setup
+
+# Any two distinct version strings exercise this file. They are named rather than
+# inlined so that a future fleet-wide version change is one edit here, and so no
+# case can be read as a claim about a specific build.
+OLDER_SERVER = "3.6"
+NEWER_CLIENT = "3.7c"
+
+
+def test_the_two_fixture_versions_really_differ() -> None:
+    """Anti-vacuity control: every disagreement case below depends on this.
+
+    If the two constants were ever set equal, `versions_disagree` would be False
+    throughout and the whole file would pass while testing nothing.
+    """
+    assert OLDER_SERVER != NEWER_CLIENT
 
 
 @pytest.fixture
@@ -81,19 +102,19 @@ def test_probe_reports_path_client_and_server(fake_tmux) -> None:
 
     assert report.present is True
     assert report.path == "/usr/bin/tmux"
-    assert report.client_version == "3.7c"
+    assert report.client_version == NEWER_CLIENT
     assert report.server_version == "3.7c"
 
 
 def test_probe_separates_client_from_server(fake_tmux) -> None:
     """The whole point: these are two processes and they disagree mid-upgrade."""
-    fake_tmux["client"] = "tmux 3.7c"
-    fake_tmux["server"] = "3.4"
+    fake_tmux["client"] = f"tmux {NEWER_CLIENT}"
+    fake_tmux["server"] = OLDER_SERVER
 
     report = tmux_setup.probe()
 
-    assert report.client_version == "3.7c"
-    assert report.server_version == "3.4"
+    assert report.client_version == NEWER_CLIENT
+    assert report.server_version == OLDER_SERVER
     assert report.versions_disagree is True
 
 
@@ -187,10 +208,10 @@ def test_report_names_an_auto_install(fake_tmux) -> None:
 
 def test_report_warns_when_client_and_server_disagree(fake_tmux) -> None:
     """Silence here is how a mixed install reads as a working one."""
-    fake_tmux["server"] = "3.4"
+    fake_tmux["server"] = OLDER_SERVER
     text = _lines(report=tmux_setup.probe(), bare=False, reason="default")
 
-    assert "3.4" in text and "3.7c" in text
+    assert OLDER_SERVER in text and NEWER_CLIENT in text
     assert "server" in text.lower()
 
 
@@ -299,7 +320,7 @@ def test_an_unprobed_report_does_not_claim_a_broken_binary(monkeypatch) -> None:
 def test_the_refusal_message_names_both_versions_and_the_way_out() -> None:
     """The message has to carry the mechanism, because the failure is silent.
 
-    Measured 2026-09-06: a 3.7c client against a live 3.4 server accepted
+    Measured 2026-09-06: a NEWER client against an OLDER live server accepted
     `new-session -d` and then failed the attach with `open terminal failed: not
     a terminal`, leaving five sessions the operator could not enter and had to
     find and kill by hand. A warning next to a successful-looking launch is
@@ -332,7 +353,7 @@ def test_the_refusal_is_reached_only_through_the_disagreement(fake_tmux) -> None
         "no running server is the normal case and must never refuse a launch"
     )
 
-    fake_tmux["server"] = "3.4"
+    fake_tmux["server"] = OLDER_SERVER
     assert tmux_setup.probe(query_versions=False).versions_disagree is False, (
         "a bare launch does not probe, so it can never trip the guard"
     )
