@@ -43,6 +43,21 @@ dev.db
 # Claude Code workflow flags (transient, per-session)
 .claude/no_jira_required
 .claude/.rc-pair-state.json
+.claude/settings.local.json
+
+# Claude Code writes its install lock to a CWD-RELATIVE `claude/locks/` instead
+# of under the user's state directory, so the directory appears in whatever
+# checkout a session happens to be standing in. The cause is an empty-string
+# XDG_STATE_HOME: the bundle resolves the base with `??`, which falls back only
+# on null/undefined, so `join("", "claude", "locks")` stays relative.
+#
+# Not merely untidy. An automated working-tree sweep committed one of these, so
+# a foreign machine's lock — carrying that machine's absolute home path — shipped
+# to every clone, and it also made `git pull` refuse with "untracked working tree
+# files would be overwritten by checkout". Ignoring the directory is what stops
+# the next sweep from re-adding it; see the guard in
+# tests/test_public_repo_hygiene.py.
+claude/
 
 # Test artifacts
 test.db
