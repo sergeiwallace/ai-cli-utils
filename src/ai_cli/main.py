@@ -2430,16 +2430,47 @@ def _do_session_launch(
     # query, so a client-only version would state a compatibility that may not
     # hold mid-upgrade.
     if tmux_report_wanted:
+        # A bare launch queries no version: it must invoke tmux zero times,
+        # which test_bare_worktree pins and which is the right contract --
+        # bare mode has already decided tmux is not part of this session.
+        _tmux_report = _tmux_setup.probe(query_versions=not bare)
         for _tmux_line in _tmux_setup.report_lines(
-            # A bare launch queries no version: it must invoke tmux zero times,
-            # which test_bare_worktree pins and which is the right contract --
-            # bare mode has already decided tmux is not part of this session.
-            report=_tmux_setup.probe(query_versions=not bare),
+            report=_tmux_report,
             bare=bare,
             reason=tmux_reason,
             auto_installed=tmux_auto_installed,
         ):
             print(_tmux_line, file=sys.stderr)
+
+        # REFUSE before creating anything when the client and the running server
+        # are different versions (AI-CLI-tmuxmix). Measured 2026-09-06: with a
+        # 3.7c client against a live 3.4 server, `new-session -d` SUCCEEDED and
+        # the attach then died with `open terminal failed: not a terminal`, so
+        # five sessions were created that the operator could not enter. Every one
+        # had to be found and killed by hand.
+        #
+        # Refusing is strictly better than warning, and it has to happen HERE:
+        # once the session exists, the damage (an unreachable session holding a
+        # worktree and a task namespace) is already done. A warning printed
+        # beside a successful-looking launch is the shape that produced the
+        # incident.
+        if _tmux_report.versions_disagree:
+            print(
+                "Error: tmux client is "
+                f"{_tmux_report.client_version} but the running server is "
+                f"{_tmux_report.server_version}.\n"
+                "  A session created now would be unattachable: the server "
+                "accepts new-session, then the\n"
+                "  attach fails with 'open terminal failed: not a terminal', "
+                "leaving a session you cannot enter.\n"
+                "  A tmux server keeps its version until its LAST session "
+                "exits, so either:\n"
+                "    - exit every session on the running server, then relaunch "
+                "(it restarts at the client's version), or\n"
+                "    - launch with -b/--bare, which uses no tmux at all.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     engine_short = engine
     remote_seg = "-r" if is_remote else ""
