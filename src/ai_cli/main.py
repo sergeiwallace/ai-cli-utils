@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_module
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -1679,6 +1680,48 @@ def _venv_interpreter(venv: "Path") -> "Path":
     return venv / "bin" / "python"
 
 
+#: Environment carried into a tmux pane. Panes inherit from the long-lived tmux
+#: SERVER, not from the process running ``new-session``, so a server started
+#: before this launch would otherwise hand the pane a stale environment.
+_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM")
+
+
+def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
+    """Return the ``-e VAR=VALUE`` flags to pass to ``tmux new-session``.
+
+    ``XDG_STATE_HOME`` is always emitted, and always as an ABSOLUTE path.
+
+    Both halves matter and they pull in opposite directions. Emitting it
+    unconditionally is what clears a stale value inherited from a pre-existing
+    tmux server. Emitting it *empty* is what put Claude Code's install lock into
+    every session's working directory: CC resolves its state base as
+    ``XDG_STATE_HOME ?? <home>/.local/state``, and ``??`` falls back only on
+    null/undefined — not on ``""`` — so an empty value survives and
+    ``join("", "claude", "locks")`` stays RELATIVE. One such lock was swept into
+    git and shipped to every clone of this public package, carrying its machine's
+    absolute home path, after which ``git pull`` refused to overwrite the
+    untracked copy. Normalising an empty value to the documented default
+    satisfies both requirements at once.
+
+    Normalising HERE, rather than only in a shell profile, is what closes the
+    case: the pane runs the session script non-interactively, so no rc file is
+    sourced inside it and this flag is the pane's only channel. A profile-level
+    fix also cannot reach ``ai c`` invoked from a login or non-interactive shell,
+    where the inherited value is still ``""``.
+
+    The other variables are forwarded only when non-empty, since none of them has
+    a meaningful empty value and an empty ``PATH`` would be actively harmful.
+    """
+    flags: list[str] = []
+    for var in _TMUX_FORWARDED_VARS:
+        value = env.get(var)
+        if var == "XDG_STATE_HOME":
+            value = value or str(Path.home() / ".local" / "state")
+        if value:
+            flags += ["-e", f"{var}={value}"]
+    return flags
+
+
 def _install_is_editable(venv: "Path") -> bool:
     """Whether this tool environment holds (or is recorded as) an editable install.
 
@@ -2995,11 +3038,7 @@ def _do_session_launch(
     # a server created before this launch cannot select a stale script or agent.
     # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
     # excluded.
-    _tmux_env_flags: list[str] = []
-    for _var in ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM"):
-        _val = os.environ.get(_var)
-        if _val or _var == "XDG_STATE_HOME":
-            _tmux_env_flags += ["-e", f"{_var}={_val or ''}"]
+    _tmux_env_flags = build_tmux_env_flags(os.environ)
 
     if once:
         target_root = worktree_path or Path.cwd()

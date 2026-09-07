@@ -19,6 +19,7 @@ from ai_cli.main import (
     _ensure_nats_tunnel,
     _install_is_editable,
     _installed_source_fingerprint,
+    build_tmux_env_flags,
     cli,
     get_engine_script,
     trigger_background_update,
@@ -3136,3 +3137,77 @@ class TestSelfUpdatePreservesEditableInstall:
             for marker in venv.glob(pattern)
         }
         assert sorted(markers)
+
+
+class TestTmuxEnvForwardingNormalisesXdgStateHome:
+    """A tmux pane must never receive an EMPTY ``XDG_STATE_HOME``.
+
+    Claude Code resolves its state base as ``XDG_STATE_HOME ?? <home>/.local/state``.
+    JavaScript's ``??`` falls back only on null/undefined, so an empty string
+    survives and ``join("", "claude", "locks")`` stays RELATIVE — CC then writes
+    its install lock under whatever directory the process is standing in. One such
+    lock was swept into git and shipped to every clone of this public package,
+    carrying its machine's absolute home path, and afterwards ``git pull`` refused
+    to overwrite the untracked copy.
+
+    The variable still has to be forwarded unconditionally, because that is what
+    clears a stale value inherited from a pre-existing tmux server. So the fix is
+    normalisation, not omission, and these tests pin both halves.
+    """
+
+    @staticmethod
+    def _value_of(flags: list[str], var: str) -> str | None:
+        for index, item in enumerate(flags):
+            if item == "-e" and flags[index + 1].startswith(f"{var}="):
+                return flags[index + 1].split("=", 1)[1]
+        return None
+
+    def test_given_an_empty_xdg_state_home_when_flags_are_built_then_an_absolute_default_is_forwarded(self):
+        """The regression itself: empty in, absolute out — never ``XDG_STATE_HOME=``."""
+        flags = build_tmux_env_flags({"XDG_STATE_HOME": "", "PATH": "/usr/bin"})
+
+        value = self._value_of(flags, "XDG_STATE_HOME")
+        assert value, "XDG_STATE_HOME must still be forwarded, so a stale server value is cleared"
+        assert Path(value).is_absolute(), f"a relative base is the whole defect, got {value!r}"
+        assert value == str(Path.home() / ".local" / "state")
+        assert "XDG_STATE_HOME=" not in flags, "the bare empty assignment must never be emitted"
+
+    def test_given_no_xdg_state_home_at_all_when_flags_are_built_then_an_absolute_default_is_forwarded(self):
+        """Unset must behave like empty: still forwarded, still absolute."""
+        flags = build_tmux_env_flags({"PATH": "/usr/bin"})
+
+        value = self._value_of(flags, "XDG_STATE_HOME")
+        assert value == str(Path.home() / ".local" / "state")
+
+    def test_given_an_explicit_xdg_state_home_when_flags_are_built_then_it_is_forwarded_verbatim(self):
+        """Negative control: a real value must not be rewritten by the normalisation.
+
+        Without this, a fix that always substituted the default would pass the two
+        tests above while silently discarding a user's configured state directory.
+        """
+        flags = build_tmux_env_flags({"XDG_STATE_HOME": "/custom/state", "PATH": "/usr/bin"})
+
+        assert self._value_of(flags, "XDG_STATE_HOME") == "/custom/state"
+
+    def test_given_other_empty_variables_when_flags_are_built_then_they_are_omitted(self):
+        """Only XDG_STATE_HOME gets the always-forward treatment.
+
+        An empty PATH is actively harmful, and the remaining variables have no
+        meaningful empty value, so emptiness must still mean "do not forward".
+        """
+        flags = build_tmux_env_flags({"PATH": "", "LC_TERMINAL": "", "TERM_PROGRAM": ""})
+
+        assert self._value_of(flags, "PATH") is None
+        assert self._value_of(flags, "LC_TERMINAL") is None
+        assert self._value_of(flags, "TERM_PROGRAM") is None
+        assert self._value_of(flags, "XDG_STATE_HOME") == str(Path.home() / ".local" / "state")
+
+    def test_given_populated_variables_when_flags_are_built_then_each_is_forwarded(self):
+        """Positive control that the forwarding works at all for the other vars."""
+        flags = build_tmux_env_flags(
+            {"PATH": "/usr/bin", "LC_TERMINAL": "iTerm2", "TERM_PROGRAM": "vscode", "XDG_STATE_HOME": "/s"}
+        )
+
+        assert self._value_of(flags, "PATH") == "/usr/bin"
+        assert self._value_of(flags, "LC_TERMINAL") == "iTerm2"
+        assert self._value_of(flags, "TERM_PROGRAM") == "vscode"
