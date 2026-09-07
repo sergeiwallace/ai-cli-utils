@@ -10,6 +10,7 @@ evidence may opt out with a documented per-line marker.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 _SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
@@ -99,6 +100,45 @@ def scan_for_private_names(root: Path) -> list[str]:
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_names_remain():
     findings = scan_for_private_names(_repo_root())
     assert not findings, "private project names in a public package:\n" + "\n".join(findings)
+
+
+def test_given_the_repository_index_when_listed_then_no_claude_code_install_lock_is_tracked():
+    """No path under ``claude/`` may be tracked, whatever it contains.
+
+    ``scan_for_private_names`` above cannot catch this, and the reason is
+    structural rather than a missing pattern: it walks an allowlist of eight
+    paths (``src``, ``tests``, ``docs``, root metadata, ``.github``), so a
+    newly-tracked TOP-LEVEL directory is invisible to it by construction. That is
+    how ``claude/locks/2.1.263.lock`` — carrying a contributor's absolute home
+    path, which the forbidden-name pattern does match — reached ``main`` with
+    every hygiene guard green.
+
+    Claude Code writes that lock to a CWD-relative ``claude/locks/`` rather than
+    the user's state directory (an empty-string ``XDG_STATE_HOME`` makes the
+    bundle's ``??`` fallback leave the base empty, so the join stays relative), so
+    the directory materialises in whatever checkout a session is standing in and
+    an automated working-tree sweep committed it. It also broke ``git pull``:
+    ``untracked working tree files would be overwritten by checkout``.
+
+    Asserted against the git INDEX, not the filesystem, because the directory is
+    expected to exist on disk in any active checkout — being present is normal,
+    being *tracked* is the defect. A ``.gitignore`` entry alone would not have
+    caught it either: ignore rules do not apply to already-tracked paths.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "claude"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=_repo_root(),
+    ).stdout
+    offenders = [path for path in tracked.split("\0") if path]
+
+    assert not offenders, (
+        "Claude Code install-lock artefacts are tracked in a public repository:\n"
+        + "\n".join(f"  {path}" for path in offenders)
+        + "\nUntrack them with `git rm --cached <path>`; `.gitignore` does not untrack an existing entry."
+    )
 
 
 def test_given_a_line_that_uses_the_private_name_as_a_project_name_when_scanned_then_it_is_flagged(tmp_path):
