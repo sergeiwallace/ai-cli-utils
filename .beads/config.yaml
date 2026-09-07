@@ -66,6 +66,14 @@ issue-prefix: "AI-CLI"
 sync.remote: "git+ssh://gh-sergeiwallace-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
 export:
     auto: true
-    git-add: true
+    # AIH-bqtzw / AIH-7ls8a. bd's auto-export stages the mirror with a `git add` under a
+    # hardcoded 5s timeout. On EFS under load that is routinely exceeded, and a killed
+    # `git add` leaves an orphaned .git/index.lock that blocks EVERY later git operation in
+    # this repo, for every session. Measured firing three times on 2026-09-07.
+    #
+    # Suppresses STAGING only: `auto: true` above still writes .beads/issues.jsonl, so the
+    # mirror converges and the divergence gates keep seeing fresh JSONL. Set here rather
+    # than via BD_EXPORT_GIT_ADD because an env var reaches only the callers we wired.
+    git-add: false
 sync:
     remote: "git+ssh://gh-sergeiwallace-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
