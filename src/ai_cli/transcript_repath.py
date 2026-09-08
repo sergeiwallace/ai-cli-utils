@@ -107,6 +107,10 @@ class RepathResult:
     lines_rewritten: int
     total_lines: int
     bytes_written: int
+    # Lines that could not be parsed and were carried through verbatim (with a
+    # substring path substitution). `errors` names each one; this is the magnitude,
+    # which `errors` alone conflates with whole-file failures.
+    lines_unparsed: int = 0
     errors: list[str] = field(default_factory=list)
     disposition: str = "repathed"
 
@@ -305,32 +309,56 @@ def _copy_or_rewrite_file(
     *,
     is_jsonl: bool,
     result: RepathResult,
+    rel_path: Path | None = None,
 ) -> None:
     """Copy one file to dest, rewriting if it's a .jsonl file.
 
-    Raises OSError or json.JSONDecodeError on failure. Uses atomic write via temp file.
+    An unparseable line is SALVAGED rather than fatal: it is carried through with a
+    plain substring substitution of old_root, counted in ``result.lines_unparsed``, and
+    reported in ``result.errors`` with its line number. The file is still written.
+
+    Raises OSError on failure. Uses atomic write via temp file.
     """
     import os
     import tempfile
 
+    label = str(rel_path) if rel_path is not None else src.name
+
     if is_jsonl:
         # Parse and rewrite every line
         out_lines: list[str] = []
-        try:
-            with src.open("r", encoding="utf-8") as fh:
-                for line_num, line in enumerate(fh, start=1):
-                    result.total_lines += 1
-                    try:
-                        rewritten, changed = _rewrite_jsonl_line(line, old_root, new_root)
-                        if changed:
-                            result.lines_rewritten += 1
-                        out_lines.append(rewritten)
-                    except (json.JSONDecodeError, ValueError) as exc:
-                        raise json.JSONDecodeError(
-                            f"malformed JSONL at line {line_num}: {exc.msg}", exc.doc, exc.pos
-                        ) from exc
-        except json.JSONDecodeError:
-            raise  # Re-raise with line number info
+        with src.open("r", encoding="utf-8") as fh:
+            for line_num, line in enumerate(fh, start=1):
+                result.total_lines += 1
+                try:
+                    rewritten, changed = _rewrite_jsonl_line(line, old_root, new_root)
+                    if changed:
+                        result.lines_rewritten += 1
+                    out_lines.append(rewritten)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    # SALVAGE, do not discard the file. This used to raise, and the
+                    # caller turned that into "no destination copy for that file" --
+                    # so one torn line cost the whole transcript. Measured during the
+                    # SageMaker-to-EC2 migration: three live-session transcripts (44 MB,
+                    # 142 MB, 386 MB) and a subagents/ subtree were silently not copied,
+                    # each for a single line truncated mid-append at column 1000.
+                    #
+                    # A transcript missing one line is readable and resumable; an absent
+                    # transcript is neither. Copying a file a live session is still
+                    # appending to is the NORMAL case during a migration, so a torn
+                    # tail must not be treated as corruption.
+                    #
+                    # The path is still rewritten, by substring rather than through the
+                    # parser. Safe for this input: old_root is an absolute path prefix,
+                    # so substituting it cannot introduce or remove JSON structure the
+                    # line does not already have -- and the line is already unparseable,
+                    # so there is no valid structure left to damage.
+                    salvaged = line.replace(old_root, new_root)
+                    if salvaged != line:
+                        result.lines_rewritten += 1
+                    out_lines.append(salvaged)
+                    result.lines_unparsed += 1
+                    result.errors.append(f"{label}: salvaged unparseable line {line_num}: {exc}")
 
         content = "".join(out_lines)
         # Atomic write via temp file
@@ -378,7 +406,10 @@ def repath_project_dir(
     readable evidence while still naming the old cwd, so nothing claims it can be
     resumed against a path that has no checkout.
 
-    Malformed JSONL produces a loud error and no destination copy for that file.
+    An unparseable line is SALVAGED, not fatal: it is written through verbatim with a
+    substring path substitution, counted in ``lines_unparsed``, and named with its
+    line number in ``errors``. The file is still copied. Discarding it was measured
+    losing three whole live-session transcripts to one torn append each.
 
     Returns statistics about what was rewritten.
     """
@@ -421,8 +452,13 @@ def repath_project_dir(
                             if changed:
                                 result.lines_rewritten += 1
                         except (json.JSONDecodeError, ValueError):
-                            result.errors.append(f"{jsonl.relative_to(old_dir)}: malformed JSONL at line {line_num}")
-                            break
+                            # Count and continue: stopping at the first bad line
+                            # under-reported every later line in the file, so a dry
+                            # run could not predict what the real run would do.
+                            result.lines_unparsed += 1
+                            result.errors.append(
+                                f"{jsonl.relative_to(old_dir)}: unparseable line {line_num} (would be salvaged)"
+                            )
                 result.jsonl_files += 1
             except OSError as exc:
                 result.errors.append(f"{jsonl.relative_to(old_dir)}: {exc}")
@@ -443,8 +479,20 @@ def repath_project_dir(
         is_jsonl = rewrite and src_file.suffix == ".jsonl"
 
         try:
-            _copy_or_rewrite_file(src_file, dest_file, old_root, new_root, is_jsonl=is_jsonl, result=result)
-        except (OSError, json.JSONDecodeError) as exc:
+            _copy_or_rewrite_file(
+                src_file, dest_file, old_root, new_root, is_jsonl=is_jsonl, result=result, rel_path=rel_path
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            # A file that cannot be READ at all is still a real failure and stays
+            # loud. Only an unparseable LINE is salvaged; the two are different.
+            #
+            # UnicodeDecodeError is listed explicitly because it is a ValueError, NOT an
+            # OSError, and it is raised by iterating the file handle rather than inside
+            # the per-line try -- so it escapes the salvage path entirely. Caught by this
+            # module's own negative-control test, which asserted that an unreadable file
+            # is REPORTED; without this clause it propagated out of repath_project_dir
+            # and took down the whole run, turning one bad file into zero migrated
+            # directories. The pre-fix code had the same hole.
             result.errors.append(f"{rel_path}: {exc}")
             # Continue processing other files, but this file produced no output
 
