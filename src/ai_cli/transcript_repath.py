@@ -29,6 +29,15 @@ necessary for embedded path references in message content.
 
 Malformed JSONL lines cause the entire file to be rejected with a loud error.
 
+Missing destinations
+--------------------
+Mapping cwds by root-slug prefix is not sufficient on its own. A session whose cwd
+was a since-reaped worktree maps to a destination path that has no checkout, so a
+rewritten transcript points Claude Code at nothing while still being offered as
+resumable. ``MissingDestPolicy`` decides what happens to those, and the caller must
+say how destination existence is determined (``dest_exists``) rather than have one
+guessed for it -- see ``plan_repath``.
+
 Limitations
 -----------
 Windows paths are out of scope. The tool assumes POSIX paths only.
@@ -41,13 +50,38 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from .cc_migrate import cc_project_dir
 
 # Pattern to match embedded path references in any JSON string value
 # This catches the old root appearing anywhere in string content, not just top-level cwd fields
+
+
+class MissingDestPolicy(StrEnum):
+    """What to do with a project dir whose repathed cwd does not exist.
+
+    ``UNREPATHED`` is the default because it is the only option that loses nothing
+    and claims nothing: the transcript stays readable as evidence, and because its
+    directory slug still names the OLD cwd, the new machine cannot offer it as a
+    resumable session.
+    """
+
+    SKIP = "skip"
+    UNREPATHED = "unrepathed"
+    REPATH = "repath"
+
+
+@dataclass
+class MissingDest:
+    """A project dir whose repathed cwd does not exist on the destination."""
+
+    old_dir: Path
+    new_cwd: Path
+    disposition: MissingDestPolicy
 
 
 @dataclass
@@ -60,6 +94,7 @@ class RepathPlan:
     total_jsonl_files: int
     total_bytes: int
     dry_run: bool
+    missing_dest: list[MissingDest] = field(default_factory=list)
 
 
 @dataclass
@@ -73,6 +108,7 @@ class RepathResult:
     total_lines: int
     bytes_written: int
     errors: list[str] = field(default_factory=list)
+    disposition: str = "repathed"
 
 
 def _slugify_cwd(cwd: str) -> str:
@@ -149,12 +185,32 @@ def plan_repath(
     new_root: Path,
     *,
     claude_home: Path | None = None,
+    dest_exists: Callable[[Path], bool] | None = None,
+    missing_dest_policy: MissingDestPolicy = MissingDestPolicy.UNREPATHED,
 ) -> RepathPlan:
     """Analyze what would be rewritten from old_root to new_root.
 
-    Returns a plan describing every project directory that would be renamed and
-    every file that would be rewritten. Does not write anything.
+    Returns a plan splitting every matching project directory into ``project_dirs``
+    (the repathed cwd exists, so the session stays resumable) and ``missing_dest``
+    (it does not). Does not write anything.
+
+    ``dest_exists`` decides which side a directory lands on, and is REQUIRED for
+    every policy except ``REPATH``. There is deliberately no default: the obvious
+    one, ``Path.is_dir``, is only correct when this runs ON the destination machine.
+    Run from the source machine it reports every destination missing, silently
+    degrading a legitimate whole-store repath into copying everything unrepathed --
+    confidently wrong rather than merely unhelpful. Pass ``Path.is_dir`` when
+    running on the target, or a predicate backed by a path manifest measured there.
     """
+    if missing_dest_policy is not MissingDestPolicy.REPATH and dest_exists is None:
+        raise ValueError(
+            f"missing_dest_policy={missing_dest_policy.value!r} depends on whether each repathed cwd "
+            "exists, so dest_exists is required. Pass dest_exists=Path.is_dir when running ON the "
+            "destination machine, or a predicate backed by a manifest of paths measured there. To "
+            "repath every directory without checking, ask for it explicitly with "
+            "missing_dest_policy=MissingDestPolicy.REPATH."
+        )
+
     home = claude_home if claude_home is not None else Path.home() / ".claude"
     projects_dir = home / "projects"
 
@@ -173,6 +229,7 @@ def plan_repath(
     old_slug_prefix = _slugify_cwd(str(old_root))
 
     project_dirs: list[tuple[Path, Path]] = []
+    missing_dest: list[MissingDest] = []
     total_files = 0
     total_bytes = 0
 
@@ -214,6 +271,12 @@ def plan_repath(
         new_cwd = str(new_root) + suffix
         new_dir = cc_project_dir(Path(new_cwd), claude_home=home)
 
+        # A repathed transcript is only resumable if the cwd it now names has a
+        # checkout. Everything else is routed by policy rather than rewritten.
+        if dest_exists is not None and not dest_exists(Path(new_cwd)):
+            missing_dest.append(MissingDest(old_dir=old_dir, new_cwd=Path(new_cwd), disposition=missing_dest_policy))
+            continue
+
         project_dirs.append((old_dir, new_dir))
 
         for jsonl in jsonl_files:
@@ -230,6 +293,7 @@ def plan_repath(
         total_jsonl_files=total_files,
         total_bytes=total_bytes,
         dry_run=True,
+        missing_dest=missing_dest,
     )
 
 
@@ -301,12 +365,18 @@ def repath_project_dir(
     new_root: str,
     *,
     dry_run: bool = False,
+    rewrite: bool = True,
 ) -> RepathResult:
     """Repath one project directory from old_dir to new_dir.
 
     Recursively rewrites every ``*.jsonl`` file at any depth, replacing all
     occurrences of old_root with new_root in string values. Copies all other files
     byte-for-byte. Writes to new_dir (created if needed). Never modifies old_dir.
+
+    ``rewrite=False`` copies every file byte-for-byte instead, jsonl included. That
+    is what ``MissingDestPolicy.UNREPATHED`` needs: the transcript is preserved as
+    readable evidence while still naming the old cwd, so nothing claims it can be
+    resumed against a path that has no checkout.
 
     Malformed JSONL produces a loud error and no destination copy for that file.
 
@@ -319,6 +389,7 @@ def repath_project_dir(
         lines_rewritten=0,
         total_lines=0,
         bytes_written=0,
+        disposition="repathed" if rewrite else "unrepathed",
     )
 
     if not old_dir.is_dir():
@@ -332,6 +403,11 @@ def repath_project_dir(
     if not jsonl_files:
         # Still copy non-jsonl files if present
         pass
+
+    if dry_run and not rewrite:
+        # A copy-only run rewrites nothing, so there is nothing to count per line.
+        result.jsonl_files = len(jsonl_files)
+        return result
 
     if dry_run:
         # Dry run: count what would be rewritten without writing
@@ -364,7 +440,7 @@ def repath_project_dir(
 
         rel_path = src_file.relative_to(old_dir)
         dest_file = new_dir / rel_path
-        is_jsonl = src_file.suffix == ".jsonl"
+        is_jsonl = rewrite and src_file.suffix == ".jsonl"
 
         try:
             _copy_or_rewrite_file(src_file, dest_file, old_root, new_root, is_jsonl=is_jsonl, result=result)
@@ -382,6 +458,8 @@ def repath_all(
     *,
     dry_run: bool = False,
     claude_home: Path | None = None,
+    dest_exists: Callable[[Path], bool] | None = None,
+    missing_dest_policy: MissingDestPolicy = MissingDestPolicy.UNREPATHED,
 ) -> list[RepathResult]:
     """Repath all project directories from old_root to new_root.
 
@@ -393,10 +471,20 @@ def repath_all(
     same destination, or if a destination already exists, the operation fails with
     an error.
 
-    Returns one result per project directory processed.
+    ``dest_exists`` and ``missing_dest_policy`` are forwarded to ``plan_repath`` and
+    carry the same contract, including its refusal to guess an existence check.
+
+    Returns one result per project directory processed, in each case carrying the
+    ``disposition`` that was applied to it.
     """
     home = claude_home if claude_home is not None else Path.home() / ".claude"
-    plan = plan_repath(old_root, new_root, claude_home=home)
+    plan = plan_repath(
+        old_root,
+        new_root,
+        claude_home=home,
+        dest_exists=dest_exists,
+        missing_dest_policy=missing_dest_policy,
+    )
 
     results: list[RepathResult] = []
     old_root_str = str(old_root.resolve())
@@ -434,5 +522,53 @@ def repath_all(
             dry_run=dry_run,
         )
         results.append(result)
+
+    # Apply the policy to every directory whose repathed cwd has no checkout.
+    for missing in plan.missing_dest:
+        if missing.disposition is MissingDestPolicy.SKIP:
+            results.append(
+                RepathResult(
+                    old_dir=missing.old_dir,
+                    new_dir=missing.new_cwd,
+                    jsonl_files=0,
+                    lines_rewritten=0,
+                    total_lines=0,
+                    bytes_written=0,
+                    disposition="skipped",
+                )
+            )
+            continue
+
+        # UNREPATHED: copy byte-for-byte under the ORIGINAL slug. Keeping the old
+        # slug is the whole mechanism -- it names a cwd that does not exist on the
+        # new machine, so the session is readable evidence and nothing else.
+        if dest_base is None:
+            # Writing into the live store, where the directory ALREADY sits under
+            # its original slug. Leaving it alone is the action; copying a directory
+            # onto itself would only trip the collision guard and report an error
+            # for work that is already in the state the policy wants.
+            results.append(
+                RepathResult(
+                    old_dir=missing.old_dir,
+                    new_dir=missing.old_dir,
+                    jsonl_files=0,
+                    lines_rewritten=0,
+                    total_lines=0,
+                    bytes_written=0,
+                    disposition="unrepathed",
+                )
+            )
+            continue
+
+        results.append(
+            repath_project_dir(
+                missing.old_dir,
+                dest_base / missing.old_dir.name,
+                old_root_str,
+                new_root_str,
+                dry_run=dry_run,
+                rewrite=False,
+            )
+        )
 
     return results
