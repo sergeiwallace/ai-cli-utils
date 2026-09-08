@@ -1135,6 +1135,7 @@ class TestCreateWorktree:
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         wt_dir = repo_root / ".worktrees" / "session-1"
         calls = []
+        probed = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
@@ -1142,10 +1143,13 @@ class TestCreateWorktree:
                 wt_dir.mkdir(parents=True, exist_ok=True)
                 (wt_dir / ".envrc").write_text((repo_root / ".envrc").read_text())
                 return MagicMock(returncode=0, stdout="")
-            if cmd == ["direnv", "exec", str(wt_dir), "true"]:
-                return MagicMock(returncode=1, stdout="")
-            if cmd == ["direnv", "exec", str(repo_root), "true"]:
-                return MagicMock(returncode=0, stdout="")
+            # The trust probe is `direnv export json` run IN the directory, so the
+            # directory it asks about arrives as cwd, never as an argv element. Keying
+            # on the retired `direnv exec <dir> true` shape matched nothing, fell through
+            # to the rc=0 catch-all, and made every probe read usable.
+            if cmd == ["direnv", "export", "json"]:
+                probed.append(Path(kwargs["cwd"]))
+                return MagicMock(returncode=0 if Path(kwargs["cwd"]) == repo_root else 1, stdout="")
             return MagicMock(returncode=0, stdout="")
 
         with (
@@ -1168,9 +1172,11 @@ class TestCreateWorktree:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd == ["direnv", "exec", str(wt_dir), "true"]:
-                return MagicMock(returncode=1, stdout="")
-            if cmd == ["direnv", "exec", str(repo_root), "true"]:
+            # The trust probe is `direnv export json` run IN the directory, so the
+            # directory it asks about arrives as cwd, never as an argv element. Keying
+            # on the retired `direnv exec <dir> true` shape matched nothing, fell through
+            # to the rc=0 catch-all, and made every probe read usable.
+            if cmd == ["direnv", "export", "json"]:
                 return MagicMock(returncode=1, stdout="")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
@@ -1192,10 +1198,16 @@ class TestCreateWorktree:
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         (wt_dir / ".envrc").write_text("export EXAMPLE=value\n")
         calls = []
+        probed = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd == ["direnv", "exec", str(wt_dir), "true"]:
+            # The trust probe is `direnv export json` run IN the directory, so the
+            # directory it asks about arrives as cwd, never as an argv element. Keying
+            # on the retired `direnv exec <dir> true` shape matched nothing, fell through
+            # to the rc=0 catch-all, and made every probe read usable.
+            if cmd == ["direnv", "export", "json"]:
+                probed.append(Path(kwargs["cwd"]))
                 return MagicMock(returncode=0, stdout="")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
@@ -1208,7 +1220,9 @@ class TestCreateWorktree:
             result = create_worktree("session-1")
 
         assert result == wt_dir
-        assert ["direnv", "exec", str(repo_root), "true"] not in calls
+        # The assertion this replaces named the retired probe shape, so it held
+        # whatever the code did -- it could not observe a root probe any more.
+        assert probed == [wt_dir], "the root .envrc must not be re-evaluated on every launch"
         assert not any(call[:2] == ["direnv", "allow"] for call in calls)
 
 

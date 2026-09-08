@@ -386,9 +386,18 @@ def _for_each(targets: list[psutil.Process], action: Callable[[psutil.Process], 
 
     Whether the processes ended is read back from psutil afterwards, so a call that
     fails because its target has already gone carries no information worth raising.
+
+    ``AttributeError`` is suppressed for the same reason, and it is not a stray catch:
+    psutil resolves the platform signal INSIDE the action, so ``resume()`` raises it
+    rather than a ``psutil.Error`` on a platform with no ``SIGCONT``. Without this,
+    ``end_process`` aborted mid-escalation on exactly the platform whose no-op resume
+    it documents as harmless -- after ``terminate()`` but before ``kill()``, so the
+    escalation it exists to guarantee never ran. It cannot mask a misspelled action
+    either: the attribute is looked up at the call site, before ``_for_each`` is
+    entered, so a typo still raises there.
     """
     for target in targets:
-        with contextlib.suppress(psutil.Error, OSError):
+        with contextlib.suppress(psutil.Error, OSError, AttributeError):
             action(target)
 
 
