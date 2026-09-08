@@ -6,7 +6,7 @@ status: resolved
 template_version: "bug-1.0.0"
 ---
 
-<!-- aido:region name="summary" kind="replaceable" -->
+<!-- companion:region name="summary" kind="replaceable" -->
 
 # [AI-CLI-vs8] Windows: ai c hard-exits when tmux is absent instead of falling back to bare mode
 
@@ -122,4 +122,4 @@ When adding platform-specific error hints to a guard, always check whether the
 guard itself should behave differently on that platform — not just whether the
 message should differ. The hint text and the exit path are separate concerns.
 
-<!-- /aido:region name="summary" -->
+<!-- /companion:region name="summary" -->

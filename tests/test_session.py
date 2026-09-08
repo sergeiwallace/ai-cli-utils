@@ -306,11 +306,53 @@ def _cleanup(config, panes_output, now=None):
     return kill_calls
 
 
-def test_cleanup_when_pane_is_shell_then_kills_session():
+def test_given_unrelated_session_with_a_false_ended_pane_result_when_cleanup_runs_then_it_never_kills_the_session():
+    """Launch-time cleanup must not have authority to end another tmux session.
+
+    The ``probe_for`` seam deliberately reports the pane as ended.  Before this
+    regression fix, that one observation made this arbitrary launch issue
+    ``tmux kill-session -t c-r-app-1``.  It is patched with ``create=True`` so
+    the test also drives that exact old path when the structural fix is reverted.
+    """
+    panes = MagicMock(returncode=0, stdout="c-r-app-1|101\n")
+    probe = MagicMock()
+    probe.has_ended.return_value = True
+
+    with (
+        patch("subprocess.run") as run,
+        patch("ai_cli.session.sys.platform", "linux"),
+        patch("ai_cli.session.probe_for", return_value=probe, create=True),
+        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
+        patch("ai_cli.session._sweep_stale_iterm2_profiles"),
+    ):
+        run.return_value = panes
+        cleanup_stale_sessions({})
+
+    assert not any("kill-session" in call.args[0] for call in run.call_args_list)
+
+
+def test_given_managed_tmux_listing_when_launch_cleanup_runs_then_it_never_starts_or_runs_the_reaper():
+    panes = MagicMock(returncode=0, stdout="c-myproject-1\n")
+    with (
+        patch("subprocess.run", return_value=panes) as run,
+        patch("ai_cli.session.sys.platform", "linux"),
+        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
+        patch("ai_cli.session._sweep_stale_iterm2_profiles"),
+        patch("ai_cli.process_manager._cmd_stale_session_reaper_start") as start,
+        patch("ai_cli.stale_session_reaper.run_stale_session_reaper") as run_reaper,
+    ):
+        cleanup_stale_sessions({})
+
+    start.assert_not_called()
+    run_reaper.assert_not_called()
+    assert not any("kill-session" in call.args[0] for call in run.call_args_list)
+
+
+def test_given_unrelated_dead_shell_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     panes = _make_list_panes_output(("c-sw-1", now - 61, "bash"))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-1" in killed
+    assert killed == []
 
 
 def test_cleanup_when_pane_is_claude_and_recent_then_preserves_session():
@@ -320,12 +362,12 @@ def test_cleanup_when_pane_is_claude_and_recent_then_preserves_session():
     assert "c-sw-1" not in killed
 
 
-def test_cleanup_when_claude_abandoned_beyond_timeout_then_kills_session():
+def test_given_unrelated_detached_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("c-sw-2", now - timeout_seconds - 1, "claude"))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-2" in killed
+    assert killed == []
 
 
 def test_cleanup_when_claude_within_timeout_then_preserves_session():
@@ -343,29 +385,29 @@ def test_cleanup_when_non_ai_session_then_ignores_it():
     assert killed == []
 
 
-def test_cleanup_when_gemini_session_abandoned_then_kills_it():
+def test_given_unrelated_gemini_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("g-sw-1", now - timeout_seconds - 1, "gemini"))
     killed = _cleanup({}, panes, now)
-    assert "g-sw-1" in killed
+    assert killed == []
 
 
-def test_cleanup_when_remote_session_abandoned_then_kills_it():
+def test_given_unrelated_remote_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("c-r-sw-1", now - timeout_seconds - 1, "claude"))
     killed = _cleanup({}, panes, now)
-    assert "c-r-sw-1" in killed
+    assert killed == []
 
 
-def test_cleanup_when_custom_timeout_configured_then_uses_it():
+def test_given_unrelated_session_past_custom_timeout_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     config = {"session": {"stale_session_timeout": 5}}  # 5 minutes
     timeout_seconds = 5 * 60
     panes = _make_list_panes_output(("c-sw-1", now - timeout_seconds - 1, "claude"))
     killed = _cleanup(config, panes, now)
-    assert "c-sw-1" in killed
+    assert killed == []
 
 
 def test_cleanup_when_no_tmux_then_does_nothing():
@@ -384,12 +426,12 @@ def test_cleanup_when_session_currently_attached_then_never_kills_it():
     assert "c-sw-1" not in killed
 
 
-def test_cleanup_when_session_detached_and_abandoned_then_kills_it():
+def test_given_detached_abandoned_session_when_cleanup_runs_then_it_never_kills_it():
     now = int(time.time())
     timeout_seconds = 15 * 60
     panes = _make_list_panes_output(("c-sw-2", now - timeout_seconds - 1, "claude", 0))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-2" in killed
+    assert killed == []
 
 
 def test_cleanup_when_old_format_session_then_ignores_it():
@@ -475,6 +517,25 @@ def test_given_live_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state
     state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
     monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
     panes = _make_list_panes_output(("c-test-1", int(time.time()), "claude"))
+
+    with patch(
+        "ai_cli.session.subprocess.run",
+        return_value=panes,
+    ):
+        cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
+
+    assert bg_spare_stand_in.poll() is None
+    assert state_file.exists()
+
+
+def test_given_live_remote_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(
+    tmp_path, monkeypatch, bg_spare_stand_in
+):
+    """A remote pane has c-r- prefix while Claude records only its --name value."""
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
+    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
+    panes = MagicMock(returncode=0, stdout=f"c-r-test-1|{os.getpid()}\n")
 
     with patch(
         "ai_cli.session.subprocess.run",
@@ -1135,21 +1196,17 @@ class TestCreateWorktree:
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         wt_dir = repo_root / ".worktrees" / "session-1"
         calls = []
-        probed = []
+        direnv_calls = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            if cmd[:2] == ["direnv", "export"]:
+                direnv_calls.append((cmd, kwargs["cwd"]))
+                return MagicMock(returncode=0 if kwargs["cwd"] == repo_root else 1, stdout="")
             if cmd[:3] == ["git", "worktree", "add"]:
                 wt_dir.mkdir(parents=True, exist_ok=True)
                 (wt_dir / ".envrc").write_text((repo_root / ".envrc").read_text())
                 return MagicMock(returncode=0, stdout="")
-            # The trust probe is `direnv export json` run IN the directory, so the
-            # directory it asks about arrives as cwd, never as an argv element. Keying
-            # on the retired `direnv exec <dir> true` shape matched nothing, fell through
-            # to the rc=0 catch-all, and made every probe read usable.
-            if cmd == ["direnv", "export", "json"]:
-                probed.append(Path(kwargs["cwd"]))
-                return MagicMock(returncode=0 if Path(kwargs["cwd"]) == repo_root else 1, stdout="")
             return MagicMock(returncode=0, stdout="")
 
         with (
@@ -1161,6 +1218,10 @@ class TestCreateWorktree:
 
         assert result == wt_dir
         assert ["direnv", "allow", str(wt_dir)] in calls
+        assert direnv_calls == [
+            (["direnv", "export", "json"], wt_dir),
+            (["direnv", "export", "json"], repo_root),
+        ]
 
     def test_create_worktree_when_root_envrc_is_unusable_then_does_not_allow_worktree(self, tmp_path):
         repo_root = tmp_path / "repo"
@@ -1172,11 +1233,7 @@ class TestCreateWorktree:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            # The trust probe is `direnv export json` run IN the directory, so the
-            # directory it asks about arrives as cwd, never as an argv element. Keying
-            # on the retired `direnv exec <dir> true` shape matched nothing, fell through
-            # to the rc=0 catch-all, and made every probe read usable.
-            if cmd == ["direnv", "export", "json"]:
+            if cmd == ["direnv", "export", "json"] and kwargs["cwd"] in (wt_dir, repo_root):
                 return MagicMock(returncode=1, stdout="")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
@@ -1198,16 +1255,12 @@ class TestCreateWorktree:
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         (wt_dir / ".envrc").write_text("export EXAMPLE=value\n")
         calls = []
-        probed = []
+        direnv_calls = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            # The trust probe is `direnv export json` run IN the directory, so the
-            # directory it asks about arrives as cwd, never as an argv element. Keying
-            # on the retired `direnv exec <dir> true` shape matched nothing, fell through
-            # to the rc=0 catch-all, and made every probe read usable.
             if cmd == ["direnv", "export", "json"]:
-                probed.append(Path(kwargs["cwd"]))
+                direnv_calls.append((cmd, kwargs["cwd"]))
                 return MagicMock(returncode=0, stdout="")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
@@ -1220,25 +1273,43 @@ class TestCreateWorktree:
             result = create_worktree("session-1")
 
         assert result == wt_dir
-        # The assertion this replaces named the retired probe shape, so it held
-        # whatever the code did -- it could not observe a root probe any more.
-        assert probed == [wt_dir], "the root .envrc must not be re-evaluated on every launch"
+        assert direnv_calls == [(["direnv", "export", "json"], wt_dir)]
         assert not any(call[:2] == ["direnv", "allow"] for call in calls)
 
 
 class TestCreateWorktreeEdgeCases:
-    def test_create_worktree_when_unregistered_dir_then_refuses_to_delete(self, tmp_path):
+    def test_given_a_plain_populated_worktree_slot_when_created_then_it_is_recovered_and_recreated(
+        self, tmp_path, capsys
+    ):
         wt_dir = tmp_path / ".worktrees" / "sw-3"
         wt_dir.mkdir(parents=True)
         (wt_dir / "leftover.txt").write_text("do not remove\n")
+        add_calls = []
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "worktree", "add"]:
+                add_calls.append(cmd)
+                wt_dir.mkdir()
+            return MagicMock(returncode=0, stdout="")
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
             patch("ai_cli.session.registered_worktrees", return_value=[]),
+            patch("ai_cli.session.time.time_ns", return_value=1_725_143_900_123_456_789),
+            _stub_worktree_base(),
+            patch("subprocess.run", side_effect=mock_run),
         ):
-            with pytest.raises(RuntimeError, match="refusing to delete"):
-                create_worktree("sw-3")
-        assert (wt_dir / "leftover.txt").read_text() == "do not remove\n"
+            result = create_worktree("sw-3")
+
+        recovered = wt_dir.with_name("sw-3-orphaned-1725143900123456789")
+        assert result == wt_dir
+        assert (recovered / "leftover.txt").read_text() == "do not remove\n"
+        assert wt_dir.is_dir()
+        assert add_calls == [["git", "worktree", "add", str(wt_dir), "-b", "wt-sw-3", "refs/remotes/origin/main"]]
+        assert (
+            f"[launch] Recovered orphaned directory: moved {wt_dir} -> {recovered} (not deleted; review manually)"
+            in capsys.readouterr().err
+        )
 
 
 class TestCreateWorktreeEdgeCases2:
@@ -1558,19 +1629,16 @@ class TestCleanupWorktree:
             cleanup_worktree("nonexistent")
 
     def test_cleanup_worktree_when_dirty_then_skips_remove(self, tmp_path):
-        """Covers lines 469-472: diff returns nonzero, so no removal."""
+        """Covers lines 469-472: status --porcelain returns nonzero, so no removal."""
         wt_dir = tmp_path / ".worktrees" / "sw-7"
         wt_dir.mkdir(parents=True)
         calls = []
 
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
-            m = MagicMock()
-            if "diff" in cmd and "--cached" not in cmd:
-                m.returncode = 1  # dirty
-            else:
-                m.returncode = 0
-            return m
+            if "status" in cmd:
+                return MagicMock(returncode=1, stdout="")
+            return MagicMock(returncode=0, stdout="")
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
@@ -1578,21 +1646,59 @@ class TestCleanupWorktree:
         remove_calls = [c for c in calls if "remove" in c]
         assert len(remove_calls) == 0
 
+    def test_cleanup_worktree_when_untracked_files_present_then_skips_remove(self, tmp_path):
+        """A worktree with only untracked files (no tracked diff) must not be treated as clean --
+        `git status --porcelain` reports them even though `git diff`/`git diff --cached` do not."""
+        wt_dir = tmp_path / ".worktrees" / "sw-9"
+        wt_dir.mkdir(parents=True)
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "status" in cmd:
+                return MagicMock(returncode=0, stdout="?? MEMORY.md\n")
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                cleanup_worktree("sw-9")
+        remove_calls = [c for c in calls if "remove" in c]
+        assert len(remove_calls) == 0
+
     def test_cleanup_worktree_when_clean_then_removes(self, tmp_path):
-        """Covers lines 471-472: both diffs clean, calls worktree remove."""
+        """Covers lines 471-472: status --porcelain is empty, calls worktree remove."""
         wt_dir = tmp_path / ".worktrees" / "sw-8"
         wt_dir.mkdir(parents=True)
         calls = []
 
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="")
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
                 cleanup_worktree("sw-8")
         remove_calls = [c for c in calls if "remove" in c]
         assert len(remove_calls) == 1
+
+    def test_cleanup_worktree_when_remove_fails_then_prints_warning(self, tmp_path, capsys):
+        """A refused `git worktree remove` (e.g. a race) must not be silently swallowed."""
+        wt_dir = tmp_path / ".worktrees" / "sw-10"
+        wt_dir.mkdir(parents=True)
+
+        def mock_run(cmd, **kwargs):
+            if "status" in cmd:
+                return MagicMock(returncode=0, stdout="")
+            if "remove" in cmd:
+                return MagicMock(returncode=128, stdout="", stderr="fatal: contains untracked files")
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
+            with patch("subprocess.run", side_effect=mock_run):
+                cleanup_worktree("sw-10")
+        captured = capsys.readouterr()
+        assert "sw-10" in captured.err
+        assert "fatal: contains untracked files" in captured.err
 
 
 # --- find_next_index ---

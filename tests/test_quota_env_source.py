@@ -1,6 +1,6 @@
-"""AIH-164 T-02: quota_statusline_part consumes AI_CLI_QUOTA_* env vars as authoritative.
+"""Ensure quota_statusline_part consumes AI_CLI_QUOTA_* env vars as authoritative.
 
-The statusline (ai-harness) now extracts CC's `rate_limits` from stdin and exports
+The statusline script extracts CC's `rate_limits` from stdin and exports
 AI_CLI_QUOTA_{SEVEN_DAY,FIVE_HOUR}_{PCT,RESET} before calling `ai quota statusline-part`.
 This module verifies quota_statusline_part uses them as the authoritative all-models source
 by recording a THROTTLED snapshot (so the value flows through the existing render + history

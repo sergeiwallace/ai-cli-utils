@@ -18,10 +18,10 @@ template_version: "plan-1.0.0"
 
 **Task:** `AI-CLI-64`
 
-<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+<!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
-  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
-  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  they navigate in-window (incl. VS Code Remote-SSH). `companion toc check` validates this
+  once COMP-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
   `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
   (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
   Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
@@ -51,8 +51,8 @@ Running `git pull --rebase` across all project repos and their worktrees is tedi
 
 **Workspace files:**
 
-- `~/projects/myproject/ai-core-local.code-workspace` — default, local repos (13 folders)
-- `~/projects/myproject/ai-core-remote.code-workspace` — optional, remote/server repos
+- `~/projects/myproject/core-cli-local.code-workspace` — default, local repos (13 folders)
+- `~/projects/myproject/core-cli-remote.code-workspace` — optional, remote/server repos
 
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing from the goal?
 > - <enter feedback here>
@@ -185,8 +185,8 @@ Parse the workspace file — it is already maintained as the authoritative list 
 ai ws pull [--workspace PATH] [--remote] [--dry-run / -d] [--verbose / -v]
 ```
 
-- `--workspace PATH` — explicit workspace file path (default: `~/projects/myproject/ai-core-local.code-workspace`)
-- `--remote` — use `ai-core-remote.code-workspace` instead of the default local one (mutually exclusive with `--workspace`)
+- `--workspace PATH` — explicit workspace file path (default: `~/projects/myproject/core-cli-local.code-workspace`)
+- `--remote` — use `core-cli-remote.code-workspace` instead of the default local one (mutually exclusive with `--workspace`)
 - `--dry-run` / `-d` — print what would be pulled, no git operations
 - `--verbose` / `-v` — show full git output per repo/worktree
 
@@ -229,12 +229,12 @@ For each workspace folder path:
 ### Output format
 
 ```text
-Workspace: ~/projects/myproject/ai-core-local.code-workspace (13 repos)
+Workspace: ~/projects/myproject/core-cli-local.code-workspace (13 repos)
 
 ✓  myproject          main
-✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
+✓  companion            main   +  .worktrees/sw-1   .worktrees/sw-2
 ↷  ai-cli-utils    .worktrees/ai-cli-1  (dirty, skipped)
-✓  ai-core         main
+✓  core-cli         main
 …
 
 Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
@@ -244,7 +244,7 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `companion validate-doc` and must not be edited independently):
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
@@ -273,7 +273,7 @@ Implement `_parse_workspace_folders(workspace_path)` in a new `src/ai_cli/worksp
 - `src/ai_cli/workspace.py` (new)
 
 **Acceptance criteria:**
-- [ ] Parses `ai-core-local.code-workspace` correctly — returns 13 absolute paths
+- [ ] Parses `core-cli-local.code-workspace` correctly — returns 13 absolute paths
 - [ ] Handles `//` comments and trailing commas without error
 - [ ] Missing workspace file raises `FileNotFoundError` with a clear message
 
@@ -308,7 +308,7 @@ Implement `ws_pull(workspace_path, dry_run, verbose)` in `workspace.py`. Handles
 
 Wire `ws_pull` into `main.py` dispatch under `ai ws pull`. Add `--workspace`, `--remote`, `--dry-run`, `--verbose` options with both short and long forms.
 
-Default workspace path: configurable in `config.toml` under `[workspace]`, falling back to `~/projects/myproject/ai-core-local.code-workspace`. `--remote` resolves to the `[workspace] remote_path` config key. `--workspace PATH` overrides both.
+Default workspace path: configurable in `config.toml` under `[workspace]`, falling back to `~/projects/myproject/core-cli-local.code-workspace`. `--remote` resolves to the `[workspace] remote_path` config key. `--workspace PATH` overrides both.
 
 **Deliverables:**
 - `src/ai_cli/main.py` (updated)

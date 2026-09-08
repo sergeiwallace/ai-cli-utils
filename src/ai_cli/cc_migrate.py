@@ -159,6 +159,7 @@ def migrate_session(
     *,
     title: str | None = None,
     session_id: str | None = None,
+    source_project_dir: Path | None = None,
     keep_source: bool = False,
     preserve_cwd: bool = False,
     dry_run: bool = False,
@@ -166,7 +167,10 @@ def migrate_session(
     claude_home: Path | None = None,
 ) -> MigrationResult:
     """Move (or copy) one CC session transcript from ``source_root``'s project
-    directory to ``dest_root``'s, rewriting recorded cwd fields.
+    directory to ``dest_root``'s, rewriting recorded cwd fields. Normally the
+    source project directory is derived from ``source_root``; callers that
+    discovered a transcript in a moved or legacy project directory may supply
+    that physical directory explicitly.
 
     Raises ``ValueError`` on any unsafe condition: no selector, source not
     found, destination worktree missing, or destination transcript already
@@ -184,7 +188,7 @@ def migrate_session(
             f"(git worktree add), then migrate into it"
         )
 
-    source_dir = cc_project_dir(source_root, claude_home)
+    source_dir = (source_project_dir or cc_project_dir(source_root, claude_home)).resolve()
     if not source_dir.is_dir():
         raise ValueError(f"no Claude Code project directory for {source_root} (looked at {source_dir})")
 

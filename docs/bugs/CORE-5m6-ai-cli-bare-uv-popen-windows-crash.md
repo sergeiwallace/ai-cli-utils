@@ -17,7 +17,7 @@ template_version: "bug-1.0.0"
 
 **Created:** 2026-07-31
 
-**Task:** CORE-5m6 (filed in ai-core store; ai-cli-utils store blocked by CORE-5dx)
+**Task:** CORE-5m6 (filed in core-cli store; ai-cli-utils store blocked by CORE-5dx)
 
 **Fixed by:** `src/ai_cli/main.py` — two sites, commit not created (per BMS machine git discipline)
 
@@ -291,7 +291,7 @@ During the audit of bare subprocess calls, a THIRD, PRE-EXISTING gap was found:
 - `bd init --prefix <PREFIX> --skip-agents --skip-hooks --non-interactive` completes (exit 0) but leaves the Dolt database corrupted: `.beads/embeddeddolt/<PREFIX>/.dolt/` exists but is missing `repo_state.json`
 - Subsequent `bd config set` / `bd list` commands fail: `Error 1105: open C:\...\repo_state.json: The system cannot find the file specified.`
 - Documented in ai-harness `docs/research/beads-cross-machine-sync.md` § 5, Open bug #4770 (2026-07-14): Windows 11 `bd dolt pull` hangs forever due to pipe deadlock in Dolt's git blobstore
-- This is a known Windows/Dolt limitation, not an ai-cli-utils bug. Reported here as context for why this bug and CORE-6nr are filed in the ai-core store rather than the ai-cli-utils one.
+- This is a known Windows/Dolt limitation, not an ai-cli-utils bug. Reported here as context for why this bug and CORE-6nr are filed in the core-cli store rather than the ai-cli-utils one.
 
 <!-- /doc:region name="related_issues" -->
 

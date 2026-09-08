@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,15 +11,13 @@ from ai_cli.main import (
     _assign_iterm2_color_slot,
     _auto_update_if_stale,
     _bare_engine_command,
-    _cmd_signal_watch_start,
-    _cmd_signal_watch_status,
     _cmd_tunnel_start,
     _cmd_tunnel_status,
     _cmd_tunnel_stop,
     _find_aicli_project_path,
+    _handle_internal,
     _installed_source_fingerprint,
     _load_iterm2_config,
-    _log_handoff_event,
     _migrate_xdg_dir,
     _release_iterm2_color_slot,
     _resolve_is_remote,
@@ -29,6 +28,7 @@ from ai_cli.main import (
     get_xdg_state_home,
     load_config,
 )
+from ai_cli.native_deps import InstallResult
 from ai_cli.session_script import resolve_session_shell
 
 # --- XDG helpers ---
@@ -236,7 +236,7 @@ class TestGetEngineScript:
             )
         assert "unknown" in result
 
-    def test_given_no_worktree_when_generating_script_then_all_agent_starts_use_direnv(self):
+    def test_given_no_worktree_when_generating_script_then_all_agent_starts_reuse_direnv_environment(self):
         script = get_engine_script(
             engine="c",
             ai_name="session-1",
@@ -246,18 +246,25 @@ class TestGetEngineScript:
         )
 
         assert 'direnv_root="$PWD"' in script
-        assert 'direnv exec "$direnv_root" "$@"' in script
+        assert "agent_direnv_initialized=false" in script
+        assert '"$(direnv export bash)"' in script
+        assert 'eval "$_direnv_exports"' in script
+        assert 'direnv exec "$direnv_root" "$@"' not in script
         # Prompt and regular launches each have exact-match and fresh-session paths.
         assert script.count("run_agent claude") == 4
-        assert "--continue" in script
+        assert "--resume" in script
         # Hot-reload must exec an interpreter that exists here — a hardcoded one
         # that does not kills the pane on the session's first self-update.
         _shell = resolve_session_shell()
         assert _shell is not None and os.access(_shell, os.X_OK)
-        assert f'exec "{_shell}" "$_script_stable_path"' in script
-        assert "direnv denied or could not evaluate .envrc" in script
+        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        assert '"$_supervisor_script" --ai-cli-child-body &' not in script
+        assert "acquire-generation-lease" in script
+        assert "exit 78" in script
+        assert f'exec "{_shell}" "$_script_stable_path"' not in script
+        assert "starting without the project environment" in script
 
-    def test_given_direnv_blocks_auto_restart_when_agent_exits_then_script_prints_recovery_command(self):
+    def test_given_direnv_cannot_load_when_agent_starts_then_script_continues_without_project_environment(self):
         script = get_engine_script(
             engine="c",
             ai_name="session-1",
@@ -267,18 +274,15 @@ class TestGetEngineScript:
             worktree_dir="/tmp/project-worktree",
         )
 
-        assert "agent_direnv_blocked=false" in script
-        # The main agent invocation's stdio must be untouched — it's a long-running
-        # interactive process; buffering its stderr would break real-time streaming.
-        assert 'direnv exec "$direnv_root" "$@"\n' in script
-        # `[.]` not `\.`: the regex lives inside a Python f-string, where `\.` is not a
-        # recognised escape (SyntaxWarning today, SyntaxError in a future Python). The two
-        # are equivalent in ERE — see tests/test_no_syntax_warnings.py.
-        assert "direnv: error.*[.]envrc is blocked" in script
-        assert "\\.envrc" not in script, "an invalid Python escape must not be reintroduced"
-        assert "direnv status --json" not in script
-        assert "AI CLI stopped because direnv blocked $direnv_root/.envrc" in script
-        assert "direnv allow $direnv_root" in script
+        assert "agent_direnv_initialized=false" in script
+        assert 'if _direnv_exports="$(direnv export bash)"; then' in script
+        assert 'eval "$_direnv_exports"' in script
+        # The main agent invocation's stdio remains untouched — it is a long-running
+        # interactive process, so only the one-time export is captured.
+        assert '"$@" &\n' in script
+        assert 'wait "$active_agent_pid"' in script
+        assert "Warning: direnv could not load $direnv_root/.envrc" in script
+        assert 'direnv exec "$direnv_root" "$@"' not in script
 
     def test_given_worktree_when_generating_script_then_direnv_uses_worktree_cwd(self):
         script = get_engine_script(
@@ -291,10 +295,10 @@ class TestGetEngineScript:
             is_remote=True,
         )
 
-        assert "cd /tmp/project-worktree" in script
-        assert script.index('direnv_root="$PWD"') > script.index("cd /tmp/project-worktree")
+        assert "cd -- /tmp/project-worktree" in script
+        assert script.index('direnv_root="$PWD"') > script.index("cd -- /tmp/project-worktree")
         assert script.count("run_agent gemini") == 4
-        assert "exec $SHELL" in script
+        assert '"$SHELL"; exit 79' in script
 
     def test_given_pi_engine_when_generating_script_then_launches_named_pi_session(self):
         script = get_engine_script(
@@ -343,126 +347,19 @@ class TestGetEngineScript:
         script = self._make_script()
         assert "ai ps cron" in script
 
-    def test_stale_signal_files_cleaned_on_session_start(self):
-        """Stale signal_file/config_changed_file from a previous killed session
-        must be removed at startup — otherwise the watcher immediately injects
-        /exit while CC is showing its startup UI (conversation rewind options)."""
+    def test_given_exit_signal_when_generating_script_then_never_auto_injects_exit(self):
+        """Exit signals and idle-composer detection must not send commands to a live pane."""
         script = self._make_script()
-        assert 'rm -f "$signal_file" "$config_changed_file"' in script
+        assert "signal_file" not in script
+        assert "cc-exit-" not in script
+        assert "gg-exit-" not in script
+        assert "send-keys -t \"$tmux_session\" '/exit' C-m" not in script
 
-    def test_signal_file_processing_uses_correct_prompt_character(self):
-        """The signal_file idle check must use CC's actual prompt character (❯),
-        not '>'. Using '>' caused injection to fire in all states because the
-        pattern never matched CC's prompt, triggering the rewind menu via Escape."""
+    def test_given_agent_exit_when_generating_script_then_session_teardown_is_preserved(self):
+        """A user-initiated client exit still reaches the normal supervisor teardown path."""
         script = self._make_script()
-        # Positive idle check: inject ONLY when at idle empty prompt
-        assert "❯" in script
-        assert "'^[[:space:]]*❯[[:space:]]*$'" in script
-
-    def test_signal_file_injection_does_not_send_escape(self):
-        """The injection sequence must not send Escape before /exit.
-        Escape at an empty CC prompt triggers the conversation rewind menu."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        assert 'send-keys -t "$tmux_session" Escape' not in injection_sequence
-
-    def test_signal_file_injection_does_not_send_ctrl_u(self):
-        """C-u must not be sent before /exit. CC uses React/Ink TUI — C-u behavior
-        is undocumented and potentially harmful. The idle guard already confirms
-        the prompt is empty, making C-u redundant."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        assert 'send-keys -t "$tmux_session" C-u' not in injection_sequence
-
-    def test_signal_file_injection_has_startup_grace_period(self):
-        """Injection must be skipped during the first 10 watcher cycles (10s).
-        When CC restarts with --continue, the pane still shows the previous
-        conversation's ❯ for 1-3s during startup. Without a grace period the
-        watcher fires into CC's initialization TUI, triggering the rewind menu."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        assert "counter >= 10" in injection_sequence
-
-    def test_signal_file_injection_double_verifies_prompt(self):
-        """Injection must perform two back-to-back capture-pane checks before
-        firing. A transient ❯ during startup or state transition fails the second
-        check and prevents injection."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        sig_block_end = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert sig_block_end != -1
-        injection_sequence = script[sig_block_start:sig_block_end]
-        # Two distinct capture-pane calls must appear
-        assert injection_sequence.count("capture-pane") >= 2
-
-    def test_signal_file_deleted_after_injection_not_before(self):
-        """signal_file must be deleted AFTER send-keys, not before.
-        Deleting before injection loses the signal if the watcher is killed
-        mid-sequence, preventing retry on the next watcher start."""
-        script = self._make_script()
-        exit_pos = script.find("'/exit' C-m")
-        rm_pos = script.find('rm -f "$signal_file"', exit_pos)
-        assert exit_pos != -1, "/exit injection not found"
-        assert rm_pos != -1, "rm signal_file not found after /exit"
-
-    def test_signal_file_injection_skips_when_exit_already_in_pane(self):
-        """The watcher must not inject /exit if /exit is already visible in the
-        pane. A concurrent watcher subshell SIGTERMed mid-sequence may have
-        already injected /exit before it could clean up signal_file. Without
-        this guard, the new watcher re-injects, causing 2+ /exit submissions."""
-        script = self._make_script()
-        sig_block_start = script.find('if [[ -f "$signal_file" ]];')
-        injection_pos = script.find("'/exit' C-m", sig_block_start)
-        assert sig_block_start != -1
-        assert injection_pos != -1
-        # The section BEFORE the /exit injection must contain a grep or check
-        # using the literal '/exit' string (not just a comment mentioning it).
-        # Discriminator: comments have /exit without quotes; the guard has '/exit'.
-        pre_injection = script[sig_block_start:injection_pos]
-        assert "'/exit'" in pre_injection, (
-            "No pane content guard for '/exit' found before injection — "
-            "watcher can inject duplicate /exit when pane already has one"
-        )
-
-    def test_signal_file_cleanup_fires_even_when_injection_skipped(self):
-        """signal_file must be removed and the watcher must break even when the
-        /exit pane guard fires (injection skipped). If signal_file persisted after
-        a skip, the next watcher cycle would inject anyway — defeating the guard.
-        Structural check: a `fi` must appear between the injection line and the
-        rm, proving rm is OUTSIDE the guard's if-block."""
-        script = self._make_script()
-        injection_pos = script.find("'/exit' C-m")
-        rm_pos = script.find('rm -f "$signal_file"', injection_pos)
-        assert injection_pos != -1, "/exit injection not found"
-        assert rm_pos != -1, "rm signal_file not found after injection"
-        between = script[injection_pos:rm_pos]
-        assert "fi" in between, (
-            "rm signal_file is inside the /exit guard's if-block — "
-            "cleanup won't fire when injection is skipped due to pane guard"
-        )
-
-    def test_config_change_detection_has_startup_grace_period(self):
-        """Config change auto-restart must also skip the first 10s.
-        Same stale-pane problem: config_changed_file from a prior run can
-        exist when the watcher starts, and the pane shows old ❯ content."""
-        script = self._make_script()
-        config_block_start = script.find('if [[ -f "$config_changed_file"')
-        assert config_block_start != -1
-        config_block = script[config_block_start : config_block_start + 200]
-        assert "counter >= 10" in config_block
+        assert '(ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &' in script
+        assert "exit 77" in script
 
     def test_given_claude_script_when_generated_then_uses_shared_continue_target_resolver(self):
         """Every Claude Code continuation must first resolve an exact title."""
@@ -472,12 +369,10 @@ class TestGetEngineScript:
         assert script.index('ai internal resolve-continue-target "$PWD" "$ai_name"') < script.index(
             'if [[ -f "$prompt_file" ]];'
         )
-        assert 'run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"' in script
+        assert 'run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name" "$resume_msg"' in script
+        assert 'run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name"' in script
         assert 'run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"' in script
         assert 'find "$HOME/.claude/projects' not in script
-
-
-# --- Group 8: _log_handoff_event OSError ---
 
 
 def test_given_pi_bare_launch_when_not_resuming_then_starts_named_session():
@@ -502,6 +397,58 @@ def test_given_codex_bare_launch_when_resuming_then_resumes_last_session_in_work
     command = _bare_engine_command("cx", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], resume=True)
 
     assert command == ["codex", "resume", "--last"]
+
+
+def test_given_matching_claude_transcript_when_bare_launching_then_resumes_its_session_id():
+    transcript = Path("/tmp/aaaaaaaa-0000-4000-8000-000000000001.jsonl")
+
+    with (
+        patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[transcript]),
+        patch("ai_cli.main._cc_session_is_live", return_value=(False, None)),
+    ):
+        command = _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
+
+    assert command[-4:] == ["--resume", transcript.stem, "--name", "session-1"]
+
+
+def test_given_invalid_claude_transcript_id_when_bare_launching_then_fails_loudly():
+    with patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[Path("/tmp/not-a-session-id.jsonl")]):
+        with pytest.raises(RuntimeError, match="invalid session UUID"):
+            _bare_engine_command("c", "session-1", Path("/tmp"), None, "gemini", "--no-sandbox", [])
+
+
+def test_given_resolve_continue_target_with_lone_mismatch_confirmed_then_prints_it(capsys):
+    """AI-CLI-8xvd: `ai internal resolve-continue-target` must honor the same
+    lone-mismatched-title confirm path `_bare_engine_command` does, since the
+    tmux session script resolves through this CLI action, not that function."""
+    transcript = Path("/tmp/aaaaaaaa-0000-4000-8000-00000000000f.jsonl")
+
+    with (
+        patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[]),
+        patch("ai_cli.main._find_lone_mismatched_cc_session", return_value=transcript),
+        patch("ai_cli.main._confirm_mismatched_title_resume", return_value=True),
+        patch("ai_cli.main._cc_session_is_live", return_value=(False, None)),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _handle_internal(["resolve-continue-target", "/tmp", "session-1"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == str(transcript)
+
+
+def test_given_resolve_continue_target_with_lone_mismatch_declined_then_prints_nothing(capsys):
+    transcript = Path("/tmp/aaaaaaaa-0000-4000-8000-000000000010.jsonl")
+
+    with (
+        patch("ai_cli.main._find_cc_session_candidates_by_title", return_value=[]),
+        patch("ai_cli.main._find_lone_mismatched_cc_session", return_value=transcript),
+        patch("ai_cli.main._confirm_mismatched_title_resume", return_value=False),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _handle_internal(["resolve-continue-target", "/tmp", "session-1"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_given_pi_missing_from_path_when_launching_then_reports_pi(capsys):
@@ -560,15 +507,6 @@ def test_given_codex_missing_from_path_when_launching_then_reports_codex(capsys)
 
     assert exc_info.value.code == 1
     assert "codex executable not found" in capsys.readouterr().err
-
-
-class TestLogHandoffEvent:
-    def test_when_log_file_write_raises_then_suppressed(self, tmp_path):
-        with (
-            patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
-            patch("builtins.open", side_effect=OSError("disk full")),
-        ):
-            _log_handoff_event("test.event", session="session-1")
 
 
 # --- Group 9: _find_aicli_project_path ---
@@ -723,6 +661,48 @@ class TestAutoUpdateIfStaleLockContention:
         ):
             assert _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}}) is False
 
+    def test_given_peer_pulls_new_source_when_loser_waits_then_loser_requests_reexec(self, tmp_path):
+        """A peer may pull after taking the lock, changing the fingerprint a loser sees."""
+        (tmp_path / "src" / "demo").mkdir(parents=True)
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
+        source = tmp_path / "src" / "demo" / "value.py"
+        source.write_text('VALUE = "before"\n')
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        peer_pulled = threading.Event()
+        finish_peer = threading.Event()
+        updates: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            if len(cmd) >= 2 and cmd[1] == "update":
+                updates.append(list(cmd))
+                source.write_text('VALUE = "after"\n')
+                peer_pulled.set()
+                assert finish_peer.wait(timeout=1)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def finish_update(*_args, **_kwargs):
+            finish_peer.set()
+
+        config = {"deploy": {"project_path": str(tmp_path)}}
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=tmp_path),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            winner = threading.Thread(target=_auto_update_if_stale, args=(config,))
+            winner.start()
+            assert peer_pulled.wait(timeout=1)
+            with patch("time.sleep", side_effect=finish_update):
+                loser_reexec = _auto_update_if_stale(config)
+            winner.join(timeout=1)
+
+        assert not winner.is_alive()
+        assert updates and len(updates) == 1
+        assert loser_reexec is True, "the loser must restart after its peer replaced the installed files"
+
 
 # --- Group 11: _cmd_tunnel_start no remote host ---
 
@@ -776,50 +756,6 @@ class TestCmdTunnelStatus:
             _cmd_tunnel_status()
         assert "dead" in capsys.readouterr().out
         assert not pid_file.exists()
-
-
-# --- Group 14: _cmd_signal_watch_start / _cmd_signal_watch_status ---
-
-
-class TestCmdSignalWatchStart:
-    def test_when_start_called_then_autostart_not_in_options(self, tmp_path):
-        """B-04: autostart is invalid for Circus add — was silently failing watcher registration."""
-        mock_client = MagicMock()
-        mock_client.send_message.return_value = {"status": "ok"}
-        with (
-            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
-            patch("circus.client.CircusClient", return_value=mock_client),
-        ):
-            _cmd_signal_watch_start("myproject", "session-1")
-        call_kwargs = mock_client.send_message.call_args_list[-1][1]
-        options = call_kwargs.get("options", {})
-        assert "autostart" not in options
-        assert call_kwargs.get("start") is True
-
-    def test_when_start_called_then_respawn_false(self, tmp_path):
-        mock_client = MagicMock()
-        mock_client.send_message.return_value = {"status": "ok"}
-        with (
-            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.process_manager._ensure_circusd", return_value=f"ipc://{tmp_path}/circus.endpoint"),
-            patch("circus.client.CircusClient", return_value=mock_client),
-        ):
-            _cmd_signal_watch_start("myproject", "session-1")
-        call_kwargs = mock_client.send_message.call_args_list[-1][1]
-        assert call_kwargs["options"]["respawn"] is False
-
-
-class TestCmdSignalWatchStatus:
-    def test_when_no_sw_watchers_then_prints_no_processes(self, tmp_path, capsys):
-        mock_client = MagicMock()
-        mock_client.send_message.return_value = {"statuses": {"other-watcher": "active"}}
-        with (
-            patch("ai_cli.process_manager.get_xdg_state_home", return_value=tmp_path),
-            patch("circus.client.CircusClient", return_value=mock_client),
-        ):
-            _cmd_signal_watch_status()
-        assert "No signal-watch processes running" in capsys.readouterr().out
 
 
 # --- Group 15: CLI dispatch tests ---
@@ -950,30 +886,6 @@ class TestCliDispatchExtended:
 
     def test_when_tunnel_unknown_action_exits_1(self):
         exit_code, _, _ = run_cli(["ai", "tunnel", "unknown"])
-        assert exit_code == 1
-
-    def test_when_signal_watch_start_missing_args_exits_1(self):
-        exit_code, _, _ = run_cli(["ai", "signal-watch", "start"])
-        assert exit_code == 1
-
-    def test_when_signal_watch_stop_missing_arg_exits_1(self):
-        exit_code, _, _ = run_cli(["ai", "signal-watch", "stop"])
-        assert exit_code == 1
-
-    def test_when_signal_watch_status_dispatches(self):
-        with (
-            patch("sys.argv", ["ai", "signal-watch", "status"]),
-            patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.process_manager._cmd_signal_watch_status") as mock_status,
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-            mock_status.assert_called_once()
-
-    def test_when_signal_watch_unknown_action_exits_1(self):
-        exit_code, _, _ = run_cli(["ai", "signal-watch", "bad"])
         assert exit_code == 1
 
     def test_when_copier_update_with_project_flag_then_dispatches(self, tmp_path):
@@ -1148,8 +1060,10 @@ class TestDoSessionLaunchTmuxGuard:
 
     Originally Windows-only (T-09). Broadened in 55ace53 because every non-Windows
     machine without tmux was crashing with a raw FileNotFoundError from deep inside
-    cleanup_stale_sessions() instead of this message. The guard now fires on all
-    platforms, with a platform-appropriate install hint and the use_tmux opt-out.
+    cleanup_stale_sessions(). It still fires on all platforms with a
+    platform-appropriate hint, but since AI-CLI-yrpa the outcome is one
+    unattended install attempt and then bare mode — never an exit. tmux is an
+    enhancement, so its absence degrades a launch instead of blocking it.
     """
 
     def _base_kwargs(self):
@@ -1214,18 +1128,21 @@ class TestDoSessionLaunchTmuxGuard:
         # confirming the guard was passed
         assert exc_info.value.code != 1 or "tmux not found" not in (capsys.readouterr().err)
 
-    def test_when_non_windows_and_tmux_not_found_then_guard_exits_with_platform_hint(self, capsys):
-        """The guard DOES fire on Linux/macOS — that is the point of 55ace53.
+    def test_when_non_windows_and_tmux_unavailable_then_falls_back_to_bare_not_exit_1(self, capsys):
+        """A missing tmux must degrade the launch to bare mode, never block it.
 
-        This previously asserted the opposite, encoding the very bug 55ace53 fixed:
-        without the guard, a non-Windows machine lacking tmux died on a raw
-        FileNotFoundError inside cleanup_stale_sessions() with no actionable message.
+        This asserted the opposite until AI-CLI-yrpa: the guard printed
+        remediation and exited 1 on every non-Windows host without tmux, so an
+        *enhancement* (detach/reattach, surviving a dropped SSH connection) was a
+        launch precondition. The remediation text is still required — the operator
+        should know what bare mode costs them — but the launch continues.
         """
         from ai_cli.main import _do_session_launch
 
         with (
             patch("sys.platform", "linux"),
             patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(False, detail="no manager")),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.get_project_prefix", return_value="test"),
@@ -1233,21 +1150,84 @@ class TestDoSessionLaunchTmuxGuard:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _do_session_launch(**self._base_kwargs())
-        assert exc_info.value.code == 1
+        assert exc_info.value.code != 1, "a missing tmux must fall back to bare mode, not exit 1"
         err = capsys.readouterr().err
-        assert "tmux not found" in err
-        # Platform-appropriate install hint, not the MSYS2/pacman one.
+        assert "launching in bare mode instead" in err
+        # Platform-appropriate install hint, not the Windows/WSL one.
         assert "apt install tmux" in err
-        # Both escape hatches must be named so the user can choose.
-        assert "-b" in err
+        # The permanent opt-out must be named so the notice can be silenced.
         assert "use_tmux = false" in err
 
-    def test_when_darwin_and_tmux_not_found_then_hint_is_homebrew(self, capsys):
+    def test_when_tmux_missing_then_one_unattended_install_is_attempted_first(self):
+        """Falling back to bare is the last resort, not the first response.
+
+        Without this, "never fatal" could be satisfied by never trying to install
+        tmux at all, which would quietly strip detach/reattach from every host
+        that merely needed one `brew install`.
+        """
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "linux"),
+            patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(False, detail="x")) as install,
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**self._base_kwargs())
+        assert install.call_count == 1
+
+    def test_when_win32_and_tmux_missing_then_no_install_is_attempted(self):
+        """Windows has no native tmux, so an install attempt there is pure noise."""
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "win32"),
+            patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux") as install,
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**self._base_kwargs())
+        install.assert_not_called()
+
+    def test_when_auto_install_succeeds_then_the_launch_stays_in_tmux_mode(self, capsys):
+        """The install must actually be believed — otherwise it buys nothing.
+
+        `bare` has to come back False after a successful install, which is only
+        observable through the notice: an install that reported success and still
+        launched bare would look identical to no install at all.
+        """
+        from ai_cli.main import _do_session_launch
+
+        with (
+            patch("sys.platform", "linux"),
+            patch("ai_cli.tmux_setup.tmux_present", return_value=False),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(True, tool="brew")),
+            patch("ai_cli.session._resolve_is_remote", return_value=False),
+            patch("ai_cli.config.validate_registry_completeness", return_value=True),
+            patch("ai_cli.session.get_project_prefix", return_value="test"),
+            patch("subprocess.run", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                _do_session_launch(**self._base_kwargs())
+        err = capsys.readouterr().err
+        assert "installed tmux via brew" in err
+        assert "launching in bare mode instead" not in err
+
+    def test_when_darwin_and_tmux_unavailable_then_hint_is_homebrew(self, capsys):
         from ai_cli.main import _do_session_launch
 
         with (
             patch("sys.platform", "darwin"),
             patch("shutil.which", return_value=None),
+            patch("ai_cli.tmux_setup.install_tmux", return_value=InstallResult(False, detail="no manager")),
             patch("ai_cli.session._resolve_is_remote", return_value=False),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.get_project_prefix", return_value="test"),
@@ -1255,7 +1235,7 @@ class TestDoSessionLaunchTmuxGuard:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _do_session_launch(**self._base_kwargs())
-        assert exc_info.value.code == 1
+        assert exc_info.value.code != 1
         assert "brew install tmux" in capsys.readouterr().err
 
     def test_when_use_tmux_false_and_tmux_absent_then_guard_is_skipped(self):

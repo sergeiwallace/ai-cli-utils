@@ -13,7 +13,7 @@
 > snapshot from a single canonical key. `_publish_quota_snapshot()` also now
 > publishes to the `hw.events.usage.claude.snapshot` NATS core subject
 > alongside the existing `quota.snapshot` JetStream subject, feeding the
-> ai-core `UsageConsumer` for cross-provider usage ingest.
+> core-cli `UsageConsumer` for cross-provider usage ingest.
 > References below to `quota.claude.weekly` are historical.
 
 <!-- FEEDBACK RULES (for AI agents):
@@ -25,10 +25,10 @@
   6. After each round, add a line item to the Approval Log: date, round N, key decisions/approvals from that round.
 -->
 
-<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+<!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
-  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
-  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  they navigate in-window (incl. VS Code Remote-SSH). `companion toc check` validates this
+  once COMP-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
   `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
   (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
   Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
@@ -220,7 +220,7 @@ to KV — Hetzner owns the data and Hetzner writes it.
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `companion validate-doc` and must not be edited independently):
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.

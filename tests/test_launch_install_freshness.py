@@ -68,7 +68,9 @@ def _stamp(state_dir: Path) -> Path:
 
 def _record_installed(project_root: Path, state_dir: Path) -> None:
     """Mark the current source as the build that is already installed."""
-    _stamp(state_dir).write_text(_installed_source_fingerprint(project_root))
+    fingerprint = _installed_source_fingerprint(project_root)
+    assert fingerprint is not None
+    _stamp(state_dir).write_text(fingerprint)
 
 
 def _loaded_value(installed_root: Path) -> str:

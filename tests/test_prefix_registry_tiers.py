@@ -248,7 +248,9 @@ def test_given_a_worktree_path_when_resolving_then_no_registry_entry_is_written_
 
     resolve_project_prefix(worktree)
 
-    config_file = Path(get_fleet_registry_path()).parent.parent / "config.toml"
+    registry_path = get_fleet_registry_path()
+    assert registry_path is not None
+    config_file = registry_path.parent.parent / "config.toml"
     assert not config_file.exists()
     assert "session-1" not in registry.read_text(encoding="utf-8")
 

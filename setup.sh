@@ -171,7 +171,16 @@ if grep -q "Original Vision" README.md 2>/dev/null && command -v claude &>/dev/n
     info "Expanding project vision with Claude Code..."
     VISION_LINE=$(grep -A1 "## Original Vision" README.md | tail -1 | sed 's/^> //')
     if [ -n "$VISION_LINE" ]; then
-        claude --print --output-format text --max-turns 1 --prompt "$(cat <<VISIONEOF
+        vision_tmp=$(mktemp "${TMPDIR:-/tmp}/ai-cli-vision.XXXXXX") || {
+            warn "Could not create a secure temporary file for the project vision."
+            vision_tmp=""
+        }
+        if [ -n "$vision_tmp" ]; then
+            chmod 600 "$vision_tmp"
+            trap 'rm -f -- "$vision_tmp"' EXIT HUP INT TERM
+        fi
+        if [ -n "$vision_tmp" ]; then
+            claude --print --output-format text --max-turns 1 --prompt "$(cat <<VISIONEOF
 You are writing the About section of a README.md for a new software project called $PROJECT_NAME.
 
 The project creator described their vision as:
@@ -185,14 +194,15 @@ Write a clear, compelling About section (2-4 paragraphs) that expands this visio
 Keep the tone professional but approachable. Do NOT include a heading — just the body paragraphs.
 Do NOT wrap output in markdown code fences. Output ONLY the paragraphs.
 VISIONEOF
-)" > /tmp/vision_expanded.md 2>/dev/null
+)" > "$vision_tmp" 2>/dev/null
+        fi
 
-        if [ -s /tmp/vision_expanded.md ]; then
+        if [ -n "$vision_tmp" ] && [ -s "$vision_tmp" ]; then
             # Insert expanded text after the "Original brief" blockquote
             python3 -c "
 import re, sys
 readme = open('README.md').read()
-expanded = open('/tmp/vision_expanded.md').read().strip()
+expanded = open('$vision_tmp').read().strip()
 # Replace the HTML comment placeholder with the expanded text
 readme = readme.replace('<!-- AI-expanded project statement will be inserted here by setup.sh -->', expanded)
 open('README.md', 'w').write(readme)
@@ -216,7 +226,8 @@ open('README.md', 'w').write(readme)
         else
             warn "Claude didn't return output — skipping vision expansion."
         fi
-        rm -f /tmp/vision_expanded.md
+        rm -f -- "$vision_tmp"
+        trap - EXIT HUP INT TERM
     fi
 else
     if ! grep -q "Original Vision" README.md 2>/dev/null; then

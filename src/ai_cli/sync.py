@@ -7,7 +7,7 @@ Scope: CC session data only — conversation JSONL files, memory files
 the mechanism that moves this data between machines.
 
 What sync does NOT touch:
-  - Git-tracked files (config, hooks, statusline, handoff queue) — use git.
+  - Git-tracked files (config, hooks, statusline) — use git.
   - ~/.claude/shell-snapshots/*.sh, which are ephemeral per-machine environment dumps.
   - ~/.claude.json and ~/.claude/settings.json, which contain machine-specific
     and auth-adjacent state.
@@ -27,11 +27,14 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+import portalocker
 
 from .cc_migrate import _rewrite_line
 
@@ -41,8 +44,77 @@ from .cc_migrate import _rewrite_line
 
 CONFLICT_LOG = Path.home() / ".claude-sync-conflicts.log"
 CONFLICT_DIR = Path.home() / ".claude-sync-conflicts"
+
+
+def _assert_safe_staging_path(path: Path, staging_dir: Path, *, require_exists: bool = True) -> None:
+    """Reject a staging path that is a symlink or resolves outside its root."""
+    try:
+        relative = path.relative_to(staging_dir)
+    except ValueError:
+        raise ValueError(f"Path is outside the sync staging directory: {path}") from None
+    root: Path | None = None
+    try:
+        root_info = staging_dir.lstat()
+    except FileNotFoundError:
+        # The staging root itself may not exist yet on a first run -- the
+        # per-file mkdir(parents=True) calls create it fresh, so there is
+        # nothing pre-existing here that could be a symlink.
+        root_info = None
+    if root_info is not None:
+        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+            raise ValueError(f"Sync staging root is not a real directory: {staging_dir}")
+        root = staging_dir.resolve(strict=True)
+    current = staging_dir
+    for part in relative.parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            # Nothing from here down exists yet, so nothing remains to inspect for a
+            # pre-existing symlink; a not-yet-created directory is what every
+            # first-time staging write looks like (dst.parent.mkdir(parents=True)
+            # runs after this check).
+            break
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"Refusing symlink in sync staging tree: {current}")
+    if require_exists and not path.exists():
+        raise ValueError(f"Missing staging file: {path}")
+    if path.exists() and root is not None and not path.resolve(strict=True).is_relative_to(root):
+        raise ValueError(f"Staging path escapes its root: {path}")
+
+
+def _read_staging_bytes(path: Path, staging_dir: Path) -> bytes:
+    _assert_safe_staging_path(path, staging_dir)
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
+def _copy_staging_file(src: Path, dst: Path, staging_dir: Path) -> None:
+    """Copy a verified staging file without reopening it through a symlink."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(_read_staging_bytes(src, staging_dir))
+
+
+def _copy_to_staging(src: Path, dst: Path, staging_dir: Path) -> None:
+    """Write to a verified staging destination without following a symlink."""
+    _assert_safe_staging_path(dst, staging_dir, require_exists=False)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(src.read_bytes())
+
+
+def _write_staging_text(path: Path, text: str, staging_dir: Path) -> None:
+    _assert_safe_staging_path(path, staging_dir)
+    fd = os.open(path, os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 _DREAM_GUARD_TIMEOUT_SECONDS = 30.0
 _DREAM_GUARD_POLL_SECONDS = 0.1
+_STAGING_LOCK_TIMEOUT_SECONDS = 600
 
 _GIT_ENV = {
     **os.environ,
@@ -65,6 +137,22 @@ class SyncConfig:
     local_prefix: str
     remote_host: str
     source_machine: str  # "mac" or "server"
+
+
+class _StagingLockUnavailableError(Exception):
+    """Raised when another local sync holds the shared staging repository lock."""
+
+
+@contextlib.contextmanager
+def _staging_repo_lock(staging_dir: Path):
+    """Serialize local sync operations that mutate one staging working tree."""
+    lock_path = staging_dir.parent / f".{staging_dir.name}.sync.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with portalocker.Lock(str(lock_path), mode="a", timeout=_STAGING_LOCK_TIMEOUT_SECONDS):
+            yield
+    except portalocker.exceptions.LockException as exc:
+        raise _StagingLockUnavailableError(lock_path) from exc
 
 
 def _canonical_path(path: str) -> str:
@@ -559,6 +647,7 @@ def stage_project_files(
             "jsonl_count": jsonl_count,
         }
 
+    _assert_safe_staging_path(staging_dir, staging_dir, require_exists=False)
     for cc_dir in sorted(cc_projects_dir.iterdir()):
         if not cc_dir.is_dir():
             continue
@@ -590,11 +679,14 @@ def stage_project_files(
             dst = staging_project_dir / rel
 
             if not dry_run:
-                dst.parent.mkdir(parents=True, exist_ok=True)
+                _assert_safe_staging_path(dst, staging_dir, require_exists=False)
                 # Skip copy if content is identical — avoids creating new git blobs
                 # for unchanged files, which is the primary driver of pack bloat.
-                if not dst.exists() or file_hash(src) != file_hash(dst):
-                    shutil.copy2(src, dst)
+                if (
+                    not dst.exists()
+                    or file_hash(src) != hashlib.sha256(_read_staging_bytes(dst, staging_dir)).hexdigest()
+                ):
+                    _copy_to_staging(src, dst, staging_dir)
                 else:
                     continue  # unchanged — exclude from staged_files too
 
@@ -620,6 +712,7 @@ def stage_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
     staged_files: list[tuple[Path, Path]] = []
     if not cc_tasks_dir.is_dir():
         return staged_files
+    _assert_safe_staging_path(staging_dir, staging_dir, require_exists=False)
 
     for namespace in sorted(cc_tasks_dir.iterdir()):
         if not namespace.is_dir() or namespace.name.startswith("."):
@@ -627,10 +720,10 @@ def stage_task_files(staging_dir: Path, cc_tasks_dir: Path, verbose: bool, dry_r
         for src in sorted(namespace.glob("*.json")):
             dst = staging_dir / "tasks" / namespace.name / src.name
             if not dry_run:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                if dst.exists() and file_hash(src) == file_hash(dst):
+                _assert_safe_staging_path(dst, staging_dir, require_exists=False)
+                if dst.exists() and file_hash(src) == hashlib.sha256(_read_staging_bytes(dst, staging_dir)).hexdigest():
                     continue
-                shutil.copy2(src, dst)
+                _copy_to_staging(src, dst, staging_dir)
             staged_files.append((src, dst))
             if verbose:
                 print(f"  stage task: {namespace.name}/{src.name}")
@@ -643,11 +736,16 @@ def stage_history_file(staging_dir: Path, history_path: Path, dry_run: bool) -> 
     """Stage the CC resume-history index when it exists."""
     if not history_path.is_file():
         return []
+    _assert_safe_staging_path(staging_dir, staging_dir, require_exists=False)
     dst = staging_dir / "history.jsonl"
     if not dry_run:
-        if dst.exists() and file_hash(history_path) == file_hash(dst):
+        _assert_safe_staging_path(dst, staging_dir, require_exists=False)
+        if (
+            dst.exists()
+            and file_hash(history_path) == hashlib.sha256(_read_staging_bytes(dst, staging_dir)).hexdigest()
+        ):
             return []
-        shutil.copy2(history_path, dst)
+        _copy_to_staging(history_path, dst, staging_dir)
     return [(history_path, dst)]
 
 
@@ -695,10 +793,13 @@ def git_commit_staged(
 # ---------------------------------------------------------------------------
 
 
-def _write_jsonl_translated(src: Path, dst: Path, local_projects_root: Path | None = None) -> None:
+def _write_jsonl_translated(
+    src: Path, dst: Path, local_projects_root: Path | None = None, staging_dir: Path | None = None
+) -> None:
     """Write a transcript with cwd fields rooted at this machine's projects directory."""
     projects_root = local_projects_root or Path.home() / "projects"
-    content = rewrite_transcript_for_local_projects(src.read_bytes(), projects_root)
+    raw = _read_staging_bytes(src, staging_dir) if staging_dir is not None else src.read_bytes()
+    content = rewrite_transcript_for_local_projects(raw, projects_root)
     dst.write_bytes(content)
 
 
@@ -973,12 +1074,12 @@ def apply_pull_files(
     updated_bare_names: set[str] = set()
     local_projects_root = local_projects_root or Path.home() / "projects"
 
+    _assert_safe_staging_path(staging_dir, staging_dir)
     for staging_project_dir in sorted(staging_dir.iterdir()):
-        if (
-            not staging_project_dir.is_dir()
-            or staging_project_dir.name.startswith(".")
-            or staging_project_dir.name == "tasks"
-        ):
+        if staging_project_dir.name.startswith(".") or staging_project_dir.name == "tasks":
+            continue
+        _assert_safe_staging_path(staging_project_dir, staging_dir)
+        if not staging_project_dir.is_dir():
             continue
 
         bare_name = staging_project_dir.name
@@ -991,6 +1092,7 @@ def apply_pull_files(
         wt_name = _wt_name_from_bare_name(bare_name)
 
         for src in staging_project_dir.rglob("*"):
+            _assert_safe_staging_path(src, staging_dir)
             if not src.is_file():
                 continue
             rel = src.relative_to(staging_project_dir)
@@ -1012,7 +1114,7 @@ def apply_pull_files(
                 if divergence == "fast_forward_remote":
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        _write_jsonl_translated(src, dst, local_projects_root)
+                        _write_jsonl_translated(src, dst, local_projects_root, staging_dir)
                     applied_count += 1
                     updated_bare_names.add(bare_name)
                     if verbose:
@@ -1024,7 +1126,7 @@ def apply_pull_files(
                     if prefer_remote:
                         if not dry_run:
                             dst.parent.mkdir(parents=True, exist_ok=True)
-                            _write_jsonl_translated(src, dst, local_projects_root)
+                            _write_jsonl_translated(src, dst, local_projects_root, staging_dir)
                         applied_count += 1
                         updated_bare_names.add(bare_name)
                         if verbose:
@@ -1035,7 +1137,7 @@ def apply_pull_files(
                         conflict_path = CONFLICT_DIR / bare_name / conflict_name
                         if not dry_run:
                             conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, conflict_path)
+                            _copy_staging_file(src, conflict_path, staging_dir)
                         conflict_str = f"jsonl  {bare_name}/{rel.name} — remote saved as {conflict_path}"
                         conflicts.append(conflict_str)
                         conflict_events.append(
@@ -1059,8 +1161,8 @@ def apply_pull_files(
                 if dst.exists() and file_hash(src) == file_hash(dst):
                     continue
 
-                content = src.read_text(errors="replace")
-                has_conflict_markers = "<<<<<<<" in content and ">>>>>>>" in content
+                content = _read_staging_bytes(src, staging_dir).decode(errors="replace")
+                has_conflict_markers = _has_conflict_markers(content)
 
                 if has_conflict_markers:
                     # Attempt LLM auto-merge before saving a conflict file.
@@ -1068,7 +1170,7 @@ def apply_pull_files(
                     if merged is not None:
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         dst.write_text(merged, encoding="utf-8")
-                        src.write_text(merged, encoding="utf-8")  # Update staging file
+                        _write_staging_text(src, merged, staging_dir)  # Update staging file
                         staging_to_commit.append(src)  # Track for git commit+push
                         applied_count += 1
                         updated_bare_names.add(bare_name)
@@ -1078,7 +1180,7 @@ def apply_pull_files(
                         conflict_path = CONFLICT_DIR / bare_name / rel.with_suffix(rel.suffix + ".conflict")
                         if not dry_run:
                             conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, conflict_path)
+                            _copy_staging_file(src, conflict_path, staging_dir)
                         conflict_str = f"memory {bare_name}/{rel} — .conflict file written"
                         conflicts.append(conflict_str)
                         conflict_events.append(
@@ -1100,7 +1202,7 @@ def apply_pull_files(
                 else:
                     if not dry_run:
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dst)
+                        _copy_staging_file(src, dst, staging_dir)
                     applied_count += 1
                     updated_bare_names.add(bare_name)
                     if verbose:
@@ -1640,9 +1742,116 @@ def is_cc_active_locally() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
+_CONFLICT_START_RE = re.compile(r"^<<<<<<<(?:[ \t].*)?$", re.MULTILINE)
+_CONFLICT_END_RE = re.compile(r"^>>>>>>>(?:[ \t].*)?$", re.MULTILINE)
+
+
+def _has_conflict_markers(text: str) -> bool:
+    """True when text contains a real git conflict hunk: a start AND end marker, each
+    anchored to the start of its own line.
+
+    A bare substring search (``"<<<<<<<" in text``) false-positives on prose that
+    legitimately quotes marker characters — a memory file about avoiding naive marker
+    detection contained an example command with `<<<<<<<`/`>>>>>>>` mid-line, got
+    misclassified as conflicted, and its LLM-merge response corrupted it (measured). Git
+    always writes a real marker at the start of its own line, e.g. ``<<<<<<< HEAD``.
+    """
+    return bool(_CONFLICT_START_RE.search(text)) and bool(_CONFLICT_END_RE.search(text))
+
+
+def _leaves_conflict_marker(text: str) -> bool:
+    """True when text still contains ANY unresolved git conflict marker (start or end),
+    anchored to line-start. Used to reject an LLM merge response that left the file
+    still broken — see :func:`_has_conflict_markers` for why line-anchoring matters."""
+    return bool(_CONFLICT_START_RE.search(text)) or bool(_CONFLICT_END_RE.search(text))
+
+
+def _staged_paths_with_conflict_markers(staging_dir: Path) -> list[str] | None:
+    """Return staged paths containing unresolved markers, or None if the index cannot be read."""
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "-z"],
+        cwd=staging_dir,
+        capture_output=True,
+        env=_GIT_ENV,
+        check=False,
+    )
+    if staged.returncode != 0:
+        return None
+
+    marker_paths: list[str] = []
+    for raw_path in staged.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        path = os.fsdecode(raw_path)
+        blob = subprocess.run(
+            ["git", "show", f":{path}"],
+            cwd=staging_dir,
+            capture_output=True,
+            env=_GIT_ENV,
+            check=False,
+        )
+        if blob.returncode != 0:
+            return None
+        if _has_conflict_markers(blob.stdout.decode("utf-8", errors="replace")):
+            marker_paths.append(path)
+    return marker_paths
+
+
+def _memory_merge_prompt(conflict_content: str, filename: str) -> str:
+    return (
+        f"You are resolving a git merge conflict in a memory file named '{filename}'.\n"
+        "The file has git conflict markers (<<<<<<, =======, >>>>>>>).\n"
+        "Merge both versions, preserving ALL information from both sides.\n"
+        "Rules:\n"
+        "- Keep ALL entries from both the HEAD (<<<<<<) and incoming (>>>>>>>) sections.\n"
+        "- For duplicate keys with different values, prefer the HEAD version (local machine).\n"
+        "- Remove ALL conflict markers from the output.\n"
+        "- Preserve original structure, headings, and markdown formatting.\n"
+        "- Output ONLY the merged file content. No explanation, no preamble.\n\n"
+        f"{conflict_content}"
+    )
+
+
+def _codex_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
+    """Use Codex (``cx mechanical``) to resolve git conflict markers in a memory markdown file.
+
+    Primary merge path — no API key required, since it goes through this fleet's
+    existing Codex delegation wrapper rather than calling an LLM API directly.
+    Returns merged content without conflict markers, or None if merge fails
+    (cx unavailable, non-zero exit, subprocess error, or the output still
+    carries markers), so the caller can fall back to the Gemini path.
+    """
+    cx_path = shutil.which("cx")
+    if cx_path is None:
+        fallback = Path.home() / ".claude" / "bin" / "cx"
+        if not fallback.exists():
+            return None
+        cx_path = str(fallback)
+
+    prompt = _memory_merge_prompt(conflict_content, filename)
+    try:
+        result = subprocess.run(
+            [cx_path, "mechanical", "--effort", "low", "-C", str(Path.cwd()), prompt],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0:
+        return None
+    merged = result.stdout
+    if not merged or _leaves_conflict_marker(merged):
+        return None  # cx failed to resolve all markers
+    return merged
+
+
+def _gemini_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
     """Use Gemini Flash to resolve git conflict markers in a memory markdown file.
 
+    Fallback merge path, used only when the Codex path is unavailable or fails.
     Returns merged content without conflict markers, or None if merge fails
     (no API key, network error, or LLM left markers in the output).
     """
@@ -1656,25 +1865,33 @@ def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | No
         from google import genai  # type: ignore
 
         client = genai.Client(api_key=api_key)
-        prompt = (
-            f"You are resolving a git merge conflict in a memory file named '{filename}'.\n"
-            "The file has git conflict markers (<<<<<<, =======, >>>>>>>).\n"
-            "Merge both versions, preserving ALL information from both sides.\n"
-            "Rules:\n"
-            "- Keep ALL entries from both the HEAD (<<<<<<) and incoming (>>>>>>>) sections.\n"
-            "- For duplicate keys with different values, prefer the HEAD version (local machine).\n"
-            "- Remove ALL conflict markers from the output.\n"
-            "- Preserve original structure, headings, and markdown formatting.\n"
-            "- Output ONLY the merged file content. No explanation, no preamble.\n\n"
-            f"{conflict_content}"
-        )
+        prompt = _memory_merge_prompt(conflict_content, filename)
         response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
         merged = response.text
-        if not merged or "<<<<<<<" in merged or ">>>>>>>" in merged:
+        if not merged or _leaves_conflict_marker(merged):
             return None  # LLM failed to resolve all markers
         return merged
     except Exception:
         return None
+
+
+def _llm_merge_memory_conflict(conflict_content: str, filename: str) -> str | None:
+    """Resolve git conflict markers in a memory markdown file.
+
+    Tries Codex (``cx mechanical``) first — this fleet's standard delegation
+    path, which needs no extra credentials in the invoking shell — and falls
+    back to Gemini only when the Codex path is unavailable or fails.
+
+    Content with no genuine (line-anchored) conflict markers is returned
+    unchanged without ever reaching an LLM: there is nothing to resolve, and
+    sending it anyway risks a nonsensical response corrupting the file.
+    """
+    if not _has_conflict_markers(conflict_content):
+        return conflict_content
+    merged = _codex_merge_memory_conflict(conflict_content, filename)
+    if merged is not None:
+        return merged
+    return _gemini_merge_memory_conflict(conflict_content, filename)
 
 
 # ---------------------------------------------------------------------------
@@ -1698,8 +1915,13 @@ def notify_conflicts(conflicts: list[str], events: list[dict[str, str]] | None =
             [
                 "osascript",
                 "-e",
-                f'display notification "{summary}" with title "ai sync: conflict detected" '
-                f'subtitle "Review .conflict files or check ~/.claude-sync-conflicts.log"',
+                "on run argv\n"
+                "display notification (item 3 of argv) with title (item 1 of argv) "
+                "subtitle (item 2 of argv)\n"
+                "end run",
+                "ai sync: conflict detected",
+                "Review .conflict files or check ~/.claude-sync-conflicts.log",
+                summary,
             ],
             capture_output=True,
             check=False,
@@ -2029,13 +2251,26 @@ def sync_push(flags: list[str]) -> int:
 
     Exit codes: 0 = success, 1 = fatal error, 2 = conflicts preserved
     """
-    memories_only, dry_run, verbose, force, _ = _parse_flags(flags)
-
     try:
         cfg = load_sync_config()
     except Exception as e:
         print(f"Error loading sync config: {e}", file=sys.stderr)
         return 1
+
+    if "--dry-run" in flags or "-n" in flags:
+        return _sync_push(flags, cfg)
+
+    try:
+        with _staging_repo_lock(cfg.staging_dir):
+            return _sync_push(flags, cfg)
+    except _StagingLockUnavailableError:
+        print("Error: another ai sync operation is using the staging repository; try again shortly.", file=sys.stderr)
+        return 1
+
+
+def _sync_push(flags: list[str], cfg: SyncConfig) -> int:
+    """Run a push after the caller has loaded config and acquired the staging lock."""
+    memories_only, dry_run, verbose, force, _ = _parse_flags(flags)
 
     if not dry_run:
         # Non-fatal — bare repo may already exist
@@ -2154,13 +2389,26 @@ def sync_pull(flags: list[str]) -> int:
 
     Exit codes: 0 = success, 1 = fatal error, 2 = conflicts preserved
     """
-    memories_only, dry_run, verbose, force, prefer_remote = _parse_flags(flags)
-
     try:
         cfg = load_sync_config()
     except Exception as e:
         print(f"Error loading sync config: {e}", file=sys.stderr)
         return 1
+
+    if "--dry-run" in flags or "-n" in flags:
+        return _sync_pull(flags, cfg)
+
+    try:
+        with _staging_repo_lock(cfg.staging_dir):
+            return _sync_pull(flags, cfg)
+    except _StagingLockUnavailableError:
+        print("Error: another ai sync operation is using the staging repository; try again shortly.", file=sys.stderr)
+        return 1
+
+
+def _sync_pull(flags: list[str], cfg: SyncConfig) -> int:
+    """Run a pull after the caller has loaded config and acquired the staging lock."""
+    memories_only, dry_run, verbose, force, prefer_remote = _parse_flags(flags)
 
     if not memories_only:
         try:
@@ -2263,15 +2511,36 @@ def sync_pull(flags: list[str]) -> int:
                 check=False,
             )
             if git_add.returncode == 0:
-                commit = subprocess.run(
-                    ["git", "commit", "-m", "sync: update staging after conflict resolution"],
-                    cwd=cfg.staging_dir,
-                    capture_output=True,
-                    env=_GIT_ENV,
-                    check=False,
-                )
-                if commit.returncode == 0:
-                    _push_to_remote(cfg.staging_dir, verbose=False)
+                marker_paths = _staged_paths_with_conflict_markers(cfg.staging_dir)
+                if marker_paths is None:
+                    print("Error: refusing to commit because the staging index could not be verified.", file=sys.stderr)
+                    subprocess.run(
+                        ["git", "reset"], cwd=cfg.staging_dir, capture_output=True, env=_GIT_ENV, check=False
+                    )
+                    result["conflicts"].append("staging index could not be verified before commit")
+                elif marker_paths:
+                    paths = ", ".join(marker_paths)
+                    print(
+                        f"Error: refusing to commit staged files with unresolved git conflict markers: {paths}",
+                        file=sys.stderr,
+                    )
+                    # Clear the complete shared index. A concurrent caller may have
+                    # staged paths outside staging_to_commit; leaving those staged
+                    # would let a future commit include data this pull never checked.
+                    subprocess.run(
+                        ["git", "reset"], cwd=cfg.staging_dir, capture_output=True, env=_GIT_ENV, check=False
+                    )
+                    result["conflicts"].append(f"staging conflict markers refused: {paths}")
+                else:
+                    commit = subprocess.run(
+                        ["git", "commit", "-m", "sync: update staging after conflict resolution"],
+                        cwd=cfg.staging_dir,
+                        capture_output=True,
+                        env=_GIT_ENV,
+                        check=False,
+                    )
+                    if commit.returncode == 0:
+                        _push_to_remote(cfg.staging_dir, verbose=False)
 
     if result["conflicts"]:
         if not dry_run:
@@ -2347,7 +2616,7 @@ def sync_resolve(flags: list[str]) -> int:
     def _resolve_memory_conflict_file(f: Path, local_cc_file: Path | None) -> str:
         """Attempt to resolve one .conflict file. Returns 'merged', 'failed', or 'no_markers'."""
         content = f.read_text(errors="replace")
-        if "<<<<<<<" not in content or ">>>>>>>" not in content:
+        if not _has_conflict_markers(content):
             if not dry_run:
                 f.unlink()
             return "no_markers"

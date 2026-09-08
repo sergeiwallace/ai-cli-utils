@@ -1123,7 +1123,7 @@ as `FAIL — fixed inline` with the commit hash of your fix.
 
 Audit the AI-CLI-208 fix (files: `src/ai_cli/session.py`, `tests/test_session.py`,
 `tests/test_session_launch_integration.py`) at commit `2b3a6b2` in
-`/Users/sergeiwallace/projects/ai-cli-utils/.worktrees/ai-cli-1` against the following scope on
+`/Users/user/projects/ai-cli-utils/.worktrees/ai-cli-1` against the following scope on
 these validation dimensions:
 
 SCOPE: newly allocated tmux session names, `ai_name` (worktree directory name), and the CC
@@ -1303,7 +1303,7 @@ introduced new contradictions, and draft-author scaffolding left over from the R
 
 Also independently re-run: `uv run ruff check src/ tests/`, `uv run ruff format --check src/
 tests/`, and `uv run pytest -q` (the FULL suite) in
-`/Users/sergeiwallace/projects/ai-cli-utils/.worktrees/ai-cli-1`, and quote the final summary line.
+`/Users/user/projects/ai-cli-utils/.worktrees/ai-cli-1`, and quote the final summary line.
 If your sandbox cannot bind local tmux sockets, say so explicitly rather than reporting a false
 pass or a false fail on tmux-dependent tests.
 

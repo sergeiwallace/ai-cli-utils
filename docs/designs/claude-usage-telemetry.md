@@ -11,7 +11,7 @@ template_version: "design-1.0.0"
 
 # Claude Usage Telemetry — Token Tracking and Quota Pacing
 
-**Status:** APPROVED — *Note: System Architecture and Data Model sections below reflect the original design (standalone SQLite + HTTP receiver). The actual implementation uses NATS JetStream → Postgres via ai-core. See `ai-core/docs/designs/ai-usage-tracking.md` for the authoritative architecture.*
+**Status:** APPROVED — *Note: System Architecture and Data Model sections below reflect the original design (standalone SQLite + HTTP receiver). The actual implementation uses NATS JetStream → Postgres via core-cli. See `core-cli/docs/designs/ai-usage-tracking.md` for the authoritative architecture.*
 
 **Created:** 2026-04-01
 
@@ -27,10 +27,10 @@ template_version: "design-1.0.0"
   6. After each round, add a line item to the Approval Log: date, round N, key decisions/approvals from that round.
 -->
 
-<!-- AIDO-128: the ToC sits ABOVE the Executive Summary (it is self-referential otherwise).
+<!-- COMP-128: the ToC sits ABOVE the Executive Summary (it is self-referential otherwise).
   D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc, with GitHub-style
   anchors (lowercase, spaces→hyphens, punctuation stripped) so they navigate in-window
-  (incl. VS Code Remote-SSH). `aido toc check` validates this once AIDO-127 lands. If
+  (incl. VS Code Remote-SSH). `companion toc check` validates this once COMP-127 lands. If
   all-`###` proves too noisy, fall back to D5 (a) "meaningful `###`" — a deterministic
   OR-rule: include a `###` when it (1) has child `####`, (2) its section body ≥ ~8-10
   lines, (3) its parent `##` is allowlisted (Design Decisions / Open Questions /
@@ -713,7 +713,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 - **Tailscale**: cross-machine networking (Mac to Hetzner)
 - **tmux**: hidden pane scraping (`_scrape_usage_hidden_pane`); status bar integration via `quota_statusline_part`
 - **NATS JetStream**: `quota.snapshot` subject (stream: `quota`) — Hetzner publishes after each scrape; Mac durable consumer `quota-subscriber-mac` replays missed messages on reconnect
-- **NATS core**: `hw.events.usage.claude.snapshot` subject — Hetzner publishes alongside `quota.snapshot` so the ai-core `UsageConsumer` can ingest snapshots into Postgres for cross-provider usage reporting
+- **NATS core**: `hw.events.usage.claude.snapshot` subject — Hetzner publishes alongside `quota.snapshot` so the core-cli `UsageConsumer` can ingest snapshots into Postgres for cross-provider usage reporting
 - **NATS KV (`hw_state`)**: `quota.claude.current` key — Hetzner writes after each scrape; other services (workers, dashboards) read without SSHing to Mac. (Renamed from the older `quota.claude.weekly` key — consumers now read the single canonical "latest snapshot" key.)
 - **hw-scheduling (myproject)**: `claude_quota_scrape` job (Hetzner, 10 min) triggers scrape; `claude_quota_sync` job (Mac, 10 min) SSH-pulls as fallback catch-up; `gemini_cost_sync` job (Hetzner, 4h) tracks Gemini API cost separately
 - **`ai internal quota-subscriber`**: persistent Circus-managed daemon on Mac; JetStream durable consumer for `quota.snapshot`; survives CC session exits
@@ -725,7 +725,7 @@ min_anchor_interval_hours = 12     # don't accept anchors more frequently
 
 <!-- Per-phase task ACs follow the canonical AC quality rules. `docs/procedures/task-authoring-standards.md`
   is AUTHORITATIVE (open it for the full/latest standard; this inline reminder is sync-checked
-  against its canonical block by `aido validate-doc` and must not be edited independently): -->
+  against its canonical block by `companion validate-doc` and must not be edited independently): -->
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.

@@ -466,6 +466,28 @@ def test_given_worktree_creation_fails_when_launched_then_it_refuses_to_use_the_
     assert "refusing to launch in the repository root" in err
     assert "branch exists" in err
     assert "permissions denied" in err
+    assert "--no-worktree" not in err, (
+        "-W/--no-worktree launches in the repository root, which is exactly what this message "
+        "refuses to do — offering it as the escape hatch talks the user into breaking isolation"
+    )
+
+
+def test_given_worktree_creation_returns_nothing_when_launched_then_it_refuses_without_offering_no_worktree(
+    tmp_path, monkeypatch, capsys
+):
+    """The falsy-return branch refuses on the same terms as the raising one.
+
+    A separate code path with its own message, so a fix applied only to the
+    RuntimeError branch above would leave this one still advertising the flag.
+    """
+    repo = _make_repo(tmp_path / "projects" / "myproject")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("ai_cli.session.create_worktree", lambda *args, **kwargs: None)
+
+    _launch_in(monkeypatch, tmp_path)
+    err = capsys.readouterr().err
+    assert "refusing to launch in the repository root" in err
+    assert "--no-worktree" not in err
 
 
 @pytest.mark.parametrize("engine", ["c", "g"])

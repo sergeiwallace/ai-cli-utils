@@ -62,7 +62,7 @@ found nothing. Otherwise, default to at least Round 1 + Round 2.
 
 `<scope-or-id>-audit.md` — e.g.:
 
-- `aido-107-silent-degradation-audit.md`
+- `companion-107-silent-degradation-audit.md`
 - `rsmcld-149-plan-audit.md`
 - `cld-48-hypothesis-agent-audit.md`
 - `q2-2026-security-audit.md`

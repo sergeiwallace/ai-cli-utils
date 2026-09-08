@@ -21,8 +21,12 @@ from ai_cli.main import (
     _cc_project_dir,
     _cc_record_liveness,
     _cc_session_is_live,
+    _confirm_mismatched_title_resume,
     _do_session_launch,
     _find_cc_session_by_title,
+    _find_cc_session_candidates_by_title,
+    _find_lone_mismatched_cc_session,
+    _LiveClaudeSessionError,
 )
 from ai_cli.session import build_session_name, find_next_index
 
@@ -104,15 +108,23 @@ def test_given_matching_title_when_searched_then_returns_that_transcript(tmp_pat
     assert _find_cc_session_by_title(cwd, "kg-1") == want
 
 
-def test_given_later_different_title_when_searched_then_first_title_remains_the_session_identity(tmp_path, monkeypatch):
+def test_given_renamed_session_when_searched_then_latest_title_is_the_session_identity(tmp_path, monkeypatch):
+    """AI-CLI-p3fg: a rename must be honored, not just the session's original title.
+
+    Claude Code appends a fresh ``custom-title`` record on rename rather than
+    rewriting the first one, so the title in effect is whichever record was
+    written last. Reading only the first record made a renamed session keep
+    matching its old name forever — exactly what let ``ai c`` resolve into a
+    session the user had already renamed away from.
+    """
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     cwd = Path("/repo/wt")
     transcript = _write_transcript(_cc_project_dir(cwd), "cccccccc-0000-4000-8000-000000000003", "proj-1-2")
     with transcript.open("a") as handle:
         handle.write(json.dumps({"type": "custom-title", "customTitle": "proj-1", "sessionId": transcript.stem}) + "\n")
 
-    assert _find_cc_session_by_title(cwd, "proj-1") is None
-    assert _find_cc_session_by_title(cwd, "proj-1-2") == transcript
+    assert _find_cc_session_by_title(cwd, "proj-1") == transcript
+    assert _find_cc_session_by_title(cwd, "proj-1-2") is None
 
 
 def test_given_no_matching_title_when_searched_then_returns_none(tmp_path, monkeypatch):
@@ -137,78 +149,320 @@ def test_given_missing_project_dir_when_searched_then_returns_none(tmp_path, mon
     assert _find_cc_session_by_title(Path("/nope"), "kg-1") is None
 
 
+def test_given_bg_bridge_shares_title_when_searched_then_interactive_transcript_wins(tmp_path, monkeypatch):
+    """AI-CLI-p3fg root cause: a /remote-control bridge inherits its parent's
+    customTitle via --fork-session, and can out-mtime the real interactive
+    session by staying alive and writing to its own transcript for days. A
+    transcript registered with kind "bg" must never be picked as the target
+    of an interactive ai c resume, however recent its mtime.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    project_dir = _cc_project_dir(cwd)
+    interactive = _write_transcript(project_dir, "aaaaaaaa-0000-4000-8000-00000000000a", "ai-cli-1")
+    bridge = _write_transcript(project_dir, "bbbbbbbb-0000-4000-8000-00000000000b", "ai-cli-1")
+    os.utime(interactive, (1, 1))
+    os.utime(bridge, (2, 2))  # newer mtime than the interactive transcript
+    _write_session_registry(tmp_path, 9001, bridge.stem)
+    sessions_dir = tmp_path / ".claude" / "sessions"
+    record = json.loads((sessions_dir / "9001.json").read_text())
+    record["kind"] = "bg"
+    (sessions_dir / "9001.json").write_text(json.dumps(record))
+
+    assert _find_cc_session_by_title(cwd, "ai-cli-1") == interactive
+
+
+def test_given_two_eligible_titled_transcripts_when_searched_then_candidates_lists_both(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    project_dir = _cc_project_dir(cwd)
+    older = _write_transcript(project_dir, "cccccccc-0000-4000-8000-00000000000c", "ai-cli-1")
+    newer = _write_transcript(project_dir, "dddddddd-0000-4000-8000-00000000000d", "ai-cli-1")
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    candidates = _find_cc_session_candidates_by_title(cwd, "ai-cli-1")
+
+    assert candidates == [newer, older]
+    assert _find_cc_session_by_title(cwd, "ai-cli-1") == newer
+
+
 # --- bare argv construction ----------------------------------------------------
 
 
-def test_given_bare_claude_when_no_prior_session_then_passes_name_without_continue(tmp_path, monkeypatch):
+def test_given_bare_claude_when_no_prior_session_then_passes_name_without_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     argv = _bare_engine_command("c", "kg-1", tmp_path / "wt", None, "gemini", "--no-sandbox", [])
 
     assert argv[0] == "claude"
     assert "--name" in argv and argv[argv.index("--name") + 1] == "kg-1"
-    assert "--continue" not in argv
+    assert "--resume" not in argv
 
 
-def test_given_bare_claude_when_prior_session_exists_then_adds_continue(tmp_path, monkeypatch):
+def test_given_bare_claude_when_prior_session_exists_then_resumes_its_session_id(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     transcript = _write_transcript(_cc_project_dir(target), "eeeeeeee-0000-4000-8000-000000000005", "kg-1")
-    os.utime(transcript, (1, 1))
-
     argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" in argv
-    assert "--name" in argv
-    assert transcript.stat().st_mtime > 1
+    assert argv[-4:] == ["--resume", transcript.stem, "--name", "kg-1"]
 
 
-def test_given_two_named_transcripts_when_bare_claude_resumes_then_touches_only_exact_title(tmp_path, monkeypatch):
+def test_given_two_named_transcripts_when_bare_claude_resumes_then_uses_only_exact_title(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     project_dir = _cc_project_dir(target)
     matching = _write_transcript(project_dir, "12121212-0000-4000-8000-000000000005", "proj-1")
-    other = _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
-    os.utime(matching, (1, 1))
-    os.utime(other, (2, 2))
-
+    _write_transcript(project_dir, "34343434-0000-4000-8000-000000000005", "proj-1-2")
     argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" in argv
-    assert matching.stat().st_mtime > 2
-    assert other.stat().st_mtime == 2
+    assert argv[-4:] == ["--resume", matching.stem, "--name", "proj-1"]
 
 
-def test_given_only_different_named_transcript_when_bare_claude_launches_then_does_not_continue(tmp_path, monkeypatch):
+def test_given_only_different_named_transcript_when_bare_claude_launches_then_does_not_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
-    other = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
-    os.utime(other, (2, 2))
+    _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000005", "proj-1-2")
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--resume" not in argv
+
+
+# --- AI-CLI-8xvd: lone mismatched-title session prompt --------------------------
+
+
+class _FakeStdin:
+    """Minimal stand-in for ``sys.stdin`` in the interactive-confirm path."""
+
+    def __init__(self, isatty: bool, line: str = ""):
+        self._isatty = isatty
+        self._line = line
+
+    def isatty(self) -> bool:
+        return self._isatty
+
+    def readline(self) -> str:
+        return self._line
+
+
+def test_given_no_transcripts_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert _find_lone_mismatched_cc_session(Path("/repo/wt"), "proj-1") is None
+
+
+def test_given_one_matching_transcript_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    """An exact title match is the multi-candidate path's job, not this one's."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    _write_transcript(_cc_project_dir(cwd), "9990aaaa-0000-4000-8000-000000000009", "proj-1")
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") is None
+
+
+def test_given_one_mismatched_transcript_when_finding_lone_mismatch_then_returns_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    want = _write_transcript(_cc_project_dir(cwd), "9990aaaa-0000-4000-8000-00000000000a", "proj-1-2")
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") == want
+
+
+def test_given_two_mismatched_transcripts_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    """Two candidates is ambiguous — never guess which one the user meant."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    project_dir = _cc_project_dir(cwd)
+    _write_transcript(project_dir, "9990aaaa-0000-4000-8000-00000000000b", "other-1")
+    _write_transcript(project_dir, "9990aaaa-0000-4000-8000-00000000000c", "other-2")
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") is None
+
+
+def test_given_bg_bridge_only_transcript_when_finding_lone_mismatch_then_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    cwd = Path("/repo/wt")
+    bridge = _write_transcript(_cc_project_dir(cwd), "9990aaaa-0000-4000-8000-00000000000d", "proj-1-2")
+    _write_session_registry(tmp_path, 9002, bridge.stem)
+    sessions_dir = tmp_path / ".claude" / "sessions"
+    record = json.loads((sessions_dir / "9002.json").read_text())
+    record["kind"] = "bg"
+    (sessions_dir / "9002.json").write_text(json.dumps(record))
+
+    assert _find_lone_mismatched_cc_session(cwd, "proj-1") is None
+
+
+def test_given_noninteractive_stdin_when_confirming_mismatch_then_defaults_no(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=False))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000001.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is False
+    assert "Non-interactive session" in capsys.readouterr().err
+
+
+def test_given_interactive_yes_when_confirming_mismatch_then_returns_true(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="y\n"))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000002.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is True
+
+
+def test_given_interactive_no_when_confirming_mismatch_then_returns_false(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="n\n"))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000003.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is False
+
+
+def test_given_interactive_empty_answer_when_confirming_mismatch_then_defaults_no(tmp_path, monkeypatch):
+    """An empty line (bare Enter) must default to "no", matching the [y/N] prompt."""
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="\n"))
+    candidate = tmp_path / "aaaaaaaa-0000-4000-8000-000000000004.jsonl"
+    candidate.write_text("")
+
+    assert _confirm_mismatched_title_resume("proj-1", candidate) is False
+
+
+def test_given_lone_mismatched_transcript_and_interactive_yes_when_bare_claude_launches_then_resumes_it(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="y\n"))
+    target = tmp_path / "wt"
+    transcript = _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000006", "proj-1-2")
 
     argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" not in argv
-    assert other.stat().st_mtime == 2
+    assert argv[-4:] == ["--resume", transcript.stem, "--name", "proj-1"]
 
 
-@pytest.mark.skipif(not _HAS_PROC, reason="needs /proc to register a genuinely live pid")
-def test_given_live_title_matched_session_when_bare_claude_then_warns_without_touching_or_continuing(
+def test_given_lone_mismatched_transcript_and_interactive_no_when_bare_claude_launches_then_does_not_resume(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="n\n"))
+    target = tmp_path / "wt"
+    _write_transcript(_cc_project_dir(target), "56565656-0000-4000-8000-000000000007", "proj-1-2")
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--resume" not in argv
+
+
+def test_given_two_mismatched_transcripts_when_bare_claude_launches_then_does_not_prompt(tmp_path, monkeypatch):
+    """Ambiguous (>1 candidate, none title-matched) must never trigger the y/n prompt."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(isatty=True, line="y\n"))
+    target = tmp_path / "wt"
+    project_dir = _cc_project_dir(target)
+    _write_transcript(project_dir, "56565656-0000-4000-8000-000000000008", "other-1")
+    _write_transcript(project_dir, "56565656-0000-4000-8000-000000000009", "other-2")
+
+    argv = _bare_engine_command("c", "proj-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert "--resume" not in argv
+
+
+def test_given_two_eligible_transcripts_when_bare_claude_resumes_then_warns_and_picks_newest(
     tmp_path, monkeypatch, capsys
 ):
+    """AI-CLI-p3fg AC1/AC5: flag the ambiguity, but still resolve deterministically
+    to the most recently active eligible transcript (not most-recent-PID)."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    target = tmp_path / "wt"
+    project_dir = _cc_project_dir(target)
+    older = _write_transcript(project_dir, "77777777-0000-4000-8000-000000000007", "kg-1")
+    newer = _write_transcript(project_dir, "88888888-0000-4000-8000-000000000008", "kg-1")
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+
+    assert argv[-4:] == ["--resume", newer.stem, "--name", "kg-1"]
+    stderr = capsys.readouterr().err
+    assert "2 Claude Code transcripts" in stderr
+    assert older.stem in stderr and newer.stem in stderr
+
+
+def test_given_live_title_matched_session_when_bare_claude_then_refuses_duplicate_launch(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
     session_id = "ffffffff-0000-4000-8000-000000000006"
     transcript = _write_transcript(_cc_project_dir(target), session_id, "kg-1")
     os.utime(transcript, (1, 1))
-    pid = os.getpid()
-    _write_session_registry(tmp_path, pid, session_id, proc_start=_self_proc_start())
+    pid = 4242
+    monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, pid))
 
-    argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
+    with pytest.raises(_LiveClaudeSessionError) as exc_info:
+        _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" not in argv
-    assert transcript.stat().st_mtime == 1
+    assert exc_info.value.title == "kg-1"
+    assert exc_info.value.pid == pid
+    assert exc_info.value.transcript == transcript
+
+
+def test_given_live_bare_claude_when_no_matching_tmux_session_then_launch_aborts(
+    real_repo, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(real_repo)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "abababab-0000-4000-8000-000000000006"
+    transcript = _write_transcript(_cc_project_dir(real_repo), session_id, "kg-1")
+    monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, 4242))
+
+    with (
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.main.shutil.which", return_value=None),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(**_launch_kwargs(no_worktree=True))
+
+    assert exc_info.value.code == 1
     stderr = capsys.readouterr().err
-    assert "kg-1" in stderr
-    assert f"pid {pid}" in stderr
+    assert "Launch aborted to avoid starting a duplicate" in stderr
+    assert str(transcript) in stderr
+
+
+def test_given_live_claude_when_matching_tmux_session_then_bare_launch_reattaches(real_repo, tmp_path, monkeypatch):
+    monkeypatch.chdir(real_repo)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    session_id = "bcbcbcbc-0000-4000-8000-000000000006"
+    _write_transcript(_cc_project_dir(real_repo), session_id, "kg-1")
+    monkeypatch.setattr("ai_cli.main._cc_session_is_live", lambda _transcript: (True, 4242))
+    execs: list[tuple[str, list[str]]] = []
+    real_run = subprocess.run
+
+    def fake_run(command, *args, **kwargs):
+        if command[0] != "tmux":
+            return real_run(command, *args, **kwargs)
+        if command[:2] == ["tmux", "list-panes"]:
+            return subprocess.CompletedProcess(command, 0, stdout="0\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    def fake_execvp(file, args):
+        execs.append((file, list(args)))
+        raise SystemExit(0)
+
+    with (
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.main.shutil.which", return_value="tmux"),
+        patch("ai_cli.main.subprocess.run", side_effect=fake_run),
+        patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_launch_kwargs(no_worktree=True))
+
+    assert execs == [("tmux", ["tmux", "attach-session", "-d", "-t", "c-kg-1"])]
 
 
 # --- session-registry liveness (AI-CLI-cc-session-live-mvht) --------------------
@@ -229,7 +483,7 @@ def test_given_registry_record_for_dead_pid_when_checked_then_not_live(tmp_path,
     assert _cc_session_is_live(Path(f"/x/{session_id}.jsonl")) == (False, None)
 
 
-def test_given_stale_registry_record_when_bare_claude_then_still_continues(tmp_path, monkeypatch, capsys):
+def test_given_stale_registry_record_when_bare_claude_then_still_resumes(tmp_path, monkeypatch, capsys):
     """End-to-end shape of the bug: the refusal must not reach the launch argv."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     target = tmp_path / "wt"
@@ -240,7 +494,7 @@ def test_given_stale_registry_record_when_bare_claude_then_still_continues(tmp_p
 
     argv = _bare_engine_command("c", "kg-1", target, None, "gemini", "--no-sandbox", [])
 
-    assert "--continue" in argv
+    assert argv[-4:] == ["--resume", session_id, "--name", "kg-1"]
     assert "still running" not in capsys.readouterr().err
 
 

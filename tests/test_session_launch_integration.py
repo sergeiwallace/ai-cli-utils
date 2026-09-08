@@ -9,17 +9,17 @@ resolution.
 """
 
 import os
-import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from unittest.mock import MagicMock, patch
 
 import libtmux
 import pytest
 
-from ai_cli.main import _do_session_launch
+from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 
 def _tmux_runnable() -> tuple[bool, str]:
@@ -122,6 +122,7 @@ def patched_subprocess(tmux_server, tmp_path):
     Yields the tmux server so tests can inspect created sessions.
     """
     server = tmux_server
+    real_subprocess_run = subprocess.run
 
     class _OK:
         returncode = 0
@@ -161,7 +162,41 @@ def patched_subprocess(tmux_server, tmp_path):
                     pass
                 return _OK()
 
-            # kill-session, set-option, etc. — silently succeed.
+            if sub == "list-panes":
+                # Query the real server so dead-pane detection reflects true state.
+                try:
+                    target = cmd[cmd.index("-t") + 1]
+                except (ValueError, IndexError):
+                    return _FAIL()
+                match = next((s for s in server.sessions if s.name == target), None)
+                if match is None:
+                    return _FAIL()
+                # Use the captured real subprocess.run, not the module-level name --
+                # that name is itself patched to this same fake_run for the whole
+                # test, so calling `subprocess.run(...)` here would recurse forever.
+                return real_subprocess_run(
+                    ["tmux", "-S", str(server.socket_path), "list-panes", "-t", target, "-F", "#{pane_dead}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            if sub == "kill-session":
+                # Actually remove the matching session so a subsequent has-session
+                # check (dead-pane recreate path) sees it gone, same as real tmux.
+                try:
+                    target = cmd[cmd.index("-t") + 1]
+                except (ValueError, IndexError):
+                    return _OK()
+                match = next((s for s in server.sessions if s.name == target), None)
+                if match is not None:
+                    try:
+                        match.kill()
+                    except Exception:
+                        pass
+                return _OK()
+
+            # set-option, set-window-option, etc. — silently succeed.
             return _OK()
 
         if head == "git":
@@ -286,6 +321,65 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     assert "c-myproject-2" in after
     # The existing session id must survive — i.e. no new-session was issued
     assert after["c-myproject-2"] in before_ids
+
+
+def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
+    """Pre-create ``session_name`` with a pane that is already dead.
+
+    A supervisor crash (AI-CLI-t8h5) leaves the tmux session alive with a dead
+    pane; tmux only keeps it around because ``remain-on-exit`` is set (as the
+    real launch path does at creation). Mirrors
+    ``test_stale_session_reaper.py``'s ``_create_dead_managed_session`` -- but
+    goes through ``server.cmd()`` (libtmux's own Popen-based transport)
+    instead of ``subprocess.run``, because ``patched_subprocess`` replaces the
+    real ``subprocess.run`` for the whole test (``ai_cli.main`` imports the
+    ``subprocess`` module directly, so patching ``ai_cli.main.subprocess.run``
+    replaces the same shared attribute a bare ``subprocess.run`` call would
+    hit) -- a raw ``subprocess.run(["tmux", ...])`` call here would silently
+    route through the fixture's fake instead of a real tmux invocation.
+    """
+    created = server.cmd("new-session", "-d", "-s", session_name, "sh", "-c", "read ignored; exit 0")
+    assert created.returncode == 0, created.stderr
+    assert server.cmd("set-window-option", "-t", session_name, "remain-on-exit", "on").returncode == 0
+    assert server.cmd("send-keys", "-t", session_name, "done", "Enter").returncode == 0
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        result = server.cmd("list-panes", "-t", session_name, "-F", "#{pane_dead}")
+        if result.returncode == 0 and result.stdout == ["1"]:
+            return
+        time.sleep(0.05)
+    pytest.fail("tmux pane did not become dead")
+
+
+def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_not_attaches(
+    patched_subprocess,
+):
+    """A session left behind by a supervisor crash (AI-CLI-t8h5 sw-4 regression)
+    has a dead pane but tmux keeps the session alive. A naive reattach shows
+    the frozen final output forever; ``_do_session_launch`` must instead kill
+    the dead session and create a genuinely fresh one."""
+    server = patched_subprocess
+    _create_dead_session(server, "c-myproject-3")
+
+    with (
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_base_launch_kwargs(name="3"))
+
+    after = {s.name: s.id for s in server.sessions}
+    assert "c-myproject-3" in after
+    pane_dead = server.cmd("list-panes", "-t", "c-myproject-3", "-F", "#{pane_dead}")
+    assert pane_dead.stdout == ["0"]
 
 
 def test_given_extra_args_positional_name_when_launched_then_session_uses_positional_name(
@@ -423,8 +517,20 @@ def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifa
     assert emit_profile.call_args.args[:3] == ("app-1", "c", "c-app-1")
 
 
-def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profile_name_is_lowercase_and_prefix_is_quoted():
+def test_given_shell_metacharacter_prefix_when_remote_session_launches_then_rejected_before_any_side_effect():
+    """A `--project-prefix` containing shell metacharacters must be rejected by
+    `validate_task_prefix()` (AI-CLI-fae.13 F-21) before the launch reaches remote
+    preflight, the iTerm2 profile, or exec — reject-outright is the intended
+    behavior, not sanitize-and-proceed (superseded AI-CLI-209 expectation)."""
     cfg = {"remote": {"host": "example.com", "transport": "ssh"}}
+    preflight_calls = []
+
+    def fake_preflight(cmd, *_args, **_kwargs):
+        if cmd[-1] == _REMOTE_SHELL_PROBE_CMD:
+            return MagicMock(returncode=0, stdout="zsh\n", stderr="")
+        preflight_calls.append(cmd)
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
     with (
         patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
         patch("ai_cli.main._session._resolve_is_remote", return_value=False),
@@ -432,9 +538,10 @@ def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profi
         patch("ai_cli.main._config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.main._iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.main._iterm2._emit_iterm2_profile_setup") as emit_profile,
+        patch("ai_cli.main.subprocess.run", side_effect=fake_preflight),
         patch("ai_cli.main.os.execvp", side_effect=SystemExit(0)) as execute,
     ):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc_info:
             _do_session_launch(
                 engine="c",
                 name="Planning",
@@ -452,13 +559,10 @@ def test_given_uppercase_or_shell_prefix_when_remote_session_launches_then_profi
                 config=cfg,
             )
 
-    assert emit_profile.call_args.args[:3] == (
-        "c-r-app; printf injected-planning",
-        "c",
-        "c-r-app; printf injected-planning",
-    )
-    remote_exec = execute.call_args.args[1][-1]
-    assert shlex.quote("APP; printf INJECTED") in remote_exec
+    assert exc_info.value.code == 1
+    assert preflight_calls == []
+    emit_profile.assert_not_called()
+    execute.assert_not_called()
 
 
 def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propagated(

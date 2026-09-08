@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 import shlex
 import subprocess
@@ -12,10 +13,12 @@ import pytest
 
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
+import ai_cli.trust as _trust_module
 from ai_cli.git_repair import _GIT_TARGETING_VARS
+from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv"})
+_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"})
 
 # Short directory name for the relocated Windows temp root -- see
 # _windows_temproot for why the length itself is the point.
@@ -135,9 +138,40 @@ def _command_program(command):
     return os.path.basename(os.fspath(command))  # noqa: PTH119
 
 
+def _tmux_argv_is_read_only(command) -> bool:
+    """True for a tmux invocation that cannot create a session, server or window.
+
+    The guard below matches on program NAME, which cannot tell `tmux new-session`
+    from `tmux -V`. That coarseness is fine until production code legitimately
+    needs to ASK tmux something during a launch: the launcher now reports the
+    client and the running server's version so an operator can see which tmux a
+    session is under, and neither query creates anything at all -- `-V` never
+    contacts a server, and `display-message` fails cleanly when none is running.
+    Rejecting those made a read-only diagnostic look like the hazard the guard
+    exists for, which is a live session leaking out of a test.
+
+    Deliberately an allowlist of exact subcommands, not a denylist: an unknown
+    tmux subcommand stays rejected, so this cannot silently widen.
+    """
+    if isinstance(command, str):
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return False
+    elif isinstance(command, (list, tuple)):
+        argv = [str(part) for part in command]
+    else:
+        return False
+    if len(argv) < 2:
+        return False
+    return argv[1] in {"-V", "display-message"}
+
+
 def _reject_real_agent_process(command, allowed_binaries=frozenset()):
-    """Fail loudly when a test reaches a real agent or tmux process boundary."""
+    """Fail loudly when a test reaches a real agent, transport, or tmux boundary."""
     program = _command_program(command)
+    if program == "tmux" and _tmux_argv_is_read_only(command):
+        return
     if program in _PROTECTED_TEST_BINARIES - allowed_binaries:
         raise RuntimeError(
             f"test attempted to spawn a real `{program}` process — "
@@ -254,6 +288,21 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_workspace_trust_registry(monkeypatch, tmp_path_factory):
+    """Keep workspace-trust registration out of the real home directory.
+
+    ``create_worktree()`` registers its newly-created checkout in Claude Code's
+    home-level trust registry. Under xdist, otherwise-isolated test repositories
+    concurrently read and replace that one file. Seed a distinct registry for
+    each test so the real integration path stays exercised without sharing
+    state across workers or with the user.
+    """
+    trust_registry = tmp_path_factory.mktemp("claude_trust") / ".claude.json"
+    trust_registry.write_text('{"projects": {}}\n')
+    monkeypatch.setattr(_trust_module, "_claude_json_path", lambda: trust_registry)
+
+
+@pytest.fixture(autouse=True)
 def _strip_git_targeting_env_vars(monkeypatch):
     """Never inherit GIT_DIR/GIT_WORK_TREE/etc. into test subprocesses (AI-CLI-121).
 
@@ -277,11 +326,10 @@ def _strip_git_targeting_env_vars(monkeypatch):
 def _no_real_nats_connections(request, monkeypatch):
     """Never let a test open a real NATS connection (AI-CLI-121 class).
 
-    ``post_handoff`` and the fleet event publishers are fire-and-forget: they build a
-    ``NATSClient`` and ``asyncio.run(...)`` a publish, wrapped in ``except Exception:
-    pass``.  That swallows a *failure* but cannot shorten a *hang*, so on any machine with
-    no NATS server six handoff tests blocked until the suite's timeout killed them —
-    exercising the network instead of the file-writing behaviour they assert.
+    Fleet event publishers are fire-and-forget: they build a ``NATSClient`` and
+    ``asyncio.run(...)`` a publish, wrapped in ``except Exception: pass``. That
+    swallows a *failure* but cannot shorten a *hang*, so tests must not exercise
+    the network instead of their intended behavior.
 
     The block is applied to ``nats.connect`` -- the actual network boundary -- rather than
     to ``NATSClient.connect``. Overriding the latter would also neutralise the many tests
@@ -340,6 +388,24 @@ def _reset_registry_cache():
     _config_module._registry_cache = None
     yield
     _config_module._registry_cache = None
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_working_directory():
+    """Keep one test's temporary CLI directory from leaking to the next test."""
+    checkout_root = Path(__file__).resolve().parent.parent
+    try:
+        original_cwd = Path.cwd()
+    except OSError:
+        original_cwd = checkout_root
+        os.chdir(original_cwd)
+
+    yield
+
+    try:
+        os.chdir(original_cwd)
+    except OSError:
+        os.chdir(checkout_root)
 
 
 @pytest.fixture(autouse=True)
@@ -427,6 +493,19 @@ def _run_cli_with_args(argv, config_override=None):
     to simulate that — otherwise execution falls through to later exec calls.
     """
     config = config_override or {}
+
+    def remote_preflight(command, **_kwargs):
+        if _command_program(command) == "tmux":
+            return make_subprocess_result(returncode=1)
+        if command[-1] == _REMOTE_SHELL_PROBE_CMD:
+            return make_subprocess_result(stdout="zsh\n")
+        remote_command = shlex.split(command[-1])[-1]
+        tokens = shlex.split(remote_command)
+        allocation_index = tokens.index("allocate-session-name")
+        engine, project_prefix, name = tokens[allocation_index + 1 : allocation_index + 4]
+        session_id, ai_name = _session_module.build_session_name(engine, project_prefix, name, is_remote=True)
+        return make_subprocess_result(stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}))
+
     with (
         patch("sys.argv", argv),
         patch("ai_cli.config.load_config", return_value=config),
@@ -435,6 +514,7 @@ def _run_cli_with_args(argv, config_override=None):
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main._auto_update_if_stale"),
+        patch("ai_cli.main.subprocess.run", side_effect=remote_preflight),
     ):
         from ai_cli.main import cli
 
@@ -543,12 +623,11 @@ def _make_tmp_path_deletable(tmp_path: Path):
     a live git repo named after the test function -- which any editor that adopts
     nearby repositories then lists as a project.
 
-    Eighty such repos accumulated on bms-windows-sem-kg before the mechanism was
-    traced (CORE-196; same defect as ai-harness AIH-612).
+    Such repositories can accumulate on Windows before the mechanism is traced.
 
     Deliberately unconditional rather than a ``sys.platform`` branch -- POSIX
     ``rmtree`` only needs write on the parent directory, so this is a no-op cost
-    on Linux and macOS instead of a platform special case (AIH-824).
+    on Linux and macOS instead of a platform special case.
 
     The Windows DACL problem that used to need a repair here is prevented
     upstream instead -- see :func:`_stop_pytest_protecting_temp_dirs`, which stops

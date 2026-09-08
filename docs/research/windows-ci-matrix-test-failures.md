@@ -368,59 +368,59 @@ version and reclassify only the residuals. Prioritize:
 
 ## Sources
 
-[^1]: ai-cli-utils contributors. (2026). [README: Windows installation and unsupported features](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/README.md#L67-L115). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Defines MSYS2, Git Bash, tmux installation, and the three exclusions.)
+[^1]: ai-cli-utils contributors. (2026). [README: Windows installation and unsupported features](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/README.md#L67-L115). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Defines MSYS2, Git Bash, tmux installation, and the three exclusions.)
 
-[^2]: ai-cli-utils contributors. (2026). [Windows support plan: scope, shell decision, and test strategy](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/docs/plans/windows-support-plan.md#L26-L59). GitHub. Verified accessible (HTTP 200) 2026-08-15. (States Git Bash/tmux scope and no-skipping intent; later sections contain the CI acceptance criteria.)
+[^2]: ai-cli-utils contributors. (2026). [Windows support plan: scope, shell decision, and test strategy](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/docs/plans/windows-support-plan.md#L26-L59). GitHub. Verified accessible (HTTP 200) 2026-08-15. (States Git Bash/tmux scope and no-skipping intent; later sections contain the CI acceptance criteria.)
 
-[^3]: GitHub. (2026). [Inaugural Windows Python 3.11 job](https://github.com/sergeiwallace/ai-cli-utils/actions/runs/24938795498/job/73028901439). GitHub Actions. Verified accessible (HTTP 200; logs expired) 2026-08-15. (Shows the six-hour timeout.)
+[^3]: GitHub. (2026). [Inaugural Windows Python 3.11 job](https://github.com/user/ai-cli-utils/actions/runs/24938795498/job/73028901439). GitHub Actions. Verified accessible (HTTP 200; logs expired) 2026-08-15. (Shows the six-hour timeout.)
 
-[^4]: GitHub. (2026). [Current Windows Python 3.12 job](https://github.com/sergeiwallace/ai-cli-utils/actions/runs/31923968515/job/95108445636). GitHub Actions. Verified accessible (HTTP 200; logs sign-in gated) 2026-08-15. (Shows pytest exit 1 and 3m32s duration.)
+[^4]: GitHub. (2026). [Current Windows Python 3.12 job](https://github.com/user/ai-cli-utils/actions/runs/31923968515/job/95108445636). GitHub Actions. Verified accessible (HTTP 200; logs sign-in gated) 2026-08-15. (Shows pytest exit 1 and 3m32s duration.)
 
-[^5]: ai-cli-utils contributors. (2026). [CI workflow Windows matrix](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/.github/workflows/ci.yml#L49-L60). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Defines runner, versions, setup, and pytest command.)
+[^5]: ai-cli-utils contributors. (2026). [CI workflow Windows matrix](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/.github/workflows/ci.yml#L49-L60). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Defines runner, versions, setup, and pytest command.)
 
-[^6]: ai-cli-utils contributors. (2026). [Commit adding Windows support and CI](https://github.com/sergeiwallace/ai-cli-utils/commit/085cc323f7b265a95f8924be01220bff86ed8827). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Introduced the Windows matrix on 2026-04-25.)
+[^6]: ai-cli-utils contributors. (2026). [Commit adding Windows support and CI](https://github.com/user/ai-cli-utils/commit/085cc323f7b265a95f8924be01220bff86ed8827). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Introduced the Windows matrix on 2026-04-25.)
 
-[^7]: GitHub. (2026). [2026-07-20 Windows Python 3.12 job](https://github.com/sergeiwallace/ai-cli-utils/actions/runs/29732074860/job/88318624788). GitHub Actions. Verified accessible (HTTP 200) 2026-08-15. (Sampled dependency-sync failure.)
+[^7]: GitHub. (2026). [2026-07-20 Windows Python 3.12 job](https://github.com/user/ai-cli-utils/actions/runs/29732074860/job/88318624788). GitHub Actions. Verified accessible (HTTP 200) 2026-08-15. (Sampled dependency-sync failure.)
 
-[^8]: GitHub. (2026). [2026-07-29 Windows Python 3.11 job](https://github.com/sergeiwallace/ai-cli-utils/actions/runs/30490667399/job/90707467361). GitHub Actions. Verified accessible (HTTP 200) 2026-08-15. (Sampled checkout failure.)
+[^8]: GitHub. (2026). [2026-07-29 Windows Python 3.11 job](https://github.com/user/ai-cli-utils/actions/runs/30490667399/job/90707467361). GitHub Actions. Verified accessible (HTTP 200) 2026-08-15. (Sampled checkout failure.)
 
-[^9]: GitHub. (2026). [2026-08-08 Windows Python 3.11 job](https://github.com/sergeiwallace/ai-cli-utils/actions/runs/31239420003/job/93057740069). GitHub Actions. Verified accessible (HTTP 200) 2026-08-15. (Sampled matrix failure before the current run.)
+[^9]: GitHub. (2026). [2026-08-08 Windows Python 3.11 job](https://github.com/user/ai-cli-utils/actions/runs/31239420003/job/93057740069). GitHub Actions. Verified accessible (HTTP 200) 2026-08-15. (Sampled matrix failure before the current run.)
 
-[^10]: GitHub. (2026). [Main-branch CI run history](https://github.com/sergeiwallace/ai-cli-utils/actions/workflows/ci.yml?query=branch%3Amain). GitHub Actions. Verified accessible (HTTP 200; partial dynamic rendering) 2026-08-15. (Shows 953 workflow results and recent main runs.)
+[^10]: GitHub. (2026). [Main-branch CI run history](https://github.com/user/ai-cli-utils/actions/workflows/ci.yml?query=branch%3Amain). GitHub Actions. Verified accessible (HTTP 200; partial dynamic rendering) 2026-08-15. (Shows 953 workflow results and recent main runs.)
 
-[^11]: ai-cli-utils contributors. (2026). [Generated launch-script writer](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/main.py#L706-L721). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Read/write calls omit encoding.)
+[^11]: ai-cli-utils contributors. (2026). [Generated launch-script writer](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/main.py#L706-L721). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Read/write calls omit encoding.)
 
-[^12]: ai-cli-utils contributors. (2026). [Generated session script status symbols](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/session_script.py#L408-L427). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Contains non-ASCII symbols written by the helper.)
+[^12]: ai-cli-utils contributors. (2026). [Generated session script status symbols](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/session_script.py#L408-L427). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Contains non-ASCII symbols written by the helper.)
 
 [^13]: Python Software Foundation. (2026). [Pathlib `read_text` and `write_text`](https://docs.python.org/3/library/pathlib.html#pathlib.Path.read_text). Python documentation. Verified accessible (HTTP 200) 2026-08-15. (Documents locale-dependent default encoding.)
 
-[^14]: ai-cli-utils contributors. (2026). [Tmux stderr decode path](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/main.py#L2415-L2437). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Calls byte `.decode()` without an explicit encoding.)
+[^14]: ai-cli-utils contributors. (2026). [Tmux stderr decode path](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/main.py#L2415-L2437). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Calls byte `.decode()` without an explicit encoding.)
 
-[^15]: ai-cli-utils contributors. (2026). [Windows no-tmux fallback](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/main.py#L1850-L1889). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Switches Windows to bare mode when tmux is absent.)
+[^15]: ai-cli-utils contributors. (2026). [Windows no-tmux fallback](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/main.py#L1850-L1889). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Switches Windows to bare mode when tmux is absent.)
 
-[^16]: ai-cli-utils contributors. (2026). [CLI tmux command-path tests](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_cli.py#L637-L674). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Mocks subprocess and exec boundaries but not tmux discovery.)
+[^16]: ai-cli-utils contributors. (2026). [CLI tmux command-path tests](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_cli.py#L637-L674). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Mocks subprocess and exec boundaries but not tmux discovery.)
 
-[^17]: ai-cli-utils contributors. (2026). [Repository-root detection fixtures](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_session.py#L832-L850). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Uses Unix absolute and relative paths.)
+[^17]: ai-cli-utils contributors. (2026). [Repository-root detection fixtures](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_session.py#L832-L850). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Uses Unix absolute and relative paths.)
 
-[^18]: ai-cli-utils contributors. (2026). [Session migration cwd rewrite](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/cc_migrate.py#L109-L135). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Nested-root recognition hard-codes `/`.)
+[^18]: ai-cli-utils contributors. (2026). [Session migration cwd rewrite](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/cc_migrate.py#L109-L135). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Nested-root recognition hard-codes `/`.)
 
-[^19]: ai-cli-utils contributors. (2026). [Sync history path recognition](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/sync.py#L560-L689). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Splits and recognizes filesystem paths with `/` literals.)
+[^19]: ai-cli-utils contributors. (2026). [Sync history path recognition](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/sync.py#L560-L689). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Splits and recognizes filesystem paths with `/` literals.)
 
 [^20]: Python Software Foundation. (2026). [`os.getuid` and `os.ttyname`](https://docs.python.org/3/library/os.html#os.getuid). Python documentation. Verified accessible (HTTP 200) 2026-08-15. (Both APIs are documented as Unix-only.)
 
-[^21]: ai-cli-utils contributors. (2026). [CLI privilege-mocking tests](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_cli.py#L865-L910). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Patches `os.getuid` directly.)
+[^21]: ai-cli-utils contributors. (2026). [CLI privilege-mocking tests](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_cli.py#L865-L910). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Patches `os.getuid` directly.)
 
-[^22]: ai-cli-utils contributors. (2026). [iTerm2 tty helper and tests](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_iterm2.py#L568-L581). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Patches `os.ttyname` directly.)
+[^22]: ai-cli-utils contributors. (2026). [iTerm2 tty helper and tests](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_iterm2.py#L568-L581). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Patches `os.ttyname` directly.)
 
-[^23]: ai-cli-utils contributors. (2026). [Config-watch Bash harness](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_config_watch_hash.py#L37-L60). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Invokes Bash and Unix tools with a POSIX PATH.)
+[^23]: ai-cli-utils contributors. (2026). [Config-watch Bash harness](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_config_watch_hash.py#L37-L60). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Invokes Bash and Unix tools with a POSIX PATH.)
 
-[^24]: ai-cli-utils contributors. (2026). [GrowthBook launch-toggle Bash harness](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_growthbook_launch_toggle.py#L37-L72). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Builds a POSIX-style PATH and invokes Bash.)
+[^24]: ai-cli-utils contributors. (2026). [GrowthBook launch-toggle Bash harness](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/tests/test_growthbook_launch_toggle.py#L37-L72). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Builds a POSIX-style PATH and invokes Bash.)
 
-[^25]: ai-cli-utils contributors. (2026). [Cross-platform PID liveness helper](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/config.py#L25-L31). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Uses `psutil.pid_exists`.)
+[^25]: ai-cli-utils contributors. (2026). [Cross-platform PID liveness helper](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/src/ai_cli/config.py#L25-L31). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Uses `psutil.pid_exists`.)
 
-[^26]: ai-cli-utils contributors. (2026). [Ruff executable locator and Windows-sensitive fixture](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/scripts/check_ruff_version_sync.py#L116-L150). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Production checks `bin`, `Scripts`, and executable suffix; the linked test fixture creates only `bin/ruff`.)
+[^26]: ai-cli-utils contributors. (2026). [Ruff executable locator and Windows-sensitive fixture](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/scripts/check_ruff_version_sync.py#L116-L150). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Production checks `bin`, `Scripts`, and executable suffix; the linked test fixture creates only `bin/ruff`.)
 
-[^27]: ai-cli-utils contributors. (2026). [Documentation-alignment reader](https://github.com/sergeiwallace/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/scripts/lint_doc_alignment.py#L44-L82). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Reads both documents explicitly as UTF-8.)
+[^27]: ai-cli-utils contributors. (2026). [Documentation-alignment reader](https://github.com/user/ai-cli-utils/blob/d50320956415e953b6de22045f47aa23df2eb9c4/scripts/lint_doc_alignment.py#L44-L82). GitHub. Verified accessible (HTTP 200) 2026-08-15. (Reads both documents explicitly as UTF-8.)
 
 <!-- /doc:region name="body" -->
 

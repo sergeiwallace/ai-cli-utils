@@ -11,6 +11,10 @@ template_version: "design-1.0.0"
 
 # Cross-Session Handoff v2 — Design Document
 
+> **Superseded:** In v0.8.0 the handoff command, queue, NATS ingress, and
+> automatic delivery hooks were retired. This design remains historical context
+> only; the archived implementation is not an active feature.
+
 **Status:** REVIEW — technical decisions resolved by the coordinator (Claude Fable); human ratification pending
 
 **Created:** 2026-08-02

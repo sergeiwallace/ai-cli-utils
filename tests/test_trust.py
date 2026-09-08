@@ -9,6 +9,11 @@ import pytest
 from ai_cli import trust
 
 
+def test_given_the_test_suite_when_workspace_trust_is_resolved_then_the_real_home_file_is_not_used():
+    """Worktree tests must not share the user's workspace-trust registry."""
+    assert trust._claude_json_path() != Path.home() / ".claude.json"
+
+
 @pytest.fixture
 def claude_json(tmp_path, monkeypatch):
     """Point trust._claude_json_path() at a temp file and return its Path."""

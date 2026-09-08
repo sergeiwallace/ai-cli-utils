@@ -181,6 +181,27 @@ async def _ensure_tailscale_up(host: str, timeout: int = 20) -> bool:
     return False
 
 
+def _print_remote_diagnostic(diagnostic_ssh_args: list[str], remote_diagnostic_file: str) -> None:
+    """Print and remove stderr saved by the failed mosh command, if available."""
+    diagnostic_command = (
+        f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+        'if test -f "$diagnostic_file"; then '
+        'tail -n 50 "$diagnostic_file" && rm -f "$diagnostic_file"; fi'
+    )
+    try:
+        result = subprocess.run(
+            [*diagnostic_ssh_args, diagnostic_command],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if diagnostic := result.stdout.strip():
+        print(f"\nRemote command error:\n{diagnostic}", file=sys.stderr)
+
+
 async def _run_transport_loop(
     ssh_args: list[str],
     mosh_args: list[str],
@@ -188,6 +209,8 @@ async def _run_transport_loop(
     session_name: str,
     config: dict,
     tailscale_host: str = "",
+    diagnostic_ssh_args: list[str] | None = None,
+    remote_diagnostic_file: str = "",
 ) -> None:
     """Run the mosh/SSH transport loop with VPN-aware switching.
 
@@ -219,6 +242,14 @@ async def _run_transport_loop(
             await nc.nc.subscribe("vpn.state.changed", cb=_on_vpn_change)
 
     force_ssh = False
+    # Bounds the "Tailscale might just be starting up" retry below to a single
+    # attempt. _ensure_tailscale_up only proves the SSH/TCP control path is
+    # reachable -- it says nothing about mosh's separate UDP data channel, so a
+    # host where that channel is blocked (e.g. firewalld not opening
+    # 60000-61000/udp for the tailscale0 interface) always reports "reachable"
+    # and mosh always fails again immediately, which retried unboundedly here
+    # before this cap (AI-CLI-gg9s).
+    tailscale_retries = 0
     try:
         while True:
             vpn_active = _is_vpn_active()
@@ -281,6 +312,8 @@ async def _run_transport_loop(
             # Threshold of 60s covers both fast TCP failures (~10s with ConnectTimeout=10)
             # and SSH banner exchange timeouts (~30s when host is reachable but SSH hangs).
             if transport_type == "mosh" and proc.returncode not in (0, None) and elapsed < 60:
+                if diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                 if _is_vpn_active():
                     print(
                         f"\nmosh failed ({elapsed:.1f}s), VPN detected — switching to SSH...",
@@ -288,14 +321,29 @@ async def _run_transport_loop(
                     )
                     continue
                 # Mosh failed fast without VPN — try to bring Tailscale up first.
-                # Only fall back to SSH if Tailscale can't be recovered.
-                if tailscale_host and await _ensure_tailscale_up(tailscale_host):
+                # Only fall back to SSH if Tailscale can't be recovered, and only
+                # retry once: a second fast failure right after "Tailscale up"
+                # means the SSH/TCP control path is fine but mosh's UDP data
+                # channel specifically is blocked, not that Tailscale was down.
+                if tailscale_host and tailscale_retries < 1 and await _ensure_tailscale_up(tailscale_host):
+                    tailscale_retries += 1
                     print("\nTailscale up — retrying mosh...", file=sys.stderr)
                     continue  # retry mosh with Tailscale now reachable
-                print(
-                    f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
-                    file=sys.stderr,
-                )
+                if tailscale_retries >= 1:
+                    print(
+                        f"\nmosh failed again quickly ({elapsed:.1f}s) even though the host is "
+                        "reachable — this usually means mosh's UDP data channel (default ports "
+                        "60000-61000) is blocked (e.g. by the remote host's firewall), not that "
+                        "Tailscale is down. Falling back to SSH; to restore mosh, allow that UDP "
+                        "range to the remote host (firewalld: `firewall-cmd --add-port="
+                        "60000-61000/udp` or trust the tailscale0 interface).",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"\nmosh failed ({elapsed:.1f}s), host unreachable — falling back to SSH...",
+                        file=sys.stderr,
+                    )
                 force_ssh = True
                 continue
 
@@ -326,11 +374,47 @@ async def _run_transport_loop(
                 break
 
             if elapsed < 3:
+                if transport_type == "mosh" and diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
                 print(
                     f"\nTransport exited too quickly ({elapsed:.1f}s) — giving up.",
                     file=sys.stderr,
                 )
                 break
+
+            # A mosh session that ends quickly with a "successful" exit code is
+            # ambiguous: mosh propagates whatever the remote command exited with,
+            # so a fast, clean exit can be a real user detach OR the remote-side
+            # command (tmux/session setup) silently no-op'ing on a transient
+            # condition (e.g. a stale session-name collision) and exiting 0 without
+            # ever actually starting a session. The mosh-fail branch above only
+            # catches a non-zero return code, so this case previously fell straight
+            # through to a bare, silent exit (AI-CLI-jbyo) — surface it instead.
+            if transport_type == "mosh" and elapsed < 15:
+                if diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                print(
+                    f"\nmosh session ended after {elapsed:.1f}s (exit code "
+                    f"{proc.returncode}) — if you didn't intentionally detach this "
+                    "quickly, the remote session likely failed to start (e.g. a "
+                    "transient session-name collision); try the command again.",
+                    file=sys.stderr,
+                )
+
+            # A non-zero mosh exit outside the fast-failure windows is neither
+            # a normal detach nor explained by one of the named diagnostics
+            # above. Preserve its exact values so a transient recurrence is
+            # actionable.
+            elif transport_type == "mosh" and proc.returncode not in (0, None):
+                if diagnostic_ssh_args and remote_diagnostic_file:
+                    _print_remote_diagnostic(diagnostic_ssh_args, remote_diagnostic_file)
+                print(
+                    "\nmosh exited without a recognized diagnostic branch "
+                    f"(returncode={proc.returncode}, elapsed={elapsed:.1f}s) — this is an "
+                    "unexplained transient failure; please retry and report if it recurs "
+                    "with these exact numbers.",
+                    file=sys.stderr,
+                )
 
             break  # Normal exit (user detached or session ended)
     finally:

@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid as uuid_module
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,11 +22,11 @@ import click
 # several helpers in this file.
 from . import config as _config
 from . import direnv_setup as _direnv_setup
-from . import handoff as _handoff
 from . import iterm2 as _iterm2
 from . import process_manager as _process_manager
 from . import session as _session
 from . import session_script as _session_script
+from . import tmux_setup as _tmux_setup
 from . import transport as _transport
 from . import tunnel as _tunnel
 
@@ -35,7 +37,6 @@ from .config import (  # noqa: F401
     WORKTREE_DIR,
     ProjectPrefixError,
     _find_project_dir,
-    _get_handoff_queue_dir,
     _get_main_project_dir,
     _get_main_project_name,
     _get_project_prefix_by_name,
@@ -65,17 +66,6 @@ from .git_repair import (
     repair_bare_worktree_config,
     unmerged_paths,
 )
-from .handoff import (  # noqa: F401
-    _claim_handoff_for_signal,
-    _find_best_handoff,
-    _format_handoff_summary,
-    _log_handoff_event,
-    check_handoff,
-    check_handoff_project,
-    claim_handoff,
-    complete_handoff,
-    post_handoff,
-)
 from .iterm2 import (  # noqa: F401
     _DEFAULT_ITERM2_CONFIG,
     _assign_iterm2_color_slot,
@@ -92,13 +82,11 @@ from .iterm2 import (  # noqa: F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
+from .launch_reporter import InstallOrigin, LaunchReporter
 from .process_manager import (  # noqa: F401
     _cmd_quota_watch_start,
     _cmd_quota_watch_status,
     _cmd_quota_watch_stop,
-    _cmd_signal_watch_start,
-    _cmd_signal_watch_status,
-    _cmd_signal_watch_stop,
     _ensure_circusd,
 )
 from .process_probe import StartTimeMatch, probe_for
@@ -279,41 +267,115 @@ def _cc_project_dir(cwd: Path) -> Path:
     return Path.home() / ".claude" / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
 
 
-def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
-    """Return the newest CC transcript under ``cwd`` whose ``customTitle`` is ``title``.
+def _cc_transcript_current_title(path: Path) -> str | None:
+    """Return ``path``'s CURRENT ``customTitle``, honoring a later rename.
 
-    Claude Code's ``--continue`` picks the most recently modified conversation in
-    the project directory, so callers ``touch`` the returned file to make the
-    session named for this launch win.  ``--resume <uuid>`` is deliberately not
-    used: it opens a search picker rather than resuming directly.
+    Claude Code appends a fresh ``custom-title`` record every time a session is
+    renamed rather than rewriting the first one, so the title in effect is
+    whichever record was written *last* — not the first.  Stopping at the
+    first non-empty record (the prior behavior here) made a renamed session
+    match its original name forever, which is exactly the AI-CLI-p3fg defect:
+    a session renamed away from ``ai-cli-1`` kept being resolved as
+    ``ai-cli-1`` because only its very first title was ever read.
+    """
+    current: str | None = None
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                found = record.get("customTitle")
+                if found:
+                    current = found
+    except OSError:
+        return None
+    return current
+
+
+def _cc_registered_kind(session_id: str) -> str | None:
+    """Return the ``kind`` Claude Code recorded for ``session_id`` (e.g. ``"bg"``
+    or ``"interactive"``), or ``None`` if no registry entry names it.
+
+    Best-effort like :func:`_cc_session_is_live` — a missing or unreadable
+    registry must not block resolution, so callers only act on a positive
+    match and never treat ``None`` as meaning "not a background session".
+    """
+    sessions_dir = Path.home() / ".claude" / "sessions"
+    if not sessions_dir.is_dir():
+        return None
+    try:
+        for entry in sessions_dir.glob("*.json"):
+            try:
+                with entry.open(encoding="utf-8") as fh:
+                    record = json.load(fh)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            if record.get("sessionId") == session_id:
+                kind = record.get("kind")
+                return kind if isinstance(kind, str) else None
+    except OSError:
+        pass
+    return None
+
+
+def _find_cc_session_candidates_by_title(cwd: Path, title: str) -> list[Path]:
+    """Return every transcript under ``cwd`` currently titled ``title``, newest first.
+
+    Excludes any transcript whose registered session ``kind`` is ``"bg"``
+    (background — e.g. a Remote Control computer-use bridge forked from an
+    interactive session via ``--fork-session``).  A fork inherits its
+    parent's ``customTitle`` at fork time, so without this exclusion a
+    long-lived background bridge can shadow the real interactive session it
+    was forked from: it keeps writing to its own transcript and can end up
+    with a newer mtime than the actual interactive session, so a naive
+    "newest transcript with this title" pick lands on the bridge instead
+    (AI-CLI-p3fg — root cause of ``ai c`` attaching to an unfamiliar
+    transcript when a ``/remote-control`` bridge shared the session name).
     """
     project_dir = _cc_project_dir(cwd)
     if not project_dir.is_dir():
-        return None
+        return []
     try:
         candidates = sorted(project_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
-        return None
+        return []
+    matches = []
     for path in candidates:
-        try:
-            with path.open("rb") as fh:
-                for raw in fh:
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-                    try:
-                        record = json.loads(raw)
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-                    found = record.get("customTitle", "")
-                    if found:
-                        # Only the first titled record matters — later ones repeat it.
-                        if found == title:
-                            return path
-                        break
-        except OSError:
+        if _cc_transcript_current_title(path) != title:
             continue
-    return None
+        if _cc_registered_kind(path.stem) == "bg":
+            continue
+        matches.append(path)
+    return matches
+
+
+def _find_cc_session_by_title(cwd: Path, title: str) -> "Path | None":
+    """Return the newest eligible CC transcript under ``cwd`` whose ``customTitle`` is ``title``.
+
+    Claude Code transcript filenames are session UUIDs.  Callers pass the
+    returned stem to ``--resume <session-id>`` to resume that session directly.
+    See :func:`_find_cc_session_candidates_by_title` for eligibility rules.
+    """
+    matches = _find_cc_session_candidates_by_title(cwd, title)
+    return matches[0] if matches else None
+
+
+def _cc_session_id(transcript: Path) -> str:
+    """Return ``transcript``'s session UUID, rejecting unexpected filenames."""
+    try:
+        session_id = uuid_module.UUID(transcript.stem)
+    except ValueError as exc:
+        raise RuntimeError(f"Matched Claude Code transcript has an invalid session UUID: {transcript}") from exc
+    if str(session_id) != transcript.stem:
+        raise RuntimeError(f"Matched Claude Code transcript has an invalid session UUID: {transcript}")
+    return transcript.stem
 
 
 def _cc_record_liveness(record: dict, proc_dir: Path | None = None) -> str:
@@ -503,6 +565,86 @@ def _cc_live_session_warning(title: str, pid: int | str | None) -> str:
     )
 
 
+class _LiveClaudeSessionError(RuntimeError):
+    """A bare launch found a live Claude Code process it cannot reattach to."""
+
+    def __init__(self, title: str, pid: int | str | None, transcript: Path):
+        self.title = title
+        self.pid = pid
+        self.transcript = transcript
+
+
+def _find_lone_mismatched_cc_session(cwd: Path, title: str) -> "Path | None":
+    """Return ``cwd``'s one eligible transcript when no candidate matches ``title``.
+
+    Scoped deliberately narrow: only returns a candidate when exactly one
+    non-background transcript exists for ``cwd`` and its current title differs
+    from ``title`` (an exact match is already handled by
+    :func:`_find_cc_session_candidates_by_title`). Two or more eligible
+    transcripts is the ambiguous case that warning already covers, so this
+    returns ``None`` rather than guessing among them (AI-CLI-8xvd).
+    """
+    project_dir = _cc_project_dir(cwd)
+    if not project_dir.is_dir():
+        return None
+    try:
+        transcripts = list(project_dir.glob("*.jsonl"))
+    except OSError:
+        return None
+    eligible = [path for path in transcripts if _cc_registered_kind(path.stem) != "bg"]
+    if len(eligible) != 1:
+        return None
+    candidate = eligible[0]
+    if _cc_transcript_current_title(candidate) == title:
+        return None
+    return candidate
+
+
+def _confirm_mismatched_title_resume(title: str, candidate: Path) -> bool:
+    """Ask whether to resume into a lone transcript whose title doesn't match.
+
+    The prompt and its answer must never touch stdout: callers of ``ai internal
+    resolve-continue-target`` capture stdout via command substitution, so a
+    prompt written there would be swallowed into the resolved path instead of
+    shown to the user. Defaults to "no" whenever stdin is not an interactive
+    terminal — an unattended auto-restart cycle must never silently attach to a
+    transcript the caller never confirmed (AI-CLI-8xvd AC3).
+    """
+    current_title = _cc_transcript_current_title(candidate) or "(untitled)"
+    print(
+        f"Note: this worktree has one Claude Code transcript ({candidate.stem}), "
+        f"but its current title is '{current_title}', not '{title}'.",
+        file=sys.stderr,
+    )
+    if not sys.stdin.isatty():
+        print("Non-interactive session — starting fresh instead of resuming it.", file=sys.stderr)
+        return False
+    print("Resume into it anyway? [y/N] ", end="", file=sys.stderr, flush=True)
+    try:
+        answer = sys.stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    return answer.strip().lower() in ("y", "yes")
+
+
+def _cc_multi_candidate_warning(title: str, candidates: list[Path]) -> str:
+    """Warn that more than one eligible transcript currently carries ``title``.
+
+    ``ai c`` always resolves to ``candidates[0]`` (the newest by mtime — see
+    :func:`_find_cc_session_candidates_by_title`), so this is informational,
+    not a block: it makes the AI-CLI-p3fg ambiguity visible instead of
+    silently picking one of several same-titled transcripts.
+    """
+    lines = [f"Note: {len(candidates)} Claude Code transcripts are currently titled '{title}':"]
+    for path in candidates:
+        is_live, pid = _cc_session_is_live(path)
+        status = f"live (pid {pid})" if is_live else "not live"
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+        lines.append(f"  {path.stem}  last active {mtime}  {status}")
+    lines.append(f"Resuming the most recently active one: {candidates[0].stem}")
+    return "\n".join(lines)
+
+
 def _bare_engine_command(
     engine: str,
     ai_name: str,
@@ -526,20 +668,22 @@ def _bare_engine_command(
         command = ["claude"]
         if not _is_root():
             command.append("--dangerously-skip-permissions")
-        command += ["--name", ai_name]
-        # Resume this session's own prior conversation when one exists. --continue
-        # picks by mtime, so touch the matching transcript to make it the newest.
-        matched = _find_cc_session_by_title(target_root, ai_name)
+        # Resume this session's own prior conversation by its exact transcript UUID.
+        candidates = _find_cc_session_candidates_by_title(target_root, ai_name)
+        if len(candidates) > 1:
+            print(_cc_multi_candidate_warning(ai_name, candidates), file=sys.stderr)
+        matched = candidates[0] if candidates else None
+        if matched is None:
+            lone = _find_lone_mismatched_cc_session(target_root, ai_name)
+            if lone is not None and _confirm_mismatched_title_resume(ai_name, lone):
+                matched = lone
         if matched is not None:
+            session_id = _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
-                print(_cc_live_session_warning(ai_name, pid), file=sys.stderr)
-            else:
-                try:
-                    os.utime(matched, None)
-                    command.append("--continue")
-                except OSError:
-                    pass
+                raise _LiveClaudeSessionError(ai_name, pid, matched)
+            command += ["--resume", session_id]
+        command += ["--name", ai_name]
         return command + extra_args
 
     if engine == "p":
@@ -595,6 +739,11 @@ def _announce_worktree_isolation(worktree_path: Path, created: bool) -> None:
         print(f"Using existing worktree: {worktree_path}", file=sys.stderr)
 
 
+def _engine_display_name(engine: str) -> str:
+    """Return the public engine name used in launch progress output."""
+    return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
+
+
 def _find_aicli_project_path(config: dict) -> "Path | None":
     """Locate the ai-cli-utils source tree regardless of cwd.
 
@@ -640,11 +789,8 @@ def _deploy_cc_config_files(project_path: Path) -> None:
     cc_dir = Path.home() / ".claude"
 
     # Files to deploy: (source relative to data_dir, dest relative to ~/.claude/)
-    # NOTE (AIH-164 audit F-02/AD-2): `data/statusline-command.sh` is the standalone-`ai`
-    # fallback and MUST be kept in sync with the canonical ai-harness copy
-    # (`ai-harness/.claude/statusline-command.sh`), which owns the statusline and wins via a
-    # symlink whenever ai-harness is installed (the `dst.is_symlink()` skip below). Re-sync with:
-    #   cp ~/projects/ai-harness/.claude/statusline-command.sh src/ai_cli/data/statusline-command.sh
+    # `data/statusline-command.sh` is the standalone fallback. Preserve an existing symlink,
+    # because it may be managed by another installation.
     deployable = [
         ("statusline-command.sh", "statusline-command.sh"),
     ]
@@ -655,7 +801,7 @@ def _deploy_cc_config_files(project_path: Path) -> None:
             continue
         dst = cc_dir / dst_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        # Skip if already managed as a symlink (ai-harness install.sh owns it)
+        # Skip externally managed symlinks.
         if dst.is_symlink():
             continue
         import shutil as _shutil
@@ -717,6 +863,7 @@ def _await_peer_update(
 
 
 UPDATE_VERBOSE_ENV = "AI_CLI_UPDATE_VERBOSE"
+_LAUNCH_REEXEC_ENV = "AI_CLI_LAUNCH_REEXEC"
 
 
 def _update_verbose_requested() -> bool:
@@ -871,7 +1018,12 @@ def _auto_update_if_stale(config: dict) -> bool:
         # Do not make a failed installation look current.  The caller must re-exec
         # after a successful installation because this process still has the old
         # template generator imported.
-        stamp_file.write_text(fingerprint)
+        # `ai update` pulls before installing, so the source can change after the
+        # fingerprint above was calculated. Stamp the post-update tree: a lock
+        # loser that observed the pulled source must re-exec after this install,
+        # rather than continuing while its imported files have been replaced.
+        installed_fingerprint = _installed_source_fingerprint(project_path) or fingerprint
+        stamp_file.write_text(installed_fingerprint)
         summary = (result.stdout or "").strip()
         if summary:
             print(summary)
@@ -955,7 +1107,6 @@ def _engine_script_from_meta(meta: dict) -> str:
         project_name=meta.get("project_name", ""),
         iterm2_slot=meta.get("iterm2_slot") or None,
         iterm2_cfg=meta.get("iterm2_cfg") or None,
-        config_reload_idle_secs=meta.get("config_reload_idle_secs", 90),
         gemini_cmd=meta.get("gemini_cmd", "gemini"),
     )
 
@@ -1108,6 +1259,73 @@ def _refresh_live_session_scripts(quiet: bool = False) -> int:
     return refreshed
 
 
+# Probe run on the remote host's OWN default login shell (never assumed to be
+# zsh) to pick the interpreter for the "-l -c <remote_cmd>" wrapper mosh/ssh
+# hand to the remote. Mirrors session_script.SESSION_SHELL_PREFERENCE (zsh
+# preferred, bash fallback); /bin/sh is a last-resort so a remote host with
+# neither still gets a working shell instead of a bare execvp crash.
+_REMOTE_SHELL_PROBE_CMD = "command -v zsh || command -v bash || echo /bin/sh"
+
+
+def _resolve_remote_shell(preflight_ssh_args: list[str]) -> str:
+    """Probe the remote host for an available login shell.
+
+    Hardcoding "zsh" here previously meant a remote host without it (e.g. a
+    minimal Fedora box) failed with mosh-server's own execvp error --
+    invisible to the user because mosh's terminal-restore erases it before
+    printing "[mosh is exiting.]" (AI-CLI-gg9s). Falls back to "bash" on any
+    probe failure (unreachable host, timeout) so a real connectivity problem
+    still surfaces via the normal mosh/ssh path instead of failing here.
+    """
+    try:
+        result = subprocess.run(
+            [*preflight_ssh_args, _REMOTE_SHELL_PROBE_CMD],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        stdout = result.stdout
+        if isinstance(stdout, str) and stdout.strip():
+            found = stdout.strip().splitlines()[0].strip()
+            if found:
+                return found
+    except Exception:
+        pass
+    return "bash"
+
+
+def _request_remote_session_allocation(
+    ssh_args: list[str], engine: str, project_prefix: str, name: str, remote_shell: str
+) -> tuple[str, str]:
+    """Return the canonical session identity allocated by the remote host."""
+    remote_command = (
+        'export PATH="$HOME/.local/bin:$PATH"; '
+        f"ai internal allocate-session-name {shlex.quote(engine)} {shlex.quote(project_prefix)} {shlex.quote(name)}"
+    )
+    result = subprocess.run(
+        [*ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"remote session-name allocation failed{f': {detail}' if detail else ''}")
+    try:
+        allocation = json.loads(result.stdout)
+        session_id = allocation["session_id"]
+        ai_name = allocation["ai_name"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError("remote session-name allocation returned an invalid response") from exc
+    expected_prefix = f"{engine}-r-"
+    if not isinstance(session_id, str) or not isinstance(ai_name, str) or not session_id.startswith(expected_prefix):
+        raise RuntimeError("remote session-name allocation returned an invalid identity")
+    if session_id.removeprefix(expected_prefix) != ai_name:
+        raise RuntimeError("remote session-name allocation returned inconsistent identities")
+    return session_id, ai_name
+
+
 # --- `ai internal` fast-path — machine-to-machine commands ---
 
 
@@ -1133,8 +1351,16 @@ def _handle_internal(argv: list[str]) -> None:
         if len(argv) < 3:
             print("Usage: ai internal resolve-continue-target <cwd> <ai_name>", file=sys.stderr)
             sys.exit(1)
-        matched = _find_cc_session_by_title(Path(argv[1]), argv[2])
+        candidates = _find_cc_session_candidates_by_title(Path(argv[1]), argv[2])
+        if len(candidates) > 1:
+            print(_cc_multi_candidate_warning(argv[2], candidates), file=sys.stderr)
+        matched = candidates[0] if candidates else None
+        if matched is None:
+            lone = _find_lone_mismatched_cc_session(Path(argv[1]), argv[2])
+            if lone is not None and _confirm_mismatched_title_resume(argv[2], lone):
+                matched = lone
         if matched is not None:
+            _cc_session_id(matched)
             is_live, pid = _cc_session_is_live(matched)
             if is_live:
                 print(_cc_live_session_warning(argv[2], pid), file=sys.stderr)
@@ -1169,6 +1395,17 @@ def _handle_internal(argv: list[str]) -> None:
         from . import icon_generator as _ig_cs
 
         _ig_cs.cleanup_session_files(argv[1])
+        sys.exit(0)
+    elif action == "allocate-session-name":
+        if len(argv) < 4:
+            print("Usage: ai internal allocate-session-name <engine> <project_prefix> <name>", file=sys.stderr)
+            sys.exit(1)
+        engine, project_prefix, name = argv[1], argv[2], argv[3]
+        use_tmux = not _tmux_setup.config_opts_out(config)
+        session_id, ai_name = _session.build_session_name(
+            engine, project_prefix, name, config, is_remote=True, use_tmux=use_tmux
+        )
+        print(json.dumps({"session_id": session_id, "ai_name": ai_name}))
         sys.exit(0)
     elif action == "get-version":
         print(_pkg_version_string())
@@ -1224,9 +1461,28 @@ def _handle_internal(argv: list[str]) -> None:
         with contextlib.suppress(Exception):
             asyncio.run(client.publish_event(argv[1], argv[2]))
         sys.exit(0)
+    elif action == "acquire-generation-lease":
+        if len(argv) != 2:
+            print("Usage: ai internal acquire-generation-lease <file_descriptor>", file=sys.stderr)
+            sys.exit(1)
+        try:
+            import portalocker
+
+            descriptor = int(argv[1])
+            if descriptor < 0:
+                raise ValueError("file descriptor must be non-negative")
+            # The shell opened this descriptor and keeps its copy open after this
+            # short helper exits. `flock` locks belong to that shared open file
+            # description, so the shell remains the sole lifetime lease holder.
+            with os.fdopen(os.dup(descriptor), "a+") as lease_file:
+                portalocker.lock(lease_file, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except Exception as exc:
+            print(f"generation lease unavailable: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
     elif action == "publish-heartbeat":
         if len(argv) < 3:
-            print("Usage: ai internal publish-heartbeat <session_id> <data_json>", file=sys.stderr)
+            print("Usage: ai internal publish-heartbeat <session_id> <data_json> [generation_token]", file=sys.stderr)
             sys.exit(1)
         import asyncio
 
@@ -1237,11 +1493,62 @@ def _handle_internal(argv: list[str]) -> None:
         except json.JSONDecodeError as e:
             print(f"Invalid JSON: {e}", file=sys.stderr)
             sys.exit(1)
+        # The wrapper supplies its generation token only after it has acquired its
+        # lifetime lease.  Local persistence is deliberately independent from the
+        # best-effort message publication below: a ledger failure must not suppress
+        # an existing heartbeat delivery attempt, and a tokenless caller gains no
+        # local reap evidence.
+        if len(argv) >= 5:
+            generation_token = argv[3]
+            supervisor_pid = argv[4]
+            try:
+                marker = subprocess.run(
+                    ["tmux", "show-options", "-t", argv[1], "-v", "@ai_cli_session_generation"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                pane = subprocess.run(
+                    ["tmux", "list-panes", "-t", argv[1], "-F", "#{pane_pid}\t#{pane_dead}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                live_supervisor = any(
+                    fields == [supervisor_pid, "0"]
+                    for fields in (line.split("\t") for line in pane.stdout.splitlines())
+                )
+                if (
+                    marker.returncode != 0
+                    or marker.stdout.strip() != generation_token
+                    or pane.returncode != 0
+                    or not supervisor_pid.isdecimal()
+                    or int(supervisor_pid) <= 0
+                    or not live_supervisor
+                ):
+                    print("heartbeat ledger not written: generation_mismatch", file=sys.stderr)
+                else:
+                    from .stale_session_reaper import write_heartbeat
+
+                    if not write_heartbeat(_config.get_xdg_state_home(), argv[1], generation_token):
+                        print("heartbeat ledger not written: heartbeat_invalid", file=sys.stderr)
+            except Exception:
+                print("heartbeat ledger not written: heartbeat_invalid", file=sys.stderr)
         nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
         client = NATSClient(servers=nats_servers)
         # NATS unavailable — non-fatal
         with contextlib.suppress(Exception):
             asyncio.run(client.publish_heartbeat(argv[1], data))
+        sys.exit(0)
+    elif action == "revoke-heartbeat":
+        if len(argv) < 3:
+            print("Usage: ai internal revoke-heartbeat <session_id> <generation_token>", file=sys.stderr)
+            sys.exit(1)
+        from .stale_session_reaper import remove_heartbeat
+
+        # A clean supervisor exit may revoke only the record it created.  A failed
+        # revoke is intentionally non-fatal and cannot remove another generation.
+        remove_heartbeat(_config.get_xdg_state_home(), argv[1], argv[2])
         sys.exit(0)
     elif action == "publish-session-event":
         if len(argv) < 3:
@@ -1279,19 +1586,8 @@ def _handle_internal(argv: list[str]) -> None:
         with contextlib.suppress(Exception):
             asyncio.run(client.publish(subject, payload))
         sys.exit(0)
-    elif action == "signal-watch":
-        if len(argv) < 3:
-            print("Usage: ai internal signal-watch <project> <session_id>", file=sys.stderr)
-            sys.exit(1)
-        _internal_signal_watch(argv[1], argv[2], config)
-        sys.exit(0)
     elif action == "quota-subscriber":
         _internal_quota_subscriber(config)
-        sys.exit(0)
-    elif action == "handoff-drain":
-        if len(argv) < 3:
-            sys.exit(0)
-        _internal_handoff_drain(argv[1], argv[2], config)
         sys.exit(0)
     elif action == "set-iterm2-name":
         if len(argv) < 3:
@@ -1307,110 +1603,6 @@ def _handle_internal(argv: list[str]) -> None:
     else:
         print(f"Usage: ai internal <action> [args...] (unknown action: {action})", file=sys.stderr)
         sys.exit(1)
-
-
-async def _on_handoff_signal_watch(
-    data: dict,
-    *,
-    handoff_dir: "Path | None",
-    pending_file: "Path",
-    session_id: str,
-    machine_id: str,
-) -> None:
-    """Process one inbound handoff message for signal-watch.
-
-    Extracted from the ``_on_handoff`` closure inside ``_internal_signal_watch``
-    so it can be imported and unit-tested independently of the NATS subscription.
-    """
-    handoff_id = data.get("id")
-    title = data.get("title", "")
-    priority = data.get("priority", "")
-    message = data.get("message", "")
-    for_machine = data.get("for_machine", "")
-    if not for_machine or for_machine != machine_id:
-        return
-    print(f"\n[HANDOFF] {priority} #{handoff_id}: {title}", flush=True)
-    if handoff_dir is None or not handoff_id:
-        return
-    content = data.get("content")
-    filename = data.get("filename")
-    if content and filename:
-        pending_dir = handoff_dir / "pending"
-        claimed_dir = handoff_dir / "claimed"
-        local_file = pending_dir / filename
-        if (claimed_dir / filename).exists():
-            return
-        if not local_file.exists():
-            pending_dir.mkdir(parents=True, exist_ok=True)
-            with contextlib.suppress(OSError):
-                local_file.write_text(content)
-    claimed = _handoff._claim_handoff_for_signal(handoff_dir, int(handoff_id), session_id)
-    if claimed is None:
-        return
-    _handoff._log_handoff_event(
-        "handoff.claimed",
-        handoff_id=handoff_id,
-        session=session_id,
-        layer="nats_realtime" if data.get("_source") != "startup_scan" else "startup_scan",
-    )
-    resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-    pending_file.parent.mkdir(parents=True, exist_ok=True)
-    pending_file.write_text(resume_msg)
-    signal_file = _config.get_xdg_state_home() / f"cc-exit-{session_id}"
-    with contextlib.suppress(OSError):
-        signal_file.touch()
-
-
-def _write_pending_if_claimed_drain(
-    data: dict,
-    *,
-    handoff_dir: "Path | None",
-    prompt_file: "Path",
-    session: str,
-    machine_id: str,
-) -> bool:
-    """Claim a handoff from drain data and write the resume prompt file.
-
-    Extracted from the ``_write_pending_if_claimed`` closure inside
-    ``_internal_handoff_drain`` so it can be unit-tested independently.
-    Returns ``True`` if a handoff was claimed and the prompt file written.
-    """
-    handoff_id = data.get("id")
-    title = data.get("title", "")
-    priority = data.get("priority", "")
-    message = data.get("message", "")
-    for_machine = data.get("for_machine", "")
-    if not for_machine or for_machine != machine_id:
-        return False
-    if handoff_dir is None or not handoff_id:
-        return False
-    content = data.get("content")
-    filename = data.get("filename")
-    if content and filename:
-        pending_dir = handoff_dir / "pending"
-        claimed_dir = handoff_dir / "claimed"
-        local_file = pending_dir / filename
-        if (claimed_dir / filename).exists():
-            return False
-        if not local_file.exists():
-            pending_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                local_file.write_text(content)
-            except OSError:
-                return False
-    claimed = _handoff._claim_handoff_for_signal(handoff_dir, int(handoff_id), session)
-    if claimed is None:
-        return False
-    _handoff._log_handoff_event(
-        "handoff.claimed",
-        handoff_id=handoff_id,
-        session=session,
-        layer="pre_launch_drain",
-    )
-    resume_msg = f"Auto-pickup: {priority} handoff #{handoff_id} — {title}. File: {claimed}\n\n{message}"
-    prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(resume_msg)
-    return True
 
 
 async def _on_quota_snapshot_handler(data: dict) -> None:
@@ -1430,69 +1622,6 @@ async def _on_quota_snapshot_handler(data: dict) -> None:
             extra_pct=data.get("extra_pct"),
             reset_at=data.get("reset_at"),
         )
-
-
-def _internal_signal_watch(sw_project: str, sw_session_id: str, config: dict) -> None:
-    import asyncio
-
-    from .messaging import NATSClient
-
-    sw_handoff_dir = _config._get_handoff_queue_dir()
-    sw_pending_file = _config.get_xdg_state_home() / f"handoff-pending-{sw_session_id}"
-    nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-    sw_client = NATSClient(servers=nats_servers)
-
-    async def _on_handoff(data):
-        await _on_handoff_signal_watch(
-            data,
-            handoff_dir=sw_handoff_dir,
-            pending_file=sw_pending_file,
-            session_id=sw_session_id,
-            machine_id=os.environ.get("AI_HOST", ""),
-        )
-
-    # Startup scan: pick up any unclaimed files already in the pending queue
-    if sw_handoff_dir is not None:
-        pending_dir = sw_handoff_dir / "pending"
-        if pending_dir.exists():
-            for f in sorted(pending_dir.glob("*.md")):
-                try:
-                    fid = int(f.name.split("-")[0])
-                except ValueError:
-                    continue
-                try:
-                    raw = f.read_text()
-                    fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
-                    fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
-                    fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
-                    body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
-                    scan_title = fm_title.group(1).strip() if fm_title else f.stem
-                    scan_priority = fm_priority.group(1) if fm_priority else ""
-                    scan_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
-                except OSError:
-                    scan_title, scan_priority, body, scan_for_machine = f.stem, "", "", ""
-                asyncio.run(
-                    _on_handoff(
-                        {
-                            "id": fid,
-                            "title": scan_title,
-                            "priority": scan_priority,
-                            "message": body,
-                            "for_machine": scan_for_machine,
-                            "_source": "startup_scan",
-                        }
-                    )
-                )
-
-    consumer_name = f"{sw_session_id}-signal-watcher"
-
-    async def _run_subscriptions() -> None:
-        await sw_client.subscribe_durable(f"handoff.{sw_project}", consumer_name, _on_handoff)
-
-    # Not covered: _run_subscriptions blocks indefinitely on success; exception
-    # path requires a live NATS server to fail mid-subscription.
-    with contextlib.suppress(Exception):
-        asyncio.run(_run_subscriptions())
 
 
 def _internal_quota_subscriber(config: dict) -> None:
@@ -1516,117 +1645,6 @@ def _internal_quota_subscriber(config: dict) -> None:
                 _on_quota_snapshot_handler,
             )
         )
-
-
-def _internal_handoff_drain(hd_project: str, hd_session: str, config: dict) -> None:
-    # Synchronous: drain pending NATS messages + local file scan, then exit.
-    # Called BEFORE CC launches so prompt_file is ready on first invocation.
-    import asyncio
-
-    from .messaging import NATSClient
-
-    hd_handoff_dir = _config._get_handoff_queue_dir()
-    hd_prompt_file = _config.get_xdg_state_home() / f"cc-resume-prompt-{hd_session}"
-    nats_servers = config.get("messaging", {}).get("nats_servers", ["nats://localhost:4222"])
-    hd_client = NATSClient(servers=nats_servers)
-    _handoff._log_handoff_event("handoff.drain.started", session=hd_session, project=hd_project)
-
-    def _write_pending_if_claimed(data):
-        return _write_pending_if_claimed_drain(
-            data,
-            handoff_dir=hd_handoff_dir,
-            prompt_file=hd_prompt_file,
-            session=hd_session,
-            machine_id=os.environ.get("AI_HOST", ""),
-        )
-
-    # 1. Local file scan first (fast, no network)
-    if hd_handoff_dir is not None:
-        pending_dir = hd_handoff_dir / "pending"
-        if pending_dir.exists():
-            best = _handoff._find_best_handoff(pending_dir, project_filter=hd_project)
-            if best is not None:
-                try:
-                    fid = int(best.name.split("-")[0])
-                    raw = best.read_text()
-                    fm_title = re.search(r'^title:\s*"?([^"\n]+)"?', raw, re.MULTILINE)
-                    fm_priority = re.search(r"^priority:\s*(\S+)", raw, re.MULTILINE)
-                    fm_for_machine = re.search(r"^for_machine:\s*(\S+)", raw, re.MULTILINE)
-                    body = raw.split("---", 2)[-1].strip() if raw.count("---") >= 2 else ""
-                    local_for_machine = fm_for_machine.group(1) if fm_for_machine else ""
-                    _handoff._log_handoff_event(
-                        "handoff.drain.local_found",
-                        session=hd_session,
-                        handoff_id=fid,
-                        for_machine=local_for_machine,
-                    )
-                    _write_pending_if_claimed(
-                        {
-                            "id": fid,
-                            "title": fm_title.group(1).strip() if fm_title else best.stem,
-                            "priority": fm_priority.group(1) if fm_priority else "",
-                            "message": body,
-                            "for_machine": local_for_machine,
-                        }
-                    )
-                except Exception:
-                    # Not covered: requires filesystem error reading a pending
-                    # handoff file that exists and was just discovered by glob.
-                    pass
-
-    # 2. NATS drain: pull pending JetStream messages (non-blocking, 2s timeout)
-    if not hd_prompt_file.exists():
-        _handoff._log_handoff_event("handoff.drain.nats_attempt", session=hd_session, project=hd_project)
-
-        # Not covered: _drain() is an async closure that requires a live NATS
-        # JetStream server. Inner branches (js is None, message decode error,
-        # _write_pending_if_claimed returning True, fetch timeout, subscribe
-        # failure) all require specific live-server or network-failure conditions.
-        # See docs/test/unit-tests.md §Intentionally Uncovered Lines.
-        async def _drain():
-            try:
-                await hd_client.connect()
-            except Exception as e:
-                _handoff._log_handoff_event("handoff.drain.nats_connect_failed", session=hd_session, error=str(e))
-                return
-            if not hd_client.js:
-                _handoff._log_handoff_event("handoff.drain.nats_no_js", session=hd_session)
-                return
-            consumer_name = f"{hd_session}-pre-launch"
-            subject = f"handoff.{hd_project}"
-            try:
-                await hd_client._ensure_stream(subject)
-                sub = await hd_client.js.pull_subscribe(subject, durable=consumer_name)
-                while True:
-                    try:
-                        msgs = await sub.fetch(1, timeout=2)
-                        for msg in msgs:
-                            try:
-                                data = json.loads(msg.data.decode())
-                            except Exception:
-                                data = {}
-                            await msg.ack()
-                            if _write_pending_if_claimed(data):
-                                return
-                    except Exception:
-                        break
-            except Exception as e:
-                _handoff._log_handoff_event("handoff.drain.nats_subscribe_failed", session=hd_session, error=str(e))
-            finally:
-                await hd_client.close()
-
-        async def _drain_with_timeout():
-            try:
-                await asyncio.wait_for(_drain(), timeout=6.0)
-            except TimeoutError:
-                _handoff._log_handoff_event("handoff.drain.nats_timeout", session=hd_session)
-
-        try:
-            asyncio.run(_drain_with_timeout())
-        except Exception as e:
-            # Not covered: requires asyncio.run() itself to raise, which needs a
-            # broken event loop or NATS server in a specific failure state.
-            _handoff._log_handoff_event("handoff.drain.nats_run_failed", session=hd_session, error=str(e))
 
 
 def _has_conflict_or_unknown(repo_root) -> bool:
@@ -1662,6 +1680,48 @@ def _venv_interpreter(venv: "Path") -> "Path":
     return venv / "bin" / "python"
 
 
+#: Environment carried into a tmux pane. Panes inherit from the long-lived tmux
+#: SERVER, not from the process running ``new-session``, so a server started
+#: before this launch would otherwise hand the pane a stale environment.
+_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM")
+
+
+def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
+    """Return the ``-e VAR=VALUE`` flags to pass to ``tmux new-session``.
+
+    ``XDG_STATE_HOME`` is always emitted, and always as an ABSOLUTE path.
+
+    Both halves matter and they pull in opposite directions. Emitting it
+    unconditionally is what clears a stale value inherited from a pre-existing
+    tmux server. Emitting it *empty* is what put Claude Code's install lock into
+    every session's working directory: CC resolves its state base as
+    ``XDG_STATE_HOME ?? <home>/.local/state``, and ``??`` falls back only on
+    null/undefined — not on ``""`` — so an empty value survives and
+    ``join("", "claude", "locks")`` stays RELATIVE. One such lock was swept into
+    git and shipped to every clone of this public package, carrying its machine's
+    absolute home path, after which ``git pull`` refused to overwrite the
+    untracked copy. Normalising an empty value to the documented default
+    satisfies both requirements at once.
+
+    Normalising HERE, rather than only in a shell profile, is what closes the
+    case: the pane runs the session script non-interactively, so no rc file is
+    sourced inside it and this flag is the pane's only channel. A profile-level
+    fix also cannot reach ``ai c`` invoked from a login or non-interactive shell,
+    where the inherited value is still ``""``.
+
+    The other variables are forwarded only when non-empty, since none of them has
+    a meaningful empty value and an empty ``PATH`` would be actively harmful.
+    """
+    flags: list[str] = []
+    for var in _TMUX_FORWARDED_VARS:
+        value = env.get(var)
+        if var == "XDG_STATE_HOME":
+            value = value or str(Path.home() / ".local" / "state")
+        if value:
+            flags += ["-e", f"{var}={value}"]
+    return flags
+
+
 def _install_is_editable(venv: "Path") -> bool:
     """Whether this tool environment holds (or is recorded as) an editable install.
 
@@ -1693,6 +1753,16 @@ def _install_is_editable(venv: "Path") -> bool:
     except OSError:
         return False
     return "editable" in receipt
+
+
+def _launch_install_origin() -> InstallOrigin:
+    """Classify installation origin only when the available evidence supports it."""
+    venv = _running_uv_tool_venv()
+    if venv is not None and _install_is_editable(venv):
+        return InstallOrigin.EDITABLE_CHECKOUT
+    # An ordinary copied environment may have come from PyPI, another index, a
+    # wheel, or a direct URL. Do not call it PyPI without source metadata.
+    return InstallOrigin.UNKNOWN
 
 
 def _tool_env_can_import(venv: "Path", module: str = "ai_cli") -> bool:
@@ -1922,7 +1992,10 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
             # Keep an editable install editable.  Dropping ``-e`` here is what
             # hands the environment back and forth with the fleet installer, and
             # its repair path is destructive — see `_install_is_editable`.
-            if _install_is_editable(self_venv):
+            editable_install = _install_is_editable(self_venv)
+            if editable_install:
+                if not quiet:
+                    print("Preserving editable install.")
                 uv_cmd.append("-e")
             uv_cmd.append(str(project_path))
             if force_reinstall:
@@ -2214,33 +2287,41 @@ def _do_color(color_arg: str) -> None:
     sys.exit(0)
 
 
-def _do_handoff_post(remote: bool, for_machine: str, post_args: "list[str]") -> None:
-    if remote:
-        remote_cfg = _config.get_remote_machine(_config.load_config())
-        remote_host = remote_cfg.get("host", "")
-        remote_user = remote_cfg.get("user", "ubuntu")
-        if not remote_host:
-            print("Error: [remote] host not set in config", file=sys.stderr)
-            sys.exit(1)
-        ssh_args = ["ssh", f"{remote_user}@{remote_host}", "ai", "handoff", "post"]
-        # Preserve the --for-machine flag for the remote side.
-        ssh_args += ["--for-machine", for_machine]
-        ssh_args += list(post_args)
-        os.execvp("ssh", ssh_args)
-    if not for_machine:
-        print("Error: --for-machine <machine> is required", file=sys.stderr)
-        sys.exit(1)
-    if len(post_args) < 4:
-        print(
-            "Usage: ai handoff post --for-machine <machine> <title> <priority> <project> <message>",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    _handoff.post_handoff(post_args[0], post_args[1], post_args[2], post_args[3], for_machine=for_machine)
-    sys.exit(0)
-
-
 # --- Session launch (default command — `ai c NAME`, `ai g NAME`) ---
+
+
+def _print_launch_plan(
+    *,
+    engine: str,
+    session_id: str,
+    ai_name: str,
+    bare: bool,
+    remote: bool,
+    worktree_enabled: bool,
+    sandbox: bool,
+    extra_args: "list[str]",
+) -> None:
+    """Report what a launch would do, having done none of it.
+
+    Deliberately reports the RESOLVED values, not the requested ones: the session
+    index, the tmux-vs-bare decision after config and the tmux preflight, and the
+    worktree path. Those are the answers a dry run is asked for, and none of them
+    is visible from the command line alone.
+    """
+    repo_root = _session.detect_repo_root()
+    worktree = str(Path(repo_root) / ".worktrees" / ai_name) if worktree_enabled and repo_root else None
+    lines = [
+        "ai-cli-utils: dry run -- nothing was created, started, or reaped.",
+        f"  engine     {_engine_display_name(engine)}",
+        f"  mode       {'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}",
+        f"  session    {ai_name}   (tmux target: {session_id})",
+        f"  worktree   {worktree or 'disabled for this launch'}",
+        f"  branch     {'wt-' + ai_name if worktree else 'n/a'}",
+        f"  sandbox    {'on' if sandbox else 'off'}",
+    ]
+    if extra_args:
+        lines.append(f"  engine args {' '.join(extra_args)}")
+    print("\n".join(lines))
 
 
 def _do_session_launch(
@@ -2260,47 +2341,60 @@ def _do_session_launch(
     config: dict,
     remote_machine: str = "",
     no_direnv: bool = False,
+    reporter: LaunchReporter | None = None,
+    dry_run: bool = False,
 ) -> None:
     # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
     # only the client library, so tmux can never be auto-installed by pip/uv and
     # must be preflighted here.
     #
-    # `[session] use_tmux = false` opts a machine out of tmux entirely (equivalent
-    # to always passing -b/--bare). tmux exists to keep sessions alive for detach
-    # /reattach -- remote access from a phone, surviving a dropped SSH connection,
-    # `ai ls`/`ai attach`. On a machine that only ever runs sessions in a local
-    # terminal, it buys nothing and its absence should not be fatal.
-    if not config.get("session", {}).get("use_tmux", True):
+    # Resolution order (AI-CLI-yrpa): the per-machine `[session] use_tmux`
+    # setting wins outright; with no setting tmux is the default rather than an
+    # opt-in; a missing tmux is installed unattended where a package manager can
+    # do it; and if it is still missing the launch continues in bare mode.
+    #
+    # That last step is the whole point. tmux exists to keep sessions alive for
+    # detach/reattach -- remote access from a phone, surviving a dropped SSH
+    # connection, `ai ls`/`ai attach`. It is an enhancement, so its absence must
+    # degrade the launch, never block it: this used to exit 1 on every non-Windows
+    # host without tmux, which made a missing enhancement fatal.
+    # Track WHY the mode was chosen, not just what it is: the report below is
+    # useless if it can only say "bare" without naming the decision that got
+    # there. An operator seeing bare mode cannot otherwise tell a config opt-out
+    # from a missing binary from a failed install.
+    tmux_reason = "tmux is the default session mode"
+    tmux_auto_installed: str | None = None
+    if bare:
+        tmux_reason = "--bare requested"
+    if _tmux_setup.config_opts_out(config):
         bare = True
+        tmux_reason = "[session] use_tmux = false in config.toml"
 
-    if not bare and not shutil.which("tmux"):
+    if not bare and not _tmux_setup.tmux_present():
+        # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
+        # so fall straight through to bare without a notice; every other platform
+        # gets one install attempt and then the same fallback, loudly.
         if sys.platform == "win32":
-            # tmux is not standard on Windows; bare mode is the correct default.
-            # Set [session] use_tmux = false in config.toml to suppress this notice.
             bare = True
+            tmux_reason = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
         else:
-            # Previously this check was gated on sys.platform == "win32", so every
-            # non-Windows machine without tmux crashed with a raw FileNotFoundError
-            # from deep inside cleanup_stale_sessions() instead of this message.
-            if sys.platform == "darwin":
-                _hint = "  brew install tmux"
+            _tmux_install = _tmux_setup.ensure_tmux()
+            bare = not _tmux_install.installed
+            if _tmux_install.installed:
+                tmux_auto_installed = _tmux_install.tool
             else:
-                _hint = "  sudo apt install tmux     (or: dnf/yum/pacman/conda install tmux)"
-            print(
-                "Error: tmux not found, and it is required for the default session mode.\n"
-                f"{_hint}\n"
-                "\n"
-                "Or run without tmux:\n"
-                "  ai <engine> -b            one-off bare launch (no tmux)\n"
-                "  [session] use_tmux = false     in ~/.config/ai-cli-utils/config.toml\n"
-                "                            to make bare the default on this machine\n"
-                "\n"
-                "tmux provides detach/reattach (ai ls, ai attach), sessions that survive a\n"
-                "dropped SSH connection, and remote access from another device. If you only\n"
-                "run sessions in a local terminal, use_tmux = false is a fine permanent choice.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+                tmux_reason = "tmux is absent and could not be installed unattended"
+
+    # The report itself is emitted further down, AFTER input validation: a launch
+    # rejected for a bad --project-prefix must reach no probe at all, which is the
+    # no-side-effect-before-rejection contract test_session_launch_integration
+    # pins. On Windows with no tmux the fallback is deliberately silent (see
+    # above), so suppress it there rather than adding a notice to the one path
+    # that is documented not to have one.
+    # Not for a remote dispatch either: the tmux that will host the session lives
+    # on the REMOTE host, so reporting the local binary's version would state a
+    # fact about the wrong machine.
+    tmux_report_wanted = not remote and not (sys.platform == "win32" and not _tmux_setup.tmux_present())
 
     # direnv preflight, alongside tmux above for the same reason: it is a native
     # binary that pip/uv can never supply. Unlike tmux it is never fatal — the
@@ -2334,7 +2428,11 @@ def _do_session_launch(
         sys.exit(1)
 
     if project_prefix_override:
-        project_prefix = project_prefix_override
+        try:
+            project_prefix = _config.validate_task_prefix(project_prefix_override)
+        except _config.ProjectPrefixError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif project:
         # An explicit project always derives its prefix from that project's
         # registered root, whether the session is local or remote.
@@ -2368,6 +2466,62 @@ def _do_session_launch(
         except _config.ProjectPrefixError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
+    # One block per launch, now that the inputs are known good: presence, path,
+    # client version, the running server's version, the resolved mode and its
+    # reason. stderr so it never contaminates anything parsing stdout. Client and
+    # server are separate lines on purpose -- the server answers every format
+    # query, so a client-only version would state a compatibility that may not
+    # hold mid-upgrade.
+    if tmux_report_wanted:
+        # A bare launch queries no version: it must invoke tmux zero times,
+        # which test_bare_worktree pins and which is the right contract --
+        # bare mode has already decided tmux is not part of this session.
+        _tmux_report = _tmux_setup.probe(query_versions=not bare)
+        for _tmux_line in _tmux_setup.report_lines(
+            report=_tmux_report,
+            bare=bare,
+            reason=tmux_reason,
+            auto_installed=tmux_auto_installed,
+        ):
+            print(_tmux_line, file=sys.stderr)
+
+        # REFUSE before creating anything when the client and the running server
+        # are different versions (AI-CLI-tmuxmix). Measured 2026-09-06: with a
+        # NEWER client against an OLDER live server, `new-session -d` SUCCEEDED
+        # and the attach then died with `open terminal failed: not a terminal`,
+        # so five sessions were created that the operator could not enter. Every
+        # one had to be found and killed by hand.
+        #
+        # Deliberately version-agnostic, and kept that way on purpose: the check
+        # is client != server, never a named pair. The harness replaced its own
+        # exact-version tmux allowlist with a floor on 2026-09-06 because naming
+        # builds in code is precisely what kept locking hosts out of the compact
+        # send path -- an allowlist that recurred four times across two
+        # subsystems. Do not reintroduce a version literal here.
+        #
+        # Refusing is strictly better than warning, and it has to happen HERE:
+        # once the session exists, the damage (an unreachable session holding a
+        # worktree and a task namespace) is already done. A warning printed
+        # beside a successful-looking launch is the shape that produced the
+        # incident.
+        if _tmux_report.versions_disagree:
+            print(
+                "Error: tmux client is "
+                f"{_tmux_report.client_version} but the running server is "
+                f"{_tmux_report.server_version}.\n"
+                "  A session created now would be unattachable: the server "
+                "accepts new-session, then the\n"
+                "  attach fails with 'open terminal failed: not a terminal', "
+                "leaving a session you cannot enter.\n"
+                "  A tmux server keeps its version until its LAST session "
+                "exits, so either:\n"
+                "    - exit every session on the running server, then relaunch "
+                "(it restarts at the client's version), or\n"
+                "    - launch with -b/--bare, which uses no tmux at all.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     engine_short = engine
     remote_seg = "-r" if is_remote else ""
     prefix = f"{engine_short}{remote_seg}-{project_prefix}-"
@@ -2413,32 +2567,86 @@ def _do_session_launch(
                 sys.exit(1)
         else:
             remote_prefix = project_prefix
-        # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
-        # when the shell is a non-interactive login shell (zsh -l -c) that does
-        # not source ~/.zshrc where the uv env PATH setup typically lives.
-        remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
-        if resume:
-            remote_cmd += " --resume"
-        if name:
-            remote_cmd += f" {shlex.quote(name)}"
-        # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
-        # mosh blocks all \033]1337; sequences from the remote side, so this
-        # is the only opportunity to set the profile and tab color.
-        _r_engine_short = engine
-        _r_ai_name = _session._new_session_display_name(_r_engine_short, remote_prefix, name or "1", True)
-        _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
-        _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
-
-        _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
         # vpn_host: direct-IP host used for SSH when VPN is active (bypasses Tailscale/WireGuard
         # which becomes unreachable when a split-tunneling VPN like Mullvad takes over routing).
         # Falls back to host when not set.
         vpn_host = remote_cfg.get("vpn_host", "") or host
         ssh_args = ["ssh", "-t", "-p", port]
+        # ConnectTimeout=10 bounds the shell probe + session allocation
+        # preflight the same way mosh_args's own ConnectTimeout does below --
+        # neither should hang silently when the host is unreachable.
+        preflight_ssh_args = ["ssh", "-T", "-p", port, "-o", "ConnectTimeout=10"]
         if id_file:
-            ssh_args += ["-i", str(Path(id_file).expanduser())]
+            identity_file = str(Path(id_file).expanduser())
+            ssh_args += ["-i", identity_file]
+            preflight_ssh_args += ["-i", identity_file]
         ssh_args.append(f"{user}@{vpn_host}")
-        ssh_args.append(f"zsh -l -c {shlex.quote(remote_cmd)}")
+        preflight_ssh_args.append(f"{user}@{vpn_host}")
+        with reporter.phase("Remote", "probing configured host") if reporter is not None else contextlib.nullcontext():
+            remote_shell = _resolve_remote_shell(preflight_ssh_args)
+        if reporter is not None:
+            reporter.phase("Remote").outcome("host ready")
+        # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
+        # when the shell is a non-interactive login shell (<remote_shell> -l -c)
+        # that does not source the shell's rc file where the uv env PATH setup
+        # typically lives.
+        remote_cmd = f'export PATH="$HOME/.local/bin:$PATH"; ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}'
+        if resume:
+            remote_cmd += " --resume"
+        # The local wrapper owns transport state, an iTerm profile, and its
+        # cleanup command.  It must use the exact session identity the remote
+        # launch will create.  Guessing ``...-1`` for unnamed launches made all
+        # wrappers to a host share those resources even though the remote tmux
+        # sessions were separately numbered. An explicit numeric slot is already
+        # its own canonical identity and needs no allocation preflight.
+        remote_session_id = ""
+        if not name or not name.isdigit():
+            try:
+                with (
+                    reporter.phase("Session", "allocating remote session")
+                    if reporter is not None
+                    else contextlib.nullcontext()
+                ):
+                    remote_session_id, _ = _request_remote_session_allocation(
+                        preflight_ssh_args, engine, remote_prefix, name, remote_shell
+                    )
+            except RuntimeError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+        if reporter is not None:
+            reporter.phase("Session").outcome(f"resolved {remote_session_id or name}")
+        if remote_session_id:
+            remote_cmd += f" {shlex.quote(remote_session_id)}"
+        elif name:
+            remote_cmd += f" {shlex.quote(name)}"
+        # Mosh restores the terminal after a remote command exits, erasing its
+        # stderr before it prints its own exit message. Save the real command's
+        # stderr during this one attempt so the local loop can retrieve it with
+        # a read-only SSH command if mosh exits immediately.
+        remote_diagnostic_file = f".local/state/ai-cli-utils/transport-errors/{uuid_module.uuid4().hex}.stderr"
+        mosh_remote_cmd = (
+            f'diagnostic_file="$HOME/{remote_diagnostic_file}"; '
+            'mkdir -p "$(dirname "$diagnostic_file")"; '
+            f'{remote_cmd} 2>"$diagnostic_file"; '
+            "status=$?; "
+            'if [ "$status" -eq 0 ]; then rm -f "$diagnostic_file"; '
+            'else cat "$diagnostic_file" >&2; fi; '
+            'exit "$status"'
+        )
+        # Emit iTerm2 profile/color before mosh/ssh takes over the pane.
+        # mosh blocks all \033]1337; sequences from the remote side, so this
+        # is the only opportunity to set the profile and tab color.
+        _r_ai_name = remote_session_id or _session._new_session_display_name(engine, remote_prefix, name, True)
+        _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
+        _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
+
+        _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
+        ssh_args.append(f"{remote_shell} -l -c {shlex.quote(remote_cmd)}")
+
+        diagnostic_ssh_args = ["ssh", "-T", "-p", port, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+        if id_file:
+            diagnostic_ssh_args += ["-i", str(Path(id_file).expanduser())]
+        diagnostic_ssh_args.append(f"{user}@{host}")
 
         # Build mosh_args unconditionally — needed for both initial connection
         # and for reconnecting after a VPN drop while on SSH.
@@ -2453,16 +2661,27 @@ def _do_session_launch(
             _mosh_ssh += f" -i {shlex.quote(str(Path(id_file).expanduser()))}"
         mosh_args += ["--ssh", _mosh_ssh]
         mosh_args.append(f"{user}@{host}")
-        mosh_args += ["--", "zsh", "-l", "-c", remote_cmd]
+        mosh_args += ["--", remote_shell, "-l", "-c", mosh_remote_cmd]
 
         if transport == "mosh":
+            if reporter is not None:
+                reporter.phase("Transport").outcome("mosh selected")
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
             try:
+                if reporter is not None:
+                    reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
                 _asyncio.run(
                     _transport._run_transport_loop(
-                        ssh_args, mosh_args, _cleanup_cmd, _r_ai_name, config, tailscale_host=host
+                        ssh_args,
+                        mosh_args,
+                        _cleanup_cmd,
+                        _r_ai_name,
+                        config,
+                        tailscale_host=host,
+                        diagnostic_ssh_args=diagnostic_ssh_args,
+                        remote_diagnostic_file=remote_diagnostic_file,
                     )
                 )
             finally:
@@ -2473,6 +2692,10 @@ def _do_session_launch(
             if sys.platform == "win32":
                 print("Error: remote SSH transport is not supported on Windows", file=sys.stderr)
                 sys.exit(1)
+            if reporter is not None:
+                reporter.phase("Transport").outcome("SSH selected")
+            if reporter is not None:
+                reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
             os.execvp("zsh", ["zsh", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
 
     # When running as the remote side of an --remote session, cd into the project directory
@@ -2494,6 +2717,43 @@ def _do_session_launch(
         _local_project_dir = _config._find_project_dir(_local_project)
         if _local_project_dir.exists():
             os.chdir(_local_project_dir)
+
+    # THE dry-run exit, and it belongs here rather than lower down: the next
+    # statement registers workspace trust, which writes. Everything from this
+    # point on mutates something -- trust state, the stale-session sweep, the
+    # worktree and its branch, session records, and finally an exec into the
+    # engine -- so a dry run that returned "after resolving the plan" would
+    # already have done two of those. Resolving the session name is read-only, so
+    # the plan is still reported with real values.
+    #
+    # It is deliberately ONE return placed above every write, not a `not dry_run`
+    # condition bolted onto each of them: guards added per-call are exactly how
+    # one gets missed, and a missed one here means a flag that promises to do
+    # nothing quietly doing something.
+    if dry_run:
+        try:
+            session_id, ai_name = _session.build_session_name(
+                engine,
+                project_prefix,
+                name,
+                config,
+                is_remote=is_remote,
+                use_tmux=not bare,
+            )
+        except _session.SessionSlotAmbiguityError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        _print_launch_plan(
+            engine=engine,
+            session_id=session_id,
+            ai_name=ai_name,
+            bare=bare,
+            remote=remote,
+            worktree_enabled=(config.get("worktree", {}).get("enabled", True) and not no_worktree),
+            sandbox=use_sandbox,
+            extra_args=extra_args,
+        )
+        return
 
     # Register workspace trust for the launch directory before starting Claude
     # Code. With ~/projects trusted as an ancestor, CC suppresses the trust
@@ -2525,6 +2785,8 @@ def _do_session_launch(
         if not session:
             print(f"No matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=session)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
@@ -2540,6 +2802,8 @@ def _do_session_launch(
     except _session.SessionSlotAmbiguityError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+    if reporter is not None:
+        reporter.phase("Session").outcome(f"resolved {ai_name}")
 
     # Worktree setup
     worktree_path = None
@@ -2553,12 +2817,20 @@ def _do_session_launch(
         if _repair_root:
             repair_bare_worktree_config(_repair_root)
         try:
-            worktree_result = _session.create_worktree(ai_name, with_status=True)
+            with (
+                reporter.phase("Worktree", "creating isolated worktree")
+                if reporter is not None
+                else contextlib.nullcontext()
+            ):
+                worktree_result = _session.create_worktree(ai_name, with_status=True)
         except RuntimeError as exc:
             print(
+                # Deliberately does NOT offer -W/--no-worktree as the way out: it
+                # launches in the repository root, which is the exact outcome this
+                # message is refusing, so advertising it here talks the user into
+                # breaking session isolation to escape a message about isolation.
                 f"Error: could not create or reuse the isolated session worktree; refusing to launch in the "
-                f"repository root. {exc} Re-run after resolving the git worktree error, or explicitly use "
-                f"--no-worktree.",
+                f"repository root. {exc} Re-run once the git worktree error above is resolved.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2569,12 +2841,18 @@ def _do_session_launch(
             worktree_path, worktree_created = worktree_result, False
         if not worktree_path:
             print(
+                # Same reasoning as the RuntimeError branch above: -W/--no-worktree
+                # is not the escape hatch from a refusal to use the repository root.
                 "Error: could not create or reuse the isolated session worktree; refusing to launch in the "
-                "repository root. Re-run after resolving the git worktree error, or explicitly use --no-worktree.",
+                "repository root. Re-run once the git worktree error above is resolved.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        _announce_worktree_isolation(worktree_path, worktree_created)
+        if reporter is not None:
+            outcome = "created" if worktree_created else "reusing"
+            reporter.phase("Worktree").outcome(f"{outcome} {worktree_path}")
+        else:
+            _announce_worktree_isolation(worktree_path, worktree_created)
         if worktree_path:
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
@@ -2610,7 +2888,8 @@ def _do_session_launch(
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
-            pull, stranded = pull_rebase_autostash(worktree_path)
+            with reporter.phase("Worktree", "synchronizing") if reporter is not None else contextlib.nullcontext():
+                pull, stranded = pull_rebase_autostash(worktree_path)
             if pull.returncode != 0 and not stranded and not _conflicted_before:
                 # Reset only when the tree was clean beforehand, so this cleanup can
                 # only ever undo work THIS launch started. Doing it unconditionally
@@ -2693,6 +2972,8 @@ def _do_session_launch(
                     f"`git -C {worktree_path} checkout -- <path>` before committing.",
                     file=sys.stderr,
                 )
+            if reporter is not None:
+                reporter.phase("Worktree").outcome("ready")
 
     # For Gemini, always check the chats directory for the latest session — the
     # session map may be stale if the user exited and restarted directly via gemini CLI.
@@ -2722,19 +3003,42 @@ def _do_session_launch(
             # Pin the task-list namespace to ai_name, matching the tmux session
             # script, so the CC task panel survives process restarts.
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
-        command = _bare_engine_command(
-            engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args, resume=resume
-        )
-        _exec_with_direnv(target_root, command)
+        try:
+            command = _bare_engine_command(
+                engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args, resume=resume
+            )
+        except _LiveClaudeSessionError as exc:
+            # tmux can reattach only when it already owns the live process. A
+            # raw bare process has no shared terminal to attach to, so refuse
+            # rather than silently fork another Claude Code session.
+            tmux_session = (
+                subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+                if shutil.which("tmux")
+                else None
+            )
+            if tmux_session is not None and tmux_session.returncode == 0:
+                bare = False
+            else:
+                pid_detail = f" (pid {exc.pid})" if exc.pid is not None else ""
+                print(
+                    f"Error: session '{exc.title}' is still running{pid_detail}; bare mode cannot reattach "
+                    f"to {exc.transcript}.\n"
+                    "Launch aborted to avoid starting a duplicate Claude Code process. "
+                    "Return to the terminal running the existing session.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            if reporter is not None:
+                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            _exec_with_direnv(target_root, command)
 
-    # Propagate iTerm2 env vars into the tmux session — tmux doesn't inherit these,
-    # so _iterm2_fleet_setup inside the bash script would silently no-op without them.
-    # The pane is renamed by live client tty (not a stored GUID), so ITERM_SESSION_ID
-    # no longer needs to be propagated or reconciled — only the terminal-type flags.
-    _iterm_env_flags: list[str] = []
-    for _var in ("LC_TERMINAL", "TERM_PROGRAM"):
-        if _val := os.environ.get(_var):
-            _iterm_env_flags += ["-e", f"{_var}={_val}"]
+    # tmux panes inherit their session environment from the long-lived server,
+    # not the process that runs `tmux new-session`. Carry the launch context so
+    # a server created before this launch cannot select a stale script or agent.
+    # The pane is renamed by live client tty, so ITERM_SESSION_ID is intentionally
+    # excluded.
+    _tmux_env_flags = build_tmux_env_flags(os.environ)
 
     if once:
         target_root = worktree_path or Path.cwd()
@@ -2749,6 +3053,8 @@ def _do_session_launch(
             if not _is_root():
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
+            if reporter is not None:
+                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             os.execvp(
                 "tmux",
                 [
@@ -2756,7 +3062,7 @@ def _do_session_launch(
                     "new-session",
                     "-s",
                     session_id,
-                    *_iterm_env_flags,
+                    *_tmux_env_flags,
                     "--",
                     _session_shell,
                     "-c",
@@ -2767,6 +3073,8 @@ def _do_session_launch(
             command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
             if uuid:
                 command += ["-r", uuid]
+                if reporter is not None:
+                    reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
                 os.execvp(
                     "tmux",
                     [
@@ -2774,7 +3082,7 @@ def _do_session_launch(
                         "new-session",
                         "-s",
                         session_id,
-                        *_iterm_env_flags,
+                        *_tmux_env_flags,
                         "--",
                         _session_shell,
                         "-c",
@@ -2783,6 +3091,8 @@ def _do_session_launch(
                 )
             else:
                 command += ["-i", f"/resume load {ai_name}"]
+                if reporter is not None:
+                    reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
                 os.execvp(
                     "tmux",
                     [
@@ -2790,7 +3100,7 @@ def _do_session_launch(
                         "new-session",
                         "-s",
                         session_id,
-                        *_iterm_env_flags,
+                        *_tmux_env_flags,
                         "--",
                         _session_shell,
                         "-c",
@@ -2801,6 +3111,8 @@ def _do_session_launch(
             command = ["pi", "--name", ai_name]
         else:
             command = ["codex"]
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp(
             "tmux",
             [
@@ -2808,7 +3120,7 @@ def _do_session_launch(
                 "new-session",
                 "-s",
                 session_id,
-                *_iterm_env_flags,
+                *_tmux_env_flags,
                 "--",
                 _session_shell,
                 "-c",
@@ -2821,7 +3133,6 @@ def _do_session_launch(
     _iterm2_cfg = _iterm2._load_iterm2_config()
     _iterm2_slot = _iterm2._assign_iterm2_color_slot(ai_name, engine, project_name=current_project_name)
 
-    _config_reload_idle_secs = int(config.get("session", {}).get("config_reload_idle_secs", 90))
     script = _session_script.get_engine_script(
         engine,
         ai_name,
@@ -2836,7 +3147,6 @@ def _do_session_launch(
         project_name=current_project_name,
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
-        config_reload_idle_secs=_config_reload_idle_secs,
         gemini_cmd=gemini_cmd,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
@@ -2852,6 +3162,21 @@ def _do_session_launch(
         # Explicit sandbox flag — kill old session so it recreates with new settings
         subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+    if existing.returncode == 0:
+        # A supervisor crash (e.g. AI-CLI-t8h5) leaves the tmux session alive with
+        # a dead pane and no process to react to a fresh script. Reattaching to it
+        # just shows the frozen final output forever instead of relaunching, so
+        # treat an all-dead-pane session as absent and let it recreate below.
+        pane_check = subprocess.run(
+            ["tmux", "list-panes", "-t", session_id, "-F", "#{pane_dead}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pane_states = [line for line in pane_check.stdout.splitlines() if line]
+        if pane_check.returncode == 0 and pane_states and all(state == "1" for state in pane_states):
+            subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+            existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
@@ -2867,6 +3192,8 @@ def _do_session_launch(
         # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
@@ -2874,7 +3201,7 @@ def _do_session_launch(
         # so Claude Code gets a proper PTY once we attach immediately after.
         _session_shell = _session_shell_or_exit()
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, "--", _session_shell, _script_path],
+            ["tmux", "new-session", "-d", "-s", session_id, *_tmux_env_flags, "--", _session_shell, _script_path],
             capture_output=True,
             check=False,
         )
@@ -2883,7 +3210,7 @@ def _do_session_launch(
             stderr = _decode_tmux_stderr(raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_id, *_iterm_env_flags, _session_shell, _script_path],
+                ["tmux", "new-session", "-d", "-s", session_id, *_tmux_env_flags, _session_shell, _script_path],
                 capture_output=True,
                 check=False,
             )
@@ -2895,8 +3222,22 @@ def _do_session_launch(
                 print(f"  (with --): {stderr}", file=sys.stderr)
                 print(f"  (without --): {stderr2}", file=sys.stderr)
                 sys.exit(1)
+        tmux_options = (
+            ["tmux", "set-window-option", "-t", session_id, "remain-on-exit", "on"],
+            ["tmux", "set-option", "-t", session_id, "mouse", "on"],
+            ["tmux", "set-option", "-s", "set-clipboard", "on"],
+        )
+        for tmux_option in tmux_options:
+            configured = subprocess.run(tmux_option, capture_output=True, check=False)
+            if configured.returncode != 0:
+                subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+                Path(_script_path).unlink(missing_ok=True)
+                print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
+                sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
+        if reporter is not None:
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
 
 
@@ -2928,16 +3269,38 @@ def _session_command(engine: str):
         project,
         is_remote,
         project_prefix,
+        quiet,
+        verbose,
+        dry_run=False,
     ):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
         # Startup hooks happen only when launching a new session.
+        reporter = LaunchReporter(quiet=quiet, verbose=verbose)
+        mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
+        reporter.start(
+            engine=_engine_display_name(engine),
+            mode=mode,
+            continuing=os.environ.pop(_LAUNCH_REEXEC_ENV, "") == "1",
+        )
         config = _config.load_config()
-        trigger_background_update()
-        if _auto_update_if_stale(config) is True:
-            ai_bin = shutil.which("ai") or "ai"
-            os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
-        _tunnel._ensure_nats_tunnel(config)
+        reporter.detail("Request", "configuration loaded")
+        # A dry run must not reinstall this CLI or start a tunnel either. Both
+        # sit above _do_session_launch, so its own dry-run exit cannot cover
+        # them: measured, `ai c 98 --dry-run` re-installed the tool and re-exec'd
+        # itself before printing a plan that claimed nothing had happened.
+        if not dry_run:
+            trigger_background_update()
+            with reporter.phase("Install", "checking installed version") as install_phase:
+                reexec = _auto_update_if_stale(config) is True
+                origin = _launch_install_origin()
+                decision = "reinstalled; restarting" if reexec else "current"
+                install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
+            if reexec:
+                ai_bin = shutil.which("ai") or "ai"
+                os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
+            _tunnel._ensure_nats_tunnel(config)
         _do_session_launch(
             engine=engine,
             name=name,
@@ -2955,6 +3318,8 @@ def _session_command(engine: str):
             config=config,
             remote_machine=remote_machine,
             no_direnv=no_direnv,
+            reporter=reporter,
+            dry_run=dry_run,
         )
 
     _impl.__name__ = f"cmd_session_{engine}"
@@ -2989,6 +3354,20 @@ def _session_options(func):
     func = click.option("-s", "--sandbox", is_flag=True, help="Enable sandboxing (default: off)")(func)
     func = click.option("-W", "--no-worktree", is_flag=True, help="Disable git worktree isolation")(func)
     func = click.option("-D", "--no-direnv", is_flag=True, help="Skip the direnv preflight and auto-install")(func)
+    func = click.option("-q", "--quiet", is_flag=True, help="Suppress launch progress output")(func)
+    func = click.option("-v", "--verbose", is_flag=True, help="Show additional launch progress details")(func)
+    # MUST be a declared option, not merely handled. SESSION_CONTEXT sets
+    # ignore_unknown_options, so an undeclared --dry-run is swallowed into
+    # ctx.args and forwarded verbatim to the engine -- the launch proceeds for
+    # real, creates a worktree and a branch, and starts a session. A flag whose
+    # entire promise is "do nothing" silently doing everything is the worst
+    # available failure, and docs/tools/ai-cli-usage.md has advertised this flag
+    # for `ai c`/`ai g` the whole time (AI-CLI-wepi).
+    func = click.option(
+        "--dry-run",
+        is_flag=True,
+        help="Print the resolved launch plan and exit; creates and starts nothing",
+    )(func)
     func = click.option("-R", "--remote", is_flag=True, help="Run session on the default remote machine")(func)
     func = click.option("-m", "--remote-machine", default="", help="Remote-machine alias to use with -R/--remote")(func)
     func = click.option(
@@ -3003,146 +3382,42 @@ def _session_options(func):
 
 @_cli_group.command("c", context_settings=SESSION_CONTEXT, help="Launch a Claude Code session")
 @_session_options
-def cmd_c(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-):
-    _session_command("c")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-    )
+def cmd_c(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("c")(ctx, **options)
 
 
 @_cli_group.command("g", context_settings=SESSION_CONTEXT, help="Launch a Gemini CLI session")
 @_session_options
-def cmd_g(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-):
-    _session_command("g")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-    )
+def cmd_g(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("g")(ctx, **options)
 
 
 @_cli_group.command("p", context_settings=SESSION_CONTEXT, help="Launch a Pi session")
 @_session_options
-def cmd_p(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-):
-    _session_command("p")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-    )
+def cmd_p(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("p")(ctx, **options)
 
 
 @_cli_group.command("cx", context_settings=SESSION_CONTEXT, help="Launch a Codex session")
 @_session_options
-def cmd_cx(
-    ctx,
-    name,
-    resume,
-    once,
-    bare,
-    notify,
-    sandbox,
-    no_worktree,
-    no_direnv,
-    remote,
-    remote_machine,
-    project,
-    is_remote,
-    project_prefix,
-):
-    _session_command("cx")(
-        ctx,
-        name,
-        resume,
-        once,
-        bare,
-        notify,
-        sandbox,
-        no_worktree,
-        no_direnv,
-        remote,
-        remote_machine,
-        project,
-        is_remote,
-        project_prefix,
-    )
+def cmd_cx(ctx, **options):
+    # Pure delegation: every option is forwarded by name. Spelling the
+    # parameter list out four times meant a new option had to be threaded
+    # through eight places, and missing one is silent -- click accepts the
+    # option, the wrapper drops it.
+    _session_command("cx")(ctx, **options)
 
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")
@@ -3196,11 +3471,17 @@ def cmd_doctor(dry_run):
     config = _config.load_config()
     root = Path.cwd()
 
-    # tmux is reported, never installed: `[session] use_tmux = false` and -b/--bare
-    # are both legitimate permanent answers, so its absence is not a defect.
+    # tmux is reported, never installed here: `[session] use_tmux = false` and
+    # -b/--bare are both legitimate permanent answers, so its absence is not a
+    # defect. Being on PATH is reported separately from actually running, because
+    # a tmux that resolves and then dies on a missing shared library used to read
+    # as `OK tmux` while no session could start.
+    tmux_note = "optional; -b/--bare and use_tmux=false opt out"
+    if _tmux_setup.tmux_present() and not _tmux_setup.tmux_runs():
+        tmux_note = "on PATH but `tmux -V` fails; launches fall back to bare mode"
     for label, present, note in (
         ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
-        ("tmux", shutil.which("tmux") is not None, "optional; -b/--bare and use_tmux=false opt out"),
+        ("tmux", _tmux_setup.tmux_runs(), tmux_note),
     ):
         click.echo(f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 
@@ -3215,53 +3496,6 @@ def cmd_doctor(dry_run):
         return
     click.echo(f"  MISS  direnv    {envrc} will not load", err=True)
     raise SystemExit(1)
-
-
-# --- handoff group ---
-
-
-@_cli_group.group("handoff", help="Post and claim handoffs from the shared queue")
-def cmd_handoff_group():
-    pass
-
-
-@cmd_handoff_group.command(
-    "post",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
-    help="Post a new handoff (run ssh when --remote is passed)",
-)
-@click.option("-m", "--for-machine", default="", help="Machine the handoff targets (required)")
-@click.option("-R", "--remote", is_flag=True, help="Post on the remote server instead of locally")
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def cmd_handoff_post(for_machine, remote, args):
-    _do_handoff_post(remote=remote, for_machine=for_machine, post_args=list(args))
-
-
-@cmd_handoff_group.command("check", help="Check for handoffs targeted at this machine")
-def cmd_handoff_check():
-    _handoff.check_handoff()
-    sys.exit(0)
-
-
-@cmd_handoff_group.command("check-project", help="Check pending handoffs for a specific project")
-@click.argument("project_name")
-def cmd_handoff_check_project(project_name):
-    _handoff.check_handoff_project(project_name)
-    sys.exit(0)
-
-
-@cmd_handoff_group.command("claim", help="Mark a handoff as claimed")
-@click.argument("file_path")
-def cmd_handoff_claim(file_path):
-    _handoff.claim_handoff(file_path)
-    sys.exit(0)
-
-
-@cmd_handoff_group.command("complete", help="Mark a handoff as complete")
-@click.argument("file_path")
-def cmd_handoff_complete(file_path):
-    _handoff.complete_handoff(file_path)
-    sys.exit(0)
 
 
 # --- memory group ---
@@ -3323,6 +3557,33 @@ def cmd_quota_watch_run(poll_interval):
     from .quota import quota_watch
 
     sys.exit(quota_watch(poll_interval))
+
+
+@_cli_group.group("session-reaper", help="Independently managed stale-session reaper")
+def cmd_session_reaper_group():
+    pass
+
+
+@cmd_session_reaper_group.command("start", help="Register the stale-session reaper with Circus")
+def cmd_session_reaper_start():
+    sys.exit(0 if _process_manager._cmd_stale_session_reaper_start() else 1)
+
+
+@cmd_session_reaper_group.command("stop", help="Stop the stale-session reaper")
+def cmd_session_reaper_stop():
+    sys.exit(0 if _process_manager._cmd_stale_session_reaper_stop() else 1)
+
+
+@cmd_session_reaper_group.command("status", help="Show stale-session reaper status")
+def cmd_session_reaper_status():
+    sys.exit(0 if _process_manager._cmd_stale_session_reaper_status() else 1)
+
+
+@cmd_session_reaper_group.command("run", hidden=True)
+def cmd_session_reaper_run():
+    from .stale_session_reaper import run_stale_session_reaper
+
+    sys.exit(run_stale_session_reaper(_config.load_config()))
 
 
 @cmd_quota_group.command("status", help="Print current quota snapshot")
@@ -3470,12 +3731,16 @@ def cmd_cc_usage_group():
 @cmd_cc_usage_group.command("push", help="Scan JSONL session files and push new events")
 @click.option("-d", "--dry-run", is_flag=True, help="Parse but do not push")
 def cmd_cc_usage_push(dry_run):
-    from .cc_usage import scan_and_push
+    from .cc_usage import EX_CONFIG, EX_TEMPFAIL, scan_and_push
 
     config = _config.load_config()
     result = scan_and_push(config=config, dry_run=dry_run)
     if result.error:
         print(f"Error: {result.error}", file=sys.stderr)
+        if result.error_kind == "config":
+            sys.exit(EX_CONFIG)
+        if result.error_kind == "transient":
+            sys.exit(EX_TEMPFAIL)
         sys.exit(1)
     if dry_run:
         print(f"Dry run: {result.new_events} new events across {result.scanned_sessions} sessions (not pushed)")
@@ -3914,35 +4179,6 @@ def cmd_tunnel_status():
     sys.exit(0)
 
 
-# --- signal-watch group ---
-
-
-@_cli_group.group("signal-watch", help="Handoff signal-watch Circus daemon management")
-def cmd_signal_watch_group():
-    pass
-
-
-@cmd_signal_watch_group.command("start", help="Start signal-watch for a session")
-@click.argument("project")
-@click.argument("session")
-def cmd_signal_watch_start(project, session):
-    _process_manager._cmd_signal_watch_start(project, session)
-    sys.exit(0)
-
-
-@cmd_signal_watch_group.command("stop", help="Stop signal-watch for a session")
-@click.argument("session")
-def cmd_signal_watch_stop(session):
-    _process_manager._cmd_signal_watch_stop(session)
-    sys.exit(0)
-
-
-@cmd_signal_watch_group.command("status", help="Show signal-watch status")
-def cmd_signal_watch_status():
-    _process_manager._cmd_signal_watch_status()
-    sys.exit(0)
-
-
 # --- cdp group ---
 
 
@@ -4136,6 +4372,34 @@ def cmd_reconnect(sessions):
     _do_reconnect(requested, config)
 
 
+@_cli_group.command("ssh", help="Open an interactive SSH shell on ALIAS, or the configured default when omitted")
+@click.argument("alias", required=False, default="", metavar="[ALIAS]")
+def cmd_ssh(alias):
+    """Connect to ALIAS, or the configured default remote machine."""
+    if sys.platform == "win32":
+        print("Error: SSH shells are not supported on Windows", file=sys.stderr)
+        sys.exit(1)
+
+    config = _config.load_config()
+    try:
+        remote_cfg = _config.get_remote_machine(config, alias)
+    except _config.RemoteMachineError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    host = remote_cfg.get("host", "")
+    if not host:
+        print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
+        sys.exit(1)
+    user = remote_cfg.get("user", "ubuntu")
+    port = str(remote_cfg.get("port", 22))
+    ssh_args = ["ssh", "-p", port]
+    if id_file := remote_cfg.get("identity_file", ""):
+        ssh_args += ["-i", str(Path(id_file).expanduser())]
+    ssh_args.append(f"{user}@{host}")
+    os.execvp("ssh", ssh_args)
+
+
 @_cli_group.command("update", help="Update ai-cli-utils from the source tree (git pull + uv tool install)")
 @click.option("-f", "--force", is_flag=True, help="Pass --reinstall to uv tool install (bypass uv's cache and deps)")
 @click.option("-q", "--quiet", is_flag=True, help="Capture git/uv output; report one line naming the new version")
@@ -4196,7 +4460,17 @@ def cli() -> None:
     exit contract matches the argparse/sys.argv dispatcher it replaces.
     """
     if len(sys.argv) > 1 and sys.argv[1] == "internal":
-        _handle_internal(sys.argv[2:])
+        try:
+            _handle_internal(sys.argv[2:])
+        except KeyboardInterrupt:
+            # `_handle_internal` always calls sys.exit (raising SystemExit, not
+            # caught here), so this only fires when Ctrl+C lands mid-startup --
+            # e.g. during module import or config load. Bash callers invoke this
+            # path many times per launch (session_script.py); an unhandled
+            # KeyboardInterrupt here would print a raw traceback on every one of
+            # them instead of exiting quietly like the Click path below already
+            # does (AI-CLI-s5cs).
+            sys.exit(1)
         return
     try:
         _cli_group(standalone_mode=False)

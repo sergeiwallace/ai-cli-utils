@@ -27,10 +27,14 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "ai-cli-utils"
 _CURSOR_FILE = _STATE_DIR / "cc-usage-cursor.json"
+
+EX_CONFIG = 78
+EX_TEMPFAIL = 75
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +69,7 @@ class PushResult:
     inserted: int = 0
     skipped: int = 0
     error: str | None = None
+    error_kind: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +77,10 @@ class PushResult:
 # ---------------------------------------------------------------------------
 
 
-def _parse_iso(ts: str) -> datetime | None:
+def _parse_iso(ts: str | None) -> datetime | None:
     """Parse an ISO 8601 timestamp string to a timezone-aware datetime."""
+    if ts is None:
+        return None
     try:
         dt = datetime.fromisoformat(ts.rstrip("Z"))
         if dt.tzinfo is None:
@@ -255,6 +262,15 @@ def _push_to_api(events: list[CCTokenEvent], api_url: str, api_key: str) -> tupl
         ]
     }
     data = json.dumps(payload).encode("utf-8")
+    parsed = urlsplit(api_url)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or not parsed.hostname.isascii()
+    ):
+        raise ValueError("usage_api.api_url must be HTTPS with an ASCII hostname and no userinfo")
     url = api_url.rstrip("/") + "/api/v1/usage/cc/ingest"
     req = urllib.request.Request(
         url,
@@ -265,7 +281,7 @@ def _push_to_api(events: list[CCTokenEvent], api_url: str, api_key: str) -> tupl
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _open_no_redirect(req, timeout=30) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     return body.get("inserted", 0), body.get("skipped", 0)
 
@@ -276,6 +292,17 @@ def _push_to_api(events: list[CCTokenEvent], api_url: str, api_key: str) -> tupl
 
 
 _BATCH_SIZE = 500
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Reject redirects so bearer credentials cannot reach another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+def _open_no_redirect(request: urllib.request.Request, timeout: int):
+    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
 def scan_and_push(
@@ -305,6 +332,7 @@ def scan_and_push(
             "usage_api.api_url and usage_api.api_key must be set in config.toml "
             "under [usage_api] to push CC usage events."
         )
+        result.error_kind = "config"
         return result
 
     cursor = _load_cursor()
@@ -324,6 +352,7 @@ def scan_and_push(
             result.skipped += skipped
     except Exception as exc:
         result.error = str(exc)
+        result.error_kind = "transient"
         return result
 
     _save_cursor(new_cursor)

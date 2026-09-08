@@ -279,6 +279,79 @@ class TestRunTransportLoop:
 
         asyncio.run(run())  # Should return cleanly without looping
 
+    def test_when_mosh_exits_with_success_code_quickly_then_surfaces_diagnostic(self, tmp_path, capsys):
+        """AI-CLI-jbyo: mosh returning 0 after a fast exit is ambiguous — it can be a
+        real user detach or the remote side silently failing to start a session
+        (e.g. a transient session-name collision). The mosh-fail branch only fires on
+        a non-zero return code, so this case previously fell through to a bare, silent
+        exit with no diagnostic at all.
+        """
+        proc = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 8.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "mosh session ended after 8.0s" in err
+        assert "exit code 0" in err
+        assert "try the command again" in err
+
+    def test_when_mosh_exits_with_success_code_after_a_while_then_no_diagnostic(self, tmp_path, capsys):
+        """A genuinely long-running mosh session (elapsed >= 15s) that ends cleanly is
+        a normal user detach, not a suspicious fast failure — no diagnostic noise.
+        """
+        proc = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 20.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "mosh session ended after" not in err
+
+    def test_when_mosh_fails_outside_named_diagnostic_windows_then_prints_fallback(self, tmp_path, capsys):
+        proc = _make_proc(returncode=1, poll_sequence=[None, 1])
+        nc = _mock_nats_client()
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 60.0]),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(SSH_ARGS, MOSH_ARGS, CLEANUP_CMD, SESSION, CONFIG)
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "mosh exited without a recognized diagnostic branch" in err
+        assert "returncode=1, elapsed=60.0s" in err
+        assert "please retry and report if it recurs" in err
+
     def test_when_mosh_fails_fast_with_vpn_then_switches_to_ssh(self, tmp_path):
         proc_mosh = _make_proc(returncode=1, poll_sequence=[None, 1])
         proc_ssh = _make_proc(returncode=0, poll_sequence=[None, 0])
@@ -327,6 +400,43 @@ class TestRunTransportLoop:
         asyncio.run(run())
         err = capsys.readouterr().err
         assert "falling back to SSH" in err
+
+    def test_when_mosh_fast_exit_has_remote_error_then_prints_it_without_reexecuting_command(self, tmp_path, capsys):
+        """A diagnostic read must only tail the failed attempt's saved stderr."""
+        proc = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+        diagnostic_ssh_args = ["ssh", "-T", "-o", "BatchMode=yes", "user@host"]
+        diagnostic_result = MagicMock(returncode=0, stdout="create_worktree: refusing to delete it\n", stderr="")
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", return_value=proc),
+                patch("ai_cli.transport._monotonic", side_effect=[0.0, 1.0]),
+                patch("subprocess.run", side_effect=[diagnostic_result, MagicMock()]) as mock_run,
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                await _run_transport_loop(
+                    SSH_ARGS,
+                    MOSH_ARGS,
+                    CLEANUP_CMD,
+                    SESSION,
+                    CONFIG,
+                    diagnostic_ssh_args=diagnostic_ssh_args,
+                    remote_diagnostic_file=".local/state/ai-cli-utils/transport-errors/failed.stderr",
+                )
+                return mock_run.call_args_list
+
+        calls = asyncio.run(run())
+        err = capsys.readouterr().err
+        assert "create_worktree: refusing to delete it" in err
+        assert "Transport exited too quickly" in err
+        diagnostic_command = calls[0].args[0]
+        assert diagnostic_command[: len(diagnostic_ssh_args)] == diagnostic_ssh_args
+        assert "tail -n 50" in diagnostic_command[-1]
+        assert " ai " not in diagnostic_command[-1]
 
     def test_when_mosh_and_ssh_both_fail_without_vpn_then_gives_up(self, tmp_path, capsys):
         # Mosh fails fast, SSH also fails fast → SSH retry backoff → give up.
@@ -383,6 +493,50 @@ class TestRunTransportLoop:
         assert "Tailscale up" in err
         assert "retrying mosh" in err
         assert "falling back to SSH" not in err
+
+    def test_when_mosh_fails_twice_with_tailscale_reachable_then_ssh_fallback_not_infinite_retry(
+        self, tmp_path, capsys
+    ):
+        # Regression for AI-CLI-gg9s: mosh fails fast, Tailscale/SSH reports
+        # reachable (as it always will when only mosh's UDP data channel is
+        # blocked, e.g. by a remote firewall), mosh is retried once and fails
+        # fast again. Must fall back to SSH instead of retrying forever.
+        mosh_fail_1 = _make_proc(returncode=1, poll_sequence=[None, 1])
+        mosh_fail_2 = _make_proc(returncode=1, poll_sequence=[None, 1])
+        ssh_ok = _make_proc(returncode=0, poll_sequence=[None, 0])
+        nc = _mock_nats_client()
+        popen_mock = MagicMock(side_effect=[mosh_fail_1, mosh_fail_2, ssh_ok])
+
+        async def run():
+            with (
+                patch("ai_cli.transport.get_xdg_state_home", return_value=tmp_path),
+                patch("ai_cli.transport._is_vpn_active", return_value=False),
+                patch("ai_cli.messaging.NATSClient", return_value=nc),
+                patch("subprocess.Popen", popen_mock),
+                patch(
+                    "ai_cli.transport._monotonic",
+                    side_effect=[0.0, 1.0, 0.0, 1.0, 0.0, 10.0],
+                ),
+                patch("subprocess.run"),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                patch("ai_cli.transport._ensure_tailscale_up", new_callable=AsyncMock, return_value=True),
+            ):
+                await _run_transport_loop(
+                    SSH_ARGS,
+                    MOSH_ARGS,
+                    CLEANUP_CMD,
+                    SESSION,
+                    CONFIG,
+                    tailscale_host="100.64.0.1",
+                )
+
+        asyncio.run(run())
+        err = capsys.readouterr().err
+        assert popen_mock.call_count == 3
+        assert err.count("retrying mosh") == 1
+        assert "falling back to ssh" in err.lower()
+        assert "UDP" in err
+        assert "firewall" in err.lower()
 
     def test_when_mosh_fails_and_tailscale_cannot_start_then_ssh_fallback(self, tmp_path, capsys):
         # Mosh fails fast, Tailscale fails to come up → SSH fallback.

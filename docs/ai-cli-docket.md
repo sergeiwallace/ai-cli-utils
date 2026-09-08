@@ -87,7 +87,7 @@ derived `score`.
 | P2 | `AI-CLI-82` | **Auto-show task panel on CC session start and auto-restart** | — (no open decision; ready to work) | — | — | `0.77` |
 | P2 | `AI-CLI-52` | **Re-record demo video for README and portfolio** | — (no open decision; ready to work) | — | — | `0.75` |
 | P2 | `AI-CLI-105` | **`ai sync` reliability — root-cause the conflicts + observability + robust prevention (part of the CORE-46 deploy/sync program)** | — (no open decision; ready to work) | — | — | `0.62` |
-| P2 | `AI-CLI-111` | **Review + reconcile `ai` CLI vs ai-core's `core` CLI — scope, ownership, interaction, optional-dependency boundary** | — (no open decision; ready to work) | — | — | `0.6` |
+| P2 | `AI-CLI-111` | **Review + reconcile `ai` CLI vs core-cli's `core` CLI — scope, ownership, interaction, optional-dependency boundary** | — (no open decision; ready to work) | — | — | `0.6` |
 | P2 | `AI-CLI-93` | **Migrate the `ai` CLI to Typer — consolidate the existing click+argparse split (DESIGN-FIRST, feature-parity-gated)** | — (no open decision; ready to work) | — | — | `0.51` |
 | P3 | `AI-CLI-prune-authorises-delete-gpjh` | **Prune authorises a delete from Path.exists(), which cannot distinguish a gone pid from an unreadable /proc** | — (no open decision; ready to work) | — | — | `0.83*` |
 | P3 | `AI-CLI-191` | **Read and action the four stash-migrate/* branches (plus the unmerged gemini-usage-tracking feature branch) before deleting any** | — (no open decision; ready to work) | — | — | `0.83*` |
@@ -98,7 +98,7 @@ derived `score`.
 | P3 | `AI-CLI-162` | **Fix mislinked task reference: workspace-sync-plan.md points at AI-CLI-64 (wrong issue), and vpn-transport-switching.md has stale status: draft despite being fully implemented** | — (no open decision; ready to work) | — | — | `0.83*` |
 | P3 | `AI-CLI-138` | **Fix ruff check errors (F841 x3, F811 x1) in scripts/generate_iterm2_icons.py** | — (no open decision; ready to work) | — | — | `0.83*` |
 | P3 | `AI-CLI-136` | **Decide disposition of 4 stashes on the remote build host's ai-cli-utils checkout** | — (no open decision; ready to work) | — | — | `0.83*` |
-| P3 | `AI-CLI-142` | **Implement Tier 1 of user behavior telemetry design (ADHD nudge lifecycle events, fatigue score, analytics.db)** | — (no open decision; ready to work) | /Users/sergeiwallace/projects/ai-cli-utils/docs/designs/user-behavior-telemetry.md | — | `0.3` |
+| P3 | `AI-CLI-142` | **Implement Tier 1 of user behavior telemetry design (ADHD nudge lifecycle events, fatigue score, analytics.db)** | — (no open decision; ready to work) | /Users/user/projects/ai-cli-utils/docs/designs/user-behavior-telemetry.md | — | `0.3` |
 
 <!-- /doc:region name="review_queue" -->
 

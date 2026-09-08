@@ -16,6 +16,7 @@ source: internal
   - [ai ls](#ai-ls)
   - [ai attach](#ai-attach)
   - [ai reconnect](#ai-reconnect)
+  - [ai ssh](#ai-ssh)
 - [Daemon Commands](#daemon-commands)
   - [ai memory watch](#ai-memory-watch)
   - [ai quota watch](#ai-quota-watch)
@@ -23,14 +24,12 @@ source: internal
   - [ai notifications](#ai-notifications)
 - [Sync Commands](#ai-sync)
 - [Utility Commands](#utility-commands)
-  - [ai gemini](#ai-gemini)
+  - [Removed ai gemini command](#removed-ai-gemini-command)
   - [ai spend gemini](#ai-spend-gemini)
   - [ai cc-usage](#ai-cc-usage)
-  - [ai handoff](#ai-handoff)
   - [ai layout](#ai-layout)
   - [ai color](#ai-color)
   - [ai cdp](#ai-cdp)
-  - [ai signal-watch](#ai-signal-watch)
   - [ai tunnel](#ai-tunnel)
   - [ai update](#ai-update)
   - [ai setup](#ai-setup)
@@ -52,9 +51,9 @@ ai -V          # same, short form
 ### Platform support
 
 - **Linux / macOS**: full feature set.
-- **Windows (MSYS2 / Git Bash)**: core session management and sync work out of the box. Requires tmux installed via MSYS2 (`pacman -S tmux`). The following features are unavailable on Windows: remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), iTerm2 color slot management. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
+- **Windows (MSYS2 / Git Bash)**: experimental. The Windows-specific session-launch paths exist, but real tmux-server integration is unverified and its integration suite is skipped after a Windows CI hang. Requires tmux installed via MSYS2 (`pacman -S tmux`). Remote sessions (`ai c -R`), SSH tunnels (`ai tunnel`), and iTerm2 color slot management are unavailable. Desktop notifications work when the `[notify-win]` optional extra is installed (`pip install "ai-cli-utils[notify-win]"`).
 
-Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai handoff post --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
+Subcommands are dispatched through a Click command-group tree, so `--help` works at every level (e.g. `ai tunnel --help`, `ai quota watch --help`). The only pre-Click fast path is `ai internal <action>`, which is reserved for machine-to-machine bash-hook callers.
 
 ### Module layout
 
@@ -66,11 +65,10 @@ Behaviour is split across focused modules so `main.py` stays thin:
 | `ai_cli.session` | session naming, worktree ops, Gemini UUID lookup |
 | `ai_cli.iterm2` | iTerm2 color slots, profile emit, tmux passthrough |
 | `ai_cli.icon_generator` | tinted PNG generation and Dynamic Profile JSON |
-| `ai_cli.handoff` | handoff queue post/claim/complete + signal helpers |
 | `ai_cli.transport` | VPN-aware mosh/SSH transport loop, Tailscale recovery |
 | `ai_cli.tunnel` | autossh SSH tunnels, CDP (Chrome DevTools) management |
-| `ai_cli.process_manager` | Circus daemon + `signal-watch` lifecycle |
-| `ai_cli.session_script` | bash template that wraps each session's engine loop |
+| `ai_cli.process_manager` | Circus daemon bootstrap and quota-watch lifecycle |
+| `ai_cli.session_script` | bash template that wraps each session's engine loop and runs its in-shell watcher |
 | `ai_cli.main` | CLI dispatch + session launch + update/deploy helpers |
 
 ---
@@ -88,11 +86,25 @@ Launch (or resume) a Claude Code session in a tmux worktree. The primary command
 - `N` — session number (default: auto-assigned). Creates worktree `.worktrees/sw-N` on branch `wt-sw-N`.
 - `-p PROJECT` — project alias (from `~/.config/ai-cli/config.toml` `[projects]` section)
 - `-R` — remote session: mosh + tmux on the configured remote host (auto-switches to SSH when VPN is active)
-- `--dry-run` — print what would happen without executing
+- `--dry-run` — print the resolved launch plan and exit. Reports the values you cannot
+  read off the command line: the session index actually free, the tmux-vs-bare decision
+  after config and the tmux preflight, the worktree path and branch. It returns above
+  every write, so it creates no worktree or branch, registers no workspace trust, reaps
+  no stale sessions, and does not auto-update the CLI.
 
 Session naming convention: `c-<project>-<N>` (local), `c-r-<project>-<N>` (remote).
 
 Auto-runs `git pull --rebase --autostash` at session start to keep worktree current.
+
+**How the launcher decides between tmux and bare.** In order: `[session] use_tmux`
+wins outright if the machine sets it; with no setting tmux is the default rather than
+an opt-in; a missing tmux gets one unattended install attempt (rootless managers
+first, then the system ones when running as root); and if tmux still is not there the
+launch continues in bare mode with a notice naming what was lost. It is never fatal —
+tmux is an enhancement, and a missing enhancement must not block a launch. Windows
+skips the install attempt because no native tmux exists there. `ai doctor` reports
+`tmux` by running `tmux -V`, not merely by finding it on PATH, so a build that
+resolves and then dies on a missing shared library reads as unusable instead of `OK`.
 
 **Bare mode (`-b`, or `[session] use_tmux = false`):** worktree isolation, `--name`,
 and conversation resume all still apply — tmux is not a prerequisite for any of them.
@@ -160,6 +172,14 @@ Lists remote tmux sessions (sessions starting with `c-r-`) on the configured rem
 
 Reads `[remote] host` and `[remote] user` from `~/.config/ai-cli/config.toml`.
 
+### ai ssh
+
+```bash
+ai ssh [alias]
+```text
+
+Opens an interactive SSH shell on a configured `[remote.machines.<alias>]` host. Without an alias, uses `[remote] default` (or the sole configured alias).
+
 ---
 
 ## Daemon Commands
@@ -223,7 +243,6 @@ Bidirectional sync of Claude Code session data between local and remote host.
 
 **Out of scope — what `ai sync` does NOT handle:**
 - Git-tracked files (config, hooks, scripts) — use `git pull/push` in the relevant repo
-- The handoff queue — `ai handoff post --remote` delivers directly; the queue lives in a git repo
 
 This boundary exists because `ai sync` is for CC session migration (conversations, memories, history) — not for config management. Files tracked in git are authoritative in git; syncing them outside git creates conflicts and dirty working trees.
 
@@ -270,20 +289,20 @@ Pull/rebase all repos and their worktrees listed in a VS Code `.code-workspace` 
 
 ```toml
 [workspace]
-local_path = "~/projects/myproject/ai-core-local.code-workspace"
-remote_path = "~/projects/myproject/ai-core-remote.code-workspace"
+local_path = "~/projects/myproject/core-cli-local.code-workspace"
+remote_path = "~/projects/myproject/core-cli-remote.code-workspace"
 ```
 
-Default falls back to `ai-core-local.code-workspace` if not configured.
+Default falls back to `core-cli-local.code-workspace` if not configured.
 
 **Example output:**
 
 ```text
-Workspace: ~/projects/myproject/ai-core-local.code-workspace (13 repos)
+Workspace: ~/projects/myproject/core-cli-local.code-workspace (13 repos)
 
   ✓  myproject          main
-  ✓  aido            main   +  .worktrees/sw-1   .worktrees/sw-2
-  ⚠  ai-core         main  (stashed+pulled)
+  ✓  companion            main   +  .worktrees/sw-1   .worktrees/sw-2
+  ⚠  core-cli         main  (stashed+pulled)
   ✓  ai-cli-utils    main
   ↷  ai-cli-utils/ai-cli-1  (dirty, skipped)
 
@@ -294,79 +313,11 @@ Done: 11 pulled, 1 stashed+pulled, 1 skipped (dirty)
 
 ## Utility Commands
 
-### ai gemini
+### Removed ai gemini command
 
-```bash
-ai gemini "prompt" [-m MODEL] [-d DEPTH] [-o OUTPUT_FILE] [--quiet] [--verbose]
-             [--timeout N] [--no-file] [--resume RUN_ID] [--planning-model MODEL]
-```text
+`ai gemini`, `src/ai_cli/gemini.py`, and `src/ai_cli/research.py` were removed in v0.7.0. The command no longer has a replacement in this package. Use `ai g` to launch an installed Gemini CLI in a managed tmux session.
 
-Gemini CLI wrapper with 3-tier auth fallback (OAuth → free API key → paid API key) and research depth tiers. See `src/ai_cli/gemini.py` and `src/ai_cli/research.py`.
-
-**Depth tiers** (`-d`/`--depth`):
-- `quick` (default) -- single-shot call, current behavior
-- `standard` -- Planner-Executor: query generation -> concurrent grounded search -> synthesis (~2x tokens, 2+ model calls)
-
-**Model aliases** (`-m`/`--model`):
-- `deep-think` (default) — Gemini 3.1 Pro with HIGH thinking via 3-tier fallback
-- `pro`, `flash`, `flash-lite` — standard Gemini models via 3-tier fallback
-- `deep-research` — Gemini Deep Research via Interactions API. Async, polls until complete, cancels on Ctrl-C. Uses `GOOGLE_API_KEY_TIER_1` (tier 3) directly — free-tier key (tier 2) is skipped, deep-research has no free quota.
-- Any full Gemini model ID
-
-**Auth tier notes** (see [pricing](https://ai.google.dev/gemini-api/docs/pricing)):
-- **Tier 1 (OAuth):** free via gemini CLI credentials. Works for all models.
-- **Tier 2 (free API key):** free quota for Flash text/multimodal models (2.0, 2.5, 3.x — including `gemini-3.1-flash-live-preview`), Gemma 4, and Gemini Embedding only. Returns a billing error — not a 429 — for Pro models, image-generation variants (`gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`), and deep-research. The fallback chain skips tier 2 automatically for ineligible models.
-- **Tier 3 (paid API key):** covers all models. Use `-s 3` when OAuth is unavailable and the model is not free-tier eligible.
-
-**Flags:**
-- `-m`/`--model` -- Model alias or full model ID (see above)
-- `-s`/`--start-tier` -- Start at auth tier 1 (OAuth, default), 2 (free API key), or 3 (paid API key). For Flash models: `-s 2` skips OAuth. For Pro/deep-research: `-s 3` (free-tier key has no quota for these).
-- `-d`/`--depth` -- Research depth: `quick` or `standard`
-- `--planning-model MODEL` -- Override planning model for standard tier (default: `deep-think`)
-- `--resume RUN_ID` -- Resume a standard run from last completed step
-- `-o`/`--output` -- Output file path (auto-generated if omitted)
-- `--quiet`/`-q` -- Suppress stderr progress output
-- `--verbose`/`-v` -- Show detailed tier/model info
-- `-t`/`--timeout` -- Timeout in seconds (default: 600)
-- `-F`/`--no-file` -- Stdout only, no file written
-
-**Paid tier for deep-research:**
-
-Deep Research (`-m deep-research`) draws from the paid AI Studio key (`GOOGLE_API_KEY_TIER_1`) and requires one opt-in:
-
-`paid_fallback_enabled = true` in `~/.config/ai-cli/config.toml` under `[gemini]` (disabled by default).
-
-If absent, the run exits with an actionable error message. After a successful run, the daily paid run count is printed to stderr. A warning is printed when paid run count reaches the configurable budget alert threshold (`DEEP_RESEARCH_DAILY_WARNING = 18`, alert at `DEEP_RESEARCH_DAILY_LIMIT = 20`). There is no Google-imposed hard daily limit — these are local budget-awareness constants only. Daily counts are persisted to `~/.local/state/ai-cli/dr-daily.json` and reset at midnight.
-
-**Auth tier names** (used in JSONL logs):
-
-| Tier | Name | Key |
-|------|------|-----|
-| 1 | `oauth` | gemini CLI credentials |
-| 2 | `ai_studio_free` | `GOOGLE_API_KEY_FREE_TIER` |
-| 3 | `ai_studio_paid` | `GOOGLE_API_KEY_TIER_1` |
-
-Token counts (`input_tokens`, `output_tokens`, `total_tokens`) are logged as `null` when usage metadata is absent from the API response (distinguishable from a model that returned zero tokens).
-
-**Logs:** `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — one entry per run. Daily Deep Research counter: `~/.local/state/ai-cli/dr-daily.json`.
-
-**JSONL fields:** in addition to tier/model/token fields, every log entry includes `id` (UUID), `occurred_at` (UTC ISO8601 with trailing `Z`), `machine` (value of `AI_HOST`), `provider` (`gemini`), and `source_quality` (`ok` when the prompt is 20+ characters, `suspected_test` otherwise).
-
-**NATS usage events:** when `[messaging] nats_servers` is configured, each call fires a fire-and-forget publish on the subject `hw.events.usage.gemini.event` with the same payload as the JSONL entry. Publishing runs in a daemon thread and never blocks the caller — if NATS is unavailable or not configured the publish silently no-ops. Downstream consumers (the ai-core `UsageConsumer`) ingest these events into Postgres for cross-provider usage reporting.
-
-**Depth config:** `~/.config/ai-cli/research.yaml` -- optional YAML file to override preset defaults (models, query counts, concurrency). Built-in defaults are used if absent.
-
-**Checkpoints:** `~/.local/state/ai-cli/research-runs/<run-id>/` -- JSON snapshots after each step. Use `--resume <run-id>` to restart from last completed step.
-
-**AI Studio billing model:** The Interactions API requires an AI Studio project
-with a prepayment balance (mandatory as of March 2026 — all accounts are prepay-only;
-postpay unlocks at \$1,000 cumulative spend). The prepay balance is a "financial
-handshake" anti-abuse mechanism, not the primary funding source: API spend deducts
-from any GCP credit balance first (e.g. monthly credits from a Google AI Ultra
-subscription), only drawing from the prepay balance once credits are exhausted.
-There is no OAuth path that routes Interactions API requests through a consumer
-Ultra subscription quota — Ultra gives GCP credits that offset project-level
-billing, not a separate quota pool.
+The historical implementation used API-key fallback, research-depth orchestration, and JSONL logging. Those behaviors and their configuration options are no longer provided by `ai-cli-utils`. This note preserves the removal context; the release history records the complete retired interface.
 
 ### ai spend gemini
 
@@ -374,18 +325,9 @@ billing, not a separate quota pool.
 ai spend gemini
 ```text
 
-Print today's and this month's Gemini API usage summary, combining local JSONL logs with GCP BigQuery billing export data.
+Print a cost summary from historical local Gemini run logs, optionally supplemented with a GCP BigQuery billing export. It does not invoke Gemini or create new logs.
 
-**Today's section** shows:
-- Deep Research paid run count for today
-- Per-model run counts for other models
-
-**This month's section** shows:
-- Monthly Deep Research OAuth and paid run totals
-- Per-model run counts
-- Actual billed amount from GCP billing export (when configured), with Ultra credit status hint
-
-**BigQuery setup** (one-time, required for paid spend data):
+**BigQuery setup** (one-time, optional historical billing data):
 
 1. Enable detailed billing export in Cloud Console → Billing → Billing export → Detailed usage cost
 2. Add to `~/.config/ai-cli/config.toml`:
@@ -398,11 +340,10 @@ billing_export_table = "your-project.billing_export.gcp_billing_export_v1_XXXXXX
 
 3. Install `google-cloud-bigquery` (`pip install google-cloud-bigquery`)
 
-Data appears in BigQuery within 24–48 hours. When not configured, `ai spend gemini` prints an actionable setup message and continues gracefully.
+When BigQuery is not configured, `ai spend gemini` reports the local historical logs that are available.
 
 **State files:**
-- `~/.local/state/ai-cli/dr-daily.json` — daily DR run counter (resets at midnight)
-- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — per-run log
+- `~/.local/state/ai-cli/gemini-logs/YYYY-MM-DD.jsonl` — historical per-run log, if retained from a version before v0.7.0
 
 ### ai cc-usage
 
@@ -420,7 +361,7 @@ Scan Claude Code session JSONL files and push per-call token usage events to a c
 **Config** (`~/.config/ai-cli-utils/config.toml`):
 
 ```toml
-[ai-core]
+[core-cli]
 api_url = "https://your-backend-host"
 api_key  = "hw-api-..."
 ```text
@@ -430,19 +371,6 @@ Both `api_url` and `api_key` must be set for `push` to run.
 **State file:** `~/.local/state/ai-cli-utils/cc-usage-cursor.json` — maps session UUID → last pushed `occurred_at` ISO timestamp.
 
 ---
-
-### ai handoff
-
-```bash
-ai handoff post [--remote] <title> <priority> <project> <message>
-ai handoff check
-ai handoff claim <file>
-ai handoff complete <file>
-```text
-
-Cross-session handoff queue. `post` writes a handoff item (add `--remote` to post to Hetzner via SSH); `check` prints the highest-priority pending file; `claim` atomically moves a file to `claimed/`; `complete` moves it to `completed/`.
-
-Queue lives at `~/projects/<main-project>/.handoff-queue/` (configured via `main_project` in config.toml). Publishing also delivers via NATS `handoff.{project}` for real-time pickup by signal-watch.
 
 ### ai layout
 
@@ -469,22 +397,6 @@ ai color <palette-name|#hex>
 ```text
 
 Ad hoc reassignment of the current session's iTerm2 tab color. Takes a palette color name (e.g., `purple`, `teal`) or a hex value (e.g., `#5e35b1`). Updates the tab color immediately via `SetColors` escape sequence and rewrites the session's Dynamic Profile JSON.
-
-### ai signal-watch
-
-```bash
-ai signal-watch start <project> <session>
-ai signal-watch stop <session>
-ai signal-watch status
-```text
-
-Manages signal-watch processes via Circus process manager (`circusd`). Signal-watch subscribes to NATS `handoff.{project}` for a CC session and writes pending marker files on arrival.
-
-- `start` — registers a Circus watcher named `sw-{session}` and starts it. Idempotent (removes existing watcher first). Auto-starts `circusd` via `_ensure_circusd()` if not running.
-- `stop` — removes the Circus watcher. Silent if circusd is not running (EXIT trap calls this unconditionally).
-- `status` — lists all `sw-*` watchers and their status.
-
-Circus uses IPC (not TCP) at `~/.local/state/ai-cli/circus.endpoint`. Config written to `~/.local/state/ai-cli/circus.ini`. Launched automatically by the bash session template at session start; stopped at EXIT.
 
 ### ai vpn-watch
 
@@ -640,5 +552,4 @@ Used by hooks and scripts — not for direct human use.
 | `publish-event` | `session_id event_type` | Publish fleet event |
 | `publish-heartbeat` | `session_id json` | Publish worker heartbeat |
 | `publish-session-event` | `session_id verb` | Publish session started/stopped |
-| `signal-watch` | `project session_id` | Subscribe durable to `handoff.{project}`, claim tasks, write pending-file for auto-pickup |
 | `cleanup-session-files` | `ai_name` | Remove session-specific icon PNG and Dynamic Profile JSON; called by EXIT trap on session end |

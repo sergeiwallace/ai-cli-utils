@@ -33,7 +33,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -371,22 +370,21 @@ def test_given_a_wrapped_process_when_ended_without_procfs_then_the_whole_tree_g
 
 
 def test_given_no_sigkill_or_sigcont_when_a_process_is_ended_then_it_still_ends(sleeper, monkeypatch):
-    """The Windows half of the defect: neither signal exists there, so neither is used.
+    """Unavailable platform-specific psutil operations must not prevent termination.
 
-    Both names are removed while the escalation runs, so reintroducing a
-    ``signal.SIGKILL`` into the no-procfs path fails here with the same
-    ``AttributeError`` a Windows host would have raised.
+    Simulate the unavailable operations at psutil's boundary. Removing attributes
+    from the shared ``signal`` module instead changes psutil's own POSIX internals,
+    so it cannot demonstrate this probe's fallback behavior.
     """
     proc, _ = sleeper()
-    monkeypatch.delattr(signal, "SIGKILL", raising=False)
-    monkeypatch.delattr(signal, "SIGCONT", raising=False)
 
-    ended = PsutilProbe().end_process(proc.pid)
-    # Restored before leaving the test: on POSIX ``Popen.kill`` reads
-    # ``signal.SIGKILL`` itself, so the fixture's own cleanup needs it back.
-    monkeypatch.undo()
+    def unavailable(self):
+        raise OSError("operation is unavailable on this platform")
 
-    assert ended is True
+    monkeypatch.setattr(psutil.Process, "resume", unavailable)
+    monkeypatch.setattr(psutil.Process, "kill", unavailable)
+
+    assert PsutilProbe().end_process(proc.pid) is True
     assert proc.poll() is not None
 
 

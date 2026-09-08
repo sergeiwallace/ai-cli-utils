@@ -198,17 +198,18 @@ def test_given_a_directory_holding_an_unregistered_checkout_when_a_session_workt
     assert (inner / "notes.md").read_text() == "independent history\n"
 
 
-def test_given_an_unregistered_directory_when_a_session_worktree_is_created_then_it_is_refused(repo, monkeypatch):
-    """A non-empty unregistered slot is never automatically recycled."""
+def test_given_an_unregistered_directory_when_a_session_worktree_is_created_then_it_is_recovered(repo, monkeypatch):
+    """A non-empty non-checkout slot is preserved before its worktree is recreated."""
     monkeypatch.chdir(repo)
     stale = repo / ".worktrees" / "session-3"
     stale.mkdir(parents=True)
     (stale / "leftover.txt").write_text("debris from an interrupted run\n")
 
-    with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-3")
+    created = create_worktree("session-3")
 
-    assert (stale / "leftover.txt").read_text() == "debris from an interrupted run\n"
+    recovered = next(stale.parent.glob("session-3-orphaned-*"))
+    assert created == stale
+    assert (recovered / "leftover.txt").read_text() == "debris from an interrupted run\n"
 
 
 def test_given_an_empty_unregistered_directory_when_a_session_worktree_is_created_then_it_is_reused(repo, monkeypatch):
@@ -236,41 +237,42 @@ def test_given_an_empty_unregistered_directory_when_a_session_worktree_is_create
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=slot).stdout.strip() == "wt-session-empty"
 
 
-def test_given_a_slot_holding_only_a_dotfile_when_a_session_worktree_is_created_then_it_is_refused(repo, monkeypatch):
+def test_given_a_slot_holding_only_a_dotfile_when_a_session_worktree_is_created_then_it_is_recovered(repo, monkeypatch):
     """Emptiness is every entry, not every visible entry.
 
-    ``git worktree add`` counts a dotfile as occupied and fails with ``already
-    exists``, so a glob-based emptiness test would wave a slot through only for
-    git to reject it — trading an actionable refusal for a confusing one.
+    ``git worktree add`` counts a dotfile as occupied, so preserve the content
+    outside the slot before asking git to create the worktree.
     """
     monkeypatch.chdir(repo)
     slot = repo / ".worktrees" / "session-dotfile"
     slot.mkdir(parents=True)
     (slot / ".leftover").write_text("hidden debris\n")
 
-    with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-dotfile")
+    created = create_worktree("session-dotfile")
 
-    assert (slot / ".leftover").read_text() == "hidden debris\n"
+    recovered = next(slot.parent.glob("session-dotfile-orphaned-*"))
+    assert created == slot
+    assert (recovered / ".leftover").read_text() == "hidden debris\n"
 
 
-def test_given_a_slot_holding_only_an_empty_subdirectory_when_a_session_worktree_is_created_then_it_is_refused(
+def test_given_a_slot_holding_only_an_empty_subdirectory_when_a_session_worktree_is_created_then_it_is_recovered(
     repo, monkeypatch
 ):
     """git's emptiness test is one level deep, and this one must agree with it.
 
     A recursive reading would call this slot empty; ``git worktree add`` does not,
-    and git is the operation that has to succeed.
+    so recover the occupied slot before letting git create the checkout.
     """
     monkeypatch.chdir(repo)
     slot = repo / ".worktrees" / "session-subdir"
     nested = slot / "nested"
     nested.mkdir(parents=True)
 
-    with pytest.raises(RuntimeError, match="refusing to delete"):
-        create_worktree("session-subdir")
+    created = create_worktree("session-subdir")
 
-    assert nested.is_dir(), "the nested directory must survive the refusal"
+    recovered = next(slot.parent.glob("session-subdir-orphaned-*"))
+    assert created == slot
+    assert (recovered / "nested").is_dir(), "the nested directory must be preserved"
 
 
 @pytest.fixture

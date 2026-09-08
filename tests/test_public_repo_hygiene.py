@@ -1,38 +1,37 @@
 """Standing guard for the public-package naming rule (BUG-005).
 
 ``CLAUDE.md`` forbids private project names, personal identifiers, and
-proprietary names anywhere in this repository's code, docs, comments and tests.
-A one-off scrub enforced that once, in April 2026; with nothing standing behind
-it, the same private project name walked back into four test files and one
-docstring over the following months, unnoticed by review.
-
-The scan is deliberately narrow in two ways so it stays trustworthy rather than
-noisy:
-
-* **Scope is ``src/`` and ``tests/``** — the shipped package and its suite. The
-  ``docs/`` tree legitimately quotes real repository URLs and preserves
-  historical records, so a docs-wide scan would cry wolf.
-* **The pattern discriminates by role.** The forbidden token is also the first
-  half of the project's real GitHub account name, which appears correctly in
-  badge, CI, coverage and package-metadata URLs and in the author/copyright
-  lines. Only the token *not* followed by the surname is a violation: every
-  legitimate use is account-name or author-name usage and therefore carries it;
-  no violation does. ``test_given_the_real_repository_url_...`` pins that
-  distinction, and ``test_given_a_line_that_uses_...`` proves the scan can fail.
+proprietary names in public code, metadata, and documentation. This guard
+checks the shipped package, its tests, root metadata, project configuration,
+and every documentation category. A line that must quote an identifier as
+evidence may opt out with a documented per-line marker.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
-_SCANNED_DIRS = ("src", "tests")
+_SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
+_LINE_EXEMPTION_MARKER = "public-hygiene: allow"
+_EXEMPTION_PATHS = frozenset(
+    {
+        Path("README.md"),
+        Path("CONTRIBUTING.md"),
+        Path("pyproject.toml"),
+        Path(".github"),
+        Path("docs"),
+        Path("tests") / "test_public_repo_hygiene.py",
+    }
+)
 
-# Assembled from fragments so this guard file does not itself contain the
-# literals it forbids. That keeps the scan free of self-exclusions, which would
-# otherwise leave a hole in exactly the file most likely to carry them.
-_PRIVATE_PROJECT_NAME = "ser" + "gei"
-_PRIVATE_REPO_NAMES = ("bms-" + "semantic-knowledge-graph", "sw-" + "bms" + "-workspace")
+# Each literal below is intentionally exempted on its own line: the guard must
+# scan the actual tokens it forbids, while its definitions and positive controls
+# necessarily contain them. Other evidence quotes use the same per-line marker.
+_PRIVATE_PROJECT_NAME = "sergeiwallace"  # public-hygiene: allow
+_PERSONAL_IDENTIFIERS = (_PRIVATE_PROJECT_NAME, "sergei", "wallace")  # public-hygiene: allow
+_PRIVATE_REPO_NAMES = ("bms-semantic-knowledge-graph", "sw-bms-workspace")  # public-hygiene: allow
 
 # Proprietary platform names. ``CLAUDE.md`` forbids these alongside the personal
 # identifiers above, but the pattern below originally carried only the personal
@@ -43,14 +42,12 @@ _PRIVATE_REPO_NAMES = ("bms-" + "semantic-knowledge-graph", "sw-" + "bms" + "-wo
 # forbidding it required a rename of the section rather than a scrub. That rename
 # has shipped, so the token is listed unconditionally here — no exemption list,
 # which would have been the hole this guard exists to close.
-_PRIVATE_PLATFORM_NAMES = ("ai" + "do", "ai-" + "core")
+_PRIVATE_PLATFORM_NAMES = ("aido", "ai-core")  # public-hygiene: allow
 
 _FORBIDDEN = re.compile(
     "|".join(
         [
-            # The private project name, except where it opens the real GitHub
-            # account name (`<name>wallace`) or the author's full name.
-            rf"{_PRIVATE_PROJECT_NAME}(?! ?wallace)",
+            *(rf"\b{re.escape(name)}\b" for name in _PERSONAL_IDENTIFIERS),
             *(re.escape(name) for name in _PRIVATE_REPO_NAMES),
             # Word-bounded: the bare tool name is a substring of ordinary English
             # ("aid", "aiding") and of unrelated identifiers, so an unbounded
@@ -67,6 +64,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _line_is_exempted(relative_path: Path, line: str) -> bool:
+    """Allow documented evidence lines, but never let source code suppress the guard."""
+    return _LINE_EXEMPTION_MARKER in line and any(
+        relative_path == allowed or allowed in relative_path.parents for allowed in _EXEMPTION_PATHS
+    )
+
+
 def scan_for_private_names(root: Path) -> list[str]:
     """Return ``path:lineno: line`` for every forbidden-name use under ``root``.
 
@@ -74,8 +78,12 @@ def scan_for_private_names(root: Path) -> list[str]:
     the scan needs no extension allowlist that a new file type could slip past.
     """
     findings: list[str] = []
-    for scanned_dir in _SCANNED_DIRS:
-        for path in sorted((root / scanned_dir).rglob("*")):
+    for scanned_path in _SCANNED_PATHS:
+        candidate = root / scanned_path
+        if not candidate.exists():
+            continue
+        paths = candidate.rglob("*") if candidate.is_dir() else (candidate,)
+        for path in sorted(paths):
             if not path.is_file():
                 continue
             try:
@@ -83,14 +91,54 @@ def scan_for_private_names(root: Path) -> list[str]:
             except (UnicodeDecodeError, OSError):
                 continue
             for lineno, line in enumerate(text.splitlines(), start=1):
-                if _FORBIDDEN.search(line):
-                    findings.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+                relative_path = path.relative_to(root)
+                if _FORBIDDEN.search(line) and not _line_is_exempted(relative_path, line):
+                    findings.append(f"{relative_path}:{lineno}: {line.strip()}")
     return findings
 
 
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_names_remain():
     findings = scan_for_private_names(_repo_root())
     assert not findings, "private project names in a public package:\n" + "\n".join(findings)
+
+
+def test_given_the_repository_index_when_listed_then_no_claude_code_install_lock_is_tracked():
+    """No path under ``claude/`` may be tracked, whatever it contains.
+
+    ``scan_for_private_names`` above cannot catch this, and the reason is
+    structural rather than a missing pattern: it walks an allowlist of eight
+    paths (``src``, ``tests``, ``docs``, root metadata, ``.github``), so a
+    newly-tracked TOP-LEVEL directory is invisible to it by construction. That is
+    how ``claude/locks/2.1.263.lock`` — carrying a contributor's absolute home
+    path, which the forbidden-name pattern does match — reached ``main`` with
+    every hygiene guard green.
+
+    Claude Code writes that lock to a CWD-relative ``claude/locks/`` rather than
+    the user's state directory (an empty-string ``XDG_STATE_HOME`` makes the
+    bundle's ``??`` fallback leave the base empty, so the join stays relative), so
+    the directory materialises in whatever checkout a session is standing in and
+    an automated working-tree sweep committed it. It also broke ``git pull``:
+    ``untracked working tree files would be overwritten by checkout``.
+
+    Asserted against the git INDEX, not the filesystem, because the directory is
+    expected to exist on disk in any active checkout — being present is normal,
+    being *tracked* is the defect. A ``.gitignore`` entry alone would not have
+    caught it either: ignore rules do not apply to already-tracked paths.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "claude"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=_repo_root(),
+    ).stdout
+    offenders = [path for path in tracked.split("\0") if path]
+
+    assert not offenders, (
+        "Claude Code install-lock artefacts are tracked in a public repository:\n"
+        + "\n".join(f"  {path}" for path in offenders)
+        + "\nUntrack them with `git rm --cached <path>`; `.gitignore` does not untrack an existing entry."
+    )
 
 
 def test_given_a_line_that_uses_the_private_name_as_a_project_name_when_scanned_then_it_is_flagged(tmp_path):
@@ -107,22 +155,15 @@ def test_given_a_line_that_uses_the_private_name_as_a_project_name_when_scanned_
     assert line == "1"
 
 
-def test_given_the_real_repository_url_when_scanned_then_it_is_not_flagged(tmp_path):
-    """Negative control: badge, metadata and author lines must not trip the scan.
+def test_given_root_metadata_with_a_personal_identifier_when_scanned_then_it_is_flagged(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(f'authors = [{{ name = "{_PERSONAL_IDENTIFIERS[0]}" }}]\n')
 
-    A naive substring search flags all of these, which is why "no hits" from one
-    would be unreachable and "hits" uninformative.
-    """
-    (tmp_path / "src").mkdir()
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "src" / "legitimate.py").write_text(
-        f'URL = "https://github.com/{_PRIVATE_PROJECT_NAME}wallace/ai-cli-utils"\n'
-        f'BADGE = "https://codecov.io/gh/{_PRIVATE_PROJECT_NAME}wallace/ai-cli-utils/graph/badge.svg"\n'
-        f'AUTHOR = "{_PRIVATE_PROJECT_NAME.capitalize()} Wallace"\n'
-        f'EMAIL = "dev@{_PRIVATE_PROJECT_NAME}wallace.com"\n'
-    )
+    findings = scan_for_private_names(tmp_path)
 
-    assert scan_for_private_names(tmp_path) == []
+    assert len(findings) == 1
+    path, line, _ = findings[0].split(":", 2)
+    assert Path(path) == Path("pyproject.toml")
+    assert line == "1"
 
 
 def test_given_a_private_repository_name_when_scanned_then_it_is_flagged(tmp_path):
@@ -137,6 +178,47 @@ def test_given_a_private_repository_name_when_scanned_then_it_is_flagged(tmp_pat
     path, line, _ = findings[0].split(":", 2)
     assert Path(path) == Path("tests") / "test_example.py"
     assert line == "1"
+
+
+def test_given_a_historical_document_with_a_private_name_when_scanned_then_it_is_flagged(tmp_path):
+    """Every documentation category is public and must remain within the guard's scope."""
+    audit_dir = tmp_path / "docs" / "audits"
+    audit_dir.mkdir(parents=True)
+    (audit_dir / "example.md").write_text(f"project: {_PRIVATE_PROJECT_NAME}\n")
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    path, line, _ = findings[0].split(":", 2)
+    assert Path(path) == Path("docs") / "audits" / "example.md"
+    assert line == "1"
+
+
+def test_given_an_explicitly_exempted_evidence_line_when_scanned_then_it_is_not_flagged(tmp_path):
+    """The exemption is line-scoped, so neighboring violations are still visible."""
+    docs_dir = tmp_path / "docs" / "audits"
+    docs_dir.mkdir(parents=True)
+    (docs_dir / "example.md").write_text(
+        f"quoted evidence: {_PRIVATE_PROJECT_NAME} # {_LINE_EXEMPTION_MARKER}\n"
+        f"unexempted violation: {_PRIVATE_PROJECT_NAME}\n"
+    )
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].startswith("docs/audits/example.md:2:")
+
+
+def test_given_a_source_line_with_an_exemption_marker_when_scanned_then_it_is_still_flagged(tmp_path):
+    """Only documented evidence locations may use the exemption marker."""
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "example.py").write_text(f'project_name = "{_PRIVATE_PROJECT_NAME}" # {_LINE_EXEMPTION_MARKER}\n')
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].startswith("src/example.py:1:")
 
 
 def test_given_a_private_platform_name_when_scanned_then_it_is_flagged(tmp_path):

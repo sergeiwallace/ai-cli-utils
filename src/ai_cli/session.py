@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal, overload
 
 from .config import (
     WORKTREE_DIR,
@@ -452,7 +453,14 @@ def _has_live_tmux_session(session_name: object, active_sessions: set[str]) -> b
         return False
     possible_sessions = {session_name}
     if not _AI_SESSION_RE.fullmatch(session_name):
-        possible_sessions.update({f"c-{session_name}", f"g-{session_name}"})
+        possible_sessions.update(
+            {
+                f"c-{session_name}",
+                f"c-r-{session_name}",
+                f"g-{session_name}",
+                f"g-r-{session_name}",
+            }
+        )
     return bool(possible_sessions & active_sessions)
 
 
@@ -511,11 +519,13 @@ def _sweep_orphaned_claude_bg_spares(active_sessions: set[str] | None, timeout_s
 
 
 def cleanup_stale_sessions(config: dict) -> None:
-    """Kill stale ai-cli tmux sessions on each launch.
+    """Clean auxiliary session state without ending any tmux session.
 
-    Two cases:
-    - Dead shell: AI exited, pane shows bash/zsh (auto-resume loop stopped).
-    - Abandoned: AI still running but session unattached for > stale_session_timeout minutes.
+    This runs as part of launching an arbitrary session.  A global tmux listing
+    can identify active session names for safe orphan-state cleanup, but it
+    cannot authorize terminating another session: a pane PID is only a
+    point-in-time implementation detail and does not establish session
+    ownership or whether the pane still contains live child processes.
     """
     if sys.platform == "win32":
         return
@@ -530,7 +540,7 @@ def cleanup_stale_sessions(config: dict) -> None:
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}|#{session_last_attached}|#{session_attached}|#{pane_current_command}",
+            "#{session_name}",
         ],
         capture_output=True,
         text=True,
@@ -540,41 +550,16 @@ def cleanup_stale_sessions(config: dict) -> None:
         _sweep_orphaned_claude_bg_spares(None, orphan_bg_spare_timeout_seconds, now)
         return
 
-    # Group pane commands by session name
-    sessions = {}
+    active_sessions: set[str] = set()
     for line in res.stdout.strip().split("\n"):
         if not line:
             continue
-        parts = line.split("|", 3)
-        if len(parts) != 4:
-            continue
-        session_name, last_attached_str, attached_str, pane_cmd = parts
+        session_name = line.split("|", 1)[0]
         if not _AI_SESSION_RE.match(session_name):
             continue
-        try:
-            last_attached = int(last_attached_str)
-        except ValueError:
-            continue
-        currently_attached = attached_str.strip() != "0"
-        if session_name not in sessions:
-            sessions[session_name] = (last_attached, currently_attached, [])
-        sessions[session_name][2].append(pane_cmd.lower())
+        active_sessions.add(session_name)
 
-    shell_cmds = {"bash", "zsh", "sh", "fish"}
-    dead_shell_grace = 60  # seconds — don't kill shell-only sessions that were recently active
-    for session_name, (last_attached, currently_attached, pane_cmds) in sessions.items():
-        all_shells = all(cmd in shell_cmds for cmd in pane_cmds)
-        # Never kill a session that currently has a client attached
-        if currently_attached:
-            continue
-        abandoned = (now - last_attached) > timeout_seconds
-        # Dead shell: all panes show a shell prompt, but grant a 60s grace period so sessions
-        # starting up (CC not yet launched) aren't killed by a concurrent session launch.
-        dead_shell = all_shells and last_attached > 0 and (now - last_attached) > dead_shell_grace
-        if dead_shell or abandoned:
-            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True, check=False)
-
-    _sweep_orphaned_claude_bg_spares(set(sessions), orphan_bg_spare_timeout_seconds, now)
+    _sweep_orphaned_claude_bg_spares(active_sessions, orphan_bg_spare_timeout_seconds, now)
     _sweep_stale_iterm2_profiles()
 
 
@@ -1042,6 +1027,91 @@ def _registered_worktree_at(candidate: Path, registered: list[Path]) -> Path | N
     return None
 
 
+def _worktree_holding_branch(repo_root: Path, branch: str) -> Path | None:
+    """Return the worktree that has ``branch`` checked out, or None.
+
+    ``git worktree add`` refuses a branch that is checked out somewhere else, and
+    names the holder only inside its error text. Parsing the porcelain listing
+    turns that holder into a path the launcher can act on, which is the whole
+    difference between a dead end and a repair: the branch is this session's own
+    ``wt-<name>``, so a holder at a non-canonical path is a misplaced slot rather
+    than a conflict with a different session.
+
+    Paired line-wise, not searched as text — porcelain emits ``branch`` as a
+    property of the preceding ``worktree`` record, so a bare grep for the ref
+    cannot say which worktree it belongs to.
+    """
+    res = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+        env=_git_env(),
+        check=False,
+    )
+    if res.returncode != 0:
+        return None
+    wanted = f"branch refs/heads/{branch}"
+    current: Path | None = None
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree ") :].strip())
+        elif line.strip() == wanted and current is not None:
+            return current
+    return None
+
+
+def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> None:
+    """Move the worktree at ``holder`` onto this session's slot path ``wt_dir``.
+
+    ``git worktree move`` is the only safe way to do this: it relocates the
+    checkout *and* rewrites git's registration, so uncommitted changes, unpushed
+    commits and the current HEAD all survive, and nothing is deleted. A plain
+    ``mv`` would leave the registration pointing at the old path.
+
+    Raises ``RuntimeError`` naming the exact manual command whenever the move
+    cannot be made safely, so a refusal still hands over a next step that works.
+    """
+    manual = f"git -C {repo_root} worktree move {holder} {wt_dir}"
+
+    if _worktree_has_live_session(holder):
+        raise RuntimeError(
+            f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and an engine "
+            f"process is still running there — refusing to move a live session's checkout. Exit that "
+            f"session, then re-run, or move it by hand: {manual}"
+        )
+
+    if wt_dir.exists():
+        # git worktree move requires an absent destination. Only an empty
+        # directory can be cleared here, and rmdir is what enforces that: a slot
+        # holding anything at all was already recovered or refused above.
+        try:
+            wt_dir.rmdir()
+        except OSError as exc:
+            raise RuntimeError(
+                f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and {wt_dir} "
+                f"could not be cleared to make room for the move: {exc}. Move it by hand: {manual}"
+            ) from exc
+
+    res = subprocess.run(
+        ["git", "worktree", "move", str(holder), str(wt_dir)],
+        capture_output=True,
+        cwd=repo_root,
+        env=_git_env(),
+        check=False,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and moving it "
+            f"failed: {_git_stderr(res)}. Move it by hand: {manual}"
+        )
+    print(
+        f"[launch] Relocated session worktree: moved {holder} -> {wt_dir} "
+        "(checkout, uncommitted changes and unpushed commits preserved)",
+        file=sys.stderr,
+    )
+
+
 def _initialize_worktree(
     repo_root: Path,
     worktree_path: Path,
@@ -1087,6 +1157,24 @@ def _initialize_worktree(
     _allow_trusted_worktree_envrc(repo_root, worktree_path)
 
 
+@overload
+def create_worktree(
+    ai_name: str, *, with_status: Literal[False] = False, repo_root: Path | None = None
+) -> Path | None: ...
+
+
+@overload
+def create_worktree(
+    ai_name: str, *, with_status: Literal[True], repo_root: Path | None = None
+) -> tuple[Path, bool] | None: ...
+
+
+@overload
+def create_worktree(
+    ai_name: str, *, with_status: bool, repo_root: Path | None = None
+) -> Path | tuple[Path, bool] | None: ...
+
+
 def create_worktree(
     ai_name: str, *, with_status: bool = False, repo_root: Path | None = None
 ) -> Path | tuple[Path, bool] | None:
@@ -1129,7 +1217,7 @@ def create_worktree(
 
             if wt_dir.exists() and not _is_empty_dir(wt_dir):
                 # A non-registered directory might hold files or git data that the
-                # launcher cannot safely evaluate. Never recycle it automatically.
+                # launcher cannot safely evaluate.
                 #
                 # An *empty* one is excluded above rather than refused: it holds
                 # nothing to protect, and `git worktree add` writes into an
@@ -1150,10 +1238,22 @@ def create_worktree(
                         f"`git worktree move {holder} {wt_dir.parent / (wt_dir.name + '-agents')}/{holder.name}` "
                         f"for each one (a plain `mv` would leave git's registration pointing at the old path)."
                     )
-                raise RuntimeError(
-                    f"create_worktree: {wt_dir} exists but is not a worktree of {repo_root} — refusing to delete it. "
-                    f"Remove or relocate it only after verifying it contains no needed files; if it is empty, run "
-                    f"`rmdir {wt_dir}` and re-run."
+                recovered_path = wt_dir.with_name(f"{wt_dir.name}-orphaned-{time.time_ns()}")
+                collision = 1
+                while recovered_path.exists():
+                    recovered_path = wt_dir.with_name(f"{wt_dir.name}-orphaned-{time.time_ns()}-{collision}")
+                    collision += 1
+                try:
+                    wt_dir.rename(recovered_path)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"create_worktree: could not recover orphaned directory {wt_dir} by moving it to "
+                        f"{recovered_path}: {exc}"
+                    ) from exc
+                print(
+                    f"[launch] Recovered orphaned directory: moved {wt_dir} -> {recovered_path} "
+                    "(not deleted; review manually)",
+                    file=sys.stderr,
                 )
 
             branch = f"wt-{ai_name}"
@@ -1201,6 +1301,30 @@ def create_worktree(
                     _initialize_worktree(repo_root, registered, branch, upstream, reused=True)
                     result = (registered, False)
                     return result if with_status else registered
+
+                # Third strategy: this session's own branch is checked out at a
+                # different path. Neither add above can ever succeed — the first
+                # because the branch exists, the second because git allows one
+                # checkout per branch — so without this the launch dead-ends on a
+                # state the launcher itself produced (a slot directory lost while
+                # its registration survived, or a worktree relocated by hand).
+                # Recovering it is a move, never a delete: the wanted checkout
+                # already exists and is merely in the wrong place.
+                branch_holder = _worktree_holding_branch(repo_root, branch)
+                if branch_holder is not None and not _same_worktree_path(branch_holder, wt_dir):
+                    _relocate_worktree_to_slot(repo_root, branch_holder, wt_dir)
+                    registered = _registered_worktree_at(wt_dir, registered_worktrees(repo_root))
+                    if registered is not None:
+                        moved_branch = _current_branch(registered)
+                        _, upstream = _resolve_worktree_target(repo_root) if moved_branch is not None else (None, None)
+                        _initialize_worktree(repo_root, registered, moved_branch, upstream, reused=True)
+                        result = (registered, False)
+                        return result if with_status else registered
+                    raise RuntimeError(
+                        f"moved {branch_holder} onto this session's slot {wt_dir}, but git does not report a "
+                        f"worktree there afterwards"
+                    )
+
                 raise RuntimeError(
                     f"git worktree add failed for {wt_dir}. First attempt: {_git_stderr(first_add)}. "
                     f"Retry with existing branch: {_git_stderr(res)}"
@@ -1277,11 +1401,29 @@ def cleanup_worktree(ai_name: str):
     if not wt_dir.exists():
         return
 
-    # Only remove if clean
-    diff = subprocess.run(["git", "-C", str(wt_dir), "diff", "--quiet"], env=_git_env(), check=False)
-    cached = subprocess.run(["git", "-C", str(wt_dir), "diff", "--cached", "--quiet"], env=_git_env(), check=False)
-    if diff.returncode == 0 and cached.returncode == 0:
-        subprocess.run(["git", "worktree", "remove", str(wt_dir)], capture_output=True, env=_git_env(), check=False)
+    # Only remove if clean. `git status --porcelain` (unlike `git diff`) also
+    # flags untracked files, so a worktree holding an uncommitted scratch file
+    # (a session MEMORY.md, a stray brief, etc.) is correctly treated as dirty
+    # instead of silently skipped past by git's own untracked-files refusal.
+    status = subprocess.run(
+        ["git", "-C", str(wt_dir), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        env=_git_env(),
+        check=False,
+    )
+    if status.returncode == 0 and not status.stdout.strip():
+        removed = subprocess.run(
+            ["git", "worktree", "remove", str(wt_dir)], capture_output=True, text=True, env=_git_env(), check=False
+        )
+        if removed.returncode != 0:
+            # Previously swallowed entirely — a refused removal (e.g. a race
+            # against another process) left no trace, making a stuck worktree
+            # indistinguishable from a successfully cleaned-up one.
+            print(
+                f"ai-cli: cleanup_worktree: git worktree remove {wt_dir} failed: {removed.stderr.strip()}",
+                file=sys.stderr,
+            )
         # Backstop repair after teardown — worktree remove is the other
         # documented trigger for the core.bare/core.worktree corruption class.
         repair_bare_worktree_config(repo_root)

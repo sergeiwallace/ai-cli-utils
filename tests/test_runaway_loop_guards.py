@@ -39,7 +39,7 @@ _MAX_TICKS = 4
 
 
 def _watcher_loop_body() -> str:
-    """The bash body of the watcher's ``while true`` loop, verbatim from the template."""
+    """The per-child monitor's ``while true`` loop, verbatim from the template."""
     script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="myproject")
     watcher_start = script.index("start_watcher() {")
     body_start = script.index("while true; do", watcher_start) + len("while true; do")
@@ -58,9 +58,6 @@ def _run_watcher_loop(tmp_path: Path) -> int:
     if shell is None:  # pragma: no cover - CI always has one of these
         pytest.skip("no zsh/bash available to run the watcher loop")
 
-    watched = tmp_path / "watched.json"
-    watched.write_text("{}")
-
     harness = tmp_path / "watcher_harness.sh"
     harness.write_text(
         f"""
@@ -68,13 +65,8 @@ tmux_session="c-sw-1"
 ai_name="sw-1"
 engine="c"
 project_prefix="sw"
-signal_file="{tmp_path}/signal"
-config_hash_file="{tmp_path}/config-hash"
-config_changed_file="{tmp_path}/config-changed"
 reload_file="{tmp_path}/reload"
 restart_file="{tmp_path}/restart"
-_config_watch_files="{watched}"
-_config_reload_idle_secs=90
 counter=0
 ticks=0
 SECONDS=0

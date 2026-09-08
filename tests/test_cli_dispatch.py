@@ -12,7 +12,6 @@ Covers previously-uncovered lines in ``ai_cli.main``:
 - reconnect transport JSON error (875-876)
 - ``_auto_update_if_stale`` lockfile early-return + stamp-match after-lock (216-217, 221)
 - ``_deploy_cc_config_files`` copy path (185-194)
-- handoff post usage error (1052-1056)
 - session launch positional-name promotion (1101-1102)
 """
 
@@ -55,7 +54,6 @@ class TestInternalRefreshTemplate:
             "project_name": "myproject",
             "iterm2_slot": "",
             "iterm2_cfg": {},
-            "config_reload_idle_secs": 90,
             "gemini_cmd": "gemini",
         }
 
@@ -327,8 +325,11 @@ class TestCliErrorPaths:
 
     def test_given_click_exception_when_cli_then_uses_exit_code(self, capsys):
         """Lines 1943-1944: ``ClickException`` prints and uses its exit code."""
-        exc_obj = click.exceptions.ClickException("boom")
-        exc_obj.exit_code = 3
+
+        class ExitThree(click.exceptions.ClickException):
+            exit_code = 3
+
+        exc_obj = ExitThree("boom")
         with (
             patch("sys.argv", ["ai", "c"]),
             patch("ai_cli.config.load_config", return_value={}),
@@ -383,8 +384,8 @@ class TestReconnectTransportError:
 
 
 class TestAutoUpdateLockfile:
-    def test_given_lockfile_exists_when_auto_update_then_returns_early(self, tmp_path):
-        """A pre-existing lockfile → O_CREAT|O_EXCL raises OSError → return."""
+    def test_given_lockfile_exists_when_auto_update_then_waits_for_peer_without_updating(self, tmp_path, capsys):
+        """A pre-existing lock belongs to a peer, so wait briefly without updating."""
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "ai-cli-utils"\nversion = "0.1.0"\n')
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -399,12 +400,17 @@ class TestAutoUpdateLockfile:
             patch("ai_cli.config.get_xdg_state_home", return_value=state_dir),
             patch("subprocess.run", side_effect=fake_run) as mock_run,
             patch("shutil.which", return_value="/usr/bin/ai"),
+            patch("ai_cli.main._PEER_UPDATE_WAIT_SECONDS", 0.05),
+            patch("ai_cli.main._PEER_UPDATE_POLL_SECONDS", 0.01),
         ):
-            _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
-        # The source is unstamped (so stale), but the update subprocess must NOT run
+            updated = _auto_update_if_stale({"deploy": {"project_path": str(tmp_path)}})
+        # The source is unstamped (so stale), but this worker must not run the
+        # update while a peer owns the lock.
         calls = [c.args[0] for c in mock_run.call_args_list]
         update_calls = [c for c in calls if len(c) >= 2 and c[1] == "update"]
+        assert updated is False
         assert not update_calls
+        assert "Warning" in capsys.readouterr().err
 
     def test_given_stamp_matches_after_lock_when_auto_update_then_skips_update(self, tmp_path):
         """After acquiring the lock, a now-matching stamp returns before the update."""
@@ -511,7 +517,7 @@ class TestDeployCcConfigFiles:
             assert mode & stat.S_IXOTH
 
     def test_given_existing_symlink_at_dst_when_deploy_then_symlink_preserved(self, tmp_path):
-        # ai-harness install.sh owns symlinked files — ai update must not overwrite them.
+        # An externally managed symlink must be preserved by ai update.
         project = tmp_path / "project"
         (project / "src" / "ai_cli" / "data").mkdir(parents=True)
         src = project / "src" / "ai_cli" / "data" / "statusline-command.sh"
@@ -540,16 +546,6 @@ class TestDeployCcConfigFiles:
         with patch("ai_cli.main.Path.home", return_value=fake_home):
             _deploy_cc_config_files(project)
         assert not (fake_home / ".claude" / "statusline-command.sh").exists()
-
-
-# --- handoff post usage error (1052-1056) ---
-
-
-class TestHandoffPostUsage:
-    def test_given_too_few_post_args_when_handoff_post_then_exits_1(self):
-        exit_code, _, stderr = run_cli(["ai", "handoff", "post", "--for-machine", "mac", "only-one-arg"])
-        assert exit_code == 1
-        assert "Usage: ai handoff post" in stderr
 
 
 # --- session launch positional-name promotion (1101-1102) ---

@@ -183,6 +183,7 @@ def test_given_existing_worktree_branch_when_worktree_recreated_then_its_history
     with patch("ai_cli.trust.ensure_workspace_trusted"):
         worktree = create_worktree("session-1")
 
+    assert worktree is not None
     (worktree / "session-work.md").write_text("work from the session\n")
     _git("add", "-A", cwd=worktree)
     _git("commit", "-q", "-m", "session work", cwd=worktree)
@@ -194,6 +195,7 @@ def test_given_existing_worktree_branch_when_worktree_recreated_then_its_history
     with patch("ai_cli.trust.ensure_workspace_trusted"):
         again = create_worktree("session-1")
 
+    assert again is not None
     assert again == worktree
     assert _out("rev-parse", "wt-session-1", cwd=repo) == session_tip
     assert (Path(again) / "session-work.md").exists(), "the session's own commit must survive re-creation"

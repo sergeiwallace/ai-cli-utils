@@ -5,10 +5,10 @@
 **Target version:** `1.0.0`
 **Context:** Follows `docs/plans/pre-release-v0.2.0-plan.md`. v1.0.0 is a stability and feature-completeness declaration — the point at which the public API is stable, the core workflows are reliable and tested, and a new user on any platform can install and use the tool without manual configuration.
 
-<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+<!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
-  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
-  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  they navigate in-window (incl. VS Code Remote-SSH). `companion toc check` validates this
+  once COMP-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
   `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
   (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
   Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);

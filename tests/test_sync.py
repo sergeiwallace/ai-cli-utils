@@ -112,6 +112,7 @@ def test_denormalize_project_name_when_server_prefix_then_correct():
 def test_denormalize_normalize_roundtrip():
     cc_dir = "-Users-user-projects-myproject--worktrees-sw-3"
     bare = normalize_project_path(cc_dir, _MAC_PREFIX)
+    assert bare is not None
     assert denormalize_project_name(bare, _MAC_PREFIX) == cc_dir
 
 
@@ -1058,6 +1059,21 @@ def test_apply_pull_files_when_clean_memory_file_then_applied(tmp_path):
     assert expected.read_text() == "# Profile\nUser"
 
 
+def test_given_staging_memory_symlink_when_pulling_then_target_is_not_read_or_written(tmp_path):
+    staging_dir = tmp_path / "staging"
+    cc_projects_dir = tmp_path / "cc_projects"
+    target = tmp_path / "secret.txt"
+    target.write_text("do not copy")
+    memory_dir = staging_dir / "myproject" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        apply_pull_files(staging_dir, cc_projects_dir, _MAC_PREFIX, False, False, False)
+
+    assert target.read_text() == "do not copy"
+
+
 def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_path):
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
@@ -1068,7 +1084,10 @@ def test_apply_pull_files_when_conflict_markers_then_conflict_file_written(tmp_p
     conflict_content = "<<<<<<< HEAD\nlocal content\n=======\nremote content\n>>>>>>> origin/main\n"
     (staging_dir / "myproject" / "memory" / "project_current_work.md").write_text(conflict_content)
 
-    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
+    with (
+        patch("ai_cli.sync.CONFLICT_DIR", conflict_dir),
+        patch("ai_cli.sync._llm_merge_memory_conflict", return_value=None),
+    ):
         result = apply_pull_files(
             staging_dir=staging_dir,
             cc_projects_dir=cc_projects_dir,
@@ -1624,7 +1643,7 @@ def test_push_to_remote_when_stale_rebase_merge_then_aborts_before_rebase(tmp_pa
 
     def fake_run(cmd, **kwargs):
         run_calls.append(cmd)
-        result = type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+        result = subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "push"] and len(run_calls) == 1:
             result.returncode = 1
             result.stderr = "rejected (non-fast-forward)"
@@ -1653,7 +1672,7 @@ def test_push_to_remote_when_no_stale_rebase_then_skips_abort(tmp_path):
 
     def fake_run(cmd, **kwargs):
         run_calls.append(cmd)
-        result = type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+        result = subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "push"] and len(run_calls) == 1:
             result.returncode = 1
             result.stderr = "rejected (non-fast-forward)"
@@ -4712,8 +4731,69 @@ def test_repair_worktree_cc_dir_when_dry_run_then_no_writes(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# _has_conflict_markers / _leaves_conflict_marker — line-anchored marker detection
+# ---------------------------------------------------------------------------
+
+
+def test_has_conflict_markers_when_real_markers_at_line_start_then_returns_true():
+    from ai_cli.sync import _has_conflict_markers
+
+    content = "<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n"
+    assert _has_conflict_markers(content) is True
+
+
+def test_has_conflict_markers_when_prose_quotes_marker_characters_then_returns_false():
+    """A file whose PROSE mentions marker characters (e.g. a memory note about conflict
+    hygiene, or a shell command example) must not be misclassified as conflicted — a bare
+    substring search false-positives on this and previously corrupted exactly such a file
+    when the LLM-merge path then rewrote it (AI-CLI-<merge-marker-anchor-fix>)."""
+    from ai_cli.sync import _has_conflict_markers
+
+    content = (
+        "Before staging, run `grep -c '^\\(<<<<<<<\\|=======\\|>>>>>>>\\)' .beads/*.jsonl`"
+        " and require 0. Nothing draws the eye to a `<<<<<<<` among them.\n"
+    )
+    assert _has_conflict_markers(content) is False
+
+
+def test_leaves_conflict_marker_when_prose_quotes_marker_characters_then_returns_false():
+    """The LLM-output-still-broken check must use the same line-anchored detection, or a
+    legitimately clean merge whose content happens to quote marker characters (exactly the
+    scenario that corrupted a real memory file) gets wrongly rejected as still-conflicted."""
+    from ai_cli.sync import _leaves_conflict_marker
+
+    merged = "Related: a rebase conflict shows `<<<<<<<` and `>>>>>>>` markers in the diff.\n"
+    assert _leaves_conflict_marker(merged) is False
+
+
+def test_leaves_conflict_marker_when_real_marker_present_then_returns_true():
+    from ai_cli.sync import _leaves_conflict_marker
+
+    assert _leaves_conflict_marker("<<<<<<< HEAD\nstill conflicted\n>>>>>>> main\n") is True
+
+
+# ---------------------------------------------------------------------------
 # _llm_merge_memory_conflict
 # ---------------------------------------------------------------------------
+
+
+def test_llm_merge_memory_conflict_when_content_has_no_real_markers_then_returns_unchanged():
+    """A file with no genuine conflict markers (only prose that quotes marker characters)
+    must never reach an LLM merge attempt — there is nothing to resolve, and sending it
+    anyway risks a nonsensical response corrupting the file (measured)."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    content = "See the example: `<<<<<<<` then `>>>>>>>` in a rebase.\n"
+
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict") as mock_codex,
+        patch("ai_cli.sync._gemini_merge_memory_conflict") as mock_gemini,
+    ):
+        result = _llm_merge_memory_conflict(content, "note.md")
+
+    assert result == content
+    mock_codex.assert_not_called()
+    mock_gemini.assert_not_called()
 
 
 def test_llm_merge_memory_conflict_when_no_api_key_then_returns_none(monkeypatch):
@@ -4722,7 +4802,8 @@ def test_llm_merge_memory_conflict_when_no_api_key_then_returns_none(monkeypatch
     monkeypatch.delenv("GOOGLE_API_KEY_TIER_1", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
-    result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
+    with patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
     assert result is None
 
 
@@ -4734,7 +4815,10 @@ def test_llm_merge_memory_conflict_when_api_exception_then_returns_none(monkeypa
     mock_client = MagicMock()
     mock_client.models.generate_content.side_effect = RuntimeError("network error")
 
-    with patch("google.genai.Client", return_value=mock_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
         result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
 
     assert result is None
@@ -4751,14 +4835,17 @@ def test_llm_merge_memory_conflict_when_llm_leaves_markers_then_returns_none(mon
     mock_client = MagicMock()
     mock_client.models.generate_content.return_value = mock_response
 
-    with patch("google.genai.Client", return_value=mock_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
         result = _llm_merge_memory_conflict("<<<<<<< HEAD\nlocal\n=======\nremote\n>>>>>>> main\n", "test.md")
 
     assert result is None
 
 
 def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content(monkeypatch):
-    """Successful merge: both sides preserved, no conflict markers in output."""
+    """Successful merge via the Gemini fallback: both sides preserved, no conflict markers in output."""
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "fake-key")
@@ -4771,7 +4858,10 @@ def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content
 
     conflict_content = "<<<<<<< HEAD\n- local entry\n=======\n- remote entry\n>>>>>>> main\n"
 
-    with patch("google.genai.Client", return_value=mock_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
         result = _llm_merge_memory_conflict(conflict_content, "memory.md")
 
     assert result == merged_text
@@ -4783,7 +4873,7 @@ def test_llm_merge_memory_conflict_when_llm_succeeds_then_returns_merged_content
 
 
 def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
-    """GOOGLE_API_KEY_TIER_1 should be preferred over GEMINI_API_KEY when both are set."""
+    """GOOGLE_API_KEY_TIER_1 should be preferred over GEMINI_API_KEY when both are set (Gemini fallback path)."""
     from ai_cli.sync import _llm_merge_memory_conflict
 
     monkeypatch.setenv("GOOGLE_API_KEY_TIER_1", "tier1-key")
@@ -4800,10 +4890,121 @@ def test_llm_merge_memory_conflict_uses_tier1_key_over_gemini_key(monkeypatch):
         captured_key.append(api_key)
         return mock_client
 
-    with patch("google.genai.Client", side_effect=capture_client):
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", side_effect=capture_client),
+    ):
         _llm_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "f.md")
 
     assert captured_key == ["tier1-key"]
+
+
+# ---------------------------------------------------------------------------
+# _codex_merge_memory_conflict / Codex-first orchestration in _llm_merge_memory_conflict
+# ---------------------------------------------------------------------------
+
+
+def test_codex_merge_memory_conflict_when_cx_unavailable_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    with patch("shutil.which", return_value=None), patch("pathlib.Path.exists", return_value=False):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_cx_exits_nonzero_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    mock_result = MagicMock(returncode=1, stdout="", stderr="codex: error")
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", return_value=mock_result),
+    ):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_output_leaves_markers_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    mock_result = MagicMock(returncode=0, stdout="<<<<<<< HEAD\nstill conflicted\n>>>>>>> main\n", stderr="")
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", return_value=mock_result),
+    ):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_subprocess_error_then_returns_none():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", side_effect=OSError("no such file")),
+    ):
+        result = _codex_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "test.md")
+    assert result is None
+
+
+def test_codex_merge_memory_conflict_when_cx_succeeds_then_returns_merged_content_via_mechanical_role():
+    from ai_cli.sync import _codex_merge_memory_conflict
+
+    merged_text = "# Memory\n- local entry\n- remote entry\n"
+    mock_result = MagicMock(returncode=0, stdout=merged_text, stderr="")
+    conflict_content = "<<<<<<< HEAD\n- local entry\n=======\n- remote entry\n>>>>>>> main\n"
+
+    with (
+        patch("shutil.which", return_value="/usr/local/bin/cx"),
+        patch("ai_cli.sync.subprocess.run", return_value=mock_result) as mock_run,
+    ):
+        result = _codex_merge_memory_conflict(conflict_content, "memory.md")
+
+    assert result == merged_text
+    argv = mock_run.call_args[0][0]
+    assert argv[0] == "/usr/local/bin/cx"
+    assert "mechanical" in argv
+    prompt = argv[-1]
+    assert "memory.md" in prompt
+    assert conflict_content in prompt
+
+
+def test_llm_merge_memory_conflict_when_codex_succeeds_then_gemini_not_called():
+    """Codex is the primary path — a successful Codex merge must never invoke Gemini."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    merged_text = "# Memory\n- codex merged this\n"
+    mock_genai_client = MagicMock()
+
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=merged_text) as mock_codex,
+        patch("google.genai.Client", return_value=mock_genai_client) as mock_gemini_client,
+    ):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "memory.md")
+
+    assert result == merged_text
+    mock_codex.assert_called_once()
+    mock_gemini_client.assert_not_called()
+
+
+def test_llm_merge_memory_conflict_when_codex_fails_then_falls_back_to_gemini(monkeypatch):
+    """Codex unavailable/failing must fall through to the existing Gemini path, not just give up."""
+    from ai_cli.sync import _llm_merge_memory_conflict
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    merged_text = "# Memory\n- gemini merged this\n"
+    mock_response = MagicMock()
+    mock_response.text = merged_text
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with (
+        patch("ai_cli.sync._codex_merge_memory_conflict", return_value=None),
+        patch("google.genai.Client", return_value=mock_client),
+    ):
+        result = _llm_merge_memory_conflict("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n", "memory.md")
+
+    assert result == merged_text
 
 
 # ---------------------------------------------------------------------------
@@ -4827,22 +5028,19 @@ def test_apply_pull_files_when_conflict_markers_and_llm_succeeds_then_file_writt
     local_project_dir.mkdir(parents=True)
 
     merged_content = "- local note\n- remote note\n"
-    mock_response = MagicMock()
-    mock_response.text = merged_content
-    mock_client = MagicMock()
-    mock_client.models.generate_content.return_value = mock_response
 
-    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
-        with patch("google.genai.Client", return_value=mock_client):
-            with patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}):
-                result = apply_pull_files(
-                    staging_dir=staging_dir,
-                    cc_projects_dir=cc_projects_dir,
-                    local_prefix=_MAC_PREFIX,
-                    memories_only=False,
-                    verbose=False,
-                    dry_run=False,
-                )
+    with (
+        patch("ai_cli.sync.CONFLICT_DIR", conflict_dir),
+        patch("ai_cli.sync._llm_merge_memory_conflict", return_value=merged_content),
+    ):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+        )
 
     # No conflicts — the LLM resolved it
     assert result["conflicts"] == []
@@ -4872,21 +5070,19 @@ def test_apply_pull_files_when_conflict_markers_and_llm_fails_then_conflict_file
     local_mem = local_mem_dir / "project_current_work.md"
     local_mem.write_text("original local content\n")
 
-    with patch("ai_cli.sync.CONFLICT_DIR", conflict_dir):
-        with patch.dict("os.environ", {}, clear=True):  # No API key → LLM returns None
-            result = apply_pull_files(
-                staging_dir=staging_dir,
-                cc_projects_dir=cc_projects_dir,
-                local_prefix=_MAC_PREFIX,
-                memories_only=False,
-                verbose=False,
-                dry_run=False,
-                # Clearing os.environ above wipes HOME/USERPROFILE too, and
-                # Path.home() requires USERPROFILE on Windows (no pwd-module
-                # fallback there) — pass an explicit root so this test's
-                # unrelated env-clearing doesn't break path resolution.
-                local_projects_root=tmp_path / "projects",
-            )
+    with (
+        patch("ai_cli.sync.CONFLICT_DIR", conflict_dir),
+        patch("ai_cli.sync._llm_merge_memory_conflict", return_value=None),
+    ):
+        result = apply_pull_files(
+            staging_dir=staging_dir,
+            cc_projects_dir=cc_projects_dir,
+            local_prefix=_MAC_PREFIX,
+            memories_only=False,
+            verbose=False,
+            dry_run=False,
+            local_projects_root=tmp_path / "projects",
+        )
 
     assert len(result["conflicts"]) == 1
     # Conflict file written
@@ -5365,6 +5561,183 @@ def test_sync_pull_when_llm_merge_succeeded_then_staging_commit_and_push(tmp_pat
 
     assert result == 0  # No unresolved conflicts
     assert push_called, "staging remote push was not called after LLM merge commit"
+
+
+def test_sync_pull_when_staged_file_has_conflict_markers_then_refuses_commit(tmp_path, capsys):
+    """The commit backstop must inspect the index, not trust the queued path's prior content."""
+    cfg = _make_pull_cfg(tmp_path)
+    _make_git_repo(cfg.staging_dir)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+    staging_file = cfg.staging_dir / "myproject" / "memory" / "notes.md"
+    staging_file.parent.mkdir(parents=True)
+    staging_file.write_text("<<<<<<< ours\nlocal\n=======\nremote\n>>>>>>> theirs\n")
+    push_called = []
+    real_run = subprocess.run
+
+    def skip_network_git(args, **kwargs):
+        if args[:2] in (["git", "fetch"], ["git", "merge"]):
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return real_run(args, **kwargs)
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync.is_cc_active_locally", return_value=False),
+        patch("ai_cli.sync._sync_projects_root", return_value=tmp_path / "projects"),
+        patch("ai_cli.sync.init_staging_repo"),
+        patch("ai_cli.sync._pre_pull_push_memories"),
+        patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir),
+        patch("ai_cli.sync.subprocess.run", side_effect=skip_network_git),
+        patch(
+            "ai_cli.sync.apply_pull_files",
+            return_value={
+                "conflicts": [],
+                "applied_count": 0,
+                "staging_to_overwrite": [],
+                "staging_to_commit": [staging_file],
+            },
+        ),
+        patch("ai_cli.sync.apply_task_files", return_value=0),
+        patch("ai_cli.sync.apply_history_file", return_value=0),
+        patch("ai_cli.sync.translate_history_jsonl"),
+        patch("ai_cli.sync.retranslate_project_jsonls"),
+        patch("ai_cli.sync.purge_phantom_history_entries"),
+        patch("ai_cli.sync.notify_conflicts"),
+        patch("ai_cli.sync._push_to_remote", side_effect=lambda *args, **kwargs: push_called.append(True)),
+    ):
+        result = sync_pull([])
+
+    assert result == 2
+    assert not push_called
+    assert "refusing to commit" in capsys.readouterr().err
+    assert (
+        "sync: update staging after conflict resolution"
+        not in subprocess.run(
+            ["git", "log", "-1", "--format=%s"], cwd=cfg.staging_dir, capture_output=True, text=True, check=True
+        ).stdout
+    )
+
+
+def test_given_concurrent_index_mutation_when_sync_pull_commits_then_refuses_conflicted_blobs(tmp_path, capsys):
+    """A competing sync used to inject marker-laden blobs into pull's final commit."""
+    cfg = _make_pull_cfg(tmp_path)
+    _make_git_repo(cfg.staging_dir)
+    cc_dir = tmp_path / ".claude" / "projects"
+    cc_dir.mkdir(parents=True)
+    staging_file = cfg.staging_dir / "myproject" / "memory" / "notes.md"
+    staging_file.parent.mkdir(parents=True)
+    staging_file.write_text("clean merge result\n")
+    foreign_file = cfg.staging_dir / "myproject" / "subagents" / "agent.jsonl"
+    push_called = []
+    race_triggered = False
+    real_run = subprocess.run
+
+    def interleave_competing_sync(args, **kwargs):
+        nonlocal race_triggered
+        if args[:2] in (["git", "fetch"], ["git", "merge"]):
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:2] == ["git", "add"] and not race_triggered:
+            race_triggered = True
+            markers = "<<<<<<< ours\nlocal\n=======\nremote\n>>>>>>> theirs\n"
+            staging_file.write_text(markers)
+            foreign_file.parent.mkdir(parents=True)
+            foreign_file.write_text(markers)
+            # Model the concurrent push's `git add -A`: it stages every current
+            # working-tree mutation, including paths this pull never selected.
+            real_run(["git", "add", "-A"], cwd=cfg.staging_dir, check=True)
+        return real_run(args, **kwargs)
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync.is_cc_active_locally", return_value=False),
+        patch("ai_cli.sync._sync_projects_root", return_value=tmp_path / "projects"),
+        patch("ai_cli.sync.init_staging_repo"),
+        patch("ai_cli.sync._pre_pull_push_memories"),
+        patch("ai_cli.sync._cc_projects_dir", return_value=cc_dir),
+        patch("ai_cli.sync.subprocess.run", side_effect=interleave_competing_sync),
+        patch(
+            "ai_cli.sync.apply_pull_files",
+            return_value={
+                "conflicts": [],
+                "applied_count": 0,
+                "staging_to_overwrite": [],
+                "staging_to_commit": [staging_file],
+            },
+        ),
+        patch("ai_cli.sync.apply_task_files", return_value=0),
+        patch("ai_cli.sync.apply_history_file", return_value=0),
+        patch("ai_cli.sync.translate_history_jsonl"),
+        patch("ai_cli.sync.retranslate_project_jsonls"),
+        patch("ai_cli.sync.purge_phantom_history_entries"),
+        patch("ai_cli.sync.notify_conflicts"),
+        patch("ai_cli.sync._push_to_remote", side_effect=lambda *args, **kwargs: push_called.append(True)),
+    ):
+        result = sync_pull([])
+
+    assert race_triggered
+    assert result == 2
+    assert not push_called
+    assert "refusing to commit" in capsys.readouterr().err
+    assert subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=cfg.staging_dir, check=False).returncode == 0
+    assert (
+        "sync: update staging after conflict resolution"
+        not in subprocess.run(
+            ["git", "log", "-1", "--format=%s"], cwd=cfg.staging_dir, capture_output=True, text=True, check=True
+        ).stdout
+    )
+
+
+def test_given_sync_pull_when_staging_lock_is_held_then_git_initialization_runs_inside_it(tmp_path):
+    """All pull-side staging mutations must share one local repository lock."""
+    cfg = _make_pull_cfg(tmp_path)
+    events = []
+
+    class RecordingLock:
+        def __enter__(self):
+            events.append("acquired")
+
+        def __exit__(self, *args):
+            events.append("released")
+
+    def fail_initialization(*args):
+        events.append("init")
+        raise RuntimeError("stop after lock-scope check")
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync._staging_repo_lock", return_value=RecordingLock()),
+        patch("ai_cli.sync.init_staging_repo", side_effect=fail_initialization),
+    ):
+        assert sync_pull([]) == 1
+
+    assert events == ["acquired", "init", "released"]
+
+
+def test_given_sync_push_when_staging_lock_is_held_then_git_initialization_runs_inside_it(tmp_path):
+    """Push must use the same lock before changing the shared staging repository."""
+    cfg = _make_pull_cfg(tmp_path)
+    events = []
+
+    class RecordingLock:
+        def __enter__(self):
+            events.append("acquired")
+
+        def __exit__(self, *args):
+            events.append("released")
+
+    def fail_initialization(*args):
+        events.append("init")
+        raise RuntimeError("stop after lock-scope check")
+
+    with (
+        patch("ai_cli.sync.load_sync_config", return_value=cfg),
+        patch("ai_cli.sync._staging_repo_lock", return_value=RecordingLock()),
+        patch("ai_cli.sync.init_server_bare_repo"),
+        patch("ai_cli.sync.init_staging_repo", side_effect=fail_initialization),
+    ):
+        assert sync_push([]) == 1
+
+    assert events == ["acquired", "init", "released"]
 
 
 def test_sync_pull_when_no_staging_changes_then_no_push(tmp_path):

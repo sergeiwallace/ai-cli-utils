@@ -13,6 +13,7 @@ These assert the behavioral contract of the generated bash + the regen helper.
 """
 
 import json
+import shlex
 from pathlib import Path
 
 from ai_cli.main import _write_launch_script_if_changed, _write_stable_session_script
@@ -21,7 +22,7 @@ from ai_cli.session_script import get_engine_script
 
 def _script(engine="c", **kw):
     kw.setdefault("worktree_dir", "/tmp/wt")
-    kw.setdefault("project_name", "job-pilot")
+    kw.setdefault("project_name", "myproject")
     return get_engine_script(engine, "job-1", "c-job-1", "c-job-", "job", **kw)
 
 
@@ -32,9 +33,9 @@ def test_task_list_namespace_pin_is_guarded_to_claude_engine():
     guarded = '[[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"'
     cc = _script("c")
     gg = get_engine_script("g", "job-1", "g-job-1", "g-job-", "job", worktree_dir="/tmp/wt")
-    assert guarded in cc and 'engine="c"' in cc
+    assert guarded in cc and f"engine={shlex.quote('c')}" in cc
     # Same guarded line in the Gemini template, but engine="g" makes it a no-op at runtime.
-    assert guarded in gg and 'engine="g"' in gg
+    assert guarded in gg and f"engine={shlex.quote('g')}" in gg
     # The export must never appear unguarded (which would set it for Gemini too).
     assert "export CLAUDE_CODE_TASK_LIST_ID" not in gg.replace(guarded, "")
 
@@ -54,6 +55,10 @@ def test_self_update_does_not_permanently_give_up_on_refresh_failure():
     assert '_template_version="$_current_ver"' not in s
     # Failure path retries rather than swallowing the update signal.
     assert "will retry on next restart" in s
+    # Reload requests return to the persistent pane-leader supervisor rather
+    # than replacing it with a fresh shell process.
+    assert "exit 78" in s
+    assert 'exec "' not in s[s.index("_need_reload") :]
 
 
 def test_write_stable_script_returns_false_without_metadata(monkeypatch, tmp_path):
@@ -74,7 +79,7 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
         "prefix": "c-job-",
         "project_prefix": "job",
         "worktree_dir": "/tmp/wt",
-        "project_name": "job-pilot",
+        "project_name": "myproject",
     }
     (state / "session-meta-c-job-1.json").write_text(json.dumps(meta))
 
@@ -82,7 +87,7 @@ def test_write_stable_script_regenerates_from_metadata(monkeypatch, tmp_path):
     out = state / "sessions" / "c-job-1.sh"
     assert out.exists()
     body = out.read_text(encoding="utf-8")
-    assert 'ai_name="job-1"' in body
+    assert f"ai_name={shlex.quote('job-1')}" in body
     assert 'CLAUDE_CODE_TASK_LIST_ID="$ai_name"' in body
 
 

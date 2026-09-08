@@ -108,7 +108,7 @@ tier and adds a direct `confirmed_unavailable` tier for the observed failed look
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `companion validate-doc` and must not be edited independently):
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
@@ -314,7 +314,7 @@ Roadmap + a short procedure note updated in the same commit.
 | # | Decision | Options Considered | Recommended (AI) | Chosen (Maintainer) | Diverged? | Rationale | Status |
 |---|----------|-------------------|------------------|-----------------|-----------|-----------|--------|
 | D-1 | Detection architecture / where detection runs | (a) SessionStart hook nudge only, (b) on-demand CLI only, (c) library + on-demand CLI + periodic background sweep, (d) library + on-demand CLI now, sweep deferred | (d) — N-04: was mislabeled "(a-narrowed)" pre-fix, now its own option | (d) | No | **Original rec was (c)** (crit 2 blast-radius + silent-mid-session value). Revised after Round-1 audit (AD-3): roadmap AI-CLI-118 is a P2 lightweight nudge for a once-observed quirk; an always-on sweep is speculative structural complexity (crit 5) whose only high-confidence trigger (`confirmed_unavailable`) is already in-band — ship the low-blast library + CLI, defer the sweep (crit 4 sequencing). | ✅ Approved (maintainer, 2026-07-22) |
-| D-2 | Where the periodic sweep runs (when built) | (a) new dedicated Circus watch service, (b) fold into the existing `ai quota watch` loop, (c) ai-core scheduled JobDef on Hetzner | (a) dedicated watcher — **but the sweep itself is deferred** (see D-1/AD-3) | (a) | No | **Original rec was (b)** fold-into-quota-watch. Revised after Round-1 audit (AD-3/DV-2): quota-watch is off by default and folding couples unrelated quota-scraping side effects (crit 2); if/when proactive monitoring is validated, build a dedicated watcher (a), not the fold. (c) wrong host (crit 2). | ✅ Approved (maintainer, 2026-07-22) |
+| D-2 | Where the periodic sweep runs (when built) | (a) new dedicated Circus watch service, (b) fold into the existing `ai quota watch` loop, (c) core-cli scheduled JobDef on Hetzner | (a) dedicated watcher — **but the sweep itself is deferred** (see D-1/AD-3) | (a) | No | **Original rec was (b)** fold-into-quota-watch. Revised after Round-1 audit (AD-3/DV-2): quota-watch is off by default and folding couples unrelated quota-scraping side effects (crit 2); if/when proactive monitoring is validated, build a dedicated watcher (a), not the fold. (c) wrong host (crit 2). | ✅ Approved (maintainer, 2026-07-22) |
 | D-3 | Remediation level | (a) notify-only, (b) guided restart command, (c) fully automatic unattended restart | (a) surface truthful **exit-and-relaunch** recovery steps; reject (c); defer a confirmed `session restart` command | — (spike done, awaiting the maintainer) | — (pending) | Crit 1 (reversibility) + blast radius reject (c). Revised after Round-1 audit (AD-2/DV-4): `ai c <N>` on a live session only `tmux attach`es, so the "one-command restart" was false — surface truthful steps; defer a real restart command until the restart-restores-tools premise is empirically confirmed (crit 4 sequencing). **The maintainer pushed back (2026-07-22):** exit-and-relaunch shouldn't be the steady-state answer if an in-place daemon reconnect is achievable — spun out as [AIH-335](../../../../../ai-harness/docs/roadmap/master-roadmap.md). **Spike result:** no known safe in-place reconnect found (external research + 2 corroborating GitHub issues, independently re-verified); recommendation reverts to (a), now evidenced rather than assumed. | ⏸ Spike done — awaiting the maintainer's ratification |
 | D-4 | Detection confidence model (false-positive control) | (a) restart-correlation alone, (b) three-signal boolean `disconnected_suspected`, (c) live `ToolSearch` probe, (d) reason-coded evidence-tiered model | (d): `confirmed_unavailable` / `at_risk_after_restart` / `healthy` / `no_issue_observed` / `unobservable` / `unsupported`, "latest observation wins" (N-01) — was mislabeled "(a-tiered)" pre-fix, now its own option | (d) | No | **Original rec was (b)** three-signal boolean. Revised after Round-1 audit (AD-1/DV-1): the correlation proves only "used Task* before, worked after", not a broken registry; the incident transcript has a direct failed-lookup signal the boolean ignored. Further revised after Round-2 (N-01/N-02): split `healthy` (affirmative-only) from a new `no_issue_observed` (insufficient evidence) state, and made the direct-failure signal a timestamp so a later success clears it. Reason-coded tiers are shared contract infra (crit 2) — demote correlation, add the direct tier, never degrade unobservable/unsupported to healthy/no_issue_observed. (c) infeasible. | ✅ Approved (maintainer, 2026-07-22) |
 
@@ -415,11 +415,11 @@ session *after* a daemon restart, without the session itself having to notice.
 
 - `ai quota watch` is **off by default** (`[quota_watch].auto_start = false`, DV-2), so the sweep would not run on this machine without separately opting into quota alerts; folding couples task-health to quota-scraping side effects; the loop has no per-iteration exception boundary for a new sweep (DV-2).
 
-##### (c) ai-core scheduled JobDef on Hetzner
+##### (c) core-cli scheduled JobDef on Hetzner
 
 **Pros:**
 
-- Matches the fleet's "recurring server tasks use ai-core scheduling" rule.
+- Matches the fleet's "recurring server tasks use core-cli scheduling" rule.
 
 **Cons:**
 

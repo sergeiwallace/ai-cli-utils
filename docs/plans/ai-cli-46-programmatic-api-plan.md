@@ -1,7 +1,7 @@
 ---
-title: "AI-CLI-46: Stabilize Programmatic API for aido Integration"
+title: "AI-CLI-46: Stabilize Programmatic API for companion Integration"
 category: plan
-tags: [api, programmatic, aido, versioning]
+tags: [api, programmatic, companion, versioning]
 status: complete
 ---
 
@@ -12,15 +12,15 @@ status: complete
   - [gemini module](#gemini-module)
   - [quota module](#quota-module)
 - [Implementation Steps](#implementation-steps)
-- [Version Floor for AIDO-18](#version-floor-for-aido-18)
+- [Version Floor for COMP-18](#version-floor-for-companion-18)
 - [Verification](#verification)
 - [Approval Log](#approval-log)
 
 ## Context
 
-AIDO-18 (aido's Gemini call routing through ai-cli-utils) requires a stable, versioned public API that aido can pin against in its `pyproject.toml`. Without an explicit API contract, any ai-cli-utils refactor risks silent breakage in aido's import paths.
+COMP-18 (companion's Gemini call routing through ai-cli-utils) requires a stable, versioned public API that companion can pin against in its `pyproject.toml`. Without an explicit API contract, any ai-cli-utils refactor risks silent breakage in companion's import paths.
 
-AI-CLI-46 defines that contract: specific functions are promoted to public API via `__all__`, their signatures are documented here, and a release is cut so aido can set `ai-cli-utils>=X.Y.0` with confidence.
+AI-CLI-46 defines that contract: specific functions are promoted to public API via `__all__`, their signatures are documented here, and a release is cut so companion can set `ai-cli-utils>=X.Y.0` with confidence.
 
 Most of the implementation was already completed (see Current State below). The remaining work is fixing a `__init__.__version__` mismatch and cutting the release.
 
@@ -118,11 +118,11 @@ class QuotaSnapshot:
 3. **Patch bump to v0.5.2** — bug fix only; update `pyproject.toml` + `__init__.py` + `CHANGELOG.md`.
 4. **Commit, tag `v0.5.2`, push** — GH Release workflow fires on tag push.
 5. **Publish to PyPI** — `uv publish`.
-6. **Post version floor** — `ai-cli-utils>=0.5.2` is the pin floor for AIDO-18.
+6. **Post version floor** — `ai-cli-utils>=0.5.2` is the pin floor for COMP-18.
 
-## Version Floor for AIDO-18
+## Version Floor for COMP-18
 
-Once v0.5.2 is published, aido's `pyproject.toml` should add:
+Once v0.5.2 is published, companion's `pyproject.toml` should add:
 
 ```toml
 [project]
@@ -131,7 +131,7 @@ dependencies = [
 ]
 ```
 
-And AIDO-18 import paths:
+And COMP-18 import paths:
 
 ```python
 from ai_cli.gemini import run_gemini, GeminiResult
@@ -148,4 +148,4 @@ from ai_cli.quota import read_latest_snapshot, QuotaSnapshot
 ## Approval Log
 
 - 2026-04-21, Round 1: Plan approved by user. Proceed with implementation.
-- 2026-04-21, Complete: v0.5.2 shipped. `__init__.__version__` fixed, 12 contract tests passing, AIDO-18 pin floor confirmed as `ai-cli-utils>=0.5.2`.
+- 2026-04-21, Complete: v0.5.2 shipped. `__init__.__version__` fixed, 12 contract tests passing, COMP-18 pin floor confirmed as `ai-cli-utils>=0.5.2`.

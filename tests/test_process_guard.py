@@ -22,6 +22,16 @@ class TestRealProcessGuard:
         with pytest.raises(RuntimeError, match="attempted to spawn a real `gemini` process"):
             subprocess.Popen(["gemini"])
 
+    def test_given_unmocked_ssh_process_when_run_then_fails_loudly(self):
+        """A missed remote transport mock must fail before SSH can connect."""
+        with pytest.raises(RuntimeError, match="attempted to spawn a real `ssh` process"):
+            subprocess.run(["ssh", "-G", "example.invalid"], check=False)
+
+    def test_given_unmocked_mosh_process_when_run_then_fails_loudly(self):
+        """A missed remote transport mock must fail before mosh can connect."""
+        with pytest.raises(RuntimeError, match="attempted to spawn a real `mosh` process"):
+            subprocess.run(["mosh", "--version"], check=False)
+
     def test_given_test_level_subprocess_mock_when_launch_runs_then_inner_mock_overrides_guard(self):
         expected = MagicMock(returncode=0)
         with patch("subprocess.run", return_value=expected):

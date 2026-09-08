@@ -39,7 +39,7 @@ for that research task.
 - `gemini-3.1-pro-preview` — product/tech comparisons, competitive research,
   moderate complexity
 - `gemini-3-flash-preview` — simple factual lookups, single-source verification only
-- `aido research -d thorough` — autonomous web research loop (Plan → Search → Read → Refine). Hard gate required — present prompt and wait for approval before running.
+- `companion research -d thorough` — autonomous web research loop (Plan → Search → Read → Refine). Hard gate required — present prompt and wait for approval before running.
 
 **Temporal scope (required for all prompts):**
 

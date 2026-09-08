@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -18,6 +19,7 @@ from ai_cli.main import (
     _ensure_nats_tunnel,
     _install_is_editable,
     _installed_source_fingerprint,
+    build_tmux_env_flags,
     cli,
     get_engine_script,
     trigger_background_update,
@@ -122,14 +124,14 @@ class TestCliDispatch:
                         cli()
                     assert exc.value.code == 0
 
-    def test_cli_when_handoff_check_then_calls_check_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "check"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.check_handoff") as mock_check:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_check.assert_called_once()
+    def test_cli_when_handoff_is_invoked_then_no_such_command(self, capsys):
+        """The handoff command was fully removed, not just stubbed -- confirm it's gone."""
+        with patch("sys.argv", ["ai", "handoff", "post", "example"]):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 1
+        assert "No such command" in capsys.readouterr().err
 
     def test_cli_when_memory_bad_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "memory"]):
@@ -245,6 +247,55 @@ class TestCliDispatch:
                     assert call_args[0] == "sess1"
                     assert call_args[1] == {"cpu": 50}
 
+    def test_given_generation_marked_session_when_heartbeat_is_published_then_ledger_is_written_first(self, tmp_path):
+        with patch(
+            "sys.argv",
+            ["ai", "internal", "publish-heartbeat", "session-1", '{"status": "WORKING"}', "token-1", "123"],
+        ):
+            with (
+                patch("ai_cli.config.load_config", return_value={}),
+                patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+                patch(
+                    "ai_cli.main.subprocess.run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, stdout="token-1\n", stderr=""),
+                        subprocess.CompletedProcess([], 0, stdout="123\t0\n", stderr=""),
+                    ],
+                ),
+                patch("ai_cli.stale_session_reaper.write_heartbeat", return_value=True) as write_heartbeat,
+                patch("ai_cli.messaging.NATSClient") as mock_nats,
+            ):
+                mock_nats.return_value = MagicMock()
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+
+        assert exc.value.code == 0
+        write_heartbeat.assert_called_once_with(tmp_path, "session-1", "token-1")
+
+    def test_given_dead_or_replaced_supervisor_when_heartbeat_is_published_then_ledger_is_not_written(self, tmp_path):
+        with patch(
+            "sys.argv",
+            ["ai", "internal", "publish-heartbeat", "session-1", '{"status": "WORKING"}', "token-1", "123"],
+        ):
+            with (
+                patch("ai_cli.config.load_config", return_value={}),
+                patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
+                patch(
+                    "ai_cli.main.subprocess.run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, stdout="token-1\n", stderr=""),
+                        subprocess.CompletedProcess([], 0, stdout="123\t1\n", stderr=""),
+                    ],
+                ),
+                patch("ai_cli.stale_session_reaper.write_heartbeat", return_value=True) as write_heartbeat,
+                patch("ai_cli.messaging.NATSClient", return_value=MagicMock()),
+            ):
+                with pytest.raises(SystemExit) as exc:
+                    cli()
+
+        assert exc.value.code == 0
+        write_heartbeat.assert_not_called()
+
     def test_cli_when_internal_publish_heartbeat_bad_json_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "publish-heartbeat", "sess1", "not-json"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -282,47 +333,6 @@ class TestCliDispatch:
                     subject, payload = mock_client.publish.call_args[0]
                     assert subject == "test.topic"
                     assert payload == {"key": "val"}
-
-    def test_cli_when_handoff_post_then_calls_post_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "post", "--for-machine", "hetzner", "title", "P1", "proj", "msg"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.post_handoff") as mock_post:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_post.assert_called_once_with("title", "P1", "proj", "msg", for_machine="hetzner")
-
-    def test_cli_when_handoff_post_without_for_machine_then_exits_1(self):
-        with patch("sys.argv", ["ai", "handoff", "post", "title", "P1", "proj", "msg"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-                assert exc.value.code == 1
-
-    def test_cli_when_handoff_claim_then_calls_claim_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "claim", "/tmp/file.md"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.claim_handoff") as mock_claim:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_claim.assert_called_once_with("/tmp/file.md")
-
-    def test_cli_when_handoff_complete_then_calls_complete_handoff(self):
-        with patch("sys.argv", ["ai", "handoff", "complete", "/tmp/file.md"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.handoff.complete_handoff") as mock_complete:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_complete.assert_called_once_with("/tmp/file.md")
-
-    def test_cli_when_handoff_no_subcommand_then_exits_1(self):
-        with patch("sys.argv", ["ai", "handoff"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-                assert exc.value.code == 1
 
     def test_cli_when_sync_pull_then_calls_sync_pull(self):
         with patch("sys.argv", ["ai", "sync", "pull"]):
@@ -439,22 +449,6 @@ class TestCliDispatch:
                         assert exc.value.code == 0
         output = capsys.readouterr().out
         assert "-p mp" in output
-
-    def test_cli_when_handoff_check_project_then_calls_function(self, capsys):
-        with (
-            patch("sys.argv", ["ai", "handoff", "check-project", "myapp"]),
-            patch("ai_cli.handoff.check_handoff_project") as mock_check,
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-        mock_check.assert_called_once_with("myapp")
-
-    def test_cli_when_handoff_check_project_no_args_then_exits(self):
-        with patch("sys.argv", ["ai", "handoff", "check-project"]):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 1
 
 
 class TestCliDispatchBranches:
@@ -668,9 +662,13 @@ class TestCliSessionSetupBranches:
 
     def test_cli_when_iterm2_env_set_then_passes_terminal_flags_to_tmux_new_session(self, tmp_path):
         # Env vars are passed to `new-session` (subprocess.run), not `attach-session` (execvp).
-        # Only the terminal-type flags are propagated — ITERM_SESSION_ID is NOT, since the
-        # pane is renamed by live client tty, not a stored GUID (AI-CLI-59 final).
+        # The generated supervisor must receive its current state directory and
+        # executable path even when the tmux server predates this launch.
+        # ITERM_SESSION_ID is NOT propagated because the pane is renamed by the
+        # live client tty.
         run_calls = []
+        state_home = tmp_path / "state"
+        path = os.environ["PATH"]
 
         def fake_run(cmd, *args, **kwargs):
             run_calls.append(list(cmd))
@@ -696,6 +694,8 @@ class TestCliSessionSetupBranches:
                                                 "ITERM_SESSION_ID": "w0t1p0:abc",
                                                 "LC_TERMINAL": "iTerm2",
                                                 "TERM_PROGRAM": "iTerm.app",
+                                                "PATH": path,
+                                                "XDG_STATE_HOME": str(state_home),
                                             },
                                             clear=False,
                                         ):
@@ -708,6 +708,8 @@ class TestCliSessionSetupBranches:
         assert "-e" in new_session_cmd
         assert any("LC_TERMINAL=iTerm2" in a for a in new_session_cmd)
         assert any("TERM_PROGRAM=iTerm.app" in a for a in new_session_cmd)
+        assert f"PATH={path}" in new_session_cmd
+        assert f"XDG_STATE_HOME={state_home}" in new_session_cmd
         # ITERM_SESSION_ID must NOT be propagated (tty-based rename, no stored GUID).
         assert not any("ITERM_SESSION_ID" in a for a in new_session_cmd)
 
@@ -724,6 +726,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.config.resolve_project_prefix_by_name", return_value="mp"),
             patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-mp-1", "mp-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -746,6 +749,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -777,6 +781,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -812,6 +817,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=True),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -844,6 +850,7 @@ class TestCliSessionSetupBranches:
             patch("ai_cli.session.get_project_prefix", return_value="sw"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=True),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -1056,6 +1063,8 @@ class TestCliSessionExecvp:
             # has-session returns 1 (no existing session); new-session returns 0 (success)
             if "new-session" in cmd:
                 return MagicMock(returncode=0, stdout="", stderr="")
+            if "set-window-option" in cmd or "set-option" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
             if "--git-common-dir" in cmd:
                 return MagicMock(returncode=1, stdout="", stderr="")
             if cmd[0] == "git":
@@ -1083,6 +1092,42 @@ class TestCliSessionExecvp:
                                             assert any("new-session" in c for c in run_calls)
                                             assert "attach-session" in mock_exec.call_args[0][1]
                                             mock_rename.assert_called_once_with("c-sw-1", "sw-1")
+
+    def test_given_new_session_when_created_then_enables_mouse_and_osc52_clipboard(self, tmp_path):
+        run_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if "has-session" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.argv", ["ai", "c", "1"]):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                ):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                            # See TestCliWorktreeGitPull._run_c_with_fake_subprocess's
+                                            # comment: the blanket subprocess.run mock incidentally
+                                            # answers AI-CLI-99's unrelated detect_repo_root()
+                                            # repair-backstop call too, tripping its worktree-nesting
+                                            # guard when run from a worktree.
+                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                                with patch("subprocess.run", side_effect=fake_run):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+
+        assert ["tmux", "set-window-option", "-t", "c-sw-1", "remain-on-exit", "on"] in run_calls
+        assert ["tmux", "set-option", "-t", "c-sw-1", "mouse", "on"] in run_calls
+        assert ["tmux", "set-option", "-s", "set-clipboard", "on"] in run_calls
 
 
 @pytest.mark.usefixtures("tmux_available")
@@ -1645,6 +1690,40 @@ class TestCliRegistryValidation:
 
 
 class TestCliDaemonDispatch:
+    def test_given_session_reaper_start_when_invoked_then_registers_watcher(self):
+        with (
+            patch("sys.argv", ["ai", "session-reaper", "start"]),
+            patch("ai_cli.process_manager._cmd_stale_session_reaper_start", return_value=True) as start,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        start.assert_called_once_with()
+
+    def test_given_session_reaper_stop_failure_when_invoked_then_exits_nonzero(self):
+        with (
+            patch("sys.argv", ["ai", "session-reaper", "stop"]),
+            patch("ai_cli.process_manager._cmd_stale_session_reaper_stop", return_value=False) as stop,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 1
+        stop.assert_called_once_with()
+
+    def test_given_session_reaper_run_when_invoked_then_runs_the_worker(self):
+        with (
+            patch("sys.argv", ["ai", "session-reaper", "run"]),
+            patch("ai_cli.stale_session_reaper.run_stale_session_reaper", return_value=0) as run,
+            patch("ai_cli.config.load_config", return_value={}),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli()
+
+        assert exc.value.code == 0
+        run.assert_called_once_with({})
+
     def test_cli_when_memory_watch_then_calls_memory_watch(self):
         with patch("sys.argv", ["ai", "memory", "watch"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1761,19 +1840,30 @@ class TestGetEngineScript:
     def test_get_engine_script_when_claude_then_contains_claude_commands(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
         assert "claude" in script
-        assert 'engine="c"' in script
-        assert 'ai_name="sw-1"' in script
+        assert "engine=c" in script
+        assert "ai_name=sw-1" in script
         assert "CC_TMUX_SESSION" in script
 
     def test_get_engine_script_when_gemini_then_contains_gemini_commands(self):
         script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw")
         assert "gemini" in script
-        assert 'engine="g"' in script
+        assert "engine=g" in script
         assert "GG_TMUX_SESSION" in script
 
     def test_get_engine_script_when_worktree_then_cds(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt")
-        assert "cd /tmp/wt" in script
+        assert "cd -- /tmp/wt" in script
+
+    def test_given_shell_metacharacters_when_rendering_then_worktree_is_shell_quoted(self):
+        marker = "/tmp/marker"
+        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir=f"/tmp/project; touch {marker}")
+        assert f"cd -- '/tmp/project; touch {marker}'" in script
+        # The raw value also appears once more inside the session-meta JSON blob
+        # (pre-existing metadata capture, unrelated to shell-quoting safety); that
+        # occurrence sits inside a JSON string value, and the whole blob is itself
+        # shell-quoted via shlex.quote() for its printf argument, so it is not an
+        # executable-context duplicate of the guarded cd command above.
+        assert script.count("touch /tmp/marker") == 2
 
     def test_get_engine_script_when_no_worktree_then_noop_cd(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -1799,11 +1889,11 @@ class TestGetEngineScript:
     def test_get_engine_script_when_valid_uuid_then_includes_it(self):
         valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", session_id_uuid=valid_uuid)
-        assert f'uuid="{valid_uuid}"' in script
+        assert f"uuid={valid_uuid}" in script
 
     def test_get_engine_script_when_invalid_uuid_then_clears_it(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", session_id_uuid="../../evil; rm -rf /")
-        assert 'uuid=""' in script
+        assert "uuid=''" in script
 
     def test_get_engine_script_uses_xdg_state_dir_not_tmp(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -1813,7 +1903,7 @@ class TestGetEngineScript:
 
     def test_get_engine_script_when_remote_then_execs_shell(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=True)
-        assert "exec $SHELL" in script
+        assert '"$SHELL"; exit 79' in script
 
     def test_get_engine_script_when_local_then_exits(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=False)
@@ -1832,7 +1922,10 @@ class TestGetEngineScript:
         # this host: a hardcoded one that does not kills the pane on reload.
         shell = resolve_session_shell()
         assert shell is not None and os.access(shell, os.X_OK)
-        assert f'exec "{shell}" "$_script_stable_path"' in script
+        assert '"$_supervisor_script" --ai-cli-child-body <&0 &' in script
+        assert '"$_supervisor_script" --ai-cli-child-body &' not in script
+        assert "exit 78" in script
+        assert f'exec "{shell}" "$_script_stable_path"' not in script
 
     def test_get_engine_script_includes_set_environment_after_first_run(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
@@ -1878,7 +1971,10 @@ class TestCliSessionStablePath:
 
     def test_when_new_session_then_script_written_to_stable_path(self, tmp_path):
         # has-session → 1 (no session), new-session → 0 (success)
-        self._run_cli(tmp_path, {"has-session": 1, "new-session": 0})
+        self._run_cli(
+            tmp_path,
+            {"has-session": 1, "new-session": 0, "set-window-option": 0, "set-option": 0},
+        )
         script_path = tmp_path / "sessions" / "c-sw-1.sh"
         assert script_path.exists()
         assert "# script" in script_path.read_text()
@@ -1915,27 +2011,15 @@ class TestGetEngineScriptSelfUpdate:
 class TestEngineScriptProjectName:
     def test_get_engine_script_when_project_name_set_then_included_in_template(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="ai-cli-utils")
-        assert 'project_name="ai-cli-utils"' in script
-
-    def test_get_engine_script_when_project_name_empty_then_signal_watch_not_started(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="")
-        assert 'project_name=""' in script
-
-    def test_get_engine_script_signal_watch_uses_project_name(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="my-project")
-        assert 'ai signal-watch start "$project_name"' in script
-
-    def test_get_engine_script_exit_trap_cleans_caught_file(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
-        assert "handoff-caught-$tmux_session" in script
+        assert f"project_name={shlex.quote('ai-cli-utils')}" in script
 
     def test_get_engine_script_exit_trap_cleans_session_metadata(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
         assert "session-meta-$tmux_session.json" in script
 
-    def test_get_engine_script_while_loop_logs_handoff_pickup(self):
+    def test_get_engine_script_when_generated_then_has_no_handoff_integration(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
-        assert "handoff.while_loop_pickup" in script
+        assert "handoff" not in script
 
 
 # --- Deploy / update ---
@@ -2608,42 +2692,6 @@ class TestAutoUpdateIfStale:
         assert stamp.read_text().strip() == "deadbeef"
 
 
-# --- signal-watch CLI dispatch ---
-
-
-class TestSignalWatchCliDispatch:
-    def test_cli_signal_watch_start_dispatches(self, tmp_path):
-        with (
-            patch("sys.argv", ["ai", "signal-watch", "start", "myproject", "c-sw-1"]),
-            patch("ai_cli.process_manager._cmd_signal_watch_start") as mock_start,
-            patch("ai_cli.config.load_config", return_value={}),
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-        mock_start.assert_called_once_with("myproject", "c-sw-1")
-
-    def test_cli_signal_watch_stop_dispatches(self, tmp_path):
-        with (
-            patch("sys.argv", ["ai", "signal-watch", "stop", "c-sw-1"]),
-            patch("ai_cli.process_manager._cmd_signal_watch_stop") as mock_stop,
-            patch("ai_cli.config.load_config", return_value={}),
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 0
-        mock_stop.assert_called_once_with("c-sw-1")
-
-    def test_cli_signal_watch_missing_args_exits_1(self):
-        with (
-            patch("sys.argv", ["ai", "signal-watch"]),
-            patch("ai_cli.config.load_config", return_value={}),
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli()
-            assert exc.value.code == 1
-
-
 # --- Tunnel tests ---
 
 _TUNNEL_CONFIG = {"remote": {"host": "192.0.2.1", "user": "user"}}
@@ -2984,6 +3032,13 @@ class TestSelfUpdatePreservesEditableInstall:
         # -e must precede the target, or uv reads the path as a plain requirement.
         assert cmd.index("-e") < cmd.index(str(tmp_path))
 
+    def test_given_editable_install_when_self_update_runs_then_confirms_preservation(self, tmp_path, capsys):
+        venv = self._tool_venv(tmp_path, marker=True, receipt=None)
+
+        self._run_update(tmp_path, venv)
+
+        assert "Preserving editable install" in capsys.readouterr().out
+
     def test_given_copied_install_when_self_update_runs_then_command_omits_editable(self, tmp_path):
         """Positive control for the test above: the flag is conditional, not constant."""
         venv = self._tool_venv(tmp_path, marker=False, receipt=None)
@@ -3021,7 +3076,16 @@ class TestSelfUpdatePreservesEditableInstall:
         python = _venv_python(venv)
 
         def markers():
-            return sorted(p.name for p in venv.glob("lib/python*/site-packages/*editable*"))
+            return sorted(
+                {
+                    marker.name
+                    for pattern in (
+                        "lib/python*/site-packages/*editable*",
+                        "Lib/site-packages/*editable*",
+                    )
+                    for marker in venv.glob(pattern)
+                }
+            )
 
         subprocess.run(
             [uv, "pip", "install", "--python", str(python), "-e", str(pkg)],
@@ -3064,4 +3128,86 @@ class TestSelfUpdatePreservesEditableInstall:
                 capture_output=True,
             )
 
-        assert sorted(p.name for p in venv.glob("lib/python*/site-packages/*editable*"))
+        markers = {
+            marker.name
+            for pattern in (
+                "lib/python*/site-packages/*editable*",
+                "Lib/site-packages/*editable*",
+            )
+            for marker in venv.glob(pattern)
+        }
+        assert sorted(markers)
+
+
+class TestTmuxEnvForwardingNormalisesXdgStateHome:
+    """A tmux pane must never receive an EMPTY ``XDG_STATE_HOME``.
+
+    Claude Code resolves its state base as ``XDG_STATE_HOME ?? <home>/.local/state``.
+    JavaScript's ``??`` falls back only on null/undefined, so an empty string
+    survives and ``join("", "claude", "locks")`` stays RELATIVE — CC then writes
+    its install lock under whatever directory the process is standing in. One such
+    lock was swept into git and shipped to every clone of this public package,
+    carrying its machine's absolute home path, and afterwards ``git pull`` refused
+    to overwrite the untracked copy.
+
+    The variable still has to be forwarded unconditionally, because that is what
+    clears a stale value inherited from a pre-existing tmux server. So the fix is
+    normalisation, not omission, and these tests pin both halves.
+    """
+
+    @staticmethod
+    def _value_of(flags: list[str], var: str) -> str | None:
+        for index, item in enumerate(flags):
+            if item == "-e" and flags[index + 1].startswith(f"{var}="):
+                return flags[index + 1].split("=", 1)[1]
+        return None
+
+    def test_given_an_empty_xdg_state_home_when_flags_are_built_then_an_absolute_default_is_forwarded(self):
+        """The regression itself: empty in, absolute out — never ``XDG_STATE_HOME=``."""
+        flags = build_tmux_env_flags({"XDG_STATE_HOME": "", "PATH": "/usr/bin"})
+
+        value = self._value_of(flags, "XDG_STATE_HOME")
+        assert value, "XDG_STATE_HOME must still be forwarded, so a stale server value is cleared"
+        assert Path(value).is_absolute(), f"a relative base is the whole defect, got {value!r}"
+        assert value == str(Path.home() / ".local" / "state")
+        assert "XDG_STATE_HOME=" not in flags, "the bare empty assignment must never be emitted"
+
+    def test_given_no_xdg_state_home_at_all_when_flags_are_built_then_an_absolute_default_is_forwarded(self):
+        """Unset must behave like empty: still forwarded, still absolute."""
+        flags = build_tmux_env_flags({"PATH": "/usr/bin"})
+
+        value = self._value_of(flags, "XDG_STATE_HOME")
+        assert value == str(Path.home() / ".local" / "state")
+
+    def test_given_an_explicit_xdg_state_home_when_flags_are_built_then_it_is_forwarded_verbatim(self):
+        """Negative control: a real value must not be rewritten by the normalisation.
+
+        Without this, a fix that always substituted the default would pass the two
+        tests above while silently discarding a user's configured state directory.
+        """
+        flags = build_tmux_env_flags({"XDG_STATE_HOME": "/custom/state", "PATH": "/usr/bin"})
+
+        assert self._value_of(flags, "XDG_STATE_HOME") == "/custom/state"
+
+    def test_given_other_empty_variables_when_flags_are_built_then_they_are_omitted(self):
+        """Only XDG_STATE_HOME gets the always-forward treatment.
+
+        An empty PATH is actively harmful, and the remaining variables have no
+        meaningful empty value, so emptiness must still mean "do not forward".
+        """
+        flags = build_tmux_env_flags({"PATH": "", "LC_TERMINAL": "", "TERM_PROGRAM": ""})
+
+        assert self._value_of(flags, "PATH") is None
+        assert self._value_of(flags, "LC_TERMINAL") is None
+        assert self._value_of(flags, "TERM_PROGRAM") is None
+        assert self._value_of(flags, "XDG_STATE_HOME") == str(Path.home() / ".local" / "state")
+
+    def test_given_populated_variables_when_flags_are_built_then_each_is_forwarded(self):
+        """Positive control that the forwarding works at all for the other vars."""
+        flags = build_tmux_env_flags(
+            {"PATH": "/usr/bin", "LC_TERMINAL": "iTerm2", "TERM_PROGRAM": "vscode", "XDG_STATE_HOME": "/s"}
+        )
+
+        assert self._value_of(flags, "PATH") == "/usr/bin"
+        assert self._value_of(flags, "LC_TERMINAL") == "iTerm2"
+        assert self._value_of(flags, "TERM_PROGRAM") == "vscode"

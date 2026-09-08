@@ -196,7 +196,7 @@ tabs:
       tab_color: "#2E7D32"
     root:
       dir: "~/projects/myproject"
-      command: "ai gemini -m flash"
+      command: "ai g"
 
   - name: "monitoring"
     base_profile: "Default"

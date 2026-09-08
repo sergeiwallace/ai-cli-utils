@@ -642,7 +642,7 @@ body:
 blank_issues_enabled: true
 contact_links:
   - name: Security Vulnerability
-    url: https://github.com/sergeiwallace/ai-cli-utils/blob/main/SECURITY.md
+    url: https://github.com/user/ai-cli-utils/blob/main/SECURITY.md
     about: Please report security issues privately via SECURITY.md
 ```text
 

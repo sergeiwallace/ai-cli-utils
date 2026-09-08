@@ -7,7 +7,6 @@ import pytest
 from ai_cli.main import (
     _find_aicli_project_path,
     _find_project_dir,
-    _get_handoff_queue_dir,
     _get_main_project_dir,
     _get_main_project_name,
     _get_project_prefix_by_name,
@@ -115,11 +114,6 @@ class TestProjectHelpers:
             with patch("ai_cli.config._get_main_project_name", return_value="myproject"):
                 result = _get_project_registry_path()
         assert result == toml_file
-
-    def test_get_handoff_queue_dir_when_main_dir_exists_then_returns_path(self):
-        with patch("ai_cli.config._get_main_project_dir", return_value=Path("/home/u/projects/myproject")):
-            result = _get_handoff_queue_dir()
-        assert result == Path("/home/u/projects/myproject/.handoff-queue")
 
     def test_get_project_prefix_by_name_when_found_then_returns_prefix(self, tmp_path):
         toml_file = tmp_path / "registry.toml"
@@ -568,11 +562,6 @@ class TestProjectsDirEdgeCases:
         with patch("ai_cli.config.load_config", side_effect=RuntimeError("broken")):
             result = _get_projects_dir()
         assert result == Path.home() / "projects"
-
-    def test_get_handoff_queue_dir_when_no_main_project_then_returns_none(self):
-        with patch("ai_cli.config._get_main_project_dir", return_value=None):
-            result = _get_handoff_queue_dir()
-        assert result is None
 
     def test_get_project_registry_path_when_no_main_dir_then_returns_none(self):
         with patch("ai_cli.config._get_main_project_dir", return_value=None):

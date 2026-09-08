@@ -13,10 +13,10 @@ source: "R-2 research"
 **Research:** [`docs/research/github-repo-automation.md`](../research/github-repo-automation.md)
 **Task:** AI-CLI-6
 
-<!-- AIDO-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
+<!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
-  they navigate in-window (incl. VS Code Remote-SSH). `aido toc check` validates this
-  once AIDO-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
+  they navigate in-window (incl. VS Code Remote-SSH). `companion toc check` validates this
+  once COMP-127 lands. If all-`###` proves too noisy, fall back to D5 (a) "meaningful
   `###`" — a deterministic OR-rule: include a `###` when it (1) has child `####`,
   (2) its section body ≥ ~8-10 lines, (3) its parent `##` is allowlisted (Decisions /
   Open Questions / appendices), or (4) matches a pattern (`### Decision N`, `### D\d+`);
@@ -41,7 +41,7 @@ Implement all "do now" and "do before going public" recommendations from R-2 res
 
 ## Task Breakdown
 
-> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `aido validate-doc` and must not be edited independently):
+> **AC quality rules** (`docs/procedures/task-authoring-standards.md` is AUTHORITATIVE — open it for the full/latest standard; this inline reminder is sync-checked against its canonical block by `companion validate-doc` and must not be edited independently):
 <!-- doc:ac-rules:mirror:begin -->
 - Every AC is independently testable — a test can fail if only this AC is violated.
 - Every AC is falsifiable — "works correctly" is not an AC.
@@ -166,7 +166,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 #### Step 1: Install Renovate GitHub App
 
 1. Go to <https://github.com/apps/renovate>
-2. Click "Install" and select the `sergeiwallace/ai-cli-utils` repo
+2. Click "Install" and select the `user/ai-cli-utils` repo
 3. Renovate will open an onboarding PR — the `renovate.json5` already in the repo should be detected automatically
 4. Merge or close the onboarding PR (config is already committed)
 5. Verify: Renovate opens a "Dependency Dashboard" issue in the repo
@@ -174,7 +174,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 #### Step 2: Set up Codecov
 
 1. Go to <https://codecov.io> and sign in with GitHub
-2. Add the `sergeiwallace/ai-cli-utils` repo
+2. Add the `user/ai-cli-utils` repo
 3. Copy the `CODECOV_TOKEN` from Codecov's repo settings
 4. In GitHub: repo Settings > Secrets and variables > Actions > New repository secret
 5. Name: `CODECOV_TOKEN`, Value: paste the token
@@ -182,7 +182,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 
 #### Step 3: Generate social preview image
 
-1. Go to <https://socialify.git.ci/sergeiwallace/ai-cli-utils>
+1. Go to <https://socialify.git.ci/user/ai-cli-utils>
 2. Configure: enable description, language, stars, forks, issues
 3. Download the 1280x640px image
 4. In GitHub: repo Settings > Social preview > Upload image
@@ -191,7 +191,7 @@ Remaining steps to complete before and after making the repo public. Do them in 
 
 Ask a CC session to verify these before flipping:
 
-- [ ] `grep -rn "178.104\|hetzner-ai-dev\|sergeiwallace" src/ tests/` — no personal infra references in source
+- [ ] `grep -rn "192.0.2\|hetzner-ai-dev\|user" src/ tests/` — no personal infra references in source
 - [ ] `uv tool install ai-cli-utils && ai --help` — clean install from PyPI works
 - [ ] README renders correctly on GitHub (all badges, all sections, no broken links)
 - [ ] CHANGELOG version links point to correct compare URLs
@@ -214,7 +214,7 @@ Ask a CC session to verify these before flipping:
 Run this command (failed earlier because repo was private):
 
 ```bash
-gh api repos/sergeiwallace/ai-cli-utils/rulesets -X POST --input - <<'JSON'
+gh api repos/user/ai-cli-utils/rulesets -X POST --input - <<'JSON'
 {
   "name": "main-protection",
   "target": "branch",
@@ -277,7 +277,7 @@ In Settings > Code security and analysis:
 2. **Test external clone + install:**
    ```bash
    cd /tmp
-   git clone https://github.com/sergeiwallace/ai-cli-utils.git
+   git clone https://github.com/user/ai-cli-utils.git
    cd ai-cli-utils
    uv tool install .
    ai --help
@@ -286,7 +286,7 @@ In Settings > Code security and analysis:
 4. **Verify Codecov** — check that coverage data appears at codecov.io
 5. **Add Codecov badge to README** — only if coverage > 80%:
    ```markdown
-   [![codecov](https://codecov.io/gh/sergeiwallace/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/sergeiwallace/ai-cli-utils)
+   [![codecov](https://codecov.io/gh/user/ai-cli-utils/graph/badge.svg)](https://codecov.io/gh/user/ai-cli-utils)
    ```text
 
 ## Deferred Items

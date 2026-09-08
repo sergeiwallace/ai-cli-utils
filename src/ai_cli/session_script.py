@@ -5,6 +5,7 @@ Depends on: nothing (self-contained).
 
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 
@@ -68,7 +69,6 @@ def get_engine_script(
     project_name: str = "",
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
-    config_reload_idle_secs: int = 90,
     gemini_cmd: str = "gemini",
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
@@ -76,7 +76,18 @@ def get_engine_script(
         session_id_uuid = ""
     env_var_prefix = {"c": "CC", "g": "GG", "p": "PI", "cx": "CX"}[engine]
     sandbox_flag = "-s" if sandbox else "--no-sandbox"
-    cd_cmd = f"cd {worktree_dir}" if worktree_dir else ":"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", project_prefix):
+        raise ValueError("project_prefix has an invalid format")
+    shell = {
+        "ai_name": shlex.quote(ai_name),
+        "session": shlex.quote(session),
+        "engine": shlex.quote(engine),
+        "prefix": shlex.quote(prefix),
+        "project_prefix": shlex.quote(project_prefix),
+        "uuid": shlex.quote(session_id_uuid or ""),
+        "project_name": shlex.quote(project_name),
+    }
+    cd_cmd = f"cd -- {shlex.quote(worktree_dir)}" if worktree_dir else ":"
     notify_cmd = 'ai internal notify "$tmux_session" "Agent Finished Task" 2>/dev/null || true' if notify else "true"
     try:
         from importlib.metadata import version as _pkg_version
@@ -113,67 +124,390 @@ def get_engine_script(
             "project_name": project_name,
             "iterm2_slot": iterm2_slot or "",
             "iterm2_cfg": iterm2_cfg or {},
-            "config_reload_idle_secs": config_reload_idle_secs,
             "gemini_cmd": gemini_cmd,
         }
     )
 
     return f"""
+    # The pane leader is deliberately stable.  Replaceable session bodies run as
+    # children so a hot reload can never transfer the generation lease to a new
+    # pane PID.
+    _ai_cli_child_mode=false
+    if [[ "${{1:-}}" == "--ai-cli-heartbeat-ticker" ]]; then
+      shift
+      tmux_session="$1"
+      generation_token="$2"
+      supervisor_pid="$3"
+      while true; do
+        heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' {shell["project_prefix"]} {shell["ai_name"]})
+        ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" "$generation_token" "$supervisor_pid" 2>/dev/null || true
+        sleep 30 || exit 0
+      done
+    fi
+    if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+      _ai_cli_child_mode=true
+      shift
+    fi
+    if ! $_ai_cli_child_mode; then
+      # These descriptors belong only to the supervisor that exported them.
+      # A nested launch can inherit stale values from another session; establish
+      # this supervisor's descriptors below instead of using those values.
+      unset AI_CLI_SUPERVISOR_LEASE_FD AI_CLI_SUPERVISOR_TERMINAL_FD AI_CLI_SUPERVISOR_CHILD_READY_PATH
+      tmux_session={shell["session"]}
+      ai_name={shell["ai_name"]}
+      engine={shell["engine"]}
+      _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
+      mkdir -p "$_ai_state_dir/session-leases" "$_ai_state_dir/session-heartbeats"
+      # A new supervisor starts a new Ctrl+C gesture. Replaceable children
+      # below share these files only for this supervisor's lifetime.
+      rm -f "$_ai_state_dir/session-int-escape-$tmux_session" \
+        "$_ai_state_dir/session-int-exit-$tmux_session"
+      generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
+      _reaper_evidence_enabled=false
+      _reaper_lease_fd=""
+      _supervisor_signal_model_reason=""
+      _verify_supervisor_signal_model() {{
+        # The supervisor must begin in the pane foreground group so it can
+        # promote each separately grouped child to the terminal foreground.
+        if ! set +m 2>/dev/null; then
+          _supervisor_signal_model_reason="could not disable shell job control"
+          return 1
+        fi
+        if [[ -o monitor ]]; then
+          _supervisor_signal_model_reason="shell job control remains enabled"
+          return 1
+        fi
+        if ! _supervisor_pgid=$(ps -o pgid= -p "$$" 2>/dev/null); then
+          _supervisor_signal_model_reason="could not read supervisor process group"
+          return 1
+        fi
+        if ! _terminal_pgid=$(ps -o tpgid= -p "$$" 2>/dev/null); then
+          _supervisor_signal_model_reason="could not read terminal foreground process group"
+          return 1
+        fi
+        _supervisor_pgid="${{_supervisor_pgid//[[:space:]]/}}"
+        _terminal_pgid="${{_terminal_pgid//[[:space:]]/}}"
+        if [[ ! "$_supervisor_pgid" =~ ^[0-9]+$ ]] || [[ ! "$_terminal_pgid" =~ ^[1-9][0-9]*$ ]]; then
+          _supervisor_signal_model_reason="process-group probe returned an unusable value"
+          return 1
+        fi
+        if [[ "$_supervisor_pgid" != "$_terminal_pgid" ]]; then
+          _supervisor_signal_model_reason="supervisor is not in the terminal foreground process group"
+          return 1
+        fi
+        return 0
+      }}
+      if _verify_supervisor_signal_model; then
+        _supervisor_signal_model_verified=true
+      else
+        _supervisor_signal_model_verified=false
+        printf '%s\\n' "ai-cli: stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
+      fi
+      if $_supervisor_signal_model_verified && [[ -n "$generation_token" ]] && tmux set-option -t "$tmux_session" @ai_cli_session_generation "$generation_token" 2>/dev/null; then
+        _lease_session=$(printf '%s' "$tmux_session" | base64 | tr '/+' '_-' | tr -d '=\\n')
+        _lease_generation=$(printf '%s' "$generation_token" | base64 | tr '/+' '_-' | tr -d '=\\n')
+        _lease_path="$_ai_state_dir/session-leases/${{_lease_session}}-${{_lease_generation}}.lock"
+        exec {{_reaper_lease_fd}}>"$_lease_path"
+        if ai internal acquire-generation-lease "$_reaper_lease_fd"; then
+          _reaper_evidence_enabled=true
+          export AI_CLI_SUPERVISOR_LEASE_FD="$_reaper_lease_fd"
+        else
+          _supervisor_signal_model_reason="generation lease backend unavailable"
+          printf '%s\n' "ai-cli: stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
+        fi
+      fi
+      _heartbeat_pid=""
+      _supervisor_cleanup() {{
+        [[ -n "$_heartbeat_pid" ]] && kill "$_heartbeat_pid" 2>/dev/null || true
+        [[ -n "${{_supervisor_child_ready_path:-}}" ]] && rm -f "$_supervisor_child_ready_path"
+        ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
+        rm -f "$_ai_state_dir/session-meta-$tmux_session.json" \\
+          "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session" \\
+          "$_ai_state_dir/session-int-escape-$tmux_session" "$_ai_state_dir/session-int-exit-$tmux_session"
+        ai internal cleanup-worktree "$ai_name" 2>/dev/null
+        ai internal release-color-slot "$ai_name" 2>/dev/null
+        ai internal cleanup-session-files "$ai_name" 2>/dev/null
+      }}
+      _supervisor_wait_for_child() {{
+        # `wait` is interrupted by a trapped signal in Bash and zsh. Keep
+        # waiting while the child is live so record-only supervisor signals do
+        # not start a second child or leave the first child behind.
+        _child_wait_status=0
+        while kill -0 "$_child_pid" 2>/dev/null; do
+          wait "$_child_pid"
+          _child_wait_status=$?
+        done
+        return "$_child_wait_status"
+      }}
+      _supervisor_promote_child() {{
+        # A terminal-backed child becomes its own process group in the exec
+        # wrapper. Wait for its explicit readiness acknowledgement before
+        # promoting that group, rather than racing its setpgrp() with a fixed
+        # polling window.
+        [[ -t 0 ]] || return 0
+        trap '' TTOU
+        _promotion_attempt=0
+        while (( _promotion_attempt < 3000 )); do
+          if [[ -s "$_supervisor_child_ready_path" ]]; then
+            if python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); pgid = int(sys.argv[1]); os.tcsetpgrp(0, pgid); os.killpg(pgid, signal.SIGCONT)' "$_child_pid" 2>/dev/null; then
+              rm -f "$_supervisor_child_ready_path"
+              return 0
+            fi
+          elif ! kill -0 "$_child_pid" 2>/dev/null; then
+            return 1
+          fi
+          sleep 0.01
+          _promotion_attempt=$((_promotion_attempt + 1))
+        done
+        return 1
+      }}
+      _supervisor_restore_terminal() {{
+        [[ -t 0 ]] || return 0
+        trap '' TTOU
+        python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); os.tcsetpgrp(0, int(sys.argv[1]))' "$_supervisor_pgid" 2>/dev/null
+      }}
+      _supervisor_term() {{
+        if $_supervisor_terminating; then
+          return
+        fi
+        _supervisor_terminating=true
+        if [[ -n "${{_child_pid:-}}" ]] && kill -0 "$_child_pid" 2>/dev/null; then
+          kill -TERM "$_child_pid" 2>/dev/null || true
+          _supervisor_wait_for_child || true
+        fi
+        exit 0
+      }}
+      _supervisor_terminating=false
+      _supervisor_int_count=0
+      _supervisor_winch_count=0
+      _supervisor_record_int() {{ _supervisor_int_count=$((_supervisor_int_count + 1)); }}
+      _supervisor_record_winch() {{ _supervisor_winch_count=$((_supervisor_winch_count + 1)); }}
+      trap '_supervisor_record_int' INT
+      trap '_supervisor_record_winch' WINCH
+      trap '_supervisor_term' TERM
+      trap '_supervisor_cleanup' EXIT
+      _supervisor_script="$0"
+      _supervisor_terminal_fd=""
+      if [[ -t 0 ]]; then
+        # zsh redirects a background command's fd 0 before its exec wrapper
+        # runs. Preserve the pane terminal on a second descriptor for that
+        # wrapper to restore after it has made the child a new process group.
+        exec 9<&0
+        _supervisor_terminal_fd=9
+        export AI_CLI_SUPERVISOR_TERMINAL_FD="$_supervisor_terminal_fd"
+      fi
+      if $_reaper_evidence_enabled; then
+        # A terminal-free companion owns only its timer. It starts a new session
+        # before execing the ticker so foreground-group changes cannot affect it.
+        python3 -c 'import os, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-heartbeat-ticker "$tmux_session" "$generation_token" "$$" \
+          </dev/null >/dev/null 2>&1 &
+        _heartbeat_pid=$!
+        disown "$_heartbeat_pid" 2>/dev/null || true
+      fi
+      while true; do
+        if [[ -f "$_ai_state_dir/sessions/$tmux_session.sh" ]]; then
+          _supervisor_script="$_ai_state_dir/sessions/$tmux_session.sh"
+        fi
+        _supervisor_child_ready_path=$(mktemp "$_ai_state_dir/child-ready.XXXXXX") || exit 1
+        export AI_CLI_SUPERVISOR_CHILD_READY_PATH="$_supervisor_child_ready_path"
+        # With job control disabled, Bash backgrounds a command with SIGINT and
+        # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
+        # dispositions in a short exec wrapper before the child shell starts,
+        # retain stdin explicitly, and then wait interruptibly in this shell.
+        python3 -c 'import os, signal, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); ready_path = os.environ.get("AI_CLI_SUPERVISOR_CHILD_READY_PATH"); os.isatty(0) and (os.setpgrp(), open(ready_path, "w").write("ready"), os.kill(os.getpid(), signal.SIGSTOP)); signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
+          {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body <&0 &
+        _child_pid=$!
+        if ! _supervisor_promote_child; then
+          printf '%s\n' "ai-cli: could not promote child process group to terminal foreground" >&2
+          kill -TERM "$_child_pid" 2>/dev/null || true
+          _supervisor_wait_for_child || true
+          rm -f "$_supervisor_child_ready_path"
+          exit 1
+        fi
+        _supervisor_wait_for_child
+        _child_status=$?
+        _supervisor_restore_terminal || true
+        rm -f "$_supervisor_child_ready_path"
+        if [[ -f "$_ai_state_dir/session-int-exit-$tmux_session" ]]; then
+          break
+        fi
+        # 78 requests a refreshed child after a stable-script/self-update check;
+        # 77 is clean local final exit and 79 is remote recovery-shell completion.
+        if (( _child_status == 77 || _child_status == 79 )); then
+          break
+        fi
+      done
+      tmux kill-session -t "$tmux_session" 2>/dev/null || true
+      exit 0
+    fi
     {cd_cmd}
     direnv_root="$PWD"
-    agent_direnv_blocked=false
-    agent_used_direnv=false
-    run_agent() {{
-      # direnv is an enhancement, never a precondition for starting a session —
-      # the same invariant the bare launch path (`_exec_with_direnv`) documents and
-      # enforces. Unguarded, `direnv exec` on a host without direnv makes every
-      # launch exit 127 before the agent runs, which the elapsed<3 guard below then
-      # reports as an .envrc *approval* problem — pointing at a trust prompt when
-      # the binary simply is not installed.
-      if command -v direnv >/dev/null 2>&1; then
-        agent_used_direnv=true
-        direnv exec "$direnv_root" "$@"
-      else
-        agent_used_direnv=false
-        "$@"
+    tmux_session={shell["session"]}
+    _ai_state_dir="${{XDG_STATE_HOME:-$HOME/.local/state}}/ai-cli-utils"
+    mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
+    # A managed session can restart its agent after a normal exit. Load the
+    # project environment into this persistent shell once, rather than running
+    # `direnv exec` for every replacement agent (and re-emitting .envrc output).
+    agent_direnv_initialized=false
+    active_agent_pid=""
+    _child_term() {{
+      # The supervisor relays only a supervisor-directed SIGTERM to this child.
+      # The active agent shares the terminal process group, but receives this
+      # explicit copy as well so child shutdown cannot orphan it.
+      if [[ -n "$active_agent_pid" ]] && kill -0 "$active_agent_pid" 2>/dev/null; then
+        kill -TERM "$active_agent_pid" 2>/dev/null || true
+        wait "$active_agent_pid" 2>/dev/null || true
       fi
-      agent_exit_code=$?
-      if (( agent_exit_code != 0 )) && $agent_used_direnv; then
-        # A cheap, isolated re-probe (not a redirect on the command above) — that
-        # command is a long-running interactive process (claude/gemini), and
-        # capturing its stderr for later inspection would buffer it instead of
-        # streaming to the terminal in real time. direnv's block state is
-        # deterministic given .envrc + approval state, so this probe reflects
-        # the same outcome the failed launch just hit, without touching its I/O.
-        if direnv exec "$direnv_root" true 2>&1 | grep -qE 'direnv: error.*[.]envrc is blocked'; then
-          agent_direnv_blocked=true
+      exit 143
+    }}
+    trap '_child_term' TERM
+    _child_int_deadline=0
+    _child_int_escape_file="$_ai_state_dir/session-int-escape-$tmux_session"
+    _child_int_exit_file="$_ai_state_dir/session-int-exit-$tmux_session"
+    _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+    _child_int_now=$(date +%s)
+    if [[ "$_child_saved_int_deadline" == "pending" ]]; then
+      :
+    elif [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]]; then
+      # The foreground agent may exit from the first Ctrl+C, causing this
+      # replaceable child to restart before the user can send the second one.
+      # Keep the escape window in session state so a restart or hot reload does
+      # not turn that second Ctrl+C into another first press.
+      _child_int_deadline=$((_child_int_now + 3))
+      printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
+    else
+      rm -f "$_child_int_escape_file"
+    fi
+    # A lone Ctrl+C reaches whatever is running in this foreground process
+    # group directly (the active agent handles its own single-press UX; a
+    # synchronous preflight command like `ai internal resolve-continue-target`
+    # below just dies and is retried on the next line). Without a trap here,
+    # bash's default SIGINT disposition kills THIS WRAPPER outright on that
+    # same first Ctrl+C -- and the supervisor's restart-unless-clean-exit loop
+    # then spawns a brand new child, re-running direnv init and every
+    # preflight step from scratch. If the user is still pressing Ctrl+C (as
+    # when trying to interrupt a stuck launch), each fresh child dies the same
+    # way before it can ever register a deliberate exit, producing an
+    # unbreakable crash-restart loop -- visible as the direnv "blocked"
+    # warning repeating and Ctrl+C landing inside random Python subprocess
+    # startups (AI-CLI-s5cs). Mirrors the supervisor's own double-press window
+    # (AI-CLI-56br) so a second Ctrl+C within 3s reliably exits instead.
+    _child_record_int() {{
+      _child_int_now=$(date +%s)
+      _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+      if [[ "$_child_saved_int_deadline" == "pending" ]] || \
+        ( [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]] && (( _child_int_now <= _child_saved_int_deadline )) ); then
+        rm -f "$_child_int_escape_file"
+        # zsh does not reliably honor `exit` or retain trap-local state when a
+        # trap races background-job startup or interrupts `wait`. Record the
+        # request in session state so ordinary child flow and the stable
+        # supervisor can both finish independently of child exit status.
+        printf '%s\n' "exit" > "$_child_int_exit_file"
+        if [[ -n "$active_agent_pid" ]] && kill -0 "$active_agent_pid" 2>/dev/null; then
+          kill -TERM "$active_agent_pid" 2>/dev/null || true
+          wait "$active_agent_pid" 2>/dev/null || true
         fi
-        echo "Error: agent command did not complete successfully under direnv for $direnv_root. If direnv denied or could not evaluate .envrc, run 'direnv allow $direnv_root' and correct the reported error." >&2
+        return
+      fi
+      _child_int_deadline=$((_child_int_now + 3))
+      printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
+      printf '%s\n' "ai-cli: Ctrl+C again within 3s to exit" >&2
+    }}
+    trap '_child_record_int' INT
+    run_agent() {{
+      if ! $agent_direnv_initialized; then
+        agent_direnv_initialized=true
+        # `direnv export bash` is the same shell integration mechanism used by
+        # direnv's hook.  Evaluating it here gives every restarted agent the
+        # initial environment without re-evaluating .envrc or reprinting its
+        # banner.  direnv remains optional: a failed export leaves the agent
+        # runnable, just as the bare launch path does.
+        if command -v direnv >/dev/null 2>&1; then
+          if _direnv_exports="$(direnv export bash)"; then
+            eval "$_direnv_exports"
+          else
+            echo "Warning: direnv could not load $direnv_root/.envrc — starting without the project environment." >&2
+          fi
+        fi
+      fi
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
+      fi
+      "$@" &
+      active_agent_pid=$!
+      wait "$active_agent_pid"
+      agent_exit_code=$?
+      active_agent_pid=""
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
+      fi
+      _child_int_now=$(date +%s)
+      _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+      if [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]] && \
+        (( agent_exit_code == 130 || _child_int_now <= _child_saved_int_deadline )); then
+        # Restart/reload work is not an opportunity for the user to address a
+        # live agent. In particular, zsh may spend the entire original window
+        # unwinding a SIGINT-exited agent (status 130). Give the replacement a
+        # complete escape window, while normal later exits still expire stale
+        # first presses below.
+        if (( agent_exit_code == 130 )); then
+          printf '%s\n' "pending" > "$_child_int_escape_file"
+        else
+          _child_int_deadline=$((_child_int_now + 3))
+          printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
+        fi
+      elif [[ -n "$_child_saved_int_deadline" ]]; then
+        rm -f "$_child_int_escape_file"
       fi
       return "$agent_exit_code"
     }}
     first_run=true
-    ai_name="{ai_name}"
-    engine="{engine}"
-    tmux_session="{session}"
+    ai_name={shell["ai_name"]}
+    engine={shell["engine"]}
     # If this script was exec'd by hot-reload, AI_SESSION_STARTED is set in the tmux
     # env — skip first-run-only setup so CC relaunches cleanly without re-running
-    # handoff drain, iTerm2 fleet wait, or session-broker on each auto-restart.
+    # iTerm2 fleet wait, or session-broker on each auto-restart.
     if [[ "$(tmux show-environment -t "$tmux_session" AI_SESSION_STARTED 2>/dev/null)" == "AI_SESSION_STARTED=1" ]]; then
       first_run=false
     fi
-    _template_version="{_template_version}"
-    _template_commit="{_template_commit}"
-    uuid="{session_id_uuid or ""}"
-    project_prefix="{project_prefix}"
-    project_name="{project_name}"
-    _ai_state_dir="$HOME/.local/state/ai-cli-utils"
-    mkdir -p "$_ai_state_dir/iterm2" "$_ai_state_dir/sessions"
+    _template_version={shlex.quote(_template_version)}
+    _template_commit={shlex.quote(_template_commit)}
+    uuid={shell["uuid"]}
+    project_prefix={shell["project_prefix"]}
+    project_name={shell["project_name"]}
+    # One mtime probe, GNU form FIRST, validated to be an integer.
+    #
+    # The old inline chain was `stat -f "%m" p || stat -c "%Y" p || echo 0`, a
+    # macOS-first idiom that misbehaves on GNU coreutils: there `-f` means
+    # FILESYSTEM status and `%m` is not a token, so `%m` is consumed as a
+    # filename. Measured on Linux 2026-09-06, that single command prints a
+    # multi-line filesystem report FOR THE REAL FILE on stdout, errors about
+    # `%m` on stderr, and exits 1. The non-zero exit is what made it dangerous
+    # rather than merely wrong: the `||` then ran the GNU branch too, so the
+    # captured value was the report CONCATENATED with the real mtime -- and the
+    # report embeds the live `Blocks: ... Free:` / `Inodes: ... Free:` counters.
+    # Two probes seconds apart therefore differed whenever anything on the box
+    # allocated or freed a block, so the loop-top comparison below fired on
+    # essentially every iteration: reload, exit 78, relaunch, forever.
+    #
+    # Returns a bare integer, or EMPTY when it cannot tell. Empty rather than
+    # "0" on purpose: "0" is a value, and a value compares unequal to a real
+    # mtime, which is the same false-positive that caused the loop.
+    _file_mtime() {{
+      local _fm_path="$1" _fm=""
+      _fm=$(stat -c "%Y" "$_fm_path" 2>/dev/null) || _fm=""
+      if [[ ! "$_fm" =~ ^[0-9]+$ ]]; then
+        _fm=$(stat -f "%m" "$_fm_path" 2>/dev/null) || _fm=""
+      fi
+      [[ "$_fm" =~ ^[0-9]+$ ]] || _fm=""
+      printf '%s' "$_fm"
+    }}
     # Stable script path — written by `ai c` on every launch/re-attach.
     # Mtime changes when a new version is installed and `ai c` re-attaches.
     _script_stable_path="$_ai_state_dir/sessions/$tmux_session.sh"
-    _script_start_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
-    printf '%s' {json.dumps(_meta)} > "$_ai_state_dir/session-meta-$tmux_session.json"
+    _script_start_mtime=$(_file_mtime "$_script_stable_path")
+    printf '%s' {shlex.quote(_meta)} > "$_ai_state_dir/session-meta-$tmux_session.json"
 
     # iTerm2 slot assigned by Python at launch time (collision-free lease system).
     # These variables are constant for the lifetime of this session.
@@ -190,42 +524,17 @@ def get_engine_script(
     fi
 
     if [[ "$engine" == "c" ]]; then
-      signal_file="$_ai_state_dir/cc-exit-$tmux_session"
       prompt_file="$_ai_state_dir/cc-resume-prompt-$tmux_session"
     else
-      signal_file="$_ai_state_dir/gg-exit-$tmux_session"
       reload_file="$_ai_state_dir/gg-reload-$tmux_session"
       restart_file="$_ai_state_dir/gg-restart-$tmux_session"
       prompt_file="$_ai_state_dir/gg-resume-prompt-$tmux_session"
     fi
     lock_file="$_ai_state_dir/ai-watcher-lock-$tmux_session"
-    handoff_pending_file="$_ai_state_dir/handoff-pending-$tmux_session"
-    config_hash_file="$_ai_state_dir/config-hash-$tmux_session"
-    config_changed_file="$_ai_state_dir/config-changed-$tmux_session"
-    _config_reload_idle_secs={config_reload_idle_secs}
-
-    # Files whose CHANGE should trigger an idle-restart. CLAUDE.md content is
-    # re-injected every turn (a genuinely live reload), but .claude/settings.json's
-    # `env` block is read ONLY at CC process startup — a `/compact` never re-reads it,
-    # so an override left there (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) silently stays
-    # baked into an already-running session forever unless this watcher also tracks
-    # settings.json (AI-CLI-115 — confirmed live: a session ran 2+ days past a
-    # settings.json fix with the stale env still active, because only CLAUDE.md was
-    # hashed here).
-    _config_watch_files="$HOME/projects/CLAUDE.md $(pwd)/CLAUDE.md $HOME/.claude/settings.json $(pwd)/.claude/settings.json $(pwd)/.mcp.json"
-
-    # Write initial config hash baseline for change detection
-    cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1 > "$config_hash_file"
-
-    # Clean up any stale exit signals from a previous killed session.
-    # Without this, a leftover signal_file causes the watcher to inject /exit
-    # while CC is still showing its startup UI on the very next launch.
-    rm -f "$signal_file" "$config_changed_file"
 
     export AI_TMUX_SESSION="$tmux_session"
     export {env_var_prefix}_TMUX_SESSION="$tmux_session"
     watcher_pid=""
-    signal_watch_pid=""
 
     start_watcher() {{
       if [[ -n "$watcher_pid" ]]; then
@@ -238,84 +547,8 @@ def get_engine_script(
       trap 'rm -f "$lock_file"' EXIT
       counter=0
       while true; do
-        if (( counter % 30 == 0 )); then
-          heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' "$project_prefix" "$ai_name")
-          ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" 2>/dev/null || true
-        fi
         (( counter++ ))
 
-        if [[ -f "$signal_file" ]]; then
-          # Only inject /exit when CC is at the idle empty prompt (❯ alone on the
-          # last visible line). Four layers of protection against false positives:
-          #
-          # 1. Grace period (counter < 10): skip the first 10s after watcher start.
-          #    When CC restarts with --continue, the pane still shows the previous
-          #    conversation's ❯ for 1-3s while CC loads. Without this guard, the
-          #    watcher fires injection into CC's startup TUI, causing the rewind menu.
-          #    counter resets to 0 every time start_watcher is called (top of each
-          #    while-loop iteration), which is always right before CC launches.
-          #
-          # 2. Double capture-pane: verify ❯ is stable across two back-to-back
-          #    samples before acting. A transient ❯ during startup or state
-          #    transition will fail the second check and be skipped.
-          #
-          # 3. /exit pane guard: before injecting, scan the full visible pane for
-          #    '/exit' text. If present, a prior watcher subshell (SIGTERMed between
-          #    send-keys and rm -f) already queued /exit — skip re-injection. CC will
-          #    exit from the already-queued /exit. signal_file is still cleaned up.
-          #
-          # 4. signal_file deleted after double-verify (regardless of whether /exit
-          #    was sent): rm and break are outside the /exit guard so they fire on
-          #    both inject and skip paths. Prevents signal_file from persisting when
-          #    the guard fires.
-          #
-          # C-u removed: the guard already confirms an empty prompt; C-u is
-          # redundant and has unknown behavior in CC's React/Ink TUI.
-          if (( counter >= 10 )); then
-            _sig_last=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-            if echo "$_sig_last" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-              _sig_verify=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-              if echo "$_sig_verify" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-                if ! tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -qF '/exit'; then
-                  if [[ "$engine" == "g" ]]; then
-                    tmux send-keys -t "$tmux_session" "/resume save $ai_name" C-m
-                    sleep 2
-                  fi
-                  tmux send-keys -t "$tmux_session" '/exit' C-m
-                fi
-                rm -f "$signal_file"
-                break
-              fi
-            fi
-          fi
-          # CC not at idle prompt, or within startup grace period — keep signal_file, retry next cycle
-        fi
-
-        # Config change detection (CC only, every 10s)
-        if [[ "$engine" == "c" ]] && (( counter % 10 == 0 )); then
-          _current_hash=$(cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1)
-          _last_hash=$(cat "$config_hash_file" 2>/dev/null || echo "")
-          if [[ -n "$_current_hash" && "$_current_hash" != "$_last_hash" && ! -f "$config_changed_file" ]]; then
-            date +%s > "$config_changed_file"
-          fi
-        fi
-
-        # Auto-restart when config changed and session has been idle long enough.
-        # Same grace period as signal_file path: skip first 10s to avoid acting
-        # on stale pane content from before CC finished launching.
-        if [[ -f "$config_changed_file" && ! -f "$signal_file" ]] && (( counter >= 10 )); then
-          _changed_at=$(cat "$config_changed_file" 2>/dev/null || echo 0)
-          _idle_secs=$(( $(date +%s) - _changed_at ))
-          if (( _idle_secs >= _config_reload_idle_secs )); then
-            _last_line=$(tmux capture-pane -t "$tmux_session" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
-            if echo "$_last_line" | grep -qE '^[[:space:]]*❯[[:space:]]*$'; then
-              _new_hash=$(cat $_config_watch_files 2>/dev/null | sha256sum | cut -d' ' -f1)
-              echo "$_new_hash" > "$config_hash_file"
-              rm -f "$config_changed_file"
-              touch "$signal_file"
-            fi
-          fi
-        fi
         if [[ "$engine" == "g" && -f "$reload_file" ]]; then
           rm -f "$reload_file"
           tmux send-keys -t "$tmux_session" Escape
@@ -340,16 +573,6 @@ def get_engine_script(
       watcher_pid=$!
     }}
 
-    # Kill predecessor mosh-servers for this project prefix.
-    # ai ps cron only kills score>=80 (needs 24h age), but rapid reconnects leave
-    # ~60-score suspects accumulating for hours. Current mosh-server was just spawned
-    # (<60s ago), so anything older with the same prefix is a stale predecessor.
-    while read -r _mpid _mage; do
-      [[ "$_mage" -gt 60 ]] && kill "$_mpid" 2>/dev/null || true
-    done < <(ps -ax -o pid=,etime=,args= 2>/dev/null | grep "mosh-server" | grep -- "--project-prefix {project_prefix}" | \
-      awk '{{pid=$1; etime=$2; n=split(etime,t,"[-:]"); if(n==4) s=t[1]*86400+t[2]*3600+t[3]*60+t[4]; else if(n==3) s=t[1]*3600+t[2]*60+t[3]; else s=t[1]*60+t[2]; print pid, s}}')
-    unset _mpid _mage
-
     # Auto-clean orphaned processes at session start (score >= 80, local only).
     # Runs in foreground so orphans are gone before CC launches. Suppressed
     # when process_hygiene.auto_clean is false in config.toml.
@@ -358,12 +581,6 @@ def get_engine_script(
     # Auto-start sync watch and memory watch (PID files prevent duplicates)
     ai sync watch &>/dev/null &
     ai memory watch &>/dev/null &
-
-    # Auto-start signal-watch for handoff auto-pickup (only for cc engine)
-    if [[ "$engine" == "c" && -n "$project_name" ]]; then
-      ai signal-watch start "$project_name" "$tmux_session" &>/dev/null
-      signal_watch_pid=""
-    fi
 
     # Auto-start quota-watch (idempotent — circusd skips if already registered).
     # Gated on [quota_watch] auto_start in config.toml (default off — see config.py).
@@ -444,19 +661,36 @@ def get_engine_script(
     # (anthropics/claude-code#20664 — CLAUDE_CODE_TASK_LIST_ID env var override)
     [[ "$engine" == "c" ]] && export CLAUDE_CODE_TASK_LIST_ID="$ai_name"
 
-    trap 'kill "$watcher_pid" 2>/dev/null; ai signal-watch stop "$tmux_session" &>/dev/null; rm -f "$lock_file" "$_ai_state_dir/handoff-caught-$tmux_session" "$_ai_state_dir/session-meta-$tmux_session.json" "$config_hash_file" "$config_changed_file"; ai internal cleanup-worktree "$ai_name" 2>/dev/null; ai internal release-color-slot "$ai_name" 2>/dev/null; ai internal cleanup-session-files "$ai_name" 2>/dev/null' EXIT
+    # Only the persistent supervisor owns final cleanup.  A child may be replaced
+    # many times, so its EXIT trap can stop only its per-child monitor.
+    trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
 
     while true; do
+      # A double Ctrl+C can be recorded by a prior replaceable child. Honor it
+      # before any per-launch preflight, especially direnv initialization.
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
+      fi
+      _child_saved_int_deadline=$(cat "$_child_int_escape_file" 2>/dev/null || echo "")
+      if [[ "$_child_saved_int_deadline" == "pending" ]]; then
+        :
+      elif [[ "$_child_saved_int_deadline" =~ ^[0-9]+$ ]]; then
+        _child_int_now=$(date +%s)
+        _child_int_deadline=$((_child_int_now + 3))
+        printf '%s\n' "$_child_int_deadline" > "$_child_int_escape_file"
+      fi
       # Hot-reload: if `ai c` wrote a fresh script to the stable path (e.g. after
       # `ai update`), exec it now so new template takes effect on this CC restart.
       # Runs at loop top so the running CC process is undisturbed; takes effect on
       # the restart after CC exits.  AI_SESSION_STARTED guard in the new script
       # ensures first_run=false so no duplicate setup runs.
       if [[ -f "$_script_stable_path" ]]; then
-        _cur_mtime=$(stat -f "%m" "$_script_stable_path" 2>/dev/null || stat -c "%Y" "$_script_stable_path" 2>/dev/null || echo "0")
-        if [[ "$_cur_mtime" != "$_script_start_mtime" && "$_cur_mtime" != "0" ]]; then
+        _cur_mtime=$(_file_mtime "$_script_stable_path")
+        # Fail CLOSED: an unknown mtime on either side means "do not reload".
+        # Reading an unmeasurable probe as "changed" is what looped forever.
+        if [[ -n "$_cur_mtime" && -n "$_script_start_mtime" && "$_cur_mtime" != "$_script_start_mtime" ]]; then
           echo "ai-cli session script updated — reloading..."
-          exec "{_session_shell}" "$_script_stable_path"
+          exit 78
         fi
       fi
       start_watcher
@@ -483,19 +717,12 @@ def get_engine_script(
         timeout 20 python3 scripts/session-broker.py --engine "$engine" &>/dev/null &
       fi
 
-      # On first run: synchronously drain local queue + NATS before launching CC.
-      # Writes prompt_file if a pending handoff exists (local or cross-machine via NATS).
-      # CC then launches with --continue on the task — zero user input required.
-      if $first_run && [[ "$engine" == "c" && -n "$project_name" && ! -f "$prompt_file" ]]; then
-        timeout 8 ai internal handoff-drain "$project_name" "$tmux_session" 2>/dev/null || true
-      fi
-
       # Pre-launch settings override. Some Claude Code feature checks resolve
       # once, very early in process startup, before a same-process settings
       # change (e.g. one written by a SessionStart hook) can influence them.
       # Writing the override here, before the agent process starts at all,
       # sidesteps that ordering entirely instead of racing it. Runs on every
-      # launch and every --continue restart, not just first run, since it sits
+      # launch and every restart, not just first run, since it sits
       # ahead of every run_agent invocation below.
       if [[ "$engine" == "c" ]]; then
         python3 -c "
@@ -514,9 +741,8 @@ with open(path, 'w') as f:
 " 2>/dev/null || true
       fi
 
-      # Resolve before every Claude Code launch.  Claude Code's bare
-      # --continue chooses the newest transcript in the directory, so it is
-      # only safe after this resolver found the exact current customTitle.
+      # Resolve before every Claude Code launch so its exact transcript UUID can
+      # be passed to --resume.
       if [[ "$engine" == "c" ]]; then
         matched_file=$(ai internal resolve-continue-target "$PWD" "$ai_name")
         resolve_status=$?
@@ -527,15 +753,16 @@ with open(path, 'w') as f:
         rm -f "$prompt_file"
         if [[ "$engine" == "c" ]]; then
           if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
-            touch "$matched_file" 2>/dev/null
-            run_agent claude $claude_perms_flag --continue "$resume_msg" --name "$ai_name"
+            session_id="${{matched_file##*/}}"
+            session_id="${{session_id%.jsonl}}"
+            run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name" "$resume_msg"
           else
             run_agent claude $claude_perms_flag --name "$ai_name" "$resume_msg"
           fi
         elif [[ "$engine" == "g" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
-          else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
+      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
@@ -551,18 +778,18 @@ with open(path, 'w') as f:
       else
         if [[ "$engine" == "c" ]]; then
           # Find the most recent conversation matching $ai_name by customTitle.
-          # The shared resolver checks the session registry before allowing a
-          # touch + --continue.  A live transcript cannot be resumed safely:
-          # Claude Code may silently continue an unrelated older transcript.
+          # The shared resolver checks the session registry before returning its
+          # transcript UUID. A live transcript cannot be resumed safely.
           if [[ $resolve_status -eq 0 && -n "$matched_file" ]]; then
-            touch "$matched_file" 2>/dev/null
-            run_agent claude $claude_perms_flag --continue --name "$ai_name"
+            session_id="${{matched_file##*/}}"
+            session_id="${{session_id%.jsonl}}"
+            run_agent claude $claude_perms_flag --resume "$session_id" --name "$ai_name"
           else
             run_agent claude $claude_perms_flag --name "$ai_name"
           fi
         elif [[ "$engine" == "g" ]]; then
-          if [[ -n "$uuid" ]]; then run_agent {gemini_cmd} -y {sandbox_flag} -r "$uuid"
-          else run_agent {gemini_cmd} -y {sandbox_flag} -i "/resume load $ai_name"
+      if [[ -n "$uuid" ]]; then run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -r "$uuid"
+      else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         elif [[ "$engine" == "p" ]]; then
           if $first_run; then run_agent pi --name "$ai_name"
@@ -573,6 +800,12 @@ with open(path, 'w') as f:
           else run_agent codex resume --last
           fi
         fi
+      fi
+
+      # Keep final-exit control flow outside the INT trap. In zsh, an exit
+      # requested by a trap interrupting `wait` can be deferred indefinitely.
+      if [[ -f "$_child_int_exit_file" ]]; then
+        exit 77
       fi
 
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
@@ -600,20 +833,10 @@ with open(path, 'w') as f:
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
-        if $agent_direnv_blocked; then
-          echo "AI CLI stopped because direnv blocked $direnv_root/.envrc. Run 'direnv allow $direnv_root' in another terminal, then run 'ai $engine $ai_name' to relaunch."
-        fi
         echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
         break
       fi
       _iterm2_status "resuming" "$_session_type" "$tmux_session"
-      if [[ -f "$handoff_pending_file" ]]; then
-        pending_msg=$(cat "$handoff_pending_file")
-        rm -f "$handoff_pending_file"
-        echo "$pending_msg" > "$prompt_file"
-        printf '{{"event":"handoff.while_loop_pickup","session":"%s","ts":%s}}\n' \
-          "$tmux_session" "$(date +%s)" >> "$_ai_state_dir/handoff-events.jsonl" 2>/dev/null || true
-      fi
       # Self-update: if ai-cli was reinstalled/updated, exec a fresh template so new
       # changes take effect on this restart. exec replaces only this bash process
       # inside the tmux window; mosh connects to the tmux session (not this PID).
@@ -635,20 +858,21 @@ with open(path, 'w') as f:
         echo "ai-cli updated — reloading session template..."
         _refresh_script=$(ai internal refresh-template "$tmux_session" 2>/dev/null)
         if [[ -n "$_refresh_script" && -f "$_refresh_script" ]]; then
-          exec "{_session_shell}" "$_refresh_script"
+          exit 78
         elif [[ -f "$_script_stable_path" ]]; then
           # Fall back to the stable script `ai update` rewrote for this session.
-          exec "{_session_shell}" "$_script_stable_path"
+          exit 78
         else
           # Do NOT advance _template_version/_template_commit on failure — a transient
           # refresh error must not permanently disable self-update. Retry next restart.
           echo "Template refresh failed — will retry on next restart (or run 'ai c $ai_name')."
         fi
       fi
-      echo "Resuming... (Ctrl-C to exit)"
-      sleep 0.5 || break
+      # The persistent supervisor, not this replaceable child, owns restarts.
+      # Returning resets child-local monitor state before the next agent launch.
+      exit 0
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
-    {('echo "Session ended. Exit shell to close tmux session."; exec $SHELL') if is_remote else "exit 0"}
+    {('echo "Session ended. Exit shell to close tmux session."; "$SHELL"; exit 79') if is_remote else "exit 77"}
     """

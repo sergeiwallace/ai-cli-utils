@@ -3,7 +3,7 @@ title: "ai c silently resumes the wrong (older, unrelated) session when the inte
 category: bug
 tags: [bug, ai-cli, claude-code, session-resume, continue, background-agent]
 status: diagnosed
-source: "aido-1-session-2026-08-12"
+source: "companion-1-session-2026-08-12"
 template_version: "bug-1.0.0"
 task: AI-CLI-210
 ---
@@ -121,7 +121,7 @@ Two separable problems:
 ## Appendix: Evidence
 
 Two transcripts, same project directory
-(`-Users-sergeiwallace-projects-sergei--worktrees-sw-6`), only two candidates
+(`-Users-user-projects-user--worktrees-sw-6`), only two candidates
 total:
 
 ```

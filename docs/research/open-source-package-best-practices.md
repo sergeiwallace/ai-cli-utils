@@ -53,8 +53,8 @@ Place badges on a single line or two lines at most, immediately below the title.
 ```markdown
 [![PyPI version](https://img.shields.io/pypi/v/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
 [![Python versions](https://img.shields.io/pypi/pyversions/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
-[![License](https://img.shields.io/pypi/l/ai-cli-utils)](https://github.com/sergeiwallace/ai-cli-utils/blob/main/LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/sergeiwallace/ai-cli-utils/ci.yml?label=CI)](https://github.com/sergeiwallace/ai-cli-utils/actions)
+[![License](https://img.shields.io/pypi/l/ai-cli-utils)](https://github.com/user/ai-cli-utils/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/user/ai-cli-utils/ci.yml?label=CI)](https://github.com/user/ai-cli-utils/actions)
 [![Downloads](https://img.shields.io/pypi/dm/ai-cli-utils)](https://pypi.org/project/ai-cli-utils/)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 ```text
@@ -316,10 +316,10 @@ classifiers = [
 keywords = ["cli", "tmux", "ai", "claude", "gemini", "session-management"]
 
 [project.urls]
-Homepage = "https://github.com/sergeiwallace/ai-cli-utils"
-Repository = "https://github.com/sergeiwallace/ai-cli-utils"
-Issues = "https://github.com/sergeiwallace/ai-cli-utils/issues"
-Changelog = "https://github.com/sergeiwallace/ai-cli-utils/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/user/ai-cli-utils"
+Repository = "https://github.com/user/ai-cli-utils"
+Issues = "https://github.com/user/ai-cli-utils/issues"
+Changelog = "https://github.com/user/ai-cli-utils/blob/main/CHANGELOG.md"
 ```text
 
 **Key points:**

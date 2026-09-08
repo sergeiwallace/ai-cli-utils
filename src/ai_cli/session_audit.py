@@ -354,9 +354,11 @@ def adopt_ready(
 ) -> tuple[list[tuple[SessionRecord, AdoptionResult | AdoptionError]], list[tuple[SessionRecord, str]]]:
     """Adopt everything :func:`triage` cleared, delegating entirely to ``session_adopt``.
 
-    ``source_root`` is the working directory the transcript itself recorded — this
-    is what makes a session living in an agent worktree adoptable without anyone
-    supplying its path. A refusal is recorded against its session and the batch
+    ``source_root`` remains the working directory the transcript recorded so
+    migration can rewrite matching cwd fields. ``source_project_dir`` is the
+    physical directory the audit found the transcript in; it is authoritative
+    for locating the transcript when its historical cwd is stale or uses a
+    legacy slug. A refusal is recorded against its session and the batch
     continues.
     """
     ready, skipped = triage(report)
@@ -371,6 +373,7 @@ def adopt_ready(
                         record.repo_root,
                         record.title,
                         source_root=Path(record.cwd),
+                        source_project_dir=record.project_dir,
                         dry_run=dry_run,
                         claude_home=claude_home,
                         proc_dir=proc_dir,

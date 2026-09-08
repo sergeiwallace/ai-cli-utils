@@ -385,7 +385,7 @@ read back `sw-3` via the real `ai internal set-iterm2-name` path.
 iTerm2 shows a popup: **"Dynamic Profiles file contains invalid JSON"** for `ai-cli-session-<name>.json` immediately after or during `ai c N` session launch. The file on disk is valid JSON when inspected after the fact. Reported 2026-04-29 with the following logs:
 
 ```
-[2026-04-29 14:21:19] Error in /Users/sergeiwallace/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-session-sw-1.json: Dynamic Profiles file contains invalid JSON
+[2026-04-29 14:21:19] Error in /Users/user/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-session-sw-1.json: Dynamic Profiles file contains invalid JSON
 [2026-04-29 14:21:19] Error loading dynamic profiles: (null)
 ```
 
@@ -395,7 +395,7 @@ iTerm2 shows a popup: **"Dynamic Profiles file contains invalid JSON"** for `ai-
 
 This is a race condition inherent to non-atomic file writes on macOS FSEvents-monitored directories. The file is valid JSON once the write completes, but that's after iTerm2 has already seen the intermediate state.
 
-A secondary issue appears in the logs: hundreds of `[DynamicProfiles] Couldn't load /Users/sergeiwallace/Library/Application Support/iTerm2/DynamicProfiles/ai-core-profiles.json — no such file or directory` entries. This is a stale reference in iTerm2's preferences from before the ai-core→ai-core rename. It is a separate iTerm2 configuration issue (not a code bug) — remove the stale entry by deleting the `ai-core-profiles.json` path from iTerm2 preferences or by creating a redirect file.
+A secondary issue appears in the logs: hundreds of `[DynamicProfiles] Couldn't load /Users/user/Library/Application Support/iTerm2/DynamicProfiles/core-cli-profiles.json — no such file or directory` entries. This is a stale reference in iTerm2's preferences from before the core-cli→core-cli rename. It is a separate iTerm2 configuration issue (not a code bug) — remove the stale entry by deleting the `core-cli-profiles.json` path from iTerm2 preferences or by creating a redirect file.
 
 ### Fix (2026-04-29, AI-CLI-84)
 

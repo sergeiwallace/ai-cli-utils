@@ -113,7 +113,7 @@ Layer 2: NATS → ntfy (Hetzner-side, 1-3s)
   ┌──────────────┐    NATS event    ┌─────────────┐    ntfy    ┌──────────┐
   │ ai-cli       │ ───────────────→ │ notification│ ─────────→ │ ntfy.    │
   │ watcher      │                  │ gateway     │            │ host     │
-  └──────────────┘                  └─────────────┘            │ wallace  │
+  └──────────────┘                  └─────────────┘            │ user     │
                                                                 │ .com     │
   Already publishes session events via:                        └────┬─────┘
   - ai internal publish-event                                      │

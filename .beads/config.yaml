@@ -7,7 +7,6 @@
 # If not set, bd init will auto-detect from directory name
 # Example: issue-prefix: "myproject" creates issues like "myproject-1", "myproject-2", etc.
 issue-prefix: "AI-CLI"
-
 # Use no-db mode: JSONL-only, no Dolt database
 # When true, .beads/issues.jsonl is the only local store
 # no-db: false
@@ -64,10 +63,17 @@ issue-prefix: "AI-CLI"
 # Secret keys (stored in this file but prefer env vars to avoid git exposure):
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
-
-sync.remote: "git+ssh://git@github.com/sergeiwallace/ai-cli-utils.git"
+sync.remote: "git+ssh://gh-sergeiwallace-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
 export:
     auto: true
-    git-add: true
+    # AIH-bqtzw / AIH-7ls8a. bd's auto-export stages the mirror with a `git add` under a
+    # hardcoded 5s timeout. On EFS under load that is routinely exceeded, and a killed
+    # `git add` leaves an orphaned .git/index.lock that blocks EVERY later git operation in
+    # this repo, for every session. Measured firing three times on 2026-09-07.
+    #
+    # Suppresses STAGING only: `auto: true` above still writes .beads/issues.jsonl, so the
+    # mirror converges and the divergence gates keep seeing fresh JSONL. Set here rather
+    # than via BD_EXPORT_GIT_ADD because an env var reaches only the callers we wired.
+    git-add: false
 sync:
-    remote: "git+ssh://git@github.com/sergeiwallace/ai-cli-utils.git"
+    remote: "git+ssh://gh-sergeiwallace-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
