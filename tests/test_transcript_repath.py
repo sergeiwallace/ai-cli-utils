@@ -363,7 +363,16 @@ def test_repath_project_dir_collision_refuses(tmp_path):
 
 
 def test_repath_project_dir_malformed_jsonl_produces_error(tmp_path):
-    """A file with malformed JSONL produces an error and no output."""
+    """A malformed line is reported AND salvaged; the file is still written.
+
+    This test previously asserted the opposite of its last two lines -- that the
+    destination file must NOT exist. That behaviour was measured losing three whole
+    live-session transcripts (44 MB, 142 MB, 386 MB) plus a subagents/ subtree during
+    the SageMaker-to-EC2 migration, each to a single line torn by being appended to
+    mid-copy. The reporting half was never the problem and is unchanged; the discard is
+    what went. Full rationale and per-line cases:
+    tests/test_transcript_repath_torn_line.py
+    """
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
@@ -372,12 +381,23 @@ def test_repath_project_dir_malformed_jsonl_produces_error(tmp_path):
     new_dir = tmp_path / "new-proj"
     result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
 
-    # Should have an error
+    # Still reported, with the offending line named.
     assert len(result.errors) > 0
-    assert "malformed" in result.errors[0].lower() or "json" in result.errors[0].lower()
+    assert "unparseable" in result.errors[0].lower() or "json" in result.errors[0].lower()
+    assert result.lines_unparsed == 1
 
-    # The destination file should not exist (no partial write)
-    assert not (new_dir / "session.jsonl").exists()
+    # And the transcript survives, both lines intact: the parseable one repathed, the
+    # unparseable one carried through verbatim.
+    out = new_dir / "session.jsonl"
+    assert out.is_file()
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    # Asserted semantically, not byte-for-byte: a parseable line is re-serialised
+    # through json.dumps, so its whitespace is normalised (`{"cwd":"..."}`, no space
+    # after the colon). That is pre-existing round-trip behaviour, unrelated to salvage.
+    assert json.loads(lines[0]) == {"cwd": "/new/root"}
+    # The unparseable line, by contrast, is passed through untouched byte-for-byte.
+    assert lines[1] == "not json"
 
 
 def test_repath_all_detects_same_destination_collision(tmp_path):
