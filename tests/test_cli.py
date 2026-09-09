@@ -55,7 +55,21 @@ def _worktree_with_envrc(tmp_path, ai_name):
 
 @pytest.fixture
 def tmux_available():
-    """Declare tmux availability for unit tests that exercise its command path."""
+    """Declare tmux availability for unit tests that exercise its command path.
+
+    Availability means **runnable**, not merely on PATH: the launcher decides
+    tmux-vs-bare by executing tmux, so a fixture that only faked ``which`` left
+    these tests reading the host's real tmux for the version answer. On a machine
+    whose tmux cannot load a shared library that made the launch degrade to bare
+    and every tmux assertion below fail — a property of the machine, not of the
+    code under test (AI-CLI-i2ih).
+
+    The version answer goes through ``tmux_setup._probe_output``, the module's own
+    one-command seam, rather than the global ``subprocess.run``: patching that
+    global here would collide with the per-test mocks these same tests install.
+    No server version is reported, which is the normal state of a host with no
+    session running and is not a client/server disagreement.
+    """
     original_which = shutil.which
 
     def fake_which(command, *args, **kwargs):
@@ -63,7 +77,13 @@ def tmux_available():
             return "/usr/bin/tmux"
         return original_which(command, *args, **kwargs)
 
-    with patch("ai_cli.main.shutil.which", side_effect=fake_which):
+    def fake_probe(argv, timeout):
+        return "tmux 3.7c" if argv[:2] == ["tmux", "-V"] else None
+
+    with (
+        patch("ai_cli.main.shutil.which", side_effect=fake_which),
+        patch("ai_cli.tmux_setup._probe_output", side_effect=fake_probe),
+    ):
         yield
 
 

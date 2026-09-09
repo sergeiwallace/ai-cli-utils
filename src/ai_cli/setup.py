@@ -40,13 +40,33 @@ def run_setup(cwd: Path | None = None) -> int:
         print("Error: not inside a git repository", file=sys.stderr)
         return 1
 
-    # Install-time direnv bootstrap. This is the cross-platform entry point --
-    # setup.sh covers the same ground but is bash-only, so it never runs for a
-    # PowerShell user. Non-fatal by design: run_setup's job is CLAUDE.md, and a
-    # host without direnv still gets a correct config.
+    # Install-time native-dependency bootstrap. This is the cross-platform entry
+    # point -- setup.sh covers the same ground but is bash-only, so it never runs
+    # for a PowerShell user. Non-fatal by design: run_setup's job is CLAUDE.md,
+    # and a host without direnv still gets a correct config.
     from .direnv_setup import ensure_direnv
 
     ensure_direnv(repo_root)
+
+    # tmux, same contract, one extra requirement: verify it EXECUTES, never that
+    # `which tmux` answers (AI-CLI-i2ih AC-1). A tmux on PATH that cannot load
+    # its own shared libraries silently disables the launcher's whole
+    # detach/reattach story, and an install that only checked for the file
+    # reported success throughout. ensure_tmux repairs the loader path where it
+    # can, attempts one unattended install otherwise, and prints the soname plus
+    # a concrete remedy when neither works (AC-2).
+    #
+    # Wrapped because this is an optional enhancement and the install is not:
+    # ensure_tmux is non-raising by contract, and an install that died inside its
+    # own tmux preflight would be a strictly worse outcome than a missing tmux.
+    # On Windows there is no native tmux to provision, and ensure_tmux's empty
+    # candidate list is what makes that a quiet no-op rather than an error (AC-4).
+    try:
+        from .tmux_setup import ensure_tmux
+
+        ensure_tmux()
+    except Exception as exc:
+        print(f"note: could not verify tmux ({exc}); sessions will fall back to bare mode", file=sys.stderr)
 
     claude_md = repo_root / "CLAUDE.md"
     claude_full_md = repo_root / "CLAUDE-full.md"

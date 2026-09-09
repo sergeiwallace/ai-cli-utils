@@ -2364,33 +2364,25 @@ def _do_session_launch(
     # from a missing binary from a failed install.
     tmux_reason = "tmux is the default session mode"
     tmux_auto_installed: str | None = None
+    # Bare because tmux turned out unusable, as opposed to bare because it was
+    # asked for. The two need different reports: a requested bare launch must
+    # invoke tmux zero times, while a degraded one has already invoked it and owes
+    # the operator the reason it could not be used.
+    tmux_degraded = False
     if bare:
         tmux_reason = "--bare requested"
     if _tmux_setup.config_opts_out(config):
         bare = True
         tmux_reason = "[session] use_tmux = false in config.toml"
 
-    if not bare and not _tmux_setup.tmux_present():
-        # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
-        # so fall straight through to bare without a notice; every other platform
-        # gets one install attempt and then the same fallback, loudly.
-        if sys.platform == "win32":
-            bare = True
-            tmux_reason = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
-        else:
-            _tmux_install = _tmux_setup.ensure_tmux()
-            bare = not _tmux_install.installed
-            if _tmux_install.installed:
-                tmux_auto_installed = _tmux_install.tool
-            else:
-                tmux_reason = "tmux is absent and could not be installed unattended"
-
-    # The report itself is emitted further down, AFTER input validation: a launch
-    # rejected for a bad --project-prefix must reach no probe at all, which is the
-    # no-side-effect-before-rejection contract test_session_launch_integration
-    # pins. On Windows with no tmux the fallback is deliberately silent (see
-    # above), so suppress it there rather than adding a notice to the one path
-    # that is documented not to have one.
+    # The runnability preflight and the report are both emitted further down,
+    # AFTER input validation: a launch rejected for a bad --project-prefix must
+    # reach no probe at all, which is the no-side-effect-before-rejection contract
+    # test_session_launch_integration pins. Only the config opt-out above is
+    # resolved this early, because reading a dict spawns nothing.
+    # On Windows with no tmux the fallback is deliberately silent (see below), so
+    # suppress the report there rather than adding a notice to the one path that
+    # is documented not to have one.
     # Not for a remote dispatch either: the tmux that will host the session lives
     # on the REMOTE host, so reporting the local binary's version would state a
     # fact about the wrong machine.
@@ -2466,17 +2458,61 @@ def _do_session_launch(
         except _config.ProjectPrefixError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-    # One block per launch, now that the inputs are known good: presence, path,
-    # client version, the running server's version, the resolved mode and its
-    # reason. stderr so it never contaminates anything parsing stdout. Client and
-    # server are separate lines on purpose -- the server answers every format
-    # query, so a client-only version would state a compatibility that may not
-    # hold mid-upgrade.
+    # Now that the inputs are known good, resolve whether tmux can actually host
+    # this session. The question is whether tmux RUNS, not whether it is on PATH:
+    # conflating those is what let a tmux whose shared library had vanished with a
+    # rebuilt container filesystem pass this preflight, report "launching inside
+    # tmux", get a worktree created and synchronized, and only then die at
+    # `tmux new-session` on the loader's own error (AI-CLI-i2ih). Resolving it
+    # here means an unusable tmux degrades to bare BEFORE anything exists, which
+    # is the same ordering the version-mismatch refusal below is built on.
+    # Not for a remote dispatch, for the same reason the report below is skipped
+    # there: the tmux that will host the session lives on the REMOTE host, so the
+    # local binary's health says nothing about whether this launch can work, and
+    # degrading to bare over it would be a decision about the wrong machine.
+    if not bare and not remote and not _tmux_setup.tmux_runs():
+        # Windows has no native tmux to install (it runs under WSL/MSYS2/Cygwin),
+        # so fall straight through to bare without a notice; every other platform
+        # gets a repair-then-install attempt and then the same fallback, loudly.
+        if sys.platform == "win32":
+            bare = True
+            tmux_reason = "no native tmux on Windows (it runs under WSL/MSYS2/Cygwin)"
+        else:
+            _tmux_present_before = _tmux_setup.tmux_present()
+            _tmux_install = _tmux_setup.ensure_tmux()
+            # Degrade on `unusable`, never on `not installed`. The difference is
+            # positive evidence: a tmux absent from PATH, or one that names a
+            # shared library it cannot load, is established to be unusable. A tmux
+            # that simply did not answer `-V` in the expected shape is not, and
+            # trading detach/reattach away over an unparsed version string would
+            # be a worse bug than the one this preflight exists to catch.
+            bare = _tmux_install.unusable
+            tmux_degraded = bare
+            if _tmux_install.installed and _tmux_install.tool != "loader-path":
+                # Only a package-manager route is an install. The loader repair
+                # puts nothing on the machine, and it has already printed its own
+                # accurate line naming the library and the directory -- reporting
+                # it as "auto-installed via loader-path" claimed a mutation that
+                # never happened.
+                tmux_auto_installed = _tmux_install.tool
+            elif _tmux_install.unusable and _tmux_present_before:
+                tmux_reason = "tmux is installed but cannot load a shared library it needs"
+            elif _tmux_install.unusable:
+                tmux_reason = "tmux is absent and could not be installed unattended"
+
+    # One block per launch: presence, path, client version, the running server's
+    # version, the resolved mode and its reason. stderr so it never contaminates
+    # anything parsing stdout. Client and server are separate lines on purpose --
+    # the server answers every format query, so a client-only version would state
+    # a compatibility that may not hold mid-upgrade.
     if tmux_report_wanted:
         # A bare launch queries no version: it must invoke tmux zero times,
         # which test_bare_worktree pins and which is the right contract --
-        # bare mode has already decided tmux is not part of this session.
-        _tmux_report = _tmux_setup.probe(query_versions=not bare)
+        # bare mode has already decided tmux is not part of this session. A
+        # DEGRADED bare launch is the exception: it reached tmux already, and
+        # reporting "version not queried" for a binary we just watched fail would
+        # hide the one fact the operator needs.
+        _tmux_report = _tmux_setup.probe(query_versions=not bare or tmux_degraded)
         for _tmux_line in _tmux_setup.report_lines(
             report=_tmux_report,
             bare=bare,
@@ -3471,17 +3507,31 @@ def cmd_doctor(dry_run):
     config = _config.load_config()
     root = Path.cwd()
 
-    # tmux is reported, never installed here: `[session] use_tmux = false` and
-    # -b/--bare are both legitimate permanent answers, so its absence is not a
-    # defect. Being on PATH is reported separately from actually running, because
-    # a tmux that resolves and then dies on a missing shared library used to read
-    # as `OK tmux` while no session could start.
+    # tmux is never *installed* here: `[session] use_tmux = false` and -b/--bare
+    # are both legitimate permanent answers, so its absence is not a defect. A
+    # broken loader path is a different matter — the binary is there and the
+    # operator wants it — so a present-but-unrunnable tmux does get the repair,
+    # which installs nothing and is the same one every launch performs.
+    #
+    # Being on PATH is reported separately from actually running, because a tmux
+    # that resolves and then dies on a missing shared library used to read as
+    # `OK tmux` while no session could start (AI-CLI-d89q).
     tmux_note = "optional; -b/--bare and use_tmux=false opt out"
-    if _tmux_setup.tmux_present() and not _tmux_setup.tmux_runs():
-        tmux_note = "on PATH but `tmux -V` fails; launches fall back to bare mode"
+    tmux_ok = _tmux_setup.tmux_runs()
+    if not tmux_ok and _tmux_setup.tmux_present():
+        repair = _tmux_setup.repair_tmux_loader_path()
+        tmux_ok = repair.repaired
+        if repair.repaired:
+            tmux_note = (
+                f"repaired for this process: {', '.join(repair.missing)} found in "
+                f"{', '.join(repair.added_dirs)}. To fix it for every shell: "
+                f"export {repair.variable}={os.pathsep.join(repair.added_dirs)}"
+            )
+        else:
+            tmux_note = f"on PATH but does not run: {repair.detail}"
     for label, present, note in (
         ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
-        ("tmux", _tmux_setup.tmux_runs(), tmux_note),
+        ("tmux", tmux_ok, tmux_note),
     ):
         click.echo(f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 

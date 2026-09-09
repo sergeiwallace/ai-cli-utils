@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -165,6 +166,55 @@ def _tmux_argv_is_read_only(command) -> bool:
     if len(argv) < 2:
         return False
     return argv[1] in {"-V", "display-message"}
+
+
+def tmux_runnable() -> tuple[bool, str]:
+    """Can ``tmux`` actually be executed here? Returns ``(runnable, reason)``.
+
+    Presence on ``PATH`` is not the same question. A ``tmux`` that resolves but
+    cannot start — an extracted bundle whose shared libraries are not on the
+    loader path, a binary built against a different libc — makes every real-tmux
+    test fail on an empty session list, which reads as a defect in the launch
+    path rather than as a broken tool. ``shutil.which`` cannot see that: it stats
+    the file and checks the executable bit, and the failure happens later, in the
+    dynamic loader. So the probe is to run the thing.
+
+    When it does not run, the PRODUCTION loader repair is applied before giving
+    up, for two reasons. It is what `ai c` itself does on the next launch, so
+    skipping here while the launcher succeeds would report the suite as unable to
+    test a path that in fact works; and it is the only way these tests observe
+    the repair against a real tmux server rather than a fixture (AI-CLI-i2ih
+    AC-5). The repair installs nothing and only edits this process's environment,
+    which real-tmux tests then inherit.
+
+    Shared by every module that gates on a live tmux. It used to be copied per
+    module, and the copies had already drifted in what they reported.
+    """
+    if shutil.which("tmux") is None:
+        return False, "tmux binary not available on PATH"
+
+    def _probe() -> tuple[bool, str]:
+        try:
+            probe = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=30, check=False)
+        except OSError as exc:
+            return False, f"tmux could not be executed: {exc}"
+        except subprocess.TimeoutExpired:
+            return False, "tmux -V timed out"
+        if probe.returncode != 0:
+            detail = (probe.stderr or probe.stdout or "").strip().splitlines()
+            return False, f"tmux is on PATH but does not run: {detail[0] if detail else f'exit {probe.returncode}'}"
+        return True, ""
+
+    runnable, reason = _probe()
+    if runnable:
+        return True, ""
+
+    from ai_cli.tmux_setup import repair_tmux_loader_path
+
+    repair = repair_tmux_loader_path()
+    if not repair.repaired:
+        return False, f"{reason} (loader repair did not help: {repair.detail})"
+    return _probe()
 
 
 def _reject_real_agent_process(command, allowed_binaries=frozenset()):

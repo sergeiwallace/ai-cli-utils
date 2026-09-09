@@ -26,7 +26,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from .native_deps import Candidate, InstallResult, attempt_installs
+from . import native_deps
+from .native_deps import Candidate, InstallResult, LoaderRepair, attempt_installs
 
 # Unattended install candidates per sys.platform, in attempt order. Rootless
 # managers come first: an unprivileged host is the common case for the machines
@@ -86,25 +87,43 @@ def tmux_runs(timeout: int = 10) -> bool:
     Presence on PATH is not the same as working. A hand-placed or half-installed
     build can resolve and then die on a missing shared library (measured on a
     SageMaker space: ``tmux`` on PATH, ``tmux -V`` exiting 127 for want of
-    ``libutempter.so.0``), which is why ``ai doctor`` reported ``OK tmux`` for a
-    tmux that could not start a single session.
+    ``libevent_core-2.1.so.7`` after the container filesystem was rebuilt under
+    it), which is why ``ai doctor`` reported ``OK tmux`` for a tmux that could
+    not start a single session.
+
+    This is THE predicate every tmux decision hangs on. Anything asking
+    :func:`tmux_present` instead is asking whether a file exists, which the
+    launcher already learned is a different question (AI-CLI-d89q).
     """
     if not tmux_present():
         return False
-    try:
-        proc = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=timeout, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return proc.returncode == 0
+    return _probe_output(["tmux", "-V"], timeout) is not None
+
+
+def repair_tmux_loader_path(timeout: int = 15) -> LoaderRepair:
+    """Try to make a present-but-unrunnable tmux run, installing nothing.
+
+    Delegates to the generic loader repair, which searches the directories
+    around tmux's own install prefix for whatever shared library the loader
+    said it could not find. On the machine this was written for, the library was
+    sitting in a persistent directory one level below the same prefix the whole
+    time — nothing needed installing, only pointing at.
+
+    ``tmux -V`` creates no server, no session and no window, so running it twice
+    (once to fail, once to prove the repair) mutates nothing.
+    """
+    return native_deps.repair_loader_path(["tmux", "-V"], timeout=timeout)
 
 
 def install_tmux(timeout: int = 300) -> InstallResult:
     """Attempt one unattended tmux install, returning the outcome.
 
-    Never raises. Verification re-probes for the binary rather than trusting the
-    manager's exit status, because some exit 0 having only staged an install.
+    Never raises. Verification re-probes by EXECUTING tmux rather than trusting
+    the manager's exit status or the binary's mere presence: some managers exit 0
+    having only staged an install, and a manager that lands a tmux which cannot
+    load its own libraries has not given us a working tmux either (AI-CLI-d89q).
     """
-    return attempt_installs(_INSTALLERS.get(sys.platform, []), verify=tmux_present, timeout=timeout)
+    return attempt_installs(_INSTALLERS.get(sys.platform, []), verify=tmux_runs, timeout=timeout)
 
 
 def remediation(result: InstallResult | None = None) -> str:
@@ -132,6 +151,10 @@ def remediation(result: InstallResult | None = None) -> str:
         "",
         "  Then open a new shell so PATH picks it up.",
         "",
+        "  If tmux is installed but cannot load a shared library, the library may",
+        "  simply be somewhere the loader was not told to look. Name that directory",
+        f"  once and every launch will use it:  export {native_deps.LIBRARY_PATH_OVERRIDE}=/path/to/lib",
+        "",
         "  Or make bare mode permanent on this machine and silence this notice:",
         "      [session] use_tmux = false   in ~/.config/ai-cli-utils/config.toml",
         "=" * 72,
@@ -141,15 +164,64 @@ def remediation(result: InstallResult | None = None) -> str:
 
 
 def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult:
-    """Make tmux usable if it is missing, and report whether it now is.
+    """Make tmux usable if it is not, and report whether it now is.
+
+    Which route runs depends on WHY tmux is unusable, and the two are not
+    interchangeable:
+
+    * **Does tmux run?** Not "is it on PATH" — that conflation is the whole of
+      AI-CLI-d89q, and it is what let a tmux missing a shared library report
+      itself healthy through an entire launch.
+    * **Absent: attempt one unattended install.** Unchanged; a package manager is
+      the only thing that can produce a tmux that is not there.
+    * **Present but unrunnable: repair the loader path, and nothing more.** Costs
+      one extra ``tmux -V``, installs nothing, mutates nothing outside this
+      process's environment, and is what actually fixes the measured failure.
+
+    **A present-but-broken tmux is deliberately NOT sent to a package manager**
+    (decided while fixing AI-CLI-i2ih). A manager cannot be verified to have
+    fixed the tmux that will actually run: the broken binary keeps its place on
+    PATH, so a freshly installed one elsewhere leaves ``tmux_runs()`` False and
+    the launch has paid the manager's full timeout — up to five minutes, on every
+    launch, forever — to change nothing. It is also a machine mutation nobody
+    asked for, installing a second tmux over one the operator placed by hand. The
+    honest answer for that case is the loud remediation below, which names the
+    missing library and the directory override that fixes it.
 
     ``installed=True`` also covers "was already there". Prints the remediation
     notice on failure but never raises and never exits: the caller is mid-launch
     and must be free to continue in bare mode, which is what a False result
     tells it to do.
     """
-    if tmux_present():
+    if tmux_runs():
         return InstallResult(True, tool="already-present")
+
+    if tmux_present():
+        # Repair runs even under ``auto_install=False``. That flag declines to
+        # touch the machine's packages; a loader path installs nothing, so it is
+        # not what was refused.
+        repair = repair_tmux_loader_path()
+        if repair.repaired:
+            # Composed from the structured fields rather than passing
+            # ``repair.detail`` through, so what a caller reports cannot go blank
+            # on a repair that happened to leave its free-text field empty.
+            summary = f"{', '.join(repair.missing)} resolved from {', '.join(repair.added_dirs)} via {repair.variable}"
+            if not quiet:
+                print(f"ai-cli-utils: repaired tmux — {summary}.", file=sys.stderr)
+            return InstallResult(True, tool="loader-path", detail=summary)
+
+        if not repair.missing:
+            # tmux did not answer a version query, and also reported no loader
+            # problem. That is NOT evidence it cannot host a session -- an
+            # unexpected `-V` output shape produces exactly this state -- so the
+            # caller is told "could not confirm", not "unusable", and no
+            # remediation is printed for a fault nobody has established.
+            return InstallResult(False, detail=repair.detail or "tmux did not report a version")
+
+        failure = InstallResult(False, detail=repair.detail, unusable=True)
+        if not quiet:
+            print(remediation(failure), file=sys.stderr)
+        return failure
 
     result = install_tmux() if auto_install else InstallResult(False, detail="auto-install not attempted")
     if result.installed:
@@ -159,7 +231,9 @@ def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult
 
     if not quiet:
         print(remediation(result), file=sys.stderr)
-    return InstallResult(False, tool=result.tool, detail=result.detail)
+    # Absent from PATH and not installed: positively established, unlike the
+    # ambiguous case above.
+    return InstallResult(False, tool=result.tool, detail=result.detail, unusable=True)
 
 
 @dataclass(frozen=True)
