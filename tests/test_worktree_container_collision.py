@@ -288,15 +288,23 @@ def uppercase_fleet_prefix(repo, monkeypatch):
 
 
 def test_given_an_uppercase_fleet_prefix_and_lowercase_registered_worktree_when_created_then_it_is_reused(
-    repo, monkeypatch, uppercase_fleet_prefix
+    repo, monkeypatch, uppercase_fleet_prefix, case_insensitive_filesystem
 ):
-    """The production prefix-to-name chain reuses a case-alias worktree."""
+    """The production prefix-to-name chain reuses a case-alias worktree.
+
+    The capability question is answered by the ``case_insensitive_filesystem``
+    fixture, at setup. It used to be asked here, after ``create_worktree`` had
+    already run a full checkout that a case-sensitive host then threw away
+    (AI-CLI-bug-tests-skip-capability-probe-bfqy).
+    """
     monkeypatch.chdir(repo)
     lower = create_worktree("app-1")
     assert lower is not None
     requested = lower.parent / "APP-1"
-    if not requested.exists():
-        pytest.skip("filesystem does not support case-alias paths")
+    assert requested.exists(), (
+        "the fixture established this filesystem aliases case, so the uppercase "
+        "spelling of a created worktree must resolve to it"
+    )
 
     prefix = resolve_project_prefix(repo)
     _session_id, ai_name = build_session_name("c", prefix, "1", use_tmux=False)

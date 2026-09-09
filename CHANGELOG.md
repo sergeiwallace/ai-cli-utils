@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Test fixtures no longer leak resources when a host-capability probe decides to
+  skip. `real_tmux_socket` created a temp directory and started a probe tmux
+  server, then decided whether to skip -- with the `try`/`finally` that cleans
+  both up beginning *below* the skip, so on the skip path neither was released.
+  That path is by definition the one taken on hosts where tmux misbehaves. An AST
+  sweep found four "acquire, then validate" sites; three are fixed by probing
+  first (a `PATH` lookup or a filesystem capability check builds nothing) or by
+  opening the `try` above the probe, and the fourth is legitimate -- its `write`
+  is the probe's own input -- so it is allowlisted by name with the reason
+  attached. A meta-guard in `tests/test_skip_hygiene.py` now enforces both correct
+  shapes, with positive and negative controls plus a stale-allowlist check so an
+  exemption cannot outlive the code it covers.
+  (`AI-CLI-bug-tests-skip-capability-probe-bfqy`)
+
 - A launch no longer dies at `tmux new-session` when tmux is on PATH but cannot
   load a shared library. `ai c` used to print `tmux version unavailable (binary
   does not run)` and then `launching inside tmux` in consecutive lines,
