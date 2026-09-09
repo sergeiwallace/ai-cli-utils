@@ -73,11 +73,134 @@ def needs_root(argv: list[str]) -> bool:
     return getattr(os, "geteuid", lambda: 0)() != 0
 
 
+def can_prompt_for_root() -> bool:
+    """True when it is safe to let a package manager ask for a password.
+
+    Two conditions, and both are required. ``sudo`` must exist, and **stdin must
+    be a terminal** — because a password prompt with nobody watching does not
+    fail, it blocks forever. That distinction is the whole reason escalation is
+    opt-in per call site rather than a global setting: an explicit ``ai setup`` or
+    ``ai doctor`` has a human in front of it, while a launch fired from a shell
+    hook, a background job or ``tmux new-session`` does not, and hanging one of
+    those is strictly worse than degrading it.
+    """
+    if sys.platform == "win32":
+        return False  # no sudo; elevation is a UAC prompt we must never trigger
+    if shutil.which("sudo") is None:
+        return False
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        # A detached or closed stdin raises rather than answering False.
+        return False
+
+
+def _authenticate_root(timeout: int = 120) -> bool:
+    """Refresh sudo's credential cache with the prompt VISIBLE. Never raises.
+
+    Deliberately a separate step from running the installer. ``sudo <manager>``
+    under ``capture_output=True`` swallows the password prompt, so the user sees a
+    silent hang and the call eventually times out — the exact failure mode this
+    whole module exists to avoid. ``sudo -v`` inherits the terminal so the prompt
+    is seen and answered; every later call can then use ``sudo -n`` and keep its
+    output captured.
+    """
+    print("ai-cli-utils: this install needs administrator rights.", file=sys.stderr)
+    try:
+        proc = subprocess.run(["sudo", "-v"], timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+# --- Provisioning into a prefix the host cannot take away --------------------
+#
+# The lesson behind this section (AI-CLI-i2ih): a binary is only as durable as
+# the least durable thing it depends on. A conda/micromamba base prefix is a
+# perfectly good place to install a tool, right up until that prefix lives on a
+# filesystem the platform rebuilds -- measured on a managed notebook host, where
+# `conda info` reports /opt/conda and `df` puts /opt/conda on an ephemeral overlay
+# while only $HOME persists. Installing there produces a tool that vanishes on
+# every restart, which is the same bug class the tmux loader repair exists for.
+#
+# So anything this package provisions goes into a prefix under the user's own
+# data directory, and nowhere else.
+
+
+def native_prefix() -> Path:
+    """The prefix this package installs native binaries into.
+
+    Under the user's XDG data directory (``%LOCALAPPDATA%`` on Windows), which is
+    the one location on any supported platform that a host rebuild leaves alone.
+    """
+    from .config import get_xdg_data_home
+
+    return get_xdg_data_home() / "native"
+
+
+def prefix_bin(prefix: Path | None = None) -> Path:
+    """The executable directory inside a conda-family prefix, per platform."""
+    prefix = native_prefix() if prefix is None else prefix
+    return prefix / ("Scripts" if sys.platform == "win32" else "bin")
+
+
+def adopt_prefix_bin(env: MutableMapping[str, str] | None = None, prefix: Path | None = None) -> bool:
+    """Put our provisioned bin directory first on PATH. Cheap and idempotent.
+
+    This is the *launch-time* half of provisioning: a stat and maybe a string
+    join, with no subprocess and no installer. It exists so a launch can pick up
+    an already-provisioned tool without ever risking a package manager's timeout
+    mid-session — installing is reserved for the explicit commands.
+
+    Returns True when the directory exists (whether or not PATH needed changing),
+    because that is the question a caller actually has: is our prefix usable.
+
+    Non-raising, like everything else here, and that is load-bearing rather than
+    defensive: this runs from ``resolve_session_shell`` on the launch path, so any
+    exception would take down the session it exists to improve. Resolving the
+    prefix can genuinely fail — it consults ``sys.platform``, and building a
+    ``WindowsPath`` on a POSIX host raises ``NotImplementedError`` — so "cannot
+    work out where our prefix would be" has to mean "there is no prefix to adopt".
+    """
+    env = os.environ if env is None else env
+    try:
+        binary_dir = prefix_bin(prefix)
+        if not binary_dir.is_dir():
+            return False
+    except Exception:
+        return False
+    current = env.get("PATH", "")
+    entries = current.split(os.pathsep) if current else []
+    if str(binary_dir) not in entries:
+        env["PATH"] = os.pathsep.join([str(binary_dir), *entries]) if entries else str(binary_dir)
+    return True
+
+
+def prefix_installers(package: str, prefix: Path | None = None) -> list[Candidate]:
+    """Rootless conda-family candidates that install ``package`` into our prefix.
+
+    ``create`` versus ``install`` is decided by whether the prefix already holds a
+    conda environment, because the two are not interchangeable: ``install`` needs
+    an existing environment and ``create`` refuses a populated one. Probing for
+    ``conda-meta`` answers it deterministically instead of relying on whichever
+    error message the current version emits.
+
+    No system managers here on purpose. These candidates need no privileges at
+    all, so they are the ones a launch could in principle survive; escalation is a
+    separate, explicitly requested path.
+    """
+    prefix = native_prefix() if prefix is None else prefix
+    verb = "install" if (prefix / "conda-meta").is_dir() else "create"
+    common = [verb, "-y", "-q", "--prefix", str(prefix), "-c", "conda-forge", package]
+    return [("micromamba", ["micromamba", *common]), ("conda", ["conda", *common])]
+
+
 def attempt_installs(
     candidates: list[Candidate],
     verify: Callable[[], bool],
     timeout: int = 300,
     before_verify: Callable[[], object] | None = None,
+    allow_root: bool = False,
 ) -> InstallResult:
     """Try each candidate for this platform in order; stop at the first success.
 
@@ -86,18 +209,42 @@ def attempt_installs(
     runs between a zero exit and that re-probe, for the Windows PATH refresh —
     the installer wrote its directory to the registry, not to this already
     running process, so without it a perfectly good install looks like a failure.
+
+    ``allow_root`` opts *this call* into escalating a system package manager
+    through ``sudo``, prompting for a password. It defaults to False and must stay
+    that way for anything on the launch path: a prompt nobody is watching blocks
+    forever, which is a worse outcome than the degradation this function exists to
+    report. Even when opted in, escalation happens only if ``sudo`` exists and
+    stdin is a terminal, and the password is collected by a separate visible
+    ``sudo -v`` so the prompt cannot be swallowed by output capture.
     """
     if not candidates:
         return InstallResult(False, detail=f"no unattended installer is known for platform {sys.platform!r}")
 
     skipped: list[str] = []
     attempted: list[str] = []
+    authenticated = False
     for probe, argv in candidates:
         if shutil.which(probe) is None:
             continue
         if needs_root(argv):
-            skipped.append(f"{probe} (needs root; re-run with sudo or install manually)")
-            continue
+            if not allow_root:
+                skipped.append(f"{probe} (needs root; re-run `ai doctor` in a terminal, or install manually)")
+                continue
+            if not can_prompt_for_root():
+                skipped.append(f"{probe} (needs root and there is no terminal to ask on)")
+                continue
+            if not authenticated:
+                # Show the exact command before asking for a password. Nobody
+                # should be typing one for an action they have not seen.
+                print(f"ai-cli-utils: about to run: sudo {' '.join(argv)}", file=sys.stderr)
+                authenticated = _authenticate_root()
+            if not authenticated:
+                skipped.append(f"{probe} (root authentication declined or failed)")
+                continue
+            # -n so this cannot re-prompt under capture_output; the credential was
+            # just cached by the visible `sudo -v` above.
+            argv = ["sudo", "-n", *argv]
         attempted.append(probe)
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)

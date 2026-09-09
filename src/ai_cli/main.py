@@ -23,12 +23,14 @@ import click
 from . import config as _config
 from . import direnv_setup as _direnv_setup
 from . import iterm2 as _iterm2
+from . import native_deps as _native_deps
 from . import process_manager as _process_manager
 from . import session as _session
 from . import session_script as _session_script
 from . import tmux_setup as _tmux_setup
 from . import transport as _transport
 from . import tunnel as _tunnel
+from . import zsh_setup as _zsh_setup
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
@@ -3529,9 +3531,29 @@ def cmd_doctor(dry_run):
             )
         else:
             tmux_note = f"on PATH but does not run: {repair.detail}"
+    # zsh IS provisioned here, unlike tmux. The difference is that tmux has two
+    # legitimate permanent answers (-b/--bare, use_tmux=false) so its absence may
+    # be a choice, whereas zsh is simply the interpreter a session prefers and
+    # nobody opts out of it -- they just end up on bash without being told
+    # (AI-CLI-s2q2). `ai doctor` is an explicit command with a terminal, so it is
+    # also a place escalation may be offered; --dry-run declines to install, which
+    # is what makes the reporting side usable on its own.
+    _zsh = _zsh_setup.ensure_zsh(
+        auto_install=not dry_run,
+        quiet=True,
+        allow_root=not dry_run and _native_deps.can_prompt_for_root(),
+    )
+    if _zsh.installed:
+        zsh_note = f"session interpreter ({_zsh.tool}); bash is the fallback"
+    elif dry_run:
+        zsh_note = "not usable; re-run without -n/--dry-run to provision it"
+    else:
+        zsh_note = f"could not be provisioned: {_zsh.detail or 'no reason reported'}"
+
     for label, present, note in (
         ("bash", _direnv_setup.bash_available(), "required by direnv to evaluate .envrc"),
         ("tmux", tmux_ok, tmux_note),
+        ("zsh", _zsh.installed, zsh_note),
     ):
         click.echo(f"  {'OK  ' if present else 'MISS'}  {label:<8} {note}")
 
