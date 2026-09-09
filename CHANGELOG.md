@@ -40,6 +40,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- State, cache, config and data directories can no longer resolve relative to the
+  current working directory, which is how a captured process listing came to be
+  written into a repository checkout instead of your home directory. The cause is
+  a distinction that only shows up for a variable that is *set but empty*:
+  `os.environ.get("XDG_STATE_HOME", default)` returns `""` rather than the
+  default, and `Path("") / "ai-cli-utils"` is the **relative** path
+  `ai-cli-utils`, so everything built on it resolved against the cwd. Measured
+  side by side with `XDG_STATE_HOME=""`, the old code produced
+  `ai-cli-utils/remote-ps-cache.json` and the new code produces an absolute path
+  under `$HOME`. One site made this more than misplaced clutter: the CC
+  update-staging reaper *deletes* under its resolved path, so a relative base
+  aimed a delete at `<cwd>/claude/staging`. All seven base-directory reads now go
+  through a single `resolve_base_dir()` that ignores a value which is empty or
+  non-absolute (as the XDG Base Directory spec requires for relative values) and
+  rejects a relative fallback outright. An AST sweep of the source tree fails the
+  suite if any module reads one of those variables directly again, since the
+  behavioural tests cannot see a call site that does not exist yet.
+  (`AI-CLI-583m`)
 - Test fixtures no longer leak resources when a host-capability probe decides to
   skip. `real_tmux_socket` created a temp directory and started a probe tmux
   server, then decided whether to skip -- with the `try`/`finally` that cleans

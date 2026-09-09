@@ -22,6 +22,8 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+from . import config
+
 # Windows cp1252 cannot encode the emoji used in statusline output (📊, ✅, etc.).
 # Reconfigure stdout to UTF-8 with replacement on errors so emoji never crashes the process.
 if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
@@ -419,8 +421,13 @@ CC_STAGING_MAX_AGE_S = 3600
 
 
 def _cc_staging_dir() -> Path:
-    """Directory CC downloads pending updates into before promoting them."""
-    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    """Directory CC downloads pending updates into before promoting them.
+
+    Resolved through the shared base-dir helper because ``reap_cc_update_staging``
+    *deletes* under this path: a cwd-relative base would aim the reaper at
+    ``<cwd>/claude/staging`` instead of the real cache.
+    """
+    base = config.resolve_base_dir("XDG_CACHE_HOME", Path.home() / ".cache")
     return base / "claude" / "staging"
 
 

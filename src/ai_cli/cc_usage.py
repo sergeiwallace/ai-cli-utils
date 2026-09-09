@@ -29,8 +29,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import config
+
 _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
-_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "ai-cli-utils"
+_STATE_DIR = config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / "ai-cli-utils"
 _CURSOR_FILE = _STATE_DIR / "cc-usage-cursor.json"
 
 EX_CONFIG = 78
