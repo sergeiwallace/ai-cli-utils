@@ -29,7 +29,16 @@ def resolve_session_shell() -> str | None:
     worst option available: ``tmux new-session`` still reports success, then the
     pane's exec fails, the pane dies, the session is torn down, and the user sees
     only a bare ``[exited]`` with no diagnostic.
+
+    A shell this package has already provisioned into its own prefix is adopted
+    onto PATH first, so ``ai setup`` provisioning zsh is enough for every later
+    launch to prefer it (AI-CLI-s2q2). That step is a directory stat and a string
+    join -- deliberately not an install, because this function is on the launch
+    path and a package-manager solve there would stall every session.
     """
+    from .native_deps import adopt_prefix_bin
+
+    adopt_prefix_bin()
     for candidate in SESSION_SHELL_PREFERENCE:
         found = shutil.which(candidate)
         if found:

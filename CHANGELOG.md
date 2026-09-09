@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- zsh is now provisioned as a native runtime dependency, alongside tmux and
+  direnv. It is the interpreter a session prefers (`SESSION_SHELL_PREFERENCE` is
+  `("zsh", "bash")`) and the macOS default, so on a host without it the shell that
+  actually runs your sessions was also the one nothing verified -- 16 real-shell
+  signal regressions skipped while bash, the fallback, stayed fully covered.
+  Two rules shape it, both learned from the tmux loader bug:
+  - **It installs where the host cannot take it away**: a prefix under your own
+    data directory (`$XDG_DATA_HOME/ai-cli-utils/native`, `%LOCALAPPDATA%` on
+    Windows), never the package manager's default. A conda base prefix can sit on
+    a filesystem the platform rebuilds -- measured on a managed notebook host
+    where `conda info` reports `/opt/conda` and `df` puts it on an ephemeral
+    overlay while only `$HOME` persists -- so installing there yields a tool that
+    silently vanishes on every restart.
+  - **A launch adopts, it never installs.** Adoption is a directory stat and a
+    `PATH` edit, so an already-provisioned zsh is picked up with no subprocess at
+    all. Installation belongs to `ai setup`, `ai update` and `ai doctor`, because a
+    package-manager solve is minutes and no session may wait on one.
+  `ai doctor` reports zsh alongside bash and tmux, and `-n/--dry-run` reports
+  without provisioning. (`AI-CLI-s2q2`)
+- Explicit commands may now escalate to a system package manager with a password
+  prompt; launches still never can. `attempt_installs` takes `allow_root`, which
+  defaults to False and is opted into only by `ai setup` and `ai doctor` -- and even
+  then only when `sudo` exists and **stdin is a terminal**, because a prompt nobody
+  is watching does not fail, it blocks forever. The exact command is printed before
+  the password is asked for, the password is collected by a separate visible
+  `sudo -v` so output capture cannot swallow the prompt, and the installer then
+  runs under `sudo -n` so it can never silently re-prompt. Verification is never
+  disabled and there is no `--insecure` path. (`AI-CLI-s2q2`)
+
 ### Fixed
 
 - Test fixtures no longer leak resources when a host-capability probe decides to

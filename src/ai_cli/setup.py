@@ -68,6 +68,20 @@ def run_setup(cwd: Path | None = None) -> int:
     except Exception as exc:
         print(f"note: could not verify tmux ({exc}); sessions will fall back to bare mode", file=sys.stderr)
 
+    # zsh, the interpreter a session prefers to run under. Provisioned here rather
+    # than at launch because a package-manager solve is minutes, and a launch must
+    # never wait on one (AI-CLI-s2q2). `ai setup` is an explicit command with a
+    # human in front of it, so this is also the one place escalation is offered --
+    # gated on stdin being a terminal, so a scripted or piped install can never
+    # block on an unanswerable password prompt.
+    try:
+        from .native_deps import can_prompt_for_root
+        from .zsh_setup import ensure_zsh
+
+        ensure_zsh(allow_root=can_prompt_for_root())
+    except Exception as exc:
+        print(f"note: could not verify zsh ({exc}); sessions will run under bash", file=sys.stderr)
+
     claude_md = repo_root / "CLAUDE.md"
     claude_full_md = repo_root / "CLAUDE-full.md"
 
