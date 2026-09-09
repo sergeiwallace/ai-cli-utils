@@ -12,6 +12,12 @@ written by a same-process hook mid-startup is not. Writing the override here,
 ahead of every `run_agent claude` invocation, sidesteps that ordering question
 entirely instead of trying to win a race against it.
 
+This override is unconditional (every `c`-engine launch gets it, regardless of
+any per-worktree marker file) — an earlier marker-gated toggle was retired once
+Claude Code split its single GrowthBook-gated evaluation into separate flags
+for Task tools, cross-session messaging, and Remote Control, removing the
+conflict the marker existed to opt into.
+
 These tests run the ACTUAL snippet extracted from the generated template in a
 real bash + python3 subprocess against a controlled temp filesystem — a
 behavioral test, not a string-presence check — matching the convention in
@@ -35,7 +41,6 @@ pytestmark = pytest.mark.skipif(
     reason="the generated launch-template block requires a POSIX bash and python3 environment",
 )
 
-MARKER_RELPATH = ".claude/.ai-cli-growthbook-toggle"
 SETTINGS_RELPATH = ".claude/settings.local.json"
 
 
@@ -59,7 +64,7 @@ def _minimal_path_with_python3() -> str:
 def _extract_toggle_block(script: str) -> str:
     """Extract the real GrowthBook override block from the generated template."""
     m = re.search(
-        r'^ {6}if \[\[ "\$engine" == "c"(?: && -f "\.claude/\.ai-cli-growthbook-toggle")? \]\]; then\n'
+        r'^ {6}if \[\[ "\$engine" == "c" \]\]; then\n'
         r' {8}python3 -c "\n(?:.*\n)*? {6}fi\n',
         script,
         re.MULTILINE,
@@ -89,9 +94,8 @@ def toggle_block():
     return _extract_toggle_block(script)
 
 
-def test_given_marker_present_when_toggle_runs_then_settings_local_json_gets_the_override(tmp_path, toggle_block):
+def test_given_c_engine_when_launch_runs_then_settings_local_json_gets_the_override(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
 
     result = _run_toggle_block(tmp_path, "c", toggle_block)
 
@@ -102,9 +106,8 @@ def test_given_marker_present_when_toggle_runs_then_settings_local_json_gets_the
     assert data["env"]["DISABLE_GROWTHBOOK"] == ""
 
 
-def test_given_existing_settings_local_json_when_toggle_runs_then_other_keys_are_preserved(tmp_path, toggle_block):
+def test_given_existing_settings_local_json_when_launch_runs_then_other_keys_are_preserved(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
     settings_path = tmp_path / SETTINGS_RELPATH
     settings_path.write_text(json.dumps({"env": {"OTHER_VAR": "keep-me"}, "hooks": {"foo": "bar"}}))
 
@@ -117,21 +120,8 @@ def test_given_existing_settings_local_json_when_toggle_runs_then_other_keys_are
     assert data["hooks"] == {"foo": "bar"}
 
 
-def test_given_no_marker_when_toggle_runs_then_settings_local_json_gets_the_override(tmp_path, toggle_block):
+def test_given_gemini_engine_when_launch_runs_then_no_write_happens(tmp_path, toggle_block):
     (tmp_path / ".claude").mkdir()
-
-    result = _run_toggle_block(tmp_path, "c", toggle_block)
-
-    assert result.returncode == 0, result.stderr
-    settings_path = tmp_path / SETTINGS_RELPATH
-    assert settings_path.exists()
-    data = json.loads(settings_path.read_text())
-    assert data["env"]["DISABLE_GROWTHBOOK"] == ""
-
-
-def test_given_gemini_engine_when_toggle_runs_even_with_marker_present_then_no_write_happens(tmp_path, toggle_block):
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
 
     result = _run_toggle_block(tmp_path, "g", toggle_block)
 
@@ -139,11 +129,10 @@ def test_given_gemini_engine_when_toggle_runs_even_with_marker_present_then_no_w
     assert not (tmp_path / SETTINGS_RELPATH).exists()
 
 
-def test_given_malformed_existing_settings_local_json_when_toggle_runs_then_it_recovers_rather_than_crashing(
+def test_given_malformed_existing_settings_local_json_when_launch_runs_then_it_recovers_rather_than_crashing(
     tmp_path, toggle_block
 ):
     (tmp_path / ".claude").mkdir()
-    (tmp_path / MARKER_RELPATH).touch()
     settings_path = tmp_path / SETTINGS_RELPATH
     settings_path.write_text("{not valid json")
 
