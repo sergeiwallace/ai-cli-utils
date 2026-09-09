@@ -78,3 +78,20 @@ bd.db
 
 # Import state tracking (local-only, machine-specific)
 .auto-import-issues.jsonl
+
+# In-flight display-id attach journal (bd-new write-ahead records). Local and
+# transient: an entry exists only between `bd create` and the `bd update` that
+# attaches the display id, and is removed once that lands. Committing one would
+# publish another machine's in-flight filing as though it were an orphan needing
+# repair here.
+.displayid-pending/
+
+# Display-id intent records (bd-new). Same per-machine, in-flight rationale as
+# .displayid-pending/ above: a live record, never a shared fact.
+.displayid-intent/
+
+# Display-id repair sweep heartbeat. Records when the sweep last ran and what it
+# found, so bd-new can alarm on a dead scheduler. Per-machine runtime state, not a
+# shared fact: committing it would let one machine's timer vouch for every other
+# clone's.
+.displayid-sweep-heartbeat.json
