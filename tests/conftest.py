@@ -168,6 +168,45 @@ def _tmux_argv_is_read_only(command) -> bool:
     return argv[1] in {"-V", "display-message"}
 
 
+def filesystem_is_case_insensitive(path: Path) -> bool:
+    """Does ``path``'s filesystem resolve two spellings to one directory?
+
+    Answered by asking the filesystem, never by guessing from ``sys.platform``: a
+    case-insensitive volume can be mounted on Linux and a case-sensitive one on
+    macOS, so a platform guess would be wrong in both directions. The probe
+    creates one directory and removes it, so it leaves nothing behind.
+    """
+    probe = path / "aicli-case-probe"
+    try:
+        probe.mkdir()
+    except OSError:
+        return False
+    try:
+        return (path / "AICLI-CASE-PROBE").exists()
+    finally:
+        with contextlib.suppress(OSError):
+            probe.rmdir()
+
+
+def _case_insensitive_filesystem_impl(path: Path):
+    """Fixture body, exposed so its skip contract can be tested directly."""
+    if not filesystem_is_case_insensitive(path):
+        pytest.skip(f"filesystem at {path} is case-sensitive, so it has no case-alias paths to test")
+    yield path
+
+
+@pytest.fixture
+def case_insensitive_filesystem(tmp_path: Path):
+    """Skip at SETUP unless this filesystem aliases case, so nothing gets built.
+
+    A case-alias test used to create a worktree and *then* discover it could not
+    run, throwing the checkout away — seconds of I/O on a throttled filesystem,
+    every run, on every case-sensitive host (AI-CLI-bug-tests-skip-capability-probe-bfqy).
+    Deciding at fixture setup means the test body is never entered.
+    """
+    yield from _case_insensitive_filesystem_impl(tmp_path)
+
+
 def tmux_runnable() -> tuple[bool, str]:
     """Can ``tmux`` actually be executed here? Returns ``(runnable, reason)``.
 

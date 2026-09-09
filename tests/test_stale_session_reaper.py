@@ -120,20 +120,37 @@ def _tmux_new_session(
     return subprocess.run([*argv, *command], env=environment, capture_output=True, text=True, check=False)
 
 
-@pytest.fixture
-def real_tmux_socket() -> Iterator[str]:
+def isolated_tmux_socket() -> Iterator[str]:
+    """An isolated tmux server, torn down on EVERY exit path including a skip.
+
+    A plain generator rather than a bare fixture so that its cleanup contract can
+    be driven directly by a test (tests/test_skip_hygiene.py). That contract used
+    to be broken in a way no test could see: the ``try``/``finally`` began BELOW
+    the "isolated tmux server unavailable" skip, so on the skip path the temp
+    directory was never removed and the probe server was never killed — and the
+    skip path is by definition the one taken on hosts where tmux misbehaves
+    (AI-CLI-bug-tests-skip-capability-probe-bfqy).
+
+    The ``which`` check stays above the ``mkdtemp`` on purpose: a PATH lookup
+    builds nothing, so there is nothing to clean up if it decides to skip.
+    """
     if shutil.which("tmux") is None:
         pytest.skip("tmux binary not available on PATH")
     socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir="/tmp"))
     socket = str(socket_dir / "socket")
-    probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
-    if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
-        pytest.skip(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
     try:
+        probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
+        if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
+            pytest.skip(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
         yield socket
     finally:
         _tmux_run(socket, "kill-server")
         shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def real_tmux_socket() -> Iterator[str]:
+    yield from isolated_tmux_socket()
 
 
 def _wait_for_dead_pane(socket: str, session_id: str) -> None:
@@ -1104,6 +1121,15 @@ def _start_generated_supervisor(
     extra_commands: dict[str, str] | None = None,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
+    # Decide the host-capability question BEFORE building anything. This used to
+    # sit ~60 lines down, after a bin directory, three log paths and several
+    # generated executables had been written, so a host without `script` paid for
+    # all of it and then skipped (AI-CLI-bug-tests-skip-capability-probe-bfqy).
+    # `which` builds nothing, so hoisting it is free and cannot leak.
+    script_bin = shutil.which("script") if pseudo_terminal else None
+    if pseudo_terminal and script_bin is None:
+        pytest.skip("script binary unavailable for terminal process-group test")
+
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     event_log = tmp_path / "events.log"
@@ -1182,9 +1208,9 @@ fi
     }
     command = [shell, *(["-o", "NO_BG_NICE"] if Path(shell).name == "zsh" else []), str(supervisor)]
     if pseudo_terminal:
-        script_bin = shutil.which("script")
-        if script_bin is None:
-            pytest.skip("script binary unavailable for terminal process-group test")
+        # Resolved and skip-checked at the top of this function, so by here it is
+        # known good; re-probing would just be a second PATH lookup.
+        assert script_bin is not None
         if sys.platform == "darwin":
             # BSD script: `script [-q] file [command ...]` — the trailing words
             # are the command and are not re-parsed as script's own options.
