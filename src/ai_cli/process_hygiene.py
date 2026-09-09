@@ -18,7 +18,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import time
@@ -27,6 +26,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import psutil
+
+from . import config
 
 ORPHAN_THRESHOLD = 80
 SUSPECT_THRESHOLD = 40
@@ -37,8 +38,8 @@ IDLE_SINCE_LAUNCH_ACTIVITY_SECONDS = 5
 
 def _get_state_dir() -> Path:
     """Return XDG state directory for ai-cli-utils."""
-    base = os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
-    return Path(base) / "ai-cli-utils"
+    base = config.resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    return base / "ai-cli-utils"
 
 
 # ---------------------------------------------------------------------------

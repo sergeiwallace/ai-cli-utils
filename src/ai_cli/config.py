@@ -45,6 +45,39 @@ def _migrate_xdg_dir(old: Path, new: Path) -> Path:
     return new
 
 
+# Name of the one function permitted to read a base-directory variable
+# directly. tests/test_xdg_base_resolution.py scans the source tree for any
+# other direct read, so this constant keeps the guard and the code in step.
+BASE_DIR_RESOLVER_NAME = "resolve_base_dir"
+
+
+def resolve_base_dir(env_var: str, fallback: Path) -> Path:
+    """Return the base directory named by *env_var*, or *fallback*.
+
+    A value that is present but empty, or present but relative, is ignored. The
+    XDG Base Directory specification requires this ("If an implementation
+    encounters a relative path in any of these variables it should consider the
+    path invalid and ignore it"), and it matters for more than conformance:
+    ``os.environ.get(var, default)`` returns ``""`` rather than the default when
+    the variable is set-but-empty, and ``Path("") / "ai-cli-utils"`` is the
+    *relative* path ``ai-cli-utils``. Anything built on it then resolves against
+    the process cwd, so state files land inside whatever directory the CLI was
+    invoked from instead of the user's home.
+
+    *fallback* must itself be absolute; a relative one would reintroduce the same
+    defect through the single place it would be invisible.
+    """
+    if not fallback.is_absolute():
+        raise ValueError(f"fallback for {env_var} must be an absolute path, got: {fallback}")
+
+    raw = os.environ.get(env_var)
+    if raw:
+        candidate = Path(raw)
+        if candidate.is_absolute():
+            return candidate
+    return fallback
+
+
 def detect_machine_profile() -> dict[str, str]:
     """Return detected host_id and os_type for this machine.
 
@@ -95,9 +128,9 @@ def ensure_machine_profile_registered(config_path: Path, config: dict) -> bool:
 
 def get_xdg_config_home() -> Path:
     if sys.platform == "win32":
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / "ai-cli-utils"
-    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        base = resolve_base_dir("APPDATA", Path.home() / "AppData" / "Roaming")
+        return base / "ai-cli-utils"
+    base = resolve_base_dir("XDG_CONFIG_HOME", Path.home() / ".config")
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
@@ -157,25 +190,25 @@ def _write_secure_config(config_path: Path, content: str) -> None:
 
 def get_xdg_state_home() -> Path:
     if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "ai-cli-utils"
-    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        base = resolve_base_dir("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        return base / "ai-cli-utils"
+    base = resolve_base_dir("XDG_STATE_HOME", Path.home() / ".local" / "state")
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
 def get_xdg_cache_home() -> Path:
     if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "ai-cli-utils" / "cache"
-    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        base = resolve_base_dir("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        return base / "ai-cli-utils" / "cache"
+    base = resolve_base_dir("XDG_CACHE_HOME", Path.home() / ".cache")
     return _migrate_xdg_dir(base / "ai-cli", base / "ai-cli-utils")
 
 
 def get_xdg_data_home() -> Path:
     if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "ai-cli-utils"
-    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+        base = resolve_base_dir("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        return base / "ai-cli-utils"
+    base = resolve_base_dir("XDG_DATA_HOME", Path.home() / ".local" / "share")
     return base / "ai-cli-utils"
 
 
