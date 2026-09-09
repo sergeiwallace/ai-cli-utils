@@ -18,40 +18,11 @@ from unittest.mock import MagicMock, patch
 
 import libtmux
 import pytest
+from conftest import tmux_runnable
 
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
-
-def _tmux_runnable() -> tuple[bool, str]:
-    """Can ``tmux`` actually be executed here? Returns ``(runnable, reason)``.
-
-    Presence on ``PATH`` is not the same question. A ``tmux`` that resolves but
-    cannot start — an extracted bundle whose shared libraries are not on the
-    loader path, a binary built against a different libc — makes every test in
-    this file fail on an empty session list, which reads as a defect in the launch
-    path rather than as a broken tool. ``shutil.which`` cannot see that: it stats
-    the file and checks the executable bit, and the failure happens later, in the
-    dynamic loader.
-
-    So the probe is to run the thing: ``tmux -V`` exits 0 only when the binary
-    really starts. Deliberately not a library-path check, which would be
-    guessing at one cause of many.
-    """
-    if shutil.which("tmux") is None:
-        return False, "tmux binary not available on PATH"
-    try:
-        probe = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=30, check=False)
-    except OSError as exc:
-        return False, f"tmux could not be executed: {exc}"
-    except subprocess.TimeoutExpired:
-        return False, "tmux -V timed out"
-    if probe.returncode != 0:
-        detail = (probe.stderr or probe.stdout or "").strip().splitlines()
-        return False, f"tmux is on PATH but does not run: {detail[0] if detail else f'exit {probe.returncode}'}"
-    return True, ""
-
-
-_TMUX_RUNNABLE, _TMUX_SKIP_REASON = _tmux_runnable()
+_TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
 
 pytestmark = [
     pytest.mark.real_tmux,
@@ -141,6 +112,13 @@ def patched_subprocess(tmux_server, tmp_path):
         sub = cmd[1] if len(cmd) > 1 else ""
 
         if head == "tmux":
+            if sub == "-V":
+                # A version answer, because the launcher now DECIDES on it: a
+                # fake that returned empty stdout here made the launch conclude
+                # tmux could not run and degrade to bare, so every session
+                # assertion below failed on an empty session list (AI-CLI-i2ih).
+                return type("TmuxVersion", (), {"returncode": 0, "stdout": "tmux 3.7c\n", "stderr": ""})()
+
             if sub == "has-session":
                 # Check via libtmux — no tmux binary call needed.
                 try:
@@ -202,7 +180,12 @@ def patched_subprocess(tmux_server, tmp_path):
         if head == "git":
             return _OK()
 
-        return subprocess.run(cmd, *args, **kwargs, check=False)
+        # Pass anything else through to the REAL subprocess.run, captured before
+        # the patch. Calling the module-level name would recurse into this very
+        # fake, and re-appending check= on top of the caller's kwargs raised
+        # TypeError for every caller that already passed it -- both latent for as
+        # long as this module skipped on hosts without a runnable tmux.
+        return real_subprocess_run(cmd, *args, **kwargs)
 
     def fake_execvp(file, args):
         # tmux attach-session is the final exec — raise SystemExit so the
@@ -468,6 +451,11 @@ def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifa
     def fake_run(cmd, *args, **kwargs):
         if cmd[0] == "tmux":
             subcommand = cmd[1]
+            if subcommand == "-V":
+                # See the note on the other fake: the launcher decides tmux-vs-bare
+                # on this answer, so an empty one silently turns the whole test
+                # into a bare launch with no session to assert on.
+                return type("TmuxResult", (), {"returncode": 0, "stdout": "tmux 3.7c\n", "stderr": ""})()
             if subcommand == "list-sessions":
                 names = [session.name for session in tmux_server.sessions]
                 formatter = cmd[cmd.index("-F") + 1]

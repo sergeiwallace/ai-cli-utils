@@ -98,13 +98,40 @@ Auto-runs `git pull --rebase --autostash` at session start to keep worktree curr
 
 **How the launcher decides between tmux and bare.** In order: `[session] use_tmux`
 wins outright if the machine sets it; with no setting tmux is the default rather than
-an opt-in; a missing tmux gets one unattended install attempt (rootless managers
-first, then the system ones when running as root); and if tmux still is not there the
-launch continues in bare mode with a notice naming what was lost. It is never fatal —
-tmux is an enhancement, and a missing enhancement must not block a launch. Windows
-skips the install attempt because no native tmux exists there. `ai doctor` reports
-`tmux` by running `tmux -V`, not merely by finding it on PATH, so a build that
-resolves and then dies on a missing shared library reads as unusable instead of `OK`.
+an opt-in; a tmux that cannot be used gets one recovery attempt, described below; and
+if it still cannot be used the launch continues in bare mode with a notice naming what
+was lost. It is never fatal — tmux is an enhancement, and a missing enhancement must not
+block a launch. Windows skips the recovery because no native tmux exists there. The
+decision is made **after argument validation and before any worktree is created**, so a
+launch that has to fall back does not leave a worktree behind first.
+
+The question asked is always whether tmux *runs*, never whether it is on `PATH`. `ai
+doctor` runs `tmux -V` too, so a build that resolves and then dies on a missing shared
+library reads as unusable instead of `OK`.
+
+**Recovering an unusable tmux.** Two different faults, two different answers:
+
+- **tmux is absent** — one unattended install attempt (rootless managers first:
+  micromamba/conda/brew, then the system ones when running as root), verified by
+  executing the result rather than by looking for the file.
+- **tmux is present but cannot load a shared library** — the launcher reads the loader's
+  own error, looks for the named library in directories around tmux's own install prefix
+  (`<prefix>/lib`, `<prefix>/lib64`, and one nesting level below for extracted
+  self-contained bundles), prepends what it finds to `LD_LIBRARY_PATH`
+  (`DYLD_LIBRARY_PATH` on macOS), and re-runs tmux to prove the repair worked. Nothing is
+  installed or written to disk, and a repair that cannot be demonstrated is undone.
+  Because it is re-derived on every invocation, a host whose system libraries are removed
+  by a restart recovers on the next launch with no action from you. No package manager is
+  invoked for this fault: a freshly installed tmux elsewhere would not displace the broken
+  one on `PATH`, so the install could not be verified to have fixed anything.
+
+  Set **`AI_CLI_LIBRARY_PATH`** to name a library directory this search does not know
+  about; it is tried first. The `export` line for making a successful repair permanent in
+  ordinary shells is printed by `ai doctor`.
+
+A tmux that runs but answers `tmux -V` in an unexpected shape is reported as
+*unconfirmed*, not unusable, and the launch stays under tmux — losing detach/reattach over
+an unparsed version string would be worse than the fault being guarded against.
 
 **Bare mode (`-b`, or `[session] use_tmux = false`):** worktree isolation, `--name`,
 and conversation resume all still apply — tmux is not a prerequisite for any of them.

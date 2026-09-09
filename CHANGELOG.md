@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A launch no longer dies at `tmux new-session` when tmux is on PATH but cannot
+  load a shared library. `ai c` used to print `tmux version unavailable (binary
+  does not run)` and then `launching inside tmux` in consecutive lines,
+  synchronize a worktree, and only then fail with the dynamic loader's error --
+  because the preflight asked whether tmux was on PATH while the report asked
+  whether it ran, and nothing acted on the report. Now the launch **self-heals**:
+  it reads the loader's own error, looks for the named library in directories
+  around tmux's install prefix (including one nesting level down, where extracted
+  self-contained bundles keep theirs), points the loader at what it finds, and
+  re-runs tmux to prove it worked. Nothing is installed, downloaded, or written to
+  the machine, and a repair that cannot be demonstrated is rolled back. Because
+  it is re-derived on every invocation, a host whose system libraries are wiped by
+  a restart or a rebuilt container fixes itself on the next launch. If no such
+  library can be found, the launch degrades to bare mode -- naming the soname, the
+  directories searched, and the `AI_CLI_LIBRARY_PATH` override -- *before* a
+  worktree is created rather than after. (`AI-CLI-i2ih`, `AI-CLI-d89q`)
 - `ai c --dry-run` (and `ai g`/`ai p`/`ai cx`) now genuinely does nothing. The
   flag was documented but never declared, and because the session commands set
   `ignore_unknown_options` so engine flags can be forwarded, it was silently
@@ -30,7 +46,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ai doctor` reports tmux by running `tmux -V` rather than only finding it on
   PATH, and says so explicitly when tmux resolves but cannot execute. A tmux that
   died on a missing shared library previously read as `OK tmux` while no session
-  could start.
+  could start. It now also performs the loader repair and, when that succeeds,
+  prints the exact `export` line that makes it permanent for shells outside `ai`.
+- Installing or reinstalling verifies tmux by **executing** it, alongside the
+  existing direnv bootstrap, and never fails the install over it -- there is no
+  native tmux on Windows to provision, and a missing enhancement must not make the
+  package uninstallable. (`AI-CLI-i2ih`)
+- Every tmux decision now hangs on execution rather than resolution:
+  `install_tmux` verifies with `tmux_runs` instead of `tmux_present`, so a package
+  manager that lands a tmux which cannot load its libraries is reported as the
+  failure it is. A tmux that is present but broken is deliberately *not* sent to a
+  package manager: the broken binary keeps its place on PATH, so the install could
+  not be verified to have fixed the tmux that will actually run, and the launch
+  would pay the manager's timeout on every attempt to change nothing.
+  (`AI-CLI-d89q`)
 
 - Corrected stale-session documentation: launch-time housekeeping does not
   terminate tmux sessions. Start the independent reaper with

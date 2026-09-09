@@ -34,6 +34,7 @@ from unittest.mock import patch
 
 import libtmux
 import pytest
+from conftest import tmux_runnable
 
 from ai_cli.main import _do_session_launch
 from ai_cli.session_script import get_engine_script
@@ -81,17 +82,7 @@ def _clean_bin(tmp_path: Path, name: str = "cleanbin") -> Path:
     return bin_dir
 
 
-def _tmux_runnable() -> tuple[bool, str]:
-    if shutil.which("tmux") is None:
-        return False, "tmux binary not available on PATH"
-    try:
-        probe = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"tmux could not be executed: {exc}"
-    return (probe.returncode == 0), "tmux is on PATH but does not run"
-
-
-_TMUX_RUNNABLE, _TMUX_SKIP_REASON = _tmux_runnable()
+_TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
 
 pytestmark = [
     pytest.mark.real_tmux,
