@@ -266,6 +266,161 @@ def test_pull_rebase_autostash_when_clean_pull_then_no_strand(tmp_path):
     assert unmerged_paths(local) == set()
 
 
+def test_given_beads_issues_only_strand_when_pull_completes_then_regenerates_and_clears_it(tmp_path, capsys):
+    """The generated issues mirror is the one safe exception to the strand refusal."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    new_stash = "new-autostash"
+    old_stash = "pre-existing-wip"
+    calls: list[tuple[list[str], dict]] = []
+    unmerged_results = ["", "100644 deadbeef 1\t.beads/issues.jsonl\0"]
+    stash_results = [f"{old_stash}\n", f"{old_stash}\n{new_stash}\n"]
+
+    def mock_run(cmd, **kwargs):
+        command = list(cmd)
+        calls.append((command, kwargs))
+        if command[3:] == ["ls-files", "--unmerged", "-z"]:
+            return MagicMock(returncode=0, stdout=unmerged_results.pop(0), stderr="")
+        if command[3:] == ["stash", "list", "--format=%H"]:
+            return MagicMock(returncode=0, stdout=stash_results.pop(0), stderr="")
+        if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
+            return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+        if command[3:] == ["pull", "--rebase", "--autostash"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[3:] == ["rev-parse", "--absolute-git-dir"]:
+            return MagicMock(returncode=0, stdout=f"{repo / '.git'}\n", stderr="")
+        if command == ["bd", "doctor"]:
+            return MagicMock(returncode=0, stdout="healthy\n", stderr="")
+        if command == ["bd", "export", "--output", ".beads/issues.jsonl"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[3:] == ["add", "--", ".beads/issues.jsonl"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[3:] == ["stash", "show", "--format=", "--name-only", "-z", new_stash]:
+            return MagicMock(returncode=0, stdout=".beads/issues.jsonl\0", stderr="")
+        if command[3:] == ["stash", "drop", new_stash]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess command: {command}")
+
+    with patch("subprocess.run", side_effect=mock_run):
+        pull, stranded = pull_rebase_autostash(repo)
+
+    assert pull.returncode == 0
+    assert stranded is None
+    commands = [command for command, _ in calls]
+    assert ["bd", "doctor"] in commands
+    assert ["bd", "export", "--output", ".beads/issues.jsonl"] in commands
+    assert ["git", "-C", str(repo), "add", "--", ".beads/issues.jsonl"] in commands
+    assert ["git", "-C", str(repo), "stash", "drop", new_stash] in commands
+    assert all(old_stash not in command for command in commands)
+    assert f"dropped stash {new_stash}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("new_paths", "doctor_returncode", "expected_reason"),
+    [
+        (
+            {".beads/issues.jsonl", ".beads/interactions.jsonl"},
+            None,
+            "2 newly conflicted path(s): .beads/interactions.jsonl, .beads/issues.jsonl; "
+            "1 autostash entr(y/ies) left on the stash stack",
+        ),
+        (
+            {".beads/interactions.jsonl"},
+            None,
+            "1 newly conflicted path(s): .beads/interactions.jsonl; 1 autostash entr(y/ies) left on the stash stack",
+        ),
+        (
+            {".beads/issues.jsonl"},
+            1,
+            "1 newly conflicted path(s): .beads/issues.jsonl; 1 autostash entr(y/ies) left on the stash stack",
+        ),
+        (
+            {".beads/issues.jsonl"},
+            OSError("bd is unavailable"),
+            "1 newly conflicted path(s): .beads/issues.jsonl; 1 autostash entr(y/ies) left on the stash stack",
+        ),
+    ],
+)
+def test_given_unsafe_beads_strand_when_pull_completes_then_retains_the_original_refusal(
+    tmp_path, new_paths, doctor_returncode, expected_reason
+):
+    """Only the issues mirror plus a queryable store may bypass the fatal path."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    new_stash = "new-autostash"
+    calls: list[list[str]] = []
+    unmerged_results = ["", "".join(f"100644 deadbeef 1\t{path}\0" for path in sorted(new_paths))]
+    stash_results = ["", f"{new_stash}\n"]
+
+    def mock_run(cmd, **kwargs):
+        command = list(cmd)
+        calls.append(command)
+        if command[3:] == ["ls-files", "--unmerged", "-z"]:
+            return MagicMock(returncode=0, stdout=unmerged_results.pop(0), stderr="")
+        if command[3:] == ["stash", "list", "--format=%H"]:
+            return MagicMock(returncode=0, stdout=stash_results.pop(0), stderr="")
+        if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
+            return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+        if command[3:] == ["pull", "--rebase", "--autostash"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[3:] == ["rev-parse", "--absolute-git-dir"]:
+            return MagicMock(returncode=0, stdout=f"{repo / '.git'}\n", stderr="")
+        if command == ["bd", "doctor"] and doctor_returncode is not None:
+            if isinstance(doctor_returncode, OSError):
+                raise doctor_returncode
+            return MagicMock(returncode=doctor_returncode, stdout="", stderr="unavailable")
+        raise AssertionError(f"unexpected subprocess command: {command}")
+
+    with patch("subprocess.run", side_effect=mock_run):
+        pull, stranded = pull_rebase_autostash(repo)
+
+    assert pull.returncode == 0
+    assert stranded == expected_reason
+    assert ["bd", "export", "--output", ".beads/issues.jsonl"] not in calls
+    assert ["git", "-C", str(repo), "add", "--", ".beads/issues.jsonl"] not in calls
+
+
+def test_given_issues_only_strand_with_nonissues_autostash_when_repaired_then_retains_stash(tmp_path, capsys):
+    """Resolving the generated file never requires discarding an unsafe stash."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    new_stash = "new-autostash"
+    calls: list[list[str]] = []
+    unmerged_results = ["", "100644 deadbeef 1\t.beads/issues.jsonl\0"]
+    stash_results = ["", f"{new_stash}\n"]
+
+    def mock_run(cmd, **kwargs):
+        command = list(cmd)
+        calls.append(command)
+        if command[3:] == ["ls-files", "--unmerged", "-z"]:
+            return MagicMock(returncode=0, stdout=unmerged_results.pop(0), stderr="")
+        if command[3:] == ["stash", "list", "--format=%H"]:
+            return MagicMock(returncode=0, stdout=stash_results.pop(0), stderr="")
+        if command[3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
+            return MagicMock(returncode=0, stdout="origin/main\n", stderr="")
+        if command[3:] == ["pull", "--rebase", "--autostash"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[3:] == ["rev-parse", "--absolute-git-dir"]:
+            return MagicMock(returncode=0, stdout=f"{repo / '.git'}\n", stderr="")
+        if command == ["bd", "doctor"]:
+            return MagicMock(returncode=0, stdout="healthy\n", stderr="")
+        if command == ["bd", "export", "--output", ".beads/issues.jsonl"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[3:] == ["add", "--", ".beads/issues.jsonl"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[3:] == ["stash", "show", "--format=", "--name-only", "-z", new_stash]:
+            return MagicMock(returncode=0, stdout=".beads/interactions.jsonl\0", stderr="")
+        raise AssertionError(f"unexpected subprocess command: {command}")
+
+    with patch("subprocess.run", side_effect=mock_run):
+        pull, stranded = pull_rebase_autostash(repo)
+
+    assert pull.returncode == 0
+    assert stranded is None
+    assert ["git", "-C", str(repo), "stash", "drop", new_stash] not in calls
+    assert "left newly created stash entries in place" in capsys.readouterr().err
+
+
 def test_pull_rebase_autostash_when_repo_holds_unrelated_wip_stashes_then_clean_pull_is_not_flagged(tmp_path):
     """Regression for the false positive that made the previous guard useless:
     it reported ANY stash entry as a strand. The stranded host's main tree held

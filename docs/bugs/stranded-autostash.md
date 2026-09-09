@@ -147,8 +147,22 @@ The existing `git rebase --abort` + `git restore --staged .` cleanup on the laun
 started. Unconditionally, it aborted a rebase the user was part-way through and cleared their
 conflict stages — destroying resolution work in the name of preventing corruption.
 
-Nothing else is auto-repaired and no stash is ever dropped: the user's work is in the stash and only
-they can say how to reconcile it.
+Outside the documented exception below, nothing else is auto-repaired and no stash is ever dropped:
+the user's work is in the stash and only they can say how to reconcile it.
+
+### 2026-09-09 exception: regenerated Beads issues mirror
+
+The sole exception is a stranded pull whose newly unmerged paths are **exactly**
+`.beads/issues.jsonl`. After `bd doctor` confirms the live store is queryable,
+`pull_rebase_autostash()` regenerates that generated mirror with
+`bd export --output .beads/issues.jsonl` and stages the result. It then drops a newly created stash
+only when that stash's own diff also touches exactly `.beads/issues.jsonl`; pre-existing stashes and
+new stashes with any other path remain untouched. The correction is logged visibly.
+
+`.beads/interactions.jsonl` is explicitly excluded, alone or alongside the issues mirror: it is an
+append-only audit log, not a regenerable projection. Any strand involving it, any other path, an
+unavailable or unhealthy `bd` store, or a failed export/stage operation retains the existing fatal
+refusal unchanged.
 
 ## Proving the guard can fail
 

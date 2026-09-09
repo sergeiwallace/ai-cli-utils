@@ -277,6 +277,108 @@ def _pull_refspec(repo_root: Path) -> list[str]:
     return ["origin", current]
 
 
+_BEADS_ISSUES_MIRROR = ".beads/issues.jsonl"
+
+
+def _repair_beads_issues_autostash_strand(repo_root: Path, new_unmerged: set[str], new_stashes: set[str]) -> bool:
+    """Regenerate the Beads issues mirror for its one safe conflict shape.
+
+    ``.beads/issues.jsonl`` is a generated projection of the live Beads store;
+    no other file, including ``.beads/interactions.jsonl``, has this property.
+    Every failure leaves the original strand for callers to refuse as usual.
+    """
+    if new_unmerged != {_BEADS_ISSUES_MIRROR}:
+        return False
+
+    try:
+        doctor = subprocess.run(
+            ["bd", "doctor"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            check=False,
+        )
+    except OSError:
+        return False
+    if doctor.returncode != 0:
+        return False
+
+    try:
+        export = subprocess.run(
+            ["bd", "export", "--output", _BEADS_ISSUES_MIRROR],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            check=False,
+        )
+    except OSError:
+        return False
+    if export.returncode != 0:
+        return False
+
+    try:
+        staged = subprocess.run(
+            ["git", "-C", str(repo_root), "add", "--", _BEADS_ISSUES_MIRROR],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+    except OSError:
+        return False
+    if staged.returncode != 0:
+        return False
+
+    dropped_stashes = []
+    for stash_id in sorted(new_stashes):
+        try:
+            shown = subprocess.run(
+                ["git", "-C", str(repo_root), "stash", "show", "--format=", "--name-only", "-z", stash_id],
+                capture_output=True,
+                text=True,
+                env=_git_env(),
+                check=False,
+            )
+        except OSError:
+            continue
+        stash_paths = {path for path in shown.stdout.split("\0") if path}
+        if shown.returncode != 0 or stash_paths != {_BEADS_ISSUES_MIRROR}:
+            continue
+        try:
+            dropped = subprocess.run(
+                ["git", "-C", str(repo_root), "stash", "drop", stash_id],
+                capture_output=True,
+                text=True,
+                env=_git_env(),
+                check=False,
+            )
+        except OSError:
+            continue
+        if dropped.returncode == 0:
+            dropped_stashes.append(stash_id)
+
+    if dropped_stashes:
+        print(
+            "Auto-resolved a beads-only autostash strand: regenerated "
+            f"{_BEADS_ISSUES_MIRROR} from the live bd store, dropped stash "
+            f"{', '.join(dropped_stashes)}.",
+            file=sys.stderr,
+        )
+    elif new_stashes:
+        print(
+            "Auto-resolved a beads-only autostash strand: regenerated "
+            f"{_BEADS_ISSUES_MIRROR} from the live bd store; left newly created "
+            "stash entries in place because their contents were not safely verified.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"Auto-resolved a beads-only autostash strand: regenerated {_BEADS_ISSUES_MIRROR} from the live bd store.",
+            file=sys.stderr,
+        )
+    return True
+
+
 def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess, str | None]:
     """Run ``git pull --rebase --autostash`` and verify what it actually did.
 
@@ -301,6 +403,11 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
 
     Both deltas are measured against a "before" snapshot, so a conflict the user
     was already resolving, or unrelated WIP stashes, are not misattributed.
+
+    The sole auto-repair exception is a newly conflicted
+    ``.beads/issues.jsonl`` alone. If ``bd doctor`` can query the live Beads
+    store, its generated mirror is exported and staged; all other conflict
+    shapes retain the returned strand reason unchanged.
 
     A non-zero exit with a clean tree (no network, say) is NOT a strand: the
     caller can carry on from the existing checkout, and gets the exit code via
@@ -349,6 +456,8 @@ def pull_rebase_autostash(repo_root: Path) -> tuple[subprocess.CompletedProcess,
     if new_stashes:
         reasons.append(f"{len(new_stashes)} autostash entr(y/ies) left on the stash stack")
     if not reasons:
+        return result, None
+    if _repair_beads_issues_autostash_strand(repo_root, new_unmerged, new_stashes):
         return result, None
     return result, "; ".join(reasons)
 
