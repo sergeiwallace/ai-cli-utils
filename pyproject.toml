@@ -135,6 +135,9 @@ include = ["src", "tests"]
 extraPaths = ["src", "scripts"]
 
 [tool.ruff]
+# Depends on ai-harness being cloned at ~/projects/ai-harness. If this repo is checked out
+# standalone (no ai-harness present), comment out the line below, or clone ai-harness first.
+extend = "~/projects/ai-harness/lint/ruff-base.toml"
 line-length = 120
 
 [tool.ruff.lint]
