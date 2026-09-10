@@ -135,8 +135,8 @@ include = ["src", "tests"]
 extraPaths = ["src", "scripts"]
 
 [tool.ruff]
-# Depends on ai-harness being cloned at ~/projects/ai-harness. If this repo is checked out
-# standalone (no ai-harness present), comment out the line below, or clone ai-harness first.
+# Fleet lint baseline, written by ai-harness install.sh -- the path is resolved per machine.
+# If this repo is checked out standalone with no ai-harness present, comment out the line below.
 extend = "~/projects/ai-harness/lint/ruff-base.toml"
 line-length = 120
 
