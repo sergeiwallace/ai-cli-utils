@@ -12,7 +12,7 @@ Usage:
     ai ps --refresh          # force SSH re-check of remote host
     ai ps clean              # prompt before killing orphaned processes
     ai ps clean --force      # kill orphaned + suspect without prompting
-    ai ps cron               # silent auto-clean (for cron or session-start hook)
+    ai ps cron               # non-destructive state/cache maintenance
 """
 
 from __future__ import annotations
@@ -834,11 +834,9 @@ def cmd_ps(
         return 0
 
     if action == "cron" or cron_mode:
-        # Silent auto-clean: orphaned local only, log, print summary if any
-        killed = auto_clean_orphans(local, log_path=log_path)
-        if killed:
-            out(f"[ai ps] Cleaned {len(killed)} orphaned process(es). Run 'ai ps' for details.")
-        # Clean up stale transport state files (parent PID dead)
+        # This path runs implicitly during session startup, so heuristic process
+        # scores may inform reports but can never authorize a signal.  Only the
+        # explicit, user-confirmed ``ai ps clean`` path has process-kill authority.
         _clean_stale_transport_files()
         # Also refresh remote cache
         if remote_host and remote_user:

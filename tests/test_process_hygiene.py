@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 from ai_cli.process_hygiene import (
@@ -820,20 +822,47 @@ class TestCmdPs:
         call_kwargs = mock_remote.call_args
         assert call_kwargs.kwargs.get("force_refresh") is True
 
-    def test_given_ps_cron_when_orphans_found_then_prints_summary(self):
+    def test_given_ps_cron_when_orphans_found_then_it_does_not_auto_clean(self):
         orphan = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
         output: list[str] = []
 
         with (
             patch("ai_cli.process_hygiene.collect_local_processes", return_value=[orphan]),
             patch("ai_cli.process_hygiene.collect_remote_processes", return_value=([], None)),
-            patch("ai_cli.process_hygiene.auto_clean_orphans", return_value=[orphan]),
+            patch("ai_cli.process_hygiene.auto_clean_orphans") as mock_clean,
         ):
             rc = cmd_ps(["cron"], self._make_config(), stdout_fn=output.append)
 
         assert rc == 0
-        full = "\n".join(output)
-        assert "Cleaned 1" in full
+        mock_clean.assert_not_called()
+        assert output == []
+
+    def test_given_live_sibling_mosh_server_when_ps_cron_runs_then_process_survives(self, tmp_path):
+        """Background maintenance must never terminate a process by heuristic."""
+        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        score, detail = score_mosh_server(
+            sibling.pid,
+            25 * 3600,
+            "mosh-server new -s -c 256 -l LANG=en_US.UTF-8",
+            set(),
+            {"c-r-myproject-1": True},
+        )
+        classified = _proc(pid=sibling.pid, score=score, verdict=_verdict_for(score), detail=detail)
+        try:
+            with (
+                patch("ai_cli.process_hygiene.collect_local_processes", return_value=[classified]),
+                patch("ai_cli.process_hygiene.collect_remote_processes", return_value=([], None)),
+                patch("ai_cli.process_hygiene._clean_stale_transport_files"),
+            ):
+                rc = cmd_ps(["cron"], self._make_config(), stdout_fn=lambda _line: None)
+
+            assert rc == 0
+            assert score == ORPHAN_THRESHOLD, detail
+            assert sibling.poll() is None, "cron terminated a live sibling mosh transport"
+        finally:
+            if sibling.poll() is None:
+                sibling.terminate()
+            sibling.wait(timeout=5)
 
     def test_given_ps_cron_when_no_orphans_then_no_output(self):
         output: list[str] = []
