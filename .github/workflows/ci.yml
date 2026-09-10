@@ -1,7 +1,13 @@
 name: CI
 
-# GitHub Actions CI is retired; see docs/procedures/github-actions-retirement.md.
+# Runs on GitHub-hosted standard runners, which are free and unmetered for public
+# repositories. This workflow was previously restricted to workflow_dispatch on the
+# belief that Actions billing blocked it; that was measured false --
+# docs/procedures/github-actions-status.md records the evidence.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
