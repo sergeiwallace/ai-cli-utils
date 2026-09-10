@@ -26,6 +26,7 @@ import click
 import pytest
 from conftest import run_cli
 
+from ai_cli.copier_update import CopierUpdateInspection, DeliveredUpdate
 from ai_cli.main import (
     _auto_update_if_stale,
     _deploy_cc_config_files,
@@ -33,6 +34,45 @@ from ai_cli.main import (
     cli,
     main,
 )
+
+
+class TestCmdCopierUpdate:
+    def test_given_no_inspection_output_when_invoked_then_preserves_existing_dispatch(self):
+        with patch("ai_cli.copier_update.run_copier_update", return_value=0) as run_update:
+            exit_code, _, _ = run_cli(["ai", "copier-update"])
+
+        assert exit_code == 0
+        run_update.assert_called_once_with(dry_run=False, project_filter=None, isolate=True, push=True)
+
+    def test_given_inspection_output_when_invoked_then_writes_json_and_returns_inspection_exit_code(self, tmp_path):
+        output = tmp_path / "inspection.json"
+        inspection = CopierUpdateInspection(
+            exit_code=0,
+            delivered_updates=(DeliveredUpdate(tmp_path / "myproject", "a" * 40, {"message.txt": b"updated\n"}),),
+        )
+        with patch("ai_cli.copier_update.run_copier_update", return_value=inspection) as run_update:
+            exit_code, _, _ = run_cli(["ai", "copier-update", "-i", str(output), "--no-push"])
+
+        assert exit_code == 0
+        run_update.assert_called_once_with(dry_run=False, project_filter=None, isolate=True, push=False, inspect=True)
+        assert json.loads(output.read_text())["delivered_updates"][0]["changed_files"] == {
+            "message.txt": {"encoding": "utf-8", "content": "updated\n"}
+        }
+
+    def test_given_inspection_output_with_push_when_invoked_then_rejects_combination(self, tmp_path):
+        exit_code, _, stderr = run_cli(["ai", "copier-update", "-i", str(tmp_path / "inspection.json")])
+
+        assert exit_code == 1
+        assert "--inspect-output requires --no-push" in stderr
+
+    def test_given_inspection_output_with_no_isolate_when_invoked_then_rejects_combination(self, tmp_path):
+        exit_code, _, stderr = run_cli(
+            ["ai", "copier-update", "--inspect-output", str(tmp_path / "inspection.json"), "--no-push", "--no-isolate"]
+        )
+
+        assert exit_code == 1
+        assert "--inspect-output requires isolated mode" in stderr
+
 
 # --- `ai internal refresh-template` ---
 

@@ -23,6 +23,8 @@ does not require a caller-managed cleanup step or leave resources behind.
 
 from __future__ import annotations
 
+import base64
+import json
 import shutil
 import subprocess
 import sys
@@ -62,6 +64,37 @@ class CopierUpdateInspection:
 
     exit_code: int
     delivered_updates: tuple[DeliveredUpdate, ...]
+
+
+def write_copier_update_inspection(inspection: CopierUpdateInspection, output_path: Path) -> None:
+    """Write an inspection result as JSON for a subprocess caller.
+
+    File contents that are valid UTF-8 are emitted as strings with
+    ``encoding: "utf-8"``. All other bytes use base64 with ``encoding:
+    "base64"``. A null file value records a deletion.
+    """
+
+    def encode_content(content: bytes | None) -> dict[str, str] | None:
+        if content is None:
+            return None
+        try:
+            return {"encoding": "utf-8", "content": content.decode("utf-8")}
+        except UnicodeDecodeError:
+            return {"encoding": "base64", "content": base64.b64encode(content).decode("ascii")}
+
+    payload = {
+        "exit_code": inspection.exit_code,
+        "delivered_updates": [
+            {
+                "project_name": update.project_dir.name,
+                "project_path": str(update.project_dir),
+                "commit_hash": update.commit_hash,
+                "changed_files": {path: encode_content(content) for path, content in update.changed_files.items()},
+            }
+            for update in inspection.delivered_updates
+        ],
+    }
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _find_copier_projects(projects_dir: Path) -> list[Path]:
