@@ -14,6 +14,26 @@ import subprocess
 from pathlib import Path
 
 _SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
+
+# Every top-level directory this repository legitimately tracks. Anything else
+# appearing in the index is a generated or machine-specific artefact until proven
+# otherwise -- see the guard that consumes this for why the allowlist is
+# enumerated rather than the offenders being pattern-matched.
+_EXPECTED_TOP_LEVEL_DIRS = frozenset(
+    {
+        ".beads",
+        ".claude",
+        ".githooks",
+        ".github",
+        ".vscode",
+        "assets",
+        "demo",
+        "docs",
+        "scripts",
+        "src",
+        "tests",
+    }
+)
 _LINE_EXEMPTION_MARKER = "public-hygiene: allow"
 _EXEMPTION_PATHS = frozenset(
     {
@@ -139,6 +159,87 @@ def test_given_the_repository_index_when_listed_then_no_claude_code_install_lock
         + "\n".join(f"  {path}" for path in offenders)
         + "\nUntrack them with `git rm --cached <path>`; `.gitignore` does not untrack an existing entry."
     )
+
+
+def _tracked_top_level_dirs(repo_root: Path) -> set[str]:
+    """Return the name of every top-level directory with a tracked file under it."""
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=repo_root,
+    ).stdout
+    return {path.split("/", 1)[0] for path in listing.split("\0") if path and "/" in path}
+
+
+def test_given_the_repository_index_when_listed_then_no_unexpected_top_level_directory_is_tracked():
+    """Generalises the ``claude/`` guard above from one name to the whole class.
+
+    That test was written for one directory name after one incident. The same
+    structural hole then admitted a second artefact by the same mechanism: a
+    captured process listing at ``ai-cli-utils/remote-ps-cache.json``, written
+    there because a set-but-empty ``XDG_STATE_HOME`` left the resolved state
+    path relative to the cwd. Both are top-level directories, and
+    ``scan_for_private_names`` walks a fixed allowlist of paths, so neither was
+    ever in its field of view.
+
+    Enumerating what *may* be tracked inverts that: an artefact directory nobody
+    anticipated fails this test on arrival instead of waiting for someone to add
+    a third per-name check. The cost is that a genuinely new source directory
+    must be added to ``_EXPECTED_TOP_LEVEL_DIRS`` deliberately, which is the
+    point -- it is one line, and it forces the question to be asked.
+
+    Asserted against the git INDEX rather than the filesystem: these directories
+    are expected to exist on disk in a working checkout. Being present is
+    normal; being *tracked* is the defect. Note that a ``.gitignore`` entry
+    cannot substitute for this, because ignore rules do not apply to paths that
+    are already tracked.
+
+    Scope limit, stated rather than implied: this covers directories only. A
+    stray top-level *file* would still pass, because the set of legitimate
+    top-level files is large and changes often enough that pinning it would
+    produce failures that teach nothing. Both observed incidents were
+    directories.
+    """
+    offenders = sorted(_tracked_top_level_dirs(_repo_root()) - _EXPECTED_TOP_LEVEL_DIRS)
+
+    assert not offenders, (
+        "unexpected top-level directories are tracked in a public repository:\n"
+        + "\n".join(f"  {name}/" for name in offenders)
+        + "\nIf one is a real source directory, add it to _EXPECTED_TOP_LEVEL_DIRS."
+        "\nIf it is a generated or machine-specific artefact, untrack it with"
+        " `git rm --cached -r <dir>` and add it to .gitignore -- ignoring alone"
+        " does not untrack an existing entry."
+    )
+
+
+def test_given_an_unexpected_tracked_top_level_directory_when_checked_then_it_is_flagged(tmp_path):
+    """Negative control: the guard must actually be able to fail.
+
+    Builds a real git repository and tracks an artefact directory in it, so the
+    assertion exercises ``git ls-files`` rather than a stubbed listing. Without
+    this, a guard whose subprocess silently returned nothing would look
+    identical to a clean repository.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    artefact = tmp_path / "some-artefact-dir"
+    artefact.mkdir()
+    (artefact / "cache.json").write_text("{}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+
+    assert _tracked_top_level_dirs(tmp_path) == {"some-artefact-dir"}
+
+
+def test_given_only_expected_top_level_directories_when_checked_then_nothing_is_flagged(tmp_path):
+    """Positive control: an expected directory must not be reported."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    expected = tmp_path / "src"
+    expected.mkdir()
+    (expected / "module.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+
+    assert _tracked_top_level_dirs(tmp_path) - _EXPECTED_TOP_LEVEL_DIRS == set()
 
 
 def test_given_a_line_that_uses_the_private_name_as_a_project_name_when_scanned_then_it_is_flagged(tmp_path):

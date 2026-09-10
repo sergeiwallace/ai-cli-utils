@@ -59,6 +59,15 @@ dev.db
 # tests/test_public_repo_hygiene.py.
 claude/
 
+# This project's own state directory, for the same reason and by the same
+# mechanism, in our code rather than Claude Code's: `os.environ.get(var,
+# default)` returns "" for a variable that is set-but-empty, so the fallback
+# never fired and `Path("") / "ai-cli-utils"` stayed relative to the cwd. A
+# captured process listing was committed here that way. The resolver is fixed
+# (config.resolve_base_dir ignores empty and non-absolute values), so this entry
+# is defence in depth against a stale build or an older install, not the fix.
+ai-cli-utils/
+
 # Test artifacts
 test.db
 .coverage
