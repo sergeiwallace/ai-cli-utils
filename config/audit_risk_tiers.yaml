@@ -1,0 +1,25 @@
+# Policy, not code: values are calibrated from fleet receipt telemetry.
+low:
+  audit_budget: 4
+  cluster_recurrence_limit: 2
+  blocking_streak_limit: 3
+  respecify_requires_human_ratification: false
+  model_check_required_on_respecify_number: null
+standard:
+  audit_budget: 8
+  cluster_recurrence_limit: 2
+  blocking_streak_limit: 3
+  respecify_requires_human_ratification: false
+  model_check_required_on_respecify_number: null
+high:
+  audit_budget: 12
+  cluster_recurrence_limit: 2
+  blocking_streak_limit: 3
+  respecify_requires_human_ratification: true
+  model_check_required_on_respecify_number: null
+destructive-state-machine:
+  audit_budget: 16
+  cluster_recurrence_limit: 2
+  blocking_streak_limit: 3
+  respecify_requires_human_ratification: true
+  model_check_required_on_respecify_number: 2
