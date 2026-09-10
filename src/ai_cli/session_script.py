@@ -582,9 +582,8 @@ def get_engine_script(
       watcher_pid=$!
     }}
 
-    # Auto-clean orphaned processes at session start (score >= 80, local only).
-    # Runs in foreground so orphans are gone before CC launches. Suppressed
-    # when process_hygiene.auto_clean is false in config.toml.
+    # Refresh non-destructive process-hygiene state before the agent starts.
+    # Session lifecycle code must never signal another session's processes.
     ai ps cron &>/dev/null || true
 
     # Auto-start sync watch and memory watch (PID files prevent duplicates)
