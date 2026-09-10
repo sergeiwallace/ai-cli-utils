@@ -1,9 +1,12 @@
 """Tests for ai cdp start/stop/status subcommand."""
 
+import json
 import socket
+import subprocess
 import sys
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 
 from ai_cli import tunnel
@@ -29,6 +32,16 @@ def _make_config(binary_path="", port=9222):
         if port != 9222:
             cfg["cdp"]["port"] = port
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def _managed_process_state_writer():
+    def write_identity(path, pid, port):
+        path.write_text(json.dumps({"pid": pid, "port": port}))
+        return True
+
+    with patch("ai_cli.tunnel._write_process_identity", side_effect=write_identity):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +115,7 @@ class TestCmdCdpStart:
 
         pid_file = tmp_path / "cdp-9222.pid"
         assert pid_file.exists()
-        assert pid_file.read_text() == "12345"
+        assert json.loads(pid_file.read_text()) == {"pid": 12345, "port": 9222}
 
     def test_when_not_running_then_prints_ready(self, tmp_path, capsys):
         mock_proc = MagicMock()
@@ -156,7 +169,7 @@ class TestCmdCdpStart:
         pid_file.write_text("55555")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel._pid_alive", return_value=True),
+            patch("ai_cli.tunnel._registered_process", return_value=(MagicMock(pid=55555), MagicMock())),
             patch("subprocess.Popen") as mock_popen,
         ):
             _cmd_cdp_start(9222, True, {})
@@ -178,7 +191,7 @@ class TestCmdCdpStart:
         ):
             _cmd_cdp_start(9222, True, {})
 
-        assert pid_file.read_text() == "66666"
+        assert json.loads(pid_file.read_text()) == {"pid": 66666, "port": 9222}
 
     def test_when_no_chrome_found_then_exits_1(self, tmp_path, capsys):
         with (
@@ -340,7 +353,7 @@ class TestCmdCdpStartMacOS:
 
         pid_file = tmp_path / "cdp-9222.pid"
         assert pid_file.exists()
-        assert pid_file.read_text() == "55555"
+        assert json.loads(pid_file.read_text()) == {"pid": 55555, "port": 9222}
 
     def test_when_on_macos_and_no_pid_found_then_no_pid_file(self, tmp_path, capsys):
         with (
@@ -386,9 +399,11 @@ class TestCmdCdpStop:
         pid_file = tmp_path / "cdp-9222.pid"
         pid_file.write_text("12345")
         mock_proc = MagicMock()
+        identity = MagicMock(pid=12345)
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
+            patch("ai_cli.tunnel._read_process_identity", return_value=identity),
+            patch("ai_cli.tunnel._matching_process", return_value=mock_proc),
         ):
             _cmd_cdp_stop(9222)
 
@@ -400,12 +415,51 @@ class TestCmdCdpStop:
         mock_proc = MagicMock()
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
+            patch("ai_cli.tunnel._registered_process", return_value=(MagicMock(pid=77777), mock_proc)),
         ):
             _cmd_cdp_stop(9222)
 
         mock_proc.terminate.assert_not_called()
         assert "No CDP process registered" in capsys.readouterr().out
+
+    def test_given_legacy_pid_reused_when_cdp_stop_runs_then_live_process_survives(self, tmp_path, capsys):
+        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        pid_file = tmp_path / "cdp-9222.pid"
+        pid_file.write_text(str(sibling.pid))
+        try:
+            with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
+                _cmd_cdp_stop(9222)
+
+            assert sibling.poll() is None
+            assert not pid_file.exists()
+            assert "no process was stopped" in capsys.readouterr().out
+        finally:
+            if sibling.poll() is None:
+                sibling.terminate()
+            sibling.wait(timeout=5)
+
+    def test_given_full_process_identity_when_cdp_stop_runs_then_terminates_exact_process(self, tmp_path):
+        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        live = psutil.Process(sibling.pid)
+        pid_file = tmp_path / "cdp-9222.pid"
+        pid_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "pid": sibling.pid,
+                    "create_time": live.create_time(),
+                    "executable": live.exe(),
+                    "command": live.cmdline(),
+                    "port": 9222,
+                }
+            )
+        )
+
+        with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
+            _cmd_cdp_stop(9222)
+
+        assert sibling.wait(timeout=5) is not None
+        assert not pid_file.exists()
 
     def test_when_process_already_dead_then_still_removes_pid_file(self, tmp_path):
         import psutil as _psutil
@@ -426,9 +480,11 @@ class TestCmdCdpStop:
         pid_file = tmp_path / "cdp-9333.pid"
         pid_file.write_text("77777")
         mock_proc = MagicMock()
+        identity = MagicMock(pid=77777)
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
+            patch("ai_cli.tunnel._read_process_identity", return_value=identity),
+            patch("ai_cli.tunnel._matching_process", return_value=mock_proc),
         ):
             _cmd_cdp_stop(9333)
 
@@ -477,7 +533,7 @@ class TestCmdCdpStatus:
         (tmp_path / "cdp-9222.pid").write_text("12345")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel._pid_alive", return_value=True),
+            patch("ai_cli.tunnel._registered_process", return_value=(MagicMock(pid=12345), MagicMock())),
         ):
             _cmd_cdp_status()
 
@@ -492,7 +548,7 @@ class TestCmdCdpStatus:
         ):
             _cmd_cdp_status()
 
-        assert "dead" in capsys.readouterr().out
+        assert "stale record" in capsys.readouterr().out
         assert not pid_file.exists()
 
     def test_when_multiple_ports_then_reports_each(self, tmp_path, capsys):
@@ -848,7 +904,7 @@ class TestCmdCdpStartPortConflict:
         assert "9222 is in use" in out
         assert "starting CDP on 9223" in out
         assert (tmp_path / "cdp-9223.pid").exists()
-        assert (tmp_path / "cdp-9223.pid").read_text() == "777"
+        assert json.loads((tmp_path / "cdp-9223.pid").read_text()) == {"pid": 777, "port": 9223}
         assert not (tmp_path / "cdp-9222.pid").exists()
 
     def test_when_no_free_port_then_exits_nonzero(self, tmp_path):

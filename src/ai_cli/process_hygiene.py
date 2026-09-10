@@ -57,6 +57,15 @@ class ProcessInfo:
     detail: str
     machine: str  # "local" or "remote"
     args: str = ""
+    create_time: float | None = None
+
+
+def _capture_process_create_time(pid: int) -> float | None:
+    """Capture the immutable psutil creation timestamp for ``pid``."""
+    try:
+        return psutil.Process(pid).create_time()
+    except (OSError, psutil.Error):
+        return None
 
 
 def _clean_stale_transport_files() -> None:
@@ -122,6 +131,7 @@ def collect_idle_since_launch_sessions(
                 detail=f"idle since launch ({_fmt_age(age)}, never used)",
                 machine="local",
                 args=str(data.get("cwd", "")),
+                create_time=_capture_process_create_time(pid),
             )
         )
 
@@ -445,6 +455,7 @@ def collect_local_processes(
                 detail=detail,
                 machine="local",
                 args=args,
+                create_time=_capture_process_create_time(pid),
             )
         )
 
@@ -604,6 +615,7 @@ def auto_clean_orphans(
     processes: list[ProcessInfo],
     log_path: Path,
     dry_run: bool = False,
+    stdout_fn: Callable[[str], None] | None = None,
 ) -> list[ProcessInfo]:
     """
     Send SIGTERM to all local processes with verdict ``"orphaned"`` (score ≥ 80).
@@ -612,8 +624,10 @@ def auto_clean_orphans(
     via ``ai ps clean`` after SSH access is established.
 
     Returns the list of processes that were killed (or would be killed in dry
-    run mode).  Already-dead processes are included: they were stale anyway.
+    run mode). Processes whose captured identity is missing or no longer matches
+    are reported and skipped.
     """
+    out = stdout_fn or print
     killed: list[ProcessInfo] = []
     for proc in processes:
         if proc.verdict != "orphaned":
@@ -623,11 +637,18 @@ def auto_clean_orphans(
         if dry_run:
             killed.append(proc)
             continue
+        if proc.create_time is None:
+            out(f"Skipped PID {proc.pid}: process identity was not captured during inventory.")
+            continue
         try:
-            psutil.Process(proc.pid).terminate()
+            process = psutil.Process(proc.pid)
+            if process.create_time() != proc.create_time:
+                out(f"Skipped PID {proc.pid}: process identity changed after inventory.")
+                continue
+            process.terminate()
             killed.append(proc)
         except psutil.NoSuchProcess:
-            killed.append(proc)  # already dead — count as cleaned
+            out(f"Skipped PID {proc.pid}: process exited after inventory.")
         except (PermissionError, psutil.AccessDenied):
             pass
 
@@ -829,7 +850,7 @@ def cmd_ps(
                 out("Aborted.")
                 return 0
 
-        killed = auto_clean_orphans(to_kill, log_path=log_path)
+        killed = auto_clean_orphans(to_kill, log_path=log_path, stdout_fn=out)
         out(f"Killed {len(killed)} process(es).")
         return 0
 

@@ -3,10 +3,12 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 
 from ai_cli.main import (
@@ -25,6 +27,7 @@ from ai_cli.main import (
     trigger_background_update,
 )
 from ai_cli.session_script import resolve_session_shell
+from ai_cli.tmux_ownership import TmuxSessionIdentity
 
 
 def _venv_python(venv: Path) -> Path:
@@ -623,15 +626,12 @@ class TestCliSessionSetupBranches:
         assert "-s" in command
         assert "--no-sandbox" not in command
 
-    def test_cli_when_sandbox_and_session_exists_then_kills_and_recreates(self, tmp_path):
+    def test_given_owned_session_when_sandbox_launch_runs_then_kills_and_recreates(self, tmp_path):
         killed = []
 
         def _run(cmd, **kwargs):
             if cmd[0] == "tmux" and cmd[1] == "has-session":
                 return MagicMock(returncode=1 if killed else 0)
-            if cmd[0] == "tmux" and cmd[1] == "kill-session":
-                killed.append(True)
-                return MagicMock(returncode=0)
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "g", "1", "--sandbox"]):
@@ -648,10 +648,47 @@ class TestCliSessionSetupBranches:
                                 # call, tripping its worktree-nesting guard when run from a worktree.
                                 with patch("ai_cli.session.detect_repo_root", return_value=None):
                                     with patch("subprocess.run", side_effect=_run):
-                                        with patch("os.execvp", side_effect=SystemExit(0)):
-                                            with pytest.raises(SystemExit):
-                                                cli()
+                                        with patch(
+                                            "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                            return_value=TmuxSessionIdentity("$42", "g-sw-1", "generation-token"),
+                                        ):
+                                            with patch(
+                                                "ai_cli.main._tmux_ownership.kill_owned_tmux_session",
+                                                side_effect=lambda _identity: killed.append(True) or True,
+                                            ):
+                                                with patch("os.execvp", side_effect=SystemExit(0)):
+                                                    with pytest.raises(SystemExit):
+                                                        cli()
         assert len(killed) == 1
+
+    def test_given_foreign_session_when_sandbox_launch_runs_then_refuses_without_kill(self, tmp_path, capsys):
+        commands = []
+
+        def _run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[0] == "tmux" and cmd[1] == "has-session":
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sys.argv", ["ai", "g", "1", "--sandbox"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            patch("subprocess.run", side_effect=_run),
+            patch("ai_cli.main._tmux_ownership.capture_tmux_session_identity", return_value=None),
+            patch("ai_cli.main._tmux_ownership.kill_owned_tmux_session") as kill_owned,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cli()
+
+        assert exc.value.code == 1
+        kill_owned.assert_not_called()
+        assert not any(cmd[0] == "tmux" and cmd[1] == "kill-session" for cmd in commands)
+        assert "not owned" in capsys.readouterr().err
 
     def test_cli_when_no_explicit_sandbox_and_session_exists_then_attaches_without_kill(self):
         killed = []
@@ -2718,6 +2755,15 @@ _TUNNEL_CONFIG = {"remote": {"host": "192.0.2.1", "user": "user"}}
 
 
 class TestTunnel:
+    @pytest.fixture(autouse=True)
+    def _managed_process_state_writer(self):
+        def write_identity(path, pid, port):
+            path.write_text(json.dumps({"pid": pid, "port": port}))
+            return True
+
+        with patch("ai_cli.tunnel._write_process_identity", side_effect=write_identity):
+            yield
+
     def test_cmd_tunnel_start_when_default_then_launches_forward_tunnel(self, tmp_path):
         mock_proc = MagicMock()
         mock_proc.pid = 12345
@@ -2731,7 +2777,7 @@ class TestTunnel:
         assert "-L" in args
         assert "-R" not in args
         assert "9222:localhost:9222" in args
-        assert (tmp_path / "tunnel-9222.pid").read_text() == "12345"
+        assert json.loads((tmp_path / "tunnel-9222.pid").read_text()) == {"pid": 12345, "port": 9222}
 
     def test_cmd_tunnel_start_when_reverse_flag_then_uses_dash_R(self, tmp_path):
         mock_proc = MagicMock()
@@ -2750,7 +2796,7 @@ class TestTunnel:
         (tmp_path / "tunnel-9222.pid").write_text("5555")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel._pid_alive", return_value=True),
+            patch("ai_cli.tunnel._registered_process", return_value=(MagicMock(pid=5555), MagicMock())),
             patch("subprocess.Popen") as mock_popen,
         ):
             _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
@@ -2768,7 +2814,7 @@ class TestTunnel:
         ):
             _cmd_tunnel_start(9222, 9222, config=_TUNNEL_CONFIG)
         mock_popen.assert_called_once()
-        assert (tmp_path / "tunnel-9222.pid").read_text() == "7777"
+        assert json.loads((tmp_path / "tunnel-9222.pid").read_text()) == {"pid": 7777, "port": 9222}
 
     def test_cmd_tunnel_start_suppresses_autossh_output(self, tmp_path):
         mock_proc = MagicMock()
@@ -2807,9 +2853,11 @@ class TestTunnel:
     def test_cmd_tunnel_stop_when_pid_file_exists_then_terminates_and_removes(self, tmp_path):
         (tmp_path / "tunnel-9222.pid").write_text("5678")
         mock_proc = MagicMock()
+        identity = MagicMock(pid=5678)
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel.psutil.Process", return_value=mock_proc),
+            patch("ai_cli.tunnel._read_process_identity", return_value=identity),
+            patch("ai_cli.tunnel._matching_process", return_value=mock_proc),
         ):
             _cmd_tunnel_stop(9222)
         mock_proc.terminate.assert_called_once()
@@ -2819,11 +2867,51 @@ class TestTunnel:
         with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
             _cmd_tunnel_stop(9222)
 
+    def test_given_legacy_pid_reused_when_tunnel_stop_runs_then_live_process_survives(self, tmp_path, capsys):
+        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        (tmp_path / "tunnel-9222.pid").write_text(str(sibling.pid))
+        try:
+            with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
+                _cmd_tunnel_stop(9222)
+
+            assert sibling.poll() is None
+            assert not (tmp_path / "tunnel-9222.pid").exists()
+            assert "no process was stopped" in capsys.readouterr().out
+        finally:
+            if sibling.poll() is None:
+                sibling.terminate()
+            sibling.wait(timeout=5)
+
+    def test_given_command_identity_mismatch_when_tunnel_stop_runs_then_live_process_survives(self, tmp_path):
+        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        live = psutil.Process(sibling.pid)
+        (tmp_path / "tunnel-9222.pid").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "pid": sibling.pid,
+                    "create_time": live.create_time(),
+                    "executable": live.exe(),
+                    "command": ["unrelated-command"],
+                    "port": 9222,
+                }
+            )
+        )
+        try:
+            with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
+                _cmd_tunnel_stop(9222)
+
+            assert sibling.poll() is None
+        finally:
+            if sibling.poll() is None:
+                sibling.terminate()
+            sibling.wait(timeout=5)
+
     def test_cmd_tunnel_status_lists_active_tunnels(self, tmp_path, capsys):
         (tmp_path / "tunnel-9222.pid").write_text("4242")
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel._pid_alive", return_value=True),
+            patch("ai_cli.tunnel._registered_process", return_value=(MagicMock(pid=4242), MagicMock())),
         ):
             _cmd_tunnel_status()
         out = capsys.readouterr().out
@@ -2862,7 +2950,7 @@ class TestTunnel:
         cfg = {**_TUNNEL_CONFIG, "messaging": {"tunnel_port": 4222}}
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
-            patch("ai_cli.tunnel._pid_alive", return_value=True),
+            patch("ai_cli.tunnel._registered_process", return_value=(MagicMock(pid=9999), MagicMock())),
             patch("subprocess.Popen") as mock_popen,
         ):
             _ensure_nats_tunnel(cfg)
@@ -3092,7 +3180,8 @@ class TestSelfUpdatePreservesEditableInstall:
             encoding="utf-8",
         )
         venv = tmp_path / "venv"
-        subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True)
+        uv_env = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+        subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True, env=uv_env)
         python = _venv_python(venv)
 
         def markers():
@@ -3111,6 +3200,7 @@ class TestSelfUpdatePreservesEditableInstall:
             [uv, "pip", "install", "--python", str(python), "-e", str(pkg)],
             check=True,
             capture_output=True,
+            env=uv_env,
         )
         assert markers(), "editable install left no marker — fixture is wrong"
 
@@ -3118,6 +3208,7 @@ class TestSelfUpdatePreservesEditableInstall:
             [uv, "pip", "install", "--python", str(python), str(pkg)],
             check=True,
             capture_output=True,
+            env=uv_env,
         )
 
         assert markers() == [], "a plain install no longer clobbers the editable marker"
@@ -3138,7 +3229,8 @@ class TestSelfUpdatePreservesEditableInstall:
             encoding="utf-8",
         )
         venv = tmp_path / "venv"
-        subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True)
+        uv_env = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+        subprocess.run([uv, "venv", str(venv), "-q"], check=True, capture_output=True, env=uv_env)
         python = _venv_python(venv)
 
         for _ in range(2):
@@ -3146,6 +3238,7 @@ class TestSelfUpdatePreservesEditableInstall:
                 [uv, "pip", "install", "--python", str(python), "-e", str(pkg)],
                 check=True,
                 capture_output=True,
+                env=uv_env,
             )
 
         markers = {

@@ -36,6 +36,7 @@ from ai_cli.stale_session_reaper import (
     run_stale_session_reaper,
     write_heartbeat,
 )
+from ai_cli.tmux_ownership import capture_tmux_session_identity, kill_owned_tmux_session
 
 
 class _ControlledTmux:
@@ -604,6 +605,50 @@ def test_given_matching_dead_managed_session_when_fence_runs_then_it_kills_the_e
     assert fingerprint is not None
     assert adapter.fence_and_kill(candidate.session_id, fingerprint)
     assert _tmux_run(real_tmux_socket, "has-session", "-t", candidate.session_id).returncode != 0
+
+
+@pytest.mark.real_tmux
+def test_given_foreign_tokenless_session_when_identity_is_captured_then_session_survives(real_tmux_socket: str):
+    assert _tmux_run(real_tmux_socket, "new-session", "-d", "-s", "foreign-session", "sleep", "30").returncode == 0
+
+    identity = capture_tmux_session_identity("foreign-session", tmux_command=("tmux", "-S", real_tmux_socket))
+
+    assert identity is None
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", "foreign-session").returncode == 0
+
+
+@pytest.mark.real_tmux
+def test_given_generation_changes_before_owned_kill_when_fence_runs_then_session_survives(real_tmux_socket: str):
+    assert _tmux_run(real_tmux_socket, "new-session", "-d", "-s", "managed-session", "sleep", "30").returncode == 0
+    assert (
+        _tmux_run(
+            real_tmux_socket,
+            "set-option",
+            "-t",
+            "managed-session",
+            "@ai_cli_session_generation",
+            "first-generation",
+        ).returncode
+        == 0
+    )
+    identity = capture_tmux_session_identity("managed-session", tmux_command=("tmux", "-S", real_tmux_socket))
+    assert identity is not None
+    assert (
+        _tmux_run(
+            real_tmux_socket,
+            "set-option",
+            "-t",
+            "managed-session",
+            "@ai_cli_session_generation",
+            "replacement-generation",
+        ).returncode
+        == 0
+    )
+
+    killed = kill_owned_tmux_session(identity, tmux_command=("tmux", "-S", real_tmux_socket))
+
+    assert killed is False
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", "managed-session").returncode == 0
 
 
 @pytest.mark.real_tmux

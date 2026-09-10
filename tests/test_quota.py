@@ -33,6 +33,7 @@ from ai_cli.quota import (
     quota_sync_from_remote,
     reap_cc_update_staging,
 )
+from ai_cli.tmux_ownership import TmuxSessionIdentity
 
 # --- _parse_usage_output ---
 
@@ -443,7 +444,13 @@ class TestCcUpdateStagingLeak:
                 sent.append(cmd[4])
             return r
 
-        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+        identity = TmuxSessionIdentity("$42", "ai-quota-scrape-test", "test-generation")
+        with (
+            patch("subprocess.run", side_effect=fake_run),
+            patch("time.sleep"),
+            patch("ai_cli.quota.capture_tmux_session_identity", return_value=identity),
+            patch("ai_cli.quota.kill_owned_tmux_session", return_value=True),
+        ):
             _scrape_usage_hidden_pane()
 
         launch = [s for s in sent if "claude" in s]
@@ -505,6 +512,17 @@ class TestCcUpdateStagingLeak:
 
 
 class TestScrapeUsageHiddenPane:
+    @pytest.fixture(autouse=True)
+    def _managed_scrape_identity(self):
+        identity = TmuxSessionIdentity("$42", "ai-quota-scrape-test", "test-generation")
+        with (
+            patch("ai_cli.quota.capture_tmux_session_identity", return_value=identity) as capture,
+            patch("ai_cli.quota.kill_owned_tmux_session", return_value=True) as kill,
+        ):
+            self.capture_identity = capture
+            self.kill_owned = kill
+            yield
+
     def _make_cap_result(self, stdout: str, returncode: int = 0) -> MagicMock:
         r = MagicMock()
         r.returncode = returncode
@@ -526,6 +544,18 @@ class TestScrapeUsageHiddenPane:
             result = _scrape_usage_hidden_pane()
         assert result is None
 
+    def test_given_unprovable_session_identity_when_scrape_runs_then_cleanup_kill_is_unreachable(self):
+        ok = MagicMock(returncode=0)
+
+        with (
+            patch("subprocess.run", return_value=ok),
+            patch("ai_cli.quota.capture_tmux_session_identity", return_value=None),
+        ):
+            result = _scrape_usage_hidden_pane()
+
+        assert result is None
+        self.kill_owned.assert_not_called()
+
     def _make_new_session_result(self) -> MagicMock:
         r = MagicMock()
         r.returncode = 0
@@ -538,14 +568,10 @@ class TestScrapeUsageHiddenPane:
         new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
-        killed = []
 
         def fake_run(cmd, **kwargs):
             if cmd[0] == "tmux" and cmd[1] == "new-session":
                 return new_sess
-            if cmd[0] == "tmux" and cmd[1] == "kill-session":
-                killed.append(True)
-                return ok
             if cmd[0] == "tmux" and cmd[1] == "capture-pane":
                 return no_prompt
             return ok
@@ -553,10 +579,9 @@ class TestScrapeUsageHiddenPane:
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             result = _scrape_usage_hidden_pane()
         assert result is None
-        assert killed, "kill-session must be called on timeout path"
+        self.kill_owned.assert_called_once()
 
-    def test_when_session_name_used_as_capture_target(self):
-        """Session-name target is used for capture-pane, not index-based :N."""
+    def test_given_captured_identity_when_scrape_runs_then_opaque_session_id_is_targeted(self):
         new_sess = self._make_new_session_result()
         ok = MagicMock()
         ok.returncode = 0
@@ -575,7 +600,28 @@ class TestScrapeUsageHiddenPane:
             _scrape_usage_hidden_pane()
 
         assert targets_seen, "capture-pane must be called"
-        assert all(t == "ai-quota-scrape" for t in targets_seen), f"expected ai-quota-scrape, got {targets_seen}"
+        assert all(t == "$42" for t in targets_seen)
+
+    def test_given_scrape_start_when_session_is_created_then_name_is_unique_and_no_pre_kill_runs(self):
+        new_sess = self._make_new_session_result()
+        ok = MagicMock(returncode=0)
+        commands: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[1] == "new-session":
+                return new_sess
+            if cmd[1] == "capture-pane":
+                return self._make_cap_result("Starting...\n")
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            _scrape_usage_hidden_pane()
+
+        created_name = next(cmd[cmd.index("-s") + 1] for cmd in commands if cmd[1] == "new-session")
+        assert created_name.startswith("ai-quota-scrape-")
+        assert created_name != "ai-quota-scrape"
+        assert not any(cmd[1] == "kill-session" for cmd in commands)
 
     def test_when_usage_output_captured_then_returns_snapshot(self):
         """Happy path: prompt appears, /usage output appears, snapshot returned."""
@@ -682,23 +728,19 @@ class TestScrapeUsageHiddenPane:
         assert isinstance(result, QuotaSnapshot), "should fall back to local estimate, not None"
         assert result.weekly_all_models_pct == 3.0, "should return the local session value"
 
-    def test_when_exception_raised_then_returns_none_and_kills_session(self):
-        """Exception mid-scrape must not propagate; kill-session must still fire."""
-        killed = []
+    def test_given_scrape_exception_when_cleanup_runs_then_owned_session_is_killed(self):
+        """Exception after identity capture must still clean up that identity."""
 
         def fake_run(cmd, **kwargs):
-            if cmd[0] == "tmux" and cmd[1] == "kill-session":
-                killed.append(True)
-                r = MagicMock()
-                r.returncode = 0
-                return r
+            if cmd[1] in {"new-session", "set-option"}:
+                return MagicMock(returncode=0)
             raise RuntimeError("tmux broken")
 
         with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
             result = _scrape_usage_hidden_pane()
 
         assert result is None
-        assert killed, "kill-session must be called even on exception"
+        self.kill_owned.assert_called_once()
 
     def test_window_size_latest_restored_after_resize(self):
         """resize-window sets window-size=manual as a tmux side effect.

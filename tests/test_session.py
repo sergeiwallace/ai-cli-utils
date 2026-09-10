@@ -299,7 +299,7 @@ def _cleanup(config, panes_output, now=None):
         patch("subprocess.run", side_effect=fake_run),
         patch("ai_cli.session.time") as mock_time,
         patch("ai_cli.session.sys.platform", "linux"),
-        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
+        patch("ai_cli.session._sweep_stale_claude_session_state"),
     ):
         mock_time.time.return_value = now
         cleanup_stale_sessions(config)
@@ -322,7 +322,7 @@ def test_given_unrelated_session_with_a_false_ended_pane_result_when_cleanup_run
         patch("subprocess.run") as run,
         patch("ai_cli.session.sys.platform", "linux"),
         patch("ai_cli.session.probe_for", return_value=probe, create=True),
-        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
+        patch("ai_cli.session._sweep_stale_claude_session_state"),
         patch("ai_cli.session._sweep_stale_iterm2_profiles"),
     ):
         run.return_value = panes
@@ -336,7 +336,7 @@ def test_given_managed_tmux_listing_when_launch_cleanup_runs_then_it_never_start
     with (
         patch("subprocess.run", return_value=panes) as run,
         patch("ai_cli.session.sys.platform", "linux"),
-        patch("ai_cli.session._sweep_orphaned_claude_bg_spares"),
+        patch("ai_cli.session._sweep_stale_claude_session_state"),
         patch("ai_cli.session._sweep_stale_iterm2_profiles"),
         patch("ai_cli.process_manager._cmd_stale_session_reaper_start") as start,
         patch("ai_cli.stale_session_reaper.run_stale_session_reaper") as run_reaper,
@@ -493,34 +493,24 @@ def _write_claude_session_state(sessions_dir, process, *, name="test-1", started
     return state_file
 
 
-def test_given_orphaned_bg_spare_when_cleanup_runs_then_reaps_process_and_removes_state(
-    tmp_path, monkeypatch, bg_spare_stand_in
-):
+def test_given_orphaned_bg_spare_when_launch_cleanup_runs_then_preserves_process_and_state(tmp_path, bg_spare_stand_in):
     sessions_dir = tmp_path / "sessions"
     state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
-    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
-
-    with patch(
-        "ai_cli.session.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=""),
-    ):
+    with patch("ai_cli.session._claude_sessions_dir", return_value=sessions_dir):
         cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
 
-    assert bg_spare_stand_in.wait(timeout=2) is not None
-    assert not state_file.exists()
+    assert bg_spare_stand_in.poll() is None
+    assert state_file.exists()
 
 
-def test_given_live_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(
-    tmp_path, monkeypatch, bg_spare_stand_in
-):
+def test_given_live_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(tmp_path, bg_spare_stand_in):
     sessions_dir = tmp_path / "sessions"
     state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
-    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
     panes = _make_list_panes_output(("c-test-1", int(time.time()), "claude"))
 
-    with patch(
-        "ai_cli.session.subprocess.run",
-        return_value=panes,
+    with (
+        patch("ai_cli.session._claude_sessions_dir", return_value=sessions_dir),
+        patch("ai_cli.session.subprocess.run", return_value=panes),
     ):
         cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
 
@@ -528,18 +518,15 @@ def test_given_live_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state
     assert state_file.exists()
 
 
-def test_given_live_remote_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(
-    tmp_path, monkeypatch, bg_spare_stand_in
-):
+def test_given_live_remote_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(tmp_path, bg_spare_stand_in):
     """A remote pane has c-r- prefix while Claude records only its --name value."""
     sessions_dir = tmp_path / "sessions"
     state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in)
-    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
     panes = MagicMock(returncode=0, stdout=f"c-r-test-1|{os.getpid()}\n")
 
-    with patch(
-        "ai_cli.session.subprocess.run",
-        return_value=panes,
+    with (
+        patch("ai_cli.session._claude_sessions_dir", return_value=sessions_dir),
+        patch("ai_cli.session.subprocess.run", return_value=panes),
     ):
         cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
 
@@ -547,16 +534,31 @@ def test_given_live_remote_tmux_session_when_cleanup_runs_then_preserves_bg_spar
     assert state_file.exists()
 
 
-def test_given_reused_pid_when_cleanup_runs_then_removes_state_without_touching_process(
-    tmp_path, monkeypatch, bg_spare_stand_in
+def test_given_live_hyphenated_tmux_session_when_cleanup_runs_then_preserves_bg_spare_state(
+    tmp_path, bg_spare_stand_in
 ):
     sessions_dir = tmp_path / "sessions"
-    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in, started_at=0)
-    monkeypatch.setattr(_session_module, "_claude_sessions_dir", lambda: sessions_dir)
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in, name="my-project-1")
+    panes = _make_list_panes_output(("c-my-project-1", int(time.time()), "claude"))
 
-    with patch(
-        "ai_cli.session.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=""),
+    with (
+        patch("ai_cli.session._claude_sessions_dir", return_value=sessions_dir),
+        patch("ai_cli.session.subprocess.run", return_value=panes),
+    ):
+        cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
+
+    assert bg_spare_stand_in.poll() is None
+    assert state_file.exists()
+    assert _session_module._AI_SESSION_RE.fullmatch("c-my-project-1")
+
+
+def test_given_reused_pid_when_launch_cleanup_runs_then_removes_only_stale_state(tmp_path, bg_spare_stand_in):
+    sessions_dir = tmp_path / "sessions"
+    state_file = _write_claude_session_state(sessions_dir, bg_spare_stand_in, started_at=0)
+
+    with (
+        patch("ai_cli.session._claude_sessions_dir", return_value=sessions_dir),
+        patch("ai_cli.session.subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
     ):
         cleanup_stale_sessions({"session": {"orphan_bg_spare_timeout": 1}})
 

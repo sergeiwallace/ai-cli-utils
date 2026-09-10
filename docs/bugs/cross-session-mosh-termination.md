@@ -2,7 +2,7 @@
 title: "Session maintenance can terminate unrelated live mosh transports"
 category: bugs
 tags: [session, mosh, tmux, process-hygiene]
-status: fix-verified
+status: fix-implemented
 severity: P1
 template_version: "bug-1.0.0"
 ---
@@ -65,34 +65,44 @@ during the reported exit/relaunch transition.
 
 ## Scope-of-fix decision
 
-Scope signals: three unrelated subsystems — no; new shared abstraction — no;
-public contract — no; repository boundary — no; broader known pattern — yes.
-The safe ownership rule is already established by the generation-fenced tmux
-reaper. Removing signal authority from one implicit command is contained,
-reversible, and sufficient; redesign criteria are not met.
+The initial cron-only change contained the reported incident but was not sufficient to eliminate
+the broader class. A complete authority inventory found other launch-time and explicit kill paths
+that trusted a score, tmux name, or PID without immutable ownership proof. The remediation therefore
+covers every identified path: implicit cleanup is non-destructive, tmux kills are generation-fenced,
+and PID-based explicit commands revalidate captured process identity immediately before signalling.
+Independent re-audit is still required before marking the class-level fix verified.
 
 ## Fix
 
 `ai ps cron` remains available for stale transport-file cleanup and remote
 inventory refresh, but it can no longer call `auto_clean_orphans`. Only the
-explicit, user-confirmed `ai ps clean` path can signal a scored process.
-Consequently, session launch, replacement, restart, and exit transitions have
-no route through heuristic process scoring to another session's process.
+explicit, user-confirmed `ai ps clean` path can signal a scored process, and it
+must match the PID and creation time captured during inventory.
+
+Launch-time stale-session cleanup no longer signals background helpers. Quota scraping allocates a
+unique tmux name and cleans up only after atomically matching its captured opaque session ID and
+generation token. Sandbox recreation refuses tokenless collisions and applies the same atomic
+identity fence. Tunnel and browser state records now include PID, creation time, executable,
+command, and port; stale or mismatched records are removed without touching the live PID holder.
 
 ## Verification
+
+Class-wide remediation adds real-process survival regressions for hyphenated launch cleanup,
+process-inventory identity mismatch, and legacy tunnel/browser PID records, plus real isolated-tmux
+coverage for tokenless sessions and generation changes. The implementation is awaiting the
+separate independent re-audit before this record returns to `fix-verified`.
 
 The frozen sibling-survival regression was RED before the production edit
 because the real sibling exited with status `-15`. It was GREEN after the
 guard, RED for the same reason when only the production guard was temporarily
 reversed, and GREEN again after restoration.
 
-The complete process-hygiene suite passed (`81 passed`), as did the existing
-generated-script and clean-exit checks (`2 passed`). The repository hard gate
-reported `29 failed, 2824 passed, 15 skipped`; an untouched archive of the base
-revision reproduced the same 29 failures plus two expected failures caused by
-the archive having no Git index. The shared failures are unrelated macOS
-sandbox, shell-startup, native-loader, process-tree, timestamp, and real-tmux
-test-harness failures.
+The focused class-level regression suite passes. A full repository run remains
+blocked in the restricted test environment by pre-existing shell-startup,
+native-loader, process-tree, timestamp, and real-tmux harness failures; an
+untouched archive of the base revision reproduces those categories. Independent
+verification should rerun the full suite in the repository's normal test
+environment.
 
 ## Lessons learned
 

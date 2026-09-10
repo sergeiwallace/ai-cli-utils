@@ -159,6 +159,14 @@ def patched_subprocess(tmux_server, tmp_path):
                     check=False,
                 )
 
+            if sub in {"display-message", "if-shell"}:
+                return real_subprocess_run(
+                    ["tmux", "-S", str(server.socket_path), *cmd[1:]],
+                    capture_output=True,
+                    text=kwargs.get("text", False),
+                    check=False,
+                )
+
             if sub == "kill-session":
                 # Actually remove the matching session so a subsequent has-session
                 # check (dead-pane recreate path) sees it gone, same as real tmux.
@@ -324,6 +332,7 @@ def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     created = server.cmd("new-session", "-d", "-s", session_name, "sh", "-c", "read ignored; exit 0")
     assert created.returncode == 0, created.stderr
     assert server.cmd("set-window-option", "-t", session_name, "remain-on-exit", "on").returncode == 0
+    assert server.cmd("set-option", "-t", session_name, "@ai_cli_session_generation", "test-generation").returncode == 0
     assert server.cmd("send-keys", "-t", session_name, "done", "Enter").returncode == 0
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
