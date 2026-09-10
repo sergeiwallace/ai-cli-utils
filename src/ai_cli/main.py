@@ -3838,6 +3838,14 @@ def cmd_cc_usage_status():
 @click.option("-d", "--dry-run", is_flag=True, help="Show diffs without applying")
 @click.option("-p", "--project", default=None, help="Only update the given project")
 @click.option(
+    "-i",
+    "--inspect-output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    metavar="PATH",
+    help="Write isolated, no-push delivered content as JSON to PATH",
+)
+@click.option(
     "--no-isolate",
     is_flag=True,
     help="Run copier directly in each repo's main tree (legacy; unsafe while sessions are active)",
@@ -3847,8 +3855,27 @@ def cmd_cc_usage_status():
     is_flag=True,
     help="Isolated mode: commit in the temp worktree but do not push HEAD:main",
 )
-def cmd_copier_update(dry_run, project, no_isolate, no_push):
-    from .copier_update import run_copier_update
+def cmd_copier_update(dry_run, project, inspect_output, no_isolate, no_push):
+    from .copier_update import CopierUpdateInspection, run_copier_update, write_copier_update_inspection
+
+    if inspect_output is not None:
+        if no_isolate:
+            raise click.UsageError("--inspect-output requires isolated mode; do not use --no-isolate.")
+        if not no_push:
+            raise click.UsageError("--inspect-output requires --no-push.")
+        if dry_run:
+            raise click.UsageError("--inspect-output cannot be used with --dry-run.")
+
+        result = run_copier_update(
+            dry_run=dry_run,
+            project_filter=project,
+            isolate=True,
+            push=False,
+            inspect=True,
+        )
+        assert isinstance(result, CopierUpdateInspection)
+        write_copier_update_inspection(result, inspect_output)
+        sys.exit(result.exit_code)
 
     sys.exit(
         run_copier_update(

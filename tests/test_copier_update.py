@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from conftest import run_cli
 
 from ai_cli.copier_update import (
     EX_CONFIG,
     EX_PARTIAL_MUTATION,
     EX_TEMPFAIL,
+    CopierUpdateInspection,
+    DeliveredUpdate,
     _changed_paths,
     _conflict_files,
     _do_update_in_worktree,
@@ -18,6 +23,7 @@ from ai_cli.copier_update import (
     _run_isolated,
     _update_one_isolated,
     run_copier_update,
+    write_copier_update_inspection,
 )
 
 # ---------------------------------------------------------------------------
@@ -619,8 +625,8 @@ def test_given_no_push_without_inspection_when_update_succeeds_then_returns_lega
     assert cleanup.call_count == 2
 
 
-def test_given_inspection_when_isolated_no_push_update_succeeds_then_returns_content_and_cleans_up(tmp_path):
-    """Inspection exposes the committed bytes while the temporary Git state is removed."""
+def test_given_inspection_output_when_isolated_no_push_update_succeeds_then_writes_delivered_content(tmp_path):
+    """CLI JSON preserves the actual commit while the temporary Git state is removed."""
     projects = tmp_path / "projects"
     projects.mkdir()
     template = tmp_path / "project-template"
@@ -655,17 +661,36 @@ def test_given_inspection_when_isolated_no_push_update_succeeds_then_returns_con
             return MagicMock(returncode=0, stdout="", stderr="")
         return real_run(command, **kwargs)
 
-    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
-        with patch("shutil.which", return_value="/usr/bin/copier"):
-            result = run_copier_update(projects_dir=projects, push=False, inspect=True)
+    inspection_output = tmp_path / "inspection.json"
+    real_path = Path
 
-    assert result.exit_code == 0
-    assert len(result.delivered_updates) == 1
-    delivered = result.delivered_updates[0]
-    assert len(delivered.commit_hash) == 40
-    assert delivered.changed_files == {"message.txt": b"updated\n"}
+    class CopierPath:
+        def __new__(cls, *args):
+            return real_path(*args)
+
+        @staticmethod
+        def home():
+            return tmp_path
+
+    with patch("ai_cli.copier_update.Path", CopierPath):
+        with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+            with patch("shutil.which", return_value="/usr/bin/copier"):
+                exit_code, _, stderr = run_cli(
+                    ["ai", "copier-update", "--no-push", "--inspect-output", str(inspection_output)]
+                )
+
+    assert exit_code == 0
+    assert stderr == ""
+    payload = json.loads(inspection_output.read_text())
+    assert payload["exit_code"] == 0
+    assert len(payload["delivered_updates"]) == 1
+    delivered = payload["delivered_updates"][0]
+    assert delivered["project_name"] == "myproject"
+    assert delivered["project_path"] == str(project)
+    assert len(delivered["commit_hash"]) == 40
+    assert delivered["changed_files"] == {"message.txt": {"encoding": "utf-8", "content": "updated\n"}}
     subprocess.run(
-        ["git", "cat-file", "-e", f"{delivered.commit_hash}^{{commit}}"],
+        ["git", "cat-file", "-e", f"{delivered['commit_hash']}^{{commit}}"],
         cwd=project,
         check=True,
         capture_output=True,
@@ -677,6 +702,39 @@ def test_given_inspection_when_isolated_no_push_update_succeeds_then_returns_con
             ["git", "branch", "--list", "copier-update-tmp"], cwd=project, check=True, capture_output=True, text=True
         ).stdout
     )
+
+
+def test_given_inspection_when_written_then_json_represents_text_binary_and_deleted_content(tmp_path):
+    """The JSON schema preserves all delivered file states for subprocess callers."""
+    inspection = CopierUpdateInspection(
+        exit_code=0,
+        delivered_updates=(
+            DeliveredUpdate(
+                project_dir=tmp_path / "myproject",
+                commit_hash="a" * 40,
+                changed_files={"text.txt": b"updated\n", "binary.bin": b"\xff\x00", "removed.txt": None},
+            ),
+        ),
+    )
+    output = tmp_path / "inspection.json"
+
+    write_copier_update_inspection(inspection, output)
+
+    assert json.loads(output.read_text()) == {
+        "exit_code": 0,
+        "delivered_updates": [
+            {
+                "project_name": "myproject",
+                "project_path": str(tmp_path / "myproject"),
+                "commit_hash": "a" * 40,
+                "changed_files": {
+                    "text.txt": {"encoding": "utf-8", "content": "updated\n"},
+                    "binary.bin": {"encoding": "base64", "content": "/wA="},
+                    "removed.txt": None,
+                },
+            }
+        ],
+    }
 
 
 def test_update_one_isolated_leaves_worktree_on_conflict(tmp_path):
