@@ -27,6 +27,7 @@ from . import native_deps as _native_deps
 from . import process_manager as _process_manager
 from . import session as _session
 from . import session_script as _session_script
+from . import tmux_ownership as _tmux_ownership
 from . import tmux_setup as _tmux_setup
 from . import transport as _transport
 from . import tunnel as _tunnel
@@ -3197,8 +3198,19 @@ def _do_session_launch(
     # Check if session already exists (e.g., re-attaching after disconnect)
     existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     if existing.returncode == 0 and sandbox:
-        # Explicit sandbox flag — kill old session so it recreates with new settings
-        subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+        identity = _tmux_ownership.capture_tmux_session_identity(session_id)
+        if identity is None:
+            print(
+                f"Error: tmux session '{session_id}' exists but is not owned by this tool; refusing to replace it",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not _tmux_ownership.kill_owned_tmux_session(identity):
+            print(
+                f"Error: tmux session '{session_id}' changed before replacement; refusing to kill it",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     if existing.returncode == 0:
         # A supervisor crash (e.g. AI-CLI-t8h5) leaves the tmux session alive with
@@ -3213,8 +3225,9 @@ def _do_session_launch(
         )
         pane_states = [line for line in pane_check.stdout.splitlines() if line]
         if pane_check.returncode == 0 and pane_states and all(state == "1" for state in pane_states):
-            subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
-            existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+            identity = _tmux_ownership.capture_tmux_session_identity(session_id)
+            if identity is not None and _tmux_ownership.kill_owned_tmux_session(identity):
+                existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump

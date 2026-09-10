@@ -1,8 +1,7 @@
 # Process Hygiene (`ai ps`) — Implementation Plan
 
-**Status:** DRAFT
+**Status:** SUPERSEDED IN PART
 **Created:** 2026-04-04
-**Task:** `[AI-CLI-28]`
 
 <!-- COMP-128 / D5 (c): list EVERY `## ` and EVERY `### ` heading in the real doc,
   with GitHub-style anchors (lowercase, spaces→hyphens, punctuation stripped) so
@@ -30,18 +29,24 @@
 
 ai-cli manages several long-running background processes (mosh-server, signal-watch, autossh tunnels, circus workers) across two machines. When sessions end abnormally — network drops, mosh client disconnects, CC crashes — server-side processes are left running indefinitely with no owner. Today this requires manual inspection and killing. Five orphaned `mosh-server` processes from March 2026 were found on Mac and killed manually, triggering this feature.
 
-Goal: `ai ps` shows a live inventory of all ai-managed processes with age and status. `ai ps clean` kills orphans, with behavior gated on a confidence score — high-confidence orphans can be auto-killed, low-confidence ones are flagged for manual review. Hetzner results are served from a local cache refreshed in the background to avoid SSH latency on every invocation.
+Goal: `ai ps` shows a live inventory of all managed processes with age and status. Scores are advisory. Only the explicit `ai ps clean` command may terminate a process, and only after revalidating the PID and creation time captured during inventory. Background launch and cron paths are non-destructive.
+
+> **Safety supersession (2026-09-10):** The approved score-triggered auto-kill design below was
+> withdrawn after it terminated unrelated live transports. Historical feedback is retained as a
+> decision record, but any statement authorizing launch-time or cron-driven kills is superseded by
+> this note and the corrected T-03 contract. A score, process name, PID, or tmux name is not proof
+> of ownership.
 
 > **Feedback Round 1:** Is the scope right? Too broad, too narrow? Anything missing from the goal?
-> - Scope: ai-managed only for now. Include anything related to ai-cli-utils usage and Termius iOS connections (those are mosh-server processes already in scope).
-> - Auto-hygiene: find a middle ground — explicit-only won't get used enough. Use the scoring system to gate auto-kill to high-confidence orphans only, flag low-confidence ones.
-> - Remote: cache Hetzner process state locally and poll periodically to avoid latency.
+> - Scope: managed processes only for now. Include mobile-client connections (those are mosh-server processes already in scope).
+> - Auto-hygiene: historical score-gated auto-kill request (**superseded by the safety note above**).
+> - Remote: cache remote-host process state locally and poll periodically to avoid latency.
 > - New module: yes.
 >
 > **AI Response Round 1:**
-> - Scope confirmed: ai-managed processes (mosh-server, signal-watch, autossh, circus, memory/sync watch). Termius connections create mosh-server processes already tracked.
-> - Auto-hygiene: score-gated approach — score ≥ 80 → auto-kill on session start + daily cron; score 40–79 → flag in `ai ps` output, require `ai ps clean` to kill; score < 40 → active, no action.
-> - Remote caching: Hetzner process state cached at `~/.local/state/ai-cli/remote-ps-cache.json` with 30-minute TTL. Refreshed async in background. `ai ps` reads cache instantly; `ai ps --refresh` forces SSH re-check.
+> - Scope confirmed: managed processes (mosh-server, signal-watch, autossh, circus, memory/sync watch). Mobile-client connections create mosh-server processes already tracked.
+> - Auto-hygiene: historical score-gated auto-kill response (**superseded**); all scores are now advisory.
+> - Remote caching: remote-host process state cached at `~/.local/state/ai-cli/remote-ps-cache.json` with 30-minute TTL. Refreshed async in background. `ai ps` reads cache instantly; `ai ps --refresh` forces SSH re-check.
 > - New module: `src/ai_cli/process_hygiene.py`.
 
 ---
@@ -52,11 +57,11 @@ Processes tracked by `ai ps`:
 
 | Process | Where | Orphan risk | Notes |
 |---------|-------|-------------|-------|
-| `mosh-server` | Mac + Hetzner | **High** — client disconnect leaves server running | Main motivator; Termius iOS sessions also create these |
-| `signal-watch` | Mac + Hetzner | Medium — tied to tmux session that may be gone | Has PID file at `~/.local/state/ai-cli/signal-watch-<project>.pid` |
+| `mosh-server` | Local + remote host | **High** — client disconnect leaves server running | Main motivator; mobile sessions also create these |
+| `signal-watch` | Local + remote host | Medium — tied to tmux session that may be gone | Has PID file at `~/.local/state/ai-cli/signal-watch-<project>.pid` |
 | `autossh` tunnels | Mac | Low — managed by `ai tunnel`, rarely stale | 2 persistent tunnels currently |
 | `circusd` | Mac | Low — intentionally persistent daemon | Report status only; don't auto-kill |
-| `nats-server` | Hetzner | Low — intentionally persistent | Report status only; don't kill |
+| `nats-server` | Remote host | Low — intentionally persistent | Report status only; don't kill |
 | `ai memory watch` / `ai sync watch` | Mac | Medium — launched per tmux session | Orphaned if parent tmux session is gone |
 
 **Not tracked:** pytest/uv test processes (transient), claude CLI itself (the main process).
@@ -67,8 +72,8 @@ Each process gets a **staleness score** (0–100). Score determines action:
 
 | Score | Verdict | Auto-behavior |
 |-------|---------|---------------|
-| ≥ 80 | **orphaned** | Auto-kill on session start + daily cron |
-| 40–79 | **suspect** | Flagged in `ai ps` output; requires `ai ps clean` |
+| ≥ 80 | **orphaned** | Flagged in `ai ps`; eligible for explicit identity-checked cleanup |
+| 40–79 | **suspect** | Flagged in `ai ps`; explicit `ai ps clean --force` required |
 | < 40 | **active** | No action |
 
 ### mosh-server scoring
@@ -83,10 +88,11 @@ Each process gets a **staleness score** (0–100). Score determines action:
 | Matching tmux session **currently attached** | -10 |
 | `lsof` unavailable and age > 48h | +60 (fallback) |
 
-**Note:** killing a mosh-server is safe regardless — it only drops the mosh tunnel, not the tmux session. The tmux session persists and all work is intact. The user can always reconnect (mosh starts a fresh server). The -10 for an actively-attached session is purely a conservative guard, not a safety necessity.
+**Corrected safety note:** Killing a live mosh-server is disruptive and is never safe merely because
+the tmux session may persist. Scoring can prioritize operator review, but cannot authorize a signal.
 
-Example: orphaned mosh-server from March with no client, no tmux = 50+20+10+10 = **90 → auto-kill**.
-Example: Termius orphan, no client, tmux unattached 8h, age 26h = 50+20+10+5 = **85 → auto-kill**.
+Example: orphaned mosh-server from March with no client, no tmux = 50+20+10+10 = **90 → review**.
+Example: disconnected client, no local peer, tmux unattached 8h, age 26h = 50+20+10+5 = **85 → review**.
 Example: mosh-server 1h old, client connected, tmux attached = 0-10 = **0 → active**.
 
 ### signal-watch scoring
@@ -107,7 +113,7 @@ Example: mosh-server 1h old, client connected, tmux attached = 0-10 = **0 → ac
 ### autossh / circusd / nats-server
 Score always < 40 (these are intentionally persistent). `ai ps` reports them as informational only; `ai ps clean` never touches them.
 
-### Hetzner remote cache
+### Remote-host cache
 
 - Cache stored at: `~/.local/state/ai-cli/remote-ps-cache.json`
 - TTL: 30 minutes (configurable in `[process_hygiene]` config section)
@@ -145,8 +151,8 @@ Spread across `ai signal-watch status`, `ai tunnel status`, etc.
 ## CLI Design
 
 ```bash
-ai ps                    # list all managed processes (local + cached Hetzner)
-ai ps --refresh          # force SSH re-check of Hetzner (updates cache)
+ai ps                    # list all managed processes (local + cached remote host)
+ai ps --refresh          # force SSH re-check of remote host (updates cache)
 ai ps clean              # show suspect/orphaned, prompt to kill
 ai ps clean --force      # kill all orphaned (score ≥ 80) without prompting
 ```text
@@ -178,10 +184,10 @@ Suspect (score 40–79):
 Kill 2 orphan(s)? Suspects require --force to include. [y/N]
 ```text
 
-**Auto-hygiene (session start + daily cron):**
-- Silently kills processes with score ≥ 80 only
-- Logs killed PIDs to `~/.local/state/ai-cli/process-hygiene.log`
-- Prints single summary line: `[ai ps] Cleaned 2 orphaned process(es). Run 'ai ps' for details.`
+**Background hygiene (session start + daily cron):**
+- Scores and reports processes without signalling them
+- Refreshes stale transport bookkeeping and the remote inventory cache
+- Leaves termination exclusively to the explicit `ai ps clean` command after identity revalidation
 
 ## Task Breakdown
 
@@ -240,7 +246,7 @@ Kill 2 orphan(s)? Suspects require --force to include. [y/N]
 
 **Acceptance criteria:**
 - [ ] `ai ps` lists all processes with age, score, verdict
-- [ ] Hetzner results shown from cache with cache age
+- [ ] Remote-host results shown from cache with cache age
 - [ ] `ai ps clean` prompts before killing orphaned; requires `--force` for suspect
 - [ ] `ai ps clean --force` kills orphaned + suspect without prompting
 - [ ] `ai ps --refresh` forces SSH re-check and updates cache
@@ -252,18 +258,19 @@ Kill 2 orphan(s)? Suspects require --force to include. [y/N]
 **Size:** S
 **Batch:** 1
 
-Wire auto-kill into session start (`ai c` launch) and daily cron.
+This task's destructive behavior is superseded. Wire non-destructive bookkeeping into session
+start and daily cron; never call process termination from either implicit path.
 
 **Deliverables:**
-- Call `auto_clean_orphans()` (kills score ≥ 80 only, logs, prints summary line) at `ai c` session start
-- `ai ps cron` command for daily cron invocation (same as auto_clean but also refreshes Hetzner cache)
-- `[process_hygiene]` section in `iterm2.toml` or `config.toml`: `auto_clean = true`, `cache_ttl_minutes = 30`, `orphan_threshold = 80`
+- Keep `ai c` session start free of process-signal authority
+- Keep `ai ps cron` non-destructive while refreshing transport bookkeeping and the remote cache
+- Retain thresholds for advisory classification only
 
 **Acceptance criteria:**
-- [ ] `ai c` launch auto-kills score ≥ 80 processes and logs them
-- [ ] No output if 0 orphans found
-- [ ] Config flag `auto_clean = false` disables auto-kill
-- [ ] `ai ps cron` refreshes remote cache and kills orphans on both machines
+- [ ] When `ai c` launches, the system shall not signal a process based on its hygiene score
+- [ ] When `ai ps cron` runs, the system shall refresh bookkeeping/cache state without signalling a process
+- [ ] When explicit cleanup targets a local process, the system shall revalidate its captured PID and creation time immediately before termination
+- [ ] If explicit-cleanup identity revalidation fails, then the system shall report the mismatch and preserve the live process
 
 **Dependencies:** T-01, T-02
 
@@ -282,7 +289,7 @@ Wire auto-kill into session start (`ai c` launch) and daily cron.
 - [ ] Scoring functions tested for all verdict boundaries (orphaned/suspect/active)
 - [ ] `lsof` unavailable fallback tested
 - [ ] Cache TTL expiry tested
-- [ ] `ai ps clean --force` test verifies correct PIDs passed to `kill()`
+- [ ] `ai ps clean --force` tests verify matching process identities are terminated and mismatches survive
 - [ ] Remote path mocked (no actual SSH in tests)
 
 **Dependencies:** T-01, T-02, T-03
@@ -309,39 +316,40 @@ Single batch — all tasks are tightly coupled; no value in shipping detection w
 
 1. **Score thresholds:** orphaned at ≥ 80, suspect at 40–79 — do these feel right? Too aggressive or too conservative? Can tune after UAT.
 
-2. **Auto-clean scope:** auto-kill runs on `ai c` session start. Should it also run when `ai c --remote` starts (cleaning Hetzner orphans too), or local-only at launch?
+2. **Auto-clean scope (resolved):** implicit auto-kill is prohibited for local and remote launches.
 
-3. **Termius sessions:** mosh-server processes from Termius iOS are tracked the same as any other mosh-server. If you frequently mosh in from Termius and leave sessions open, the age signal needs tuning — Termius sessions can legitimately run for days. Is 24h a reasonable threshold for the age signal, or should it be higher (e.g., 7d)?
+3. **Mobile sessions:** mosh-server processes from mobile clients are tracked like any other mosh-server. If mobile sessions are often left open, the age signal needs tuning because they can legitimately run for days. Is 24h a reasonable threshold for the age signal, or should it be higher (e.g., 7d)?
 
 4. **Cache location:** `~/.local/state/ai-cli/remote-ps-cache.json` — does this fit with existing XDG state dir usage, or should it go elsewhere?
 
 > **Feedback Round 2:**
 > 1. Thresholds fine. How would suspect flagging actually surface to the user?
 > 2. Unsure.
-> 3. Termius sessions are fleeting — user closes Termius when done. `ai c` sessions from iOS are rare; user resumes from MacBook. Orphaned Termius mosh-servers with persisting tmux sessions are fine to leave as suspect (manual clean).
+> 3. Mobile sessions are fleeting — the user closes the client when done. Managed mobile sessions are rare; the user resumes from a desktop. Orphaned mobile mosh-servers with persisting tmux sessions are fine to leave as suspect (manual clean).
 > 4. (no feedback)
 >
 > **AI Response Round 2:**
 >
-> **1 — Suspect flagging:** Two touchpoints only — no intrusive alerts. At session start (`ai c`), orphaned processes (≥ 80) are auto-killed silently and logged. For suspects (40–79), one line is printed: `[ai ps] 1 suspect process(es). Run 'ai ps clean' to review.` The explicit `ai ps` command always shows the full picture with scores. That's it.
+> **1 — Suspect flagging (superseded):** Session start may report advisory scores but cannot terminate processes.
 >
-> **2 — Remote auto-clean:** Recommend yes — also clean Hetzner orphans when launching `ai c --remote`. Already connecting there; zero extra SSH calls needed (cache refreshed as part of the mosh/ssh flow). Local `ai c` cleans local only; `ai c --remote` cleans both.
+> **2 — Remote auto-clean (superseded):** Remote and local launch paths are both non-destructive.
 >
-> **3 — Termius scoring confirmed correct:** Disconnected Termius mosh-server scores +50 (no client) +10 (>6h) = 60 suspect, then +20 (>24h) = 70 suspect. Never reaches 80 (orphaned/auto-kill) because the tmux session persists on Hetzner, so "no matching tmux session" (+10) doesn't fire. Correctly becomes a suspect flagged at session start, never auto-killed. No scoring changes needed.
+> **3 — Client scoring (superseded):** The score remains useful for review but never authorizes launch-time termination.
 >
 > **4 — Cache location:** `~/.local/state/ai-cli/remote-ps-cache.json` consistent with existing XDG usage. Proceeding as specified.
 >
 > **Feedback Round 3:**
-> 3. Termius sessions are fleeting — user closes Termius when done. Don't want to manually kill stale Termius mosh-server orphans. Is there any harm in eventually auto-killing them if we're confident they're stale?
+> 3. Mobile sessions are fleeting — the user closes the client when done. Is there any harm in eventually auto-killing stale mobile mosh-server orphans if they appear abandoned?
 >
 > **AI Response Round 3:**
 >
-> **3 — Termius auto-kill:** No harm — killing a mosh-server only drops the mosh tunnel; the tmux session on Hetzner persists untouched. All work is safe. Updated scoring: added `+5` for "matching tmux session unattached > 2h" and `-10` for "matching tmux session currently attached". Result: Termius orphan with no client, tmux unattached 8h, age 26h = 50+20+10+5 = **85 → auto-kill** (reaches threshold without needing "no tmux session at all"). Active session with tmux attached still scores -10, safely stays **active**.
+> **3 — Auto-kill response (superseded):** Dropping a live transport is disruptive even when tmux state persists. The scoring adjustment remains advisory; it cannot prove ownership or authorize a signal.
 
 ## Approval Log
 
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-04-04 | Round 1 approved | Connection-based detection; score-gated auto-clean; remote cache with 30m TTL; new `process_hygiene.py` module; ai-managed scope only |
-| 2026-04-04 | Round 2 approved | Suspect flagging: one-line nudge at session start; auto-clean `ai c --remote` cleans both machines; Termius scoring confirmed correct as-is; cache location confirmed |
-| 2026-04-04 | Round 3 approved | Termius auto-kill approved: +5 for tmux unattached > 2h; -10 for tmux attached; Termius orphan now reaches 85 → auto-kill after 24h+ |
+| 2026-04-04 | Round 2 approved | Suspect flagging: one-line nudge at session start; historical remote auto-clean; mobile-session scoring; cache location confirmed |
+| 2026-04-04 | Round 3 approved | Historical score-triggered auto-kill decision; superseded below |
+| 2026-09-10 | Safety remediation | Score-triggered launch/cron kills withdrawn; scoring is advisory and termination is explicit plus identity-checked |

@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
+from .tmux_ownership import capture_tmux_session_identity, kill_owned_tmux_session
 
 # Windows cp1252 cannot encode the emoji used in statusline output (📊, ✅, etc.).
 # Reconfigure stdout to UTF-8 with replacement on errors so emoji never crashes the process.
@@ -476,22 +478,16 @@ def reap_cc_update_staging(max_age_s: int = CC_STAGING_MAX_AGE_S) -> int:
 def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     """Scrape /usage from a hidden tmux session running a bare CC session.
 
-    Always creates a fully isolated detached tmux session (never new-window in the
-    user's session). Uses the session name as the target throughout — unambiguous,
-    never accidentally targets the user's active session.
+    Always creates a uniquely named, fully isolated detached tmux session. Cleanup
+    is fenced by its captured opaque session ID and random generation marker.
     """
     global _last_scrape_had_format_mismatch
 
     _last_scrape_had_format_mismatch = False
-    window_name = "ai-quota-scrape"
+    generation = secrets.token_urlsafe(32)
+    window_name = f"ai-quota-scrape-{os.getpid()}-{generation[:8]}"
+    identity = None
     try:
-        # Kill any stale scrape session left by a previous failed run
-        subprocess.run(
-            ["tmux", "kill-session", "-t", window_name],
-            capture_output=True,
-            timeout=3,
-            check=False,
-        )
         # Always use a standalone detached session — never new-window inside the user's
         # session, which would cause `:N` targeting to hit the wrong session.
         result = subprocess.run(
@@ -503,7 +499,18 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         )
         if result.returncode != 0:
             return None
-        target = window_name  # session-name target — unambiguous across all tmux contexts
+        marked = subprocess.run(
+            ["tmux", "set-option", "-t", window_name, "@ai_cli_session_generation", generation],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        if marked.returncode != 0:
+            return None
+        identity = capture_tmux_session_identity(window_name, expected_generation=generation)
+        if identity is None:
+            return None
+        target = identity.session_id
 
         # Resize to a generous size so the full /usage dialog fits without scrolling.
         # The dialog spans ~25 lines; a small default pane causes the label lines to
@@ -646,12 +653,9 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
     except Exception:
         return None
     finally:
-        subprocess.run(
-            ["tmux", "kill-session", "-t", window_name],
-            capture_output=True,
-            timeout=3,
-            check=False,
-        )
+        if identity is not None:
+            with contextlib.suppress(Exception):
+                kill_owned_tmux_session(identity)
         # Second line of defence behind DISABLE_AUTOUPDATER=1 above: sweep anything a
         # previous (or otherwise-configured) scrape orphaned, so staging stays bounded.
         reap_cc_update_staging()

@@ -7,6 +7,8 @@ import subprocess
 import sys
 from unittest.mock import MagicMock, patch
 
+import psutil
+
 from ai_cli.process_hygiene import (
     ORPHAN_THRESHOLD,
     SUSPECT_THRESHOLD,
@@ -45,6 +47,7 @@ def _proc(**kwargs) -> ProcessInfo:
         "detail": "active",
         "machine": "local",
         "args": "mosh-server 60001",
+        "create_time": 123.0,
     }
     defaults.update(kwargs)
     return ProcessInfo(**defaults)
@@ -558,6 +561,7 @@ class TestAutoCleanOrphans:
     def _mock_terminate(self, side_effect=None):
         """Return a context-manager that mocks psutil.Process.terminate()."""
         mock_proc = MagicMock()
+        mock_proc.create_time.return_value = 123.0
         if side_effect is not None:
             mock_proc.terminate.side_effect = side_effect
         return patch("psutil.Process", return_value=mock_proc), mock_proc
@@ -586,14 +590,35 @@ class TestAutoCleanOrphans:
         mock_proc.terminate.assert_not_called()
         assert killed == []
 
-    def test_given_already_dead_process_when_cleaned_then_counted_as_killed(self, tmp_path):
+    def test_given_already_dead_process_when_cleaned_then_skipped(self, tmp_path):
         import psutil as _psutil
 
         proc = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
         ctx, _ = self._mock_terminate(side_effect=_psutil.NoSuchProcess(9999))
         with ctx:
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt")
-        assert len(killed) == 1  # already dead — counts as cleaned
+        assert killed == []
+
+    def test_given_changed_process_identity_when_cleaned_then_live_process_survives(self, tmp_path):
+        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        proc = _proc(
+            pid=sibling.pid,
+            verdict="orphaned",
+            score=90,
+            machine="local",
+            create_time=psutil.Process(sibling.pid).create_time() - 1,
+        )
+        output: list[str] = []
+        try:
+            killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt", stdout_fn=output.append)
+
+            assert killed == []
+            assert sibling.poll() is None
+            assert output == [f"Skipped PID {sibling.pid}: process identity changed after inventory."]
+        finally:
+            if sibling.poll() is None:
+                sibling.terminate()
+            sibling.wait(timeout=5)
 
     def test_given_permission_error_when_cleaned_then_not_in_killed(self, tmp_path):
         import psutil as _psutil
@@ -891,7 +916,7 @@ class TestCmdPs:
         orphan = _proc(pid=9999, verdict="orphaned", score=90, machine="local")
         killed: list[ProcessInfo] = []
 
-        def fake_clean(procs, log_path, dry_run=False):
+        def fake_clean(procs, log_path, dry_run=False, stdout_fn=None):
             killed.extend(procs)
             return procs
 

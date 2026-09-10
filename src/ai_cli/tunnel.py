@@ -3,19 +3,134 @@
 Depends on: config.py, transport.py.
 """
 
-import contextlib
+import json
+import math
 import shutil
 import socket
 import subprocess
 import sys
 import time
 import urllib.request
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import psutil
 
 from .config import _pid_alive, get_remote_machine, get_xdg_data_home, get_xdg_state_home
 from .transport import _is_vpn_active
+
+_PROCESS_STATE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class _ManagedProcessIdentity:
+    """Durable identity for one process created by this tool."""
+
+    version: int
+    pid: int
+    create_time: float
+    executable: str
+    command: tuple[str, ...]
+    port: int
+
+
+def _capture_process_identity(pid: int, port: int) -> _ManagedProcessIdentity | None:
+    try:
+        process = psutil.Process(pid)
+        create_time = process.create_time()
+        executable = process.exe()
+        command = tuple(process.cmdline())
+    except (OSError, psutil.Error):
+        return None
+    if (
+        pid <= 0
+        or port <= 0
+        or not isinstance(create_time, (int, float))
+        or isinstance(create_time, bool)
+        or not math.isfinite(create_time)
+        or not executable
+        or not command
+        or not all(isinstance(part, str) for part in command)
+    ):
+        return None
+    return _ManagedProcessIdentity(_PROCESS_STATE_VERSION, pid, create_time, executable, command, port)
+
+
+def _write_process_identity(path: Path, pid: int, port: int) -> bool:
+    identity = _capture_process_identity(pid, port)
+    if identity is None:
+        return False
+    payload = asdict(identity)
+    payload["command"] = list(identity.command)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, sort_keys=True))
+        temporary.replace(path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _read_process_identity(path: Path, port: int) -> _ManagedProcessIdentity | None:
+    try:
+        payload = json.loads(path.read_text())
+        command = payload["command"]
+        if not isinstance(command, list):
+            return None
+        identity = _ManagedProcessIdentity(
+            version=payload["version"],
+            pid=payload["pid"],
+            create_time=payload["create_time"],
+            executable=payload["executable"],
+            command=tuple(command),
+            port=payload["port"],
+        )
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(identity.version, int)
+        or isinstance(identity.version, bool)
+        or identity.version != _PROCESS_STATE_VERSION
+        or not isinstance(identity.pid, int)
+        or isinstance(identity.pid, bool)
+        or identity.pid <= 0
+        or not isinstance(identity.create_time, (int, float))
+        or isinstance(identity.create_time, bool)
+        or not math.isfinite(identity.create_time)
+        or not isinstance(identity.executable, str)
+        or not identity.executable
+        or not identity.command
+        or not all(isinstance(part, str) for part in identity.command)
+        or not isinstance(identity.port, int)
+        or isinstance(identity.port, bool)
+        or identity.port != port
+    ):
+        return None
+    return identity
+
+
+def _matching_process(identity: _ManagedProcessIdentity) -> psutil.Process | None:
+    """Revalidate every durable identity field immediately before use."""
+    try:
+        process = psutil.Process(identity.pid)
+        if (
+            process.create_time() != identity.create_time
+            or process.exe() != identity.executable
+            or tuple(process.cmdline()) != identity.command
+        ):
+            return None
+    except (OSError, psutil.Error):
+        return None
+    return process
+
+
+def _registered_process(path: Path, port: int) -> tuple[_ManagedProcessIdentity, psutil.Process] | None:
+    identity = _read_process_identity(path, port)
+    if identity is None:
+        return None
+    process = _matching_process(identity)
+    return (identity, process) if process is not None else None
 
 
 def _cmd_tunnel_start(
@@ -24,14 +139,11 @@ def _cmd_tunnel_start(
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"tunnel-{local_port}.pid"
     if pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            if _pid_alive(pid):
-                if not quiet:
-                    print(f"Tunnel already running: localhost:{local_port} (PID {pid})")
-                return
-        except ValueError:
-            pass
+        registered = _registered_process(pid_file, local_port)
+        if registered is not None:
+            if not quiet:
+                print(f"Tunnel already running: localhost:{local_port} (PID {registered[0].pid})")
+            return
         pid_file.unlink(missing_ok=True)
 
     autossh_bin = shutil.which("autossh")
@@ -71,7 +183,10 @@ def _cmd_tunnel_start(
     ]
     proc = subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     state_dir.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(proc.pid))
+    if not _write_process_identity(pid_file, proc.pid, local_port):
+        proc.terminate()
+        print("Error: could not capture tunnel process identity; tunnel was stopped", file=sys.stderr)
+        sys.exit(1)
     if not quiet:
         print(f"Tunnel started: localhost:{local_port} -> {host}:{remote_port} (PID {proc.pid})")
 
@@ -87,11 +202,7 @@ def _ensure_nats_tunnel(config: dict) -> None:
     pid_file = state_dir / f"tunnel-{port}.pid"
     already_running = False
     if pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            already_running = _pid_alive(pid)
-        except ValueError:
-            pass
+        already_running = _registered_process(pid_file, port) is not None
     try:
         _cmd_tunnel_start(port, port, forward=True, config=config, quiet=True)
     except SystemExit:
@@ -106,10 +217,13 @@ def _cmd_tunnel_stop(local_port: int) -> None:
     pid_file = state_dir / f"tunnel-{local_port}.pid"
     if not pid_file.exists():
         return
-    pid = int(pid_file.read_text().strip())
-    with contextlib.suppress(psutil.NoSuchProcess):
-        psutil.Process(pid).terminate()
+    identity = _read_process_identity(pid_file, local_port)
     pid_file.unlink(missing_ok=True)
+    process = _matching_process(identity) if identity is not None else None
+    if process is None:
+        print(f"Removed stale tunnel record: port {local_port}; no process was stopped")
+        return
+    process.terminate()
     print(f"Tunnel stopped: port {local_port}")
 
 
@@ -121,13 +235,12 @@ def _cmd_tunnel_status() -> None:
         return
     for pid_file in pid_files:
         port = pid_file.stem[len("tunnel-") :]
-        pid = int(pid_file.read_text().strip())
-        if _pid_alive(pid):
-            status = "alive"
-        else:
-            status = "dead"
+        registered = _registered_process(pid_file, int(port))
+        if registered is None:
             pid_file.unlink(missing_ok=True)
-        print(f"port {port}: PID {pid} ({status})")
+            print(f"port {port}: dead (stale record removed)")
+            continue
+        print(f"port {port}: PID {registered[0].pid} (alive)")
 
 
 # --- CDP (Chrome DevTools Protocol) browser management ---
@@ -215,13 +328,10 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     pid_file = state_dir / f"cdp-{port}.pid"
 
     if pid_file.exists():
-        try:
-            existing_pid = int(pid_file.read_text().strip())
-            if _pid_alive(existing_pid):
-                print(f"CDP already running on port {port} (PID {existing_pid})")
-                return
-        except ValueError:
-            pass
+        registered = _registered_process(pid_file, port)
+        if registered is not None:
+            print(f"CDP already running on port {port} (PID {registered[0].pid})")
+            return
         pid_file.unlink(missing_ok=True)
 
     # If the requested port is held by a process we don't track (a foreign Chrome or
@@ -285,7 +395,10 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
             stderr=subprocess.DEVNULL,
         )
         pid = proc.pid
-        pid_file.write_text(str(pid))
+        if not _write_process_identity(pid_file, pid, port):
+            proc.terminate()
+            print("Error: could not capture CDP process identity; browser was stopped", file=sys.stderr)
+            sys.exit(1)
 
     url = f"http://localhost:{port}/json/version"
     deadline = time.monotonic() + 5.0
@@ -301,7 +414,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     if sys.platform == "darwin":
         pid = _find_chrome_pid_by_port(port)
         if pid is not None:
-            pid_file.write_text(str(pid))
+            _write_process_identity(pid_file, pid, port)
 
     if ready:
         print(f"CDP ready at localhost:{port}")
@@ -319,11 +432,14 @@ def _cmd_cdp_stop(port: int, tunnel: bool = False) -> None:
     if not pid_file.exists():
         print(f"No CDP process registered on port {port}.")
         return
-    pid = int(pid_file.read_text().strip())
-    with contextlib.suppress(psutil.NoSuchProcess):
-        psutil.Process(pid).terminate()
+    identity = _read_process_identity(pid_file, port)
     pid_file.unlink(missing_ok=True)
-    print(f"CDP stopped: port {port}")
+    process = _matching_process(identity) if identity is not None else None
+    if process is None:
+        print(f"Removed stale CDP record: port {port}; no process was stopped")
+    else:
+        process.terminate()
+        print(f"CDP stopped: port {port}")
     if tunnel:
         _cmd_tunnel_stop(port)
 
@@ -336,10 +452,9 @@ def _cmd_cdp_status() -> None:
         return
     for pid_file in pid_files:
         port = pid_file.stem[len("cdp-") :]
-        pid = int(pid_file.read_text().strip())
-        if _pid_alive(pid):
-            status = "alive"
-        else:
-            status = "dead"
+        registered = _registered_process(pid_file, int(port))
+        if registered is None:
             pid_file.unlink(missing_ok=True)
-        print(f"port {port}: PID {pid} ({status})")
+            print(f"port {port}: stale record")
+            continue
+        print(f"port {port}: PID {registered[0].pid} (alive)")
