@@ -13,6 +13,12 @@ Two modes:
   each repo's main working tree and leave the changes uncommitted for a manual
   commit+push. Fast, but races any active session in that repo. Use only when you
   know no session is working in the target(s).
+
+For an isolated, no-push update, Python callers can pass ``inspect=True`` to
+``run_copier_update()``. It returns a ``CopierUpdateInspection`` containing each
+temporary commit hash and a copy of its changed files' final bytes. The temporary
+worktree and branch are still removed before the function returns, so inspection
+does not require a caller-managed cleanup step or leave resources behind.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -30,6 +37,31 @@ from .git_repair import _git_env, repair_bare_worktree_config
 EX_CONFIG = 78
 EX_TEMPFAIL = 75
 EX_PARTIAL_MUTATION = 3
+
+
+@dataclass(frozen=True)
+class DeliveredUpdate:
+    """A committed isolated update preserved as in-memory inspection data.
+
+    ``changed_files`` maps repository-relative paths to their final bytes. A value
+    of ``None`` records a file removed by the update.
+    """
+
+    project_dir: Path
+    commit_hash: str
+    changed_files: dict[str, bytes | None]
+
+
+@dataclass(frozen=True)
+class CopierUpdateInspection:
+    """Inspectable outcome returned by ``run_copier_update(inspect=True)``.
+
+    The worktree and temporary branch are already cleaned up when this result is
+    returned. ``exit_code`` has the same meaning as the legacy integer return.
+    """
+
+    exit_code: int
+    delivered_updates: tuple[DeliveredUpdate, ...]
 
 
 def _find_copier_projects(projects_dir: Path) -> list[Path]:
@@ -378,13 +410,45 @@ def _cleanup_worktree(root: Path, wt_dir: Path, branch: str) -> None:
     repair_bare_worktree_config(root)
 
 
+def _snapshot_staged_files(worktree_dir: Path) -> dict[str, bytes | None] | None:
+    """Copy final bytes for every path staged for an isolated update commit."""
+    staged = subprocess.run(
+        ["git", "-C", str(worktree_dir), "diff", "--cached", "--name-only", "-z"],
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    if staged.returncode != 0:
+        return None
+
+    changed_files: dict[str, bytes | None] = {}
+    for raw_path in staged.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative_path = raw_path.decode(errors="surrogateescape")
+        path = worktree_dir / relative_path
+        if path.is_file():
+            changed_files[relative_path] = path.read_bytes()
+        elif path.is_symlink():
+            changed_files[relative_path] = str(path.readlink()).encode()
+        else:
+            changed_files[relative_path] = None
+    return changed_files
+
+
 def _do_update_in_worktree(
-    wt_dir: Path, root: Path, copier_bin: str, push: bool, resolved_source: str | None = None
-) -> tuple[str, str | list[str]]:
+    wt_dir: Path,
+    root: Path,
+    copier_bin: str,
+    push: bool,
+    resolved_source: str | None = None,
+    inspect: bool = False,
+) -> tuple[str, str | list[str] | DeliveredUpdate]:
     """Run copier + commit/push inside an already-created worktree.
 
     Returns (status, detail) where status is one of:
-      ok        — updated, committed, (pushed) — detail unused
+      ok        — updated, committed, (pushed) — detail unused unless inspect=True,
+                  when it is a DeliveredUpdate
       nochange  — copier produced no changes — detail unused
       conflict  — merge conflicts — detail = list[str] of relative paths
       parityfail — a template file or hunk did not land — detail = str (message)
@@ -421,6 +485,9 @@ def _do_update_in_worktree(
         return "parityfail", parity_error
 
     subprocess.run(["git", "-C", str(wt_dir), "add", "-A"], capture_output=True, env=_git_env(), check=False)
+    changed_files = _snapshot_staged_files(wt_dir) if inspect else None
+    if inspect and changed_files is None:
+        return "failed", "could not capture delivered content"
     commit = subprocess.run(
         ["git", "-C", str(wt_dir), "commit", "-m", _COMMIT_MSG],
         capture_output=True,
@@ -431,6 +498,18 @@ def _do_update_in_worktree(
     if commit.returncode != 0:
         # A commit failure is retried as transient; the isolated target is discarded.
         return "failed", (commit.stderr.strip() or "commit failed")
+
+    if inspect:
+        commit_hash = subprocess.run(
+            ["git", "-C", str(wt_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+        if commit_hash.returncode != 0 or not commit_hash.stdout.strip():
+            return "failed", "could not determine temporary commit hash"
+        delivered_update = DeliveredUpdate(wt_dir, commit_hash.stdout.strip(), changed_files)
 
     if push:
         pr = subprocess.run(
@@ -446,14 +525,17 @@ def _do_update_in_worktree(
         subprocess.run(["git", "-C", str(root), "pull", "--rebase"], capture_output=True, env=_git_env(), check=False)
         repair_bare_worktree_config(root)
 
-    return "ok", ""
+    return "ok", delivered_update if inspect else ""
 
 
-def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) -> tuple[str, str | list[str]]:
+def _update_one_isolated(
+    project_dir: Path, copier_bin: str, push: bool = True, inspect: bool = False
+) -> tuple[str, str | list[str] | DeliveredUpdate]:
     """Update one repo in an isolated temp worktree. Returns (status, detail).
 
     On ok/nochange/failed the temp worktree is removed. On conflict/pushfail it is
-    left in place (detail carries the info needed to resolve it manually).
+    left in place (detail carries the info needed to resolve it manually). When
+    inspect=True, an ok result contains copied content before that cleanup.
     """
     root = _repo_root(project_dir)
     if root is None:
@@ -501,7 +583,14 @@ def _update_one_isolated(project_dir: Path, copier_bin: str, push: bool = True) 
         # The required isolated worktree cannot be created, so retrying without repair will not help.
         return "failed", f"worktree add failed: {add.stderr.strip()}"
 
-    status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push, resolved_source)
+    if inspect:
+        status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push, resolved_source, inspect=True)
+    else:
+        status, detail = _do_update_in_worktree(wt_dir, root, copier_bin, push, resolved_source)
+
+    if inspect and status == "ok":
+        assert isinstance(detail, DeliveredUpdate)
+        detail = DeliveredUpdate(project_dir, detail.commit_hash, detail.changed_files)
 
     # Only tear down the temp worktree when there is nothing left to hand off.
     if status in ("ok", "nochange", "failed"):
@@ -521,13 +610,21 @@ def run_copier_update(
     dry_run: bool = False,
     isolate: bool = True,
     push: bool = True,
-) -> int:
-    """Run copier update across all matching projects. Returns exit code (0 = success).
+    inspect: bool = False,
+) -> int | CopierUpdateInspection:
+    """Run copier update across all matching projects.
 
     isolate=True (default) runs each repo in a throwaway worktree and ships to main;
     isolate=False runs copier directly in each repo's main tree (legacy, unsafe while
     sessions are active).
+
+    ``inspect=True`` requires ``isolate=True`` and ``push=False``. It returns a
+    ``CopierUpdateInspection`` instead of an integer, with committed file content
+    copied before the isolated worktree and branch are cleaned up.
     """
+    if inspect and (not isolate or push):
+        raise ValueError("inspect=True requires isolate=True and push=False")
+
     if projects_dir is None:
         projects_dir = Path.home() / "projects"
 
@@ -566,11 +663,15 @@ def run_copier_update(
         return 0
 
     if isolate:
+        if inspect:
+            return _run_isolated(projects, copier_bin, push, inspect=True)
         return _run_isolated(projects, copier_bin, push)
     return _run_direct(projects, copier_bin)
 
 
-def _run_isolated(projects: list[Path], copier_bin: str, push: bool) -> int:
+def _run_isolated(
+    projects: list[Path], copier_bin: str, push: bool, inspect: bool = False
+) -> int | CopierUpdateInspection:
     """Isolated-worktree flow (AI-CLI-91). Returns exit code."""
     print(f"Updating {len(projects)} project(s) [isolated worktree → main]:\n")
     failed = 0
@@ -578,12 +679,19 @@ def _run_isolated(projects: list[Path], copier_bin: str, push: bool) -> int:
     has_partial_mutation = False
     has_config_failure = False
     has_transient_failure = False
+    delivered_updates: list[DeliveredUpdate] = []
     for project_dir in projects:
         print(f"  {project_dir.name}... ", end="", flush=True)
-        status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
+        if inspect:
+            status, detail = _update_one_isolated(project_dir, copier_bin, push=push, inspect=True)
+        else:
+            status, detail = _update_one_isolated(project_dir, copier_bin, push=push)
         if status == "ok":
             print("✓ updated + pushed" if push else "✓ updated (committed, not pushed)")
             changed += 1
+            if inspect:
+                assert isinstance(detail, DeliveredUpdate)
+                delivered_updates.append(detail)
         elif status == "nochange":
             print("· no changes")
         elif status == "conflict":
@@ -619,12 +727,16 @@ def _run_isolated(projects: list[Path], copier_bin: str, push: bool) -> int:
     else:
         print(f"All projects up to date ({changed} updated).")
     if has_partial_mutation:
-        return EX_PARTIAL_MUTATION
-    if has_config_failure:
-        return EX_CONFIG
-    if has_transient_failure:
-        return EX_TEMPFAIL
-    return 0
+        exit_code = EX_PARTIAL_MUTATION
+    elif has_config_failure:
+        exit_code = EX_CONFIG
+    elif has_transient_failure:
+        exit_code = EX_TEMPFAIL
+    else:
+        exit_code = 0
+    if inspect:
+        return CopierUpdateInspection(exit_code, tuple(delivered_updates))
+    return exit_code
 
 
 def _run_direct(projects: list[Path], copier_bin: str) -> int:

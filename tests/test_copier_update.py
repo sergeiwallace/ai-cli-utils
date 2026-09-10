@@ -605,6 +605,80 @@ def test_update_one_isolated_cleans_up_on_ok(tmp_path):
     assert mclean.call_count == 2
 
 
+def test_given_no_push_without_inspection_when_update_succeeds_then_returns_legacy_detail_and_cleans_up(tmp_path):
+    """The existing no-push path still discards its temporary commit and worktree."""
+    _make_answers(tmp_path)
+    ok = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("ai_cli.copier_update._repo_root", return_value=tmp_path):
+        with patch("ai_cli.copier_update.subprocess.run", return_value=ok):
+            with patch("ai_cli.copier_update._cleanup_worktree") as cleanup:
+                with patch("ai_cli.copier_update._do_update_in_worktree", return_value=("ok", "")):
+                    status, detail = _update_one_isolated(tmp_path, "/usr/bin/copier", push=False)
+
+    assert (status, detail) == ("ok", "")
+    assert cleanup.call_count == 2
+
+
+def test_given_inspection_when_isolated_no_push_update_succeeds_then_returns_content_and_cleans_up(tmp_path):
+    """Inspection exposes the committed bytes while the temporary Git state is removed."""
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    template = tmp_path / "project-template"
+    project = projects / "myproject"
+    template.mkdir()
+    project.mkdir()
+
+    for directory in (template, project):
+        subprocess.run(["git", "init"], cwd=directory, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=directory, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=directory, check=True)
+
+    (template / "message.txt").write_text("original\n")
+    subprocess.run(["git", "add", "message.txt"], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    previous_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "message.txt").write_text("updated\n")
+    subprocess.run(["git", "commit", "-am", "update"], cwd=template, check=True, capture_output=True)
+
+    (project / "message.txt").write_text("original\n")
+    (project / ".copier-answers.yml").write_text(f"_src_path: {template}\n_commit: {previous_commit}\n")
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "/usr/bin/copier":
+            (Path(kwargs["cwd"]) / "message.txt").write_text("updated\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return real_run(command, **kwargs)
+
+    with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
+        with patch("shutil.which", return_value="/usr/bin/copier"):
+            result = run_copier_update(projects_dir=projects, push=False, inspect=True)
+
+    assert result.exit_code == 0
+    assert len(result.delivered_updates) == 1
+    delivered = result.delivered_updates[0]
+    assert len(delivered.commit_hash) == 40
+    assert delivered.changed_files == {"message.txt": b"updated\n"}
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{delivered.commit_hash}^{{commit}}"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    assert not (project / ".worktrees" / "copier-update").exists()
+    assert (
+        "copier-update-tmp"
+        not in subprocess.run(
+            ["git", "branch", "--list", "copier-update-tmp"], cwd=project, check=True, capture_output=True, text=True
+        ).stdout
+    )
+
+
 def test_update_one_isolated_leaves_worktree_on_conflict(tmp_path):
     """On conflict, the temp worktree is left in place (only the stale-clear cleanup runs)."""
     _make_answers(tmp_path)
