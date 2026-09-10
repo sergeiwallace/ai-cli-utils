@@ -359,3 +359,4 @@
 {"id":"int-51e18336a0248a2c7dfed10b99346ed6","kind":"field_change","created_at":"2026-09-10T04:34:12.144215852Z","actor":"Sergei Wallace","issue_id":"AI-CLI-j0ro","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-552d44d06ff46a5d1d7ba61964077942","kind":"field_change","created_at":"2026-09-10T06:01:57.343226609Z","actor":"Sergei Wallace","issue_id":"AI-CLI-ts5g","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-5c2d90090f814dd0b659be863043e63a","kind":"field_change","created_at":"2026-09-10T06:07:15.960334246Z","actor":"Sergei Wallace","issue_id":"AI-CLI-b1g1","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
+{"id":"int-762fb572df3de9742455166b78a980ca","kind":"field_change","created_at":"2026-09-10T06:32:41.735388Z","actor":"T","issue_id":"AI-CLI-1wzz","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
