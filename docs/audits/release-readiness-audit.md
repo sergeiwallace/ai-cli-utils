@@ -348,8 +348,12 @@ exit-1 retirement stub, and `archive/handoff.py` is outside the shipped package.
 
 **Current status (2026-08-29): REFRAMED, STILL OPEN — CONFIRMED.** Commits `8894668` and `cdbcbf1`
 repair the two originally cited test defects (`tests/test_process_probe.py:372-388` and
-`tests/test_session.py:1178-1207`). GitHub-hosted CI is now explicitly non-authoritative because
-billing prevents code execution (`docs/procedures/github-actions-retirement.md:10-30`). However, the
+`tests/test_session.py:1178-1207`). GitHub-hosted CI was recorded here as non-authoritative because
+billing was believed to prevent code execution. **Corrected 2026-09-10: that premise was false.**
+Run `33238718021` on 2026-08-29 — the same date as this status line — executed on GitHub-hosted
+runners for minutes and its `lint` job passed, which a billing-blocked job cannot do; CI was red
+because tests were failing. Actions is active and authoritative again, and the known-failing tests
+are tracked on their own merits (`docs/procedures/github-actions-status.md`). However, the
 replacement local gate is not green: Ruff check/format pass, while Pyright 1.1.411 reports 81 errors
 with the existing environment (including unresolved relative imports in `archive/handoff.py:13,63`),
 and pytest cannot initialize because this audit sandbox exposes no writable temporary directory.

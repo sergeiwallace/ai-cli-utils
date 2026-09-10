@@ -2,7 +2,7 @@
 
 ## Continuous Integration
 
-- GitHub Actions CI is retired; use the local verification gate and follow `docs/procedures/github-actions-retirement.md` before interpreting or changing CI workflows.
+- GitHub Actions CI is **active** and its results are meaningful — a red check is a code or workflow problem, not a billing block. Public repos get free unmetered standard runners. Use the local gate (`ruff`, `pytest`) as the fast pre-push signal and CI for cross-platform coverage, especially Windows, which no local Linux/macOS run provides. Read `docs/procedures/github-actions-status.md` before interpreting or changing CI workflows.
 
 ## Public Open-Source Package Standards
 

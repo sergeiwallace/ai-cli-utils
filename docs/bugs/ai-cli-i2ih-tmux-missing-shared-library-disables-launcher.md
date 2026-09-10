@@ -136,9 +136,18 @@ operator paid for a worktree checkout before finding out.
 
 ## Fix Options and the recorded decision
 
-AI-CLI-i2ih's AC-7 required an explicit choice between four options. **Decided by Claude
-Opus 5 (`us.anthropic.claude-opus-5[1m]`), 2026-09-09**, under the Authority test: the
-choice is contained, reversible, and touches no interface outside this package.
+AI-CLI-i2ih's AC-7 required an explicit choice between four options.
+
+> **Decision:** `(1)+(4)` — option 1 (vendor the libraries + a launch wrapper), adopted in
+> **discovery** form rather than by shipping copies, plus option 4 (detect and fail loudly) as an
+> unconditional floor. Option 3 is retained for an **absent** tmux only; option 2 is rejected.
+
+<!-- decision-record: chosen-option=(1)+(4); ai-family=claude; ai-model=us.anthropic.claude-opus-5[1m]; ai-effort=high; ai-profile=session-driver -->
+<!-- decision-lineage: decision-id=AI-CLI-i2ih/D-1; decision-topic=how-to-provision-tmux-native-runtime-dependencies; governs=src/ai_cli/native_deps.py:repair_loader_path; normalized-proposition=a-missing-shared-library-is-repaired-by-discovering-it-on-the-host-not-by-vendoring-or-installing; applicability=package:ai-cli-utils,platform:posix; outcome-id=tmux-launch-self-heals-after-a-host-rebuild; relation=different-question; related-decision-id=; supersedes=; approval-log-decision-id=; approval-actor=; approval-date=; approval-commit= -->
+
+**Decided by Claude Opus 5 (`us.anthropic.claude-opus-5[1m]`), 2026-09-09**, under the
+Authority test: the choice is contained, reversible, and touches no interface outside this
+package.
 
 | Option | Verdict |
 | --- | --- |
