@@ -546,17 +546,19 @@ class-wide follow-up until every lifecycle authority edge is closed.
 
 | Finding | Status | How resolved |
 |---------|--------|--------------|
-| IC-1 | UNRESOLVED | Bug record requires a semantic correction after the implementation boundary is fixed. |
-| JA-1 | UNRESOLVED | Class-wide no-signal boundary is not implemented or tested. |
-| DV-1 | UNRESOLVED | Keep the cron test and add authority-level lifecycle coverage. |
-| F-1 | UNRESOLVED | Remove launch-time termination or add generation-fenced ownership. |
-| F-2 | UNRESOLVED | Replace fixed-name kill with unique, identity-bound cleanup. |
-| F-3 | UNRESOLVED | Refuse or identity-check foreign tmux name collisions. |
-| F-4 | UNRESOLVED | Add process-identity capture and time-of-use revalidation. |
-| F-5 | UNRESOLVED | Replace PID-only durable records with versioned process identity. |
-| F-6 | UNRESOLVED | Supersede the approved destructive plan clauses. |
+| IC-1 | CLAIMED FIXED (commit `067a358b`, PR #129) | Bug record's "contained and sufficient" claim corrected to accurately describe class-wide remediation; status downgraded `fix-verified` → `fix-implemented` pending independent re-audit (`docs/bugs/cross-session-mosh-termination.md`). |
+| JA-1 | CLAIMED FIXED (commit `067a358b`, PR #129) | Every implicit/explicit signal site below now requires proven ownership before signalling, closing the class-wide gap this finding identified. |
+| DV-1 | CLAIMED FIXED (commit `067a358b`, PR #129) | New regression test `tests/test_stale_session_reaper.py` (added lines) asserts a live sibling process survives across the launch/quota/sandbox/explicit-clean paths, not just the cron path DV-1 flagged as insufficient coverage. |
+| F-1 | CLAIMED FIXED (commit `067a358b`, PR #129) | `process.terminate()` removed entirely from implicit launch-time cleanup; `_sweep_orphaned_claude_bg_spares` renamed `_sweep_stale_claude_session_state` (`src/ai_cli/session.py:457`), now bookkeeping-only — `cleanup_stale_sessions` (`src/ai_cli/session.py:485-495`) no longer calls any terminate path. |
+| F-2 | CLAIMED FIXED (commit `067a358b`, PR #129) | Quota scraping now allocates a unique per-scrape tmux window name with a `secrets.token_urlsafe(32)` generation marker (`src/ai_cli/quota.py:487`), captures identity via `capture_tmux_session_identity` (`quota.py:510`), and kills only that exact identity via the new `tmux_ownership` module's atomic `tmux if-shell` fence (`quota.py:658`; `src/ai_cli/tmux_ownership.py`). |
+| F-3 | CLAIMED FIXED (commit `067a358b`, PR #129) | `--sandbox` relaunch captures identity and atomically revalidates the managed generation via `tmux_ownership.capture_tmux_session_identity`/`kill_owned_tmux_session` before killing, refusing a tokenless/unowned collision (`src/ai_cli/main.py:3201-3229`). |
+| F-4 | CLAIMED FIXED (commit `067a358b`, PR #129) | `ai ps clean` now captures `create_time` at inventory (`src/ai_cli/process_hygiene.py:60,63-66,134,458`) and revalidates it immediately before `terminate()`, skipping instead of killing on mismatch (`process_hygiene.py:640-645`). |
+| F-5 | CLAIMED FIXED (commit `067a358b`, PR #129) | Tunnel/CDP stop commands now persist and revalidate a full `_ManagedProcessIdentity` (pid, create_time, executable, command, port) via `_matching_process` before signalling; a stale record is removed without touching the live PID holder (`src/ai_cli/tunnel.py:26-56,75-132`). |
+| F-6 | CLAIMED FIXED (commit `067a358b`, PR #129) | `docs/plans/process-hygiene-plan.md`'s score-based auto-kill-on-launch/cron sections marked superseded; the "safe regardless" claim corrected. |
 
-No inline target fixes were applied. Every resolution requires a source, test, bug-record, or plan
+No inline target fixes were applied in Round 1. All nine resolutions above are Round-2-unverified
+claims from PR #129 (commit `067a358b`) — the Round 2 dispatch below exists to check each one
+against the actual code, not to take this table's word for it. Every resolution requires a source, test, bug-record, or plan
 change outside this audit document's sole writable target.
 
 ### R1 Verification Matrix
@@ -1085,14 +1087,14 @@ found; faked findings are not. Cite file:line for every codebase claim.
 
 ### Round 2 Reviewer Prompt (Re-audit)
 
-**Model:** Codex (fresh session, ideally independent verification)
+**Model:** Codex (fresh session, independent verification — different model/persona from Round 1's `gpt-5.6-sol`)
 
-**Date:** TBD (post-Round-1, only if Round 1 leaves open MUST-fix items)
+**Date:** 2026-09-10 (post-Round-1; Round 1 left 9 open MUST-fix items, all now claimed fixed by PR #129, commit `067a358b`)
 
 ```text
 You are a principal staff engineer specializing in developer-experience tooling, terminal
 multiplexer/session-lifecycle systems (tmux, mosh), and reliability engineering (same domain as
-the prior round, ideally a fresh agent / model for independent verification). You are reading the
+the prior round, a fresh agent / model for independent verification). You are reading the
 audit history of docs/bugs/cross-session-mosh-termination.md. This is a later-round verification
 pass.
 
@@ -1106,13 +1108,25 @@ MAJOR — implemented literally as specified, this produces incorrect or unsafe 
 
 ## Scope guard — full open MUST-fix backlog
 
-`OPEN-MUST-FIX-BACKLOG` must be the full current list of every unresolved item marked **MUST be
-fixed before merge** anywhere in the prior audit history, with its ID and latest verification
-status. Your task is to verify that EVERY item in that backlog, including every applicable finding
-(IC-N / JA-N / DV-N / F-N) and AD-N decision, has been correctly applied to the target. If the
-filled list omits an older open MUST-fix item you find in the audit history, add it to your output;
-do not accept a narrowed scope. The immediately preceding round's new findings are additive only,
-never a replacement for the full backlog.
+The full current OPEN-MUST-FIX-BACKLOG (every item marked MUST be fixed before merge from Round 1,
+with its ID and latest claimed-resolution status per the R1 Resolution Pass table above):
+
+- IC-1 — bug record's "contained and sufficient" claim was false given the class-wide gaps below. Claimed fixed: status downgraded `fix-verified` → `fix-implemented`, scope-of-fix section rewritten (`docs/bugs/cross-session-mosh-termination.md`).
+- JA-1 — the approved fix's scope claim ("one-command removal is sufficient") did not hold: 5 other call sites retained unowned signal authority. Claimed fixed: all 5 sites below now require proven ownership before signalling.
+- DV-1 — the shipped regression test only proved the cron path safe, not the other reachable paths. Claimed fixed: new regression coverage added in `tests/test_stale_session_reaper.py` (live sibling mosh-server survival across launch/quota/sandbox/explicit-clean paths).
+- F-1 — `session.py`'s implicit launch-time cleanup could terminate a live sibling's `claude bg-spare` on a legally-hyphenated session name (`c-my-project-1`) misclassified by `_AI_SESSION_RE`. Claimed fixed: `process.terminate()` removed entirely from `cleanup_stale_sessions()`/`_sweep_stale_claude_session_state()` (formerly `_sweep_orphaned_claude_bg_spares`), `src/ai_cli/session.py:457,485-495` — now bookkeeping-only.
+- F-2 — `quota.py`'s usage-scraping pre-killed a FIXED tmux name (`ai-quota-scrape`) with zero ownership check. Claimed fixed: unique per-scrape window name + `secrets.token_urlsafe(32)` generation marker + `tmux_ownership.capture_tmux_session_identity`/`kill_owned_tmux_session` atomic fence, `src/ai_cli/quota.py:487,510,658`.
+- F-3 — `main.py`'s `--sandbox` relaunch killed any tmux session matching a derived name after only an existence check. Claimed fixed: identity capture + atomic generation revalidation before kill via `tmux_ownership`, `src/ai_cli/main.py:3201-3229`.
+- F-4 — `process_hygiene.py`'s `ai ps clean` explicit kill path had a TOCTOU window (PID captured at inventory, killed later with no revalidation). Claimed fixed: `create_time` captured at inventory and revalidated immediately before `terminate()`, skip-not-kill on mismatch, `src/ai_cli/process_hygiene.py:60,63-66,134,458,640-645`.
+- F-5 — `tunnel.py`'s `ai tunnel stop`/`ai cdp stop` trusted PID-only state files with no start-time/command check (PID-reuse hazard). Claimed fixed: full `_ManagedProcessIdentity` (pid, create_time, executable, command, port) persisted and revalidated via `_matching_process` before signalling; stale records removed without touching the live PID holder, `src/ai_cli/tunnel.py:26-56,75-132`.
+- F-6 — the APPROVED `docs/plans/process-hygiene-plan.md` still mandated the exact score-based auto-kill behavior the fix removed as unsafe. Claimed fixed: those sections marked superseded, the "safe regardless" claim corrected.
+
+Your task is to verify that EVERY item above, including every applicable finding (IC-N / JA-N /
+DV-N / F-N) and AD-N decision, has been correctly applied to the target AT ITS CLAIMED LOCATION —
+do not just check that the location exists; check that the code there actually does what the claim
+says. If you find an older open MUST-fix item this list omits, add it to your output; do not accept
+a narrowed scope. The immediately preceding round's new findings are additive only, never a
+replacement for the full backlog.
 
 You will also surface NEW issues (N-N) that prior fixes themselves introduced. Any FAIL or PARTIAL
 backlog item remains in the open MUST-fix backlog and must be carried into every subsequent
@@ -1167,11 +1181,23 @@ file:line for every claim.
 0. docs/audits/TEMPLATE.md in this repo — so your Round 2 section follows the required
    append-only structure.
 1. docs/bugs/cross-session-mosh-termination.md — the artifact being verified. Read every section
-   prior fixes touched.
+   prior fixes touched. Target commit: `067a358b`.
 2. THIS AUDIT DOC — its full history is your verification checklist; derive and check the complete
    `OPEN-MUST-FIX-BACKLOG`, not only the preceding round.
-3. src/ai_cli/process_hygiene.py, src/ai_cli/session_script.py, tests/test_process_hygiene.py —
-   consult if a backlog claim about them might be contradicted by what the code actually says.
+3. src/ai_cli/session.py — F-1's claimed fix (launch-time cleanup, `_sweep_stale_claude_session_state`).
+4. src/ai_cli/quota.py — F-2's claimed fix (generation-fenced tmux identity for quota scraping).
+5. src/ai_cli/main.py — F-3's claimed fix (`--sandbox` relaunch ownership revalidation).
+6. src/ai_cli/process_hygiene.py — F-4's claimed fix (create_time capture + revalidation in `ai ps clean`).
+7. src/ai_cli/tunnel.py — F-5's claimed fix (`_ManagedProcessIdentity` for tunnel/CDP stop).
+8. src/ai_cli/tmux_ownership.py — the NEW shared module F-2/F-3 both depend on (generation-fenced
+   identity capture + atomic `tmux if-shell` ownership-fenced kill). Verify the atomicity claim
+   directly: does the kill really happen inside one `tmux if-shell` call, or is there still a
+   capture-then-kill gap?
+9. docs/plans/process-hygiene-plan.md — F-6's claimed fix (superseded auto-kill sections).
+10. tests/test_stale_session_reaper.py, tests/test_session.py, tests/test_quota.py, tests/test_cli.py,
+    tests/test_process_hygiene.py — the regression coverage DV-1 and each F-N claim rely on. Actually
+    run the relevant tests, don't just read them, to confirm PASS is real and not a tautological
+    assertion against a mock.
 ```
 
 <!-- /doc:region name="appendix_reviewer_prompt" -->
