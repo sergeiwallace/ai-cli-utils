@@ -42,6 +42,13 @@ delegation_provenance:
   - [R2.5 Verification Matrix](#r25-verification-matrix)
   - [R2 Recommendations](#r2-recommendations)
   - [R2 Receipt Payload Projection](#r2-receipt-payload-projection)
+- [Round 3 — Verification Pass](#round-3--verification-pass-append-only)
+  - [R3 Summary](#r3-summary)
+  - [R3.1 Open MUST-fix backlog verification](#r31-open-must-fix-backlog-verification)
+  - [R3.3 AD-N decisions verification](#r33-ad-n-decisions-verification)
+  - [R3.4 NEW issues surfaced](#r34-new-issues-surfaced)
+  - [R3.5 Verification Matrix](#r35-verification-matrix)
+  - [R3 Recommendations](#r3-recommendations)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
 - [Outstanding Issues to Fix](#outstanding-issues-to-fix)
 - [Already-Correct Items](#already-correct-items)
@@ -107,25 +114,28 @@ collection; historical suite counts in the bug record remain **UNVERIFIED by thi
 <!-- doc:region name="loop_receipt" kind="replaceable" -->
 ## Status Summary
 
-**Loop state:** Round 2 verification projection complete — **NOT promotion-ready**. Seven of nine
-Round 1 findings are verified fixed; JA-1 and DV-1 remain PARTIAL, and one new MAJOR finding is
-open. This document contains an untrusted broker projection; only the adjacent trusted receipt may
-assert stabilization or promotion.
+**Loop state:** Direct Round 3 verification complete — **NOT promotion-ready**. N-1's production
+fence is correct at source level and its mutation regression is genuine, but test execution remains
+blocked by the worker sandbox. JA-1 is still false because Round 3 found a separate reachable
+name-only configuration-cleanup kill (N-2); DV-1 therefore remains PARTIAL. This direct round does
+not advance the driver receipt; only the adjacent trusted receipt may assert stabilization or
+promotion.
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | MAJOR justified | New MINOR | Open blocking | Scope | Terminal |
 |---|---:|---|---:|---:|---:|---:|---:|---|---|
 | audit | 1 | `sha256:a8842576e99d546d67386b5c329ff5c6eed4494de4012d1e7b26944faa85c82c` | 0 | 9 | 0 | 0 | 9 | discovery | none — projection only |
 | audit | 2 | `blob:c454026f066f10c7e3b3537c2acd9ab8bab44861` | 0 | 1 | 0 | 0 | 3 | verification | none — projection only |
+| audit | 3 | `blob:1e21c3e7144cba2595225461bd314cd2706bb854ef5679c228f8f288ecd524a1` | 0 | 1 | 0 | 0 | 4 | direct verification | blocked — JA-1, DV-1, N-1, N-2 |
 
 ### Run Ledger
 
 | Field | Value |
 |---|---|
 | ledger-version | 2 |
-| Stage cursor | `R2 verification complete; resolution required` |
+| Stage cursor | `direct R3 verification complete; resolution required` |
 | Driver lane | `verification` |
 | Capability plan | `cx-audit-medium + test execution requested` |
-| Promotion | `blocked: JA-1, DV-1, and N-1 open; trusted receipt pending` |
+| Promotion | `blocked: JA-1, DV-1, N-1, and N-2 open; trusted receipt pending` |
 <!-- /doc:region name="loop_receipt" -->
 
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
@@ -1093,6 +1103,146 @@ invoked via bare `python3` instead of `uv run` — worth filing, not blocking.)
 }
 ```
 
+## Round 3 — Verification Pass (append-only)
+
+**Round 3 auditor:** Codex audit (GPT-5; exact deployment ID not exposed, effort: medium)
+
+**Round 3 date:** 2026-09-10
+
+**Round 3 scope:** Verify the complete Round 2 open backlog (JA-1, DV-1, and N-1) against
+commit `518f222` or later, including source fidelity, mutation-test quality, and actual focused
+test execution. Re-check the class invariant only where the named Round 3 files contradict a prior
+PASS. No source, test, bug-record, or other repository file was edited.
+
+### R3 Summary
+
+N-1's code repair is **PASS at source level**: the relaunch path captures a dead-pane fingerprint
+bound to the old opaque session ID and then compares that exact fingerprint inside tmux's atomic
+`if-shell` before killing. The new regression is a genuine mutation test, not a tautology: its
+post-`list-panes` hook destroys the observed dead session, creates a live same-name replacement,
+and asserts both the replacement ID and its generation marker survive.
+
+The required runtime verification is **BLOCKED**, not passed. The exact `uv run pytest ... -v`
+command failed before collection because uv could not initialize its cache. A direct
+`.venv/bin/pytest` fallback also failed before collection because the sandbox exposes no writable
+temporary directory. A pre-fix RED run was consequently unavailable without violating the
+single-write-target constraint. N-1 and DV-1 are PARTIAL rather than fully verified.
+
+JA-1 is **FAIL**. While checking the whole-class claim in the named `main.py`, Round 3 found N-2:
+after creating a new tmux session, any option-configuration failure reaches an unfenced
+`kill-session -t session_id`. A concurrent process can replace that same name between the failed
+configuration command and the cleanup call, causing this launch to kill the replacement. This
+predates commit `518f222`, but it directly contradicts the existing class-wide PASS assertion and
+is the same reachable destructive lifecycle failure class.
+
+### R3.1 Open MUST-fix backlog verification
+
+| ID | Verdict | Evidence | Verification note |
+|----|---------|----------|-------------------|
+| JA-1 | **FAIL (CONFIRMED)** | N-1's dead-pane path is fenced, but new-session configuration failure still calls name-only `tmux kill-session -t session_id` (`src/ai_cli/main.py:3284-3295`). The audit previously asserts this “cleans only the tmux session just created” (`docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md:1277-1278`), yet no captured opaque ID or generation is checked before the kill. See N-2. | Source ordering and `git blame` reproduced the authority gap; dynamic pytest execution was unavailable. |
+| DV-1 | **PARTIAL (CONFIRMED source; execution BLOCKED)** | The requested mutation test now exists at `tests/test_session_launch_integration.py:375-418`; the fixture runs its one-shot replacement hook after the real `list-panes` observation (`tests/test_session_launch_integration.py:143-158`). It does not cover the newly found configuration-cleanup race, and neither the mutation test nor the ordinary dead-pane test could collect in this sandbox. | Genuine regression source is present; no independent GREEN/RED runtime result was obtained. |
+| N-1 | **PARTIAL (source PASS; execution BLOCKED)** | `_do_session_launch()` selects the prior candidate, captures its full dead-pane fingerprint, and calls `fence_and_kill(candidate.session_id, fingerprint)` (`src/ai_cli/main.py:3223-3238`). The adapter fingerprint contains session ID, generation, attachment, window/pane IDs, PIDs, and `pane_dead` (`src/ai_cli/stale_session_reaper.py:35-48,141-183,526-548`). The exact requested test did not reach collection. | Current relevant files are byte-identical to commit `518f222`; source adaptation is faithful, runtime verification is incomplete. |
+
+### R3.3 AD-N decisions verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| — | **N/A (CONFIRMED)** | No prior AD-N exists, and N-2 has a single fail-closed remedy rather than a product-policy choice. |
+
+### R3.4 NEW issues surfaced
+
+#### N-2: Configuration-failure cleanup can kill a concurrent same-name replacement — `MAJOR` (CONFIRMED)
+
+**Location:** `src/ai_cli/main.py:3262-3295`;
+`tests/test_session_launch_integration.py:130-141,183-184`;
+`docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md:1277-1278`
+
+**Existing class-wide claim contradicted:**
+
+> “`main.py:3271` cleans only the tmux session just created by the current invocation after its
+> configuration fails.”
+
+**Actual state:**
+
+```python
+# src/ai_cli/main.py:3289-3295
+for tmux_option in tmux_options:
+    configured = subprocess.run(tmux_option, capture_output=True, check=False)
+    if configured.returncode != 0:
+        subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+        Path(_script_path).unlink(missing_ok=True)
+        print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
+        sys.exit(1)
+```
+
+The current invocation does create a session before this loop, but it retains only the mutable
+name. If another actor kills that session and creates a replacement with the same name while an
+option command is running, that command can fail and the subsequent cleanup resolves the name to
+the replacement. Unlike the sandbox and N-1 paths, there is no captured opaque session ID,
+generation token, or atomic comparison between the configuration result and destruction.
+
+`git blame` attributes the kill to commit `2f90ebe9`, so N-2 was not introduced by N-1's commit.
+It is reported because the Round 3 mandate explicitly requires verification that JA-1's class
+invariant now holds everywhere, and the named source file directly contradicts that claim.
+
+**Why it matters:** A routine launch configuration failure can terminate another live tmux session
+that acquired the same name during the cleanup race. This is reachable incorrect destructive
+behavior and therefore MAJOR under the binding rubric.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/main.py | sed -n '3262,3295p'
+git blame -L 3284,3295 -- src/ai_cli/main.py
+rg -n 'configured.returncode|failed to configure tmux session|kill-session.*session_id' \
+  src/ai_cli/main.py tests/test_session_launch_integration.py tests/test_cli.py
+```
+
+**Recommended fix (follow-up round):** Immediately after successful `new-session`, establish the
+managed generation marker and capture the new session's opaque identity. On configuration failure,
+kill only through an atomic ID+generation fence. If identity capture or the fence fails, preserve
+the current name occupant and exit. Add a mutation integration test that replaces the created
+session immediately after a forced option failure and asserts the live replacement survives.
+
+### R3.5 Verification Matrix
+
+| Check | Command | Expected | Actual | Pass? |
+|-------|---------|----------|--------|-------|
+| N-1 production adaptation | `nl -ba src/ai_cli/main.py \| sed -n '3216,3238p'` | Full fingerprint capture and atomic exact-ID fence | Candidate selected by name, fingerprint captured, exact `candidate.session_id` fenced at lines 3223-3238 | ✅ |
+| N-1 helper fidelity | `nl -ba src/ai_cli/stale_session_reaper.py \| sed -n '35,48p;141,183p;526,548p'` | ID, generation, attachment, every pane's ID/PID/dead state compared | Format and validators include all fields; `require_dead=True` at capture and fence | ✅ |
+| DV-1 mutation quality | `nl -ba tests/test_session_launch_integration.py \| sed -n '143,158p;375,418p'` | Replacement occurs after observation; replacement identity survives | One-shot hook replaces after real `list-panes`; assertions check opaque ID and generation | ✅ |
+| Ordinary dead-pane behavior | `nl -ba tests/test_session_launch_integration.py \| sed -n '315,372p'` | Dead managed session is recreated with a live pane | Test creates a real dead managed pane and asserts the resulting named session has `pane_dead == 0` | ✅ source / runtime blocked |
+| Requested runtime test | `uv run pytest tests/test_session_launch_integration.py -k test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives -v` | One selected test passes | Exit 2 before collection: `Failed to initialize cache ... Operation not permitted` | ❌ BLOCKED |
+| Direct pytest fallback | `.venv/bin/pytest ... -v -p no:cacheprovider` | Bypass uv and run the selected test | Failed before collection: `FileNotFoundError: No usable temporary directory found` | ❌ BLOCKED |
+| JA-1 / N-2 authority edge | `nl -ba src/ai_cli/main.py \| sed -n '3262,3295p'` | Cleanup destroys only a captured owned identity | Line 3292 destroys by mutable name after a separately observed configuration failure | ❌ |
+| N-2 coverage | `rg -n 'configured.returncode|failed to configure tmux session|configuration.*fail' tests/test_session_launch_integration.py tests/test_cli.py` | Mutation test for replacement before failure cleanup | No matching test; integration fixture makes all option commands succeed at lines 183-184 | ❌ |
+
+**Verified: 4/8 checks pass by reproduced source evidence; 2/8 runtime checks are blocked before
+collection; 2/8 checks confirm N-2 and its missing regression. No test pass count is claimed.**
+
+### R3 Recommendations
+
+**MUST be fixed before closing AI-CLI-1wzz or claiming the class invariant:**
+
+- N-2: replace the name-only configuration-failure kill with captured owned identity plus an
+  atomic fence, and add a same-name replacement mutation regression.
+- JA-1 and DV-1: remain open until N-2 is fixed and covered.
+- N-1: rerun the named focused test in an environment with writable uv cache and temporary paths;
+  also run the ordinary dead-pane recreate test. If feasible, repeat the requested pre-fix RED
+  mutation check without modifying the audited worktree.
+
+**SHOULD be corrected in the next audit update:**
+
+- Supersede the prior Already-Correct assertion that configuration cleanup necessarily kills only
+  the session created by the current invocation; N-2 disproves it.
+
+**Can be folded into a follow-up:**
+
+- None. N-2 is a destructive lifecycle-boundary defect.
+
+**Closure verdict:** `AI-CLI-1wzz` is **not safe to close**. N-1's source fix is credible, but its
+required runtime verification is incomplete, and the class invariant remains false at N-2.
+
 ## Decisions Requiring Team Input
 
 None. Each finding has a fail-closed resolution that does not require choosing among materially
@@ -1169,6 +1319,7 @@ different product policies. No AD-N entry is warranted.
 | 2026-09-10 | Round 1 | Independent audit complete: 9 MAJOR findings, 9/9 reproduced; narrow cron fix verified, class-wide invariant failed; no source or target-artifact edits; promotion blocked. |
 | 2026-09-10 | Fix round | Codex (gpt-5.6-sol, `implement-network`, high effort) implemented remediation for all 9 findings, independently reviewed and re-verified by the orchestrating session, merged as ai-cli-utils PR #129 (commit `067a358b`). Bug record status downgraded `fix-verified` -> `fix-implemented` pending the Round 2 re-audit below; this row is orchestrator-recorded, not a trusted receipt assertion -- promotion/stabilization still requires the driver's own Round 2 verification. |
 | 2026-09-10 | Round 2 | Codex (GPT-5, exact deployment ID not exposed; `audit`, medium effort): 7 PASS, 2 PARTIAL, 1 new MAJOR (N-1); dead-pane relaunch authorization is outside the atomic generation fence; pytest execution blocked before collection by temporary-directory policy; no target edits. |
+| 2026-09-10 | Round 3 | Codex (GPT-5, exact deployment ID not exposed; `audit`, medium effort): N-1 source fix PASS, N-1 runtime verification BLOCKED, DV-1 PARTIAL, JA-1 FAIL; 1 new MAJOR (N-2) in name-only configuration-failure cleanup; not safe to close; no target edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -1235,6 +1386,25 @@ different product policies. No AD-N entry is warranted.
 - Commit `067a358b`, its parent, complete source/test diff, and path equivalence through current
   `HEAD` `05983a8`.
 
+**Round 3 additions:**
+
+- `docs/bugs/cross-session-mosh-termination.md` — full current target; verification claims and
+  pending independent-audit status.
+- `docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md` — full prior Round 1/Round 2
+  history and the frozen Round 3 reviewer prompt.
+- `src/ai_cli/main.py:3199-3300` — sandbox replacement, N-1 dead-pane fence, session creation,
+  configuration, failure cleanup, and attach control flow.
+- `src/ai_cli/stale_session_reaper.py:35-183,340-394,513-548` — candidate grammar, complete
+  fingerprint format/validation, exact-ID fence, and established evaluator use.
+- `tests/test_session_launch_integration.py:110-200,290-418` — real-tmux subprocess adapter,
+  ordinary dead-pane recreation, and post-observation replacement mutation.
+- `tests/test_stale_session_reaper.py:587-706` — positive fence, tokenless/generation/respawn
+  negatives, hostile-token rejection, and exact argv contract.
+- `tests/test_cli.py:1070-1187,2000-2053` — session creation/configuration mocks and absence of a
+  configuration-cleanup replacement mutation.
+- Commit `518f222`, its parent, complete two-file diff, path equivalence through current `HEAD`
+  `5e4e80b`, and blame/history for the pre-existing N-2 kill at commit `2f90ebe9`.
+
 ## Appendix: Commands Run
 
 ```bash
@@ -1261,6 +1431,24 @@ git show 744499b4:docs/bugs/cross-session-mosh-termination.md | shasum -a 256
 markdownlint docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md
 <canonical-doc-validator> validate-doc docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md
 .venv/bin/python -B -c '<extract and validate the single receipt payload projection>'
+# Round 3
+git rev-parse HEAD
+git show --stat --oneline 518f222
+git diff 518f222..HEAD -- src/ai_cli/main.py src/ai_cli/stale_session_reaper.py \
+  tests/test_session_launch_integration.py docs/bugs/cross-session-mosh-termination.md
+git show 518f222 -- src/ai_cli/main.py tests/test_session_launch_integration.py
+nl -ba src/ai_cli/main.py | sed -n '3199,3300p'
+nl -ba src/ai_cli/stale_session_reaper.py | sed -n '35,183p;340,394p;513,548p'
+nl -ba tests/test_session_launch_integration.py | sed -n '110,200p;290,418p'
+nl -ba tests/test_stale_session_reaper.py | sed -n '587,706p'
+rg -n 'kill-session|fence_and_kill|capture_fingerprint' src/ai_cli/main.py \
+  src/ai_cli/stale_session_reaper.py tests/test_session_launch_integration.py tests/test_cli.py
+git blame -L 3284,3295 -- src/ai_cli/main.py
+uv run pytest tests/test_session_launch_integration.py -k \
+  test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives -v
+.venv/bin/pytest tests/test_session_launch_integration.py -k \
+  test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives \
+  -v -p no:cacheprovider
 ```
 
 The pytest command failed before collection because no permitted temporary directory exists. The
