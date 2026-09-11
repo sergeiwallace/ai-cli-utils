@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -3281,6 +3282,21 @@ def _do_session_launch(
                 print(f"  (with --): {stderr}", file=sys.stderr)
                 print(f"  (without --): {stderr2}", file=sys.stderr)
                 sys.exit(1)
+        generation = secrets.token_urlsafe(32)
+        marked = subprocess.run(
+            ["tmux", "set-option", "-t", session_id, "@ai_cli_session_generation", generation],
+            capture_output=True,
+            check=False,
+        )
+        if marked.returncode != 0:
+            Path(_script_path).unlink(missing_ok=True)
+            print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
+            sys.exit(1)
+        identity = _tmux_ownership.capture_tmux_session_identity(session_id, expected_generation=generation)
+        if identity is None:
+            Path(_script_path).unlink(missing_ok=True)
+            print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
+            sys.exit(1)
         tmux_options = (
             ["tmux", "set-window-option", "-t", session_id, "remain-on-exit", "on"],
             ["tmux", "set-option", "-t", session_id, "mouse", "on"],
@@ -3289,7 +3305,7 @@ def _do_session_launch(
         for tmux_option in tmux_options:
             configured = subprocess.run(tmux_option, capture_output=True, check=False)
             if configured.returncode != 0:
-                subprocess.run(["tmux", "kill-session", "-t", session_id], capture_output=True, check=False)
+                _tmux_ownership.kill_owned_tmux_session(identity)
                 Path(_script_path).unlink(missing_ok=True)
                 print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
                 sys.exit(1)
