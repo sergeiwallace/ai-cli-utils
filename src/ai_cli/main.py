@@ -27,6 +27,7 @@ from . import native_deps as _native_deps
 from . import process_manager as _process_manager
 from . import session as _session
 from . import session_script as _session_script
+from . import stale_session_reaper as _stale_session_reaper
 from . import tmux_ownership as _tmux_ownership
 from . import tmux_setup as _tmux_setup
 from . import transport as _transport
@@ -3216,18 +3217,25 @@ def _do_session_launch(
         # A supervisor crash (e.g. AI-CLI-t8h5) leaves the tmux session alive with
         # a dead pane and no process to react to a fresh script. Reattaching to it
         # just shows the frozen final output forever instead of relaunching, so
-        # treat an all-dead-pane session as absent and let it recreate below.
-        pane_check = subprocess.run(
-            ["tmux", "list-panes", "-t", session_id, "-F", "#{pane_dead}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        pane_states = [line for line in pane_check.stdout.splitlines() if line]
-        if pane_check.returncode == 0 and pane_states and all(state == "1" for state in pane_states):
-            identity = _tmux_ownership.capture_tmux_session_identity(session_id)
-            if identity is not None and _tmux_ownership.kill_owned_tmux_session(identity):
-                existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
+        # treat an all-dead-pane session as absent and let it recreate below. The
+        # fingerprint captures that all-dead state and the exact opaque session
+        # identity together, then fences both atomically before any kill.
+        adapter = _stale_session_reaper.SubprocessTmuxAdapter()
+        try:
+            candidate = next(
+                (item for item in adapter.sessions() if item.session_name == session_id),
+                None,
+            )
+            fingerprint = adapter.capture_fingerprint(candidate) if candidate is not None else None
+        except (OSError, RuntimeError, ValueError):
+            fingerprint = None
+            candidate = None
+        if (
+            candidate is not None
+            and fingerprint is not None
+            and adapter.fence_and_kill(candidate.session_id, fingerprint)
+        ):
+            existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     # Stable script path: refreshed on every launch/re-attach so the session script's
     # mtime check detects updates (e.g. after `ai update`) and hot-reloads. Written
     # only when the template actually changed — otherwise a plain re-attach would bump
