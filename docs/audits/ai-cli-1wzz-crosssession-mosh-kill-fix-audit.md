@@ -917,6 +917,43 @@ policy.**
 
 - None. The only new issue is in the destructive lifecycle boundary and is blocking.
 
+### Post-R2 status note (2026-09-11, not a new round)
+
+N-1 fixed and merged: ai-cli-utils PR #132, commit `518f222`. Reused
+`stale_session_reaper.py`'s `SubprocessTmuxAdapter.capture_fingerprint()` /
+`fence_and_kill()` pattern in the dead-pane relaunch path (`src/ai_cli/main.py`), closing
+the same-name-replacement race. New mutation regression
+`test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives`
+independently confirmed RED against pre-fix code, GREEN after (verified via `git stash`, not
+just the delegated worker's self-report).
+
+A formal, driver-brokered Round 3 confirmation could not be dispatched this session.
+`audit_loop.py next confirmation` returned `audit-loop: respecify required; freeze
+docs/bugs/cross-session-mosh-termination.md.invariants.yaml before another dispatch` — the
+`high` risk tier's `cluster_recurrence_limit`/`blocking_streak_limit` policy tripped after 2
+consecutive dispatched rounds both carrying blocking findings in the same invariant cluster.
+
+This is a genuine, code-enforced human gate, not a bug or a style choice: `config/
+audit_risk_tiers.yaml` sets `respecify_requires_human_ratification: true` for `high`, and
+`scripts/invariant_register.py`'s `validate_freeze()` hard-rejects any freeze whose
+`human_ratification` event does not have `actor.family == "human"` — an AI-authored
+ratification record cannot satisfy this check by construction. Separately, authoring the
+`.invariants.yaml` register itself (full state/transition/dimension/cell formalization,
+schema in `invariant_register.py:REQUIRED`) is real design work, and the fleet's own
+decision-tier floor reserves design decisions for Opus/Fable/Codex-flagship, not the Sonnet
+session that ran this loop.
+
+**Next step, owned by Sergei, not autonomous:** either (a) ratify a respecify — author or
+review the invariants register and record a human decision event over it — then dispatch a
+real Round 3 confirmation of the `N-1` fix through the driver, or (b) accept this session's
+independent manual verification (diff read + RED/GREEN stash test + independent suite re-run)
+as sufficient and close `AI-CLI-1wzz` without a formal Round 3. `AI-CLI-1wzz`'s bug record
+correctly says `fix-implemented`, not `fix-verified`, reflecting this open item either way.
+
+(A real, separate driver bug found investigating this: the halt-handling path in
+`audit_loop.py`'s `next()` crashes with `ModuleNotFoundError: No module named 'yaml'` when
+invoked via bare `python3` instead of `uv run` — worth filing, not blocking.)
+
 ### R2 Receipt Payload Projection
 ```json
 {
