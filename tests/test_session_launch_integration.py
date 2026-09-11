@@ -20,6 +20,7 @@ import libtmux
 import pytest
 from conftest import tmux_runnable
 
+from ai_cli import tmux_ownership
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
@@ -94,6 +95,9 @@ def patched_subprocess(tmux_server, tmp_path):
     """
     server = tmux_server
     real_subprocess_run = subprocess.run
+    real_capture_tmux_session_identity = tmux_ownership.capture_tmux_session_identity
+    server._tmux_commands = []
+    server._execvp_calls = []
 
     class _OK:
         returncode = 0
@@ -124,6 +128,7 @@ def patched_subprocess(tmux_server, tmp_path):
         sub = cmd[1] if len(cmd) > 1 else ""
 
         if head == "tmux":
+            server._tmux_commands.append(list(cmd))
             if sub == "-V":
                 # A version answer, because the launcher now DECIDES on it: a
                 # fake that returned empty stdout here made the launch conclude
@@ -222,14 +227,27 @@ def patched_subprocess(tmux_server, tmp_path):
         # long as this module skipped on hosts without a runnable tmux.
         return real_subprocess_run(cmd, *args, **kwargs)
 
+    def capture_tmux_session_identity(*args, **kwargs):
+        identity = real_capture_tmux_session_identity(*args, **kwargs)
+        after_identity_capture = getattr(server, "_after_identity_capture", None)
+        if identity is not None and after_identity_capture is not None:
+            server._after_identity_capture = None
+            after_identity_capture()
+        return identity
+
     def fake_execvp(file, args):
         # tmux attach-session is the final exec — raise SystemExit so the
         # test process survives while the call is still recorded.
+        server._execvp_calls.append((file, list(args)))
         raise SystemExit(0)
 
     with (
         patch("ai_cli.main.subprocess.run", side_effect=fake_run),
         patch("ai_cli.iterm2.subprocess.run", side_effect=fake_run),
+        patch(
+            "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+            side_effect=capture_tmux_session_identity,
+        ),
         patch("ai_cli.main.os.execvp", side_effect=fake_execvp),
         patch("ai_cli.main.get_xdg_state_home", return_value=tmp_path),
     ):
@@ -535,6 +553,64 @@ def test_given_new_session_replaced_before_ownership_mark_when_launching_then_re
     assert replacement.id == replacement_id
     marker = server.cmd("show-options", "-t", replacement_id, "-v", "@ai_cli_session_generation")
     assert marker.returncode != 0, "the replacement must never receive the creator's ownership marker"
+
+
+def test_given_new_session_replaced_after_identity_capture_when_launching_then_original_is_configured_and_attached(
+    patched_subprocess,
+):
+    """Post-capture work must target the created session's opaque ID, not its reusable name."""
+    server = patched_subprocess
+    original_id = None
+    original_name = None
+    replacement_id = None
+    post_capture_command_index = None
+
+    def replace_created_session_name() -> None:
+        nonlocal original_id, original_name, replacement_id, post_capture_command_index
+        original = next(iter(server.sessions))
+        original_id = original.id
+        original_name = original.name
+        assert server.cmd("rename-session", "-t", original_id, f"{original_name}-renamed").returncode == 0
+        replacement = server.new_session(session_name=original_name, detach=True, window_command="sleep 30")
+        replacement_id = replacement.id
+        post_capture_command_index = len(server._tmux_commands)
+
+    server._after_identity_capture = replace_created_session_name
+
+    with (
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_base_launch_kwargs(name="identity-capture-race"))
+
+    assert original_id is not None
+    assert original_name is not None
+    assert replacement_id is not None
+    assert post_capture_command_index is not None
+    assert any(session.id == original_id and session.name == f"{original_name}-renamed" for session in server.sessions)
+    assert any(session.id == replacement_id and session.name == original_name for session in server.sessions)
+
+    post_capture_targets = [
+        (command[1], command[command.index("-t") + 1])
+        for command in server._tmux_commands[post_capture_command_index:]
+        if "-t" in command
+    ]
+    assert post_capture_targets == [
+        ("set-window-option", original_id),
+        ("set-option", original_id),
+        ("set-option", original_id),
+        ("set-window-option", original_id),
+        ("rename-window", original_id),
+    ]
+    assert server._execvp_calls == [("tmux", ["tmux", "attach-session", "-d", "-t", original_id])]
 
 
 def test_given_renamed_supervisor_when_clean_exit_fence_runs_then_old_name_replacement_survives(tmux_server):

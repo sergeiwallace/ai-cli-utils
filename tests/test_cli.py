@@ -1156,7 +1156,7 @@ class TestCliSessionExecvp:
                                             # New session: detached new-session via subprocess, then attach via execvp
                                             assert any("new-session" in c for c in run_calls)
                                             assert "attach-session" in mock_exec.call_args[0][1]
-                                            mock_rename.assert_called_once_with("c-sw-1", "sw-1")
+                                            mock_rename.assert_called_once_with("$42", "sw-1")
 
     def test_given_new_session_when_created_then_enables_mouse_and_osc52_clipboard(self, tmp_path):
         run_calls = []
@@ -1198,8 +1198,8 @@ class TestCliSessionExecvp:
                                                             with pytest.raises(SystemExit):
                                                                 cli()
 
-        assert ["tmux", "set-window-option", "-t", "c-sw-1", "remain-on-exit", "on"] in run_calls
-        assert ["tmux", "set-option", "-t", "c-sw-1", "mouse", "on"] in run_calls
+        assert ["tmux", "set-window-option", "-t", "$42", "remain-on-exit", "on"] in run_calls
+        assert ["tmux", "set-option", "-t", "$42", "mouse", "on"] in run_calls
         assert ["tmux", "set-option", "-s", "set-clipboard", "on"] in run_calls
 
 
