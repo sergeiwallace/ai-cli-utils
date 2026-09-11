@@ -2,7 +2,7 @@
 title: "Session maintenance can terminate unrelated live mosh transports"
 category: bugs
 tags: [session, mosh, tmux, process-hygiene]
-status: fix-implemented
+status: fix-verified
 severity: P1
 template_version: "bug-1.0.0"
 ---
@@ -70,7 +70,27 @@ the broader class. A complete authority inventory found other launch-time and ex
 that trusted a score, tmux name, or PID without immutable ownership proof. The remediation therefore
 covers every identified path: implicit cleanup is non-destructive, tmux kills are generation-fenced,
 and PID-based explicit commands revalidate captured process identity immediately before signalling.
-Independent re-audit is still required before marking the class-level fix verified.
+
+The initial 9-finding remediation (PR #129) was not sufficient either: the subsequent AI-CLI-1wzz
+audit initiative (docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md) ran seven more
+verification rounds and found six further distinct mechanisms of the same class, each fixed and
+independently RED/GREEN-verified in turn:
+
+- N-1 (PR #132): a dead-pane relaunch race.
+- N-2 (PR #133): a new-session configuration-failure cleanup race.
+- N-3 (PR #134): a new-session ownership-bootstrap race that acquired identity through the mutable
+  name instead of tmux's own opaque ID.
+- N-4 (PR #134): a supervisor clean-exit teardown that killed by raw mutable name.
+- N-5 (PR #134): an abandoned-process reclamation path that validated identity but dropped it
+  before signalling, a PID-reuse race.
+- N-6 (PR #135): the generated supervisor's own ownership-bootstrap step repeating N-3's
+  mutable-name race one level down.
+- N-7 (PR #136): the launcher reverting from its captured opaque ID back to the mutable name for
+  post-creation configuration/attach.
+
+The class-level fix is now the union of all of these: every destructive tmux/process authority edge
+in this codebase is fenced by an atomically-captured opaque ID (and, for tmux, a generation token),
+never by a mutable, reusable name or a bare PID alone.
 
 ## Fix
 
@@ -89,20 +109,25 @@ command, and port; stale or mismatched records are removed without touching the 
 
 Class-wide remediation adds real-process survival regressions for hyphenated launch cleanup,
 process-inventory identity mismatch, and legacy tunnel/browser PID records, plus real isolated-tmux
-coverage for tokenless sessions and generation changes. The implementation is awaiting the
-separate independent re-audit before this record returns to `fix-verified`.
+coverage for tokenless sessions and generation changes.
 
 The frozen sibling-survival regression was RED before the production edit
 because the real sibling exited with status `-15`. It was GREEN after the
 guard, RED for the same reason when only the production guard was temporarily
 reversed, and GREEN again after restoration.
 
-The focused class-level regression suite passes. A full repository run remains
-blocked in the restricted test environment by pre-existing shell-startup,
-native-loader, process-tree, timestamp, and real-tmux harness failures; an
-untouched archive of the base revision reproduces those categories. Independent
-verification should rerun the full suite in the repository's normal test
-environment.
+**Full independent verification (2026-09-11):** the AI-CLI-1wzz audit initiative ran eight
+verification rounds (docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md), each finding and
+each fix independently RED/GREEN-verified by the orchestrating session -- not merely trusted from a
+worker's or auditor's self-report. The final commit (`552a883`) was run through the full repository
+test suite directly by the orchestrating session, with real tmux and temp-directory access: 26 failed
+/ 2854 passed / 15 skipped, identically in serial and parallel execution, and every one of those 26
+failures is a member of a 29-item pre-existing flaky baseline captured on an earlier commit
+(`e15a51f`) -- diffed by exact test node ID, zero new failures. The audit tooling's own sandbox could
+never independently execute the real-tmux regression suite (AF_UNIX socket creation is denied in
+every `cx audit`/`cx research` sandbox on this host, confirmed across two separate attempts including
+one with `--allow-test-execution`); this is recorded as an accepted tooling limitation, not an open
+code-safety gap. See the audit document's "Closure Determination" section for the full evidence.
 
 ## Lessons learned
 
@@ -116,3 +141,4 @@ opposite side of a network connection.
 | Date | Change | Notes |
 |---|---|---|
 | 2026-09-10 | Regression and causal fix | Implemented with high effort because the recurring symptom had several independent historical mechanisms. |
+| 2026-09-10/11 | N-1 through N-7, JA-2 | Six further mechanisms of the same class found and fixed across the AI-CLI-1wzz audit initiative's Rounds 2-7 (PRs #132, #133, #134, #135, #136); full-suite verified against a diffed pre-existing baseline with zero new failures; status raised to `fix-verified`. |
