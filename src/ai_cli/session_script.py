@@ -172,6 +172,8 @@ def get_engine_script(
       rm -f "$_ai_state_dir/session-int-escape-$tmux_session" \
         "$_ai_state_dir/session-int-exit-$tmux_session"
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
+      _supervisor_tmux_session_id=""
+      _supervisor_tmux_ownership_established=false
       _reaper_evidence_enabled=false
       _reaper_lease_fd=""
       _supervisor_signal_model_reason=""
@@ -212,7 +214,13 @@ def get_engine_script(
         _supervisor_signal_model_verified=false
         printf '%s\\n' "ai-cli: stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
       fi
-      if $_supervisor_signal_model_verified && [[ -n "$generation_token" ]] && tmux set-option -t "$tmux_session" @ai_cli_session_generation "$generation_token" 2>/dev/null; then
+      if [[ -n "$generation_token" ]]; then
+        _supervisor_tmux_session_id=$(tmux display-message -p -t "$tmux_session" '#{{session_id}}' 2>/dev/null || true)
+      fi
+      if [[ "$_supervisor_tmux_session_id" =~ ^\\$[0-9]+$ ]] && tmux set-option -t "$_supervisor_tmux_session_id" @ai_cli_session_generation "$generation_token" 2>/dev/null; then
+        _supervisor_tmux_ownership_established=true
+      fi
+      if $_supervisor_signal_model_verified && $_supervisor_tmux_ownership_established; then
         _lease_session=$(printf '%s' "$tmux_session" | base64 | tr '/+' '_-' | tr -d '=\\n')
         _lease_generation=$(printf '%s' "$generation_token" | base64 | tr '/+' '_-' | tr -d '=\\n')
         _lease_path="$_ai_state_dir/session-leases/${{_lease_session}}-${{_lease_generation}}.lock"
@@ -347,7 +355,14 @@ def get_engine_script(
           break
         fi
       done
-      tmux kill-session -t "$tmux_session" 2>/dev/null || true
+      if $_supervisor_tmux_ownership_established; then
+        _supervisor_fence_result=$(tmux if-shell -F -t "$_supervisor_tmux_session_id" "#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},$_supervisor_tmux_session_id|$generation_token}}" "kill-session -t '$_supervisor_tmux_session_id'" "display-message -p __ai_cli_ownership_mismatch__" 2>/dev/null || true)
+        if [[ "$_supervisor_fence_result" == *"__ai_cli_ownership_mismatch__"* ]]; then
+          printf '%s\n' "ai-cli: refusing to kill tmux session: ownership fence mismatch" >&2
+        fi
+      else
+        printf '%s\n' "ai-cli: skipping tmux session cleanup because supervisor ownership was not established" >&2
+      fi
       exit 0
     fi
     {cd_cmd}

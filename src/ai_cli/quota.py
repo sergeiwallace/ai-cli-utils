@@ -491,7 +491,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         # Always use a standalone detached session — never new-window inside the user's
         # session, which would cause `:N` targeting to hit the wrong session.
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", window_name],
+            ["tmux", "new-session", "-d", "-P", "-F", "#{session_id}", "-s", window_name],
             capture_output=True,
             text=True,
             timeout=5,
@@ -499,15 +499,18 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         )
         if result.returncode != 0:
             return None
+        created_session_id = result.stdout.strip() if isinstance(result.stdout, str) else ""
+        if not re.fullmatch(r"\$\d+", created_session_id):
+            return None
         marked = subprocess.run(
-            ["tmux", "set-option", "-t", window_name, "@ai_cli_session_generation", generation],
+            ["tmux", "set-option", "-t", created_session_id, "@ai_cli_session_generation", generation],
             capture_output=True,
             timeout=3,
             check=False,
         )
         if marked.returncode != 0:
             return None
-        identity = capture_tmux_session_identity(window_name, expected_generation=generation)
+        identity = capture_tmux_session_identity(created_session_id, expected_generation=generation)
         if identity is None:
             return None
         target = identity.session_id

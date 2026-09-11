@@ -147,10 +147,10 @@ def patched_subprocess(tmux_server, tmp_path):
                 except (ValueError, IndexError):
                     session_name = "unknown"
                 try:
-                    server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
+                    created = server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
                 except Exception:
-                    pass
-                return _OK()
+                    return _FAIL()
+                return type("TmuxCreated", (), {"returncode": 0, "stdout": f"{created.id}\n", "stderr": ""})()
 
             if sub == "list-panes":
                 # Query the real server so dead-pane detection reflects true state.
@@ -183,6 +183,10 @@ def patched_subprocess(tmux_server, tmp_path):
                     return _FAIL_AFTER_RETURN_CODE_OBSERVED()
 
             if sub in {"set-option", "set-window-option"}:
+                before_creation_marker = getattr(server, "_before_creation_marker", None)
+                if before_creation_marker is not None and sub == "set-option" and "@ai_cli_session_generation" in cmd:
+                    server._before_creation_marker = None
+                    before_creation_marker()
                 return real_subprocess_run(
                     ["tmux", "-S", str(server.socket_path), *cmd[1:]],
                     capture_output=True,
@@ -490,6 +494,75 @@ def test_given_new_session_replaced_after_configuration_failure_when_cleanup_run
     assert generation.stdout == ["replacement-generation"]
 
 
+def test_given_new_session_replaced_before_ownership_mark_when_launching_then_replacement_survives_unmarked(
+    patched_subprocess,
+):
+    """Creation ownership must bind to tmux's returned opaque ID, never its reusable name."""
+    server = patched_subprocess
+    session_name = None
+    replacement_id = None
+
+    def replace_before_marker() -> None:
+        nonlocal replacement_id, session_name
+        original = next(iter(server.sessions))
+        session_name = original.name
+        original.kill()
+        consumed_id = server.new_session(session_name="creation-race-consumer", detach=True, window_command="sleep 30")
+        replacement = server.new_session(session_name=original.name, detach=True, window_command="sleep 30")
+        consumed_id.kill()
+        replacement_id = replacement.id
+
+    server._before_creation_marker = replace_before_marker
+
+    with (
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_base_launch_kwargs(name="creation-race"))
+
+    assert replacement_id is not None
+    assert session_name is not None
+    replacement = next(session for session in server.sessions if session.name == session_name)
+    assert replacement.id == replacement_id
+    marker = server.cmd("show-options", "-t", replacement_id, "-v", "@ai_cli_session_generation")
+    assert marker.returncode != 0, "the replacement must never receive the creator's ownership marker"
+
+
+def test_given_renamed_supervisor_when_clean_exit_fence_runs_then_old_name_replacement_survives(tmux_server):
+    """The real tmux compare-and-kill fence targets the supervisor's opaque ID."""
+    server = tmux_server
+    original_name = "c-session-1"
+    original = server.new_session(session_name=original_name, detach=True, window_command="sleep 30")
+    generation = "supervisor-generation"
+    assert server.cmd("set-option", "-t", original.id, "@ai_cli_session_generation", generation).returncode == 0
+    assert server.cmd("rename-session", "-t", original.id, "c-session-1-renamed").returncode == 0
+    replacement = server.new_session(session_name=original_name, detach=True, window_command="sleep 30")
+
+    predicate = f"#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},{original.id}|{generation}}}"
+    result = server.cmd(
+        "if-shell",
+        "-F",
+        "-t",
+        original.id,
+        predicate,
+        f"kill-session -t '{original.id}'",
+        "display-message -p __ai_cli_ownership_mismatch__",
+    )
+
+    assert result.returncode == 0
+    assert not any(session.id == original.id for session in server.sessions)
+    assert any(session.id == replacement.id and session.name == original_name for session in server.sessions)
+
+
 def test_given_extra_args_positional_name_when_launched_then_session_uses_positional_name(
     patched_subprocess,
 ):
@@ -592,7 +665,8 @@ def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifa
                 return type("TmuxResult", (), {"returncode": 0 if exists else 1, "stdout": "", "stderr": ""})()
             if subcommand == "new-session":
                 name = cmd[cmd.index("-s") + 1]
-                tmux_server.new_session(session_name=name, detach=True, window_command="sleep 30")
+                created = tmux_server.new_session(session_name=name, detach=True, window_command="sleep 30")
+                return type("TmuxCreated", (), {"returncode": 0, "stdout": f"{created.id}\n", "stderr": ""})()
             return _Result()
         return real_run(cmd, *args, **kwargs)
 

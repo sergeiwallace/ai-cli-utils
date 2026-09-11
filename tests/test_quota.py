@@ -439,7 +439,7 @@ class TestCcUpdateStagingLeak:
         def fake_run(cmd, **kwargs):
             r = MagicMock()
             r.returncode = 0
-            r.stdout = ""
+            r.stdout = "$42\n" if cmd[0] == "tmux" and cmd[1] == "new-session" else ""
             if cmd[0] == "tmux" and cmd[1] == "send-keys":
                 sent.append(cmd[4])
             return r
@@ -559,8 +559,31 @@ class TestScrapeUsageHiddenPane:
     def _make_new_session_result(self) -> MagicMock:
         r = MagicMock()
         r.returncode = 0
-        r.stdout = ""
+        r.stdout = "$99\n"
         return r
+
+    def test_given_session_replaced_before_ownership_mark_when_scraping_then_marker_uses_created_opaque_id(self):
+        """The scrape marker must target the ID emitted by ``new-session``, not its name."""
+        new_sess = self._make_new_session_result()
+        ok = MagicMock(returncode=0)
+        targets: list[str] = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1] == "new-session":
+                return new_sess
+            if cmd[1] == "set-option" and "@ai_cli_session_generation" in cmd:
+                targets.append(cmd[cmd.index("-t") + 1])
+                return ok
+            if cmd[1] == "capture-pane":
+                return self._make_cap_result("Starting...\n")
+            return ok
+
+        with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+            _scrape_usage_hidden_pane()
+
+        assert targets == ["$99"]
+        assert self.capture_identity.call_args.args == ("$99",)
+        assert self.capture_identity.call_args.kwargs["expected_generation"]
 
     def test_when_cc_prompt_never_appears_then_returns_none(self):
         """No ❯ in capture output → timeout → returns None."""
@@ -732,7 +755,9 @@ class TestScrapeUsageHiddenPane:
         """Exception after identity capture must still clean up that identity."""
 
         def fake_run(cmd, **kwargs):
-            if cmd[1] in {"new-session", "set-option"}:
+            if cmd[1] == "new-session":
+                return MagicMock(returncode=0, stdout="$42\n")
+            if cmd[1] == "set-option":
                 return MagicMock(returncode=0)
             raise RuntimeError("tmux broken")
 

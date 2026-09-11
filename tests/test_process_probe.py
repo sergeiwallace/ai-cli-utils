@@ -342,6 +342,36 @@ def test_given_different_procfs_start_ticks_when_matched_then_unproven(tmp_path)
     assert ProcfsProbe(tmp_path).start_time_match(4242, 777) is StartTimeMatch.UNPROVEN
 
 
+def test_given_pid_identity_swaps_before_termination_when_reclaimed_then_no_signal_is_sent(tmp_path, monkeypatch):
+    """A stale identity must block every signal, even after an earlier match succeeded."""
+    _write_stat(tmp_path, 4242, starttime=777)
+    probe = ProcfsProbe(tmp_path)
+    assert probe.start_time_match(4242, 777) is StartTimeMatch.MATCH
+    _write_stat(tmp_path, 4242, starttime=888)
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(probe, "_signal_group", lambda _pid: 0)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    probe.end_process(4242, 777)
+    assert sent == []
+
+
+def test_given_psutil_identity_swaps_before_termination_when_reclaimed_then_no_signal_is_sent(sleeper, monkeypatch):
+    """The non-procfs backend must also fail closed before every escalation stage."""
+    proc, _ = sleeper()
+    probe = PsutilProbe()
+    identity = psutil.Process(proc.pid).create_time()
+    assert probe.start_time_match(proc.pid, identity) is StartTimeMatch.MATCH
+    sent: list[str] = []
+    monkeypatch.setattr(probe, "start_time_match", lambda _pid, _identity: StartTimeMatch.UNPROVEN)
+    monkeypatch.setattr(psutil.Process, "terminate", lambda _proc: sent.append("term"))
+    monkeypatch.setattr(psutil.Process, "resume", lambda _proc: sent.append("cont"))
+    monkeypatch.setattr(psutil.Process, "kill", lambda _proc: sent.append("kill"))
+
+    assert probe.end_process(proc.pid, identity, timeout=0) is False
+    assert sent == []
+
+
 def test_given_a_procfs_start_time_as_a_string_when_matched_then_unrecorded(tmp_path):
     """``/proc`` ticks are compared as exact integers; anything else cannot refute."""
     _write_stat(tmp_path, 4242, starttime=777)
@@ -364,7 +394,7 @@ def test_given_a_wrapped_process_when_ended_without_procfs_then_the_whole_tree_g
     """A wrapper's child must be reaped with it, not left running with no parent."""
     proc, child_pid = sleeper(with_child=True)
 
-    assert PsutilProbe().end_process(proc.pid) is True
+    assert PsutilProbe().end_process(proc.pid, psutil.Process(proc.pid).create_time()) is True
     assert proc.poll() is not None
     assert _wait_for(lambda: not psutil.pid_exists(child_pid)), f"wrapped pid {child_pid} was orphaned"
 
@@ -384,7 +414,7 @@ def test_given_no_sigkill_or_sigcont_when_a_process_is_ended_then_it_still_ends(
     monkeypatch.setattr(psutil.Process, "resume", unavailable)
     monkeypatch.setattr(psutil.Process, "kill", unavailable)
 
-    assert PsutilProbe().end_process(proc.pid) is True
+    assert PsutilProbe().end_process(proc.pid, psutil.Process(proc.pid).create_time()) is True
     assert proc.poll() is not None
 
 
@@ -393,16 +423,17 @@ def test_given_a_process_that_ignores_the_graceful_request_when_ended_then_it_is
     proc, _ = sleeper()
     monkeypatch.setattr(psutil.Process, "terminate", lambda self: None)
 
-    assert PsutilProbe().end_process(proc.pid, timeout=0.5) is True
+    assert PsutilProbe().end_process(proc.pid, psutil.Process(proc.pid).create_time(), timeout=0.5) is True
     assert proc.poll() is not None
 
 
 def test_given_a_pid_that_is_already_gone_when_ended_then_it_reports_ended(sleeper):
     proc, _ = sleeper()
+    identity = psutil.Process(proc.pid).create_time()
     proc.kill()
     proc.wait(timeout=15)
 
-    assert PsutilProbe().end_process(proc.pid, timeout=0.5) is True
+    assert PsutilProbe().end_process(proc.pid, identity, timeout=0.5) is True
 
 
 def test_given_the_recorded_pid_is_the_caller_when_ended_then_it_is_not_signalled(sleeper, monkeypatch):
@@ -415,7 +446,7 @@ def test_given_the_recorded_pid_is_the_caller_when_ended_then_it_is_not_signalle
     proc, _ = sleeper()
     monkeypatch.setattr(os, "getpid", lambda: proc.pid)
 
-    assert PsutilProbe().end_process(proc.pid, timeout=0.3) is False
+    assert PsutilProbe().end_process(proc.pid, psutil.Process(proc.pid).create_time(), timeout=0.3) is False
     assert proc.poll() is None, "the caller's own process must never be signalled"
 
 

@@ -1184,6 +1184,9 @@ def _start_generated_supervisor(
         bin_dir / "tmux",
         "#!/bin/sh\n"
         '[ -z "${AI_CLI_TEST_TMUX_EVENTS:-}" ] || printf "%s\\n" "$*" >> "$AI_CLI_TEST_TMUX_EVENTS"\n'
+        'if [ "$1" = "display-message" ] && [ "$2" = "-p" ]; then\n'
+        "  printf '%s\\n' '$1'\n"
+        "fi\n"
         "exit 0\n",
     )
     _write_executable(
@@ -1422,7 +1425,13 @@ fi
     stdout, stderr = _communicate_supervisor(process)
 
     assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
-    assert "kill-session -t test-session" in (tmp_path / "tmux-events.log").read_text(encoding="utf-8")
+    cleanup_event = next(
+        event
+        for event in (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
+        if event.startswith("if-shell -F -t $1 ")
+    )
+    assert "#{==:#{session_id}|#{@ai_cli_session_generation},$1|" in cleanup_event
+    assert cleanup_event.endswith(" kill-session -t '$1' display-message -p __ai_cli_ownership_mismatch__")
 
 
 def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wrapper_survives_and_double_press_exits_cleanly(
@@ -1515,7 +1524,13 @@ def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skip
 
     assert process.returncode == 0, f"supervisor did not exit cleanly: {stdout!r} {stderr!r}"
     assert not direnv_called.exists(), "an already-requested exit must not start direnv"
-    assert "kill-session -t test-session" in (tmp_path / "tmux-events.log").read_text(encoding="utf-8")
+    cleanup_event = next(
+        event
+        for event in (tmp_path / "tmux-events.log").read_text(encoding="utf-8").splitlines()
+        if event.startswith("if-shell -F -t $1 ")
+    )
+    assert "#{==:#{session_id}|#{@ai_cli_session_generation},$1|" in cleanup_event
+    assert cleanup_event.endswith(" kill-session -t '$1' display-message -p __ai_cli_ownership_mismatch__")
 
 
 def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_receives_one_relay(
