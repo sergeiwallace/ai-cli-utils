@@ -33,6 +33,15 @@ delegation_provenance:
   - [R1 Resolution Pass](#r1-resolution-pass)
   - [R1 Verification Matrix](#r1-verification-matrix)
   - [R1 Receipt Payload Projection](#r1-receipt-payload-projection)
+- [Round 2 — Verification Pass](#round-2--verification-pass-append-only)
+  - [R2 Summary](#r2-summary)
+  - [R2.1 Round 1 IC/JA/DV verification](#r21-round-1-icjadv-verification)
+  - [R2.2 Round 1 F-N verification](#r22-round-1-f-n-verification)
+  - [R2.3 AD-N decisions verification](#r23-ad-n-decisions-verification)
+  - [R2.4 NEW issues surfaced](#r24-new-issues-surfaced)
+  - [R2.5 Verification Matrix](#r25-verification-matrix)
+  - [R2 Recommendations](#r2-recommendations)
+  - [R2 Receipt Payload Projection](#r2-receipt-payload-projection)
 - [Decisions Requiring Team Input](#decisions-requiring-team-input)
 - [Outstanding Issues to Fix](#outstanding-issues-to-fix)
 - [Already-Correct Items](#already-correct-items)
@@ -98,23 +107,25 @@ collection; historical suite counts in the bug record remain **UNVERIFIED by thi
 <!-- doc:region name="loop_receipt" kind="replaceable" -->
 ## Status Summary
 
-**Loop state:** Round 1 projection complete — **NOT promotion-ready**. This document contains an
-untrusted broker projection; only the adjacent trusted receipt may assert stabilization or
-promotion.
+**Loop state:** Round 2 verification projection complete — **NOT promotion-ready**. Seven of nine
+Round 1 findings are verified fixed; JA-1 and DV-1 remain PARTIAL, and one new MAJOR finding is
+open. This document contains an untrusted broker projection; only the adjacent trusted receipt may
+assert stabilization or promotion.
 
 | Loop | Round | Target digest | New CRITICAL | New MAJOR | MAJOR justified | New MINOR | Open blocking | Scope | Terminal |
 |---|---:|---|---:|---:|---:|---:|---:|---|---|
 | audit | 1 | `sha256:a8842576e99d546d67386b5c329ff5c6eed4494de4012d1e7b26944faa85c82c` | 0 | 9 | 0 | 0 | 9 | discovery | none — projection only |
+| audit | 2 | `blob:c454026f066f10c7e3b3537c2acd9ab8bab44861` | 0 | 1 | 0 | 0 | 3 | verification | none — projection only |
 
 ### Run Ledger
 
 | Field | Value |
 |---|---|
 | ledger-version | 2 |
-| Stage cursor | `R1 audit complete; resolution required` |
-| Driver lane | `discovery` |
-| Capability plan | `cx-audit-high` |
-| Promotion | `blocked: 9 open MAJOR findings; trusted receipt pending` |
+| Stage cursor | `R2 verification complete; resolution required` |
+| Driver lane | `verification` |
+| Capability plan | `cx-audit-medium + test execution requested` |
+| Promotion | `blocked: JA-1, DV-1, and N-1 open; trusted receipt pending` |
 <!-- /doc:region name="loop_receipt" -->
 
 <!-- doc:region name="round_1_findings" kind="replaceable" -->
@@ -751,6 +762,300 @@ that infrastructure block is not represented as a passing test.
 
 <!-- /doc:region name="round_1_findings" -->
 
+## Round 2 — Verification Pass (append-only)
+
+**Round 2 auditor:** Codex audit (GPT-5; exact deployment ID not exposed, effort: medium)
+
+**Round 2 date:** 2026-09-10
+
+**Round 2 scope:** Verify all nine Round 1 MUST-fix findings against commit `067a358b`, including
+the shared tmux ownership primitive and the claimed regression coverage. Surface only defects in
+the remediation or claims it introduced. No target source, tests, bug record, or plan were edited.
+
+### R2 Summary
+
+Seven of nine Round 1 findings PASS. JA-1 and DV-1 are PARTIAL because one reachable lifecycle
+kill remains unsafe and the added tests do not exercise that race. One new MAJOR finding, N-1, is
+CONFIRMED: the ordinary dead-pane relaunch path decides that a name is dead before it captures the
+session identity. If another launch replaces that name in the gap, the later identity capture
+binds to the replacement and the ID+generation-only fence kills that live session. This is the
+same cross-session lifecycle failure class the fix is intended to eliminate.
+
+The isolated ownership helper itself does execute comparison and kill in one `tmux if-shell`
+command (`src/ai_cli/tmux_ownership.py:64-84`). The defect is that its predicate contains only
+session ID and generation (`src/ai_cli/tmux_ownership.py:10-11,67-79`), while the dead-pane
+authorization was observed separately and earlier (`src/ai_cli/main.py:3220-3229`). The established
+reaper fence includes attachment and every pane's ID, PID, and dead state in the atomic predicate
+(`src/ai_cli/stale_session_reaper.py:35-39,141-183`).
+
+The requested pytest run was attempted twice. Both attempts failed before test collection because
+this worker has no permitted temporary directory; the second attempt disabled capture and the
+cache plugin but import-time `tempfile.gettempdir()` still failed. Therefore historical pass counts
+and the new real-tmux tests are not independently verified by execution in this round.
+
+### R2.1 Round 1 IC/JA/DV verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| IC-1 | **PASS (CONFIRMED)** | The record is `status: fix-implemented` and now says, verbatim, “The initial cron-only change contained the reported incident but was not sufficient to eliminate the broader class” and “Independent re-audit is still required” (`docs/bugs/cross-session-mosh-termination.md:5,68-73`). |
+| JA-1 | **PARTIAL (CONFIRMED)** | F-1 through F-6's named repairs landed, but the class invariant is still false in the dead-pane relaunch race: `list-panes` establishes deadness at `src/ai_cli/main.py:3220-3227`, then identity is captured and killed at lines 3228-3229. A same-name live replacement between those operations is the identity that gets killed. See N-1. |
+| DV-1 | **PARTIAL (CONFIRMED source gap; test execution BLOCKED)** | Coverage was broadened across several files, not solely `tests/test_stale_session_reaper.py` as claimed. The new real-tmux tests there cover tokenless identity and generation change (`tests/test_stale_session_reaper.py:610-651`), while sandbox composition mocks both ownership functions (`tests/test_cli.py:629-662`) and the dead-pane integration test has no mutation between deadness observation and capture (`tests/test_session_launch_integration.py:346-374`). No test covers N-1's reachable race. |
+
+### R2.2 Round 1 F-N verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| F-1 | **PASS (CONFIRMED)** | `_sweep_stale_claude_session_state()` only unlinks stale JSON state (`src/ai_cli/session.py:457-482`); `cleanup_stale_sessions()` calls only that bookkeeping sweep and the iTerm2 profile sweep (`src/ai_cli/session.py:485-496`). There is no `.terminate()` or `.kill()` in this module's production cleanup path. |
+| F-2 | **PASS (CONFIRMED)** | Quota scraping uses `secrets.token_urlsafe(32)`, a per-invocation name, and capture with `expected_generation` (`src/ai_cli/quota.py:487-513`); cleanup calls only `kill_owned_tmux_session(identity)` (`src/ai_cli/quota.py:655-658`). That helper compares and kills in one `tmux if-shell` argv (`src/ai_cli/tmux_ownership.py:64-84`). |
+| F-3 | **PASS (CONFIRMED)** | The `--sandbox` branch refuses a session without a valid generation identity and exits if the atomic ID+generation fence fails (`src/ai_cli/main.py:3198-3214`). F-3's prior name-only `kill-session` is gone. N-1 concerns the neighboring non-sandbox dead-pane authorization, not this explicit sandbox branch. |
+| F-4 | **PASS (CONFIRMED)** | Both local inventory producers capture `create_time` (`src/ai_cli/process_hygiene.py:125-135,448-459`), and explicit cleanup skips missing/mismatched identity before `process.terminate()` (`src/ai_cli/process_hygiene.py:640-651`). Installed psutil's `terminate()` also performs its own pre-signal PID-reuse check. |
+| F-5 | **PASS (CONFIRMED)** | The versioned state contains PID, creation time, executable, command, and port (`src/ai_cli/tunnel.py:22-56`); reading validates all fields and the requested port (`src/ai_cli/tunnel.py:75-110`); `_matching_process()` rechecks process identity (`src/ai_cli/tunnel.py:113-125`); both stop paths unlink stale records and signal only a returned match (`src/ai_cli/tunnel.py:215-227,429-444`). |
+| F-6 | **PASS (CONFIRMED)** | The approved plan is marked `SUPERSEDED IN PART`, states background launch/cron are non-destructive, corrects the “safe” claim, rewrites T-03 to forbid implicit signals, and records the safety remediation (`docs/plans/process-hygiene-plan.md:3,30-38,91-95,256-275,348-355`). |
+
+### R2.3 AD-N decisions verification
+
+| ID | Verdict | Evidence |
+|----|---------|----------|
+| — | **N/A (CONFIRMED)** | Round 1 recorded no AD-N decisions (`docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md § Decisions Requiring Team Input`), and the full Round 1 backlog contains only IC-1, JA-1, DV-1, and F-1 through F-6. |
+
+### R2.4 NEW issues surfaced
+
+#### N-1: Dead-pane authorization is outside the generation fence — `MAJOR` (CONFIRMED)
+
+**Location:** `src/ai_cli/main.py:3220-3229`;
+`src/ai_cli/tmux_ownership.py:10-11,64-84`;
+`src/ai_cli/stale_session_reaper.py:35-39,141-183`
+
+**What the Round 1 Resolution Pass claimed:**
+
+> “Every implicit/explicit signal site below now requires proven ownership before signalling,
+> closing the class-wide gap this finding identified.”
+
+The F-3 resolution also claims atomic generation revalidation for the neighboring sandbox path.
+
+**Actual state:**
+
+```python
+# src/ai_cli/main.py:3226-3229
+pane_states = [line for line in pane_check.stdout.splitlines() if line]
+if pane_check.returncode == 0 and pane_states and all(state == "1" for state in pane_states):
+    identity = _tmux_ownership.capture_tmux_session_identity(session_id)
+    if identity is not None and _tmux_ownership.kill_owned_tmux_session(identity):
+```
+
+The destructive authorization (“all panes dead”) is evaluated before identity capture. If the
+observed dead session disappears and a concurrent launch creates a live managed session with the
+same name, `capture_tmux_session_identity(session_id)` captures the replacement. The helper then
+atomically verifies only `#{session_id}|#{@ai_cli_session_generation}` and kills it
+(`src/ai_cli/tmux_ownership.py:10-11,67-79`); it never revalidates `pane_dead`.
+
+This is not merely a theoretical weakness in tmux's `if-shell`: the older reaper implementation
+already treats pane topology as part of the fence, comparing session ID, generation, attachment,
+window IDs, pane IDs, pane PIDs, and pane-dead flags inside the same server command
+(`src/ai_cli/stale_session_reaper.py:35-39,158-183`). Its regression explicitly respawns a pane
+between capture and fence and asserts survival (`tests/test_stale_session_reaper.py:654-665`). The
+new dead-pane launch path does not use that fingerprint and its positive integration test does not
+inject a replacement (`tests/test_session_launch_integration.py:346-374`).
+
+**Why it matters:** Ordinary relaunch is an implicit session lifecycle action. In a reachable
+concurrent launch/teardown interleaving, one invocation can terminate the newly live tmux session
+created by another invocation—the prohibited cross-session destructive behavior and a MAJOR safety
+invariant violation under this audit's binding rubric.
+
+**Verification command:**
+
+```bash
+nl -ba src/ai_cli/main.py | sed -n '3220,3230p'
+nl -ba src/ai_cli/tmux_ownership.py | sed -n '10,11p;64,84p'
+nl -ba src/ai_cli/stale_session_reaper.py | sed -n '35,39p;141,183p'
+nl -ba tests/test_stale_session_reaper.py | sed -n '654,665p'
+```
+
+**Recommended fix (Round 3):** Capture the dead session's opaque identity and full pane
+fingerprint before deciding, then compare that same ID, generation, attachment state, window/pane
+IDs, pane PIDs, and dead flags inside the one `tmux if-shell` command that performs the kill. Reuse
+or factor the established `SubprocessTmuxAdapter.capture_fingerprint()` / `fence_and_kill()`
+contract rather than using the ID+generation-only cleanup helper. Add a deterministic integration
+regression that replaces or respawns the named session after the initial dead observation and
+before the fence; the replacement must survive and the launch must attach/retry or fail closed.
+
+### R2.5 Verification Matrix
+
+| Finding | Command | Expected | Actual | Pass? |
+|---------|---------|----------|--------|-------|
+| IC-1 | `rg -n 'status: fix-implemented|initial cron-only change contained|Independent re-audit' docs/bugs/cross-session-mosh-termination.md` | Corrected status/scope, pending re-audit | Lines 5, 68, and 73 match | ✅ |
+| JA-1 / N-1 | `rg -n 'pane_states|all\\(state == "1"|capture_tmux_session_identity|kill_owned_tmux_session' src/ai_cli/main.py` | Deadness bound to same atomic fence | Deadness is lines 3226-3227; capture/kill are later at 3228-3229 | ❌ |
+| DV-1 | Added-test diff plus focused test grep | Coverage of every claimed path and boundary | Tests are distributed; sandbox mocks both ownership calls; no dead-pane mutation test | ❌ |
+| F-1 | `rg -n 'def cleanup_stale_sessions|def _sweep_stale_claude_session_state|\\.terminate\\(|\\.kill\\(' src/ai_cli/session.py` | Bookkeeping functions present; no signal call | Functions at 457/485; no terminate/kill matches | ✅ |
+| F-2 | Quota/ownership symbol grep | Unique name, expected token, single-call atomic kill | `quota.py:487-510,658`; `tmux_ownership.py:68-79` | ✅ |
+| F-3 | `nl -ba src/ai_cli/main.py \| sed -n '3198,3214p'` | Sandbox refuses unowned/mutated session | Identity `None` and failed fence both exit 1 | ✅ |
+| F-4 | Process identity symbol grep | Capture at inventory; mismatch skips signal | Captures at lines 134/458; checks at 640-648 | ✅ |
+| F-5 | Tunnel identity/stop symbol grep | Full durable identity rechecked before both signals | Validation at lines 75-125; stops at 215-227/429-444 | ✅ |
+| F-6 | Plan supersession grep | Destructive contract withdrawn throughout | Status, safety note, T-03, and Approval Log all corrected | ✅ |
+
+**Verified: 7/9 backlog dispositions pass by reproduced source evidence; 2/9 are PARTIAL. N-1
+reproduces by source ordering and comparison with the existing full-fingerprint fence. Test
+execution is UNVERIFIED because pytest failed before collection under the worker's temporary-file
+policy.**
+
+### R2 Recommendations
+
+**MUST be fixed before closing AI-CLI-1wzz or claiming class-wide verification:**
+
+- N-1: move dead-pane authorization into the atomic tmux fingerprint fence.
+- JA-1 and DV-1: carry both PARTIAL dispositions forward until N-1 is fixed and a mutation-style
+  regression proves a live replacement survives the observation-to-kill interleaving.
+
+**SHOULD be fixed before the next verification gate:**
+
+- Correct the R1 Resolution Pass's DV-1 claim that all class-level regressions were added in
+  `tests/test_stale_session_reaper.py`; the coverage is distributed and partially mocked.
+- Re-run the named focused suite in a test environment with a writable temporary directory and
+  record actual results; this round cannot independently confirm the historical pass counts.
+
+**Can be folded into a follow-up:**
+
+- None. The only new issue is in the destructive lifecycle boundary and is blocking.
+
+### R2 Receipt Payload Projection
+```json
+{
+  "iteration": 2,
+  "scope": {
+    "mode": "verification",
+    "purpose": "Round 2 verification of all nine Round 1 cross-session termination findings",
+    "members_in_scope": [
+      "docs/bugs/cross-session-mosh-termination.md"
+    ],
+    "diff_since_digest": "blob:a8842576e99d546d67386b5c329ff5c6eed4494de4012d1e7b26944faa85c82c",
+    "capability_plan": [
+      "filesystem-read",
+      "git-history-read",
+      "shell-read",
+      "test-execution-requested"
+    ]
+  },
+  "findings": [
+    {
+      "finding_key": "ai-cli-1wzz:IC-1",
+      "id": "IC-1",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "e848623a999757d33fd3d8a9f816a6ff4218e3e87fd23fe0c3cfe6921e1ff7cb",
+      "cluster": {"spec_version": "bug-1.0.0", "invariant_id": "implicit-lifecycle-no-cross-session-signal", "subsystem": "bug-record", "violation_kind": "scope-conclusion-conflict"},
+      "reachable_behavior": "The corrected record no longer declares the cron-only containment sufficient and remains pending independent verification.",
+      "disposition": "fixed",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:JA-1",
+      "id": "JA-1",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "3684bf2eb0a77b37005f6a4eb35934b1dc0fbad9deab625da43e37a39c5c71d7",
+      "cluster": {"spec_version": "bug-1.0.0", "invariant_id": "implicit-lifecycle-no-cross-session-signal", "subsystem": "session-lifecycle", "violation_kind": "acceptance-invariant-unsatisfied"},
+      "reachable_behavior": "Ordinary relaunch can still kill a concurrent live same-name replacement because dead-pane authorization is not part of the atomic fence.",
+      "disposition": "open-blocking",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:DV-1",
+      "id": "DV-1",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "22da09a2415b0afa71404abdea42a5aae80d709e0e1e401bd829f60df5632961",
+      "cluster": {"spec_version": "bug-1.0.0", "invariant_id": "implicit-lifecycle-no-cross-session-signal", "subsystem": "regression-coverage", "violation_kind": "guard-scope-overclaim"},
+      "reachable_behavior": "The broadened suite has no mutation test for replacement after dead-pane observation and mocks the sandbox ownership boundary.",
+      "disposition": "open-blocking",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:F-1",
+      "id": "F-1",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "4be0d3bf3751c5baea422e9ae793f4c04de025e162a64b474dcf02bf0f5a4e1a",
+      "cluster": {"spec_version": null, "invariant_id": "implicit-lifecycle-no-cross-session-signal", "subsystem": "bg-spare-cleanup", "violation_kind": "name-classifier-false-negative"},
+      "reachable_behavior": "Implicit launch cleanup no longer signals background helper processes and only removes stale state records.",
+      "disposition": "fixed",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:F-2",
+      "id": "F-2",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "e71908a3ae85d879b93a459d732ace20ff1594b2646ae68545c5bc7cd7a6cda1",
+      "cluster": {"spec_version": null, "invariant_id": "owned-session-destruction-only", "subsystem": "quota-scrape", "violation_kind": "fixed-name-unowned-kill"},
+      "reachable_behavior": "Quota scraping uses a unique name and cleanup can kill only the captured opaque ID with its expected random generation.",
+      "disposition": "fixed",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:F-3",
+      "id": "F-3",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "ad63c84311244b496f9fa242bc302eb887f45fc60c372db0447d0a73559fcf77",
+      "cluster": {"spec_version": null, "invariant_id": "owned-session-destruction-only", "subsystem": "session-launch", "violation_kind": "name-only-destruction"},
+      "reachable_behavior": "Explicit sandbox replacement refuses tokenless sessions and requires an atomic ID and generation match before killing.",
+      "disposition": "fixed",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:F-4",
+      "id": "F-4",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "f22309373f31cd8d3c8ed97a7f415b241eaab564c3f4bacf498e8794d5b596d4",
+      "cluster": {"spec_version": null, "invariant_id": "process-identity-before-signal", "subsystem": "process-hygiene", "violation_kind": "pid-reuse-toctou"},
+      "reachable_behavior": "Explicit process cleanup skips a PID whose captured creation time is missing or differs immediately before termination.",
+      "disposition": "fixed",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:F-5",
+      "id": "F-5",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "e4a25502b18ea45ece85c4fb773b8d5e16bdbb3e9eb96dec0cebaa3170135af0",
+      "cluster": {"spec_version": null, "invariant_id": "process-identity-before-signal", "subsystem": "utility-stop", "violation_kind": "pid-reuse-toctou"},
+      "reachable_behavior": "Tunnel and browser stop paths signal only after every persisted process identity field matches the current process.",
+      "disposition": "fixed",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:F-6",
+      "id": "F-6",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "e6ab77355cdb64e46d0f748d17ab8d99c2c1ecc649066141b2309b5190bc3be7",
+      "cluster": {"spec_version": "plan-legacy", "invariant_id": "implicit-lifecycle-no-cross-session-signal", "subsystem": "process-hygiene-plan", "violation_kind": "stale-destructive-contract"},
+      "reachable_behavior": "The approved plan now marks score-triggered launch and cron termination superseded and requires explicit identity-checked cleanup.",
+      "disposition": "fixed",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    },
+    {
+      "finding_key": "ai-cli-1wzz:N-1",
+      "id": "N-1",
+      "submitted_severity": "major",
+      "severity": "major",
+      "fingerprint": "b1e509f3fc6c9192b318ca3aba6bc43b6063f3bf70d7dae26da5326da0666a6f",
+      "cluster": {"spec_version": null, "invariant_id": "implicit-lifecycle-no-cross-session-signal", "subsystem": "dead-pane-relaunch", "violation_kind": "authorization-outside-generation-fence"},
+      "reachable_behavior": "After dead panes are observed, a concurrent same-name live replacement can be captured as the new identity and killed because pane liveness is absent from the atomic predicate.",
+      "disposition": "open-blocking",
+      "member_digest": "blob:c454026f066f10c7e3b3537c2acd9ab8bab44861"
+    }
+  ],
+  "new_by_severity": {
+    "critical": 0,
+    "major": 1,
+    "minor": 0
+  },
+  "major_nonblocking_justifications": {}
+}
+```
+
 ## Decisions Requiring Team Input
 
 None. Each finding has a fail-closed resolution that does not require choosing among materially
@@ -760,10 +1065,11 @@ different product policies. No AD-N entry is warranted.
 
 | ID | Severity | Issue | Linked finding(s) | Owner | Target |
 |----|----------|-------|-------------------|-------|--------|
-| I-01 | MAJOR | Remove or generation-fence all implicit launch/restart/exit signal authority | IC-1, JA-1, DV-1, F-1, F-2 | Team | Resolution round |
-| I-02 | MAJOR | Require owned tmux identity for destructive sandbox recreation | F-3 | Team | Resolution round |
-| I-03 | MAJOR | Add process identity to explicit PID-based cleaners/stoppers | F-4, F-5 | Team | Resolution round |
-| I-04 | MAJOR | Supersede the stale auto-kill plan and correct the bug record's scope claim | IC-1, F-6 | Team | Resolution round |
+| I-01 | FIXED | Remove process authority from implicit launch cleanup and generation-fence quota cleanup | IC-1, F-1, F-2 | — | Verified in Round 2 |
+| I-02 | FIXED | Require owned tmux identity for destructive sandbox recreation | F-3 | — | Verified in Round 2 |
+| I-03 | FIXED | Add process identity to explicit PID-based cleaners/stoppers | F-4, F-5 | — | Verified in Round 2 |
+| I-04 | FIXED | Supersede the stale auto-kill plan and correct the bug record's scope claim | IC-1, F-6 | — | Verified in Round 2 |
+| I-05 | MAJOR | Bind dead-pane state and captured generation into one atomic relaunch fence; add a concurrent replacement regression | JA-1, DV-1, N-1 | Team | Round 3 resolution |
 
 ## Already-Correct Items
 
@@ -784,6 +1090,12 @@ different product policies. No AD-N entry is warranted.
 - ✅ `main.py:3271` cleans only the tmux session just created by the current invocation after its
   configuration fails; transport and messaging terminations use direct child `Popen` handles.
 - ✅ No source `pkill` call exists at the target commit.
+- ✅ Round 2 verified quota cleanup's destructive action is inside one `tmux if-shell` call and
+  rechecks the captured opaque ID plus expected generation (`src/ai_cli/tmux_ownership.py:64-84`).
+- ✅ Round 2 verified the sandbox-specific replacement path refuses tokenless collisions and a
+  changed generation (`src/ai_cli/main.py:3198-3214`).
+- ✅ Round 2 verified explicit process hygiene and tunnel/CDP stops revalidate durable process
+  identity before signalling (`src/ai_cli/process_hygiene.py:640-651`; `src/ai_cli/tunnel.py:75-125`).
 
 ## Anti-Patterns to Watch For
 
@@ -806,8 +1118,8 @@ different product policies. No AD-N entry is warranted.
 - [x] Already-Correct Items populated with code evidence
 - [x] No inline source/doc/config fixes applied
 - [x] All CRITICAL findings fixed or explicitly accepted — none found
-- [ ] All MAJOR findings fixed or explicitly accepted — 9 open
-- [ ] At least one append-only verification round confirms the fixes
+- [ ] All MAJOR findings fixed or explicitly accepted — JA-1, DV-1, and N-1 open
+- [x] At least one append-only verification round confirms the fixes — Round 2 completed; 7/9 PASS
 - [ ] Trusted receipt asserts stabilization/promotion
 - [ ] User reviewed and approved sign-off
 
@@ -819,6 +1131,7 @@ different product policies. No AD-N entry is warranted.
 |------|-------|-------|
 | 2026-09-10 | Round 1 | Independent audit complete: 9 MAJOR findings, 9/9 reproduced; narrow cron fix verified, class-wide invariant failed; no source or target-artifact edits; promotion blocked. |
 | 2026-09-10 | Fix round | Codex (gpt-5.6-sol, `implement-network`, high effort) implemented remediation for all 9 findings, independently reviewed and re-verified by the orchestrating session, merged as ai-cli-utils PR #129 (commit `067a358b`). Bug record status downgraded `fix-verified` -> `fix-implemented` pending the Round 2 re-audit below; this row is orchestrator-recorded, not a trusted receipt assertion -- promotion/stabilization still requires the driver's own Round 2 verification. |
+| 2026-09-10 | Round 2 | Codex (GPT-5, exact deployment ID not exposed; `audit`, medium effort): 7 PASS, 2 PARTIAL, 1 new MAJOR (N-1); dead-pane relaunch authorization is outside the atomic generation fence; pytest execution blocked before collection by temporary-directory policy; no target edits. |
 
 <!-- /doc:region name="audit_log" -->
 
@@ -869,7 +1182,21 @@ different product policies. No AD-N entry is warranted.
 - Commit `744499b4`, its parent, the complete four-file diff, and current relevant-path diff.
 - Related kill-authority history including `a223fe5`, `ed17415`, `1532f49`, `4a534ff`, and
   `72721a7`; commit `1532f49`'s remote background-spare mapping change was inspected in detail.
-- Current worktree status and commit `c74146ec3ea4`; unrelated existing changes were not modified.
+- Round 1 worktree status and commit `c74146ec3ea4`; unrelated existing changes were not modified.
+
+**Round 2 additions:**
+
+- `src/ai_cli/tmux_ownership.py` — full file; validated input grammar and single-call ID/generation
+  comparison-and-kill.
+- `src/ai_cli/main.py:3160-3292` — sandbox and ordinary dead-pane recreation ordering.
+- `src/ai_cli/stale_session_reaper.py:30-185` — established full pane-fingerprint atomic fence.
+- `tests/test_stale_session_reaper.py:587-710` — real-tmux identity/generation/respawn tests.
+- `tests/test_session_launch_integration.py:300-374` — dead-pane relaunch integration path.
+- `tests/test_session.py:283-566`, `tests/test_quota.py:511-625`, `tests/test_cli.py:629-718,2853-2908`,
+  `tests/test_process_hygiene.py:555-647,850-890`, and `tests/test_cdp.py:392-455` — claimed
+  regression coverage and mocking boundaries.
+- Commit `067a358b`, its parent, complete source/test diff, and path equivalence through current
+  `HEAD` `05983a8`.
 
 ## Appendix: Commands Run
 
@@ -902,6 +1229,23 @@ markdownlint docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md
 The pytest command failed before collection because no permitted temporary directory exists. The
 five read-only Python probes completed; their actual outputs are recorded in the R1 Verification
 Matrix.
+
+Round 2 additionally ran:
+
+```bash
+git diff --stat 067a358b..HEAD -- <Round-2-member-paths>
+git diff 067a358b^..067a358b -- <source-and-test-paths>
+rg -n -g '*.py' 'kill-session|kill_session|SIGTERM|\.terminate\(|\.kill\(|os\.kill\(|os\.killpg\(|pkill' src/ai_cli tests
+nl -ba <Round-2-source-or-test> | sed -n '<evidence-ranges>'
+git diff 067a358b^..067a358b -- tests | rg '^\+\s*(async\s+)?def test_'
+.venv/bin/python -B -c 'import inspect, psutil; print(inspect.getsource(psutil.Process.terminate)); print(inspect.getsource(psutil.Process._send_signal))'
+.venv/bin/pytest -q tests/test_stale_session_reaper.py tests/test_session.py tests/test_quota.py \
+  tests/test_cli.py tests/test_process_hygiene.py tests/test_cdp.py tests/test_session_launch_integration.py
+.venv/bin/pytest -s -p no:cacheprovider -q <three-focused-quota-ownership-tests>
+```
+
+Both Round 2 pytest attempts failed before collection with `FileNotFoundError: No usable temporary
+directory`; no test result is reported as PASS from those commands.
 
 <!-- doc:region name="appendix_reviewer_prompt" kind="immutable" -->
 
