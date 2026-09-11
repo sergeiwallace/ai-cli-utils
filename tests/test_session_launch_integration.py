@@ -105,6 +105,18 @@ def patched_subprocess(tmux_server, tmp_path):
         stdout = ""
         stderr = ""
 
+    class _FAIL_AFTER_RETURN_CODE_OBSERVED:
+        stdout = ""
+        stderr = ""
+
+        @property
+        def returncode(self):
+            after_configuration_failure = getattr(server, "_after_configuration_failure", None)
+            if after_configuration_failure is not None:
+                server._after_configuration_failure = None
+                after_configuration_failure()
+            return 1
+
     def fake_run(cmd, *args, **kwargs):
         if not isinstance(cmd, (list, tuple)) or not cmd:
             return subprocess.run.__wrapped__(cmd, *args, **kwargs)  # type: ignore[attr-defined]
@@ -165,6 +177,19 @@ def patched_subprocess(tmux_server, tmp_path):
                     check=False,
                 )
 
+            if sub == "set-window-option":
+                after_configuration_failure = getattr(server, "_after_configuration_failure", None)
+                if after_configuration_failure is not None:
+                    return _FAIL_AFTER_RETURN_CODE_OBSERVED()
+
+            if sub in {"set-option", "set-window-option"}:
+                return real_subprocess_run(
+                    ["tmux", "-S", str(server.socket_path), *cmd[1:]],
+                    capture_output=True,
+                    text=kwargs.get("text", False),
+                    check=False,
+                )
+
             if sub == "kill-session":
                 # Actually remove the matching session so a subsequent has-session
                 # check (dead-pane recreate path) sees it gone, same as real tmux.
@@ -180,7 +205,7 @@ def patched_subprocess(tmux_server, tmp_path):
                         pass
                 return _OK()
 
-            # set-option, set-window-option, etc. — silently succeed.
+            # Other tmux configuration calls — silently succeed.
             return _OK()
 
         if head == "git":
@@ -412,6 +437,53 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
             _do_session_launch(**_base_launch_kwargs(name="4"))
 
     assert replacement_id is not None
+    after = {session.name: session.id for session in server.sessions}
+    assert after[session_name] == replacement_id
+    generation = server.cmd("show-options", "-t", session_name, "-v", "@ai_cli_session_generation")
+    assert generation.stdout == ["replacement-generation"]
+
+
+def test_given_new_session_replaced_after_configuration_failure_when_cleanup_runs_then_replacement_survives(
+    patched_subprocess,
+):
+    """Configuration cleanup must not kill a live same-name replacement."""
+    server = patched_subprocess
+    session_name = None
+    replacement_id = None
+
+    def replace_new_session_with_live_replacement() -> None:
+        nonlocal replacement_id, session_name
+        original = next(iter(server.sessions))
+        session_name = original.name
+        original.kill()
+        replacement = server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
+        assert (
+            server.cmd(
+                "set-option", "-t", session_name, "@ai_cli_session_generation", "replacement-generation"
+            ).returncode
+            == 0
+        )
+        replacement_id = replacement.id
+
+    server._after_configuration_failure = replace_new_session_with_live_replacement
+
+    with (
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_base_launch_kwargs(name="configuration-race"))
+
+    assert replacement_id is not None
+    assert session_name is not None
     after = {session.name: session.id for session in server.sessions}
     assert after[session_name] == replacement_id
     generation = server.cmd("show-options", "-t", session_name, "-v", "@ai_cli_session_generation")
