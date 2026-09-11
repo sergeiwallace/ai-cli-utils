@@ -59,7 +59,7 @@ during the reported exit/relaunch transition.
 
 | Hypothesis | Check | Result |
 |---|---|---|
-| Clean-exit tmux teardown targets a sibling | Traced the supervisor variable scopes | Rejected: teardown uses the baked `tmux_session`; transcript resolution mutates child-only `session_id` |
+| Clean-exit tmux teardown targets a sibling | Traced the supervisor variable scopes | Rejected for the reported incident: at the time of this investigation the baked `tmux_session` name and this transcript's live session coincided, so this specific teardown did not cause the reported symptom. **This was never general safety evidence that a baked name is a safe teardown target** — the AI-CLI-1wzz audit (docs/audits/ai-cli-1wzz-crosssession-mosh-kill-fix-audit.md) subsequently found and fixed two real name-based ownership races in exactly this teardown/bootstrap mechanism: N-4 (raw name-only `kill-session` on supervisor clean exit, fixed PR #134) and N-6 (supervisor ownership bootstrap resolved by mutable name instead of live pane context, fixed PR #135) |
 | The heartbeat reaper kills a live sibling | Read its lease, process-state, generation, and atomic tmux-fingerprint gates | Rejected for this path: every failed revalidation makes the kill unreachable |
 | Session-start process hygiene kills live sibling transports | Score reproduction plus a real subprocess regression through `cmd_ps cron` | Confirmed: sibling exited with status `-15` |
 
