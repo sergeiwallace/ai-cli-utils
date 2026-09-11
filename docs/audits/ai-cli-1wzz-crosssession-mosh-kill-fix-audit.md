@@ -1581,4 +1581,108 @@ file:line for every claim.
     assertion against a mock.
 ```
 
+### Round 3 Reviewer Prompt (Re-audit — N-1 closure verification)
+
+**Model:** Codex (fresh session, independent verification — different model/persona from both
+Round 1's `gpt-5.6-sol` and Round 2's `audit`/medium session)
+
+**Date:** 2026-09-11 (post-Round-2; Round 2 left N-1 open-blocking, and JA-1/DV-1 PARTIAL
+pending N-1's closure; N-1 is now claimed fixed by ai-cli-utils PR #132, commit `518f222`)
+
+```text
+You are a principal staff engineer specializing in developer-experience tooling, terminal
+multiplexer/session-lifecycle systems (tmux, mosh), and reliability engineering (same domain as
+the prior rounds, a fresh agent / model for independent verification). You are reading the audit
+history of docs/bugs/cross-session-mosh-termination.md. This is a later-round verification pass.
+
+## Severity rubric (binding — your findings are validated against this)
+
+CRITICAL — implemented literally as specified, this produces data loss, a security or
+  safety-invariant violation, or an unrecoverable state, in a reachable scenario.
+MAJOR — implemented literally as specified, this produces incorrect or unsafe behavior in a
+  reachable scenario: a genuine contradiction between documents, an ambiguity with more than one
+  plausible unsafe reading, or a stated invariant the spec as written does not enforce.
+
+## Scope guard — full open MUST-fix backlog
+
+The full current OPEN-MUST-FIX-BACKLOG (every item Round 2 left open or PARTIAL, with its ID and
+latest claimed-resolution status):
+
+- JA-1 — Round 2 found the class invariant still false in one reachable path (the dead-pane
+  relaunch race, N-1). Claimed fixed: N-1's fix (below) closes that path, so JA-1's class
+  invariant should now hold everywhere. Verify this claim, not just N-1 in isolation.
+- DV-1 — Round 2 found no test covered the dead-pane-replacement race. Claimed fixed: a new
+  mutation-style regression test was added (see N-1 below) that specifically covers it.
+- N-1 — Round 2 confirmed MAJOR: `src/ai_cli/main.py`'s dead-pane relaunch path decided a session
+  was dead via a separate `tmux list-panes` call, then captured identity and killed it via a fence
+  that only checked ID+generation, never pane-dead state — so a concurrent live replacement could
+  be killed. Claimed fixed in ai-cli-utils PR #132 (commit `518f222`): the two-step
+  check-then-capture-and-kill logic was replaced with `stale_session_reaper.py`'s established
+  `SubprocessTmuxAdapter.capture_fingerprint()` / `fence_and_kill()` pattern — one atomic tmux read
+  captures session ID, generation, attachment, AND every pane's dead state together, then the
+  atomic fence compares that exact fingerprint before killing. A new mutation regression test,
+  `test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives`
+  (`tests/test_session_launch_integration.py`), replaces the named dead session with a live
+  managed replacement immediately after the dead-pane observation and asserts the replacement
+  survives.
+
+F-1 through F-6 and IC-1 are Round-2-CONFIRMED PASS and are NOT in scope for this round — do not
+re-verify them unless you find something that specifically contradicts a PASS verdict while
+reading the files this round names.
+
+Your task is to verify that EACH item above has been correctly applied to the target AT ITS
+CLAIMED LOCATION — do not just check that the location exists; check that the code there actually
+does what the claim says, and that the new regression test is a genuine mutation test (not a
+tautological assertion). If you find a new issue introduced by this fix, surface it as a new N-N
+finding.
+
+## Constraints
+
+- APPEND-ONLY: do not edit the target doc/code in this round. If a fix is missing or incorrect,
+  surface it as an N-N finding for a follow-up round to apply.
+- READ-ONLY on prior rounds' findings: do not rewrite JA-1's wording or change N-1's severity.
+  Verify, report PASS / FAIL / PARTIAL with quoted evidence.
+
+## Verification methodology
+
+For each open MUST-fix backlog item:
+  1. Read the claimed-resolution text above.
+  2. Open the target at the location the resolution claims the fix landed.
+  3. Compare the actual text against the claimed fix.
+  4. Report PASS (present and correct), FAIL (missing or wrong — quote what's actually there), or
+     PARTIAL (name what's present and what's missing).
+  5. For N-1 specifically: actually RUN the new regression test
+     (`uv run pytest tests/test_session_launch_integration.py -k
+     test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives -v`)
+     and report the real pass/fail output, not just a source-code read. If you can, also try
+     reverting just the `main.py` fix (e.g. `git stash` the relevant hunk) and re-running the test
+     to independently confirm it goes RED without the fix.
+
+## Output
+
+Write into a new Round 3 section of this audit doc, following the same structure as Round 2 (R3
+Summary → full open MUST-fix backlog verification table → R3.4 NEW issues (N-N) if any → R3
+Recommendations). Append a row to the Audit Log. Update the Status Summary cross-round counts.
+Never fabricate; cite file:line for every claim.
+
+If ALL of JA-1, DV-1, and N-1 come back PASS with no new blocking issues, say explicitly in your
+R3 Recommendations whether you believe `AI-CLI-1wzz` is now safe to close (all 10 findings across
+2 rounds resolved) — this is the specific question this round exists to answer.
+
+## Files to read
+
+1. docs/bugs/cross-session-mosh-termination.md — the artifact being verified. Target commit:
+   `518f222` or later.
+2. THIS AUDIT DOC — Round 1 and Round 2 sections are your verification checklist for this
+   narrower backlog.
+3. src/ai_cli/main.py — N-1's claimed fix (the dead-pane relaunch fingerprint fence, around what
+   was lines 3195-3232 as of the Round 2 audit; the fix changed this block).
+4. src/ai_cli/stale_session_reaper.py — the `SubprocessTmuxAdapter` pattern N-1's fix reuses
+   (`_TMUX_FINGERPRINT_FORMAT`, `capture_fingerprint()`, `fence_and_kill()`). Confirm the reuse is
+   faithful, not a partial/incorrect adaptation.
+5. tests/test_session_launch_integration.py — the new mutation regression test claimed for N-1;
+   also re-read the existing `test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_...`
+   test nearby to confirm the fix didn't regress the ordinary (non-race) dead-pane-recreate case.
+```
+
 <!-- /doc:region name="appendix_reviewer_prompt" -->
