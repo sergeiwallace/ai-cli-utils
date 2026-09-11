@@ -733,6 +733,8 @@ class TestCliSessionSetupBranches:
                 return MagicMock(returncode=0, stdout="", stderr="")
             if "has-session" in cmd:
                 return MagicMock(returncode=1, stdout="", stderr="")
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$42\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "g", "1"]):
@@ -1119,7 +1121,7 @@ class TestCliSessionExecvp:
             run_calls.append(list(cmd))
             # has-session returns 1 (no existing session); new-session returns 0 (success)
             if "new-session" in cmd:
-                return MagicMock(returncode=0, stdout="", stderr="")
+                return MagicMock(returncode=0, stdout="$42\n", stderr="")
             if "set-window-option" in cmd or "set-option" in cmd:
                 return MagicMock(returncode=0, stdout="", stderr="")
             if "--git-common-dir" in cmd:
@@ -1141,10 +1143,16 @@ class TestCliSessionExecvp:
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
                                             with patch("subprocess.run", side_effect=fake_run):
-                                                with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
-                                                    with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
+                                                with patch(
+                                                    "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                    return_value=TmuxSessionIdentity(
+                                                        "$42", "c-sw-1", "test-generation"
+                                                    ),
+                                                ):
+                                                    with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
+                                                        with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
+                                                            with pytest.raises(SystemExit):
+                                                                cli()
                                             # New session: detached new-session via subprocess, then attach via execvp
                                             assert any("new-session" in c for c in run_calls)
                                             assert "attach-session" in mock_exec.call_args[0][1]
@@ -1157,6 +1165,8 @@ class TestCliSessionExecvp:
             run_calls.append(list(cmd))
             if "has-session" in cmd:
                 return MagicMock(returncode=1, stdout="", stderr="")
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$42\n", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "c", "1"]):
@@ -1178,9 +1188,15 @@ class TestCliSessionExecvp:
                                             # guard when run from a worktree.
                                             with patch("ai_cli.session.detect_repo_root", return_value=None):
                                                 with patch("subprocess.run", side_effect=fake_run):
-                                                    with patch("os.execvp", side_effect=SystemExit(0)):
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
+                                                    with patch(
+                                                        "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                        return_value=TmuxSessionIdentity(
+                                                            "$42", "c-sw-1", "test-generation"
+                                                        ),
+                                                    ):
+                                                        with patch("os.execvp", side_effect=SystemExit(0)):
+                                                            with pytest.raises(SystemExit):
+                                                                cli()
 
         assert ["tmux", "set-window-option", "-t", "c-sw-1", "remain-on-exit", "on"] in run_calls
         assert ["tmux", "set-option", "-t", "c-sw-1", "mouse", "on"] in run_calls
@@ -2005,7 +2021,8 @@ class TestCliSessionStablePath:
                     return MagicMock(returncode=0, stdout="", stderr="")
                 for key, code in run_returncode_map.items():
                     if key in cmd:
-                        return MagicMock(returncode=code, stdout="", stderr="")
+                        stdout = "$42\n" if key == "new-session" and code == 0 else ""
+                        return MagicMock(returncode=code, stdout=stdout, stderr="")
             return MagicMock(returncode=1, stdout="", stderr="")
 
         with patch("sys.argv", ["ai", "c", "1"]):
@@ -2022,9 +2039,15 @@ class TestCliSessionStablePath:
                                         with patch("ai_cli.session_script.get_engine_script", return_value="# script"):
                                             with patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path):
                                                 with patch("subprocess.run", side_effect=fake_run):
-                                                    with patch("os.execvp", side_effect=SystemExit(0)):
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
+                                                    with patch(
+                                                        "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                        return_value=TmuxSessionIdentity(
+                                                            "$42", "c-sw-1", "test-generation"
+                                                        ),
+                                                    ):
+                                                        with patch("os.execvp", side_effect=SystemExit(0)):
+                                                            with pytest.raises(SystemExit):
+                                                                cli()
 
     def test_when_new_session_then_script_written_to_stable_path(self, tmp_path):
         # has-session → 1 (no session), new-session → 0 (success)
@@ -2073,6 +2096,15 @@ class TestEngineScriptProjectName:
     def test_get_engine_script_exit_trap_cleans_session_metadata(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
         assert "session-meta-$tmux_session.json" in script
+
+    def test_given_supervisor_clean_exit_when_generating_script_then_opaque_generation_fence_controls_kill(self):
+        """A renamed supervisor must not kill a replacement that inherits its old name."""
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
+
+        assert "tmux display-message -p -t \"$tmux_session\" '#{session_id}'" in script
+        assert 'tmux if-shell -F -t "$_supervisor_tmux_session_id"' in script
+        assert "kill-session -t '$_supervisor_tmux_session_id'" in script
+        assert 'tmux kill-session -t "$tmux_session"' not in script
 
     def test_get_engine_script_when_generated_then_has_no_handoff_integration(self):
         script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")

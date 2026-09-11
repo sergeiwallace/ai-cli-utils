@@ -494,7 +494,7 @@ def _reclaim_abandoned_cc_session(entry: Path, record: dict) -> bool:
             file=sys.stderr,
         )
         return False
-    if probe.end_process(pid):
+    if probe.end_process(pid, record.get("procStart")):
         _prune_dead_cc_session_record(entry)
         print(
             f"Claude Code session {label} did not exit: pid {pid} was present in state {state}, "
@@ -3261,8 +3261,22 @@ def _do_session_launch(
         # so Claude Code gets a proper PTY once we attach immediately after.
         _session_shell = _session_shell_or_exit()
         result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_id, *_tmux_env_flags, "--", _session_shell, _script_path],
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{session_id}",
+                "-s",
+                session_id,
+                *_tmux_env_flags,
+                "--",
+                _session_shell,
+                _script_path,
+            ],
             capture_output=True,
+            text=True,
             check=False,
         )
         if result.returncode != 0:
@@ -3270,8 +3284,21 @@ def _do_session_launch(
             stderr = _decode_tmux_stderr(raw).strip()
             # Mac tmux may not support `--` separator — retry without it
             result2 = subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_id, *_tmux_env_flags, _session_shell, _script_path],
+                [
+                    "tmux",
+                    "new-session",
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{session_id}",
+                    "-s",
+                    session_id,
+                    *_tmux_env_flags,
+                    _session_shell,
+                    _script_path,
+                ],
                 capture_output=True,
+                text=True,
                 check=False,
             )
             if result2.returncode != 0:
@@ -3282,9 +3309,15 @@ def _do_session_launch(
                 print(f"  (with --): {stderr}", file=sys.stderr)
                 print(f"  (without --): {stderr2}", file=sys.stderr)
                 sys.exit(1)
+            result = result2
+        created_session_id = result.stdout.strip() if isinstance(result.stdout, str) else ""
+        if not re.fullmatch(r"\$\d+", created_session_id):
+            Path(_script_path).unlink(missing_ok=True)
+            print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
+            sys.exit(1)
         generation = secrets.token_urlsafe(32)
         marked = subprocess.run(
-            ["tmux", "set-option", "-t", session_id, "@ai_cli_session_generation", generation],
+            ["tmux", "set-option", "-t", created_session_id, "@ai_cli_session_generation", generation],
             capture_output=True,
             check=False,
         )
@@ -3292,7 +3325,7 @@ def _do_session_launch(
             Path(_script_path).unlink(missing_ok=True)
             print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
             sys.exit(1)
-        identity = _tmux_ownership.capture_tmux_session_identity(session_id, expected_generation=generation)
+        identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
         if identity is None:
             Path(_script_path).unlink(missing_ok=True)
             print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)

@@ -172,7 +172,7 @@ class ProcessProbe(ABC):
         """
 
     @abstractmethod
-    def end_process(self, pid: int, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
+    def end_process(self, pid: int, identity: object, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
         """End ``pid`` and anything it wraps, then confirm by re-reading the OS.
 
         Never answers from a signal's or a call's return value: a terminate that
@@ -281,7 +281,7 @@ class ProcfsProbe(ProcessProbe):
         except ValueError:
             return None
 
-    def end_process(self, pid: int, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
+    def end_process(self, pid: int, identity: object, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
         """SIGTERM, SIGCONT, bounded wait, SIGKILL -- then answer from ``/proc``.
 
         The SIGCONT is part of the escalation rather than belt-and-braces: a stopped
@@ -303,6 +303,8 @@ class ProcfsProbe(ProcessProbe):
         group = self._signal_group(pid)
 
         def send(sig: int) -> None:
+            if self.start_time_match(pid, identity) is not StartTimeMatch.MATCH:
+                return
             # Failures are ignored on purpose: whether the process ended is read back
             # from /proc below, never inferred from a signal's return.
             with contextlib.suppress(OSError):
@@ -395,7 +397,7 @@ class PsutilProbe(ProcessProbe):
             return None
         return ProcessIdentity("psutil", marker)
 
-    def end_process(self, pid: int, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
+    def end_process(self, pid: int, identity: object, timeout: float = _END_TIMEOUT_SECONDS) -> bool:
         """Terminate, continue, bounded wait, kill -- then answer from psutil.
 
         ``resume()`` is this layer's ``SIGCONT`` and is part of the mechanism on
@@ -404,11 +406,14 @@ class PsutilProbe(ProcessProbe):
         no-op, because terminating there does not need the target to be running.
         """
         targets = self._tree(pid)
-        _for_each(targets, psutil.Process.terminate)
-        _for_each(targets, psutil.Process.resume)
+        if self.start_time_match(pid, identity) is StartTimeMatch.MATCH:
+            _for_each(targets, psutil.Process.terminate)
+        if self.start_time_match(pid, identity) is StartTimeMatch.MATCH:
+            _for_each(targets, psutil.Process.resume)
         if self._ended_within(pid, timeout):
             return True
-        _for_each(targets, psutil.Process.kill)
+        if self.start_time_match(pid, identity) is StartTimeMatch.MATCH:
+            _for_each(targets, psutil.Process.kill)
         return self._ended_within(pid, timeout)
 
     def _tree(self, pid: int) -> list[psutil.Process]:
