@@ -3331,8 +3331,8 @@ def _do_session_launch(
             print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
             sys.exit(1)
         tmux_options = (
-            ["tmux", "set-window-option", "-t", session_id, "remain-on-exit", "on"],
-            ["tmux", "set-option", "-t", session_id, "mouse", "on"],
+            ["tmux", "set-window-option", "-t", identity.session_id, "remain-on-exit", "on"],
+            ["tmux", "set-option", "-t", identity.session_id, "mouse", "on"],
             ["tmux", "set-option", "-s", "set-clipboard", "on"],
         )
         for tmux_option in tmux_options:
@@ -3342,11 +3342,11 @@ def _do_session_launch(
                 Path(_script_path).unlink(missing_ok=True)
                 print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
                 sys.exit(1)
-        _iterm2._configure_tmux_for_iterm2(session_id)
-        _iterm2._rename_tmux_window(session_id, ai_name)
+        _iterm2._configure_tmux_for_iterm2(identity.session_id)
+        _iterm2._rename_tmux_window(identity.session_id, ai_name)
         if reporter is not None:
             reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
-        os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
+        os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
 
 
 # --- Click command tree ---
