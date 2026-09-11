@@ -142,22 +142,20 @@ def patched_subprocess(tmux_server, tmp_path):
 
             if sub == "list-panes":
                 # Query the real server so dead-pane detection reflects true state.
-                try:
-                    target = cmd[cmd.index("-t") + 1]
-                except (ValueError, IndexError):
-                    return _FAIL()
-                match = next((s for s in server.sessions if s.name == target), None)
-                if match is None:
-                    return _FAIL()
                 # Use the captured real subprocess.run, not the module-level name --
                 # that name is itself patched to this same fake_run for the whole
                 # test, so calling `subprocess.run(...)` here would recurse forever.
-                return real_subprocess_run(
-                    ["tmux", "-S", str(server.socket_path), "list-panes", "-t", target, "-F", "#{pane_dead}"],
+                result = real_subprocess_run(
+                    ["tmux", "-S", str(server.socket_path), *cmd[1:]],
                     capture_output=True,
                     text=True,
                     check=False,
                 )
+                after_list_panes = getattr(server, "_after_list_panes", None)
+                if after_list_panes is not None:
+                    server._after_list_panes = None
+                    after_list_panes()
+                return result
 
             if sub in {"display-message", "if-shell"}:
                 return real_subprocess_run(
@@ -372,6 +370,52 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
     assert "c-myproject-3" in after
     pane_dead = server.cmd("list-panes", "-t", "c-myproject-3", "-F", "#{pane_dead}")
     assert pane_dead.stdout == ["0"]
+
+
+def test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives(
+    patched_subprocess,
+):
+    """A live session that reuses a dead session's name must never be killed."""
+    server = patched_subprocess
+    session_name = "c-myproject-4"
+    _create_dead_session(server, session_name)
+    replacement_id = None
+
+    def replace_dead_session_with_live_replacement() -> None:
+        nonlocal replacement_id
+        original = next(session for session in server.sessions if session.name == session_name)
+        original.kill()
+        replacement = server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
+        assert (
+            server.cmd(
+                "set-option", "-t", session_name, "@ai_cli_session_generation", "replacement-generation"
+            ).returncode
+            == 0
+        )
+        replacement_id = replacement.id
+
+    server._after_list_panes = replace_dead_session_with_live_replacement
+
+    with (
+        patch("ai_cli.config.validate_registry_completeness", return_value=True),
+        patch("ai_cli.session.cleanup_stale_sessions"),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.config.get_session_map", return_value={}),
+        patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
+        patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
+        patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+        patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
+        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(**_base_launch_kwargs(name="4"))
+
+    assert replacement_id is not None
+    after = {session.name: session.id for session in server.sessions}
+    assert after[session_name] == replacement_id
+    generation = server.cmd("show-options", "-t", session_name, "-v", "@ai_cli_session_generation")
+    assert generation.stdout == ["replacement-generation"]
 
 
 def test_given_extra_args_positional_name_when_launched_then_session_uses_positional_name(
