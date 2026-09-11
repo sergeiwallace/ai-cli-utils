@@ -215,9 +215,9 @@ def get_engine_script(
         printf '%s\\n' "ai-cli: stale-session reaper evidence disabled: $_supervisor_signal_model_reason" >&2
       fi
       if [[ -n "$generation_token" ]]; then
-        _supervisor_tmux_session_id=$(tmux display-message -p -t "$tmux_session" '#{{session_id}}' 2>/dev/null || true)
+        _supervisor_tmux_session_id=$(tmux display-message -p '#{{session_id}}' 2>/dev/null || true)
       fi
-      if [[ "$_supervisor_tmux_session_id" =~ ^\\$[0-9]+$ ]] && tmux set-option -t "$_supervisor_tmux_session_id" @ai_cli_session_generation "$generation_token" 2>/dev/null; then
+      if [[ "$_supervisor_tmux_session_id" =~ ^[$][0-9]+$ ]] && tmux set-option -t "$_supervisor_tmux_session_id" @ai_cli_session_generation "$generation_token" 2>/dev/null; then
         _supervisor_tmux_ownership_established=true
       fi
       if $_supervisor_signal_model_verified && $_supervisor_tmux_ownership_established; then
