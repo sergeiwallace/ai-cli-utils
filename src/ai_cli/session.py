@@ -1079,7 +1079,27 @@ def _initialize_worktree(
         src = repo_root / item
         dst = worktree_path / item
         if src.exists() and not dst.exists():
-            dst.symlink_to(src)
+            try:
+                dst.symlink_to(src)
+            except OSError as e:
+                # On Windows without Developer Mode, symlink creation fails with WinError 1314
+                # (A required privilege is not held by the client). Fall back to creating a
+                # directory junction, which works without special privileges.
+                if sys.platform == "win32" and e.winerror == 1314:
+                    import _winapi
+
+                    try:
+                        _winapi.CreateJunction(str(src), str(dst))
+                    except OSError as junction_err:
+                        raise RuntimeError(
+                            f"Failed to create symlink or junction for {item} in worktree. "
+                            f"Symlink error: {e}. Junction error: {junction_err}. "
+                            f"Enable Developer Mode in Windows Settings to use symlinks, "
+                            f"or ensure the directory is accessible for junction creation."
+                        ) from junction_err
+                else:
+                    # Re-raise if it's not the Windows privilege error
+                    raise
     # Register workspace trust so Claude Code loads the symlinked
     # .claude/settings.json permissions instead of dropping them with a
     # "workspace has not been trusted" warning (GH #72896). Worktrees

@@ -1510,7 +1510,11 @@ class TestCreateWorktreeEdgeCases2:
 
         assert results["creator"] == "creator initialization failed"
         assert results["waiter"] == (wt_dir, False)
-        assert (wt_dir / ".venv").is_symlink()
+        # On Windows without Developer Mode, junctions are created instead of symlinks
+        if sys.platform == "win32":
+            assert (wt_dir / ".venv").exists() and (wt_dir / ".venv").is_dir()
+        else:
+            assert (wt_dir / ".venv").is_symlink()
         ensure_trusted.assert_called_once_with([tmp_path, wt_dir])
         allow_envrc.assert_called_once_with(tmp_path, wt_dir)
         assert set_upstream.call_count == 1
@@ -1555,7 +1559,8 @@ import ai_cli.session
 
 class TestCreateWorktreeSymlink:
     def test_create_worktree_when_venv_exists_then_symlinks(self, tmp_path):
-        """Covers line 455: os.symlink when src exists and dst does not."""
+        """Covers line 455: os.symlink when src exists and dst does not.
+        On Windows without Developer Mode, creates a junction instead of a symlink."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".venv").mkdir()
@@ -1571,7 +1576,50 @@ class TestCreateWorktreeSymlink:
                 with patch("subprocess.run", side_effect=fake_run):
                     result = create_worktree("sw-1")
 
-        assert (wt_dir / ".venv").is_symlink()
+        # On Windows without Developer Mode, the code falls back to junctions
+        # which report as directories, not symlinks. On other platforms, symlinks work.
+        assert (wt_dir / ".venv").exists()
+        if sys.platform == "win32":
+            # Junction exists as a directory on Windows
+            assert (wt_dir / ".venv").is_dir()
+        else:
+            # Symlink on non-Windows platforms
+            assert (wt_dir / ".venv").is_symlink()
+        assert result == wt_dir
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific WinError 1314 handling")
+    def test_create_worktree_when_symlink_privilege_denied_then_falls_back_to_junction(self, tmp_path):
+        """AI-CLI-xg2o: On Windows without Developer Mode, symlink fails with WinError 1314.
+        The code must catch this and fall back to creating a directory junction instead."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".venv").mkdir()
+        wt_dir = repo_root / ".worktrees" / "sw-2"
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
+                wt_dir.mkdir(parents=True, exist_ok=True)
+            return MagicMock(returncode=0, stdout="")
+
+        # Mock Path.symlink_to to raise WinError 1314 (privilege not held)
+        def mock_symlink_to(self, target, *args, **kwargs):
+            # Simulate WinError 1314: A required privilege is not held by the client
+            # On Windows, OSError from symlink operations has winerror attribute
+            err = OSError(1314, "A required privilege is not held by the client")
+            err.winerror = 1314
+            raise err
+
+        with patch("ai_cli.session.detect_repo_root", return_value=repo_root), _stub_worktree_base():
+            with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("subprocess.run", side_effect=fake_run):
+                    with patch.object(Path, "symlink_to", mock_symlink_to):
+                        result = create_worktree("sw-2")
+
+        # On Windows, the .venv link should exist as a junction (directory), not a symlink
+        assert (wt_dir / ".venv").exists()
+        assert (wt_dir / ".venv").is_dir()
+        # On Windows, junctions report as directories with the reparse point attribute
+        # Python's is_symlink() returns False for junctions
         assert result == wt_dir
 
 
