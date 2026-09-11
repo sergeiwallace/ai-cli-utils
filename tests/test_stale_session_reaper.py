@@ -210,6 +210,7 @@ def _start_real_tmux_supervisor(
     is_remote: bool,
     child_body: str | None = None,
     agent_body: str | None = None,
+    ownership_bootstrap_barrier: tuple[Path, Path] | None = None,
 ) -> tuple[str, Path, Path]:
     """Run a generated supervisor through real tmux, locks, and heartbeat writes."""
     session_id = "test-session"
@@ -254,6 +255,15 @@ def _start_real_tmux_supervisor(
         is_remote=is_remote,
         worktree_dir=str(tmp_path),
     ).replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
+    if ownership_bootstrap_barrier is not None:
+        ready, release = ownership_bootstrap_barrier
+        bootstrap = 'if [[ -n "$generation_token" ]]; then\n'
+        paused_bootstrap = (
+            f"touch {shlex.quote(str(ready))}\n"
+            f"while [[ ! -f {shlex.quote(str(release))} ]]; do sleep 0.05; done\n" + bootstrap
+        )
+        assert bootstrap in script
+        script = script.replace(bootstrap, paused_bootstrap, 1)
     supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
@@ -418,6 +428,65 @@ fi
     ):
         pass
     assert record.stat().st_mtime_ns == final_mtime, "a crashed supervisor must stop its detached ticker"
+
+
+@pytest.mark.real_tmux
+def test_given_renamed_supervisor_during_ownership_bootstrap_when_clean_exit_then_replacement_survives(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
+):
+    """Ownership must bind to the supervisor's pane, never a reused session name."""
+    bootstrap_ready = tmp_path / "bootstrap-ready"
+    release_bootstrap = tmp_path / "release-bootstrap"
+    finish_child = tmp_path / "finish-child"
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  while [[ ! -f {shlex.quote(str(finish_child))} ]]; do sleep 0.05; done
+  exit 77
+fi
+"""
+    session_id, _, _ = _start_real_tmux_supervisor(
+        real_tmux_socket,
+        tmp_path,
+        real_supervisor_shell,
+        is_remote=False,
+        child_body=child_body,
+        ownership_bootstrap_barrier=(bootstrap_ready, release_bootstrap),
+    )
+    _wait_for_condition("the ownership-bootstrap barrier", bootstrap_ready.exists)
+    original_id = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{session_id}").stdout.strip()
+    assert original_id
+    assert _tmux_run(real_tmux_socket, "rename-session", "-t", original_id, "renamed-supervisor").returncode == 0
+    replacement = _tmux_new_session(
+        real_tmux_socket,
+        session_id,
+        ["sleep", "30"],
+        {**os.environ},
+        (),
+    )
+    assert replacement.returncode == 0, replacement.stderr
+    replacement_id = _tmux_run(
+        real_tmux_socket, "display-message", "-p", "-t", session_id, "#{session_id}"
+    ).stdout.strip()
+    assert replacement_id and replacement_id != original_id
+
+    release_bootstrap.touch()
+    _wait_for_condition(
+        "the original supervisor generation marker",
+        lambda: (
+            _tmux_run(
+                real_tmux_socket, "show-options", "-t", original_id, "-v", "@ai_cli_session_generation"
+            ).returncode
+            == 0
+        ),
+    )
+    replacement_marker = _tmux_run(
+        real_tmux_socket, "show-options", "-t", replacement_id, "-v", "@ai_cli_session_generation"
+    )
+    assert replacement_marker.returncode != 0, "the replacement must never receive the supervisor marker"
+
+    finish_child.touch()
+    _wait_for_missing_session(real_tmux_socket, original_id)
+    assert _tmux_run(real_tmux_socket, "has-session", "-t", replacement_id).returncode == 0
 
 
 @pytest.mark.real_tmux

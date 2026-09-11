@@ -2101,7 +2101,8 @@ class TestEngineScriptProjectName:
         """A renamed supervisor must not kill a replacement that inherits its old name."""
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
 
-        assert "tmux display-message -p -t \"$tmux_session\" '#{session_id}'" in script
+        assert "tmux display-message -p '#{session_id}'" in script
+        assert "tmux display-message -p -t \"$tmux_session\" '#{session_id}'" not in script
         assert 'tmux if-shell -F -t "$_supervisor_tmux_session_id"' in script
         assert "kill-session -t '$_supervisor_tmux_session_id'" in script
         assert 'tmux kill-session -t "$tmux_session"' not in script
