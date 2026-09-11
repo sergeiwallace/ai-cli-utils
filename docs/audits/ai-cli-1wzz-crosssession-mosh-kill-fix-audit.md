@@ -1873,4 +1873,86 @@ R3 Recommendations whether you believe `AI-CLI-1wzz` is now safe to close (all 1
    test nearby to confirm the fix didn't regress the ordinary (non-race) dead-pane-recreate case.
 ```
 
+### Round 4 Reviewer Prompt (Re-audit — full remaining backlog: JA-1, DV-1, N-1, N-2)
+
+**Model:** Codex (fresh session, independent verification — different model/persona from prior rounds)
+
+**Date:** 2026-09-11 (post-Round-3; Round 3 found N-2 MAJOR and left JA-1/DV-1/N-1 unresolved
+pending it; N-2 is now claimed fixed by ai-cli-utils PR #133, commit `0663ac0`)
+
+```text
+You are a principal staff engineer specializing in developer-experience tooling, terminal
+multiplexer/session-lifecycle systems (tmux, mosh), and reliability engineering (same domain as
+the prior rounds, a fresh agent / model for independent verification). You are reading the audit
+history of docs/bugs/cross-session-mosh-termination.md. This is a later-round verification pass.
+
+## Severity rubric (binding — your findings are validated against this)
+
+CRITICAL — implemented literally as specified, this produces data loss, a security or
+  safety-invariant violation, or an unrecoverable state, in a reachable scenario.
+MAJOR — implemented literally as specified, this produces incorrect or unsafe behavior in a
+  reachable scenario: a genuine contradiction between documents, an ambiguity with more than one
+  plausible unsafe reading, or a stated invariant the spec as written does not enforce.
+
+## Scope guard — full open MUST-fix backlog
+
+The full current OPEN-MUST-FIX-BACKLOG:
+
+- JA-1 — class invariant (no cross-session tmux kill without proven ownership). Blocked on N-1 and
+  N-2 both actually closing every reachable path. Verify it holds EVERYWHERE now, not just at the
+  two previously-named sites.
+- DV-1 — regression coverage for the whole class, not just individual sites.
+- N-1 — dead-pane relaunch race, claimed fixed in commit `518f222` (PR #132). Round 3 confirmed the
+  source fix but could not execute the test in its sandbox; you have a normal writable environment,
+  so actually run `uv run pytest tests/test_session_launch_integration.py -k
+  test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives -v`
+  and report the real result.
+- N-2 — new-session configuration-failure cleanup race, claimed fixed in commit `0663ac0` (PR #133):
+  immediately after `tmux new-session` succeeds, a random generation token is set and identity is
+  captured via `tmux_ownership.capture_tmux_session_identity`; the configuration-failure cleanup path
+  now calls `tmux_ownership.kill_owned_tmux_session(identity)` instead of a raw name-only
+  `kill-session`. Verify this at `src/ai_cli/main.py` (search for `@ai_cli_session_generation` near
+  the `tmux_options` loop), and run
+  `uv run pytest tests/test_session_launch_integration.py -k
+  test_given_new_session_replaced_after_configuration_failure_when_cleanup_runs_then_replacement_survives -v`.
+
+Your task: verify EACH item above against the actual code AND by actually running the cited tests.
+Also actively look for an 8th mechanism: read every remaining `subprocess.run` call in
+`src/ai_cli/main.py`, `src/ai_cli/session.py`, `src/ai_cli/quota.py`, and `src/ai_cli/tunnel.py`
+whose argv contains `kill-session`, `kill`, or `.terminate(` / `.kill(`, and confirm each one is
+gated by a captured-identity/generation fence (not a bare name or bare PID). This is the question
+this round exists to answer: is there ANY remaining unfenced destructive call site in this codebase?
+
+## Constraints
+
+- APPEND-ONLY: do not edit the target doc/code in this round.
+- READ-ONLY on prior rounds' findings: report PASS / FAIL / PARTIAL with quoted evidence, do not
+  rewrite prior wording or severity.
+
+## Output
+
+Write into a new Round 4 section of this audit doc, following the same structure as Round 3 (R4
+Summary → full open MUST-fix backlog verification table → R4.4 NEW issues (N-N) if any → R4
+Recommendations). Append a row to the Audit Log. Update the Status Summary cross-round counts.
+Never fabricate; cite file:line for every claim, and cite the actual pytest output for every test
+claim.
+
+**This is the round that determines whether AI-CLI-1wzz can close.** If JA-1, DV-1, N-1, and N-2
+all come back PASS with real (not blocked) test execution, and your sweep for an 8th mechanism
+finds nothing new, say explicitly in your R4 Recommendations that AI-CLI-1wzz is safe to close. If
+anything is still open or you find a new issue, say explicitly that it is not.
+
+## Files to read
+
+1. docs/bugs/cross-session-mosh-termination.md — target commit `0663ac0` or later.
+2. THIS AUDIT DOC — Rounds 1-3 are your verification checklist.
+3. src/ai_cli/main.py — N-1's fix (around the dead-pane relaunch block) and N-2's fix (around the
+   new-session configuration block, look for `@ai_cli_session_generation`).
+4. src/ai_cli/session.py, src/ai_cli/quota.py, src/ai_cli/tunnel.py, src/ai_cli/process_hygiene.py,
+   src/ai_cli/tmux_ownership.py, src/ai_cli/stale_session_reaper.py — sweep every destructive call
+   site in these files for the 8th-mechanism check above.
+5. tests/test_session_launch_integration.py — run the N-1 and N-2 regression tests directly, don't
+   just read them.
+```
+
 <!-- /doc:region name="appendix_reviewer_prompt" -->
