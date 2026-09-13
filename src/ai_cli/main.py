@@ -145,6 +145,49 @@ from .tunnel import (  # noqa: F401
 # --- Helpers ---
 
 
+def _dolt_server_script() -> Path | None:
+    """Locate ai-harness's dolt_server.py without hardcoding a cross-repo path.
+
+    Most sessions launch into a repo that is NOT ai-harness (job-pilot, ai-core,
+    ...), so a bare cwd-relative lookup only ever fires inside ai-harness itself.
+    Checked in order: an explicit override, the same ``AI_HARNESS_ROOT``
+    convention the fleet's own tooling already uses to locate ai-harness from an
+    arbitrary cwd, the conventional checkout location, then a source checkout
+    that vendors its own copy (the ai-harness case).
+    """
+    configured = os.environ.get("AI_DOLT_SERVER_SCRIPT")
+    if configured:
+        return Path(configured).expanduser()
+    candidates = [
+        os.environ.get("AI_HARNESS_ROOT"),
+        os.environ.get("PROJECTS_DIR", "") and str(Path(os.environ["PROJECTS_DIR"]) / "ai-harness"),
+        str(Path("~/projects/ai-harness").expanduser()),
+        str(Path.cwd()),
+    ]
+    for root in candidates:
+        if not root:
+            continue
+        script = Path(root) / "scripts" / "dolt_server.py"
+        if script.is_file():
+            return script
+    return None
+
+
+def _ensure_dolt_server() -> None:
+    """Run the optional local Dolt supervisor before a real session launch.
+
+    The supervisor is advisory by design: it reports healthy, restarted, or the
+    visible embedded fallback itself and always permits the requested session.
+    """
+    script = _dolt_server_script()
+    if script is None:
+        return
+    subprocess.run(
+        [sys.executable, str(script), "ensure", "--repo", str(Path.cwd())],
+        check=False,
+    )
+
+
 def _exec_with_direnv(project_root: Path, command: list[str]) -> None:
     """Replace this process with ``command``, under direnv when that is possible.
 
@@ -3398,6 +3441,7 @@ def _session_command(engine: str):
         # them: measured, `ai c 98 --dry-run` re-installed the tool and re-exec'd
         # itself before printing a plan that claimed nothing had happened.
         if not dry_run:
+            _ensure_dolt_server()
             trigger_background_update()
             with reporter.phase("Install", "checking installed version") as install_phase:
                 reexec = _auto_update_if_stale(config) is True
