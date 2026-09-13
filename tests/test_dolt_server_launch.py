@@ -1,35 +1,30 @@
-"""Regression coverage for session-launch Dolt supervision."""
+"""Regression coverage for session-launch Dolt supervision.
+
+Deliberately config.toml-driven, never env-var-driven (see `_dolt_server_script`'s
+docstring). The `script_path` override is read via `load_config()` directly;
+the `[project] projects_dir`-based fallback goes through `_find_project_dir`, so
+those tests patch `ai_cli.config._get_projects_dir` -- the same seam
+`conftest.py`'s `_projects_dir_contains_the_checkout` autouse fixture patches
+and explicitly documents as overridable by an inner test-level patch.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 from ai_cli.main import _ensure_dolt_server
 
 
-def _clear_resolution_env(monkeypatch, home: Path) -> None:
-    """Neutralize every candidate so a test starts from a known-empty slate.
-
-    ``home`` stands in for ``$HOME`` so the hardcoded ``~/projects/ai-harness``
-    fallback cannot accidentally resolve to this machine's REAL ai-harness
-    checkout -- without this, a "no supervisor configured" test would silently
-    find the real script and stop testing what it claims to.
-    """
-    monkeypatch.delenv("AI_DOLT_SERVER_SCRIPT", raising=False)
-    monkeypatch.delenv("AI_HARNESS_ROOT", raising=False)
-    monkeypatch.delenv("PROJECTS_DIR", raising=False)
-    monkeypatch.setenv("HOME", str(home))
-
-
-def test_given_configured_supervisor_when_launching_then_runs_ensure(monkeypatch, tmp_path):
-    _clear_resolution_env(monkeypatch, tmp_path)
+def test_given_configured_script_path_when_launching_then_runs_ensure(monkeypatch, tmp_path):
     script = tmp_path / "dolt_server.py"
     script.write_text("", encoding="utf-8")
-    monkeypatch.setenv("AI_DOLT_SERVER_SCRIPT", str(script))
     monkeypatch.chdir(tmp_path)
+    config = {"dolt_server": {"script_path": str(script)}}
 
-    with patch("ai_cli.main.subprocess.run") as run:
+    with (
+        patch("ai_cli.main.load_config", return_value=config),
+        patch("ai_cli.main.subprocess.run") as run,
+    ):
         _ensure_dolt_server()
 
     command = run.call_args.args[0]
@@ -38,18 +33,26 @@ def test_given_configured_supervisor_when_launching_then_runs_ensure(monkeypatch
     assert run.call_args.kwargs["check"] is False
 
 
-def test_given_ai_harness_root_when_launching_then_resolves_its_dolt_server(monkeypatch, tmp_path):
+def test_given_projects_dir_config_when_launching_then_resolves_its_dolt_server(monkeypatch, tmp_path):
+    """[project] projects_dir, not an env var, is what a config edit actually changes.
+
+    A CC session or agent already running picks this up on its NEXT launch --
+    load_config() re-reads config.toml from disk every call, unlike an env var,
+    which would need every already-running process to restart.
+    """
     harness = tmp_path / "ai-harness"
     (harness / "scripts").mkdir(parents=True)
     script = harness / "scripts" / "dolt_server.py"
     script.write_text("", encoding="utf-8")
-    _clear_resolution_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("AI_HARNESS_ROOT", str(harness))
     other_cwd = tmp_path / "job-pilot"
     other_cwd.mkdir()
     monkeypatch.chdir(other_cwd)
 
-    with patch("ai_cli.main.subprocess.run") as run:
+    with (
+        patch("ai_cli.main.load_config", return_value={}),
+        patch("ai_cli.config._get_projects_dir", return_value=tmp_path),
+        patch("ai_cli.main.subprocess.run") as run,
+    ):
         _ensure_dolt_server()
 
     command = run.call_args.args[0]
@@ -58,10 +61,15 @@ def test_given_ai_harness_root_when_launching_then_resolves_its_dolt_server(monk
 
 
 def test_given_no_supervisor_when_launching_then_does_not_run_a_guess(monkeypatch, tmp_path):
-    _clear_resolution_env(monkeypatch, tmp_path)
+    empty_projects_dir = tmp_path / "empty-projects"
+    empty_projects_dir.mkdir()
     monkeypatch.chdir(tmp_path)
 
-    with patch("ai_cli.main.subprocess.run") as run:
+    with (
+        patch("ai_cli.main.load_config", return_value={}),
+        patch("ai_cli.config._get_projects_dir", return_value=empty_projects_dir),
+        patch("ai_cli.main.subprocess.run") as run,
+    ):
         _ensure_dolt_server()
 
     run.assert_not_called()
