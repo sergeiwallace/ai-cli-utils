@@ -200,7 +200,7 @@ def _restore_answer_source(
     if answers == original_answers:
         answers_file.write_text(original_text)
     else:
-        answers_file.write_text(yaml.safe_dump(answers, sort_keys=False))
+        answers_file.write_text(yaml.safe_dump(answers, sort_keys=False, allow_unicode=True))
     return True
 
 
@@ -368,7 +368,10 @@ def _run_copier_update(
     original_source = original_answers["_src_path"]
     update_answers = original_answers.copy()
     update_answers["_src_path"] = source
-    answers_file.write_text(yaml.safe_dump(update_answers, sort_keys=False))
+    if update_answers == original_answers:
+        answers_file.write_text(original_text)
+    else:
+        answers_file.write_text(yaml.safe_dump(update_answers, sort_keys=False, allow_unicode=True))
     failure: str | None = None
     try:
         result = subprocess.run(
