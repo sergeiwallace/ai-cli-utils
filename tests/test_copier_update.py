@@ -20,6 +20,7 @@ from ai_cli.copier_update import (
     _do_update_in_worktree,
     _find_copier_projects,
     _repo_root,
+    _run_copier_update,
     _run_isolated,
     _update_one_isolated,
     run_copier_update,
@@ -451,6 +452,37 @@ def test_given_stored_answers_when_updating_then_passes_them_to_copier(tmp_path)
     copier_command = next(command for command in runner.calls if command[0] == "/usr/bin/copier")
     assert "--data-file" in copier_command
     assert copier_command[copier_command.index("--data-file") + 1] == str(answers)
+
+
+def test_given_non_ascii_answers_when_source_is_unchanged_then_copier_starts_clean(tmp_path):
+    """The temporary Copier data-file write must not dirty a tracked answers file."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=tmp_path, check=True)
+    source = str(tmp_path / "template")
+    answers = tmp_path / ".copier-answers.yml"
+    answers.write_text(
+        f"_src_path: {source}\n"
+        "_commit: previous\n"
+        "project_description: Automated example — bridge to autonomy\n"
+        "project_vision: ''\n"
+    )
+    original_bytes = answers.read_bytes()
+    subprocess.run(["git", "add", ".copier-answers.yml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
+    real_run = subprocess.run
+
+    def run_copier(command, **kwargs):
+        status = real_run(["git", "status", "--porcelain"], cwd=tmp_path, check=True, capture_output=True, text=True)
+        assert status.stdout == ""
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("ai_cli.copier_update._template_diff", return_value=(set(), set())):
+        with patch("ai_cli.copier_update.subprocess.run", side_effect=run_copier):
+            failure, _, _ = _run_copier_update(tmp_path, "/usr/bin/copier", resolved_source=source)
+
+    assert failure is None
+    assert answers.read_bytes() == original_bytes
 
 
 def test_given_drifted_template_hunk_when_copier_exits_cleanly_then_update_fails_closed(tmp_path):
