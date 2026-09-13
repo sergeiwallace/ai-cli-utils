@@ -150,24 +150,22 @@ def _dolt_server_script() -> Path | None:
 
     Most sessions launch into a repo that is NOT ai-harness (job-pilot, ai-core,
     ...), so a bare cwd-relative lookup only ever fires inside ai-harness itself.
-    Checked in order: an explicit override, the same ``AI_HARNESS_ROOT``
-    convention the fleet's own tooling already uses to locate ai-harness from an
-    arbitrary cwd, the conventional checkout location, then a source checkout
-    that vendors its own copy (the ai-harness case).
+    Deliberately config.toml-driven, not env-var-driven: ``load_config()`` is
+    re-read from disk on every call, so editing ``[dolt_server] script_path`` (or
+    ``[project] projects_dir``, which ``_find_project_dir`` already reads) takes
+    effect on the next launch -- no CC session or agent needs to restart to pick
+    up the change, which an env var would require.
+
+    Checked in order: an explicit ``[dolt_server] script_path`` override, the
+    conventional checkout found via ``_find_project_dir("ai-harness")`` (honors
+    ``[project] projects_dir``, default ``~/projects``), then a source checkout
+    that vendors its own copy (the ai-harness case, resolved from cwd).
     """
-    configured = os.environ.get("AI_DOLT_SERVER_SCRIPT")
-    if configured:
-        return Path(configured).expanduser()
-    candidates = [
-        os.environ.get("AI_HARNESS_ROOT"),
-        os.environ.get("PROJECTS_DIR", "") and str(Path(os.environ["PROJECTS_DIR"]) / "ai-harness"),
-        str(Path("~/projects/ai-harness").expanduser()),
-        str(Path.cwd()),
-    ]
-    for root in candidates:
-        if not root:
-            continue
-        script = Path(root) / "scripts" / "dolt_server.py"
+    configured = load_config().get("dolt_server", {}).get("script_path")
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured.strip()).expanduser()
+    for root in (_find_project_dir("ai-harness"), Path.cwd()):
+        script = root / "scripts" / "dolt_server.py"
         if script.is_file():
             return script
     return None

@@ -386,6 +386,15 @@ nats_servers = ["nats://localhost:4222"]
 ## section for it, see the CHANGELOG [Unreleased] entry for the old header name.
 # api_url = "https://usage.example.com"
 # api_key = "ua-api-..."
+
+[dolt_server]
+## Explicit override for ai-harness's scripts/dolt_server.py, the optional local
+## Dolt sql-server supervisor run before each session launch (ai c/g/p/cx).
+## Only needed when ai-harness is not discoverable under [project] projects_dir
+## (default ~/projects) -- otherwise it is found there automatically.
+## Read fresh on every launch, so editing this takes effect immediately: no CC
+## session or agent needs to restart, unlike an environment-variable override.
+# script_path = "~/projects/ai-harness/scripts/dolt_server.py"
 """
 
 
