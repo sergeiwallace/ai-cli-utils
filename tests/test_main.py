@@ -277,9 +277,10 @@ class TestGetEngineScript:
         assert "agent_direnv_initialized=false" in script
         assert 'if _direnv_exports="$(direnv export bash)"; then' in script
         assert 'eval "$_direnv_exports"' in script
-        # The main agent invocation's stdio remains untouched — it is a long-running
-        # interactive process, so only the one-time export is captured.
-        assert '"$@" &\n' in script
+        # A backgrounded TUI must explicitly retain its controlling terminal.
+        # The fallback preserves stdin for non-terminal subprocess launches.
+        assert '"$@" </dev/tty &' in script
+        assert '"$@" <&0 &' in script
         assert 'wait "$active_agent_pid"' in script
         assert "Warning: direnv could not load $direnv_root/.envrc" in script
         assert 'direnv exec "$direnv_root" "$@"' not in script

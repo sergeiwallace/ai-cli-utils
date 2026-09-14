@@ -397,6 +397,186 @@ def test_given_restarting_agent_when_direnv_is_available_then_environment_loads_
     assert result.stderr.count("direnv: loading test/.envrc") == 1, result.stderr
 
 
+@pytest.mark.parametrize("shell_name", ["bash", "zsh"])
+def test_given_terminal_agent_when_run_agent_invoked_then_agent_keeps_terminal_stdin(
+    real_tmux_socket, tmp_path, shell_name
+):
+    """A backgrounded agent must retain the pane terminal it needs for a TUI.
+
+    The session child is deliberately a non-interactive shell. POSIX shells redirect
+    a background job's stdin from ``/dev/null`` in that mode unless the caller
+    explicitly preserves it. Pi treats that EOF as a clean exit, so a supervised
+    session restarted forever while the same foreground command stayed interactive.
+    A real tmux pane and the real generated ``run_agent`` body keep this pinned at
+    the terminal boundary shared by every engine.
+    """
+    shell = shutil.which(shell_name)
+    if shell is None:
+        pytest.skip(f"{shell_name} is not installed")
+
+    bin_dir = _clean_bin(tmp_path, f"{shell_name}-bin")
+    terminal_state = tmp_path / f"{shell_name}-stdin-state"
+    release = tmp_path / f"{shell_name}-release"
+    completed = tmp_path / f"{shell_name}-completed"
+    agent = bin_dir / "terminal-agent"
+    agent.write_text(
+        "#!/bin/sh\n"
+        f'if test -t 0; then printf tty > "{terminal_state}"; else printf not-tty > "{terminal_state}"; exit 97; fi\n'
+        f'while test ! -f "{release}"; do sleep 0.05; done\n'
+    )
+    agent.chmod(0o755)
+
+    body = tmp_path / f"{shell_name}-run-agent.sh"
+    body.write_text(_run_agent_body())
+    harness = tmp_path / f"{shell_name}-run-agent-harness.sh"
+    harness.write_text(
+        f'direnv_root="{tmp_path}"\n'
+        "agent_direnv_initialized=true\n"
+        'active_agent_pid=""\n'
+        f'_child_int_exit_file="{tmp_path / "exit"}"\n'
+        f'_child_int_escape_file="{tmp_path / "escape"}"\n'
+        f'. "{body}"\n'
+        "run_agent terminal-agent\n"
+        f'printf done > "{completed}"\n'
+    )
+
+    session_name = f"run-agent-{shell_name}"
+    created = subprocess.run(
+        ["tmux", "-S", real_tmux_socket, "new-session", "-d", "-s", session_name, shell, str(harness)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": str(bin_dir)},
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    assert _wait_for_file(terminal_state), "the agent never started in the tmux pane"
+    assert terminal_state.read_text() == "tty", "run_agent detached the TUI agent from terminal stdin"
+    assert not completed.exists(), "the terminal agent exited instead of remaining interactive"
+
+    release.touch()
+    assert _wait_for_file(completed), "run_agent did not return after the terminal agent exited"
+
+
+def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_stops(real_tmux_socket, tmp_path):
+    """An agent exit after the fast-crash window must still be bounded.
+
+    This runs the generated Pi session script in a real tmux pane. The stand-in
+    takes four seconds before each successful exit, so the existing ``elapsed < 3``
+    circuit breaker cannot stop it. The session must instead stop after a bounded
+    sequence of unsuccessful starts and preserve a diagnostic in the pane.
+    """
+    bin_dir = _clean_bin(tmp_path, "breaker-bin")
+    id_binary = shutil.which("id")
+    assert id_binary is not None
+    (bin_dir / "id").symlink_to(id_binary)
+    fake_bin = tmp_path / "breaker-fakes"
+    fake_bin.mkdir()
+    launches = tmp_path / "agent-launches"
+    fake_pi = fake_bin / "pi"
+    fake_pi.write_text(
+        "#!/bin/sh\n"
+        f'count=$(cat "{launches}" 2>/dev/null || echo 0)\n'
+        "count=$((count + 1))\n"
+        f'printf "%s\\n" "$count" > "{launches}"\n'
+        "sleep 4\n"
+        "exit 0\n"
+    )
+    fake_pi.chmod(0o755)
+    fake_ai = fake_bin / "ai"
+    fake_ai.write_text(
+        '#!/bin/sh\nif [ "$1" = internal ] && [ "$2" = get-version ]; then printf "%s\\n" unknown; fi\nexit 0\n'
+    )
+    fake_ai.chmod(0o755)
+    fake_direnv = fake_bin / "direnv"
+    fake_direnv.write_text("#!/bin/sh\n[ \"$1\" = export ] && printf '%s\\n' 'export TEST_DIRENV=1'\n")
+    fake_direnv.chmod(0o755)
+
+    script = tmp_path / "slow-failure-session.sh"
+    rendered = get_engine_script(
+        "p",
+        "breaker",
+        "p-myproject-breaker",
+        "p-myproject-",
+        "myproject",
+        worktree_dir=str(tmp_path),
+        is_remote=False,
+    )
+    fast_crash_guard = "if (( elapsed < 3 )); then"
+    assert rendered.count(fast_crash_guard) == 1
+    # This test is specifically for the independent slow-exit breaker. Disable
+    # the pre-existing fast-crash guard in the disposable rendered script so it
+    # cannot satisfy the test by stopping the first attempt for a timing reason.
+    script.write_text(rendered.replace(fast_crash_guard, "if false; then"))
+    script.chmod(0o755)
+    session_name = "slow-agent-failures"
+    shell = shutil.which("bash")
+    assert shell is not None
+    runner = tmp_path / "slow-failure-runner.sh"
+    runner.write_text(
+        f"#!{shell}\n"
+        "set +e\n"
+        f'while true; do "{shell}" +e "{script}" --ai-cli-child-body; [ "$?" -eq 77 ] && break; done\n'
+        "sleep 60\n"
+    )
+    runner.chmod(0o755)
+    created = subprocess.run(
+        [
+            "tmux",
+            "-S",
+            real_tmux_socket,
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            shell,
+            str(runner),
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": os.pathsep.join((str(fake_bin), str(bin_dir))),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+        },
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+
+    diagnostic = "AI CLI keeps failing to start"
+
+    def circuit_breaker_reported() -> bool:
+        pane = subprocess.run(
+            ["tmux", "-S", real_tmux_socket, "capture-pane", "-p", "-t", session_name, "-S", "-80"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return diagnostic in pane.stdout
+
+    started = _wait_for_file(launches, timeout=5)
+    initial_pane = subprocess.run(
+        ["tmux", "-S", real_tmux_socket, "capture-pane", "-p", "-t", session_name, "-S", "-80"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert started, f"the slow failing agent never started: {initial_pane.stdout!r} {initial_pane.stderr!r}"
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not circuit_breaker_reported():
+        time.sleep(0.05)
+    final_pane = subprocess.run(
+        ["tmux", "-S", real_tmux_socket, "capture-pane", "-p", "-t", session_name, "-S", "-80"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    launch_count = launches.read_text().strip() if launches.exists() else "missing"
+    assert circuit_breaker_reported(), (
+        f"slow failures kept restarting without a stop after {launch_count} attempts: {final_pane.stdout!r}"
+    )
+    assert launches.read_text().strip() == "3", "the breaker must stop the third consecutive failure"
+
+
 # --- `ai c --once` launch path ---------------------------------------------------
 #
 # The --once branch builds its own tmux argv (three call sites, one per engine

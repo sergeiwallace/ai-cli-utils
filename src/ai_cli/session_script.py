@@ -172,7 +172,8 @@ def get_engine_script(
       # A new supervisor starts a new Ctrl+C gesture. Replaceable children
       # below share these files only for this supervisor's lifetime.
       rm -f "$_ai_state_dir/session-int-escape-$tmux_session" \
-        "$_ai_state_dir/session-int-exit-$tmux_session"
+        "$_ai_state_dir/session-int-exit-$tmux_session" \
+        "$_ai_state_dir/session-agent-exits-$tmux_session"
       generation_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)
       _supervisor_tmux_session_id=""
       _supervisor_tmux_ownership_established=false
@@ -242,7 +243,8 @@ def get_engine_script(
         ai internal revoke-heartbeat "$tmux_session" "$generation_token" 2>/dev/null || true
         rm -f "$_ai_state_dir/session-meta-$tmux_session.json" \\
           "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session" \\
-          "$_ai_state_dir/session-int-escape-$tmux_session" "$_ai_state_dir/session-int-exit-$tmux_session"
+          "$_ai_state_dir/session-int-escape-$tmux_session" "$_ai_state_dir/session-int-exit-$tmux_session" \\
+          "$_ai_state_dir/session-agent-exits-$tmux_session"
         ai internal cleanup-worktree "$ai_name" 2>/dev/null
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
@@ -442,6 +444,7 @@ def get_engine_script(
     }}
     trap '_child_record_int' INT
     run_agent() {{
+      agent_attempted=true
       if ! $agent_direnv_initialized; then
         agent_direnv_initialized=true
         # `direnv export bash` is the same shell integration mechanism used by
@@ -460,7 +463,15 @@ def get_engine_script(
       if [[ -f "$_child_int_exit_file" ]]; then
         exit 77
       fi
-      "$@" &
+      # Non-interactive shells redirect a background job's stdin from /dev/null.
+      # Bash honors <&0, but zsh performs that redirect after the fd duplication;
+      # reopening the controlling terminal works for both while preserving the
+      # background PID used for signal forwarding.
+      if [[ -t 0 && -r /dev/tty ]]; then
+        "$@" </dev/tty &
+      else
+        "$@" <&0 &
+      fi
       active_agent_pid=$!
       wait "$active_agent_pid"
       agent_exit_code=$?
@@ -486,7 +497,10 @@ def get_engine_script(
       elif [[ -n "$_child_saved_int_deadline" ]]; then
         rm -f "$_child_int_escape_file"
       fi
-      return "$agent_exit_code"
+      # The launch loop owns exit handling through agent_exit_code below. Returning
+      # success keeps a non-zero agent status from being interpreted as a shell
+      # failure before that loop can apply its restart guards.
+      return 0
     }}
     first_run=true
     ai_name={shell["ai_name"]}
@@ -690,6 +704,7 @@ def get_engine_script(
     # many times, so its EXIT trap can stop only its per-child monitor.
     trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
 
+    agent_exit_count_file="$_ai_state_dir/session-agent-exits-$tmux_session"
     while true; do
       # A double Ctrl+C can be recorded by a prior replaceable child. Honor it
       # before any per-launch preflight, especially direnv initialization.
@@ -720,6 +735,7 @@ def get_engine_script(
       fi
       start_watcher
       start_ts=$(date +%s)
+      agent_attempted=false
       # Re-emit iTerm2 setup + set status to running.
       # On first launch, wait for the tmux client to attach — DCS passthrough sequences
       # are discarded when no client is connected, so firing before attach is a no-op.
@@ -831,6 +847,22 @@ with open(path, 'w') as f:
       # requested by a trap interrupting `wait` can be deferred indefinitely.
       if [[ -f "$_child_int_exit_file" ]]; then
         exit 77
+      fi
+
+      if $agent_attempted; then
+        # A TUI that has actually started remains alive. Whether a short-lived
+        # command returns zero or non-zero, three consecutive returns mean this
+        # supervisor is cycling instead of hosting an interactive session. The
+        # supervisor starts each replacement in a fresh shell, so retain the
+        # count in its per-session state directory rather than a shell variable.
+        agent_exit_count=$(cat "$agent_exit_count_file" 2>/dev/null || echo 0)
+        [[ "$agent_exit_count" =~ ^[0-9]+$ ]] || agent_exit_count=0
+        agent_exit_count=$((agent_exit_count + 1))
+        printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
+        if (( agent_exit_count >= 3 )); then
+          echo "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
+          break
+        fi
       fi
 
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
