@@ -255,6 +255,44 @@ def _parse_diff_hunks(diff: str) -> tuple[set[str], set[tuple[str, tuple[str, ..
     return paths, hunks
 
 
+def _template_subdirectory(template_dir: Path) -> str:
+    """Return the current Copier render subdirectory, if one is configured."""
+    for config_name in ("copier.yml", "copier.yaml"):
+        result = subprocess.run(
+            ["git", "-C", str(template_dir), "show", f"HEAD:{config_name}"],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+        if result.returncode != 0:
+            continue
+        if not isinstance(result.stdout, str):
+            return ""
+        try:
+            config = yaml.safe_load(result.stdout) or {}
+        except yaml.YAMLError:
+            return ""
+        if not isinstance(config, dict):
+            return ""
+        subdirectory = config.get("_subdirectory")
+        if isinstance(subdirectory, str):
+            return subdirectory.strip("/")
+    return ""
+
+
+def _rendered_template_path(path: str, subdirectory: str) -> str | None:
+    """Convert a source-template path to its static Copier destination path."""
+    if subdirectory:
+        prefix = f"{subdirectory}/"
+        if not path.startswith(prefix):
+            return None
+        path = path.removeprefix(prefix)
+    if any("{{" in segment or "{%" in segment for segment in path.split("/")):
+        return None
+    return path.removesuffix(".jinja")
+
+
 def _template_diff(
     source: str, previous_commit: str
 ) -> tuple[set[str], set[tuple[str, tuple[str, ...], tuple[str, ...]]]] | None:
@@ -281,9 +319,19 @@ def _template_diff(
             env=_git_env(),
             check=False,
         )
+        subdirectory = _template_subdirectory(template_dir)
     if result.returncode != 0:
         return None
-    return _parse_diff_hunks(result.stdout)
+    paths, hunks = _parse_diff_hunks(result.stdout)
+    rendered_paths = {
+        rendered_path for path in paths if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
+    }
+    rendered_hunks = {
+        (rendered_path, removed, added)
+        for path, removed, added in hunks
+        if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
+    }
+    return rendered_paths, rendered_hunks
 
 
 def _verify_update_parity(

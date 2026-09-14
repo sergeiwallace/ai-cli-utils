@@ -22,7 +22,9 @@ from ai_cli.copier_update import (
     _repo_root,
     _run_copier_update,
     _run_isolated,
+    _template_diff,
     _update_one_isolated,
+    _verify_update_parity,
     run_copier_update,
     write_copier_update_inspection,
 )
@@ -111,6 +113,50 @@ def test_conflict_files_returns_empty_when_none(tmp_path):
 
 def _make_answers(proj_dir: Path, src_path: str = "/projects/project-template") -> None:
     (proj_dir / ".copier-answers.yml").write_text(f"_src_path: {src_path}\n_commit: previous\n")
+
+
+def test_given_subdirectory_template_changes_when_verifying_parity_then_ignores_template_repository_files(tmp_path):
+    """Only rendered subdirectory changes are required in a Copier destination."""
+    template = tmp_path / "template"
+    template.mkdir()
+    subprocess.run(["git", "init"], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=template, check=True)
+    (template / "copier.yml").write_text("_subdirectory: template\n")
+    (template / "template").mkdir()
+    (template / "template" / ".gitignore.jinja").write_text(".cache/\n")
+    (template / "pyproject.toml").write_text("[project]\nname = 'template'\n")
+    subprocess.run(["git", "add", "."], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    previous_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "template" / ".gitignore.jinja").write_text(".cache/\n.build/\n")
+    (template / "pyproject.toml").write_text("[project]\nname = 'template-next'\n")
+    subprocess.run(["git", "add", "."], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "update"], cwd=template, check=True, capture_output=True)
+
+    template_changes = _template_diff(str(template), previous_commit)
+
+    assert template_changes is not None
+    template_paths, template_hunks = template_changes
+    assert template_paths == {".gitignore"}
+    assert {hunk[0] for hunk in template_hunks} == {".gitignore"}
+
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    subprocess.run(["git", "init"], cwd=consumer, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=consumer, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=consumer, check=True)
+    (consumer / ".gitignore").write_text(".cache/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=consumer, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=consumer, check=True, capture_output=True)
+    (consumer / ".gitignore").write_text(".cache/\n.build/\n")
+    porcelain = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=consumer, check=True, capture_output=True, text=True
+    ).stdout
+
+    assert _verify_update_parity(consumer, porcelain, *template_changes) is None
 
 
 def test_run_copier_update_projects_dir_not_found(tmp_path):
