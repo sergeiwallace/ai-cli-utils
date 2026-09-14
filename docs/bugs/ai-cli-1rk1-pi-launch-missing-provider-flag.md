@@ -139,6 +139,49 @@ Users with a working provider other than `openai-codex` can override it via
 
 <!-- /doc:region name="verification" -->
 
+## Follow-up investigation and final fix
+
+The provider fix exposed three further, independent conditions required for a
+stable remote Pi session.
+
+1. **Worktree direnv trust:** direnv approvals are path-specific. The
+   worktree initializer (`_allow_trusted_worktree_envrc`, shipped in PR #52,
+   2026-08-23) propagates approval to a new worktree only when its `.envrc` is
+   byte-identical to an *already-approved root* `.envrc` (`envrc_loads(repo_root)`
+   must return true). That PR was already deployed on Framework at the time of
+   this reproduction — the code-level propagation mechanism was never the gap.
+   The actual cause: Framework's own root `ai-cli-utils` checkout had never had
+   `direnv allow` run against it (confirmed live: `direnv exec . true` on the
+   root reported the same "is blocked" error as the worktree), so the
+   propagate-from-trusted-root mechanism had nothing to propagate from — every
+   fresh worktree stayed unapproved no matter how many times the launcher ran.
+   Remediated by running `direnv allow` once on Framework's root checkout,
+   after which the existing propagation mechanism worked as designed for a
+   freshly created worktree. This leaves a real, narrow gap: nothing in the
+   launch flow ever bootstraps the *root's own* initial trust, so any host
+   whose root `.envrc` is unapproved (first-time setup, or after the root
+   `.envrc`'s content changes and invalidates the prior approval) is stuck the
+   same way until a human manually re-approves the root — worth a follow-up
+   hardening item, not fixed here.
+2. **Terminal stdin:** a non-interactive Bash or zsh redirects a background
+   job's stdin to `/dev/null`. Pi interprets that EOF as a clean exit. `run_agent`
+   now reopens `/dev/tty` when available before backgrounding an agent, retaining
+   the existing PID and wait-based signal forwarding used by Claude, Gemini,
+   Pi, and Codex.
+3. **Slow restart loop:** the existing `elapsed < 3` fast-crash guard remains
+   unchanged. A new per-session counter records agent exits across freshly
+   spawned child shells; the third consecutive exit prints `AI CLI keeps
+   failing to start` and stops the session. It intentionally counts a clean
+   short-lived exit too, because an interactive TUI should remain running and
+   Pi's terminal-EOF failure exits with status zero.
+
+Regression coverage in `tests/test_session_launch_shell_resolution.py` runs the
+real generated wrapper in real tmux panes under Bash and zsh, proving a terminal
+agent remains interactive. It also drives three slow subprocess exits through
+fresh generated child bodies and proves the independent circuit breaker stops
+the loop. `tests/test_worktree_envrc_approval.py` continues to cover the
+byte-identical approved-root trust boundary.
+
 <!-- doc:region name="lessons" kind="replaceable" -->
 
 ## Lessons learned
