@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cc_migrate import cc_project_dir
+from .config import _has_valid_git_marker
 from .session_adopt import (
     AdoptionError,
     AdoptionResult,
@@ -169,7 +170,7 @@ def _is_repo_root(path: Path) -> bool:
     counts: that is the structure this tool is about, and it lets a repo whose
     ``.git`` has not been created yet still be attributed rather than dropped.
     """
-    return (path / ".git").exists() or (path / WORKTREES).is_dir()
+    return _has_valid_git_marker(path) or (path / WORKTREES).is_dir()
 
 
 def owning_repo(cwd: Path) -> tuple[Path | None, str]:
