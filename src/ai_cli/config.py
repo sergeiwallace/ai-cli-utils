@@ -488,6 +488,25 @@ def _strip_worktree_segments(resolved: Path) -> Path | None:
     return None
 
 
+def _has_valid_git_marker(path: Path) -> bool:
+    """Return whether ``path`` has the marker shape of a Git checkout.
+
+    A normal checkout has a ``.git`` directory containing ``HEAD``; a linked
+    worktree has a ``.git`` file beginning with ``gitdir:``. Merely finding an
+    entry named ``.git`` is insufficient because shared temp roots and sandbox
+    mounts may expose an empty placeholder with that name.
+    """
+    marker = path / ".git"
+    if marker.is_dir():
+        return (marker / "HEAD").is_file()
+    if not marker.is_file():
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").lstrip().lower().startswith("gitdir:")
+    except (OSError, UnicodeError):
+        return False
+
+
 def _project_root(path: Path) -> Path:
     """Return the main repository root for ``path`` without importing session.py."""
     resolved = path.expanduser().resolve()
@@ -495,7 +514,7 @@ def _project_root(path: Path) -> Path:
     if owning_root is not None:
         return owning_root
     for candidate in (resolved, *resolved.parents):
-        if (candidate / ".git").exists():
+        if _has_valid_git_marker(candidate):
             return candidate
     return resolved
 

@@ -346,6 +346,15 @@ def test_slot_given_a_session_with_no_owning_repo_when_asked_then_none(fleet, au
     assert "<none>" in record.describe()
 
 
+def test_owning_repo_given_non_repository_git_marker_in_ancestor_when_mapped_then_unknown(tmp_path):
+    shared_parent = tmp_path / "shared"
+    (shared_parent / ".git").mkdir(parents=True)
+    cwd = shared_parent / "loose" / "scratch"
+    cwd.mkdir(parents=True)
+
+    assert owning_repo(cwd) == (None, UNKNOWN)
+
+
 # ---- AC-2: discovery covers every location a session actually occurs ---------
 
 

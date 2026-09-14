@@ -407,6 +407,37 @@ class TestEnsureMachineProfileRegistered:
 
 
 class TestProjectPrefixRegistry:
+    def test_given_non_repository_git_marker_in_ancestor_when_resolving_then_marker_is_ignored(self, tmp_path):
+        shared_parent = tmp_path / "shared"
+        (shared_parent / ".git").mkdir(parents=True)
+        repo = shared_parent / "myproject"
+        repo.mkdir()
+        (repo / "pyproject.toml").write_text('[tool.ai-cli]\ntask_prefix = "PROJECT"\n')
+        config_dir = tmp_path / "config"
+
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
+            assert resolve_project_prefix(repo) == "PROJECT"
+
+        import tomllib
+
+        with (config_dir / "config.toml").open("rb") as config_file:
+            registry = tomllib.load(config_file)["project_registry"]
+        assert str(repo) in registry
+        assert str(shared_parent) not in registry
+
+    def test_given_valid_git_marker_in_ancestor_when_resolving_then_repo_is_found(self, tmp_path):
+        repo = tmp_path / "myproject"
+        git_dir = repo / ".git"
+        git_dir.mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        source_dir = repo / "src"
+        source_dir.mkdir()
+        config_dir = tmp_path / "config"
+
+        with patch("ai_cli.config.get_xdg_config_home", return_value=config_dir):
+            register_project(repo, "PROJECT")
+            assert resolve_project_prefix(source_dir) == "PROJECT"
+
     def test_given_registered_repo_when_resolving_then_returns_raw_registered_prefix(self, tmp_path):
         repo = tmp_path / "myproject"
         (repo / ".git").mkdir(parents=True)
