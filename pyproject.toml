@@ -114,7 +114,7 @@ testkit_enabled = false
 tmp_path_retention_policy = "failed"
 pythonpath = ["src", "."]
 testpaths = ["tests"]
-addopts = "-n auto"
+addopts = "-n auto -p pytest_memory_guard"
 markers = [
     "real_quota_scrape: test drives the real quota-scrape spawn functions (opts out of the conftest no-op; must mock subprocess.Popen itself)",
     "real_tmux: test owns an isolated tmux socket and explicitly opts in to tmux subprocess calls",
