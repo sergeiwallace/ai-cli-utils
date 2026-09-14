@@ -310,9 +310,24 @@ class TestGetEngineScript:
         )
 
         assert 'export PI_TMUX_SESSION="$tmux_session"' in script
-        assert 'run_agent pi --name "$ai_name"' in script
-        assert 'run_agent pi --continue --name "$ai_name"' in script
+        assert 'run_agent pi --provider openai-codex --name "$ai_name"' in script
+        assert 'run_agent pi --continue --provider openai-codex --name "$ai_name"' in script
         assert '[[ "$engine" == "p" ]] && export CLAUDE_CODE_TASK_LIST_ID' not in script
+
+    def test_given_pi_provider_configured_when_generating_script_then_uses_configured_provider(self):
+        # AI-CLI-1rk1: pi's own default provider (google) is silently unready on a
+        # typical setup, so every pi launch must carry an explicit --provider.
+        script = get_engine_script(
+            engine="p",
+            ai_name="myproject-1",
+            session="p-myproject-1",
+            prefix="p-myproject-",
+            project_prefix="myproject",
+            pi_provider="anthropic",
+        )
+
+        assert 'run_agent pi --provider anthropic --name "$ai_name"' in script
+        assert 'run_agent pi --continue --provider anthropic --name "$ai_name"' in script
 
     def test_given_codex_engine_when_generating_script_then_resumes_last_worktree_session(self):
         script = get_engine_script(
@@ -378,13 +393,23 @@ class TestGetEngineScript:
 def test_given_pi_bare_launch_when_not_resuming_then_starts_named_session():
     command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [])
 
-    assert command == ["pi", "--name", "myproject-1"]
+    assert command == ["pi", "--provider", "openai-codex", "--name", "myproject-1"]
 
 
 def test_given_pi_bare_launch_when_resuming_then_continues_named_session():
     command = _bare_engine_command("p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], resume=True)
 
-    assert command == ["pi", "--continue", "--name", "myproject-1"]
+    assert command == ["pi", "--continue", "--provider", "openai-codex", "--name", "myproject-1"]
+
+
+def test_given_pi_bare_launch_when_provider_configured_then_uses_configured_provider():
+    # AI-CLI-1rk1: pi's own default provider (google) is silently unready almost
+    # everywhere -- ai-cli-utils must never launch pi without an explicit --provider.
+    command = _bare_engine_command(
+        "p", "myproject-1", Path.cwd(), None, "gemini", "--no-sandbox", [], pi_provider="anthropic"
+    )
+
+    assert command == ["pi", "--provider", "anthropic", "--name", "myproject-1"]
 
 
 def test_given_codex_bare_launch_when_not_resuming_then_starts_interactive_codex():

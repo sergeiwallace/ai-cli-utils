@@ -79,6 +79,7 @@ def get_engine_script(
     iterm2_slot: str | None = None,
     iterm2_cfg: dict | None = None,
     gemini_cmd: str = "gemini",
+    pi_provider: str = "openai-codex",
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
@@ -134,6 +135,7 @@ def get_engine_script(
             "iterm2_slot": iterm2_slot or "",
             "iterm2_cfg": iterm2_cfg or {},
             "gemini_cmd": gemini_cmd,
+            "pi_provider": pi_provider,
         }
     )
 
@@ -789,8 +791,8 @@ with open(path, 'w') as f:
           fi
         elif [[ "$engine" == "p" ]]; then
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
-          if $first_run; then run_agent pi --name "$ai_name"
-          else run_agent pi --continue --name "$ai_name"
+          if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
+          else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
         else
           (sleep 4; tmux send-keys -t "$tmux_session" "$resume_msg" C-m) &
@@ -815,8 +817,8 @@ with open(path, 'w') as f:
       else run_agent {shlex.join(shlex.split(gemini_cmd))} -y {sandbox_flag} -i "/resume load $ai_name"
           fi
         elif [[ "$engine" == "p" ]]; then
-          if $first_run; then run_agent pi --name "$ai_name"
-          else run_agent pi --continue --name "$ai_name"
+          if $first_run; then run_agent pi --provider {shlex.quote(pi_provider)} --name "$ai_name"
+          else run_agent pi --continue --provider {shlex.quote(pi_provider)} --name "$ai_name"
           fi
         else
           if $first_run; then run_agent codex

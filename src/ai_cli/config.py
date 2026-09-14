@@ -227,6 +227,14 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 ## (e.g. "npx @google/gemini-cli" for npx-only installs).
 # command = "gemini"
 
+[pi]
+## Provider passed to `pi --provider ...` on every launch. pi's own built-in
+## default (google) is silently unready unless you have separately configured
+## Google credentials for it -- ai-cli-utils always passes an explicit provider
+## rather than relying on that default. Run `pi auth check --provider <name>`
+## to see which providers are actually ready on this machine.
+# provider = "openai-codex"
+
 [project_prefixes]
 ## Task-prefix overrides, keyed by project directory name. Consulted before the
 ## project registry and before the default 3-character truncation. Use these when
