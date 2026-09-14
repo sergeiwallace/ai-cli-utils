@@ -700,6 +700,7 @@ def _bare_engine_command(
     sandbox_flag: str,
     extra_args: list[str],
     resume: bool = False,
+    pi_provider: str = "openai-codex",
 ) -> list[str]:
     """Build the argv for a bare (no-tmux) engine launch.
 
@@ -736,10 +737,13 @@ def _bare_engine_command(
         # Pi scopes its saved sessions to the current worktree.  Continuing here
         # therefore resumes this session's prior conversation without needing a
         # provider-specific UUID registry.
+        # AI-CLI-1rk1: pi's own default provider (google) is silently unready on
+        # a fresh/typical setup, so an explicit --provider is required on every
+        # launch -- omitting it makes pi fail (near-)silently on every attempt.
         command = ["pi"]
         if resume:
             command.append("--continue")
-        return [*command, "--name", ai_name, *extra_args]
+        return [*command, "--provider", pi_provider, "--name", ai_name, *extra_args]
 
     if engine == "cx":
         # Codex does not offer a launch-time session-name option. Its resume
@@ -1154,6 +1158,7 @@ def _engine_script_from_meta(meta: dict) -> str:
         iterm2_slot=meta.get("iterm2_slot") or None,
         iterm2_cfg=meta.get("iterm2_cfg") or None,
         gemini_cmd=meta.get("gemini_cmd", "gemini"),
+        pi_provider=meta.get("pi_provider", "openai-codex"),
     )
 
 
@@ -2611,6 +2616,7 @@ def _do_session_launch(
     use_sandbox = sandbox
     sandbox_flag = "-s" if use_sandbox else "--no-sandbox"
     gemini_cmd = config.get("gemini", {}).get("command", "gemini")
+    pi_provider = config.get("pi", {}).get("provider", "openai-codex")
 
     if engine == "p" and not shutil.which("pi"):
         print("Error: pi executable not found on PATH. Install pi, then retry.", file=sys.stderr)
@@ -3087,7 +3093,15 @@ def _do_session_launch(
             os.environ["CLAUDE_CODE_TASK_LIST_ID"] = ai_name
         try:
             command = _bare_engine_command(
-                engine, ai_name, target_root, uuid, gemini_cmd, sandbox_flag, extra_args, resume=resume
+                engine,
+                ai_name,
+                target_root,
+                uuid,
+                gemini_cmd,
+                sandbox_flag,
+                extra_args,
+                resume=resume,
+                pi_provider=pi_provider,
             )
         except _LiveClaudeSessionError as exc:
             # tmux can reattach only when it already owns the live process. A
@@ -3190,7 +3204,7 @@ def _do_session_launch(
                     ],
                 )
         elif engine == "p":
-            command = ["pi", "--name", ai_name]
+            command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
         if reporter is not None:
@@ -3230,6 +3244,7 @@ def _do_session_launch(
         iterm2_slot=_iterm2_slot,
         iterm2_cfg=_iterm2_cfg,
         gemini_cmd=gemini_cmd,
+        pi_provider=pi_provider,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
