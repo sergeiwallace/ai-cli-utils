@@ -465,9 +465,15 @@ def get_engine_script(
       # Non-interactive shells redirect a background job's stdin from /dev/null.
       # Bash honors <&0, but zsh performs that redirect after the fd duplication;
       # reopening the controlling terminal works for both while preserving the
-      # background PID used for signal forwarding.
+      # background PID used for signal forwarding. Prefer the resolved device:
+      # macOS kqueue cannot poll an fd opened through the /dev/tty alias.
       if [[ -t 0 && -r /dev/tty ]]; then
-        "$@" </dev/tty &
+        _agent_tty=$(tty 2>/dev/null)
+        if [[ -n "$_agent_tty" && -c "$_agent_tty" && -r "$_agent_tty" ]]; then
+          "$@" <"$_agent_tty" &
+        else
+          "$@" </dev/tty &
+        fi
       else
         "$@" <&0 &
       fi
