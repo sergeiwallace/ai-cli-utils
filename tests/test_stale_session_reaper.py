@@ -256,10 +256,16 @@ def _start_real_tmux_supervisor(
         worktree_dir=str(tmp_path),
     ).replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
     if ownership_bootstrap_barrier is not None:
-        ready, release = ownership_bootstrap_barrier
+        # Deliberately NOT rebinding `ready`: that name is exported as
+        # AI_CLI_TEST_CHILD_READY below, so reusing it here would silently make the
+        # barrier signal and the child-ready signal the same file, and a caller whose
+        # child body watches the environment variable would see the barrier's touch as
+        # its own readiness. Harmless for the callers that exist today, which is exactly
+        # why it would go unnoticed.
+        barrier_ready, release = ownership_bootstrap_barrier
         bootstrap = 'if [[ -n "$generation_token" ]]; then\n'
         paused_bootstrap = (
-            f"touch {shlex.quote(str(ready))}\n"
+            f"touch {shlex.quote(str(barrier_ready))}\n"
             f"while [[ ! -f {shlex.quote(str(release))} ]]; do sleep 0.05; done\n" + bootstrap
         )
         assert bootstrap in script
@@ -487,6 +493,46 @@ fi
     finish_child.touch()
     _wait_for_missing_session(real_tmux_socket, original_id)
     assert _tmux_run(real_tmux_socket, "has-session", "-t", replacement_id).returncode == 0
+
+
+@pytest.mark.real_tmux
+def test_given_child_exits_before_the_supervisor_waits_then_the_session_still_terminates(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
+):
+    """A child that is already reaped when the wait begins must still report its real exit code.
+
+    This is the tty-backed twin of the clean-child-exit test below, and the difference is the whole
+    point. That one launches the supervisor with `</dev/null`, so `[[ -t 0 ]]` is false: the child
+    never stops itself and `_supervisor_promote_child` returns immediately, leaving no gap between
+    the fork and the wait. A real pane has a tty, so promotion spends tens of milliseconds spawning
+    a python subprocess to tcsetpgrp and SIGCONT -- and a child that exits at once is terminated
+    AND reaped by bash before the wait is ever entered.
+
+    At that point `kill -0` fails, so a wait guarded by it never runs and the clean 77 is replaced
+    by the initialised 0. Since 0 is neither 77 nor 79, the supervisor reads it as "restart the
+    child" and respawns forever: the session is never torn down, which is precisely the stale
+    session the reaper exists to prevent.
+
+    The launch count is asserted as well as the teardown, so the test pins the mechanism rather
+    than only the symptom -- with the defect present it runs into the hundreds.
+    """
+    launch_log = tmp_path / "child-launches"
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf 'launched\\n' >> {shlex.quote(str(launch_log))}
+  exit 77
+fi
+"""
+    session_id, _, _ = _start_real_tmux_supervisor(
+        real_tmux_socket,
+        tmp_path,
+        real_supervisor_shell,
+        is_remote=False,
+        child_body=child_body,
+    )
+    _wait_for_missing_session(real_tmux_socket, session_id)
+    launches = launch_log.read_text().count("launched") if launch_log.exists() else 0
+    assert launches == 1, f"a clean 77 must not respawn the child; it launched {launches} times"
 
 
 @pytest.mark.real_tmux

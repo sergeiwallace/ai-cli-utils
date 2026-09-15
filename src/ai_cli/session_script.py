@@ -252,10 +252,22 @@ def get_engine_script(
         # `wait` is interrupted by a trapped signal in Bash and zsh. Keep
         # waiting while the child is live so record-only supervisor signals do
         # not start a second child or leave the first child behind.
+        #
+        # The wait runs BEFORE the liveness check rather than behind it. `kill -0`
+        # answers whether the OS still has the pid; whether a status can still be
+        # collected is a different question, because the shell retains an exited
+        # child's status until it is waited for exactly once. Gating the wait on
+        # `kill -0` therefore discarded the status of any child that exited and was
+        # reaped before this function was entered -- which a tty-backed child does
+        # routinely, since promotion spends tens of milliseconds in a subprocess
+        # before the wait begins. The lost status fell back to 0, and 0 means
+        # "restart the child", so a clean 77 exit became an endless respawn loop
+        # and the tmux session was never torn down.
         _child_wait_status=0
-        while kill -0 "$_child_pid" 2>/dev/null; do
+        while :; do
           wait "$_child_pid"
           _child_wait_status=$?
+          kill -0 "$_child_pid" 2>/dev/null || break
         done
         return "$_child_wait_status"
       }}
