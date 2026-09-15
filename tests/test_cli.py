@@ -1287,6 +1287,45 @@ class TestCliSessionExecvp:
         assert ["tmux", "set-option", "-t", "$42", "mouse", "on"] in run_calls
         assert ["tmux", "set-option", "-s", "set-clipboard", "on"] in run_calls
 
+    def test_given_new_pi_session_when_created_then_leaves_native_selection_available(self, tmp_path):
+        run_calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if "has-session" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$43\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.argv", ["ai", "p", "1"]):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="myapp"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.session.cleanup_stale_sessions"):
+                            with patch("ai_cli.session.build_session_name", return_value=("p-myapp-1", "myapp-1")):
+                                with patch(
+                                    "ai_cli.session.create_worktree",
+                                    return_value=_successful_worktree(tmp_path, "myapp-1"),
+                                ):
+                                    with patch("ai_cli.config.get_session_map", return_value={}):
+                                        with patch("ai_cli.session_script.get_engine_script", return_value="script"):
+                                            with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                                with patch("subprocess.run", side_effect=fake_run):
+                                                    with patch(
+                                                        "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
+                                                        return_value=TmuxSessionIdentity(
+                                                            "$43", "p-myapp-1", "test-generation"
+                                                        ),
+                                                    ):
+                                                        with patch("os.execvp", side_effect=SystemExit(0)):
+                                                            with pytest.raises(SystemExit):
+                                                                cli()
+
+        assert ["tmux", "set-window-option", "-t", "$43", "remain-on-exit", "on"] in run_calls
+        assert ["tmux", "set-option", "-t", "$43", "mouse", "off"] in run_calls
+        assert ["tmux", "set-option", "-s", "set-clipboard", "on"] in run_calls
+
 
 @pytest.mark.usefixtures("tmux_available")
 class TestCliIsRemotePath:
