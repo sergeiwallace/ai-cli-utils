@@ -965,7 +965,7 @@ schema in `invariant_register.py:REQUIRED`) is real design work, and the fleet's
 decision-tier floor reserves design decisions for Opus/Fable/Codex-flagship, not the Sonnet
 session that ran this loop.
 
-**Next step, owned by Sergei, not autonomous:** either (a) ratify a respecify — author or
+**Next step, owned by the maintainer, not autonomous:** either (a) ratify a respecify — author or
 review the invariants register and record a human decision event over it — then dispatch a
 real Round 3 confirmation of the `N-1` fix through the driver, or (b) accept this session's
 independent manual verification (diff read + RED/GREEN stash test + independent suite re-run)
@@ -1879,13 +1879,13 @@ removed the `auto_clean_orphans()` call from the `ai ps cron` session-start hook
 src/ai_cli/process_hygiene.py, so that path no longer has authority to SIGTERM any process. Kill
 authority remains reachable only through the explicit, user-confirmed `ai ps clean` path. This is
 the 6th distinct occurrence of a recurring bug class where one CC session's lifecycle
-(launch/restart/exit) destructively kills a sibling session's mosh-server/tmux process; Sergei's
+(launch/restart/exit) destructively kills a sibling session's mosh-server/tmux process; the maintainer's
 explicit framing is that this class must be structurally eliminated, not narrowly patched again.
 Audit specifically:
 
   1. Internal Consistency (IC-N): does the bug doc's causal analysis, hypothesis ledger, and fix
      description contradict itself or the actual diff?
-  2. Spec / AC Compliance (JA-N): does the fix actually satisfy Sergei's explicit ask -- eliminate
+  2. Spec / AC Compliance (JA-N): does the fix actually satisfy the maintainer's explicit ask -- eliminate
      the WHOLE CLASS of cross-session kill bugs, not just today's specific `-R`-reconnect trigger?
      Specifically verify: does the fix structurally eliminate process-kill authority from EVERY
      implicit session-lifecycle path (session start, restart, exit), not just the `ai ps cron`
@@ -1906,7 +1906,7 @@ Audit specifically:
      F-N finding, since it means the recurring bug class is NOT actually eliminated, only this one
      occurrence's specific mechanism was patched. Also assess whether the bug doc's "Scope-of-fix
      decision" section's reasoning for a CONTAINED fix (vs. a broader redesign / consolidated
-     reaper) holds up against Sergei's explicit ask (quoted in the bug doc) for a fix that makes
+     reaper) holds up against the maintainer's explicit ask (quoted in the bug doc) for a fix that makes
      the WHOLE CLASS "no longer possible."
 
 ## Severity rubric (binding — your findings are validated against this)
@@ -3253,6 +3253,6 @@ assertion, and is recorded here for human review.
 - [x] Multiple independent verification passes confirm the fixes (Rounds 2-7, plus this session's own
       direct RED/GREEN and full-suite verification, which is the closing evidence for runtime)
 - [x] Closure Determination recorded above, attributed, with full evidence
-- [ ] User (Sergei) reviewed and approved sign-off -- **pending, this is a session-level
+- [ ] The maintainer reviewed and approved sign-off -- **pending, this is a session-level
       determination, not a human ratification**
 ```
