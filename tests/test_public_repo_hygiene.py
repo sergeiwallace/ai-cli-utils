@@ -27,6 +27,7 @@ _EXPECTED_TOP_LEVEL_DIRS = frozenset(
         ".github",
         ".vscode",
         "assets",
+        "config",
         "demo",
         "docs",
         "scripts",
