@@ -129,15 +129,6 @@ class TestCliDispatch:
                         assert exc.value.code == 0
                         mock_save.assert_called_once()
 
-    def test_cli_when_internal_cleanup_worktree_then_calls_function(self):
-        with patch("sys.argv", ["ai", "internal", "cleanup-worktree", "sw-1"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.cleanup_worktree") as mock_cleanup:
-                    with pytest.raises(SystemExit) as exc:
-                        cli()
-                    assert exc.value.code == 0
-                    mock_cleanup.assert_called_once_with("sw-1")
-
     def test_cli_when_internal_notify_then_calls_notification_manager(self):
         with patch("sys.argv", ["ai", "internal", "notify", "session1", "hello"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -221,13 +212,6 @@ class TestCliDispatch:
 
     def test_cli_when_internal_update_session_map_missing_args_then_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "update-session-map"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with pytest.raises(SystemExit) as exc:
-                    cli()
-                assert exc.value.code == 1
-
-    def test_cli_when_internal_cleanup_worktree_missing_args_then_exits_1(self):
-        with patch("sys.argv", ["ai", "internal", "cleanup-worktree"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with pytest.raises(SystemExit) as exc:
                     cli()

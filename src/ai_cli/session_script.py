@@ -245,7 +245,6 @@ def get_engine_script(
           "$_ai_state_dir/config-hash-$tmux_session" "$_ai_state_dir/config-changed-$tmux_session" \\
           "$_ai_state_dir/session-int-escape-$tmux_session" "$_ai_state_dir/session-int-exit-$tmux_session" \\
           "$_ai_state_dir/session-agent-exits-$tmux_session"
-        ai internal cleanup-worktree "$ai_name" 2>/dev/null
         ai internal release-color-slot "$ai_name" 2>/dev/null
         ai internal cleanup-session-files "$ai_name" 2>/dev/null
       }}

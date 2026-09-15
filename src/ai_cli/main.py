@@ -105,7 +105,6 @@ from .session import (  # noqa: F401
     _sweep_stale_iterm2_profiles,
     build_session_name,
     cleanup_stale_sessions,
-    cleanup_worktree,
     create_worktree,
     detect_repo_root,
     find_next_index,
@@ -1426,12 +1425,6 @@ def _handle_internal(argv: list[str]) -> None:
         d = _config.get_session_map(engine)
         d[ai_name] = uuid
         _config.save_session_map(d, engine)
-        sys.exit(0)
-    elif action == "cleanup-worktree":
-        if len(argv) < 2:
-            print("Usage: ai internal cleanup-worktree <ai_name>", file=sys.stderr)
-            sys.exit(1)
-        _session.cleanup_worktree(argv[1])
         sys.exit(0)
     elif action == "release-color-slot":
         if len(argv) < 2:
