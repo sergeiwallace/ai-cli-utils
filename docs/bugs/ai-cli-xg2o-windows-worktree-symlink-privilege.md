@@ -43,8 +43,8 @@ template_version: "bug-1.0.0"
 
 ```
 [launch] Worktree: failed after 1.6s: [WinError 1314] A required privilege is not held by the client:
-'C:\\Users\\sergei.wallace\\Projects\\ai-harness\\.venv' ->
-'C:\\Users\\sergei.wallace\\projects\\ai-harness\\.worktrees\\aih-1\\.venv'
+'C:\\Users\\developer\\Projects\\ai-harness\\.venv' ->
+'C:\\Users\\developer\\projects\\ai-harness\\.worktrees\\aih-1\\.venv'
 ```
 
 Followed by a full Python traceback pointing to `src/ai_cli/session.py:1064` in the `dst.symlink_to(src)` call within `_initialize_worktree()`.
@@ -219,7 +219,7 @@ uv run pytest
 ### Original Error Traceback
 
 ```
-sergei.wallace@c11-7dg49p33r2n MINGW64 ~/Projects/ai-harness (main)
+developer@windows-host MINGW64 ~/Projects/ai-harness (main)
 $ ai c 1
 [launch] Starting Claude Code session: local, tmux
 [launch] Install: checking installed version
@@ -227,15 +227,15 @@ $ ai c 1
 [launch] Session: resolved aih-1
 [launch] Worktree: creating isolated worktree
 [launch] Worktree: failed after 1.6s: [WinError 1314] A required privilege is not held by the client:
-'C:\\Users\\sergei.wallace\\Projects\\ai-harness\\.venv' ->
-'C:\\Users\\sergei.wallace\\projects\\ai-harness\\.worktrees\\aih-1\\.venv'
+'C:\\Users\\developer\\Projects\\ai-harness\\.venv' ->
+'C:\\Users\\developer\\projects\\ai-harness\\.worktrees\\aih-1\\.venv'
 Traceback (most recent call last):
   File "<frozen runpy>", line 203, in _run_module_as_main
   File "<frozen runpy>", line 88, in _run_code
-  File "C:\Users\sergei.wallace\.local\bin\ai.exe\__main__.py", line 10, in <module>
+  File "C:\Users\developer\.local\bin\ai.exe\__main__.py", line 10, in <module>
     sys.exit(cli())
   ...
-  File "C:\Users\sergei.wallace\projects\ai-cli-utils\src\ai_cli\session.py", line 1064, in _initialize_worktree
+  File "C:\Users\developer\projects\ai-cli-utils\src\ai_cli\session.py", line 1064, in _initialize_worktree
     dst.symlink_to(src)
 OSError: [WinError 1314] A required privilege is not held by the client
 ```

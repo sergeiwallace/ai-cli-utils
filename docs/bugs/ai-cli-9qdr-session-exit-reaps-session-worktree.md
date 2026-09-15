@@ -30,7 +30,7 @@ Exiting a Claude Code session launched by `ai c` deleted that session's git work
 report was that it "disappeared from the VS Code Source Control extension", which turned out
 to understate it: the worktree was genuinely gone, not merely hidden.
 
-Measured on session `kg-1` in `bms-semantic-knowledge-graph`, immediately after a deliberate
+Measured on session `kg-1` in a private downstream repository, immediately after a deliberate
 clean exit:
 
 | Observation | Result |
@@ -43,7 +43,7 @@ clean exit:
 | branch `wt-kg-1` | alive at `4192690` |
 | `.worktrees/.kg-1.lock` | still present, dated Aug 12 |
 
-Nothing was lost. `wt-kg-1` was identical to `origin/sergei/dev-workspace`, 0 ahead / 0
+Nothing was lost. `wt-kg-1` was identical to its remote workspace branch, 0 ahead / 0
 behind, and contained in that remote ref, so every commit was safe. The session's 573 Claude
 Code transcripts were untouched, because those live under `~/.claude/projects` rather than in
 the worktree.

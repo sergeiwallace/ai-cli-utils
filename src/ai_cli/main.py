@@ -147,8 +147,8 @@ from .tunnel import (  # noqa: F401
 def _dolt_server_script() -> Path | None:
     """Locate ai-harness's dolt_server.py without hardcoding a cross-repo path.
 
-    Most sessions launch into a repo that is NOT ai-harness (job-pilot, ai-core,
-    ...), so a bare cwd-relative lookup only ever fires inside ai-harness itself.
+    Most sessions launch into a repo that is NOT ai-harness, so a bare
+    cwd-relative lookup only ever fires inside ai-harness itself.
     Deliberately config.toml-driven, not env-var-driven: ``load_config()`` is
     re-read from disk on every call, so editing ``[dolt_server] script_path`` (or
     ``[project] projects_dir``, which ``_find_project_dir`` already reads) takes
