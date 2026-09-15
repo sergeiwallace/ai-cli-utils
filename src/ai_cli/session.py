@@ -1346,37 +1346,26 @@ def _allow_trusted_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:
         )
 
 
-def cleanup_worktree(ai_name: str):
-    repo_root = detect_repo_root()
-    if not repo_root:
-        return
-    wt_dir = repo_root / WORKTREE_DIR / ai_name
-    if not wt_dir.exists():
-        return
-
-    # Only remove if clean. `git status --porcelain` (unlike `git diff`) also
-    # flags untracked files, so a worktree holding an uncommitted scratch file
-    # (a session MEMORY.md, a stray brief, etc.) is correctly treated as dirty
-    # instead of silently skipped past by git's own untracked-files refusal.
-    status = subprocess.run(
-        ["git", "-C", str(wt_dir), "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-        check=False,
-    )
-    if status.returncode == 0 and not status.stdout.strip():
-        removed = subprocess.run(
-            ["git", "worktree", "remove", str(wt_dir)], capture_output=True, text=True, env=_git_env(), check=False
-        )
-        if removed.returncode != 0:
-            # Previously swallowed entirely — a refused removal (e.g. a race
-            # against another process) left no trace, making a stuck worktree
-            # indistinguishable from a successfully cleaned-up one.
-            print(
-                f"ai-cli: cleanup_worktree: git worktree remove {wt_dir} failed: {removed.stderr.strip()}",
-                file=sys.stderr,
-            )
-        # Backstop repair after teardown — worktree remove is the other
-        # documented trigger for the core.bare/core.worktree corruption class.
-        repair_bare_worktree_config(repo_root)
+# A session worktree is NOT torn down when its session exits.
+#
+# There used to be a `cleanup_worktree(ai_name)` here, called from the supervisor
+# teardown trap, which ran `git worktree remove` on `<repo>/.worktrees/<ai_name>`
+# whenever `git status --porcelain` came back empty. That deleted the session's
+# home the moment it exited cleanly: the checkout and its `.git/worktrees/<name>`
+# admin entry both went, the worktree deregistered, and it vanished from the
+# editor's source-control view. Only the branch survived, because `git worktree
+# remove` never touches one.
+#
+# It contradicted the ratified fleet rule (AIH-771, ai-harness
+# `docs/procedures/worktree-workflow.md`): a canonical `ai c`/`ai g` session
+# worktree is a long-lived session home and is "never a cleanup candidate
+# whatever their merge status or cleanliness". Cleanliness was exactly the
+# condition the teardown used to justify removing one, and ai-harness's own
+# `worktree_audit.py` carries a hard canonical veto so its audit path cannot.
+#
+# `git status --porcelain` was also the only safety test, so a worktree whose
+# branch held commits that existed on no remote was reaped too.
+#
+# Removing a worktree is a deliberate act, via the audit's anchor-before-delete
+# path. Do not reintroduce a teardown reap here.
+# Regression coverage: tests/test_session_worktree_survives_exit.py
