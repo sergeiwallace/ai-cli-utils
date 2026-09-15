@@ -299,6 +299,20 @@ def _invoke_run_agent(tmp_path: Path, bin_dir: Path, agent_marker: Path) -> subp
     )
 
 
+def test_given_terminal_stdin_when_agent_is_backgrounded_then_resolved_device_path_is_preferred():
+    """The generated launcher must not hand agents a literal /dev/tty stdin fd."""
+    body = _run_agent_body()
+
+    resolve_tty = "_agent_tty=$(tty 2>/dev/null)"
+    resolved_redirect = '"$@" <"$_agent_tty" &'
+    literal_fallback = '"$@" </dev/tty &'
+
+    assert resolve_tty in body, "run_agent did not resolve the controlling terminal's device path"
+    assert resolved_redirect in body, "run_agent did not redirect stdin from the resolved terminal device"
+    assert literal_fallback in body, "run_agent must retain the existing fallback when tty resolution fails"
+    assert body.index(resolve_tty) < body.index(resolved_redirect) < body.index(literal_fallback)
+
+
 def test_given_no_direnv_when_run_agent_invoked_then_the_agent_command_still_runs(tmp_path):
     """direnv must be an enhancement, never a precondition for starting the agent.
 
