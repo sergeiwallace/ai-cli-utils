@@ -77,3 +77,14 @@ export:
     git-add: false
 sync:
     remote: "git+ssh://gh-sergeiwallace-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
+
+# Shared Dolt server mode (AIH-1yh2c, 2026-09-16). FLEET POLICY, deliberately tracked:
+# every machine runs its Beads store on the shared Dolt server, so this key carries the
+# same value everywhere. Nothing machine-specific belongs in this file or metadata.json --
+# the endpoint and data location are machine-local and already gitignored
+# (.beads/dolt-server.port, .pid, .log, .lock; data under ~/.beads/shared-server/).
+# A machine that pulls this key without having been provisioned fails with
+# the bd "Dolt server unreachable" error (AIH-f6qqn). That is a provisioning gap,
+# not a reason to untrack the policy: place the database directory under the server's
+# data dir and restart it once.
+dolt.shared-server: true
