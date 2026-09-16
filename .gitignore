@@ -161,3 +161,9 @@ docs/specs/SPEC-TEMPLATE.md
 docs/specs/STUB.md.jinja
 docs/social/TEMPLATE.md
 # <<< ai-harness canonical symlinks (AIH-119) <<<
+
+# Repo-root gate/lock markers (e.g. .beads.gate.lock): machine-local coordination
+# state, never repo content. Ignored in ai-harness since AIH-swgb4 but nowhere else,
+# so a /sync-git dry-run on 2026-09-16 reported it would commit the zero-byte lock
+# into this repo and four siblings (AIH-beads-gate-lock-gitignored-only-m1pq0).
+/.*.lock
