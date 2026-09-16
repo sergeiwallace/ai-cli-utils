@@ -11,6 +11,7 @@ venv/
 
 # OS
 .DS_Store
+canonical-session-worktrees.json
 
 # IDE
 .vs/
