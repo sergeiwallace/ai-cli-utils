@@ -8,6 +8,7 @@ test explicitly exercises production worktree creation or registry
 resolution.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -709,12 +710,14 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
     assert "c-myproject-1" in session_names
 
 
-def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifacts_are_lowercase(
-    tmux_server, fleet_registered_repo, monkeypatch, tmp_path
+def test_given_uppercase_fleet_prefix_when_bare_session_launches_then_real_artifacts_are_lowercase(
+    fleet_registered_repo, monkeypatch, tmp_path
 ):
     """Exercise production registry resolution and worktree creation for an empty slot."""
     repo = fleet_registered_repo
     monkeypatch.chdir(repo)
+    canonical_registry = tmp_path / "persistent-state" / "canonical-session-worktrees.json"
+    monkeypatch.setenv("AI_CLI_CANONICAL_WORKTREE_REGISTRY", str(canonical_registry))
     real_run = subprocess.run
 
     class _Result:
@@ -724,25 +727,6 @@ def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifa
 
     def fake_run(cmd, *args, **kwargs):
         if cmd[0] == "tmux":
-            subcommand = cmd[1]
-            if subcommand == "-V":
-                # See the note on the other fake: the launcher decides tmux-vs-bare
-                # on this answer, so an empty one silently turns the whole test
-                # into a bare launch with no session to assert on.
-                return type("TmuxResult", (), {"returncode": 0, "stdout": "tmux 3.7c\n", "stderr": ""})()
-            if subcommand == "list-sessions":
-                names = [session.name for session in tmux_server.sessions]
-                formatter = cmd[cmd.index("-F") + 1]
-                output = "\n".join(f"{name} 0" if "session_activity" in formatter else name for name in names)
-                return type("TmuxResult", (), {"returncode": 0, "stdout": output, "stderr": ""})()
-            if subcommand == "has-session":
-                target = cmd[cmd.index("-t") + 1]
-                exists = any(session.name == target for session in tmux_server.sessions)
-                return type("TmuxResult", (), {"returncode": 0 if exists else 1, "stdout": "", "stderr": ""})()
-            if subcommand == "new-session":
-                name = cmd[cmd.index("-s") + 1]
-                created = tmux_server.new_session(session_name=name, detach=True, window_command="sleep 30")
-                return type("TmuxCreated", (), {"returncode": 0, "stdout": f"{created.id}\n", "stderr": ""})()
             return _Result()
         return real_run(cmd, *args, **kwargs)
 
@@ -770,14 +754,21 @@ def test_given_uppercase_fleet_prefix_when_new_session_launches_then_real_artifa
         kwargs.update(
             project_prefix_override="",
             no_worktree=False,
+            bare=True,
             config={"worktree": {"enabled": True}},
         )
         with pytest.raises(SystemExit):
             _do_session_launch(**kwargs)
 
     assert (repo / ".worktrees" / "app-1").is_dir()
-    assert [session.name for session in tmux_server.sessions] == ["c-app-1"]
-    assert emit_profile.call_args.args[:3] == ("app-1", "c", "c-app-1")
+    registered = json.loads(canonical_registry.read_text(encoding="utf-8"))["worktrees"]
+    assert len(registered) == 1
+    assert registered[0]["engine"] == "c"
+    assert registered[0]["path"] == str((repo / ".worktrees" / "app-1").resolve())
+    assert registered[0]["session_name"] == "c-app-1"
+    assert registered[0]["first_registered_at"]
+    assert registered[0]["last_validated_at"]
+    emit_profile.assert_not_called()
 
 
 def test_given_shell_metacharacter_prefix_when_remote_session_launches_then_rejected_before_any_side_effect():

@@ -2934,6 +2934,16 @@ def _do_session_launch(
             reporter.phase("Worktree").outcome(f"{outcome} {worktree_path}")
         else:
             _announce_worktree_isolation(worktree_path, worktree_created)
+        from .canonical_worktrees import CanonicalWorktreeRegistryError, register_canonical_worktree
+
+        try:
+            registry_action, registry_path = register_canonical_worktree(
+                worktree_path, engine=engine, session_name=session_id
+            )
+        except CanonicalWorktreeRegistryError as exc:
+            print(f"Error: {exc}; refusing to launch an unprotected canonical session worktree.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Canonical worktree registry {registry_action}: {registry_path}", file=sys.stderr)
         if worktree_path:
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
