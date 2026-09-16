@@ -3369,10 +3369,32 @@ def _do_session_launch(
                 print(f"  (without --): {stderr2}", file=sys.stderr)
                 sys.exit(1)
             result = result2
-        created_session_id = result.stdout.strip() if isinstance(result.stdout, str) else ""
-        if not re.fullmatch(r"\$\d+", created_session_id):
+        _id_status, created_session_id = _tmux_ownership.classify_new_session_output(
+            result.stdout if isinstance(result.stdout, str) else ""
+        )
+        if _id_status != "ok":
             Path(_script_path).unlink(missing_ok=True)
             print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
+            if _id_status == "format-not-expanded":
+                print(
+                    f"  tmux returned the literal {created_session_id!r} rather than a session id"
+                    " like '$0', so it is not expanding format strings.",
+                    file=sys.stderr,
+                )
+                print(
+                    "  Retrying will not help. Relaunch with -b/--bare to skip tmux, or restart"
+                    " the tmux server so its version matches the client.",
+                    file=sys.stderr,
+                )
+            # new-session reported success, so a session under this name probably exists.
+            # It is deliberately NOT killed here: without an opaque id or generation marker
+            # it cannot be fenced, and an unfenced `kill-session -t <name>` would destroy a
+            # replacement another process created in the interim -- the exact race the
+            # *_replacement_survives_* launch tests pin. Report it and let the operator act.
+            print(
+                f"  A session named '{session_id}' may remain; remove it with: tmux kill-session -t {session_id}",
+                file=sys.stderr,
+            )
             sys.exit(1)
         generation = secrets.token_urlsafe(32)
         marked = subprocess.run(

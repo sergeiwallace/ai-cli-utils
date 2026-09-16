@@ -14,6 +14,32 @@ _SESSION_ID_RE = re.compile(r"^\$\d+$")
 _GENERATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
+def classify_new_session_output(stdout: str | None) -> tuple[str, str]:
+    """Classify the stdout of ``tmux new-session -P -F '#{session_id}'``.
+
+    Returns ``(status, raw)`` where status is:
+
+    - ``"ok"`` -- ``raw`` is a validated opaque session id such as ``$3``.
+    - ``"format-not-expanded"`` -- tmux echoed the format back instead of expanding
+      it, so the session almost certainly EXISTS but its opaque id is unobtainable
+      by this route.
+    - ``"unusable"`` -- any other answer, including empty.
+
+    The middle case needs separating because the id regex alone cannot tell it from
+    a generic failure, yet the remedy is different: a tmux that does not expand
+    formats will not start expanding them on retry, so the operator needs to launch
+    without tmux rather than try again. Observed as ``#{session_id}`` arriving as the
+    literal ``#session_id``; a server reporting its version as the literal
+    ``#version`` is the same fault seen through a different format.
+    """
+    raw = (stdout or "").strip()
+    if _SESSION_ID_RE.match(raw):
+        return "ok", raw
+    if "#" in raw:
+        return "format-not-expanded", raw
+    return "unusable", raw
+
+
 @dataclass(frozen=True)
 class TmuxSessionIdentity:
     """Immutable identity captured from one managed tmux session generation."""
