@@ -29,14 +29,55 @@ class CanonicalWorktreeRegistryError(RuntimeError):
     """The canonical-worktree registry could not be safely read or written."""
 
 
+_NETWORK_FILESYSTEMS = frozenset({"nfs", "nfs4", "cifs", "smb3", "fuse.efs", "lustre"})
+
+
+def _is_network_backed(path: Path) -> bool:
+    """Return whether *path* is served by a network filesystem.
+
+    Resolved from ``/proc/self/mounts`` by longest matching mountpoint, so a
+    subdirectory of a network mount counts as well as the mountpoint itself.
+    Where that file is unavailable -- macOS, or a restricted container -- fall
+    back to ``os.path.ismount``, which still rejects an ordinary local
+    directory and is the property this predicate actually needs.
+    """
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return False
+    try:
+        entries = [line.split() for line in Path("/proc/self/mounts").read_text(encoding="utf-8").splitlines()]
+    except OSError:
+        return os.path.ismount(resolved)
+
+    ancestors = {str(parent) for parent in (resolved, *resolved.parents)}
+    best_mountpoint = ""
+    best_fstype = ""
+    for fields in entries:
+        if len(fields) < 3:
+            continue
+        mountpoint, fstype = fields[1], fields[2]
+        if mountpoint in ancestors and len(mountpoint) >= len(best_mountpoint):
+            best_mountpoint, best_fstype = mountpoint, fstype
+    return best_fstype in _NETWORK_FILESYSTEMS
+
+
 def get_canonical_worktree_registry_path() -> Path:
     """Return the persistent per-machine registry path.
 
     SageMaker Code Editor stores ``$HOME`` on ephemeral instance storage while
-    ``$HOME/user-default-efs`` persists across restarts.  When that EFS root is
-    present, keep the state below it; other machines use the normal XDG data
-    directory.  The environment override exists for administrators and tests
-    that keep state on a separately managed persistent volume.
+    ``$HOME/user-default-efs`` is an EFS mount that persists across restarts.
+    Keep the state below that mount when it is genuinely present; other machines
+    use the normal XDG data directory.  The environment override exists for
+    administrators and tests that keep state on a separately managed persistent
+    volume.
+
+    The mount check is the whole point, not a formality (AI-CLI-hgna).  This used
+    to accept the path whenever a DIRECTORY of that name existed, which is a claim
+    about a name rather than about storage.  On sem-kg-ec2 that directory exists --
+    ``credo`` created it, and it holds only ``.credo`` -- while the host has no EFS
+    at all, so the registry resolved onto the root volume under a SageMaker-shaped
+    path instead of this machine's own durable location.
     """
     override = os.environ.get("AI_CLI_CANONICAL_WORKTREE_REGISTRY")
     if override:
@@ -45,7 +86,7 @@ def get_canonical_worktree_registry_path() -> Path:
             return candidate
 
     efs_home = Path.home() / "user-default-efs"
-    if efs_home.is_dir():
+    if efs_home.is_dir() and _is_network_backed(efs_home):
         return efs_home / ".local" / "share" / "ai-cli-utils" / REGISTRY_FILENAME
     return get_xdg_data_home() / REGISTRY_FILENAME
 
