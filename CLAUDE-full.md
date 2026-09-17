@@ -21,7 +21,7 @@
 ## Terminology
 
 - **Session config** — files that shape every Claude Code session: `CLAUDE.md`, `MEMORY.md`, `.claude/settings.json`, `.claude/hooks/`
-- **Orchestration config** — files that define multi-agent team setup: `.claude/agents/*.md`, `docs/designs/orchestration.md`, `.githooks/`
+- **Orchestration config** — files that define multi-agent team setup: `.claude/agents/*.md`, `.githooks/`
 
 ## Memory Management
 
@@ -217,7 +217,7 @@ Custom agents in `.claude/agents/` — each file defines its role, tools, model,
 
 ### Context Management
 
-Summarize context before spawning teams. Spawn prompts are self-contained (teammates don't inherit conversation). After each phase, persist decisions to files. See `docs/designs/orchestration.md` § Context Management.
+Summarize context before spawning teams. Spawn prompts are self-contained (teammates don't inherit conversation). After each phase, persist decisions to files.
 
 1. **Create team** → **Spawn teammates** → **Create tasks** with dependencies
 2. **Teammates work** — claim tasks, complete them, report back
