@@ -719,7 +719,14 @@ def get_engine_script(
 
     # Only the persistent supervisor owns final cleanup.  A child may be replaced
     # many times, so its EXIT trap can stop only its per-child monitor.
-    trap 'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
+    #
+    # The -n guard is load-bearing on zsh, not defensive style. There, `kill ""`
+    # signals the CURRENT PROCESS GROUP rather than erroring, so an empty
+    # watcher_pid made this trap SIGTERM the child's own group during teardown
+    # (bash treats it as a harmless error). `2>/dev/null` hid the message and did
+    # nothing about the signal. watcher_pid is legitimately empty both before a
+    # watcher starts and after the branch above stops one and resets it.
+    trap '[[ -n "$watcher_pid" ]] && kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"' EXIT
 
     agent_exit_count_file="$_ai_state_dir/session-agent-exits-$tmux_session"
     while true; do

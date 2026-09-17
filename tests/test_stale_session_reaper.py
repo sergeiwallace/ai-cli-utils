@@ -1839,3 +1839,117 @@ def test_given_generated_session_script_when_rendered_then_it_never_signals_any_
                 "check), update this test's assertion; a bare 'kill'-adjacent mosh-server "
                 "reference is what caused AI-CLI-sdgi"
             )
+
+
+# ── The child EXIT trap under each supported shell (AI-CLI-vj64) ────────────────
+#
+# THE MEASURED DEFECT. In zsh, `kill ""` signals the CURRENT PROCESS GROUP instead
+# of erroring, and `2>/dev/null` hides the message without preventing the signal:
+#
+#   bash -c 'p=""; kill "$p" 2>/dev/null; echo survived'  -> survived, status 1
+#   zsh  -c 'p=""; kill "$p" 2>/dev/null; echo survived'  -> Terminated, exit 143
+#
+# The child's EXIT trap killed `$watcher_pid` unguarded, and that variable is
+# legitimately empty both before a watcher starts and after the surrounding branch
+# stops one and resets it -- so on zsh the trap SIGTERMed the child's own group
+# during teardown. The same function already guarded its other kill of that
+# variable 125 lines earlier; the trap was the one place that did not.
+#
+# These tests execute the shipped trap COMMAND rather than driving a whole
+# supervisor. That is deliberate: the full-supervisor route is exactly what
+# AI-CLI-d7e5 shows to be fragile, where an unrelated harness stub silently moved
+# the run onto a different branch and the test stopped measuring its own subject.
+# Extracting the command keeps the shell and the signal real, which is where the
+# defect lives.
+#
+# The guard can fail, measured against the pre-fix trap body rather than assumed:
+#   bash  -> returncode 0, stdout 'reached'
+#   zsh   -> returncode -15 (killed by SIGTERM), no output
+# So this is a zsh-only regression, and a bash-only test could never have caught it.
+# The selector needs BOTH tokens. Matching on the lock-file cleanup alone found two
+# EXIT traps, because a second one removes the lock without touching a watcher --
+# and picking the wrong one would have tested a trap that has no kill in it, which
+# passes trivially and proves nothing.
+_WATCHER_TOKEN = '"$watcher_pid"'
+_LOCK_FILE_TOKEN = 'rm -f "$lock_file"'
+
+
+def _child_exit_trap_body(script: str) -> str:
+    """The child EXIT trap's command string, read out of the generated script."""
+    bodies = [
+        line.split("'", 2)[1]
+        for line in script.splitlines()
+        if line.strip().startswith("trap '")
+        and line.rstrip().endswith("' EXIT")
+        and _LOCK_FILE_TOKEN in line
+        and _WATCHER_TOKEN in line
+    ]
+    assert len(bodies) == 1, (
+        f"expected exactly one child EXIT trap containing both {_WATCHER_TOKEN!r} and "
+        f"{_LOCK_FILE_TOKEN!r}, found {len(bodies)}; the trap moved or changed shape, so "
+        "this test is no longer reading the command it exists to check"
+    )
+    return bodies[0]
+
+
+def _run_trap_body(shell: str, program: str) -> subprocess.CompletedProcess[str]:
+    """Run a snippet in its own session, so a group-wide kill cannot reach pytest."""
+    return subprocess.run(
+        [shell, "-c", program],
+        capture_output=True,
+        text=True,
+        check=False,
+        # Load-bearing: without a new session, the very defect under test would
+        # signal this test runner's own process group.
+        start_new_session=True,
+    )
+
+
+def test_given_no_watcher_when_the_child_exit_trap_runs_then_it_signals_nothing(
+    tmp_path: Path, supported_session_shell: str
+):
+    """An empty watcher_pid must not be turned into a process-group SIGTERM."""
+    body = _child_exit_trap_body(
+        get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=False)
+    )
+    lock_file = tmp_path / "child.lock"
+    lock_file.write_text("", encoding="utf-8")
+    program = f'watcher_pid=""\nlock_file={shlex.quote(str(lock_file))}\n{body}\nprintf reached\n'
+
+    result = _run_trap_body(supported_session_shell, program)
+
+    assert result.returncode == 0, (
+        f"the trap terminated its own process group: exit {result.returncode} "
+        f"(143 is SIGTERM), stderr={result.stderr!r}"
+    )
+    assert result.stdout == "reached", result.stdout
+    # The cleanup must survive the guard: an early exit would leak the lock.
+    assert not lock_file.exists(), "the trap skipped its lock-file cleanup"
+
+
+def test_given_a_live_watcher_when_the_child_exit_trap_runs_then_it_is_still_terminated(
+    tmp_path: Path, supported_session_shell: str
+):
+    """The guard must not be satisfied by never killing anything."""
+    body = _child_exit_trap_body(
+        get_engine_script("c", "session-1", "test-session", "test-", "myproject", is_remote=False)
+    )
+    lock_file = tmp_path / "child.lock"
+    lock_file.write_text("", encoding="utf-8")
+    program = (
+        f"lock_file={shlex.quote(str(lock_file))}\n"
+        "sleep 30 &\n"
+        "watcher_pid=$!\n"
+        f"{body}\n"
+        'wait "$watcher_pid"\n'
+        "printf '%s' \"$?\"\n"
+    )
+
+    result = _run_trap_body(supported_session_shell, program)
+
+    # 143 == 128 + SIGTERM: the watcher was reaped after being signalled, so this
+    # reads the wait status rather than a zombie that `kill -0` would still find.
+    assert result.stdout == "143", (
+        f"a live watcher was not terminated: wait status {result.stdout!r}, stderr={result.stderr!r}"
+    )
+    assert not lock_file.exists(), "the trap skipped its lock-file cleanup"
