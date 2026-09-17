@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -64,6 +64,17 @@ class CopierUpdateInspection:
 
     exit_code: int
     delivered_updates: tuple[DeliveredUpdate, ...]
+
+
+@dataclass(frozen=True)
+class TemplateChanges:
+    """Rendered template changes and update policies relevant to parity."""
+
+    paths: set[str]
+    hunks: set[tuple[str, tuple[str, ...], tuple[str, ...]]]
+    skip_if_exists: set[str]
+    deleted_paths: set[str]
+    excluded_on_update: set[str] = field(default_factory=set)
 
 
 def write_copier_update_inspection(inspection: CopierUpdateInspection, output_path: Path) -> None:
@@ -255,8 +266,8 @@ def _parse_diff_hunks(diff: str) -> tuple[set[str], set[tuple[str, tuple[str, ..
     return paths, hunks
 
 
-def _template_subdirectory(template_dir: Path) -> str:
-    """Return the current Copier render subdirectory, if one is configured."""
+def _template_config(template_dir: Path) -> dict[str, object]:
+    """Return the current Copier configuration, or an empty mapping on failure."""
     for config_name in ("copier.yml", "copier.yaml"):
         result = subprocess.run(
             ["git", "-C", str(template_dir), "show", f"HEAD:{config_name}"],
@@ -268,17 +279,21 @@ def _template_subdirectory(template_dir: Path) -> str:
         if result.returncode != 0:
             continue
         if not isinstance(result.stdout, str):
-            return ""
+            return {}
         try:
             config = yaml.safe_load(result.stdout) or {}
         except yaml.YAMLError:
-            return ""
+            return {}
         if not isinstance(config, dict):
-            return ""
-        subdirectory = config.get("_subdirectory")
-        if isinstance(subdirectory, str):
-            return subdirectory.strip("/")
-    return ""
+            return {}
+        return config
+    return {}
+
+
+def _template_subdirectory(config: dict[str, object]) -> str:
+    """Return the current Copier render subdirectory, if one is configured."""
+    subdirectory = config.get("_subdirectory")
+    return subdirectory.strip("/") if isinstance(subdirectory, str) else ""
 
 
 def _rendered_template_path(path: str, subdirectory: str) -> str | None:
@@ -293,9 +308,26 @@ def _rendered_template_path(path: str, subdirectory: str) -> str | None:
     return path.removesuffix(".jinja")
 
 
-def _template_diff(
-    source: str, previous_commit: str
-) -> tuple[set[str], set[tuple[str, tuple[str, ...], tuple[str, ...]]]] | None:
+def _excluded_on_update(config: dict[str, object]) -> set[str]:
+    """Return static paths whose Copier exclusion is guaranteed during updates."""
+    exclusions = config.get("_exclude", [])
+    if not isinstance(exclusions, list):
+        return set()
+    result = set()
+    for exclusion in exclusions:
+        if not isinstance(exclusion, str):
+            continue
+        if "_copier_operation != 'copy'" not in exclusion and '_copier_operation != "copy"' not in exclusion:
+            continue
+        if not (exclusion.startswith("{% if ") and exclusion.endswith("{% endif %}")):
+            continue
+        path = exclusion.split("%}", 1)[1].removesuffix("{% endif %}")
+        if "{{" not in path and "{%" not in path:
+            result.add(path.removesuffix(".jinja"))
+    return result
+
+
+def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
     """Return the template changes Copier should apply from previous_commit to HEAD."""
     source_path = Path(source)
     with tempfile.TemporaryDirectory(prefix="ai-copier-template-") as temporary_dir:
@@ -319,8 +351,16 @@ def _template_diff(
             env=_git_env(),
             check=False,
         )
-        subdirectory = _template_subdirectory(template_dir)
-    if result.returncode != 0:
+        config = _template_config(template_dir)
+        subdirectory = _template_subdirectory(config)
+        head_files = subprocess.run(
+            ["git", "-C", str(template_dir), "ls-tree", "-r", "--name-only", "HEAD"],
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            check=False,
+        )
+    if result.returncode != 0 or head_files.returncode != 0:
         return None
     paths, hunks = _parse_diff_hunks(result.stdout)
     rendered_paths = {
@@ -331,7 +371,18 @@ def _template_diff(
         for path, removed, added in hunks
         if (rendered_path := _rendered_template_path(path, subdirectory)) is not None
     }
-    return rendered_paths, rendered_hunks
+    current_paths = set(head_files.stdout.splitlines())
+    deleted_paths = {
+        rendered_path
+        for path in paths
+        if path not in current_paths and (rendered_path := _rendered_template_path(path, subdirectory)) is not None
+    }
+    skip_if_exists = {
+        path.removesuffix(".jinja")
+        for path in config.get("_skip_if_exists", [])
+        if isinstance(path, str) and "{{" not in path and "{%" not in path
+    }
+    return TemplateChanges(rendered_paths, rendered_hunks, skip_if_exists, deleted_paths, _excluded_on_update(config))
 
 
 def _verify_update_parity(
@@ -339,6 +390,9 @@ def _verify_update_parity(
     porcelain: str,
     template_paths: set[str],
     template_hunks: set[tuple[str, tuple[str, ...], tuple[str, ...]]],
+    skip_if_exists: set[str] | None = None,
+    deleted_template_paths: set[str] | None = None,
+    excluded_on_update: set[str] | None = None,
 ) -> str | None:
     """Return a parity error when Copier omitted a template file or static hunk."""
     changed_paths = {
@@ -346,9 +400,24 @@ def _verify_update_parity(
         for path in _changed_paths(porcelain, project_dir)
         if Path(path).is_relative_to(project_dir)
     }
+    skip_if_exists = skip_if_exists or set()
+    deleted_template_paths = deleted_template_paths or set()
+    excluded_on_update = excluded_on_update or set()
+    ignored_paths = {
+        path
+        for path in skip_if_exists
+        if any((project_dir / candidate).exists() for candidate in _path_candidates(path))
+    }
+    ignored_paths.update(
+        path
+        for path in deleted_template_paths
+        if not any((project_dir / candidate).exists() for candidate in _path_candidates(path))
+    )
+    ignored_paths.update(excluded_on_update)
     expected_paths = {
         path for path in template_paths if path not in {"copier.yml", "copier.yaml"} and not path.startswith(".copier-")
     }
+    expected_paths -= ignored_paths
     missing_paths = sorted(path for path in expected_paths if not (_path_candidates(path) & changed_paths))
     if missing_paths:
         return f"template parity failed: missing changed file(s): {', '.join(missing_paths)}"
@@ -377,7 +446,9 @@ def _verify_update_parity(
     expected_static_hunks = {
         hunk
         for hunk in template_hunks
-        if "{{" not in "\n".join((*hunk[1], *hunk[2])) and "{%" not in "\n".join((*hunk[1], *hunk[2]))
+        if hunk[0] not in ignored_paths
+        and "{{" not in "\n".join((*hunk[1], *hunk[2]))
+        and "{%" not in "\n".join((*hunk[1], *hunk[2]))
     }
     missing_hunks = [
         hunk
@@ -395,9 +466,7 @@ def _verify_update_parity(
 
 def _run_copier_update(
     project_dir: Path, copier_bin: str, resolved_source: str | None = None
-) -> tuple[
-    str | None, dict[str, object] | None, tuple[set[str], set[tuple[str, tuple[str, ...], tuple[str, ...]]]] | None
-]:
+) -> tuple[str | None, dict[str, object] | None, TemplateChanges | None]:
     """Run Copier with stored answers and return any safety failure."""
     answers_file = project_dir / ".copier-answers.yml"
     answers_before = _load_answers(answers_file)
@@ -564,7 +633,15 @@ def _do_update_in_worktree(
         return "conflict", rels
 
     assert template_changes is not None
-    parity_error = _verify_update_parity(wt_dir, status.stdout, *template_changes)
+    parity_error = _verify_update_parity(
+        wt_dir,
+        status.stdout,
+        template_changes.paths,
+        template_changes.hunks,
+        template_changes.skip_if_exists,
+        template_changes.deleted_paths,
+        template_changes.excluded_on_update,
+    )
     if parity_error is not None:
         return "parityfail", parity_error
 
@@ -864,7 +941,15 @@ def _run_direct(projects: list[Path], copier_bin: str) -> int:
             has_partial_mutation = True
         else:
             assert template_changes is not None
-            parity_error = _verify_update_parity(project_dir, porcelain.stdout, *template_changes)
+            parity_error = _verify_update_parity(
+                project_dir,
+                porcelain.stdout,
+                template_changes.paths,
+                template_changes.hunks,
+                template_changes.skip_if_exists,
+                template_changes.deleted_paths,
+                template_changes.excluded_on_update,
+            )
             if parity_error is not None:
                 print("✗ TEMPLATE PARITY FAILED")
                 print(f"    {parity_error}")

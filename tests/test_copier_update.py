@@ -15,6 +15,7 @@ from ai_cli.copier_update import (
     EX_TEMPFAIL,
     CopierUpdateInspection,
     DeliveredUpdate,
+    TemplateChanges,
     _changed_paths,
     _conflict_files,
     _do_update_in_worktree,
@@ -115,6 +116,14 @@ def _make_answers(proj_dir: Path, src_path: str = "/projects/project-template") 
     (proj_dir / ".copier-answers.yml").write_text(f"_src_path: {src_path}\n_commit: previous\n")
 
 
+def _init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
+    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=path, check=True, capture_output=True)
+
+
 def test_given_subdirectory_template_changes_when_verifying_parity_then_ignores_template_repository_files(tmp_path):
     """Only rendered subdirectory changes are required in a Copier destination."""
     template = tmp_path / "template"
@@ -122,7 +131,7 @@ def test_given_subdirectory_template_changes_when_verifying_parity_then_ignores_
     subprocess.run(["git", "init"], cwd=template, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=template, check=True)
-    (template / "copier.yml").write_text("_subdirectory: template\n")
+    (template / "copier.yml").write_text("_subdirectory: template\n_skip_if_exists:\n  - .gitignore\n")
     (template / "template").mkdir()
     (template / "template" / ".gitignore.jinja").write_text(".cache/\n")
     (template / "pyproject.toml").write_text("[project]\nname = 'template'\n")
@@ -139,9 +148,11 @@ def test_given_subdirectory_template_changes_when_verifying_parity_then_ignores_
     template_changes = _template_diff(str(template), previous_commit)
 
     assert template_changes is not None
-    template_paths, template_hunks = template_changes
+    template_paths = template_changes.paths
+    template_hunks = template_changes.hunks
     assert template_paths == {".gitignore"}
     assert {hunk[0] for hunk in template_hunks} == {".gitignore"}
+    assert template_changes.skip_if_exists == {".gitignore"}
 
     consumer = tmp_path / "consumer"
     consumer.mkdir()
@@ -156,7 +167,101 @@ def test_given_subdirectory_template_changes_when_verifying_parity_then_ignores_
         ["git", "status", "--porcelain"], cwd=consumer, check=True, capture_output=True, text=True
     ).stdout
 
-    assert _verify_update_parity(consumer, porcelain, *template_changes) is None
+    assert (
+        _verify_update_parity(
+            consumer,
+            porcelain,
+            template_changes.paths,
+            template_changes.hunks,
+            template_changes.skip_if_exists,
+            template_changes.deleted_paths,
+            template_changes.excluded_on_update,
+        )
+        is None
+    )
+
+
+def test_given_existing_skip_if_exists_path_when_verifying_parity_then_accepts_copier_omission(tmp_path):
+    """A configured existing-file skip is not a missing Copier update."""
+    (tmp_path / ".gitignore").write_text("local-rule\n")
+    _init_git_repo(tmp_path)
+
+    assert (
+        _verify_update_parity(
+            tmp_path,
+            "",
+            {".gitignore"},
+            {(".gitignore", ("old-rule",), ("new-rule",))},
+            skip_if_exists={".gitignore"},
+        )
+        is None
+    )
+
+
+def test_given_already_absent_template_deletion_when_verifying_parity_then_accepts_convergence(tmp_path):
+    """A deletion already reflected downstream is not an omitted update."""
+    (tmp_path / ".keep").write_text("keep\n")
+    _init_git_repo(tmp_path)
+
+    assert (
+        _verify_update_parity(
+            tmp_path,
+            "",
+            {"docs/obsolete.md"},
+            {("docs/obsolete.md", ("obsolete",), ())},
+            deleted_template_paths={"docs/obsolete.md"},
+        )
+        is None
+    )
+
+
+def test_given_update_only_excluded_path_when_verifying_parity_then_accepts_copier_omission(tmp_path):
+    """A static Copier update exclusion is not a missing template change."""
+    template = tmp_path / "template"
+    template.mkdir()
+    subprocess.run(["git", "init"], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=template, check=True)
+    (template / "copier.yml").write_text(
+        "_exclude:\n  - \"{% if _copier_operation != 'copy' %}pytest.ini{% endif %}\"\n"
+    )
+    (template / "pytest.ini.jinja").write_text("[pytest]\n")
+    subprocess.run(["git", "add", "."], cwd=template, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=template, check=True, capture_output=True)
+    previous_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=template, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (template / "pytest.ini.jinja").write_text("[pytest]\naddopts = -q\n")
+    subprocess.run(["git", "commit", "-am", "update"], cwd=template, check=True, capture_output=True)
+
+    template_changes = _template_diff(str(template), previous_commit)
+
+    assert template_changes is not None
+    assert template_changes.excluded_on_update == {"pytest.ini"}
+
+    (tmp_path / "consumer").mkdir()
+    (tmp_path / "consumer" / ".keep").write_text("keep\n")
+    _init_git_repo(tmp_path / "consumer")
+    assert (
+        _verify_update_parity(
+            tmp_path / "consumer",
+            "",
+            template_changes.paths,
+            template_changes.hunks,
+            template_changes.skip_if_exists,
+            template_changes.deleted_paths,
+            template_changes.excluded_on_update,
+        )
+        is None
+    )
+
+
+def test_given_unskipped_present_template_path_when_verifying_parity_then_reports_omission(tmp_path):
+    """A non-skipped template change still requires a downstream change."""
+
+    error = _verify_update_parity(tmp_path, "", {"settings.toml"}, set())
+
+    assert error == "template parity failed: missing changed file(s): settings.toml"
 
 
 def test_run_copier_update_projects_dir_not_found(tmp_path):
@@ -414,7 +519,10 @@ def test_do_update_nochange(tmp_path):
     """copier ok + empty porcelain → nochange."""
     runner = _wt_runner(porcelain="")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+        with patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ):
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "nochange"
@@ -436,7 +544,10 @@ def test_do_update_conflict(tmp_path):
     runner = _wt_runner(porcelain=" M docs/x.py\n")
     with (
         patch("ai_cli.copier_update.subprocess.run", side_effect=runner),
-        patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))),
+        patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ),
         patch(
             "ai_cli.copier_update._conflict_files",
             return_value=[str(wt / "docs" / "x.py")],
@@ -454,7 +565,10 @@ def test_do_update_ok_push(tmp_path):
     """Clean changes + push → ok; pushes HEAD:main and rebases the main tree."""
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+        with patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ):
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "ok"
@@ -466,7 +580,10 @@ def test_do_update_ok_no_push(tmp_path):
     """push=False commits but never pushes or rebases."""
     runner = _wt_runner(porcelain=" M file\n")
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+        with patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ):
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 status, _ = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", False)
     assert status == "ok"
@@ -661,7 +778,10 @@ def test_do_update_pushfail(tmp_path):
     """Push rejected → pushfail with git stderr, worktree/commit preserved by caller."""
     runner = _wt_runner(porcelain=" M file\n", push_rc=1)
     with patch("ai_cli.copier_update.subprocess.run", side_effect=runner):
-        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+        with patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ):
             with patch("ai_cli.copier_update._conflict_files", return_value=[]):
                 status, detail = _do_update_in_worktree(tmp_path / "wt", tmp_path / "root", "/usr/bin/copier", True)
     assert status == "pushfail"
@@ -995,6 +1115,9 @@ def test_do_update_ignores_unchanged_marker_files(tmp_path):
         return r
 
     with patch("ai_cli.copier_update.subprocess.run", side_effect=run):
-        with patch("ai_cli.copier_update._run_copier_update", return_value=(None, {}, (set(), set()))):
+        with patch(
+            "ai_cli.copier_update._run_copier_update",
+            return_value=(None, {}, TemplateChanges(set(), set(), set(), set())),
+        ):
             status, _ = _do_update_in_worktree(wt, tmp_path / "root", "/usr/bin/copier", False)
     assert status == "ok"  # NOT "conflict"
