@@ -243,6 +243,52 @@ def test_given_only_expected_top_level_directories_when_checked_then_nothing_is_
     assert _tracked_top_level_dirs(tmp_path) - _EXPECTED_TOP_LEVEL_DIRS == set()
 
 
+def test_given_the_machine_local_dolt_server_state_when_checked_then_it_is_ignored():
+    """The two guards above cannot see this file, so the ignore rule is the guard.
+
+    ``.beads/.dolt-server-state.json`` records the local task-store server's host,
+    pid and port. Those are meaningless in any other clone, so it belongs to the
+    machine and not to the repository.
+
+    Neither index-based guard covers it. The install-lock guard names one directory,
+    and the top-level-directory guard treats ``.beads`` as expected -- correctly, it
+    holds tracked task-store files. So an artefact *inside* ``.beads`` has no guard
+    but this one, and it appeared in ``git status`` as untracked where a sweeping
+    ``git add -A`` would have taken it.
+
+    Asserted with ``git check-ignore`` against the real repository rather than by
+    grepping ``.gitignore`` for the string: an ignore rule that stops matching --
+    shadowed by a later negation, or moved into a directory whose scope no longer
+    reaches -- fails silently, and a substring match cannot tell the difference. The
+    exit status answers the question the rule exists to answer.
+    """
+
+    def ignored(path: str) -> bool:
+        return (
+            subprocess.run(
+                ["git", "check-ignore", "-q", "--no-index", "--", path],
+                cwd=_repo_root(),
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    # Control first: a probe that reports everything as ignored would pass the real
+    # assertion while measuring nothing.
+    assert not ignored(".beads/issues.jsonl"), (
+        "the tracked task-store export reports as ignored, so this probe cannot fail"
+        " and proves nothing about the rule below"
+    )
+
+    path = ".beads/.dolt-server-state.json"
+
+    assert ignored(path), (
+        f"{path} is not ignored: machine-local server state (host, pid, port) can be"
+        " committed into a public repository by a sweeping `git add`."
+        "\nRestore its entry in .gitignore."
+    )
+
+
 def test_given_a_line_that_uses_the_private_name_as_a_project_name_when_scanned_then_it_is_flagged(tmp_path):
     """Positive control: the scan must go red on a real violation, not just pass."""
     (tmp_path / "src").mkdir()
