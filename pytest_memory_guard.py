@@ -9,12 +9,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-import psutil
 import pytest
 
 _DEFAULT_MEMORY_LIMIT_MB = 2048
 _MINIMUM_MEMORY_LIMIT_MB = 64
 _MEMORY_LIMIT_ENV = "PYTEST_WORKER_MEMORY_LIMIT_MB"
+_UNCONSTRAINED_MEMORY_MARKER = "unconstrained_memory"
+_LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE = "_pytest_memory_guard_linux_address_space_limit"
 _WATCHDOG_ATTRIBUTE = "_pytest_memory_guard_watchdog"
 
 
@@ -36,7 +37,7 @@ def _is_test_process(config: Any) -> bool:
     return not getattr(config.option, "numprocesses", None)
 
 
-def _apply_linux_address_space_limit(limit_bytes: int) -> None:
+def _apply_linux_address_space_limit(limit_bytes: int) -> int:
     # RLIMIT_AS is a kernel-enforced ceiling on Linux. Import resource only on
     # the platform where this path is used because the module is absent on Windows.
     import resource
@@ -45,7 +46,10 @@ def _apply_linux_address_space_limit(limit_bytes: int) -> None:
     effective_limit = limit_bytes
     if hard_limit != resource.RLIM_INFINITY:
         effective_limit = min(effective_limit, hard_limit)
-    resource.setrlimit(resource.RLIMIT_AS, (effective_limit, effective_limit))
+    # Preserve the inherited hard limit so a marked test can temporarily remove
+    # this guard's soft ceiling and restore it afterwards.
+    resource.setrlimit(resource.RLIMIT_AS, (effective_limit, hard_limit))
+    return effective_limit
 
 
 def _start_rss_watchdog(limit_bytes: int) -> subprocess.Popen[bytes]:
@@ -64,22 +68,51 @@ def _start_rss_watchdog(limit_bytes: int) -> subprocess.Popen[bytes]:
 
 
 def pytest_configure(config: Any) -> None:
+    config.addinivalue_line(
+        "markers",
+        f"{_UNCONSTRAINED_MEMORY_MARKER}: run this test without the Linux RLIMIT_AS guard",
+    )
     if not _is_test_process(config):
         return
 
     limit_bytes = _memory_limit_bytes()
     if _MEMORY_LIMIT_ENV in os.environ:
         limit_mb = limit_bytes // 1024 // 1024
-        os.write(2, f"pytest memory guard: limiting this process to {limit_mb} MiB\n".encode())
+        os.write(
+            2,
+            f"pytest memory guard: limiting this process to {limit_mb} MiB\n".encode(),
+        )
 
     if sys.platform.startswith("linux"):
-        _apply_linux_address_space_limit(limit_bytes)
+        setattr(
+            config,
+            _LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE,
+            _apply_linux_address_space_limit(limit_bytes),
+        )
         return
 
     # macOS processes map a very large shared address space, making RLIMIT_AS
     # unusable as an RSS ceiling. Windows has no resource module. A separate
     # psutil process remains schedulable if a runaway test monopolizes the GIL.
     setattr(config, _WATCHDOG_ATTRIBUTE, _start_rss_watchdog(limit_bytes))
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
+    """Lift the Linux soft limit only while a marked test executes."""
+    limit_bytes = getattr(item.config, _LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE, None)
+    if limit_bytes is None or item.get_closest_marker(_UNCONSTRAINED_MEMORY_MARKER) is None:
+        yield
+        return
+
+    import resource
+
+    _, hard_limit = resource.getrlimit(resource.RLIMIT_AS)
+    resource.setrlimit(resource.RLIMIT_AS, (hard_limit, hard_limit))
+    try:
+        yield
+    finally:
+        resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, hard_limit))
 
 
 def pytest_unconfigure(config: Any) -> None:
@@ -95,6 +128,11 @@ def pytest_unconfigure(config: Any) -> None:
 
 
 def _watch_parent(parent_pid: int, limit_bytes: int) -> int:
+    # Linux uses RLIMIT_AS and does not need psutil. Import it only in the
+    # portable watchdog process so Linux repositories can adopt the guard
+    # without adding a dependency they never execute.
+    import psutil
+
     parent = psutil.Process(parent_pid)
     while True:
         try:
