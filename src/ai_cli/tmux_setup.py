@@ -384,16 +384,31 @@ def formats_expand_probe(timeout: int = 20, *, runner: "Callable[..., object] | 
     return None
 
 
-def formats_expand(timeout: int = 10, *, runner: "Callable[..., object] | None" = None) -> bool | None:
+def formats_expand(
+    timeout: int = 10,
+    *,
+    allow_probe: bool = False,
+    runner: "Callable[..., object] | None" = None,
+) -> bool | None:
     """Whether this tmux expands formats. ``None`` when undetermined.
 
-    Prefers a RUNNING server: that costs one query and creates nothing. Falls back
-    to the throwaway-session probe only when no server is running, because there is
-    no other way to ask.
+    Asks a RUNNING server, which costs one read-only query and creates nothing.
+
+    ``allow_probe`` is OFF by default, and deliberately so: the throwaway-session
+    fallback CREATES a tmux session, and a launch preflight must not do that. It
+    added a session-creating call to every launch, which the suite's mocked tmux
+    boundary correctly rejected — the guard exists precisely to stop a test
+    reaching a real tmux. A diagnostic may opt in; the launch path may not.
+
+    ``None`` means undetermined, and callers must treat it as "do not degrade":
+    guessing that formats are broken would trade detach/reattach away on no
+    evidence, which is a worse bug than the one this detection exists to catch.
     """
     server = _probe_output(["tmux", "display-message", "-p", "#{version}"], timeout)
     if server is not None:
         return not _looks_unexpanded(server)
+    if not allow_probe:
+        return None
     return formats_expand_probe(timeout=max(timeout, 20), runner=runner)
 
 

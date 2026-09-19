@@ -2556,6 +2556,15 @@ def _do_session_launch(
     # and possibly a live session the operator had to remove by hand. Deciding it
     # in the preflight is the same ordering the version refusal above relies on.
     #
+    # SCOPE, stated rather than implied: this covers the case where a tmux server
+    # is ALREADY RUNNING, which is one read-only query. It deliberately does not
+    # start a server to find out — `formats_expand` defaults `allow_probe=False`
+    # because a session-creating call in a launch preflight is exactly what the
+    # suite's mocked tmux boundary rejects, and rightly so. With no server running
+    # the condition is still only discoverable at `new-session`, which reports it
+    # accurately and exits; auto-falling back to bare from that point needs the
+    # launch flow restructured and is tracked separately.
+    #
     # It is explicitly NOT a version mismatch, and must not be reported as one: a
     # server freshly started by the same client answers `#version` too, so the
     # "restart the server so its version matches" remedy cannot work. Measured on an

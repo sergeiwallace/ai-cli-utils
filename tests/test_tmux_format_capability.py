@@ -104,10 +104,25 @@ def test_given_a_running_healthy_server_when_resolved_then_true_without_creating
     assert tmux_setup.formats_expand() is True
 
 
-def test_given_no_running_server_when_resolved_then_it_falls_back_to_the_throwaway_probe(monkeypatch) -> None:
+def test_given_no_running_server_when_probe_is_allowed_then_it_falls_back_to_the_throwaway_probe(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(tmux_setup, "_probe_output", lambda argv, timeout: None)
     monkeypatch.setattr(tmux_setup, "formats_expand_probe", lambda **_kwargs: False)
-    assert tmux_setup.formats_expand() is False
+    assert tmux_setup.formats_expand(allow_probe=True) is False
+
+
+def test_given_no_running_server_when_probe_is_not_allowed_then_nothing_is_created(monkeypatch) -> None:
+    """The launch path must never create a tmux session just to answer this.
+
+    A session-creating call in the preflight ran on every launch and was rejected
+    by the suite's mocked tmux boundary -- the guard that exists to stop a test
+    reaching a real tmux. ``None`` (undetermined) is the correct answer here, and
+    callers must not degrade on it.
+    """
+    monkeypatch.setattr(tmux_setup, "_probe_output", lambda argv, timeout: None)
+    monkeypatch.setattr(tmux_setup, "formats_expand_probe", _must_not_probe)
+    assert tmux_setup.formats_expand() is None
 
 
 # --- the throwaway probe ----------------------------------------------------
