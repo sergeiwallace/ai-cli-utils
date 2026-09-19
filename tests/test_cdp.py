@@ -1,9 +1,14 @@
 """Tests for ai cdp start/stop/status subcommand."""
 
 import json
+import os
+import shutil
 import socket
 import subprocess
 import sys
+import time
+import urllib.request
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import psutil
@@ -387,6 +392,165 @@ class TestCmdCdpStartMacOS:
         assert "--no-first-run" in cmd
         assert "--no-default-browser-check" in cmd
         assert "--disable-default-apps" in cmd
+
+
+# ---------------------------------------------------------------------------
+# _linux_display_env / Linux Popen env threading (KC-qx6)
+# ---------------------------------------------------------------------------
+
+
+class TestLinuxDisplayEnv:
+    def test_when_runtime_dir_has_wayland_socket_and_xauth_then_all_resolved(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("XAUTHORITY", raising=False)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        (tmp_path / "wayland-0").touch()
+        (tmp_path / ".mutter-Xwaylandauth.ABC123").touch()
+
+        env = tunnel._linux_display_env()
+
+        assert env["XDG_RUNTIME_DIR"] == str(tmp_path)
+        assert env["WAYLAND_DISPLAY"] == "wayland-0"
+        assert env["DISPLAY"] == ":0"
+        assert env["XAUTHORITY"] == str(tmp_path / ".mutter-Xwaylandauth.ABC123")
+
+    def test_when_no_wayland_socket_then_wayland_display_not_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+
+        env = tunnel._linux_display_env()
+
+        assert "WAYLAND_DISPLAY" not in env
+
+    def test_when_caller_already_set_a_value_then_it_is_not_overridden(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-caller-supplied")
+        monkeypatch.setenv("DISPLAY", ":7")
+        monkeypatch.setenv("XAUTHORITY", "/caller/supplied/xauth")
+        (tmp_path / "wayland-0").touch()
+        (tmp_path / ".mutter-Xwaylandauth.ABC123").touch()
+
+        env = tunnel._linux_display_env()
+
+        assert "WAYLAND_DISPLAY" not in env
+        assert "DISPLAY" not in env
+        assert "XAUTHORITY" not in env
+
+
+@patch.object(sys, "platform", "linux")
+class TestCmdCdpStartLinuxDisplayEnv:
+    @pytest.fixture(autouse=True)
+    def _requested_port_free(self):
+        with patch("ai_cli.tunnel._port_in_use", return_value=False):
+            yield
+
+    def test_given_no_display_env_when_cdp_start_on_linux_then_popen_receives_resolved_display_vars(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("XAUTHORITY", raising=False)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        (tmp_path / "wayland-0").touch()
+        (tmp_path / ".mutter-Xwaylandauth.ABC123").touch()
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path / "state"),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("urllib.request.urlopen"),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        _, kwargs = mock_popen.call_args
+        assert kwargs["env"]["WAYLAND_DISPLAY"] == "wayland-0"
+        assert kwargs["env"]["DISPLAY"] == ":0"
+        assert kwargs["env"]["XAUTHORITY"] == str(tmp_path / ".mutter-Xwaylandauth.ABC123")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux display-env resolution only applies on Linux")
+class TestCdpStartRealChromeBoundary:
+    """Real-boundary regression for KC-qx6: a mocked Popen cannot prove the CDP
+    port actually opens -- the original bug shipped with a green mocked test
+    suite. This launches the real Chrome binary with the ambient display
+    environment stripped, exactly as an agent-tool subprocess sees it."""
+
+    def test_given_stripped_display_env_when_real_chrome_launched_then_cdp_port_opens(self, monkeypatch, tmp_path):
+        chrome = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
+        for candidate in (
+            "/root/.local/share/chrome-for-testing",
+            str(Path.home() / ".local/share/chrome-for-testing"),
+        ):
+            if chrome:
+                break
+            found = list(Path(candidate).glob("chrome/*/chrome-linux64/chrome")) if Path(candidate).exists() else []
+            if found:
+                chrome = str(found[0])
+        if not chrome:
+            pytest.skip("no real Chrome/Chromium binary available on this machine")
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        if not (Path(runtime_dir) / "wayland-0").exists():
+            pytest.skip("no live Wayland session on this machine to prove the real fix against")
+        if sys.platform == "linux":
+            import resource
+
+            if resource.getrlimit(resource.RLIMIT_AS)[0] != resource.RLIM_INFINITY:
+                pytest.skip(
+                    "this test process has a finite RLIMIT_AS (this repo's own "
+                    "pytest_memory_guard plugin) -- real Chrome needs a large virtual "
+                    "address-space reservation for its own startup and is killed before "
+                    "it can bind the CDP port under that ceiling, independent of KC-qx6"
+                )
+
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.delenv("XAUTHORITY", raising=False)
+
+        port = 19412
+        user_data_dir = tmp_path / "chrome-profile"
+        user_data_dir.mkdir()
+        stdout_log = tmp_path / "chrome-stdout.log"
+        stderr_log = tmp_path / "chrome-stderr.log"
+        popen_env = {**os.environ, **tunnel._linux_display_env()}
+        with stdout_log.open("wb") as out_fh, stderr_log.open("wb") as err_fh:
+            proc = subprocess.Popen(
+                [
+                    chrome,
+                    f"--remote-debugging-port={port}",
+                    f"--user-data-dir={user_data_dir}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-default-apps",
+                ],
+                stdout=out_fh,
+                stderr=err_fh,
+                env=popen_env,
+            )
+        try:
+            deadline = time.monotonic() + 10.0
+            opened = False
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.5)
+                    opened = True
+                    break
+                except OSError:
+                    time.sleep(0.25)
+            if not opened:
+                pytest.fail(
+                    f"real Chrome never opened the CDP port; chrome={chrome!r} "
+                    f"returncode={proc.poll()!r} stderr={stderr_log.read_text(errors='replace')!r} "
+                    f"stdout={stdout_log.read_text(errors='replace')!r}"
+                )
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
 
 
 # ---------------------------------------------------------------------------
