@@ -2544,6 +2544,32 @@ def _do_session_launch(
             elif _tmux_install.unusable:
                 tmux_reason = "tmux is absent and could not be installed unattended"
 
+    # A tmux that RUNS can still be unable to expand format strings, and every
+    # ownership guarantee in this launcher is built on `#{session_id}`: such a build
+    # answers `new-session -P -F '#{session_id}'` with the literal `#session_id`, so
+    # the opaque id and the generation marker are both unobtainable and the session
+    # cannot be fenced for a later kill (AI-CLI-siow).
+    #
+    # Degrading HERE is the whole point. Before this, the condition surfaced at
+    # `new-session` — after the worktree had been created, synchronized and
+    # registered — so every attempt exited 1 and left a worktree, a registry entry
+    # and possibly a live session the operator had to remove by hand. Deciding it
+    # in the preflight is the same ordering the version refusal above relies on.
+    #
+    # It is explicitly NOT a version mismatch, and must not be reported as one: a
+    # server freshly started by the same client answers `#version` too, so the
+    # "restart the server so its version matches" remedy cannot work. Measured on an
+    # MSYS2 build: with no server running beforehand, a brand-new server returned
+    # `#session_id`, `#version`, `#pid` and `#session_name` while a plain literal
+    # came back verbatim.
+    if not bare and not remote and _tmux_setup.formats_expand() is False:
+        bare = True
+        tmux_degraded = True
+        tmux_reason = (
+            "tmux runs but does not expand format strings, so session ownership "
+            "cannot be established (a server restart does not change this)"
+        )
+
     # One block per launch: presence, path, client version, the running server's
     # version, the resolved mode and its reason. stderr so it never contaminates
     # anything parsing stdout. Client and server are separate lines on purpose --
@@ -3381,9 +3407,18 @@ def _do_session_launch(
                     " like '$0', so it is not expanding format strings.",
                     file=sys.stderr,
                 )
+                # The server-restart suggestion this used to carry was FALSE and is
+                # deliberately gone: measured on an MSYS2 build with no server
+                # running beforehand, a brand-new server started by the same client
+                # answered `#session_id` and `#version` exactly the same way, so a
+                # restart cannot change the outcome. Sending the operator to restart
+                # was sending them to a dead end (AI-CLI-siow).
                 print(
-                    "  Retrying will not help. Relaunch with -b/--bare to skip tmux, or restart"
-                    " the tmux server so its version matches the client.",
+                    "  Retrying will not help, and neither will restarting the tmux server:"
+                    " a freshly started\n"
+                    "  server on such a build does not expand formats either. Relaunch with"
+                    " -b/--bare to skip tmux,\n"
+                    "  or use a tmux build whose format strings work.",
                     file=sys.stderr,
                 )
             # new-session reported success, so a session under this name probably exists.
