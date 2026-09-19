@@ -478,6 +478,7 @@ class TestCdpStartRealChromeBoundary:
     suite. This launches the real Chrome binary with the ambient display
     environment stripped, exactly as an agent-tool subprocess sees it."""
 
+    @pytest.mark.unconstrained_memory
     def test_given_stripped_display_env_when_real_chrome_launched_then_cdp_port_opens(self, monkeypatch, tmp_path):
         chrome = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
         for candidate in (
@@ -494,16 +495,6 @@ class TestCdpStartRealChromeBoundary:
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
         if not (Path(runtime_dir) / "wayland-0").exists():
             pytest.skip("no live Wayland session on this machine to prove the real fix against")
-        if sys.platform == "linux":
-            import resource
-
-            if resource.getrlimit(resource.RLIMIT_AS)[0] != resource.RLIM_INFINITY:
-                pytest.skip(
-                    "this test process has a finite RLIMIT_AS (this repo's own "
-                    "pytest_memory_guard plugin) -- real Chrome needs a large virtual "
-                    "address-space reservation for its own startup and is killed before "
-                    "it can bind the CDP port under that ceiling, independent of KC-qx6"
-                )
 
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
