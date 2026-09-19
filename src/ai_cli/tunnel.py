@@ -5,6 +5,7 @@ Depends on: config.py, transport.py.
 
 import json
 import math
+import os
 import shutil
 import socket
 import subprocess
@@ -16,7 +17,7 @@ from pathlib import Path
 
 import psutil
 
-from .config import _pid_alive, get_remote_machine, get_xdg_data_home, get_xdg_state_home
+from .config import _pid_alive, get_remote_machine, get_xdg_data_home, get_xdg_state_home, resolve_base_dir
 from .transport import _is_vpn_active
 
 _PROCESS_STATE_VERSION = 1
@@ -323,6 +324,35 @@ def _next_free_port(start: int, limit: int = 20) -> int | None:
     return None
 
 
+def _linux_display_env() -> dict[str, str]:
+    """Resolve the active desktop session's display vars for a Chrome subprocess.
+
+    ``ai cdp start`` is often invoked from a process (an agent tool shell, a cron
+    job, a non-interactive SSH session) that lacks ``WAYLAND_DISPLAY``/``DISPLAY``/
+    ``XAUTHORITY`` even though a real graphical session is running for this user.
+    Without them, Chrome's Ozone platform auto-detection falls back to X11, finds
+    no ``$DISPLAY``, and exits immediately -- the CDP port never opens, independent
+    of retry duration (KC-qx6). Only fill in what is genuinely missing from the
+    caller's own environment; never override an explicit value.
+    """
+    env: dict[str, str] = {}
+    runtime_path = resolve_base_dir("XDG_RUNTIME_DIR", Path(f"/run/user/{os.getuid()}"))
+    env.setdefault("XDG_RUNTIME_DIR", str(runtime_path))
+
+    if not os.environ.get("WAYLAND_DISPLAY") and (runtime_path / "wayland-0").exists():
+        env["WAYLAND_DISPLAY"] = "wayland-0"
+
+    if not os.environ.get("DISPLAY"):
+        env["DISPLAY"] = ":0"
+
+    if not os.environ.get("XAUTHORITY"):
+        xauth_candidates = sorted(runtime_path.glob(".mutter-Xwaylandauth.*"))
+        if xauth_candidates:
+            env["XAUTHORITY"] = str(xauth_candidates[0])
+
+    return env
+
+
 def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = False, forward: bool = False) -> None:
     state_dir = get_xdg_state_home()
     pid_file = state_dir / f"cdp-{port}.pid"
@@ -388,11 +418,15 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         _app_name = _app_dir[:-4] if _app_dir else "Google Chrome"
         subprocess.run(["open", "-na", _app_name, "--args", *chrome_args], check=False)
     else:
+        popen_env = None
+        if sys.platform == "linux":
+            popen_env = {**os.environ, **_linux_display_env()}
         proc = subprocess.Popen(
             [chrome, *chrome_args],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=popen_env,
         )
         pid = proc.pid
         if not _write_process_identity(pid_file, pid, port):
