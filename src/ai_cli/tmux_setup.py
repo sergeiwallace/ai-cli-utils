@@ -21,13 +21,19 @@ Cygwin — so there are deliberately no unattended candidates for ``win32`` and
 bare mode is the correct permanent answer there.
 """
 
+import contextlib
+import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import native_deps
 from .native_deps import Candidate, InstallResult, LoaderRepair, attempt_installs
+from .tmux_ownership import classify_new_session_output
 
 # Unattended install candidates per sys.platform, in attempt order. Rootless
 # managers come first: an unprivileged host is the common case for the machines
@@ -264,18 +270,146 @@ class TmuxReport:
         return self.client_version is not None
 
     @property
+    def formats_unexpanded(self) -> bool:
+        """True when the running server echoes formats back instead of expanding them.
+
+        Such a build answers ``display-message -p '#{version}'`` with the literal
+        ``#version`` — braces stripped, nothing substituted. A real version string
+        never contains ``#``, so the marker is unambiguous.
+        """
+        return _looks_unexpanded(self.server_version)
+
+    @property
     def versions_disagree(self) -> bool:
         """True only when both are known and differ.
 
         No running server is the normal state of a fresh machine, so an unknown
         server version is not a mismatch — claiming one would make the common
         case look broken.
+
+        A server that does not expand formats is likewise NOT a mismatch, and this
+        guard is load-bearing: its ``server_version`` is the literal ``#version``,
+        which differs from every real client version, so without the guard the
+        launcher refuses with "client is 3.7c but the running server is #version"
+        and sends the operator to restart the server. Measured: a freshly started
+        server on such a build answers ``#version`` too, so restarting cannot help.
+        The broken-format condition has its own detection and its own remedy.
         """
+        if self.formats_unexpanded:
+            return False
         return (
             self.client_version is not None
             and self.server_version is not None
             and self.client_version != self.server_version
         )
+
+
+def _looks_unexpanded(value: str | None) -> bool:
+    """True when ``value`` is a format tmux echoed back instead of expanding.
+
+    One predicate, used by both the report and the capability probe, so the
+    preflight and the ownership check can never disagree about what counts as
+    "expanded".
+    """
+    return value is not None and "#" in value
+
+
+def formats_expand_probe(timeout: int = 20, *, runner: "Callable[..., object] | None" = None) -> bool | None:
+    """Whether this tmux expands formats, decided with a throwaway session.
+
+    ``True``/``False``, or ``None`` when it could not be determined.
+
+    Needed because format expansion can only be asked of a SERVER, and the normal
+    state before a launch is that no server is running yet. Establishing it here
+    means a build that cannot expand formats degrades to bare BEFORE a worktree or
+    a session exists — the same ordering the version refusal already relies on,
+    and the difference between a clean fallback and a failed launch that leaves a
+    worktree, a registry entry and a session behind.
+
+    Two implementation details are load-bearing:
+
+    * stdout goes to a FILE, never a pipe. ``new-session -d`` daemonizes a server
+      that INHERITS the caller's stdout, so a captured pipe is never closed by the
+      surviving daemon and the call blocks indefinitely — measured running past
+      600s with a 30s timeout wrapped around it, because the timeout kills the
+      direct child while the command substitution keeps waiting on the inherited
+      descriptor. Writing to a file removes the shared pipe entirely.
+    * the session name carries a random suffix, which is the only reason killing
+      it by name without the generation fence is safe: no other process can hold
+      that name, so there is no replacement to destroy.
+
+    ``runner`` is injectable for the same reason ``tmux_command`` is elsewhere in
+    this package: a test can supply a double without patching the global
+    ``subprocess.run``, which would otherwise clobber the suite's own
+    real-process guard.
+    """
+    run = runner if runner is not None else subprocess.run
+    name = f"ai-cli-format-probe-{secrets.token_hex(6)}"
+    raw: str | None = None
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            out_path = Path(scratch) / "new-session.out"
+            with out_path.open("w", encoding="utf-8") as handle:
+                run(
+                    ["tmux", "new-session", "-d", "-s", name, "-P", "-F", "#{session_id}"],
+                    stdout=handle,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    timeout=timeout,
+                    check=False,
+                )
+            raw = out_path.read_text(encoding="utf-8", errors="replace").strip()
+    except (OSError, subprocess.SubprocessError):
+        raw = None
+    finally:
+        # Unconditional: `new-session` can create the session and still fail to
+        # answer, so a probe that errored may still have left one behind.
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            run(
+                ["tmux", "kill-session", "-t", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+    if not raw:
+        return None
+    # Reuse the launcher's own classifier rather than re-deriving the rule here.
+    status, _ = classify_new_session_output(raw)
+    if status == "ok":
+        return True
+    if status == "format-not-expanded":
+        return False
+    return None
+
+
+def formats_expand(
+    timeout: int = 10,
+    *,
+    allow_probe: bool = False,
+    runner: "Callable[..., object] | None" = None,
+) -> bool | None:
+    """Whether this tmux expands formats. ``None`` when undetermined.
+
+    Asks a RUNNING server, which costs one read-only query and creates nothing.
+
+    ``allow_probe`` is OFF by default, and deliberately so: the throwaway-session
+    fallback CREATES a tmux session, and a launch preflight must not do that. It
+    added a session-creating call to every launch, which the suite's mocked tmux
+    boundary correctly rejected — the guard exists precisely to stop a test
+    reaching a real tmux. A diagnostic may opt in; the launch path may not.
+
+    ``None`` means undetermined, and callers must treat it as "do not degrade":
+    guessing that formats are broken would trade detach/reattach away on no
+    evidence, which is a worse bug than the one this detection exists to catch.
+    """
+    server = _probe_output(["tmux", "display-message", "-p", "#{version}"], timeout)
+    if server is not None:
+        return not _looks_unexpanded(server)
+    if not allow_probe:
+        return None
+    return formats_expand_probe(timeout=max(timeout, 20), runner=runner)
 
 
 def _probe_output(argv: list[str], timeout: int) -> str | None:
@@ -353,8 +487,16 @@ def report_lines(
     detail = report.client_version or "version unavailable (binary does not run)"
     lines.append(f"ai-cli: tmux {detail} at {report.path}")
 
-    if report.server_version:
+    if report.server_version and not report.formats_unexpanded:
         lines.append(f"ai-cli: running tmux server reports {report.server_version}")
+    if report.formats_unexpanded:
+        # Naming the observation rather than printing `#version` as if it were a
+        # version: the literal IS the finding, and reporting it as a version is
+        # what made this look like a mismatch.
+        lines.append(
+            "ai-cli: running tmux server does not expand format strings "
+            f"(it answered {report.server_version!r} for its own version)"
+        )
     if report.versions_disagree:
         lines.append(
             f"ai-cli: WARNING — client {report.client_version} but the running "
