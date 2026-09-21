@@ -1,7 +1,11 @@
 """Tests for the core.bare=true / stale core.worktree corruption fix (AI-CLI-99),
 plus the AIH-443 phantom-deletion detection guards."""
 
+import contextlib
+import http.server
+import os
 import subprocess
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -72,6 +76,43 @@ def test_git_env_when_no_base_given_then_scrubs_os_environ():
         result = _git_env()
     assert "GIT_DIR" not in result
     assert result.get("SOME_VAR") == "1"
+
+
+# --- credential-prompt containment (`ai c` stalled on "Username for 'https://...'") ---
+#
+# git writes its credential prompt to /dev/tty, NOT to the subprocess's stdin or
+# stdout, so `capture_output=True` does not contain it. Every git subprocess this
+# package runs is unattended automation with no one to answer, so a prompt can
+# only ever hang the caller -- which is exactly what stalled `ai c <session>` on a
+# machine whose git had no usable credential for the worktree's https remote.
+
+
+def test_git_env_when_caller_left_prompt_unset_then_real_git_refuses_to_prompt(tmp_path):
+    """Drives the real `git` CLI, because the defect IS git's prompting behaviour:
+    a mocked subprocess would only assert what the mock was told to say."""
+    base = {k: v for k, v in os.environ.items() if k != "GIT_TERMINAL_PROMPT"}
+
+    result = subprocess.run(
+        # An empty `credential.helper` resets the helper list, so the only route
+        # left to git is its own terminal prompt -- the mechanism under test, and
+        # the same on every OS regardless of which helper is installed.
+        ["git", "-c", "credential.helper=", "credential", "fill"],
+        input="protocol=https\nhost=git.example\n\n",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=_git_env(base),
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "terminal prompts disabled" in result.stderr, result.stderr
+
+
+def test_git_env_when_caller_set_prompt_explicitly_then_value_is_not_overridden():
+    """The containment is a default, not a clamp: a caller that deliberately wants
+    an interactive git keeps it."""
+    assert _git_env({"GIT_TERMINAL_PROMPT": "1"})["GIT_TERMINAL_PROMPT"] == "1"
 
 
 # --- repair_bare_worktree_config ---
@@ -250,6 +291,54 @@ def test_pull_rebase_autostash_when_pop_conflicts_then_reports_strand_despite_ex
     assert unmerged_paths(local) == {"f.txt"}
     assert len(stash_entries(local)) == 1
     assert operation_in_progress(local) is None  # nothing "in progress" to signal it
+
+
+class _AlwaysUnauthorized(http.server.BaseHTTPRequestHandler):
+    """Smallest remote that makes git ask for a credential: answer every request 401."""
+
+    def do_GET(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="git"')
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass  # keep the captured test output readable
+
+
+@contextlib.contextmanager
+def _remote_demanding_credentials():
+    server = http.server.HTTPServer(("127.0.0.1", 0), _AlwaysUnauthorized)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/repo.git"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_pull_rebase_autostash_when_remote_demands_credentials_then_fails_without_prompting(tmp_path):
+    """The reported defect, at the function `ai c` actually calls to sync a worktree.
+    A loopback remote that 401s every request is the real protocol boundary: git
+    reaches the credential step for real, so nothing here can pass by stubbing it.
+    Unattended, git must fail fast and leave the repo usable -- prompting instead
+    blocks the launcher on `Username for '...'` forever and no session ever starts."""
+    local = _make_remote(tmp_path / "local")
+    with _remote_demanding_credentials() as url:
+        _git(local, "remote", "add", "origin", url)
+        # Reset the helper list so the machine's configured helper cannot answer
+        # (or, on Windows, raise a GUI prompt) and mask the behaviour under test.
+        _git(local, "config", "--local", "credential.helper", "")
+
+        pull, stranded = pull_rebase_autostash(local)
+
+    assert pull.returncode != 0
+    assert "terminal prompts disabled" in (pull.stderr + pull.stdout), pull.stderr
+    # ...and a credential failure must stay a soft failure: the caller refuses the
+    # launch on a strand, and being unable to reach the remote is not one.
+    assert stranded is None
+    assert unmerged_paths(local) == set()
 
 
 def test_pull_rebase_autostash_when_clean_pull_then_no_strand(tmp_path):

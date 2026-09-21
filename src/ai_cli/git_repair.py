@@ -97,12 +97,25 @@ def _git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     Strips vars that redirect git's repo/worktree targeting (``GIT_DIR``,
     ``GIT_WORK_TREE``, etc.) so the subprocess always operates on the repo
     given via ``-C``/``cwd``, never one inherited from the caller's own git
-    context. Keeps other ``GIT_*`` vars (``GIT_SSH*``, ``GIT_TERMINAL_PROMPT``,
-    ``GIT_AUTHOR_*``, ``GIT_COMMITTER_*``, ...) untouched.
+    context. Keeps other ``GIT_*`` vars (``GIT_SSH*``, ``GIT_AUTHOR_*``,
+    ``GIT_COMMITTER_*``, ...) untouched.
+
+    Also defaults ``GIT_TERMINAL_PROMPT=0`` so a git subprocess can never stop
+    to ask for a credential. Every git call routed through here is unattended
+    automation reading back a captured result, and git writes its credential
+    prompt to ``/dev/tty`` rather than to the subprocess's stdin/stdout — so
+    ``capture_output=True`` does NOT contain it. A remote git cannot
+    authenticate to (an https remote on a machine whose credential helper holds
+    nothing for that host, say) therefore hung ``ai c <session>`` on a bare
+    ``Username for 'https://...':`` prompt during the worktree sync, instead of
+    letting the caller's own degraded-network handling report it and carry on
+    from the existing checkout. Failing fast is what makes that handling
+    reachable. A caller that has explicitly set the var keeps its own value.
     """
     env = dict(base_env if base_env is not None else os.environ)
     for var in _GIT_TARGETING_VARS:
         env.pop(var, None)
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
     return env
 
 

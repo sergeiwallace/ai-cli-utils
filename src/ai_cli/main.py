@@ -4080,14 +4080,14 @@ def cmd_copier_update(dry_run, project, inspect_output, no_isolate, no_push):
         write_copier_update_inspection(result, inspect_output)
         sys.exit(result.exit_code)
 
-    sys.exit(
-        run_copier_update(
-            dry_run=dry_run,
-            project_filter=project,
-            isolate=not no_isolate,
-            push=not no_push,
-        )
+    exit_code = run_copier_update(
+        dry_run=dry_run,
+        project_filter=project,
+        isolate=not no_isolate,
+        push=not no_push,
     )
+    # inspect=False (default), so return type is int
+    sys.exit(cast(int, exit_code))
 
 
 @_cli_group.command(
