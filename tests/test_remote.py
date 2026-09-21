@@ -419,8 +419,10 @@ class TestIsVpnActive:
 class TestRemoteSessionIterm2Emit:
     """Verify iTerm2 profile/color is emitted before mosh/ssh connects for remote sessions."""
 
-    def _run_remote(self, argv, transport="mosh", preflight_run=None):
+    def _run_remote(self, argv, transport="mosh", preflight_run=None, vscode_authority=None):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": transport}}
+        if vscode_authority is not None:
+            config["remote"]["vscode_authority"] = vscode_authority
         call_order = []
         mock_preflight_run = preflight_run or MagicMock()
 
@@ -628,3 +630,11 @@ class TestRemoteSessionIterm2Emit:
         assert mock_emit.called
         emit_engine = mock_emit.call_args[0][1]
         assert emit_engine == "g"
+
+    def test_given_remote_vscode_authority_when_launching_then_profile_receives_authority(self):
+        _, mock_emit, _, _ = self._run_remote(
+            ["ai", "c", "4", "--remote"],
+            vscode_authority="framework",
+        )
+
+        assert mock_emit.call_args.kwargs["vscode_authority"] == "framework"

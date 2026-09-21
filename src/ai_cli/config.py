@@ -322,6 +322,8 @@ stale_after_seconds = 600
 # identity_file = ""
 # transport = "mosh"     # "ssh" or "mosh"
 # project = "my-project" # default project (directory name under ~/projects/)
+## Optional VS Code Remote-SSH/SSH config alias for iTerm2 Cmd-click routing.
+# vscode_authority = "server"
 ## VPN poll interval in seconds for the vpn-watch daemon (default: 3)
 # vpn_poll_interval = 3
 

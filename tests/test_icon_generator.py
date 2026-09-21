@@ -139,13 +139,28 @@ class TestGenerateDynamicProfile:
         data = json.loads(out.read_text())
         assert data["Profiles"][0]["Dynamic Profile Parent Name"] == "Default"
 
-    def test_no_semantic_history_key(self, tmp_path):
+    def test_given_no_authority_when_generating_profile_then_omits_semantic_history(self, tmp_path):
         # The generator no longer injects a Semantic History command — file opening
         # is handled by the macOS default app (VS Code), set via LaunchServices.
         # Profiles omit the key so they inherit Default's "Open with default app".
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         assert "Semantic History" not in json.loads(out.read_text())["Profiles"][0]
+
+    def test_given_remote_authority_when_generating_profile_then_adds_remote_open_command(self, tmp_path):
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile(
+                "test-session",
+                "#5e35b1",
+                "cc",
+                vscode_authority="framework",
+            )
+
+        semantic_history = json.loads(out.read_text())["Profiles"][0]["Semantic History"]
+        assert semantic_history == {
+            "action": "command",
+            "text": "ai internal open-vscode-remote framework '\\1' '\\2'",
+        }
 
     def test_tab_color_set_in_profile(self, tmp_path):
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
