@@ -80,6 +80,7 @@ def get_engine_script(
     iterm2_cfg: dict | None = None,
     gemini_cmd: str = "gemini",
     pi_provider: str = "openai-codex",
+    launch_log_path: str | None = None,
 ) -> str:
     # Validate UUID before interpolating into bash script (defense-in-depth)
     if session_id_uuid and not re.fullmatch(r"[0-9a-f-]{36}", session_id_uuid):
@@ -96,6 +97,7 @@ def get_engine_script(
         "project_prefix": shlex.quote(project_prefix),
         "uuid": shlex.quote(session_id_uuid or ""),
         "project_name": shlex.quote(project_name),
+        "launch_log_path": shlex.quote(launch_log_path or ""),
     }
     cd_cmd = f"cd -- {shlex.quote(worktree_dir)}" if worktree_dir else ":"
     notify_cmd = 'ai internal notify "$tmux_session" "Agent Finished Task" 2>/dev/null || true' if notify else "true"
@@ -136,6 +138,7 @@ def get_engine_script(
             "iterm2_cfg": iterm2_cfg or {},
             "gemini_cmd": gemini_cmd,
             "pi_provider": pi_provider,
+            "launch_log_path": launch_log_path or "",
         }
     )
 
@@ -159,7 +162,17 @@ def get_engine_script(
       _ai_cli_child_mode=true
       shift
     fi
+    _ai_launch_log={shell["launch_log_path"]}
     if ! $_ai_cli_child_mode; then
+      # Preserve interactive stderr while recording supervisor-only diagnostics.
+      # Child bodies restore fd 2 below so normal agent output does not grow this log.
+      if [[ -n "$_ai_launch_log" ]]; then
+        exec 3>&2
+        exec 2> >(while IFS= read -r _ai_log_line; do
+          printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$_ai_log_line" >> "$_ai_launch_log"
+          printf '%s\n' "$_ai_log_line" >&3
+        done)
+      fi
       # These descriptors belong only to the supervisor that exported them.
       # A nested launch can inherit stale values from another session; establish
       # this supervisor's descriptors below instead of using those values.
@@ -379,6 +392,9 @@ def get_engine_script(
         printf '%s\n' "ai-cli: skipping tmux session cleanup because supervisor ownership was not established" >&2
       fi
       exit 0
+    fi
+    if [[ -n "${{_ai_launch_log:-}}" ]]; then
+      exec 2>&3
     fi
     {cd_cmd}
     direnv_root="$PWD"

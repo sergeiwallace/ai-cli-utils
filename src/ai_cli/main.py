@@ -87,6 +87,7 @@ from .iterm2 import (  # noqa: F401
     _resolve_iterm2_config,
     _set_iterm2_name_by_tty,
 )
+from .launch_logging import create_launch_log
 from .launch_reporter import InstallOrigin, LaunchReporter
 from .process_manager import (  # noqa: F401
     _cmd_quota_watch_start,
@@ -1158,6 +1159,7 @@ def _engine_script_from_meta(meta: dict) -> str:
         iterm2_cfg=meta.get("iterm2_cfg") or None,
         gemini_cmd=meta.get("gemini_cmd", "gemini"),
         pi_provider=meta.get("pi_provider", "openai-codex"),
+        launch_log_path=meta.get("launch_log_path") or None,
     )
 
 
@@ -2386,6 +2388,7 @@ def _do_session_launch(
     remote_machine: str = "",
     no_direnv: bool = False,
     reporter: LaunchReporter | None = None,
+    launch_log_path: str | None = None,
     dry_run: bool = False,
 ) -> None:
     # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
@@ -3283,6 +3286,7 @@ def _do_session_launch(
         iterm2_cfg=_iterm2_cfg,
         gemini_cmd=gemini_cmd,
         pi_provider=pi_provider,
+        launch_log_path=launch_log_path,
     )
     # Emit iTerm2 profile/color/title now, before tmux takes over the pane.
     # This fires in the current shell (no DCS wrapping needed) so it works
@@ -3509,7 +3513,9 @@ def _session_command(engine: str):
         if remote_machine and not remote:
             raise click.UsageError("--remote-machine requires -R/--remote")
         # Startup hooks happen only when launching a new session.
-        reporter = LaunchReporter(quiet=quiet, verbose=verbose)
+        launch_log = create_launch_log(name or engine)
+        launch_log.install_stderr()
+        reporter = LaunchReporter(quiet=quiet, verbose=verbose, logger=launch_log.logger, stream=launch_log.live_stderr)
         mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
         reporter.start(
             engine=_engine_display_name(engine),
@@ -3553,6 +3559,7 @@ def _session_command(engine: str):
             remote_machine=remote_machine,
             no_direnv=no_direnv,
             reporter=reporter,
+            launch_log_path=str(launch_log.path),
             dry_run=dry_run,
         )
 
