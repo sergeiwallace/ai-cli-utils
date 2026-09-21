@@ -1646,6 +1646,21 @@ def _handle_internal(argv: list[str]) -> None:
         tty = target if target.startswith("/dev/") else _iterm2._iterm_pane_tty_for_tmux_session(target)
         _iterm2._set_iterm2_name_by_tty(tty, argv[2])
         sys.exit(0)
+    elif action == "open-vscode-remote":
+        if len(argv) not in (3, 4):
+            print(
+                "Usage: ai internal open-vscode-remote <authority> <absolute_path> [line]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        from .vscode import open_vscode_remote
+
+        try:
+            status = open_vscode_remote(argv[1], argv[2], argv[3] if len(argv) == 4 else "")
+        except (OSError, ValueError) as exc:
+            print(f"VS Code remote open failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(status)
     else:
         print(f"Usage: ai internal <action> [args...] (unknown action: {action})", file=sys.stderr)
         sys.exit(1)
@@ -2757,7 +2772,13 @@ def _do_session_launch(
         # is the only opportunity to set the profile and tab color.
         _r_ai_name = remote_session_id or _session._new_session_display_name(engine, remote_prefix, name, True)
         _iterm2_remote_slot = _iterm2._assign_iterm2_color_slot(_r_ai_name, engine)
-        _iterm2._emit_iterm2_profile_setup(_r_ai_name, engine, _r_ai_name, slot=_iterm2_remote_slot)
+        _iterm2._emit_iterm2_profile_setup(
+            _r_ai_name,
+            engine,
+            _r_ai_name,
+            slot=_iterm2_remote_slot,
+            vscode_authority=remote_cfg.get("vscode_authority"),
+        )
 
         _cleanup_cmd = ["ai", "internal", "cleanup-session-files", _r_ai_name]
         ssh_args.append(f"{remote_shell} -l -c {shlex.quote(remote_cmd)}")

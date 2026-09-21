@@ -394,6 +394,7 @@ def _emit_iterm2_profile_setup(
     session: str = "",
     slot: str | None = None,
     project_name: str = "",
+    vscode_authority: str | None = None,
 ) -> None:
     """Emit iTerm2 profile/color/title escape sequences directly to stdout.
 
@@ -430,7 +431,13 @@ def _emit_iterm2_profile_setup(
         icon_color = _resolve_iterm2_config(cfg, ai_name, project_name).get("icon_color")
 
         icon_path = _ig.generate_session_icon(ai_name, color_hex, session_type, icon_color)
-        _ig.generate_dynamic_profile(ai_name, color_hex, session_type, icon_path)
+        _ig.generate_dynamic_profile(
+            ai_name,
+            color_hex,
+            session_type,
+            icon_path,
+            vscode_authority=vscode_authority,
+        )
         # Give iTerm2 time to FSEvents-reload the Dynamic Profile before SetProfile
         # is sent. Without this delay the profile may not exist yet when the escape
         # sequence arrives, which is unrecoverable for remote (mosh) sessions where

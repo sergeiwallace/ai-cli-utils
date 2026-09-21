@@ -204,6 +204,7 @@ def generate_dynamic_profile(
     icon_path: Path | None = None,
     background_hex: str | None = None,
     base_profile: str | None = None,
+    vscode_authority: str | None = None,
 ) -> Path:
     """Write a Dynamic Profile JSON for this session. Returns the path.
 
@@ -237,6 +238,10 @@ def generate_dynamic_profile(
             "Escaping": 2,
         }
     }
+    if vscode_authority:
+        from .vscode import build_iterm2_semantic_history
+
+        profile["Semantic History"] = build_iterm2_semantic_history(vscode_authority)
     if background_hex:
         profile["Background Color"] = _hex_to_iterm2_color(background_hex)
     if icon_path and icon_path.exists():

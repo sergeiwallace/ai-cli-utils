@@ -149,6 +149,16 @@ class TestEmitIterm2ProfileSetup:
         out = capsys.readouterr().out
         assert "SetProfile=ai-cli:sw-1" in out
 
+    def test_given_vscode_authority_when_emitting_then_forwards_it_to_profile_generator(self, capsys):
+        with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
+            with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
+                with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
+                    with patch("ai_cli.icon_generator.generate_dynamic_profile") as generate_profile:
+                        _emit_iterm2_profile_setup("sw-1", "c", vscode_authority="framework")
+
+        assert "SetProfile=ai-cli:sw-1" in capsys.readouterr().out
+        assert generate_profile.call_args.kwargs["vscode_authority"] == "framework"
+
 
 class TestEmitIterm2ProfileSetupGeminiWithIterm2Env:
     """Tests for gemini engine + ITERM_SESSION_ID in _emit_iterm2_profile_setup."""
