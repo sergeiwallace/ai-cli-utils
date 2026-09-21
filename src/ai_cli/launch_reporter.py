@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import AbstractContextManager
 from enum import StrEnum
 from time import monotonic
+from typing import TextIO
 
 import click
 
@@ -42,13 +44,24 @@ class _Phase(AbstractContextManager["_Phase"]):
 class LaunchReporter:
     """Emit durable launch phase lines without adding a logging dependency."""
 
-    def __init__(self, *, quiet: bool = False, verbose: bool = False):
+    def __init__(
+        self,
+        *,
+        quiet: bool = False,
+        verbose: bool = False,
+        logger: logging.Logger | None = None,
+        stream: TextIO | None = None,
+    ):
         self.quiet = quiet
         self.verbose = verbose
+        self.logger = logger
+        self.stream = stream
 
     def _emit(self, phase: str, outcome: str) -> None:
+        if self.logger is not None:
+            self.logger.info("[launch] %s: %s", phase, outcome)
         if not self.quiet:
-            click.echo(f"[launch] {phase}: {outcome}", err=True)
+            click.echo(f"[launch] {phase}: {outcome}", err=True, file=self.stream)
 
     def start(self, *, engine: str, mode: str, continuing: bool = False) -> None:
         verb = "Continuing" if continuing else "Starting"
@@ -58,8 +71,10 @@ class LaunchReporter:
         return _Phase(self, name, start)
 
     def detail(self, name: str, outcome: str) -> None:
-        if self.verbose:
-            self._emit(name, outcome)
+        if self.logger is not None:
+            self.logger.debug("[launch] %s: %s", name, outcome)
+        if self.verbose and not self.quiet:
+            click.echo(f"[launch] {name}: {outcome}", err=True, file=self.stream)
 
     def handoff(self, *, engine: str, session: str) -> None:
         self._emit("Ready", f"handing off to {engine} ({session})")
