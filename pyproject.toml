@@ -135,9 +135,10 @@ include = ["src", "tests"]
 extraPaths = ["src", "scripts"]
 
 [tool.ruff]
-# Fleet lint baseline, written by ai-harness install.sh -- the path is resolved per machine.
-# If this repo is checked out standalone with no ai-harness present, comment out the line below.
-extend = "~/projects/ai-harness/lint/ruff-base.toml"
+# No fleet ai-harness `extend` pointer here on purpose (AI-CLI-bmt0/AI-CLI-u3zc): this repo
+# is public and must lint cleanly on GitHub's CI and for external contributors, neither of
+# which has ~/projects/ai-harness present. The select list below already carries every rule
+# ai-harness's fleet baseline (E4/E7/E9/F/I) would add, plus more, so this is a no-op fix.
 line-length = 120
 
 [tool.ruff.lint]
