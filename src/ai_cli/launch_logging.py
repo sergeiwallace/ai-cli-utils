@@ -32,7 +32,7 @@ def _log_level(message: str) -> int:
     return logging.INFO
 
 
-class _LoggingStderr:
+class _LoggingStderr(TextIO):  # type: ignore[misc]
     """Mirror launch stderr into the standard logging pipeline line by line."""
 
     def __init__(self, stream: TextIO, logger: logging.Logger):
