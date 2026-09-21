@@ -377,9 +377,10 @@ def _template_diff(source: str, previous_commit: str) -> TemplateChanges | None:
         for path in paths
         if path not in current_paths and (rendered_path := _rendered_template_path(path, subdirectory)) is not None
     }
+    skip_if_exists_raw = config.get("_skip_if_exists", [])
     skip_if_exists = {
         path.removesuffix(".jinja")
-        for path in config.get("_skip_if_exists", [])
+        for path in (skip_if_exists_raw if isinstance(skip_if_exists_raw, list) else [])
         if isinstance(path, str) and "{{" not in path and "{%" not in path
     }
     return TemplateChanges(rendered_paths, rendered_hunks, skip_if_exists, deleted_paths, _excluded_on_update(config))
@@ -670,6 +671,7 @@ def _do_update_in_worktree(
         )
         if commit_hash.returncode != 0 or not commit_hash.stdout.strip():
             return "failed", "could not determine temporary commit hash"
+        assert changed_files is not None  # guaranteed by check at line 650
         delivered_update = DeliveredUpdate(wt_dir, commit_hash.stdout.strip(), changed_files)
 
     if push:
@@ -856,6 +858,7 @@ def _run_isolated(
         elif status == "nochange":
             print("· no changes")
         elif status == "conflict":
+            assert isinstance(detail, list)  # conflict status returns list[str] of paths
             print(f"✗ CONFLICTS ({len(detail)} file(s)) — resolve in temp worktree, then merge:")
             for rel in detail:
                 print(f"    conflict: {rel}")
