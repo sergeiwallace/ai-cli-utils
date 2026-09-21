@@ -2,7 +2,7 @@
 title: "A terminal foreground-promotion failure can leave a session supervisor waiting forever"
 category: bugs
 tags: [session, tmux, terminal, process-group, signals, remote]
-status: needs-live-linux-reproduction
+status: needs-deterministic-linux-regression
 severity: P0
 template_version: "bug-1.0.0"
 related_docs:
@@ -27,8 +27,8 @@ are the only preserved launch evidence; per-launch logging was not available.
 ## Environment and reproduction
 
 The report came from a macOS client connected to a Linux tmux server over a
-remote terminal transport. The affected sessions were removed before this
-investigation began.
+remote terminal transport. The live incident evidence is preserved in
+[`aih-jpnd-2026-09-21-live-linux-repro.txt`](aih-jpnd-2026-09-21-live-linux-repro.txt).
 
 The generated supervisor creates a terminal-backed child wrapper that:
 
@@ -46,9 +46,12 @@ SIGCONT sent afterward               -> child exits with its queued SIGTERM
 
 It cannot reproduce the reported session failure faithfully. The remote host
 name is unavailable from this sandbox, and no local Linux container runtime is
-running. A temporary real-pseudo-terminal experiment was deliberately discarded:
-the macOS `script` wrapper's teardown differs from a still-live Linux tmux pane,
-so it did not provide a valid RED regression for the reported behavior.
+running. A focused macOS pty experiment ran the generated supervisor with a pty
+that was a terminal but not its controlling terminal. Its real `tcsetpgrp` call
+failed and emitted the expected diagnostic after the child reached readiness,
+but the macOS zsh supervisor exited rather than blocking in its child wait.
+That platform difference means the experiment cannot be retained as a RED
+regression for the Linux hang.
 
 ## Root cause analysis
 
@@ -92,27 +95,34 @@ regression is confirmed RED. No production edit was attempted.
 
 ## Required next reproduction
 
-Run the generated supervisor on Linux inside a real tmux pane, force its
-foreground-promotion syscall to fail after the wrapper records readiness, and
-assert all of the following:
+Run the generated supervisor with Linux zsh and a real pty that is a terminal
+but not its controlling terminal. This makes the real foreground-promotion
+syscall fail after the wrapper records readiness without mocking `tcsetpgrp` or
+requiring tmux or SSH. Bound the generated retry count in the test harness only
+so the cleanup branch is reached promptly, then assert all of the following:
 
 - the exact promotion error is emitted;
 - the supervisor exits within a bounded interval;
 - the stopped child wrapper has exited; and
-- an unrelated tmux session remains live.
+- an unrelated process remains live.
 
 The test must fail on the current source before any fix. It must not mock
-`tcsetpgrp`; it should make the real syscall reject a non-existent process group
-or use a real terminal condition that produces the failure.
+`tcsetpgrp`; it should use the non-controlling pty condition above (or another
+real terminal condition that produces the failure). The failure must show that
+the supervisor remains live after the promotion diagnostic and that its stopped
+child has a pending `SIGTERM`. A Linux tmux test remains a useful additional
+end-to-end check, but is not required to establish this cleanup mechanism.
 
 ## Verification
 
 - Read the current generated supervisor and prior signal/terminal bug records.
 - Confirm the repository working tree was clean before investigation.
-- Confirm remote inspection could not start because the configured remote host
-  name did not resolve from this sandbox.
+- Read the live Linux process evidence: both stopped children had pending
+  `SIGTERM`, and both supervisors were blocked in `sigsuspend`.
 - Run the direct stopped-child signal experiment: `SIGTERM` alone left the child
   running; `SIGCONT` caused its normal exit.
+- Run a real generated-supervisor macOS pty experiment: it emitted the expected
+  promotion diagnostic but exited, so it did not reproduce Linux's blocked wait.
 - No code or test changes were retained because no valid Linux RED regression
   was available.
 
@@ -129,3 +139,4 @@ trigger from the resulting cleanup deadlock.
 | Date | Change | Notes |
 |---|---|---|
 | 2026-09-20 | Investigation recorded | Static causal chain and a real stopped-child signal experiment support the cleanup hypothesis; no production fix because Linux tmux RED evidence is unavailable. |
+| 2026-09-21 | Live Linux evidence and macOS pty attempt recorded | Live stopped children had pending `SIGTERM` and Linux supervisors waited in `sigsuspend`. The macOS pty reached the real promotion error but exited, so Iron Gate 5 prevents a production edit until a Linux RED regression is run. |
