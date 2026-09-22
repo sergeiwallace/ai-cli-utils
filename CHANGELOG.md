@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-22
+
 ### Added
 
 - zsh is now provisioned as a native runtime dependency, alongside tmux and
@@ -128,8 +130,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminate tmux sessions. Start the independent reaper with
   `ai session-reaper start`; it observes by default and requires explicit
   `mode = "reap"` opt-in before it can reclaim an eligible session.
-
-## [0.8.0] - 2026-08-27
 
 ### Added
 
@@ -721,7 +721,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session reconnection (`ai reconnect`)
 
 [Unreleased]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.8.0...HEAD
-[0.8.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.7.0...HEAD
+[0.8.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.7.0...v0.8.0
 [0.4.1]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sergeiwallace/ai-cli-utils/compare/v0.2.0...v0.3.0
