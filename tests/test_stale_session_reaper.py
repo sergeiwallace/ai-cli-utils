@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import pty
 import shlex
 import shutil
 import signal
@@ -1279,6 +1280,9 @@ def _start_generated_supervisor(
     pseudo_terminal: bool = False,
     ready_timeout: float = 15,
     extra_commands: dict[str, str] | None = None,
+    stdin_fd: int | None = None,
+    fast_promotion_retry: bool = False,
+    wait_for_child_ready: bool = True,
 ) -> tuple[subprocess.Popen[str], Path, Path]:
     """Start the generated supervisor with controlled external session commands."""
     # Decide the host-capability question BEFORE building anything. This used to
@@ -1356,6 +1360,11 @@ fi
         )
     if fast_heartbeat:
         script = script.replace("sleep 30 || exit 0", "sleep 0.05 || exit 0")
+    if fast_promotion_retry:
+        # Bound only in the test harness (docs/bugs/terminal-promotion-failure-hang.md
+        # "Required next reproduction") so a deterministically-failing promotion
+        # gives up in ~0.2s instead of the production 30s (3000 * 0.01s).
+        script = script.replace("_promotion_attempt < 3000", "_promotion_attempt < 20")
     supervisor.write_text(script, encoding="utf-8")
     environment = {
         **os.environ,
@@ -1388,17 +1397,22 @@ fi
             # blaming the code under test for an argv-parsing collision in its
             # own harness.
             command = [script_bin, "-q", "-c", shlex.join(command), "/dev/null"]
+    if stdin_fd is not None:
+        stdin_value: int | None = stdin_fd
+    else:
+        stdin_value = subprocess.PIPE if terminal else None
     process = subprocess.Popen(
         command,
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        stdin=subprocess.PIPE if terminal else None,
+        stdin=stdin_value,
         start_new_session=True,
     )
     _SPAWNED_SUPERVISORS.append(process)
-    _wait_for_path(child_ready, process, timeout=ready_timeout)
+    if wait_for_child_ready:
+        _wait_for_path(child_ready, process, timeout=ready_timeout)
     return process, event_log, heartbeat_log
 
 
@@ -1407,6 +1421,88 @@ def _finish_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
         os.kill(process.pid, signal.SIGTERM)
     stdout, stderr = _communicate_supervisor(process)
     return stdout, stderr
+
+
+def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exits_and_child_dies(
+    tmp_path: Path, supported_session_shell: str
+):
+    """A foreground-promotion failure must not hang the supervisor forever (AI-CLI-jpnd).
+
+    Two independent remote launches hung on a blank pane, ignored repeated
+    Ctrl+C, and printed "could not promote child process group to terminal
+    foreground" -- see docs/bugs/terminal-promotion-failure-hang.md. The child
+    wrapper SIGSTOPs itself and waits for the supervisor to promote its
+    process group before it execs into the real session. When promotion never
+    succeeds, the former cleanup path sent only SIGTERM to that stopped child:
+    a stopped process retains a pending SIGTERM without acting on it until it
+    is continued, so ``_supervisor_wait_for_child``'s ``wait`` blocked forever
+    on a child that could never die.
+
+    Reproducing this does not need tmux or SSH: a pty that is a real terminal
+    but never became this process's *controlling* terminal makes the actual
+    ``tcsetpgrp`` syscall fail every time (ENOTTY), exactly like the reported
+    hang, without mocking anything. Opening the slave with ``O_NOCTTY`` alone
+    is not sufficient -- an interactive-capable shell that is itself a fresh
+    session leader (via ``start_new_session=True``) auto-acquires any valid
+    tty handed to it via job-control initialization the moment it starts,
+    regardless of how an unrelated ancestor opened the underlying fd
+    (confirmed against a real Linux host, Fedora, kernel 7.2.5, while writing
+    this test: a bare non-shell child left the fd genuinely uncontrolled, but
+    wrapping the identical fd in ``bash -c`` let it claim the terminal
+    anyway). What is reliable is giving the pty's controlling-terminal slot
+    to a *different* session first: a throwaway ``bash`` "owner" process is
+    started as its own session leader and left running, which the kernel
+    then refuses to let the supervisor's own (also fresh) session reclaim --
+    ``os.tcsetpgrp`` on it fails deterministically with ENOTTY every time,
+    exactly matching the production failure mode.
+    """
+    master_fd, initial_slave_fd = pty.openpty()
+    slave_name = os.ttyname(initial_slave_fd)
+    os.close(initial_slave_fd)
+
+    owner_fd = os.open(slave_name, os.O_RDWR)
+    owner = subprocess.Popen(
+        ["bash", "-c", "echo owner-up; sleep 60"],
+        stdin=owner_fd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        text=True,
+    )
+    os.close(owner_fd)
+    try:
+        assert owner.stdout is not None
+        owner.stdout.readline()  # blocks until the owner has claimed the terminal
+
+        slave_fd = os.open(slave_name, os.O_RDWR)
+        try:
+            process, _, _ = _start_generated_supervisor(
+                tmp_path,
+                supported_session_shell,
+                stdin_fd=slave_fd,
+                fast_promotion_retry=True,
+                wait_for_child_ready=False,
+            )
+        finally:
+            os.close(slave_fd)
+
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=5)
+            pytest.fail(
+                "supervisor never exited after a failed foreground promotion -- it hung "
+                "waiting on a stopped child that never received SIGCONT (AI-CLI-jpnd); "
+                f"stdout={stdout!r} stderr={stderr!r}"
+            )
+
+        assert "could not promote child process group to terminal foreground" in stderr, stderr
+        assert process.returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
+    finally:
+        owner.kill()
+        owner.wait(timeout=5)
+        os.close(master_fd)
 
 
 def test_given_generated_supervisor_when_pgrp_mismatch_then_it_publishes_no_heartbeat(

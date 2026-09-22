@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A remote session could hang on a blank pane, ignoring repeated Ctrl+C, and
+  print `ai-cli: could not promote child process group to terminal
+  foreground` forever. The generated supervisor's child wrapper stops itself
+  with `SIGSTOP` while it waits to be promoted to the terminal foreground
+  group; when that promotion never succeeded, the cleanup path sent only
+  `SIGTERM` to the stopped child. A stopped process only records `SIGTERM` as
+  pending — it never acts on it until continued — so the supervisor's own
+  wait blocked forever on a child that could never die. The cleanup path now
+  also sends `SIGCONT` to the child's process group, so it wakes, processes
+  the queued terminate signal, and the supervisor exits normally instead of
+  hanging. (`AI-CLI-jpnd`)
+
 ## [0.8.0] - 2026-09-22
 
 ### Added
