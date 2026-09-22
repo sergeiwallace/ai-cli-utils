@@ -365,7 +365,14 @@ def get_engine_script(
         _child_pid=$!
         if ! _supervisor_promote_child; then
           printf '%s\n' "ai-cli: could not promote child process group to terminal foreground" >&2
+          # The child wrapper SIGSTOPs itself waiting for this promotion to
+          # succeed. A stopped process only records a SIGTERM as pending; it
+          # never acts on it until continued, so a bare SIGTERM here left the
+          # wait below blocked forever on a child that could never die
+          # (AI-CLI-jpnd). Continue its whole process group after the TERM so
+          # it wakes, sees the pending signal, and actually exits.
           kill -TERM "$_child_pid" 2>/dev/null || true
+          kill -CONT -"$_child_pid" 2>/dev/null || true
           _supervisor_wait_for_child || true
           rm -f "$_supervisor_child_ready_path"
           exit 1

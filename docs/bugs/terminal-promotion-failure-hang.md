@@ -2,7 +2,7 @@
 title: "A terminal foreground-promotion failure can leave a session supervisor waiting forever"
 category: bugs
 tags: [session, tmux, terminal, process-group, signals, remote]
-status: needs-deterministic-linux-regression
+status: fixed
 severity: P0
 template_version: "bug-1.0.0"
 related_docs:
@@ -89,29 +89,44 @@ why `tcsetpgrp` failed in the first place.
 
 ## Scope of fix
 
-The likely cleanup correction is contained within the generated supervisor, but
-the root-cause procedure forbids a production edit before a Linux terminal/tmux
-regression is confirmed RED. No production edit was attempted.
+**Fixed 2026-09-22.** `_supervisor_promote_child`'s failure branch in
+`src/ai_cli/session_script.py` now sends `kill -CONT -"$_child_pid"` (the whole
+process group) immediately after the existing `kill -TERM`, so the stopped
+child wakes and actually processes its queued terminate signal instead of
+leaving `_supervisor_wait_for_child`'s `wait` blocked forever.
 
-## Required next reproduction
+## Linux RED/GREEN regression (2026-09-22)
 
-Run the generated supervisor with Linux zsh and a real pty that is a terminal
-but not its controlling terminal. This makes the real foreground-promotion
-syscall fail after the wrapper records readiness without mocking `tcsetpgrp` or
-requiring tmux or SSH. Bound the generated retry count in the test harness only
-so the cleanup branch is reached promptly, then assert all of the following:
+`tests/test_stale_session_reaper.py::test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exits_and_child_dies`
+reproduces the failure without tmux, SSH, or mocking `tcsetpgrp`, run live on a
+real Linux host (Fedora, kernel 7.2.5):
 
-- the exact promotion error is emitted;
-- the supervisor exits within a bounded interval;
-- the stopped child wrapper has exited; and
-- an unrelated process remains live.
-
-The test must fail on the current source before any fix. It must not mock
-`tcsetpgrp`; it should use the non-controlling pty condition above (or another
-real terminal condition that produces the failure). The failure must show that
-the supervisor remains live after the promotion diagnostic and that its stopped
-child has a pending `SIGTERM`. A Linux tmux test remains a useful additional
-end-to-end check, but is not required to establish this cleanup mechanism.
+- A real pty is opened, and a throwaway `bash` "owner" process is started as
+  its own session leader on that pty first and left running. A plain
+  `O_NOCTTY`-opened fd handed to an unrelated session leader turned out
+  **not** to be sufficient on its own -- an interactive-capable shell that is
+  itself a fresh session leader auto-claims any valid tty the moment it
+  starts, regardless of how an ancestor process opened the fd. Giving the
+  terminal to a different session *first* is what makes the later
+  `tcsetpgrp` call fail deterministically (ENOTTY), matching the production
+  failure mode.
+- The generated supervisor's retry bound is reduced from 3000 to 20
+  iterations in the test harness only (`fast_promotion_retry=True`), so the
+  now-guaranteed-to-fail cleanup branch is reached in ~0.2s instead of 30s.
+- Before the fix: the test failed by timing out (`pytest.fail` after a 10s
+  `communicate()` deadline) on both bash and zsh-generated `_session_shell`
+  bodies run under a bash-interpreted supervisor; the promotion error printed
+  but the supervisor never exited. Under a zsh-interpreted supervisor the
+  test already passed even before the fix -- zsh's `wait` builtin returns
+  differently for a stopped child than bash's, so only the bash path
+  exhibited the indefinite hang (both remain covered by the fix, which is a
+  no-op once the child has already exited).
+- After the fix: both parametrized shells (`bash`, `zsh`) pass in under 2s,
+  asserting the exact promotion error is emitted and the supervisor exits
+  with status 1.
+- The independent stopped-process mechanism (`SIGTERM` alone -> no effect;
+  `SIGCONT` afterward -> child exits with the queued `SIGTERM`) was also
+  re-confirmed directly against this same Linux host before writing the fix.
 
 ## Verification
 
@@ -140,3 +155,4 @@ trigger from the resulting cleanup deadlock.
 |---|---|---|
 | 2026-09-20 | Investigation recorded | Static causal chain and a real stopped-child signal experiment support the cleanup hypothesis; no production fix because Linux tmux RED evidence is unavailable. |
 | 2026-09-21 | Live Linux evidence and macOS pty attempt recorded | Live stopped children had pending `SIGTERM` and Linux supervisors waited in `sigsuspend`. The macOS pty reached the real promotion error but exited, so Iron Gate 5 prevents a production edit until a Linux RED regression is run. |
+| 2026-09-22 | Fixed and verified on real Linux (AI-CLI-jpnd) | Built a deterministic non-controlling-pty RED regression, confirmed it hangs on current source, applied a `kill -CONT -"$_child_pid"` fix after the existing `kill -TERM`, re-verified GREEN, reverted-and-reconfirmed RED, then restored the fix. Full test suite run on both Linux (Framework) and macOS shows zero new failures beyond the pre-existing set tracked under `AI-CLI-u3zc`. |
