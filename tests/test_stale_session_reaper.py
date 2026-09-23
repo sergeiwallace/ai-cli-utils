@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import pty
 import shlex
 import shutil
 import signal
@@ -1505,6 +1504,15 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
     ``os.tcsetpgrp`` on it fails deterministically with ENOTTY every time,
     exactly matching the production failure mode.
     """
+    # Imported here, not at module scope (AI-CLI-ta1l). On Windows `import pty` pulls in
+    # `tty`, which does `from termios import *`, and termios does not exist there -- so a
+    # module-level import made this ENTIRE FILE fail to COLLECT on Windows with
+    # `ModuleNotFoundError: No module named 'termios'`, taking all ~69 of its tests with
+    # it, and tests/test_skip_hygiene.py with them (it imports this module). A
+    # module-level `pytestmark` skip cannot help: collection imports the module before
+    # any marker is consulted. This is the only use of pty in the file.
+    import pty
+
     master_fd, initial_slave_fd = pty.openpty()
     slave_name = os.ttyname(initial_slave_fd)
     os.close(initial_slave_fd)
