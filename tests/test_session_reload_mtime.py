@@ -48,7 +48,37 @@ import pytest
 
 from ai_cli.session_script import get_engine_script
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+
+def _bash_actually_runs() -> bool:
+    """Prove bash executes, rather than trusting that a file named bash exists.
+
+    ``shutil.which("bash")`` is a presence check, and on Windows it succeeds on a
+    binary that is not bash: ``C:\\Windows\\System32\\bash.exe`` is the WSL
+    launcher stub. With no distribution installed it prints "Windows Subsystem for
+    Linux has no installed distributions" as UTF-16 and runs nothing, so every
+    test here failed comparing a shell mtime against that text -- decoded through
+    a UTF-8 reader, which is why the assertion messages arrived as ``W^@i^@n^@...``.
+
+    So the guard has to ask whether bash *works*, which is also the honest question
+    on any platform: a bash on PATH that cannot execute is not a usable bash
+    anywhere.
+    """
+    if shutil.which("bash") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["bash", "-c", "printf ok"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return probe.returncode == 0 and probe.stdout.strip() == "ok"
+
+
+pytestmark = pytest.mark.skipif(not _bash_actually_runs(), reason="requires a working bash")
 
 
 def _script(engine: str = "c") -> str:
