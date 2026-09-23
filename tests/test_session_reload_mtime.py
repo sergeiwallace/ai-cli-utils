@@ -152,9 +152,15 @@ def test_helper_detects_a_real_change(tmp_path: Path) -> None:
     target.write_text("x", encoding="utf-8")
     helper = _mtime_helper(_script())
 
+    # `touch -t CCYYMMDDhhmm.SS`, not `touch -d "@<epoch>"`: the `@epoch` form is a GNU
+    # coreutils extension, and BSD/macOS touch rejects it outright with "out of range
+    # or illegal time specification" (AI-CLI-ta1l). `-t` is POSIX and GNU accepts it
+    # too, so this is portable rather than merely swapped to the other platform's
+    # dialect. Any fixed past timestamp works -- the assertion is only that the mtime
+    # CHANGED, never what it became.
     result = _run(
         f"{helper}\n"
-        f'a=$(_file_mtime {target}); touch -d "@1000000000" {target}; '
+        f"a=$(_file_mtime {target}); touch -t 200109090146.40 {target}; "
         f'b=$(_file_mtime {target}); [[ -n "$a" && -n "$b" && "$a" != "$b" ]] '
         f"&& printf changed"
     )
