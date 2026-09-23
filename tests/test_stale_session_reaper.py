@@ -1695,6 +1695,25 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     assert "Ctrl+C again within" in stderr
 
 
+def _child_launch_loop_anchor(script: str) -> str:
+    """Return the generated line that installs the per-child EXIT trap, verbatim.
+
+    That trap sits immediately above the child launch loop, so splicing before it
+    is how a test gets a statement to run once before any child starts.
+
+    Located by its two invariant substrings rather than matched as an exact literal
+    (AI-CLI-ta1l). The literal form drifted when the trap gained a
+    ``[[ -n "$watcher_pid" ]] &&`` guard, and every caller then failed with
+    "expected the child launch loop" — a stale-anchor problem in the harness
+    reported as if the template were broken. Uniqueness is asserted, so a future
+    change that makes the anchor ambiguous still fails loudly instead of splicing
+    into the wrong place.
+    """
+    matches = [line for line in script.splitlines() if "watcher_pid" in line and line.rstrip().endswith("EXIT")]
+    assert len(matches) == 1, f"expected exactly one per-child EXIT trap to anchor on, found {matches}"
+    return matches[0]
+
+
 def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skips_direnv_and_exits(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -1715,8 +1734,7 @@ def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skip
         marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
         1,
     )
-    loop_start = '    trap \'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"\' EXIT\n\n'
-    assert loop_start in instrumented_script, "expected the child launch loop"
+    loop_start = _child_launch_loop_anchor(instrumented_script)
     instrumented_script = instrumented_script.replace(
         loop_start,
         f"    printf '%s\\n' exit > {str(exit_file)!r}\n" + loop_start,
