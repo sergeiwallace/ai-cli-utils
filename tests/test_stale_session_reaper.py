@@ -282,6 +282,11 @@ def _start_real_tmux_supervisor(
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "SHELL": str(recovery_shell),
         "XDG_STATE_HOME": str(state_root),
+        # See _zsh_rc_free_home: without this, ~/.zshenv re-prepends ~/.local/bin and
+        # the real `ai` shadows the stub. Must also be listed in the pane environment
+        # below -- tmux passes only the names given with -e, so setting it here alone
+        # would leave the pane inheriting the developer's own ZDOTDIR.
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
     }
     created = _tmux_new_session(
         socket,
@@ -297,6 +302,7 @@ def _start_real_tmux_supervisor(
             "PATH",
             "SHELL",
             "XDG_STATE_HOME",
+            "ZDOTDIR",
         ),
     )
     assert created.returncode == 0, created.stderr
@@ -1180,6 +1186,34 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o700)
 
 
+def _zsh_rc_free_home(tmp_path: Path) -> Path:
+    """An empty directory to point ``ZDOTDIR`` at, so zsh loads no rc file.
+
+    Scrubbing this at the process boundary is what makes the stub binaries in
+    ``bin_dir`` actually win (AI-CLI-ta1l). **zsh sources ``.zshenv`` on every
+    invocation, including a non-interactive script** — unlike bash, which sources
+    nothing for a non-interactive shell. On a machine whose ``~/.zshenv`` re-exports
+    ``PATH`` with ``~/.local/bin`` prepended, that silently moved the REAL ``ai``
+    ahead of the harness stub, so the generated script called the real CLI, the stub
+    never recorded anything, and the assertion failed on a file that was never
+    written.
+
+    It bit both shell legs, not just the zsh one, because the heartbeat ticker and
+    the child are always launched under ``resolve_session_shell()``'s choice (zsh
+    where present) regardless of which shell runs the supervisor. It also passed on
+    CI while failing on a developer Mac, because a CI runner has no such
+    ``~/.zshenv`` to inherit — the exact shape of a test that is green only where
+    nobody has configured anything.
+
+    ``ZDOTDIR`` is used rather than ``zsh -f``: the shell invocation belongs to the
+    generated script (production code), so the fix has to live in the environment the
+    harness controls, not in an argv the harness does not own.
+    """
+    zdotdir = tmp_path / "zdotdir"
+    zdotdir.mkdir(exist_ok=True)
+    return zdotdir
+
+
 def _write_isolated_tmux_wrapper(path: Path) -> None:
     tmux_binary = shutil.which("tmux")
     assert tmux_binary is not None, "tmux binary not available on PATH"
@@ -1369,6 +1403,7 @@ fi
     environment = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
         "XDG_STATE_HOME": str(state_home),
         "AI_CLI_TEST_CHILD_READY": str(child_ready),
         "AI_CLI_TEST_EVENTS": str(event_log),
