@@ -567,6 +567,13 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
         "AI_CLI_TEST_TMUX_SOCKET": real_tmux_socket,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "XDG_STATE_HOME": str(state_home),
+        # See _zsh_rc_free_home. This site launches the supervisor under bash, which
+        # sources no rc file, so the stubs are not shadowed today. It is set anyway
+        # because the generated script's own child and heartbeat ticker are launched
+        # under resolve_session_shell()'s choice -- zsh where present -- regardless of
+        # the supervisor's shell, which is exactly how this class of breakage reached
+        # the [bash] legs elsewhere in this file.
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
     }
 
     created = _tmux_new_session(
@@ -574,7 +581,7 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
         session_id,
         ["bash", "-c", 'exec bash "$1" </dev/null', "--", str(supervisor)],
         environment,
-        ("PATH", "XDG_STATE_HOME", "AI_CLI_TEST_TMUX_SOCKET"),
+        ("PATH", "XDG_STATE_HOME", "ZDOTDIR", "AI_CLI_TEST_TMUX_SOCKET"),
     )
 
     assert created.returncode == 0, created.stderr
@@ -660,6 +667,12 @@ fi
         "AI_CLI_TEST_TMUX_SOCKET": real_tmux_socket,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "XDG_STATE_HOME": str(state_home),
+        # See _zsh_rc_free_home. This test builds its own environment rather than going
+        # through _start_generated_supervisor, so it needs the same scrub: without it
+        # ~/.zshenv re-prepends ~/.local/bin and the REAL `claude` shadows the stub, so
+        # nothing is ever appended to agent-launches.log. That is why the [zsh] leg
+        # failed while [bash] passed -- bash sources no rc file when non-interactive.
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
     }
 
     created = _tmux_new_session(
@@ -670,6 +683,7 @@ fi
         (
             "PATH",
             "XDG_STATE_HOME",
+            "ZDOTDIR",
             "AI_CLI_TEST_EVENTS",
             "AI_CLI_TEST_EXIT_REQUEST",
             "AI_CLI_TEST_INT_STATE",
