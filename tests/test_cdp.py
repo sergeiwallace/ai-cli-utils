@@ -93,12 +93,31 @@ class TestFindChromeBinary:
         assert result is None
 
 
+def _simulate_linux(target):
+    """Declare the Linux platform *and* the POSIX uid the Linux branch reads.
+
+    Patching ``sys.platform`` alone is not enough to simulate Linux on a
+    non-Linux host, and the two halves have to travel together or the second is
+    forgotten. ``_linux_display_env`` returns ``{}`` off Linux, so a test about
+    Linux display composition must declare the platform to reach the code at
+    all -- but past that early return it calls ``os.getuid``, which exists only
+    on POSIX. On Windows that raised ``AttributeError: module 'os' has no
+    attribute 'getuid'`` from inside production code, making a platform-
+    declaration gap in the test look like a defect in the resolver.
+
+    ``create=True`` is required: ``patch.object`` refuses to patch an attribute
+    the host does not already have, and on Windows ``os.getuid`` is exactly that.
+    """
+    target = patch.object(os, "getuid", lambda: 1000, create=True)(target)
+    return patch.object(sys, "platform", "linux")(target)
+
+
 # ---------------------------------------------------------------------------
 # _cmd_cdp_start
 # ---------------------------------------------------------------------------
 
 
-@patch.object(sys, "platform", "linux")
+@_simulate_linux
 class TestCmdCdpStart:
     @pytest.fixture(autouse=True)
     def _requested_port_free(self):
@@ -399,11 +418,10 @@ class TestCmdCdpStartMacOS:
 # ---------------------------------------------------------------------------
 
 
-# `_linux_display_env` now returns {} off Linux, so these must declare the platform
-# they are about rather than inheriting the host's (AI-CLI-ta1l). Same idiom as
-# TestLinuxPopenEnvThreading below, which already did this. Without it the whole class
-# asserts Linux display composition against whatever the runner happens to be.
-@patch.object(sys, "platform", "linux")
+# These assert Linux display composition, so they must declare the platform they are
+# about rather than inheriting the host's (AI-CLI-ta1l). Without it the whole class
+# asserts against whatever the runner happens to be.
+@_simulate_linux
 class TestLinuxDisplayEnv:
     def test_when_runtime_dir_has_wayland_socket_and_xauth_then_all_resolved(self, tmp_path, monkeypatch):
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -443,7 +461,7 @@ class TestLinuxDisplayEnv:
         assert "XAUTHORITY" not in env
 
 
-@patch.object(sys, "platform", "linux")
+@_simulate_linux
 class TestCmdCdpStartLinuxDisplayEnv:
     @pytest.fixture(autouse=True)
     def _requested_port_free(self):
@@ -987,7 +1005,7 @@ class TestClearStaleSingletonLock:
         assert not mock_alive.called  # never reached the liveness check
         assert (tmp_path / "SingletonLock").is_symlink()
 
-    @patch.object(sys, "platform", "linux")
+    @_simulate_linux
     def test_cmd_cdp_start_clears_stale_lock_before_launch(self, tmp_path):
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
@@ -1042,7 +1060,7 @@ class TestNextFreePort:
             assert tunnel._next_free_port(9222, limit=5) is None
 
 
-@patch.object(sys, "platform", "linux")
+@_simulate_linux
 class TestCmdCdpStartPortConflict:
     def test_when_port_in_use_then_increments_and_launches_on_next_free(self, tmp_path, capsys):
         mock_proc = MagicMock()
