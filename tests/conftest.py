@@ -1,4 +1,5 @@
 import contextlib
+import http.server
 import io
 import json
 import os
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -205,6 +207,38 @@ def case_insensitive_filesystem(tmp_path: Path):
     Deciding at fixture setup means the test body is never entered.
     """
     yield from _case_insensitive_filesystem_impl(tmp_path)
+
+
+class _AlwaysUnauthorized(http.server.BaseHTTPRequestHandler):
+    """Smallest remote that makes git ask for a credential: answer every request 401."""
+
+    def do_GET(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="git"')
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass  # keep the captured test output readable
+
+
+@pytest.fixture
+def remote_demanding_credentials():
+    """Yield the URL of a loopback remote that answers every request with 401.
+
+    This is the real protocol boundary for the credential-prompt containment:
+    git reaches its credential step for real, so a test driven through here
+    cannot pass by stubbing the behaviour under test. Shared because every
+    module that runs unattended git subprocesses against a remote needs it.
+    """
+    server = http.server.HTTPServer(("127.0.0.1", 0), _AlwaysUnauthorized)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/repo.git"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def tmux_runnable() -> tuple[bool, str]:

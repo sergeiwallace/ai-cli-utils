@@ -6223,3 +6223,67 @@ def test_apply_pull_files_when_no_files_applied_then_updated_bare_names_empty(tm
     )
 
     assert "myproject" not in result["updated_bare_names"]
+
+
+# ---------------------------------------------------------------------------
+# credential-prompt containment (AI-CLI-9qj6)
+#
+# sync.py builds its own _GIT_ENV and passes it to every git subprocess it runs,
+# several of which talk to a remote. git writes its credential prompt to /dev/tty,
+# which capture_output=True does not contain, so a remote it cannot authenticate to
+# hangs `ai sync` silently -- the same defect PR #164 fixed for git_repair.
+# ---------------------------------------------------------------------------
+
+
+def test_git_env_when_sync_runs_git_then_real_git_refuses_to_prompt(tmp_path):
+    """Drives the real `git` CLI with sync's own env, because the defect IS git's
+    prompting behaviour: a mocked subprocess would assert only what the mock said."""
+    from ai_cli.sync import _GIT_ENV
+
+    result = subprocess.run(
+        # An empty `credential.helper` resets the helper list, so the only route
+        # left to git is its own terminal prompt -- the mechanism under test, and
+        # the same on every OS regardless of which helper is installed.
+        ["git", "-c", "credential.helper=", "credential", "fill"],
+        input="protocol=https\nhost=git.example\n\n",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=_GIT_ENV,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "terminal prompts disabled" in result.stderr, result.stderr
+
+
+def test_git_env_when_containment_added_then_ai_sync_identity_is_preserved():
+    """The containment must not cost the author/committer identity: sync commits on
+    a staging repo that has no user.name configured, so dropping these breaks it."""
+    from ai_cli.sync import _GIT_ENV
+
+    assert _GIT_ENV["GIT_AUTHOR_NAME"] == "ai-sync"
+    assert _GIT_ENV["GIT_AUTHOR_EMAIL"] == "ai-sync@local"
+    assert _GIT_ENV["GIT_COMMITTER_NAME"] == "ai-sync"
+    assert _GIT_ENV["GIT_COMMITTER_EMAIL"] == "ai-sync@local"
+
+
+@pytest.mark.timeout(60)
+def test_push_to_remote_when_remote_demands_credentials_then_fails_without_prompting(
+    tmp_path, remote_demanding_credentials
+):
+    """The real network path, against a real 401 remote. _PUSH_TIMEOUT is 300s, so an
+    unfixed git prompting on /dev/tty stalls `ai sync` for five minutes per push; the
+    60s cap here fails the test rather than letting the suite absorb the hang."""
+    from ai_cli.sync import _push_to_remote
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    _init_git_repo(staging)
+    for args in (
+        ["config", "credential.helper", ""],
+        ["remote", "add", "origin", remote_demanding_credentials],
+    ):
+        subprocess.run(["git", "-C", str(staging), *args], capture_output=True, check=True)
+
+    assert _push_to_remote(staging, verbose=False) is False
