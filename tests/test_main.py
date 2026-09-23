@@ -35,11 +35,21 @@ from ai_cli.session_script import resolve_session_shell
 
 
 class TestXdgHelpers:
-    def test_get_xdg_state_home_when_env_var_set_then_uses_it(self, monkeypatch):
+    """The POSIX branch, pinned via ``sys.platform``, so it is exercised on every OS.
+
+    The base-directory value has to come from ``tmp_path`` rather than a literal
+    such as ``/custom/state``: ``Path("/custom/state").is_absolute()`` is False on
+    Windows, because a drive-relative path has no drive. ``resolve_base_dir`` then
+    correctly discards it per the XDG spec's relative-path rule and returns the
+    home fallback, so the test failed on an assertion about the literal while the
+    code under test was behaving exactly as specified.
+    """
+
+    def test_get_xdg_state_home_when_env_var_set_then_uses_it(self, monkeypatch, tmp_path):
         monkeypatch.setattr("sys.platform", "linux")
-        monkeypatch.setenv("XDG_STATE_HOME", "/custom/state")
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
         result = get_xdg_state_home()
-        assert result == Path("/custom/state") / "ai-cli-utils"
+        assert result == tmp_path / "ai-cli-utils"
 
     def test_get_xdg_state_home_when_no_env_var_then_uses_default(self, monkeypatch):
         monkeypatch.setattr("sys.platform", "linux")
@@ -48,11 +58,11 @@ class TestXdgHelpers:
         assert result.name == "ai-cli-utils"
         assert ".local/state" in result.as_posix()
 
-    def test_get_xdg_cache_home_when_env_var_set_then_uses_it(self, monkeypatch):
+    def test_get_xdg_cache_home_when_env_var_set_then_uses_it(self, monkeypatch, tmp_path):
         monkeypatch.setattr("sys.platform", "linux")
-        monkeypatch.setenv("XDG_CACHE_HOME", "/custom/cache")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
         result = get_xdg_cache_home()
-        assert result == Path("/custom/cache") / "ai-cli-utils"
+        assert result == tmp_path / "ai-cli-utils"
 
     def test_get_xdg_cache_home_when_no_env_var_then_uses_default(self, monkeypatch):
         monkeypatch.setattr("sys.platform", "linux")
