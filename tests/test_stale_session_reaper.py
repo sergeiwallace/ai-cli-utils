@@ -121,6 +121,17 @@ def _tmux_new_session(
     return subprocess.run([*argv, *command], env=environment, capture_output=True, text=True, check=False)
 
 
+# tmux sockets are AF_UNIX paths under a ~104-byte limit, and macOS's $TMPDIR is a
+# long /var/folders/<hash>/T/ path, so a short parent is what keeps the socket inside
+# it -- which is why "/tmp" was hardcoded here. It is not a portable location: it does
+# not exist on Windows, where `mkdtemp(dir="/tmp")` raised `FileNotFoundError:
+# [WinError 3] ... '/tmp\\ai-cli-tmux-...'`. Falling back to tempfile's own default
+# (dir=None) costs nothing there, because no real tmux exists on that platform; the
+# path is reached only by tests/test_skip_hygiene.py, which fakes tmux's presence to
+# drive this generator's cleanup contract.
+_SOCKET_PARENT = "/tmp" if Path("/tmp").is_dir() else None
+
+
 def isolated_tmux_socket() -> Iterator[str]:
     """An isolated tmux server, torn down on EVERY exit path including a skip.
 
@@ -137,7 +148,7 @@ def isolated_tmux_socket() -> Iterator[str]:
     """
     if shutil.which("tmux") is None:
         pytest.skip("tmux binary not available on PATH")
-    socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir="/tmp"))
+    socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir=_SOCKET_PARENT))
     socket = str(socket_dir / "socket")
     try:
         probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
