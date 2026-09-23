@@ -3084,7 +3084,7 @@ class TestSelfUpdatePreservesEditableInstall:
     alternate forever and every install-side repair is a window in which a fresh
     shell gets ``bash: ai: command not found``.
 
-    Measured on sem-kg-sagemaker 2026-08-21: the live environment was editable
+    Measured on a managed notebook host 2026-08-21: the live environment was editable
     (``uv-receipt.toml`` recorded ``editable = <repo>``) immediately after an
     installer run, having been a copied snapshot before it.
     """

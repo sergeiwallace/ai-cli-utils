@@ -37,7 +37,7 @@ The correct fix is not "resolve the path" (as in the uv bug) but "gate these com
 ## Reproduction
 
 **Environment:**
-- Windows 11 Enterprise 10.0.26100 (BMS corporate machine)
+- Windows 11 Enterprise 10.0.26100 (a corporate-managed machine)
 - Git Bash (MINGW64)
 - `ai-cli-utils` installed editable
 - tmux not installed (and unavailable for Windows)
@@ -221,7 +221,7 @@ This is why the tmux bug was NOT fixed during the uv bug fix — it requires a d
 **Paper trail:**
 - Found during audit of CORE-5m6-ai-cli-bare-uv-popen-windows-crash
 - Filed separately to capture the design question
-- ai-cli-utils is installed editable; no commit per BMS machine git discipline
+- ai-cli-utils is installed editable; no commit per corporate-machine git discipline
 - Real beads issue ID will be backfilled once the Windows/Dolt blocker is resolved
 
 <!-- /doc:region name="appendix" -->

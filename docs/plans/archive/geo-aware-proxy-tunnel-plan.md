@@ -115,7 +115,7 @@ Cons: slightly more complex; requires writing config on runtime detection.
 ```toml
 [gemini.geo_proxy]
 enabled = true
-relay_host = "100.106.24.69"
+relay_host = "192.0.2.20"
 relay_user = "user"
 socks_port = 19050
 relay_pproxy_cmd = "pproxy -l socks5://:19050"
@@ -130,7 +130,7 @@ enabled = true
 socks_port = 19050
 
 [[gemini.geo_proxy.relays]]
-host = "100.106.24.69"   # Mac (primary)
+host = "192.0.2.20"   # Mac (primary)
 user = "user"
 pproxy = true             # start pproxy on demand
 

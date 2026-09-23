@@ -452,7 +452,7 @@ class TestOpenSshTunnel:
     def test_uses_vpn_host_when_configured(self):
         """When vpn_host is set and VPN is active, the SSH tunnel uses vpn_host."""
         client = NATSClient()
-        config = {"remote": {"host": "100.106.24.69", "vpn_host": "192.0.2.1", "user": "user", "port": 22}}
+        config = {"remote": {"host": "192.0.2.20", "vpn_host": "192.0.2.1", "user": "user", "port": 22}}
         popen_calls = []
 
         def fake_popen(cmd, **kwargs):
@@ -472,12 +472,12 @@ class TestOpenSshTunnel:
         assert len(popen_calls) == 1
         ssh_cmd = " ".join(popen_calls[0])
         assert "192.0.2.1" in ssh_cmd  # vpn_host used
-        assert "100.106.24.69" not in ssh_cmd  # host not used
+        assert "192.0.2.20" not in ssh_cmd  # host not used
 
     def test_uses_configured_host_not_hardcoded_ip(self):
         """When VPN is off, tunnel uses config remote.host (not vpn_host)."""
         client = NATSClient()
-        config = {"remote": {"host": "100.106.24.69", "user": "user", "port": 22}}
+        config = {"remote": {"host": "192.0.2.20", "user": "user", "port": 22}}
         popen_calls = []
 
         def fake_popen(cmd, **kwargs):
@@ -499,7 +499,7 @@ class TestOpenSshTunnel:
 
         assert len(popen_calls) == 1
         ssh_cmd = popen_calls[0]
-        assert "100.106.24.69" in " ".join(ssh_cmd)
+        assert "192.0.2.20" in " ".join(ssh_cmd)
         assert "192.0.2.1" not in " ".join(ssh_cmd)
 
     def test_skips_tunnel_when_config_missing(self):
