@@ -399,6 +399,11 @@ class TestCmdCdpStartMacOS:
 # ---------------------------------------------------------------------------
 
 
+# `_linux_display_env` now returns {} off Linux, so these must declare the platform
+# they are about rather than inheriting the host's (AI-CLI-ta1l). Same idiom as
+# TestLinuxPopenEnvThreading below, which already did this. Without it the whole class
+# asserts Linux display composition against whatever the runner happens to be.
+@patch.object(sys, "platform", "linux")
 class TestLinuxDisplayEnv:
     def test_when_runtime_dir_has_wayland_socket_and_xauth_then_all_resolved(self, tmp_path, monkeypatch):
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)

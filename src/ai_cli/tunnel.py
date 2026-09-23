@@ -334,7 +334,20 @@ def _linux_display_env() -> dict[str, str]:
     no ``$DISPLAY``, and exits immediately -- the CDP port never opens, independent
     of retry duration (KC-qx6). Only fill in what is genuinely missing from the
     caller's own environment; never override an explicit value.
+
+    Returns an empty dict off Linux, and the early return is load-bearing rather
+    than tidiness (AI-CLI-ta1l). ``_cmd_cdp_start`` calls this unconditionally, and
+    ``os.getuid`` does not exist on Windows -- so ``ai cdp start`` died there with
+    ``AttributeError: module 'os' has no attribute 'getuid'`` before Chrome was ever
+    launched. Everything composed below is Linux-only by construction anyway
+    (``XDG_RUNTIME_DIR``, a ``wayland-0`` socket, ``DISPLAY=:0``, Xwayland's
+    ``.mutter-Xwaylandauth.*``), so there is nothing here for another platform to
+    want: on macOS it was additionally handing Chrome a ``/run/user/<uid>`` path
+    that does not exist and a ``DISPLAY`` that means nothing.
     """
+    if not sys.platform.startswith("linux"):
+        return {}
+
     env: dict[str, str] = {}
     runtime_path = resolve_base_dir("XDG_RUNTIME_DIR", Path(f"/run/user/{os.getuid()}"))
     env.setdefault("XDG_RUNTIME_DIR", str(runtime_path))
