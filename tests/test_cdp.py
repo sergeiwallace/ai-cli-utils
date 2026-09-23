@@ -94,20 +94,32 @@ class TestFindChromeBinary:
 
 
 def _simulate_linux(target):
-    """Declare the Linux platform *and* the POSIX uid the Linux branch reads.
+    """Run a Linux-branch test on any host that can represent Linux paths.
 
-    Patching ``sys.platform`` alone is not enough to simulate Linux on a
-    non-Linux host, and the two halves have to travel together or the second is
-    forgotten. ``_linux_display_env`` returns ``{}`` off Linux, so a test about
-    Linux display composition must declare the platform to reach the code at
-    all -- but past that early return it calls ``os.getuid``, which exists only
-    on POSIX. On Windows that raised ``AttributeError: module 'os' has no
-    attribute 'getuid'`` from inside production code, making a platform-
-    declaration gap in the test look like a defect in the resolver.
+    ``_linux_display_env`` returns ``{}`` off Linux, so a test about Linux display
+    composition has to declare the platform to reach the code at all. Two things
+    beyond ``sys.platform`` are then needed, and they belong together here rather
+    than at five call sites where the second keeps getting forgotten.
 
-    ``create=True`` is required: ``patch.object`` refuses to patch an attribute
-    the host does not already have, and on Windows ``os.getuid`` is exactly that.
+    ``os.getuid`` -- the Linux branch calls it just past the early return, and it
+    exists only on POSIX. Patched with ``create=True``, which is load-bearing:
+    ``patch.object`` refuses an attribute the host does not already have, and on
+    Windows that is exactly this one. Fixing the uid at 1000 also keeps the
+    composed ``/run/user/<uid>`` path identical on every host.
+
+    A Windows skip -- not a workaround, a real limit. ``pathlib`` chooses its
+    flavour from ``os.name`` at import time, so no patch can make ``Path`` produce
+    a ``PosixPath`` there. ``Path("/run/user/1000")`` is a ``WindowsPath`` whose
+    ``str()`` is ``\\run\\user\\1000`` and whose ``is_absolute()`` is False, so
+    ``resolve_base_dir`` rejects it with ``ValueError: fallback for
+    XDG_RUNTIME_DIR must be an absolute path`` -- correctly, per the XDG spec's
+    relative-path rule. A Windows host cannot represent the Linux paths this
+    branch composes, so it cannot host these assertions. macOS can, and does.
     """
+    target = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pathlib cannot produce POSIX-absolute paths on Windows, so the Linux branch is unrepresentable",
+    )(target)
     target = patch.object(os, "getuid", lambda: 1000, create=True)(target)
     return patch.object(sys, "platform", "linux")(target)
 
