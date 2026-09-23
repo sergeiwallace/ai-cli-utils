@@ -14,6 +14,21 @@ from ai_cli.transcript_repath import (
     repath_project_dir,
 )
 
+# ``plan_repath`` resolves ``old_root``/``new_root`` before slugifying them, so the
+# roots these tests name have to survive ``resolve()`` identically on every OS. A
+# POSIX literal like OLD does not: it is drive-RELATIVE on Windows, where
+# ``resolve()`` anchors it to the current drive as ``D:\old\root``. Its slug is then
+# "D--old-root", which no longer starts with the "-old-root" the fixtures built their
+# project directories from -- so every lookup matched nothing and eight tests failed
+# on empty results while the production matching was correct.
+#
+# On POSIX these are byte-identical to the literals they replace, which is what makes
+# the substitution safe to verify here.
+OLD_ROOT = Path("/old/root").resolve()
+NEW_ROOT = Path("/new/root").resolve()
+OLD = str(OLD_ROOT)
+NEW = str(NEW_ROOT)
+
 
 def test_slugify_cwd():
     """Slugification replaces all non-alphanumeric with hyphens."""
@@ -24,11 +39,11 @@ def test_slugify_cwd():
 
 def test_rewrite_jsonl_line_cwd_field():
     """Top-level cwd fields are rewritten."""
-    line = '{"type":"init","cwd":"/old/root/myproject","sessionId":"abc"}\n'
-    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    line = json.dumps({"type": "init", "cwd": f"{OLD}/myproject", "sessionId": "abc"}) + "\n"
+    rewritten, changed = _rewrite_jsonl_line(line, OLD, NEW)
     assert changed
-    assert "/new/root/myproject" in rewritten
-    assert "/old/root" not in rewritten
+    assert f"{NEW}/myproject" in rewritten
+    assert OLD not in rewritten
     # Verify it's still valid JSON
     assert json.loads(rewritten.strip())
 
@@ -40,30 +55,30 @@ def test_rewrite_jsonl_line_embedded_in_content():
             {
                 "type": "message",
                 "role": "user",
-                "content": "Read the file at /old/root/data/file.txt",
-                "cwd": "/old/root/myproject",
+                "content": f"Read the file at {OLD}/data/file.txt",
+                "cwd": f"{OLD}/myproject",
             }
         )
         + "\n"
     )
-    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    rewritten, changed = _rewrite_jsonl_line(line, OLD, NEW)
     assert changed
     record = json.loads(rewritten.strip())
-    assert "/new/root/data/file.txt" in record["content"]
-    assert record["cwd"] == "/new/root/myproject"
+    assert f"{NEW}/data/file.txt" in record["content"]
+    assert record["cwd"] == f"{NEW}/myproject"
 
 
 def test_rewrite_jsonl_line_no_match():
     """Lines not containing the old root are unchanged."""
     line = '{"type":"message","role":"assistant","content":"Hello"}\n'
-    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    rewritten, changed = _rewrite_jsonl_line(line, OLD, NEW)
     assert not changed
     assert rewritten == line
 
 
 def test_rewrite_jsonl_line_blank():
     """Blank lines are unchanged."""
-    rewritten, changed = _rewrite_jsonl_line("\n", "/old/root", "/new/root")
+    rewritten, changed = _rewrite_jsonl_line("\n", OLD, NEW)
     assert not changed
     assert rewritten == "\n"
 
@@ -72,7 +87,7 @@ def test_rewrite_jsonl_line_malformed():
     """Malformed JSON raises an exception."""
     line = "not json at all\n"
     with pytest.raises(json.JSONDecodeError):
-        _rewrite_jsonl_line(line, "/old/root", "/new/root")
+        _rewrite_jsonl_line(line, OLD, NEW)
 
 
 def test_rewrite_jsonl_line_nested_paths():
@@ -82,19 +97,19 @@ def test_rewrite_jsonl_line_nested_paths():
             {
                 "type": "tool-result",
                 "tool": "read",
-                "args": {"path": "/old/root/src/main.py"},
-                "result": {"content": "# File from /old/root/src"},
-                "cwd": "/old/root",
+                "args": {"path": f"{OLD}/src/main.py"},
+                "result": {"content": f"# File from {OLD}/src"},
+                "cwd": OLD,
             }
         )
         + "\n"
     )
-    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    rewritten, changed = _rewrite_jsonl_line(line, OLD, NEW)
     assert changed
     record = json.loads(rewritten.strip())
-    assert record["args"]["path"] == "/new/root/src/main.py"
-    assert "/new/root/src" in record["result"]["content"]
-    assert record["cwd"] == "/new/root"
+    assert record["args"]["path"] == f"{NEW}/src/main.py"
+    assert f"{NEW}/src" in record["result"]["content"]
+    assert record["cwd"] == NEW
 
 
 def test_plan_repath_empty_projects_dir(tmp_path):
@@ -117,18 +132,18 @@ def test_plan_repath_finds_matching_dirs(tmp_path):
     projects = fake_home / "projects"
     projects.mkdir(parents=True)
 
-    old_root = Path("/old/root")
+    old_root = OLD_ROOT
     old_slug = _slugify_cwd(str(old_root))
     # Create a project dir matching the old root
     proj_dir = projects / (old_slug + "-myproject")
     proj_dir.mkdir()
     # Write a sample jsonl with the old cwd
     jsonl = proj_dir / "test.jsonl"
-    jsonl.write_text(json.dumps({"type": "init", "cwd": "/old/root/myproject", "sessionId": "abc"}) + "\n")
+    jsonl.write_text(json.dumps({"type": "init", "cwd": f"{OLD}/myproject", "sessionId": "abc"}) + "\n")
 
     plan = plan_repath(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         claude_home=fake_home,
         dest_exists=lambda p: True,
     )
@@ -143,10 +158,10 @@ def test_repath_project_dir_dry_run(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    jsonl.write_text(json.dumps({"cwd": "/old/root/proj"}) + "\n" + json.dumps({"cwd": "/old/root/proj"}) + "\n")
+    jsonl.write_text(json.dumps({"cwd": f"{OLD}/proj"}) + "\n" + json.dumps({"cwd": f"{OLD}/proj"}) + "\n")
 
     new_dir = tmp_path / "new-proj"
-    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=True)
+    result = repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=True)
 
     assert result.jsonl_files == 1
     assert result.total_lines == 2
@@ -160,11 +175,11 @@ def test_repath_project_dir_writes_rewritten_files(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    content = json.dumps({"type": "init", "cwd": "/old/root/proj", "content": "file at /old/root/data.txt"}) + "\n"
+    content = json.dumps({"type": "init", "cwd": f"{OLD}/proj", "content": f"file at {OLD}/data.txt"}) + "\n"
     jsonl.write_text(content)
 
     new_dir = tmp_path / "new-proj"
-    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    result = repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
 
     assert result.jsonl_files == 1
     assert result.lines_rewritten == 1
@@ -173,9 +188,9 @@ def test_repath_project_dir_writes_rewritten_files(tmp_path):
     assert dest_jsonl.exists()
 
     rewritten = dest_jsonl.read_text()
-    assert "/new/root/proj" in rewritten
-    assert "/new/root/data.txt" in rewritten
-    assert "/old/root" not in rewritten
+    assert f"{NEW}/proj" in rewritten
+    assert f"{NEW}/data.txt" in rewritten
+    assert OLD not in rewritten
 
 
 def test_repath_project_dir_preserves_mtime(tmp_path):
@@ -183,11 +198,11 @@ def test_repath_project_dir_preserves_mtime(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    jsonl.write_text(json.dumps({"cwd": "/old/root"}) + "\n")
+    jsonl.write_text(json.dumps({"cwd": OLD}) + "\n")
     original_mtime = jsonl.stat().st_mtime
 
     new_dir = tmp_path / "new-proj"
-    repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
 
     dest_jsonl = new_dir / "session.jsonl"
     assert abs(dest_jsonl.stat().st_mtime - original_mtime) < 1.0
@@ -198,24 +213,24 @@ def test_repath_project_dir_copies_sidecar(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "abc123.jsonl"
-    jsonl.write_text(json.dumps({"cwd": "/old/root"}) + "\n")
+    jsonl.write_text(json.dumps({"cwd": OLD}) + "\n")
 
     sidecar = old_dir / "abc123"
     sidecar.mkdir()
     # Valid JSON in the sidecar .jsonl file
-    sidecar_content = json.dumps({"type": "subagent", "path": "/old/root/file"}) + "\n"
+    sidecar_content = json.dumps({"type": "subagent", "path": f"{OLD}/file"}) + "\n"
     (sidecar / "subagent.jsonl").write_text(sidecar_content)
     # Also a non-jsonl file
     (sidecar / "metadata.txt").write_text("some metadata")
 
     new_dir = tmp_path / "new-proj"
-    repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
 
     dest_sidecar = new_dir / "abc123"
     assert dest_sidecar.is_dir()
     # The .jsonl was rewritten
     rewritten = (dest_sidecar / "subagent.jsonl").read_text()
-    assert "/new/root/file" in rewritten
+    assert f"{NEW}/file" in rewritten
     # The .txt was copied byte-for-byte
     assert (dest_sidecar / "metadata.txt").read_text() == "some metadata"
 
@@ -225,11 +240,11 @@ def test_repath_project_dir_leaves_originals_untouched(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    original = json.dumps({"cwd": "/old/root"}) + "\n"
+    original = json.dumps({"cwd": OLD}) + "\n"
     jsonl.write_text(original)
 
     new_dir = tmp_path / "new-proj"
-    repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
 
     assert jsonl.read_text() == original
 
@@ -239,16 +254,16 @@ def test_repath_project_dir_idempotent(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    jsonl.write_text(json.dumps({"cwd": "/old/root/proj"}) + "\n")
+    jsonl.write_text(json.dumps({"cwd": f"{OLD}/proj"}) + "\n")
 
     # First repath
     new_dir = tmp_path / "new-proj"
-    result1 = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    result1 = repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
     assert result1.lines_rewritten == 1
 
     # Second repath on the output
     newer_dir = tmp_path / "newer-proj"
-    result2 = repath_project_dir(new_dir, newer_dir, "/old/root", "/new/root", dry_run=False)
+    result2 = repath_project_dir(new_dir, newer_dir, OLD, NEW, dry_run=False)
     assert result2.lines_rewritten == 0  # Already rewritten, nothing changed
     assert result2.total_lines == 1
 
@@ -259,19 +274,19 @@ def test_repath_all_with_dest_base(tmp_path):
     projects = fake_home / "projects"
     projects.mkdir(parents=True)
 
-    old_root = Path("/old/root")
+    old_root = OLD_ROOT
     old_slug = _slugify_cwd(str(old_root))
     proj_dir = projects / (old_slug + "-myproject")
     proj_dir.mkdir()
     jsonl = proj_dir / "test.jsonl"
-    jsonl.write_text(json.dumps({"cwd": "/old/root/myproject"}) + "\n")
+    jsonl.write_text(json.dumps({"cwd": f"{OLD}/myproject"}) + "\n")
 
     dest_base = tmp_path / "dest"
     dest_base.mkdir()
 
     results = repath_all(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         dest_base=dest_base,
         dry_run=False,
         claude_home=fake_home,
@@ -281,7 +296,7 @@ def test_repath_all_with_dest_base(tmp_path):
     assert results[0].jsonl_files == 1
 
     # Check that output went to dest_base, not back into fake_home/projects
-    new_slug = _slugify_cwd("/new/root/myproject")
+    new_slug = _slugify_cwd(f"{NEW}/myproject")
     expected = dest_base / new_slug
     assert expected.is_dir()
     assert (expected / "test.jsonl").exists()
@@ -289,26 +304,26 @@ def test_repath_all_with_dest_base(tmp_path):
 
 def test_rewrite_jsonl_line_dict_key_untouched():
     """Dict keys containing the prefix are left alone."""
-    line = json.dumps({"/old/root/key": "value", "cwd": "/old/root/proj"}) + "\n"
-    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    line = json.dumps({f"{OLD}/key": "value", "cwd": f"{OLD}/proj"}) + "\n"
+    rewritten, changed = _rewrite_jsonl_line(line, OLD, NEW)
     assert changed
     record = json.loads(rewritten.strip())
     # Key is unchanged
-    assert "/old/root/key" in record
+    assert f"{OLD}/key" in record
     # But cwd value is rewritten
-    assert record["cwd"] == "/new/root/proj"
+    assert record["cwd"] == f"{NEW}/proj"
 
 
 def test_rewrite_jsonl_line_longer_token_with_prefix():
     """A longer token embedding the prefix is rewritten per the stated policy."""
     # This tests that we accept partial rewriting of longer tokens
-    line = json.dumps({"id": "abc-/old/root-xyz", "cwd": "/old/root"}) + "\n"
-    rewritten, changed = _rewrite_jsonl_line(line, "/old/root", "/new/root")
+    line = json.dumps({"id": f"abc-{OLD}-xyz", "cwd": OLD}) + "\n"
+    rewritten, changed = _rewrite_jsonl_line(line, OLD, NEW)
     assert changed
     record = json.loads(rewritten.strip())
     # The id value is rewritten because it contains the old root substring
-    assert record["id"] == "abc-/new/root-xyz"
-    assert record["cwd"] == "/new/root"
+    assert record["id"] == f"abc-{NEW}-xyz"
+    assert record["cwd"] == NEW
 
 
 def test_repath_project_dir_with_memory_and_nested_jsonl(tmp_path):
@@ -318,7 +333,7 @@ def test_repath_project_dir_with_memory_and_nested_jsonl(tmp_path):
 
     # Top-level jsonl
     jsonl = old_dir / "session.jsonl"
-    jsonl.write_text(json.dumps({"cwd": "/old/root"}) + "\n")
+    jsonl.write_text(json.dumps({"cwd": OLD}) + "\n")
 
     # Memory directory with MEMORY.md
     memory_dir = old_dir / "memory"
@@ -327,10 +342,10 @@ def test_repath_project_dir_with_memory_and_nested_jsonl(tmp_path):
 
     # Nested .jsonl that should also be rewritten
     nested_jsonl = memory_dir / "nested.jsonl"
-    nested_jsonl.write_text(json.dumps({"path": "/old/root/file.txt"}) + "\n")
+    nested_jsonl.write_text(json.dumps({"path": f"{OLD}/file.txt"}) + "\n")
 
     new_dir = tmp_path / "new-proj"
-    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    result = repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
 
     # Check that both jsonl files were rewritten
     assert result.jsonl_files == 2
@@ -342,7 +357,7 @@ def test_repath_project_dir_with_memory_and_nested_jsonl(tmp_path):
     # Check nested jsonl was rewritten
     nested_content = (new_dir / "memory" / "nested.jsonl").read_text()
     nested_record = json.loads(nested_content.strip())
-    assert nested_record["path"] == "/new/root/file.txt"
+    assert nested_record["path"] == f"{NEW}/file.txt"
 
 
 def test_repath_project_dir_collision_refuses(tmp_path):
@@ -350,12 +365,12 @@ def test_repath_project_dir_collision_refuses(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    jsonl.write_text(json.dumps({"cwd": "/old/root"}) + "\n")
+    jsonl.write_text(json.dumps({"cwd": OLD}) + "\n")
 
     new_dir = tmp_path / "new-proj"
     new_dir.mkdir()  # Pre-create destination
 
-    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    result = repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
 
     assert len(result.errors) > 0
     assert "already exists" in result.errors[0]
@@ -376,10 +391,10 @@ def test_repath_project_dir_malformed_jsonl_produces_error(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    jsonl.write_text('{"cwd": "/old/root"}\n' + "not json\n")
+    jsonl.write_text(json.dumps({"cwd": OLD}) + "\n" + "not json\n")
 
     new_dir = tmp_path / "new-proj"
-    result = repath_project_dir(old_dir, new_dir, "/old/root", "/new/root", dry_run=False)
+    result = repath_project_dir(old_dir, new_dir, OLD, NEW, dry_run=False)
 
     # Still reported, with the offending line named.
     assert len(result.errors) > 0
@@ -395,7 +410,7 @@ def test_repath_project_dir_malformed_jsonl_produces_error(tmp_path):
     # Asserted semantically, not byte-for-byte: a parseable line is re-serialised
     # through json.dumps, so its whitespace is normalised (`{"cwd":"..."}`, no space
     # after the colon). That is pre-existing round-trip behaviour, unrelated to salvage.
-    assert json.loads(lines[0]) == {"cwd": "/new/root"}
+    assert json.loads(lines[0]) == {"cwd": NEW}
     # The unparseable line, by contrast, is passed through untouched byte-for-byte.
     assert lines[1] == "not json"
 
@@ -408,26 +423,26 @@ def test_repath_all_detects_same_destination_collision(tmp_path):
 
     # Create two projects that will map to the same destination
     # (this requires crafted slugs that differ in source but collapse in dest)
-    old_root = Path("/old/root")
+    old_root = OLD_ROOT
     old_slug = _slugify_cwd(str(old_root))
 
     proj1 = projects / (old_slug + "-proj")
     proj1.mkdir()
-    (proj1 / "test.jsonl").write_text(json.dumps({"cwd": "/old/root/proj"}) + "\n")
+    (proj1 / "test.jsonl").write_text(json.dumps({"cwd": f"{OLD}/proj"}) + "\n")
 
     # Manually create a second dir that would map to the same new destination
     # by reading cwd from a jsonl that points to the same subpath
     proj2 = projects / (old_slug + "-other")
     proj2.mkdir()
     # Both have same subpath, so they map to same dest
-    (proj2 / "test.jsonl").write_text(json.dumps({"cwd": "/old/root/proj"}) + "\n")
+    (proj2 / "test.jsonl").write_text(json.dumps({"cwd": f"{OLD}/proj"}) + "\n")
 
     dest_base = tmp_path / "dest"
     dest_base.mkdir()
 
     results = repath_all(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         dest_base=dest_base,
         dry_run=False,
         claude_home=fake_home,
@@ -454,13 +469,13 @@ def _seed_store(tmp_path, *, suffixes):
     fake_home = tmp_path / ".claude"
     projects = fake_home / "projects"
     projects.mkdir(parents=True)
-    old_root = Path("/old/root")
+    old_root = OLD_ROOT
     old_slug = _slugify_cwd(str(old_root))
     made = {}
     for suffix in suffixes:
         proj_dir = projects / (old_slug + _slugify_cwd(suffix))
         proj_dir.mkdir()
-        (proj_dir / "test.jsonl").write_text(json.dumps({"cwd": f"/old/root{suffix}"}) + "\n")
+        (proj_dir / "test.jsonl").write_text(json.dumps({"cwd": f"{OLD}{suffix}"}) + "\n")
         made[suffix] = proj_dir
     return fake_home, old_root, made
 
@@ -477,7 +492,7 @@ def test_plan_repath_requires_a_dest_existence_source(tmp_path):
     with pytest.raises(ValueError) as exc:
         plan_repath(
             old_root,
-            Path("/new/root"),
+            NEW_ROOT,
             claude_home=fake_home,
             missing_dest_policy=MissingDestPolicy.UNREPATHED,
         )
@@ -493,15 +508,15 @@ def test_plan_repath_partitions_on_destination_existence(tmp_path):
 
     plan = plan_repath(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         claude_home=fake_home,
-        dest_exists=lambda p: str(p) == "/new/root/live",
+        dest_exists=lambda p: str(p) == f"{NEW}/live",
         missing_dest_policy=MissingDestPolicy.UNREPATHED,
     )
 
     assert [old for old, _ in plan.project_dirs] == [made["/live"]]
     assert [m.old_dir for m in plan.missing_dest] == [made["/reaped"]]
-    assert plan.missing_dest[0].new_cwd == Path("/new/root/reaped")
+    assert plan.missing_dest[0].new_cwd == Path(NEW + "/reaped")
     assert plan.missing_dest[0].disposition == MissingDestPolicy.UNREPATHED
 
 
@@ -511,7 +526,7 @@ def test_plan_repath_policy_repath_needs_no_existence_check(tmp_path):
 
     plan = plan_repath(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         claude_home=fake_home,
         missing_dest_policy=MissingDestPolicy.REPATH,
     )
@@ -528,7 +543,7 @@ def test_repath_all_skip_policy_writes_nothing_for_a_missing_destination(tmp_pat
 
     results = repath_all(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         dest_base=dest_base,
         claude_home=fake_home,
         dest_exists=lambda p: False,
@@ -554,7 +569,7 @@ def test_repath_all_unrepathed_policy_copies_under_the_original_slug(tmp_path):
 
     results = repath_all(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         dest_base=dest_base,
         claude_home=fake_home,
         dest_exists=lambda p: False,
@@ -567,8 +582,8 @@ def test_repath_all_unrepathed_policy_copies_under_the_original_slug(tmp_path):
     copied = dest_base / made["/reaped"].name
     assert copied.is_dir(), f"expected an unrepathed copy at {copied}"
     body = (copied / "test.jsonl").read_text()
-    assert "/old/root/reaped" in body
-    assert "/new/root" not in body
+    assert f"{OLD}/reaped" in body
+    assert NEW not in body
     # Byte-for-byte with the source
     assert body == (made["/reaped"] / "test.jsonl").read_text()
 
@@ -581,20 +596,20 @@ def test_repath_all_mixed_store_repaths_only_the_reachable_dirs(tmp_path):
 
     results = repath_all(
         old_root,
-        Path("/new/root"),
+        NEW_ROOT,
         dest_base=dest_base,
         claude_home=fake_home,
-        dest_exists=lambda p: str(p) == "/new/root/live",
+        dest_exists=lambda p: str(p) == f"{NEW}/live",
         missing_dest_policy=MissingDestPolicy.UNREPATHED,
     )
 
     by_disposition = {r.disposition: r for r in results}
     assert set(by_disposition) == {"repathed", "unrepathed"}
 
-    repathed = dest_base / _slugify_cwd("/new/root/live")
+    repathed = dest_base / _slugify_cwd(f"{NEW}/live")
     assert repathed.is_dir()
-    assert "/new/root/live" in (repathed / "test.jsonl").read_text()
+    assert f"{NEW}/live" in (repathed / "test.jsonl").read_text()
 
     unrepathed = dest_base / made["/reaped"].name
     assert unrepathed.is_dir()
-    assert "/old/root/reaped" in (unrepathed / "test.jsonl").read_text()
+    assert f"{OLD}/reaped" in (unrepathed / "test.jsonl").read_text()
