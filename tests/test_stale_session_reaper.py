@@ -282,6 +282,11 @@ def _start_real_tmux_supervisor(
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "SHELL": str(recovery_shell),
         "XDG_STATE_HOME": str(state_root),
+        # See _zsh_rc_free_home: without this, ~/.zshenv re-prepends ~/.local/bin and
+        # the real `ai` shadows the stub. Must also be listed in the pane environment
+        # below -- tmux passes only the names given with -e, so setting it here alone
+        # would leave the pane inheriting the developer's own ZDOTDIR.
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
     }
     created = _tmux_new_session(
         socket,
@@ -297,6 +302,7 @@ def _start_real_tmux_supervisor(
             "PATH",
             "SHELL",
             "XDG_STATE_HOME",
+            "ZDOTDIR",
         ),
     )
     assert created.returncode == 0, created.stderr
@@ -561,6 +567,13 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
         "AI_CLI_TEST_TMUX_SOCKET": real_tmux_socket,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "XDG_STATE_HOME": str(state_home),
+        # See _zsh_rc_free_home. This site launches the supervisor under bash, which
+        # sources no rc file, so the stubs are not shadowed today. It is set anyway
+        # because the generated script's own child and heartbeat ticker are launched
+        # under resolve_session_shell()'s choice -- zsh where present -- regardless of
+        # the supervisor's shell, which is exactly how this class of breakage reached
+        # the [bash] legs elsewhere in this file.
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
     }
 
     created = _tmux_new_session(
@@ -568,7 +581,7 @@ def test_given_clean_child_exit_when_supervisor_finishes_then_tmux_session_is_re
         session_id,
         ["bash", "-c", 'exec bash "$1" </dev/null', "--", str(supervisor)],
         environment,
-        ("PATH", "XDG_STATE_HOME", "AI_CLI_TEST_TMUX_SOCKET"),
+        ("PATH", "XDG_STATE_HOME", "ZDOTDIR", "AI_CLI_TEST_TMUX_SOCKET"),
     )
 
     assert created.returncode == 0, created.stderr
@@ -654,6 +667,12 @@ fi
         "AI_CLI_TEST_TMUX_SOCKET": real_tmux_socket,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "XDG_STATE_HOME": str(state_home),
+        # See _zsh_rc_free_home. This test builds its own environment rather than going
+        # through _start_generated_supervisor, so it needs the same scrub: without it
+        # ~/.zshenv re-prepends ~/.local/bin and the REAL `claude` shadows the stub, so
+        # nothing is ever appended to agent-launches.log. That is why the [zsh] leg
+        # failed while [bash] passed -- bash sources no rc file when non-interactive.
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
     }
 
     created = _tmux_new_session(
@@ -664,6 +683,7 @@ fi
         (
             "PATH",
             "XDG_STATE_HOME",
+            "ZDOTDIR",
             "AI_CLI_TEST_EVENTS",
             "AI_CLI_TEST_EXIT_REQUEST",
             "AI_CLI_TEST_INT_STATE",
@@ -1180,6 +1200,34 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o700)
 
 
+def _zsh_rc_free_home(tmp_path: Path) -> Path:
+    """An empty directory to point ``ZDOTDIR`` at, so zsh loads no rc file.
+
+    Scrubbing this at the process boundary is what makes the stub binaries in
+    ``bin_dir`` actually win (AI-CLI-ta1l). **zsh sources ``.zshenv`` on every
+    invocation, including a non-interactive script** — unlike bash, which sources
+    nothing for a non-interactive shell. On a machine whose ``~/.zshenv`` re-exports
+    ``PATH`` with ``~/.local/bin`` prepended, that silently moved the REAL ``ai``
+    ahead of the harness stub, so the generated script called the real CLI, the stub
+    never recorded anything, and the assertion failed on a file that was never
+    written.
+
+    It bit both shell legs, not just the zsh one, because the heartbeat ticker and
+    the child are always launched under ``resolve_session_shell()``'s choice (zsh
+    where present) regardless of which shell runs the supervisor. It also passed on
+    CI while failing on a developer Mac, because a CI runner has no such
+    ``~/.zshenv`` to inherit — the exact shape of a test that is green only where
+    nobody has configured anything.
+
+    ``ZDOTDIR`` is used rather than ``zsh -f``: the shell invocation belongs to the
+    generated script (production code), so the fix has to live in the environment the
+    harness controls, not in an argv the harness does not own.
+    """
+    zdotdir = tmp_path / "zdotdir"
+    zdotdir.mkdir(exist_ok=True)
+    return zdotdir
+
+
 def _write_isolated_tmux_wrapper(path: Path) -> None:
     tmux_binary = shutil.which("tmux")
     assert tmux_binary is not None, "tmux binary not available on PATH"
@@ -1369,6 +1417,7 @@ fi
     environment = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "ZDOTDIR": str(_zsh_rc_free_home(tmp_path)),
         "XDG_STATE_HOME": str(state_home),
         "AI_CLI_TEST_CHILD_READY": str(child_ready),
         "AI_CLI_TEST_EVENTS": str(event_log),
@@ -1695,6 +1744,25 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     assert "Ctrl+C again within" in stderr
 
 
+def _child_launch_loop_anchor(script: str) -> str:
+    """Return the generated line that installs the per-child EXIT trap, verbatim.
+
+    That trap sits immediately above the child launch loop, so splicing before it
+    is how a test gets a statement to run once before any child starts.
+
+    Located by its two invariant substrings rather than matched as an exact literal
+    (AI-CLI-ta1l). The literal form drifted when the trap gained a
+    ``[[ -n "$watcher_pid" ]] &&`` guard, and every caller then failed with
+    "expected the child launch loop" — a stale-anchor problem in the harness
+    reported as if the template were broken. Uniqueness is asserted, so a future
+    change that makes the anchor ambiguous still fails loudly instead of splicing
+    into the wrong place.
+    """
+    matches = [line for line in script.splitlines() if "watcher_pid" in line and line.rstrip().endswith("EXIT")]
+    assert len(matches) == 1, f"expected exactly one per-child EXIT trap to anchor on, found {matches}"
+    return matches[0]
+
+
 def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skips_direnv_and_exits(
     tmp_path: Path, supported_session_shell: str
 ):
@@ -1715,8 +1783,7 @@ def test_given_persisted_exit_request_when_replacement_child_starts_then_it_skip
         marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
         1,
     )
-    loop_start = '    trap \'kill "$watcher_pid" 2>/dev/null; rm -f "$lock_file"\' EXIT\n\n'
-    assert loop_start in instrumented_script, "expected the child launch loop"
+    loop_start = _child_launch_loop_anchor(instrumented_script)
     instrumented_script = instrumented_script.replace(
         loop_start,
         f"    printf '%s\\n' exit > {str(exit_file)!r}\n" + loop_start,

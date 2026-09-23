@@ -21,8 +21,17 @@ def resolve_session_shell() -> str | None:
     zsh remains the *preferred* interpreter wherever it is installed — switching
     hosts that have it would be a behavioural change, not a portability fix. bash
     is the fallback, and a safe one: the generated template uses only ``[[ ]]``,
-    ``(( ))`` and POSIX builtins, and its own self-update branch already execs a
-    refreshed template under ``bash``.
+    ``(( ))``, POSIX builtins and explicitly-numbered file descriptors, and its own
+    self-update branch already execs a refreshed template under ``bash``.
+
+    "Explicitly-numbered" is load-bearing and was not always true (AI-CLI-ta1l). The
+    template opened its generation-lease descriptor with bash's auto-assigning
+    ``exec {var}>file`` form, which requires bash 4.1+ — while macOS ships bash
+    3.2.57 as ``/bin/bash``, where it parses as a command name and fails rc 127.
+    Because this function falls back to bash wherever zsh is missing, that made the
+    fallback path the unsafe one, contradicting the paragraph above. Any new
+    redirection here must stay within bash 3.2's grammar; the shell-resolution
+    suite pins it against every installed candidate interpreter.
 
     Returns ``None`` when neither shell is installed, so the caller can fail with
     an actionable message. Handing tmux an interpreter that does not exist is the
@@ -240,7 +249,17 @@ def get_engine_script(
         _lease_session=$(printf '%s' "$tmux_session" | base64 | tr '/+' '_-' | tr -d '=\\n')
         _lease_generation=$(printf '%s' "$generation_token" | base64 | tr '/+' '_-' | tr -d '=\\n')
         _lease_path="$_ai_state_dir/session-leases/${{_lease_session}}-${{_lease_generation}}.lock"
-        exec {{_reaper_lease_fd}}>"$_lease_path"
+        # Descriptor 8 is named directly rather than auto-assigned with bash's
+        # `exec {{var}}>file` form. That form needs bash 4.1+, and macOS still ships
+        # bash 3.2.57 as /bin/bash, where it parses as a COMMAND name and `exec`
+        # fails with `{{_reaper_lease_fd}}: not found` (rc 127) -- which killed the
+        # pane before the agent ever launched, so tmux tore the session down and the
+        # user saw a bare `[exited]`. resolve_session_shell falls back to bash on any
+        # host without zsh, so this was reachable in production, not only in tests.
+        # This script already names its descriptors directly (3 for the saved stderr,
+        # 9 for the terminal dup); 8 continues that convention and is unused here.
+        _reaper_lease_fd=8
+        exec 8>"$_lease_path"
         if ai internal acquire-generation-lease "$_reaper_lease_fd"; then
           _reaper_evidence_enabled=true
           export AI_CLI_SUPERVISOR_LEASE_FD="$_reaper_lease_fd"

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _pytest_config_args(repository_root: Path) -> list[str]:
     """``-c <path>`` for whichever config this repo actually uses, or none.
@@ -57,13 +59,29 @@ def test_given_runaway_xdist_worker_when_memory_limit_is_reached_then_worker_is_
     tmp_path: Path,
 ):
     runaway_test = tmp_path / "test_synthetic_runaway.py"
+    # The allocation is derived from the configured ceiling rather than hardcoded, so
+    # the "runaway" genuinely exceeds it on every platform (AI-CLI-ta1l). It used to
+    # allocate a fixed 32 x 8 MiB = 256 MiB against a 384 MiB ceiling and still passed
+    # on Linux, because RLIMIT_AS caps VIRTUAL ADDRESS SPACE -- which CPython maps far
+    # beyond its resident size -- not RSS. macOS cannot use RLIMIT_AS for this (the
+    # plugin says so, and setrlimit is refused outright here), so it falls back to an
+    # RSS watchdog, measured the runaway peaking at 273 MiB, correctly did not kill a
+    # process that never reached 384 MiB, and the test failed. The test was calibrated
+    # against one platform's accounting rather than against a real memory ceiling.
     runaway_test.write_text(
         """
+import os
 import time
+
+_ceiling_mb = int(os.environ["PYTEST_WORKER_MEMORY_LIMIT_MB"])
+_chunk_mb = 8
+# 1.5x the ceiling: comfortably over it on an RSS basis even with the interpreter's
+# own baseline excluded, while staying small enough not to stress the host.
+_chunks = (_ceiling_mb + _ceiling_mb // 2) // _chunk_mb
 
 
 def test_synthetic_runaway_allocation():
-    chunks = [bytearray(8 * 1024 * 1024) for _ in range(32)]
+    chunks = [bytearray(_chunk_mb * 1024 * 1024) for _ in range(_chunks)]
     print(f"allocation completed: {len(chunks)} chunks")
     time.sleep(1)
 """,
@@ -155,6 +173,19 @@ def test_synthetic_unconstrained_allocation():
     assert "pytest memory guard" in output
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "the unconstrained_memory marker is a Linux-only feature and this asserted it "
+        "cross-platform (AI-CLI-ta1l). pytest_memory_guard.pytest_runtest_protocol reads only "
+        "_LINUX_ADDRESS_SPACE_LIMIT_ATTRIBUTE, which is set solely on the RLIMIT_AS path; the "
+        "non-Linux path installs an out-of-process RSS watchdog instead, which has no per-test "
+        "awareness and so cannot lift its ceiling for a marked test. The marker's own description "
+        "says 'without the Linux RLIMIT_AS guard'. Teaching the RSS watchdog to honour the marker "
+        "needs IPC between the worker and the watchdog -- a design change, not a fix -- tracked "
+        "separately. Skipped rather than deleted so it keeps covering the contract on Linux."
+    ),
+)
 def test_given_unconstrained_memory_marker_when_next_test_runs_then_guard_is_restored(
     tmp_path: Path,
 ):

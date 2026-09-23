@@ -24,6 +24,7 @@ constraint: the fix must not stop preferring zsh/direnv where they exist.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,7 +38,7 @@ import pytest
 from conftest import tmux_runnable
 
 from ai_cli.main import _do_session_launch
-from ai_cli.session_script import get_engine_script
+from ai_cli.session_script import SESSION_SHELL_PREFERENCE, get_engine_script
 
 # Binaries the launch path and the harness scripts legitimately reach for. The
 # hermetic PATH is built from symlinks to exactly these, which is what makes
@@ -696,3 +697,59 @@ def test_given_direnv_available_when_once_launched_then_the_engine_runs_under_di
     subprocess.run([interpreter, "-c", command], capture_output=True, text=True, timeout=60, check=False)
     assert direnv_used.exists(), "direnv could load the .envrc but --once did not run the engine under it"
     assert engine_marker.exists(), "the engine was never reached"
+
+
+# ---------------------------------------------------------------------------
+# Redirection portability across the supported interpreters (AI-CLI-ta1l)
+#
+# A third unguarded dependency, of the same shape as the two above: the generated
+# supervisor opened its generation-lease descriptor with bash's auto-assigning
+# `exec {var}>file` form, which requires bash 4.1+. macOS still ships bash 3.2.57
+# as /bin/bash, and `resolve_session_shell` falls back to bash wherever zsh is
+# absent -- there the line parses as a COMMAND name, `exec` fails with
+# "{_reaper_lease_fd}: not found", the pane dies, tmux tears the session down, and
+# the child agent never launches at all. Identical end-user symptom to the zsh and
+# direnv cases: a bare `[exited]` with no useful diagnostic.
+#
+# Asserted against the real shell boundary rather than by grepping the script for
+# the construct: the question is whether the interpreter ACCEPTS what was
+# generated, and only that interpreter can answer it.
+# ---------------------------------------------------------------------------
+
+
+def _lease_redirection_line(script: str) -> str:
+    """The generated line that opens the generation-lease descriptor."""
+    matches = [
+        line.strip() for line in script.splitlines() if "$_lease_path" in line and line.strip().startswith("exec")
+    ]
+    assert len(matches) == 1, f"expected exactly one lease redirection, found {matches}"
+    return matches[0]
+
+
+@pytest.mark.parametrize("candidate", SESSION_SHELL_PREFERENCE)
+def test_given_generated_lease_redirection_when_run_under_a_supported_shell_then_it_opens_the_descriptor(
+    candidate: str, tmp_path: Path
+):
+    """Every shell `resolve_session_shell` may pick must accept the generated redirection.
+
+    The oldest bash this reaches in practice is macOS's /bin/bash 3.2.57, which is
+    exactly the version that rejects the auto-assigning form -- so on a Mac this
+    test fails against the unfixed template and passes against the fixed one. On a
+    host whose bash is modern it still pins the contract for zsh and for any later
+    change that reintroduces a version-gated construct.
+    """
+    shell = shutil.which(candidate)
+    if shell is None:
+        pytest.skip(f"{candidate} is not installed")
+
+    script = get_engine_script(
+        "c", "session-1", "test-session", "test-", "myproject", is_remote=False, worktree_dir=str(tmp_path)
+    )
+    lease_path = tmp_path / "generation.lock"
+    probe = f"_lease_path={shlex.quote(str(lease_path))}\n{_lease_redirection_line(script)}\n"
+
+    result = subprocess.run([shell, "-c", probe], capture_output=True, text=True, timeout=30, check=False)
+
+    assert result.returncode == 0, f"{candidate} rejected the generated redirection: {result.stderr}"
+    assert "not found" not in result.stderr, result.stderr
+    assert lease_path.exists(), "the descriptor was accepted but no lease file was created"

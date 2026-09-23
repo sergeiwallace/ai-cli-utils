@@ -131,22 +131,40 @@ def _fake_binary(prefix: Path, name: str = "fake-probe") -> Path:
 
     It succeeds only when the loader search path actually contains the library,
     so nothing about this test can pass on a repair that merely *claims* to have
-    worked. POSIX ``sh`` so it does not depend on bash being present.
+    worked.
+
+    The interpreter is ``sys.executable``, NOT ``/bin/sh`` (AI-CLI-ta1l). macOS SIP
+    purges every ``DYLD_*`` variable from the environment of a protected binary, and
+    ``/bin/sh`` is protected -- so the script could never observe the
+    ``DYLD_LIBRARY_PATH`` the repair had just set, reported itself still broken, and
+    ``repair_loader_path`` correctly returned ``repaired=False``. The test was
+    unsatisfiable on macOS by construction while looking like a product defect.
+
+    Measured, with a non-DYLD control variable to prove it is the purge and not
+    general env loss: under ``/bin/sh`` DYLD_LIBRARY_PATH was STRIPPED while
+    MY_CONTROL_VAR was VISIBLE; under a non-protected interpreter (Homebrew bash, and
+    this venv's python) it was VISIBLE. Production is unaffected -- a real broken tmux
+    under /opt/homebrew is not SIP-protected, so the repair does reach it.
+
+    ``sys.executable`` also removes the previous POSIX-``sh`` dependency: the
+    interpreter running the suite is by definition present.
     """
     var = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
     return _write_exe(
         prefix / "bin" / name,
-        f"""#!/bin/sh
-IFS=':'
-for dir in ${{{var}:-}}; do
-    if [ -f "$dir/{FAKE_SONAME}" ]; then
-        echo "fake-probe 1.0"
-        exit 0
-    fi
-done
-echo "{name}: error while loading shared libraries: {FAKE_SONAME}: \
-cannot open shared object file: No such file or directory" >&2
-exit 127
+        f"""#!{sys.executable}
+import os
+import sys
+
+for directory in os.environ.get({var!r}, "").split(os.pathsep):
+    if directory and os.path.isfile(os.path.join(directory, {FAKE_SONAME!r})):
+        print("fake-probe 1.0")
+        sys.exit(0)
+sys.stderr.write(
+    "{name}: error while loading shared libraries: {FAKE_SONAME}: "
+    "cannot open shared object file: No such file or directory\\n"
+)
+sys.exit(127)
 """,
     )
 
