@@ -30,7 +30,7 @@ def test_given_local_user_default_efs_directory_when_resolving_then_xdg_is_used(
     is the EFS mount that survives a restart -- but the test was for the NAME, so any host
     where that directory happens to exist inherited a SageMaker-shaped path.
 
-    Measured on sem-kg-ec2: /home/ubuntu/user-default-efs exists, created by `credo` and
+    Measured on an EC2 Linux host: /home/ubuntu/user-default-efs exists, created by `credo` and
     holding only `.credo`, and `findmnt -t nfs,nfs4` returns nothing because the host has no
     EFS at all. The registry therefore resolved onto the root volume rather than this
     machine's XDG location -- and the durable volume here is /data, which is what

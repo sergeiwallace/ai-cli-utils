@@ -19,7 +19,7 @@ template_version: "bug-1.0.0"
 
 **Task:** CORE-5m6 (filed in core-cli store; ai-cli-utils store blocked by CORE-5dx)
 
-**Fixed by:** `src/ai_cli/main.py` — two sites, commit not created (per BMS machine git discipline)
+**Fixed by:** `src/ai_cli/main.py` — two sites, commit not created (per corporate-machine git discipline)
 
 **Related issues:**
 - CORE-6nr (separate, pre-existing Windows incompatibility — `ai ls` crashes with identical `FileNotFoundError` class for a different bare-name call; NOT fixed here, filed separately)
@@ -51,7 +51,7 @@ Silent-skip was rejected for the background case because it would hide a permane
 ## Reproduction
 
 **Environment:**
-- Windows 11 Enterprise 10.0.26100 (BMS corporate machine, `bms-windows`)
+- Windows 11 Enterprise 10.0.26100 (a corporate-managed machine)
 - Git Bash (MINGW64), bash 5.2.37
 - `ai-cli-utils` installed editable via `uv tool install --editable ~/projects/ai-cli-utils` — source edits are live immediately, no reinstall required
 - VS Code integrated terminal with stale environment block (opened before uv installation, `which uv` → not found)
@@ -312,7 +312,7 @@ During the audit of bare subprocess calls, a THIRD, PRE-EXISTING gap was found:
 
 **Paper trail:**
 - This bug doc serves as the canonical record of the fix
-- ai-cli-utils is installed editable; changes are live immediately, no commit required per BMS machine git discipline (ai-harness `CLAUDE.md`: "on the ACN Windows machine follow enterprise constraints (no autonomous push)")
+- ai-cli-utils is installed editable; changes are live immediately, no commit required per corporate-machine git discipline (ai-harness `CLAUDE.md`: "on the ACN Windows machine follow enterprise constraints (no autonomous push)")
 - Real beads issue ID will be backfilled once the Windows/Dolt blocker is resolved or a workaround is found
 
 <!-- /doc:region name="appendix" -->

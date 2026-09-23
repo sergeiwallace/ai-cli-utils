@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation, tests and one source comment no longer name a real machine or
+  network. A VPN-range IP address was used as a test fixture and appeared in an
+  archived plan document's example config, and several provenance notes
+  ("Measured on `<machine>`: ...") named private hosts and the organization whose
+  network they sit on. The measurements are unchanged; the names are now generic
+  ("an EC2 Linux host", "a corporate-managed machine") and the address is an
+  RFC 5737 documentation address. The public-repository hygiene suite gained a
+  standing guard for both classes, so the next one fails a test rather than
+  reaching a published commit: literal IPv4 addresses are checked against an
+  enumerated list of synthetic values plus the RFC 5737 ranges, and the private
+  host-name prefixes are matched with a left-only word boundary so a suffixed
+  hostname cannot slip past.
+
 ### Fixed
 
 - A remote session could hang on a blank pane, ignoring repeated Ctrl+C, and

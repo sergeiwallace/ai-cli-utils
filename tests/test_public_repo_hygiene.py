@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 _SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
@@ -65,6 +66,15 @@ _PRIVATE_REPO_NAMES = ("bms-semantic-knowledge-graph", "sw-bms-workspace")  # pu
 # which would have been the hole this guard exists to close.
 _PRIVATE_PLATFORM_NAMES = ("aido", "ai-core")  # public-hygiene: allow
 
+# Private machine and client identifiers. These are SSH-host information in the
+# sense that matters here: a name that identifies one real machine, or the
+# organization whose network it sits on. They reached ``src/`` and ``tests/`` as
+# honest provenance notes ("Measured on <machine>: ..."), which is exactly how
+# this class arrives -- nobody pastes a hostname on purpose. The measurement is
+# worth keeping; the name is not, and "an EC2 Linux host" carries the same
+# information to a reader who does not have the machine.
+_PRIVATE_MACHINE_NAMES = ("sem-kg", "bms")  # public-hygiene: allow
+
 _FORBIDDEN = re.compile(
     "|".join(
         [
@@ -75,9 +85,40 @@ _FORBIDDEN = re.compile(
             # match would flag legitimate prose and make the guard noisy enough
             # to be disabled.
             *(rf"\b{re.escape(name)}\b" for name in _PRIVATE_PLATFORM_NAMES),
+            # Bounded on the LEFT only. These are prefixes of longer host names
+            # (``bms-windows``, ``sem-kg-ec2``), so a right boundary would match  # public-hygiene: allow
+            # only the bare stem and miss every real hostname built from it --
+            # which is the entire class.
+            *(rf"\b{re.escape(name)}" for name in _PRIVATE_MACHINE_NAMES),
         ]
     ),
     re.IGNORECASE,
+)
+
+# Literal IPv4 addresses this repository may contain. Every one is synthetic: the
+# RFC 5737 documentation range is matched by rule below, and these are the
+# pre-existing placeholders (a fake public address, the CGNAT network base
+# address a VPN range is illustrated with, RFC 1918 addresses inside a fabricated
+# ``ifconfig`` output, loopback and the unspecified address).
+#
+# Enumerating what is ALLOWED rather than pattern-matching what is forbidden is
+# deliberate, and it is the same inversion ``_EXPECTED_TOP_LEVEL_DIRS`` uses: a
+# reserved-range rule looks principled and is not, because both errors occur in
+# practice. A real machine's address inside the CGNAT range -- which is where a
+# VPN puts every host -- would pass such a rule, and that is precisely the leak
+# this guard was added for; meanwhile ``100.0.0.1``, a placeholder, is globally
+# routable and would be flagged. So a new address is a deliberate one-line
+# decision, and new placeholders should use ``192.0.2.x`` and need no entry.
+_ALLOWED_IP_LITERALS = frozenset(
+    {"1.2.3.4", "100.64.0.1", "100.0.0.1", "10.64.0.1", "192.168.1.5", "127.0.0.1", "0.0.0.0"}
+)
+# RFC 5737 TEST-NET-1/2/3, reserved for documentation and guaranteed to route nowhere.
+_DOCUMENTATION_IP_PREFIXES = ("192.0.2.", "198.51.100.", "203.0.113.")
+# All four octets bounded to 0-255, so a dotted version string ("2.1.220.300")
+# is not mistaken for an address. Anchored on non-digits rather than \b, because
+# \b does not separate a digit from a preceding dot.
+_IPV4 = re.compile(
+    r"(?<![\d.])((?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))(?![\d.])"
 )
 
 
@@ -92,13 +133,12 @@ def _line_is_exempted(relative_path: Path, line: str) -> bool:
     )
 
 
-def scan_for_private_names(root: Path) -> list[str]:
-    """Return ``path:lineno: line`` for every forbidden-name use under ``root``.
+def _scanned_text_files(root: Path) -> Iterator[tuple[Path, Path, str]]:
+    """Yield ``(path, path relative to root, text)`` for every scanned text file.
 
     Files that are not UTF-8 text (images, compiled artefacts) are skipped, so
     the scan needs no extension allowlist that a new file type could slip past.
     """
-    findings: list[str] = []
     for scanned_path in _SCANNED_PATHS:
         candidate = root / scanned_path
         if not candidate.exists():
@@ -111,16 +151,118 @@ def scan_for_private_names(root: Path) -> list[str]:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            for lineno, line in enumerate(text.splitlines(), start=1):
-                relative_path = path.relative_to(root)
-                if _FORBIDDEN.search(line) and not _line_is_exempted(relative_path, line):
-                    findings.append(f"{relative_path}:{lineno}: {line.strip()}")
+            yield path, path.relative_to(root), text
+
+
+def scan_for_private_names(root: Path) -> list[str]:
+    """Return ``path:lineno: line`` for every forbidden-name use under ``root``."""
+    findings: list[str] = []
+    for path, relative_path, text in _scanned_text_files(root):
+        del path
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _FORBIDDEN.search(line) and not _line_is_exempted(relative_path, line):
+                findings.append(f"{relative_path}:{lineno}: {line.strip()}")
     return findings
 
 
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_names_remain():
     findings = scan_for_private_names(_repo_root())
     assert not findings, "private project names in a public package:\n" + "\n".join(findings)
+
+
+def _ip_is_allowed(address: str) -> bool:
+    return address in _ALLOWED_IP_LITERALS or address.startswith(_DOCUMENTATION_IP_PREFIXES)
+
+
+def scan_for_host_addresses(root: Path) -> list[str]:
+    """Return ``path:lineno: line`` for every literal IPv4 address that is not synthetic."""
+    findings: list[str] = []
+    for path, relative_path, text in _scanned_text_files(root):
+        del path
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            offenders = [address for address in _IPV4.findall(line) if not _ip_is_allowed(address)]
+            if offenders and not _line_is_exempted(relative_path, line):
+                findings.append(f"{relative_path}:{lineno}: {line.strip()}")
+    return findings
+
+
+def test_given_the_repository_when_scanned_then_no_real_host_address_is_present():
+    """An address identifies one machine on someone's network, which is the leak.
+
+    Two reached ``main`` before this guard existed and neither looked like a
+    mistake in review: a VPN-range address used as a test fixture, and the same
+    address in an archived plan document's example config. Both are the shape this
+    catches -- a plausible-looking value nobody thought of as a hostname.
+
+    Scope limit, stated rather than implied: this walks ``_SCANNED_PATHS``, so the
+    tracked task-store exports under ``.beads/`` are outside it. Those carry
+    historical issue text with two real addresses in it, and scrubbing the export
+    would not hold -- it is regenerated from the task store, so the fix belongs in
+    the store and is tracked separately rather than being silently skipped here.
+    """
+    findings = scan_for_host_addresses(_repo_root())
+    assert not findings, (
+        "literal host addresses in a public package:\n"
+        + "\n".join(findings)
+        + "\nUse an RFC 5737 documentation address (192.0.2.x) instead."
+    )
+
+
+def test_given_a_routable_host_address_when_scanned_then_it_is_flagged(tmp_path):
+    """Positive control, with an address in the range a VPN actually assigns.
+
+    A control using an obviously-public address would pass against a guard that
+    allowed the whole CGNAT range -- which is the guard a reserved-range rule
+    would have produced, and the range the real leak was in.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    # A CGNAT-range address, which is the range the real leak was in, but not any
+    # machine's: carrying the actual leaked value here would defeat the scrub this
+    # guard exists to keep in place.
+    cgnat_address = "100.127.255.254"  # public-hygiene: allow
+    (tmp_path / "src" / "example.py").write_text(f'relay_host = "{cgnat_address}"\n')
+
+    findings = scan_for_host_addresses(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].startswith("src/example.py:1:")
+
+
+def test_given_documentation_and_placeholder_addresses_when_scanned_then_they_are_not_flagged(tmp_path):
+    """Negative control: every value the repository legitimately contains must pass.
+
+    Includes a four-part version string, which the octet bounds are what excludes
+    -- a naive dotted-quad pattern matches it and would make this guard noisy
+    enough to be switched off.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    lines = [f'addr = "{address}"' for address in sorted(_ALLOWED_IP_LITERALS)]
+    lines += [f'doc = "{prefix}42"' for prefix in _DOCUMENTATION_IP_PREFIXES]
+    lines.append('version = "2.1.220.300"')
+    (tmp_path / "src" / "example.py").write_text("\n".join(lines) + "\n")
+
+    assert scan_for_host_addresses(tmp_path) == []
+
+
+def test_given_a_private_machine_name_when_scanned_then_it_is_flagged(tmp_path):
+    """Per-token control: the left-only boundary must match a real hostname.
+
+    Each token is a PREFIX of the names that actually leaked, so the assertion
+    uses the suffixed form. A right boundary passes the bare stem and fails
+    the suffixed hostname, which is the entire class inverted.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    for index, name in enumerate(_PRIVATE_MACHINE_NAMES):
+        (tmp_path / "src" / f"host_{index}.py").write_text(f"# measured on {name}-somehost\n")
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == len(_PRIVATE_MACHINE_NAMES)
+    for index, name in enumerate(_PRIVATE_MACHINE_NAMES):
+        assert any(finding.startswith(f"src/host_{index}.py:1:") for finding in findings), f"scan did not flag {name!r}"
 
 
 def test_given_the_repository_index_when_listed_then_no_claude_code_install_lock_is_tracked():

@@ -74,7 +74,7 @@ def get_canonical_worktree_registry_path() -> Path:
 
     The mount check is the whole point, not a formality (AI-CLI-hgna).  This used
     to accept the path whenever a DIRECTORY of that name existed, which is a claim
-    about a name rather than about storage.  On sem-kg-ec2 that directory exists --
+    about a name rather than about storage.  On one EC2 Linux host that directory exists --
     ``credo`` created it, and it holds only ``.credo`` -- while the host has no EFS
     at all, so the registry resolved onto the root volume under a SageMaker-shaped
     path instead of this machine's own durable location.

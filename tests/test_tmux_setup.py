@@ -42,7 +42,7 @@ class TestPresenceVersusUsable:
         assert run.call_args[0][0] == ["tmux", "-V"]
 
     def test_when_tmux_is_on_path_but_cannot_execute_then_present_but_not_runnable(self):
-        """The exact sem-kg failure: present, exit 127, no usable tmux."""
+        """The exact observed failure: present, exit 127, no usable tmux."""
         with (
             patch("shutil.which", return_value="/home/u/.local/bin/tmux"),
             patch("subprocess.run", return_value=_completed(returncode=127, stdout="", stderr="libutempter.so.0")),
