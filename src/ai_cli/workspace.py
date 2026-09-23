@@ -5,6 +5,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from .git_repair import _git_env
+
 
 def _parse_workspace_folders(workspace_path: Path) -> list[Path]:
     """Return absolute paths of all folders in a .code-workspace file."""
@@ -20,7 +22,23 @@ def _parse_workspace_folders(workspace_path: Path) -> list[Path]:
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    """Run one git command for the workspace walk, contained.
+
+    ``env=_git_env()`` is what makes this safe to run unattended across a whole
+    ``.code-workspace``, and it settles two things this function previously
+    inherited from the ambient environment:
+
+    * ``GIT_TERMINAL_PROMPT=0`` -- ``_pull_rebase`` below is a network operation,
+      and git writes its credential prompt to ``/dev/tty``, which the
+      ``capture_output=True`` here does NOT contain. One repo whose remote cannot
+      authenticate would otherwise stall the entire walk on an invisible
+      ``Username for '...'`` prompt rather than being reported and skipped.
+    * the git *targeting* vars are stripped. Every call here aims at a repo via
+      ``git -C``, and an inherited ``GIT_DIR`` silently overrides it -- git exports
+      ``GIT_DIR`` into every hook subprocess, so a workspace walk invoked from a
+      hook would read and rebase the wrong repository.
+    """
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=_git_env())
     return result.returncode, result.stdout, result.stderr
 
 

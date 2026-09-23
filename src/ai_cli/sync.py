@@ -37,6 +37,7 @@ from pathlib import Path
 import portalocker
 
 from .cc_migrate import _rewrite_line
+from .git_repair import _git_env
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -116,8 +117,18 @@ _DREAM_GUARD_TIMEOUT_SECONDS = 30.0
 _DREAM_GUARD_POLL_SECONDS = 0.1
 _STAGING_LOCK_TIMEOUT_SECONDS = 600
 
+# Built from git_repair._git_env() rather than raw os.environ so this module cannot
+# drift from the one place the fleet's git-subprocess containment is defined. It
+# supplies GIT_TERMINAL_PROMPT=0 -- every git call below is unattended automation
+# reading back a captured result, and git writes its credential prompt to /dev/tty,
+# which capture_output=True does NOT contain, so a remote git cannot authenticate to
+# hangs `ai sync` silently instead of failing. It also strips the git *targeting*
+# vars (GIT_DIR, GIT_WORK_TREE, ...), so an ambient GIT_DIR -- which git exports into
+# every hook subprocess, and which overrides cwd= -- cannot redirect a staging-repo
+# operation into the caller's own repo. The identity assignments stay last: they are
+# the point of this dict, and the staging repo has no user.name of its own.
 _GIT_ENV = {
-    **os.environ,
+    **_git_env(),
     "GIT_AUTHOR_NAME": "ai-sync",
     "GIT_AUTHOR_EMAIL": "ai-sync@local",
     "GIT_COMMITTER_NAME": "ai-sync",

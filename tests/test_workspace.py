@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_cli.workspace import _parse_workspace_folders, _upstream_drift, ws_pull
+from ai_cli.workspace import _parse_workspace_folders, _pull_rebase, _run, _upstream_drift, ws_pull
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -536,3 +536,61 @@ class TestWsPullDriftReporting:
         out = capsys.readouterr().out
         assert "AI-CLI-128" not in out
         assert "not tracking origin/main" not in out
+
+
+# ---------------------------------------------------------------------------
+# credential-prompt containment (AI-CLI-9qj6)
+#
+# git writes its credential prompt to /dev/tty, NOT to the subprocess's stdin or
+# stdout, so the capture_output=True in workspace._run does not contain it. `ai ws`
+# walks every folder in a .code-workspace unattended, so a remote git cannot
+# authenticate to can only ever hang the whole walk on the first such repo -- the
+# same defect PR #164 fixed for git_repair.
+# ---------------------------------------------------------------------------
+
+
+def _real_repo_with_remote(path: Path, url: str) -> Path:
+    """A real git repo with one commit whose origin is ``url``."""
+    path.mkdir(parents=True, exist_ok=True)
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=True)
+
+    run("init", "-b", "main")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "test")
+    # Reset the helper list so the machine's own credential helper cannot answer
+    # (or, on Windows, raise a GUI prompt) and mask the behaviour under test.
+    run("config", "credential.helper", "")
+    (path / "f.txt").write_text("x")
+    run("add", "f.txt")
+    run("commit", "-m", "seed")
+    run("remote", "add", "origin", url)
+    return path
+
+
+@pytest.mark.timeout(60)
+def test_pull_rebase_when_remote_demands_credentials_then_fails_without_prompting(
+    tmp_path, remote_demanding_credentials
+):
+    """Drives the real `git` CLI against a real 401 remote, because the defect IS
+    git's prompting behaviour -- a mocked _run would only assert what the mock said.
+    Unattended, git must fail fast; prompting instead blocks `ai ws` forever."""
+    repo = _real_repo_with_remote(tmp_path / "repo", remote_demanding_credentials)
+
+    rc, output = _pull_rebase(repo)
+
+    assert rc != 0
+    assert "terminal prompts disabled" in output, output
+
+
+def test_run_when_invoked_then_git_targeting_vars_cannot_redirect_the_repo(tmp_path, monkeypatch):
+    """Every call here targets a repo via `git -C`, which GIT_DIR silently overrides.
+    Routing through _git_env strips it, so an ambient GIT_DIR cannot retarget the walk."""
+    repo = _real_repo_with_remote(tmp_path / "repo", "http://127.0.0.1:1/unused.git")
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere" / ".git"))
+
+    rc, stdout, _ = _run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"])
+
+    assert rc == 0
+    assert stdout.strip() == "main"
