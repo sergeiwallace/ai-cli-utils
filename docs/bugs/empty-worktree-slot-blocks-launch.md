@@ -47,7 +47,7 @@ The directory named in the error was empty. The error told the human to remove a
 `git worktree add` would have written into unaided, and the advice it gave (`rmdir`) was the
 launcher's own job.
 
-Two slots were in this state in the same repository (`aih-1`, `kg-1`), so the state recurs
+Two slots were in this state in the same repository (`aih-1`, `session-1`), so the state recurs
 rather than being a one-off.
 
 ### D2 — no symptom at the point of failure

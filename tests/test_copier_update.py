@@ -855,7 +855,11 @@ def test_given_inspection_output_when_isolated_no_push_update_succeeds_then_writ
 
     def run(command, **kwargs):
         if command[0] == "/usr/bin/copier":
-            (Path(kwargs["cwd"]) / "message.txt").write_text("updated\n")
+            # Byte-exact on purpose. `_snapshot_staged_files` reads the delivered
+            # file with `read_bytes`, and the assertion below compares those bytes,
+            # but `write_text` translates "\n" to os.linesep -- so on Windows the
+            # stub delivered "updated\r\n" and the test blamed the snapshot code.
+            (Path(kwargs["cwd"]) / "message.txt").write_bytes(b"updated\n")
             return MagicMock(returncode=0, stdout="", stderr="")
         return real_run(command, **kwargs)
 

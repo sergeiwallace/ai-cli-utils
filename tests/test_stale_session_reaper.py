@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-import pty
+import re
 import shlex
 import shutil
 import signal
@@ -28,6 +28,7 @@ import pytest
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import get_engine_script
 from ai_cli.stale_session_reaper import (
+    _TMUX_FINGERPRINT_FORMAT,
     Pane,
     SessionCandidate,
     StaleSessionReaper,
@@ -122,6 +123,38 @@ def _tmux_new_session(
     return subprocess.run([*argv, *command], env=environment, capture_output=True, text=True, check=False)
 
 
+# tmux sockets are AF_UNIX paths under a ~104-byte limit, and macOS's $TMPDIR is a
+# long /var/folders/<hash>/T/ path, so a short parent is what keeps the socket inside
+# it -- which is why "/tmp" was hardcoded here. It is not a portable location: it does
+# not exist on Windows, where `mkdtemp(dir="/tmp")` raised `FileNotFoundError:
+# [WinError 3] ... '/tmp\\ai-cli-tmux-...'`. Falling back to tempfile's own default
+# (dir=None) costs nothing there, because no real tmux exists on that platform; the
+# path is reached only by tests/test_skip_hygiene.py, which fakes tmux's presence to
+# drive this generator's cleanup contract.
+_SOCKET_PARENT = "/tmp" if Path("/tmp").is_dir() else None
+
+# The real-tmux tests need POSIX process semantics, not merely a tmux binary: AF_UNIX
+# sockets, `remain-on-exit` panes, process groups, signals, and supervisors launched as
+# shell scripts. A module constant rather than an inline check so
+# tests/test_skip_hygiene.py can declare it satisfied while driving this generator's
+# cleanup contract, which is how that file already handles `shutil.which`.
+_POSIX_HOST = os.name == "posix"
+
+# How long to let a real process take. These tests spawn real shells, supervisors, tmux
+# servers and signal relays, and the suite runs under `-n auto`, so several of them
+# compete for CPU with ~2,900 other tests. A timeout here exists to bound a genuine
+# hang, NOT to assert promptness -- and the short ones were doing the latter by
+# accident. Measured on this tree: the same two files give 1 failure serially and 9-34
+# under `-n auto`, and every one of those is a `subprocess.TimeoutExpired` after 5
+# seconds, or a poll deadline of 10, on a process that was merely descheduled.
+#
+# A generous bound loses nothing: every wait returns the moment its process exits or
+# its predicate holds, so the fast path is unchanged and a real hang is still caught --
+# it simply never exits. The worst case is a genuinely broken build taking a minute
+# longer to say so. Overridable so a slow runner can raise it without a code change.
+_PROCESS_WAIT_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+
+
 def isolated_tmux_socket() -> Iterator[str]:
     """An isolated tmux server, torn down on EVERY exit path including a skip.
 
@@ -136,9 +169,11 @@ def isolated_tmux_socket() -> Iterator[str]:
     The ``which`` check stays above the ``mkdtemp`` on purpose: a PATH lookup
     builds nothing, so there is nothing to clean up if it decides to skip.
     """
+    if not _POSIX_HOST:
+        pytest.skip("the real-tmux tests need POSIX process semantics, not just a tmux binary")
     if shutil.which("tmux") is None:
         pytest.skip("tmux binary not available on PATH")
-    socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir="/tmp"))
+    socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir=_SOCKET_PARENT))
     socket = str(socket_dir / "socket")
     try:
         probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
@@ -156,7 +191,7 @@ def real_tmux_socket() -> Iterator[str]:
 
 
 def _wait_for_dead_pane(socket: str, session_id: str) -> None:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         result = _tmux_run(socket, "list-panes", "-t", session_id, "-F", "#{pane_dead}")
         if result.returncode == 0 and result.stdout.strip() == "1":
@@ -175,7 +210,7 @@ def _create_dead_managed_session(socket: str, session_id: str, generation: str =
 
 
 def _wait_for_missing_session(socket: str, session_id: str) -> None:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         result = _tmux_run(socket, "has-session", "-t", session_id)
         if result.returncode != 0:
@@ -185,7 +220,7 @@ def _wait_for_missing_session(socket: str, session_id: str) -> None:
 
 
 def _wait_for_lines(path: Path, count: int) -> list[str]:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
         if len(lines) >= count:
@@ -194,8 +229,8 @@ def _wait_for_lines(path: Path, count: int) -> list[str]:
     raise AssertionError(f"{path.name} did not contain {count} lines")
 
 
-def _wait_for_condition(description: str, predicate: Callable[[], bool], timeout: float = 10) -> None:
-    deadline = time.monotonic() + timeout
+def _wait_for_condition(description: str, predicate: Callable[[], bool], timeout: float | None = None) -> None:
+    deadline = time.monotonic() + (_PROCESS_WAIT_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
         if predicate():
             return
@@ -351,9 +386,7 @@ fi
     record = heartbeat_path(state_home, session_id, generation)
     _wait_for_condition("the first heartbeat record", record.exists)
     _assert_generation_lease_is_held(state_home, session_id, generation)
-    _wait_for_condition(
-        "the replacement child", lambda: launches.read_text(encoding="utf-8").strip() == "2", timeout=15
-    )
+    _wait_for_condition("the replacement child", lambda: launches.read_text(encoding="utf-8").strip() == "2")
 
     assert (
         _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}").stdout.strip()
@@ -731,6 +764,59 @@ def test_given_managed_pane_with_remain_on_exit_when_process_exits_then_tmux_mar
     assert _tmux_run(real_tmux_socket, "has-session", "-t", "managed-pane").returncode == 0
 
 
+def test_given_the_fingerprint_format_when_inspected_then_it_uses_no_tmux_sort_argument():
+    """The fence's format must work on every tmux the fleet runs, including 3.4.
+
+    Frozen because the failure was total and silent. `#{W/i:...}` asks tmux to sort the
+    window loop by index, and per tmux(1) that suffix only exists on newer builds. On
+    tmux 3.4 -- Ubuntu 24.04's, which is what the Linux CI runner has -- tmux does not
+    error: it emits the literal text `W/i:` and then expands the body, so the
+    fingerprint came out as `$1|token|0|W/i:@1[%1=10290=1;]`. That matches
+    `_FINGERPRINT_RE` never, so `capture_fingerprint` returned None for every dead
+    managed session and the reaper could fence-and-kill nothing at all on that
+    platform, while passing on newer tmux.
+
+    Asserted against the format string, not against a live tmux, because the machine
+    with the affected tmux is the one that cannot run such a check -- a test requiring
+    tmux 3.4 would skip in exactly the place the bug lives.
+    """
+    windows_loop = re.search(r"#\{W([^:]*):", _TMUX_FINGERPRINT_FORMAT)
+
+    assert windows_loop is not None, f"no window loop found in {_TMUX_FINGERPRINT_FORMAT!r}"
+    assert windows_loop.group(1) == "", (
+        f"the window loop carries the sort argument {windows_loop.group(1)!r}. tmux 3.4 does not "
+        "support sort suffixes on W: and emits them literally, which makes the fingerprint "
+        "unmatchable and disables the fence entirely on that version"
+    )
+
+
+def _fingerprint_diagnostic(socket: str, candidate: object) -> str:
+    """Why `capture_fingerprint` refused, in the terms it actually judges on.
+
+    A bare `assert fingerprint is not None` says a dead managed session could not be
+    fenced and nothing about which of the four gates rejected it -- the candidate's
+    shape, the tmux call, the format regex, or the pane-for-pane pid comparison. That
+    left a Linux-only failure undiagnosable from CI output alone, so the message now
+    carries the two sides that have to agree.
+    """
+    raw = _tmux_run(socket, "list-panes", "-a", "-F", "#{pane_id}=#{pane_pid}=#{pane_dead}")
+    shown = _tmux_run(
+        socket,
+        "display-message",
+        "-p",
+        "-t",
+        getattr(candidate, "session_id", "?"),
+        _TMUX_FINGERPRINT_FORMAT,
+    )
+    version = subprocess.run(["tmux", "-V"], capture_output=True, text=True, check=False)
+    return (
+        f"candidate={candidate!r}\n"
+        f"tmux -V -> {version.stdout.strip()!r}\n"
+        f"list-panes -> {raw.stdout.strip()!r} (rc={raw.returncode}, err={raw.stderr.strip()!r})\n"
+        f"fingerprint -> {shown.stdout.strip()!r} (rc={shown.returncode}, err={shown.stderr.strip()!r})"
+    )
+
+
 @pytest.mark.real_tmux
 def test_given_matching_dead_managed_session_when_fence_runs_then_it_kills_the_exact_session(real_tmux_socket: str):
     _create_dead_managed_session(real_tmux_socket, "fence-positive")
@@ -738,7 +824,7 @@ def test_given_matching_dead_managed_session_when_fence_runs_then_it_kills_the_e
     candidate = adapter.sessions()[0]
     fingerprint = adapter.capture_fingerprint(candidate)
 
-    assert fingerprint is not None
+    assert fingerprint is not None, _fingerprint_diagnostic(real_tmux_socket, candidate)
     assert adapter.fence_and_kill(candidate.session_id, fingerprint)
     assert _tmux_run(real_tmux_socket, "has-session", "-t", candidate.session_id).returncode != 0
 
@@ -793,7 +879,7 @@ def test_given_respawn_before_atomic_fence_when_fence_runs_then_live_session_sur
     adapter = SubprocessTmuxAdapter(("tmux", "-S", real_tmux_socket))
     candidate = adapter.sessions()[0]
     fingerprint = adapter.capture_fingerprint(candidate)
-    assert fingerprint is not None
+    assert fingerprint is not None, _fingerprint_diagnostic(real_tmux_socket, candidate)
     respawned = _tmux_run(real_tmux_socket, "respawn-pane", "-k", "-t", candidate.panes[0].pane_id, "sleep", "30")
     assert respawned.returncode == 0, respawned.stderr
 
@@ -829,7 +915,11 @@ def test_given_valid_fingerprint_when_atomic_fence_runs_then_it_uses_one_argv_if
         "-F",
         "-t",
         "$1",
-        "#{==:#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]},$1|generation-token|0|@1[%1=9001=1;]}",
+        # Built from the production constant rather than copied. A second copy of this
+        # format is how it could change -- as it did, dropping an unsupported sort
+        # argument -- while a test kept asserting the old spelling and said nothing
+        # about the platform consequence.
+        f"#{{==:{_TMUX_FINGERPRINT_FORMAT},{fingerprint}}}",
         "kill-session -t '$1'",
         "display-message -p __ai_cli_fence_mismatch__",
     ]
@@ -1238,6 +1328,10 @@ def _write_isolated_tmux_wrapper(path: Path) -> None:
 
 
 @pytest.mark.real_tmux
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the wrapper is a #!/bin/sh script, which Windows cannot execute (WinError 193)",
+)
 def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it_executes_system_tmux(tmp_path: Path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -1253,15 +1347,15 @@ def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it
         capture_output=True,
         text=True,
         check=False,
-        timeout=2,
+        timeout=_PROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("tmux ")
 
 
-def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float = 15) -> None:
-    deadline = time.monotonic() + timeout
+def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float | None = None) -> None:
+    deadline = time.monotonic() + (_PROCESS_WAIT_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
         if path.exists():
             return
@@ -1274,9 +1368,9 @@ def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float = 
 
 def _communicate_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
     if process.stdout is None:
-        process.wait(timeout=5)
+        process.wait(timeout=_PROCESS_WAIT_SECONDS)
         return "", ""
-    return process.communicate(timeout=5)
+    return process.communicate(timeout=_PROCESS_WAIT_SECONDS)
 
 
 _SPAWNED_SUPERVISORS: list[subprocess.Popen[str]] = []
@@ -1310,7 +1404,7 @@ def _reap_leaked_supervisors() -> Iterator[None]:
                 with contextlib.suppress(psutil.NoSuchProcess):
                     descendant.kill()
         with contextlib.suppress(Exception):
-            process.wait(timeout=5)
+            process.wait(timeout=_PROCESS_WAIT_SECONDS)
 
 
 def _start_generated_supervisor(
@@ -1505,6 +1599,15 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
     ``os.tcsetpgrp`` on it fails deterministically with ENOTTY every time,
     exactly matching the production failure mode.
     """
+    # Imported here, not at module scope (AI-CLI-ta1l). On Windows `import pty` pulls in
+    # `tty`, which does `from termios import *`, and termios does not exist there -- so a
+    # module-level import made this ENTIRE FILE fail to COLLECT on Windows with
+    # `ModuleNotFoundError: No module named 'termios'`, taking all ~69 of its tests with
+    # it, and tests/test_skip_hygiene.py with them (it imports this module). A
+    # module-level `pytestmark` skip cannot help: collection imports the module before
+    # any marker is consulted. This is the only use of pty in the file.
+    import pty
+
     master_fd, initial_slave_fd = pty.openpty()
     slave_name = os.ttyname(initial_slave_fd)
     os.close(initial_slave_fd)
@@ -1536,10 +1639,10 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
             os.close(slave_fd)
 
         try:
-            stdout, stderr = process.communicate(timeout=10)
+            stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
-            stdout, stderr = process.communicate(timeout=5)
+            stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
             pytest.fail(
                 "supervisor never exited after a failed foreground promotion -- it hung "
                 "waiting on a stopped child that never received SIGCONT (AI-CLI-jpnd); "
@@ -1550,7 +1653,7 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
         assert process.returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
     finally:
         owner.kill()
-        owner.wait(timeout=5)
+        owner.wait(timeout=_PROCESS_WAIT_SECONDS)
         os.close(master_fd)
 
 
@@ -1722,9 +1825,18 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     # A readiness marker written the instant the new trap is installed --
     # before any preflight `ai internal ...` call -- so the test can send
     # Ctrl+C into that exact preflight window without racing a fixed sleep.
+    # Announce readiness, then HOLD the preflight window open until the test releases
+    # it. Announcing alone is not enough: under load the child ran to completion and the
+    # supervisor exited 0 before the first Ctrl+C landed, so the assertion below saw a
+    # finished process and blamed the signal -- reporting AI-CLI-s5cs as regressed when
+    # the wrapper had simply finished its work (AI-CLI-gcbo). Same
+    # wait-for-a-release-file shape already used in
+    # tests/test_session_launch_shell_resolution.py.
     patched_script = real_script.replace(
         marker,
-        marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
+        marker
+        + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"'
+        + '\n    while test ! -f "${AI_CLI_TEST_CHILD_READY}.release"; do sleep 0.05; done',
         1,
     )
     process, _, _ = _start_generated_supervisor(
@@ -1734,9 +1846,24 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     assert os.getpgid(child_pid) == process.pid
 
     os.killpg(process.pid, signal.SIGINT)
-    time.sleep(0.5)
+    # Wait for a definite outcome rather than a fixed 0.5s, then assert which one it was.
+    # The child's INT trap writes its 3-second escape deadline to
+    # $XDG_STATE_HOME/ai-cli-utils/session-int-escape-<session>, so that file appearing is
+    # evidence the trap ran; the wrapper exiting is the regression. Sleeping a fixed
+    # interval raced the signal against the trap's installation under load and reported
+    # "a single Ctrl+C during preflight killed the child wrapper" when the signal had
+    # merely arrived before the handler existed -- naming AI-CLI-s5cs as regressed on a
+    # loaded machine (AI-CLI-gcbo).
+    escape_dir = tmp_path / "state" / "ai-cli-utils"
+    _wait_for_condition(
+        "the child's INT trap to record the first Ctrl+C, or the wrapper to exit",
+        lambda: any(escape_dir.glob("session-int-escape-*")) or process.poll() is not None,
+    )
     assert process.poll() is None, "a single Ctrl+C during preflight killed the child wrapper (AI-CLI-s5cs)"
 
+    # The window has served its purpose; let the child leave it so the second press can
+    # take the deliberate-exit path rather than racing a still-blocked child.
+    (tmp_path / "child-ready.release").write_text("go\n", encoding="utf-8")
     os.killpg(process.pid, signal.SIGINT)
     stdout, stderr = _communicate_supervisor(process)
 

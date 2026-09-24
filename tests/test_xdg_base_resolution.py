@@ -30,11 +30,33 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src" / "ai_cli"
 
 # Every resolver whose output must be an absolute path, regardless of what the
 # corresponding environment variable holds.
-BASE_DIR_RESOLVERS = (
-    ("XDG_CONFIG_HOME", config.get_xdg_config_home),
-    ("XDG_STATE_HOME", config.get_xdg_state_home),
-    ("XDG_CACHE_HOME", config.get_xdg_cache_home),
-    ("XDG_DATA_HOME", config.get_xdg_data_home),
+#
+# The variable is per-platform because the resolvers are (AI-CLI-ta1l). On Windows they
+# deliberately ignore the XDG names and read the native ones instead -- `APPDATA`
+# (Roaming) for config, `LOCALAPPDATA` for state/cache/data -- which is correct
+# behaviour for a Windows application, not a gap. Pairing every resolver with its XDG
+# name unconditionally meant the honoured-override test asserted a POSIX contract on
+# Windows and failed there by construction: it set XDG_STATE_HOME and got
+# `…\AppData\Local\ai-cli-utils` back.
+#
+# Parametrising the variable rather than skipping the test keeps Windows genuinely
+# covered: it now proves the override variable that platform actually honours, so a
+# regression in the Windows branch would be caught rather than skipped past.
+_WINDOWS_BASE_DIR_VARS = {
+    config.get_xdg_config_home: "APPDATA",
+    config.get_xdg_state_home: "LOCALAPPDATA",
+    config.get_xdg_cache_home: "LOCALAPPDATA",
+    config.get_xdg_data_home: "LOCALAPPDATA",
+}
+
+BASE_DIR_RESOLVERS = tuple(
+    (_WINDOWS_BASE_DIR_VARS[resolver] if sys.platform == "win32" else xdg_var, resolver)
+    for xdg_var, resolver in (
+        ("XDG_CONFIG_HOME", config.get_xdg_config_home),
+        ("XDG_STATE_HOME", config.get_xdg_state_home),
+        ("XDG_CACHE_HOME", config.get_xdg_cache_home),
+        ("XDG_DATA_HOME", config.get_xdg_data_home),
+    )
 )
 
 # Values that must all be rejected in favour of the home-relative fallback.

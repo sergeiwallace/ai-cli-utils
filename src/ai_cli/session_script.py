@@ -676,8 +676,11 @@ def get_engine_script(
     # Session lifecycle code must never signal another session's processes.
     ai ps cron &>/dev/null || true
 
-    # Auto-start sync watch and memory watch (PID files prevent duplicates)
-    ai sync watch &>/dev/null &
+    # Auto-start sync watch and memory watch (PID files prevent duplicates).
+    # sync watch is gated on [sync] auto_watch in config.toml (default on — see
+    # config.py); --auto marks this as the launch path so a machine that does not
+    # sync can decline without losing the hand-run command.
+    ai sync watch --auto &>/dev/null &
     ai memory watch &>/dev/null &
 
     # Auto-start quota-watch (idempotent — circusd skips if already registered).

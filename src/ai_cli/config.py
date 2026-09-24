@@ -332,6 +332,13 @@ stale_after_seconds = 600
 # remote_host = "user@host"
 # staging_dir = "~/.claude-sync-staging"
 # remote_url = "ssh://user@host/home/user/.claude-sync-staging.git"
+##
+## Start the sync watcher automatically when a session launches. Default true.
+## Set false on a machine that does not participate in session sync at all: the
+## launch then starts no watcher, while `ai sync push`, `pull` and `watch` remain
+## available by hand. Sync moves CC session data between machines, so a single-machine
+## setup has nothing for it to do.
+# auto_watch = false
 
 [project]
 ## Name of the main project directory

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import itertools
 import logging
 import os
 import re
@@ -15,6 +17,9 @@ from . import config
 
 _LOG_DIRECTORY = "launch-logs"
 _MAX_LOGS_PER_SESSION = 20
+
+# Breaks a launch-log path tie when the clock cannot. See create_launch_log.
+_PATH_UNIQUIFIER = itertools.count()
 
 
 def _safe_session_name(session_name: str) -> str:
@@ -84,10 +89,27 @@ def create_launch_log(session_name: str) -> LaunchLog:
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     path = log_dir / f"{safe_name}-{timestamp}-{os.getpid()}.log"
+    while path.exists():
+        # The timestamp is only as unique as the platform clock is fine-grained. This
+        # format asks for microseconds, but `time()` granularity is about 15.6 ms on
+        # Windows, so two launches inside one tick resolve to the same path and the
+        # second silently reopens the first's file. One process writes one launch log,
+        # so production never reached this; the retention count did, reporting fewer
+        # files than the limit because several of them were the same file.
+        path = log_dir / f"{safe_name}-{timestamp}-{os.getpid()}-{next(_PATH_UNIQUIFIER)}.log"
+
     for stale in sorted(log_dir.glob(f"{safe_name}-*.log"), key=lambda item: item.stat().st_mtime, reverse=True)[
         _MAX_LOGS_PER_SESSION - 1 :
     ]:
-        stale.unlink(missing_ok=True)
+        # A log that cannot be removed is one another process still holds open, which
+        # means it is still being written -- so keeping it is the correct outcome, not
+        # a concession to one platform. POSIX unlinks an open file happily (the inode
+        # outlives the directory entry), which is exactly why this was invisible there.
+        # Windows raises `PermissionError: [WinError 32]`, which `missing_ok` does not
+        # suppress, so `ai c` died inside log setup before launching anything as soon
+        # as a prune candidate belonged to a live session (AI-CLI-4tno).
+        with contextlib.suppress(OSError):
+            stale.unlink(missing_ok=True)
 
     logger = logging.getLogger(f"ai_cli.launch.{timestamp}.{id(path)}")
     logger.setLevel(logging.DEBUG)

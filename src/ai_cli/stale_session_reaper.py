@@ -33,9 +33,27 @@ DEFAULT_MODE = "observe"
 DEFAULT_STALE_AFTER_SECONDS = 600
 REAPER_CADENCE_SECONDS = 60
 _TMUX_FORMAT = "#{session_id}\t#{session_name}\t#{@ai_cli_session_generation}\t#{pane_id}\t#{pane_pid}"
+#: The fence's canonical session fingerprint.
+#:
+#: The window loop is ``#{W:...}`` and deliberately carries no sort argument. It used
+#: to be ``#{W/i:...}`` -- sort by index -- and per tmux(1) that suffix is only
+#: available on newer tmux: on **tmux 3.4** (Ubuntu 24.04's build, measured on CI) the
+#: modifier is not recognised, so tmux emits the literal text ``W/i:`` and then expands
+#: the body, yielding ``$1|token|0|W/i:@1[%1=10290=1;]``. That never matches
+#: ``_FINGERPRINT_RE``, so ``capture_fingerprint`` returned None for every dead managed
+#: session and the reaper could not fence-and-kill anything at all on that tmux. It
+#: failed safe -- nothing was ever killed wrongly -- but it also never reaped.
+#:
+#: Dropping the sort costs no determinism, because the ordering only ever has to agree
+#: between two evaluations of THIS string by the same tmux server:
+#: ``capture_fingerprint`` expands it, and ``fence_and_kill`` has tmux expand it again
+#: inside ``if-shell -F #{==:<format>,<captured>}``. If the window order did change
+#: between those two moments, the comparison fails and the session is preserved, which
+#: is the required behaviour when the state moved under us. The pane loop ``#{P:...}``
+#: has always relied on natural order for the same reason.
 _TMUX_FINGERPRINT_FORMAT = (
     "#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|"
-    "#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}"
+    "#{W:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}"
 )
 _SESSION_ID_RE = re.compile(r"^\$\d+$")
 _WINDOW_ID_RE = re.compile(r"^@\d+$")

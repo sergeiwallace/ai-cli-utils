@@ -378,7 +378,7 @@ class TestRootEscalation:
         with (
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: "/usr/bin/apt-get" if t == "apt-get" else None),
-            patch("os.geteuid", return_value=1000),
+            patch("os.geteuid", return_value=1000, create=True),
             patch("subprocess.run", side_effect=AssertionError("ran a root manager without permission")),
         ):
             result = native_deps.attempt_installs([("apt-get", ["apt-get", "install", "-y", "zsh"])], lambda: False)
@@ -390,7 +390,7 @@ class TestRootEscalation:
         with (
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
-            patch("os.geteuid", return_value=1000),
+            patch("os.geteuid", return_value=1000, create=True),
             patch("ai_cli.native_deps.can_prompt_for_root", return_value=False),
             patch("subprocess.run", side_effect=AssertionError("escalated with no terminal to ask on")),
         ):
@@ -411,7 +411,7 @@ class TestRootEscalation:
         with (
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
-            patch("os.geteuid", return_value=1000),
+            patch("os.geteuid", return_value=1000, create=True),
             patch("ai_cli.native_deps.can_prompt_for_root", return_value=True),
             patch("ai_cli.native_deps._authenticate_root", return_value=False),
             patch("subprocess.run", side_effect=_record),
@@ -437,7 +437,7 @@ class TestRootEscalation:
         with (
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
-            patch("os.geteuid", return_value=1000),
+            patch("os.geteuid", return_value=1000, create=True),
             patch("ai_cli.native_deps.can_prompt_for_root", return_value=True),
             patch("ai_cli.native_deps._authenticate_root", return_value=True),
             patch("subprocess.run", side_effect=_record),
@@ -463,7 +463,7 @@ class TestRootEscalation:
         with (
             patch.object(sys, "platform", "linux"),
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
-            patch("os.geteuid", return_value=0),
+            patch("os.geteuid", return_value=0, create=True),
             patch("ai_cli.native_deps._authenticate_root", side_effect=AssertionError("asked root for a password")),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
         ):

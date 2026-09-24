@@ -155,13 +155,20 @@ def _scanned_text_files(root: Path) -> Iterator[tuple[Path, Path, str]]:
 
 
 def scan_for_private_names(root: Path) -> list[str]:
-    """Return ``path:lineno: line`` for every forbidden-name use under ``root``."""
+    """Return ``path:lineno: line`` for every forbidden-name use under ``root``.
+
+    The path is rendered with ``as_posix()`` so a finding reads the same on every
+    OS. Interpolating the ``Path`` directly gives ``src\\example.py`` on Windows,
+    and every caller that matches a documented ``src/example.py:1:`` prefix then
+    silently stops matching -- reporting "scan did not flag" for a name the scan
+    did in fact flag.
+    """
     findings: list[str] = []
     for path, relative_path, text in _scanned_text_files(root):
         del path
         for lineno, line in enumerate(text.splitlines(), start=1):
             if _FORBIDDEN.search(line) and not _line_is_exempted(relative_path, line):
-                findings.append(f"{relative_path}:{lineno}: {line.strip()}")
+                findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
     return findings
 
 
@@ -182,7 +189,7 @@ def scan_for_host_addresses(root: Path) -> list[str]:
         for lineno, line in enumerate(text.splitlines(), start=1):
             offenders = [address for address in _IPV4.findall(line) if not _ip_is_allowed(address)]
             if offenders and not _line_is_exempted(relative_path, line):
-                findings.append(f"{relative_path}:{lineno}: {line.strip()}")
+                findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
     return findings
 
 
@@ -263,6 +270,28 @@ def test_given_a_private_machine_name_when_scanned_then_it_is_flagged(tmp_path):
     assert len(findings) == len(_PRIVATE_MACHINE_NAMES)
     for index, name in enumerate(_PRIVATE_MACHINE_NAMES):
         assert any(finding.startswith(f"src/host_{index}.py:1:") for finding in findings), f"scan did not flag {name!r}"
+
+
+def test_given_a_nested_offender_when_scanned_then_the_finding_path_is_os_independent(tmp_path):
+    """Every assertion above matches a ``/``-separated prefix, so the renderer owes them one.
+
+    This is the contract the other tests depend on rather than state, which is why
+    it silently held on POSIX and broke every one of them at once on Windows: a
+    plain ``f"{relative_path}"`` renders ``src\\nested\\example.py``, so the
+    prefix match fails and the guard reports "scan did not flag" for a name it
+    flagged. Asserting no backslash makes the dependency explicit and fails on the
+    OS where it is violated.
+    """
+    nested = tmp_path / "src" / "nested"
+    nested.mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (nested / "example.py").write_text(f"# measured on {_PRIVATE_MACHINE_NAMES[0]}-somehost\n")
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].startswith("src/nested/example.py:1:")
+    assert "\\" not in findings[0].split(":", 1)[0]
 
 
 def test_given_the_repository_index_when_listed_then_no_claude_code_install_lock_is_tracked():

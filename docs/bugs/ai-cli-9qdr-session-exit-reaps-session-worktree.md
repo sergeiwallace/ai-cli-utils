@@ -30,20 +30,20 @@ Exiting a Claude Code session launched by `ai c` deleted that session's git work
 report was that it "disappeared from the VS Code Source Control extension", which turned out
 to understate it: the worktree was genuinely gone, not merely hidden.
 
-Measured on session `kg-1` in a private downstream repository, immediately after a deliberate
+Measured on session `session-1` in a private downstream repository, immediately after a deliberate
 clean exit:
 
 | Observation | Result |
 |---|---|
-| `.worktrees/kg-1` on disk | gone |
-| `.git/worktrees/kg-1` admin entry | gone |
+| `.worktrees/session-1` on disk | gone |
+| `.git/worktrees/session-1` admin entry | gone |
 | both parent directory mtimes | `2026-09-15 01:37:35`, the same second |
-| `git worktree list` | 4 entries, `kg-1` absent |
+| `git worktree list` | 4 entries, `session-1` absent |
 | `git worktree prune --dry-run` | empty, so nothing was orphaned |
-| branch `wt-kg-1` | alive at `4192690` |
-| `.worktrees/.kg-1.lock` | still present, dated Aug 12 |
+| branch `wt-session-1` | alive at `4192690` |
+| `.worktrees/.session-1.lock` | still present, dated Aug 12 |
 
-Nothing was lost. `wt-kg-1` was identical to its remote workspace branch, 0 ahead / 0
+Nothing was lost. `wt-session-1` was identical to its remote workspace branch, 0 ahead / 0
 behind, and contained in that remote ref, so every commit was safe. The session's 573 Claude
 Code transcripts were untouched, because those live under `~/.claude/projects` rather than in
 the worktree.
@@ -70,9 +70,9 @@ and the branch was never touched.
 
 ### Why it had never been seen before
 
-A trap fires only on a graceful exit. `kg-3` and `kg-4` were also porcelain-clean at the time
+A trap fires only on a graceful exit. `session-3` and `session-4` were also porcelain-clean at the time
 of measurement and their worktrees survived, because those sessions never exited through the
-trap — a killed process or a space restart skips it entirely. `kg-1` was the first session
+trap — a killed process or a space restart skips it entirely. `session-1` was the first session
 deliberately exited while clean, so it was the first to meet both conditions at once.
 
 This is therefore not a regression. The call dates to `121c9c9`, 2026-04-19. It sat dormant
@@ -93,8 +93,8 @@ this. So two components of one fleet implemented opposite policies on the same o
 the rule lived in a different repository from the violating code, which is how they drifted
 apart without anyone noticing.
 
-Exposure was fleet-wide, not specific to `kg-1`. ai-harness's `is_canonical_session()`
-returns True for `kg-1`, `kg-2`, `kg-3`, `aih-4` and `ai-cli-1`.
+Exposure was fleet-wide, not specific to `session-1`. ai-harness's `is_canonical_session()`
+returns True for `session-1`, `session-2`, `session-3`, `aih-4` and `ai-cli-1`.
 
 `git status --porcelain` was also the reap's only safety test. It reports uncommitted and
 untracked files but says nothing about whether commits exist anywhere else, so a worktree
@@ -106,7 +106,7 @@ commits reachable, so this was recoverable rather than destructive, but the chec
 | Hypothesis | Why it was rejected |
 |---|---|
 | A stray `rm -rf`, or a crash mid-write | `git worktree prune --dry-run` was empty and the admin entry was gone too. A directory removal outside git leaves an orphaned entry that prune reports. |
-| ai-harness `worktree_audit.py --delete` swept it | That path deletes the branch alongside the worktree, and it carries a canonical veto that refuses `kg-1` outright. `wt-kg-1` survived. |
+| ai-harness `worktree_audit.py --delete` swept it | That path deletes the branch alongside the worktree, and it carries a canonical veto that refuses `session-1` outright. `wt-session-1` survived. |
 | A session-end hook in the harness | The removal is fully explained by a call site inside ai-cli-utils, reproduced end to end below. No harness hook was involved. |
 | A new regression from a recent change | `git log -S` on both call sites returns only `121c9c9` (2026-04-19). The code had not changed. |
 | It only affects oddly configured worktrees | Reproduced on a clean scratch repo with nothing unusual, and for three different canonical session names. |
@@ -128,10 +128,10 @@ Coverage:
 1. the rendered session script contains no worktree-removal command at all (the negative
    constraint, asserted against the real generated artifact bash executes);
 2. a clean session worktree still exists, is still registered, and keeps its admin entry
-   after teardown (the positive contract, and the exact `kg-1` scenario);
+   after teardown (the positive contract, and the exact `session-1` scenario);
 3. a worktree whose branch holds commits present on no remote also survives (the severity
    case that porcelain-clean concealed);
-4. the same for `kg-1`, `aih-4` and `ai-cli-1`, so the assertion is about the class of
+4. the same for `session-1`, `aih-4` and `ai-cli-1`, so the assertion is about the class of
    canonical session names rather than one instance.
 
 ### A false-pass caught while writing them

@@ -93,12 +93,43 @@ class TestFindChromeBinary:
         assert result is None
 
 
+def _simulate_linux(target):
+    """Run a Linux-branch test on any host that can represent Linux paths.
+
+    ``_linux_display_env`` returns ``{}`` off Linux, so a test about Linux display
+    composition has to declare the platform to reach the code at all. Two things
+    beyond ``sys.platform`` are then needed, and they belong together here rather
+    than at five call sites where the second keeps getting forgotten.
+
+    ``os.getuid`` -- the Linux branch calls it just past the early return, and it
+    exists only on POSIX. Patched with ``create=True``, which is load-bearing:
+    ``patch.object`` refuses an attribute the host does not already have, and on
+    Windows that is exactly this one. Fixing the uid at 1000 also keeps the
+    composed ``/run/user/<uid>`` path identical on every host.
+
+    A Windows skip -- not a workaround, a real limit. ``pathlib`` chooses its
+    flavour from ``os.name`` at import time, so no patch can make ``Path`` produce
+    a ``PosixPath`` there. ``Path("/run/user/1000")`` is a ``WindowsPath`` whose
+    ``str()`` is ``\\run\\user\\1000`` and whose ``is_absolute()`` is False, so
+    ``resolve_base_dir`` rejects it with ``ValueError: fallback for
+    XDG_RUNTIME_DIR must be an absolute path`` -- correctly, per the XDG spec's
+    relative-path rule. A Windows host cannot represent the Linux paths this
+    branch composes, so it cannot host these assertions. macOS can, and does.
+    """
+    target = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pathlib cannot produce POSIX-absolute paths on Windows, so the Linux branch is unrepresentable",
+    )(target)
+    target = patch.object(os, "getuid", lambda: 1000, create=True)(target)
+    return patch.object(sys, "platform", "linux")(target)
+
+
 # ---------------------------------------------------------------------------
 # _cmd_cdp_start
 # ---------------------------------------------------------------------------
 
 
-@patch.object(sys, "platform", "linux")
+@_simulate_linux
 class TestCmdCdpStart:
     @pytest.fixture(autouse=True)
     def _requested_port_free(self):
@@ -399,6 +430,10 @@ class TestCmdCdpStartMacOS:
 # ---------------------------------------------------------------------------
 
 
+# These assert Linux display composition, so they must declare the platform they are
+# about rather than inheriting the host's (AI-CLI-ta1l). Without it the whole class
+# asserts against whatever the runner happens to be.
+@_simulate_linux
 class TestLinuxDisplayEnv:
     def test_when_runtime_dir_has_wayland_socket_and_xauth_then_all_resolved(self, tmp_path, monkeypatch):
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -438,7 +473,7 @@ class TestLinuxDisplayEnv:
         assert "XAUTHORITY" not in env
 
 
-@patch.object(sys, "platform", "linux")
+@_simulate_linux
 class TestCmdCdpStartLinuxDisplayEnv:
     @pytest.fixture(autouse=True)
     def _requested_port_free(self):
@@ -982,7 +1017,7 @@ class TestClearStaleSingletonLock:
         assert not mock_alive.called  # never reached the liveness check
         assert (tmp_path / "SingletonLock").is_symlink()
 
-    @patch.object(sys, "platform", "linux")
+    @_simulate_linux
     def test_cmd_cdp_start_clears_stale_lock_before_launch(self, tmp_path):
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
@@ -1037,7 +1072,7 @@ class TestNextFreePort:
             assert tunnel._next_free_port(9222, limit=5) is None
 
 
-@patch.object(sys, "platform", "linux")
+@_simulate_linux
 class TestCmdCdpStartPortConflict:
     def test_when_port_in_use_then_increments_and_launches_on_next_free(self, tmp_path, capsys):
         mock_proc = MagicMock()

@@ -1,6 +1,7 @@
 """Tests for platform-aware XDG path helpers, _pid_alive(), and machine profile detection."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,10 @@ from ai_cli.config import (
 )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="_secure_config_file gates its whole mode-and-ownership block behind sys.platform != win32",
+)
 def test_given_umask_022_when_config_created_then_owner_only(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     previous = os.umask(0o022)
@@ -33,6 +38,10 @@ def test_given_umask_022_when_config_created_then_owner_only(tmp_path, monkeypat
     assert config_path.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the symlink refusal lives in the same POSIX-only block; AI-CLI-2frp tracks the Windows gap",
+)
 def test_given_config_symlink_when_loading_then_refuses_target(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     config_dir = tmp_path / "xdg" / "ai-cli-utils"

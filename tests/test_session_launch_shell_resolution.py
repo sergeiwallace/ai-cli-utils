@@ -191,8 +191,17 @@ def _drive_launch_against_real_tmux(sock: str, tmp_path: Path, name: str, script
             _do_session_launch(**_launch_kwargs(name))
 
 
-def _wait_for_file(path: Path, timeout: float = 10.0) -> bool:
-    deadline = time.monotonic() + timeout
+#: How long to let a real tmux pane start a real shell. Same measurement as the reaper
+#: suite's _PROCESS_WAIT_SECONDS: under `-n auto` these waits were bounding the
+#: scheduler rather than a genuine failure to start, and `_wait_for_file` returning
+#: False surfaced as "zsh was on PATH but the pane was not started with it" -- a
+#: portability contract appearing broken because ten seconds was not enough CPU.
+#: Every wait returns the moment its file appears, so a generous bound costs nothing.
+_OBSERVE_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+
+
+def _wait_for_file(path: Path, timeout: float | None = None) -> bool:
+    deadline = time.monotonic() + (_OBSERVE_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
         if path.exists():
             return True
@@ -252,6 +261,15 @@ def test_given_zsh_on_path_when_session_launched_then_zsh_is_still_the_interpret
     fake_zsh.write_text(f'#!/bin/sh\necho ran > "{zsh_ran}"\nexec /bin/sh "$@"\n')
     fake_zsh.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir))
+    # Point XDG_DATA_HOME at tmp_path so ai-cli's own provisioned-binary directory,
+    # `get_xdg_data_home() / "native" / "bin"`, is empty here. The launcher prepends it
+    # to PATH -- deliberately, so `ai setup` provisioning zsh is enough -- which means a
+    # real zsh installed there SHADOWS this fake one. On CI another test provisions one
+    # into the real home, so whether this test could see its own fake depended on xdist
+    # ordering: it failed on a different Python version every run, reporting "the pane
+    # was not started with it" while `which('zsh')` pointed at the provisioned binary
+    # (AI-CLI-gcbo). Redirecting the variable is also simply what makes this hermetic.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     assert shutil.which("zsh") == str(fake_zsh)
 
     marker = tmp_path / "script-ran"
@@ -262,7 +280,23 @@ def test_given_zsh_on_path_when_session_launched_then_zsh_is_still_the_interpret
         script_body=f"touch {marker}\nsleep 30\n",
     )
 
-    assert _wait_for_file(zsh_ran), "zsh was on PATH but the pane was not started with it"
+    # Distinguish the three ways this can fail, because the original message named only
+    # one of them and named it wrongly on CI. `resolve_session_shell` is pure
+    # `shutil.which` over a preference list -- no probe, no timeout -- so the shell it
+    # picks is deterministic given PATH. A missing `zsh_ran` therefore means either the
+    # pane never ran the script at all, or it ran it with a PATH that does not contain
+    # this fake zsh, not that resolution preferred something else.
+    if not _wait_for_file(zsh_ran):
+        panes = subprocess.run(
+            ["tmux", "-S", real_tmux_socket, "list-panes", "-a", "-F", "#{pane_id}=#{pane_dead}=#{pane_start_command}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pytest.fail(
+            "the fake zsh never ran. script_executed="
+            f"{marker.exists()} which_zsh={shutil.which('zsh')!r} panes={panes.stdout.strip()!r}"
+        )
     assert _wait_for_file(marker), "session script never executed"
 
 
@@ -568,7 +602,7 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
         )
         return diagnostic in pane.stdout
 
-    started = _wait_for_file(launches, timeout=5)
+    started = _wait_for_file(launches)
     initial_pane = subprocess.run(
         ["tmux", "-S", real_tmux_socket, "capture-pane", "-p", "-t", session_name, "-S", "-80"],
         capture_output=True,
@@ -576,7 +610,7 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
         check=False,
     )
     assert started, f"the slow failing agent never started: {initial_pane.stdout!r} {initial_pane.stderr!r}"
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + _OBSERVE_SECONDS
     while time.monotonic() < deadline and not circuit_breaker_reported():
         time.sleep(0.05)
     final_pane = subprocess.run(
