@@ -404,6 +404,34 @@ def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     pytest.fail("tmux pane did not become dead")
 
 
+def _recreate_stage_diagnostic(server, session_name: str) -> str:
+    """Which of the three recreate stages refused, in the launcher's own terms.
+
+    `_do_session_launch` decides recreate-vs-attach by locating the session as a
+    reaper candidate, capturing its fingerprint, and fencing the kill -- and it
+    swallows every failure into `fingerprint = None`. So a dead session that is
+    attached instead of recreated looks identical whichever stage declined, both here
+    and in production. This reports each stage separately.
+    """
+    from ai_cli import stale_session_reaper as reaper
+
+    adapter = reaper.SubprocessTmuxAdapter()
+    try:
+        sessions = adapter.sessions()
+    except Exception as exc:
+        return f"sessions() raised {exc!r}"
+    candidate = next((item for item in sessions if item.session_name == session_name), None)
+    if candidate is None:
+        return f"no candidate named {session_name!r} among {[i.session_name for i in sessions]!r}"
+    try:
+        fingerprint = adapter.capture_fingerprint(candidate)
+    except Exception as exc:
+        return f"capture_fingerprint raised {exc!r} for {candidate!r}"
+    if fingerprint is None:
+        return f"capture_fingerprint returned None for {candidate!r}"
+    return f"fingerprint={fingerprint!r}; fence_and_kill -> {adapter.fence_and_kill(candidate.session_id, fingerprint)}"
+
+
 def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_not_attaches(
     patched_subprocess,
 ):
@@ -437,7 +465,8 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
         # launch. Show what it was and what the pane holds, because "['1'] != ['0']"
         # alone cannot distinguish a child that exited from one that never started.
         f"the recreated session's pane is dead; child={_LIVE_CHILD_COMMAND!r} "
-        f"panes={server.cmd('list-panes', '-t', 'c-myproject-3', '-F', '#{pane_id}=#{pane_pid}=#{pane_dead}=#{pane_start_command}').stdout!r}"
+        f"panes={server.cmd('list-panes', '-t', 'c-myproject-3', '-F', '#{pane_id}=#{pane_pid}=#{pane_dead}=#{pane_start_command}').stdout!r} "
+        f"recreate_stage: {_recreate_stage_diagnostic(server, 'c-myproject-3')}"
     )
 
 
