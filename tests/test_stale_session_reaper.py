@@ -1825,9 +1825,18 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     # A readiness marker written the instant the new trap is installed --
     # before any preflight `ai internal ...` call -- so the test can send
     # Ctrl+C into that exact preflight window without racing a fixed sleep.
+    # Announce readiness, then HOLD the preflight window open until the test releases
+    # it. Announcing alone is not enough: under load the child ran to completion and the
+    # supervisor exited 0 before the first Ctrl+C landed, so the assertion below saw a
+    # finished process and blamed the signal -- reporting AI-CLI-s5cs as regressed when
+    # the wrapper had simply finished its work (AI-CLI-gcbo). Same
+    # wait-for-a-release-file shape already used in
+    # tests/test_session_launch_shell_resolution.py.
     patched_script = real_script.replace(
         marker,
-        marker + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"',
+        marker
+        + '\n    printf \'%s\\n\' "$$" > "$AI_CLI_TEST_CHILD_READY"'
+        + '\n    while test ! -f "${AI_CLI_TEST_CHILD_READY}.release"; do sleep 0.05; done',
         1,
     )
     process, _, _ = _start_generated_supervisor(
@@ -1852,6 +1861,9 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     )
     assert process.poll() is None, "a single Ctrl+C during preflight killed the child wrapper (AI-CLI-s5cs)"
 
+    # The window has served its purpose; let the child leave it so the second press can
+    # take the deliberate-exit path rather than racing a still-blocked child.
+    (tmp_path / "child-ready.release").write_text("go\n", encoding="utf-8")
     os.killpg(process.pid, signal.SIGINT)
     stdout, stderr = _communicate_supervisor(process)
 
