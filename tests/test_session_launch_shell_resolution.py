@@ -271,7 +271,23 @@ def test_given_zsh_on_path_when_session_launched_then_zsh_is_still_the_interpret
         script_body=f"touch {marker}\nsleep 30\n",
     )
 
-    assert _wait_for_file(zsh_ran), "zsh was on PATH but the pane was not started with it"
+    # Distinguish the three ways this can fail, because the original message named only
+    # one of them and named it wrongly on CI. `resolve_session_shell` is pure
+    # `shutil.which` over a preference list -- no probe, no timeout -- so the shell it
+    # picks is deterministic given PATH. A missing `zsh_ran` therefore means either the
+    # pane never ran the script at all, or it ran it with a PATH that does not contain
+    # this fake zsh, not that resolution preferred something else.
+    if not _wait_for_file(zsh_ran):
+        panes = subprocess.run(
+            ["tmux", "-S", real_tmux_socket, "list-panes", "-a", "-F", "#{pane_id}=#{pane_dead}=#{pane_start_command}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pytest.fail(
+            "the fake zsh never ran. script_executed="
+            f"{marker.exists()} which_zsh={shutil.which('zsh')!r} panes={panes.stdout.strip()!r}"
+        )
     assert _wait_for_file(marker), "session script never executed"
 
 
