@@ -237,6 +237,24 @@ def _default_remote_bare_url(remote_host: str) -> str:
     return f"ssh://{remote_host}{repo_home}/.claude-sync-staging.git"
 
 
+def auto_watch_enabled() -> bool:
+    """Whether a session launch should start the sync watcher on this machine.
+
+    Defaults to True, so every machine that has been relying on the launch to start
+    the watcher keeps doing so. A machine that does not participate in session sync
+    at all sets ``[sync] auto_watch = false`` in its own config.toml, which is
+    machine-local state and therefore the right place for it -- nothing about which
+    machines sync belongs in this package.
+
+    Only the automatic path is gated. ``ai sync push``/``pull``/``watch`` invoked by
+    hand still work, because turning off an unattended background process is a
+    different decision from removing the command.
+    """
+    from .config import load_config
+
+    return bool(load_config().get("sync", {}).get("auto_watch", True))
+
+
 def load_sync_config() -> SyncConfig:
     """Load sync config, falling back to sensible defaults."""
     from .config import load_config
@@ -2782,6 +2800,12 @@ def sync_watch(flags: list[str]) -> int:
     from .messaging import NATSClient
 
     verbose = "--verbose" in flags
+
+    if "--auto" in flags and not auto_watch_enabled():
+        # The launch path asked for the watcher and this machine declines. Silent and
+        # zero: a launch must not be noisier or slower for a machine that does not
+        # sync, and `ai sync watch` by hand still works, as do push and pull.
+        return 0
 
     if not _acquire_pid_file("sync-watch"):
         print("ai sync watch is already running.", file=sys.stderr)

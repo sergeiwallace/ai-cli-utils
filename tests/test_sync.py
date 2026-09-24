@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ai_cli.session_script import get_engine_script
 from ai_cli.sync import (
     SyncConfig,
     _default_remote_bare_url,
@@ -24,6 +25,7 @@ from ai_cli.sync import (
     apply_history_file,
     apply_pull_files,
     apply_task_files,
+    auto_watch_enabled,
     clean_worktree_cc_dirs,
     denormalize_project_name,
     detect_jsonl_divergence,
@@ -6287,3 +6289,61 @@ def test_push_to_remote_when_remote_demands_credentials_then_fails_without_promp
         subprocess.run(["git", "-C", str(staging), *args], capture_output=True, check=True)
 
     assert _push_to_remote(staging, verbose=False) is False
+
+
+# ---------------------------------------------------------------------------
+# [sync] auto_watch — the launch-path gate
+# ---------------------------------------------------------------------------
+
+
+def test_given_no_sync_config_when_auto_watch_is_asked_then_it_defaults_to_enabled():
+    """The default has to stay on, or adding this gate would silently disable sync
+    everywhere it currently works."""
+    with patch("ai_cli.config.load_config", return_value={}):
+        assert auto_watch_enabled() is True
+
+
+def test_given_auto_watch_disabled_when_the_launch_path_runs_then_no_watcher_starts():
+    """A machine that does not sync must not have a watcher started for it.
+
+    Asserted through the PID file, not just the return code: acquiring it is the first
+    side effect `sync_watch` has, so proving it was never touched proves nothing was
+    started rather than started-and-stopped.
+    """
+    with (
+        patch("ai_cli.config.load_config", return_value={"sync": {"auto_watch": False}}),
+        patch("ai_cli.sync._acquire_pid_file") as acquire,
+    ):
+        assert sync_watch(["--auto"]) == 0
+
+    acquire.assert_not_called()
+
+
+def test_given_auto_watch_disabled_when_watch_is_run_by_hand_then_the_gate_does_not_apply():
+    """Turning off an unattended background process is not removing the command.
+
+    Without `--auto` the gate must not fire, so `ai sync watch` keeps working on a
+    machine whose launches do not start it. Anti-vacuity control for the test above:
+    if the gate were keyed on config alone, this would return 0 too and the case above
+    would prove nothing.
+    """
+    with (
+        patch("ai_cli.config.load_config", return_value={"sync": {"auto_watch": False}}),
+        patch("ai_cli.sync._acquire_pid_file", return_value=False),
+    ):
+        assert sync_watch([]) == 2  # reached the real body and hit the PID-file guard
+
+
+def test_given_the_session_script_when_it_starts_the_watcher_then_it_marks_the_launch_path():
+    """The gate is only reachable if the launch actually passes --auto."""
+    script = get_engine_script(
+        "c",
+        "session-1",
+        "c-session-1",
+        "c-session-",
+        "session",
+        worktree_dir="/tmp/wt",
+        project_name="myproject",
+    )
+
+    assert "ai sync watch --auto" in script
