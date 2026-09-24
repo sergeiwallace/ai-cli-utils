@@ -26,6 +26,19 @@ from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
 
+# How long a stand-in session child must stay alive. These tests assert that a pane is
+# still LIVE after a launch, so the child has to outlast the whole test rather than
+# merely start it. `sleep 5` did not: under `-n auto` the assertion can land after the
+# five seconds elapse, and `#{pane_dead}` reads "1" -- which surfaced as
+# `assert ['1'] == ['0']`, a liveness contract failing because the fixture died on
+# schedule. Nothing waits on these children; the fixture kills the server in teardown,
+# so a long sleep costs no wall clock.
+_LIVE_CHILD_COMMAND = "sleep 600"
+
+#: Bounds a genuine failure to die, not the scheduler. See the reaper suite's
+#: _PROCESS_WAIT_SECONDS for the measurement behind the generous value.
+_DEAD_PANE_WAIT_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+
 pytestmark = [
     pytest.mark.real_tmux,
     # This drives a REAL tmux server (libtmux.Server) against MSYS2's tmux, same
@@ -153,7 +166,9 @@ def patched_subprocess(tmux_server, tmp_path):
                 except (ValueError, IndexError):
                     session_name = "unknown"
                 try:
-                    created = server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
+                    created = server.new_session(
+                        session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND
+                    )
                 except Exception:
                     return _FAIL()
                 return type("TmuxCreated", (), {"returncode": 0, "stdout": f"{created.id}\n", "stderr": ""})()
@@ -319,7 +334,7 @@ def test_given_new_session_when_launched_then_tmux_session_created(patched_subpr
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -334,7 +349,7 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
     not create a new one."""
     server = patched_subprocess
     # Pre-create the target session directly via libtmux
-    server.new_session(session_name="c-myproject-2", detach=True, window_command="sleep 30")
+    server.new_session(session_name="c-myproject-2", detach=True, window_command=_LIVE_CHILD_COMMAND)
     before_ids = {s.id for s in server.sessions}
     assert any(s.name == "c-myproject-2" for s in server.sessions)
 
@@ -347,7 +362,7 @@ def test_given_existing_session_when_relaunched_then_attaches_not_creates(patche
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -380,7 +395,7 @@ def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     assert server.cmd("set-window-option", "-t", session_name, "remain-on-exit", "on").returncode == 0
     assert server.cmd("set-option", "-t", session_name, "@ai_cli_session_generation", "test-generation").returncode == 0
     assert server.cmd("send-keys", "-t", session_name, "done", "Enter").returncode == 0
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _DEAD_PANE_WAIT_SECONDS
     while time.monotonic() < deadline:
         result = server.cmd("list-panes", "-t", session_name, "-F", "#{pane_dead}")
         if result.returncode == 0 and result.stdout == ["1"]:
@@ -408,7 +423,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -433,7 +448,7 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
         nonlocal replacement_id
         original = next(session for session in server.sessions if session.name == session_name)
         original.kill()
-        replacement = server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
+        replacement = server.new_session(session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
         assert (
             server.cmd(
                 "set-option", "-t", session_name, "@ai_cli_session_generation", "replacement-generation"
@@ -453,7 +468,7 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -479,7 +494,7 @@ def test_given_new_session_replaced_after_configuration_failure_when_cleanup_run
         original = next(iter(server.sessions))
         session_name = original.name
         original.kill()
-        replacement = server.new_session(session_name=session_name, detach=True, window_command="sleep 30")
+        replacement = server.new_session(session_name=session_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
         assert (
             server.cmd(
                 "set-option", "-t", session_name, "@ai_cli_session_generation", "replacement-generation"
@@ -499,7 +514,7 @@ def test_given_new_session_replaced_after_configuration_failure_when_cleanup_run
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -526,8 +541,10 @@ def test_given_new_session_replaced_before_ownership_mark_when_launching_then_re
         original = next(iter(server.sessions))
         session_name = original.name
         original.kill()
-        consumed_id = server.new_session(session_name="creation-race-consumer", detach=True, window_command="sleep 30")
-        replacement = server.new_session(session_name=original.name, detach=True, window_command="sleep 30")
+        consumed_id = server.new_session(
+            session_name="creation-race-consumer", detach=True, window_command=_LIVE_CHILD_COMMAND
+        )
+        replacement = server.new_session(session_name=original.name, detach=True, window_command=_LIVE_CHILD_COMMAND)
         consumed_id.kill()
         replacement_id = replacement.id
 
@@ -542,7 +559,7 @@ def test_given_new_session_replaced_before_ownership_mark_when_launching_then_re
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -572,7 +589,7 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
         original_id = original.id
         original_name = original.name
         assert server.cmd("rename-session", "-t", original_id, f"{original_name}-renamed").returncode == 0
-        replacement = server.new_session(session_name=original_name, detach=True, window_command="sleep 30")
+        replacement = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
         replacement_id = replacement.id
         post_capture_command_index = len(server._tmux_commands)
 
@@ -586,7 +603,7 @@ def test_given_new_session_replaced_after_identity_capture_when_launching_then_o
         patch("ai_cli.iterm2._load_iterm2_config", return_value={}),
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -618,11 +635,11 @@ def test_given_renamed_supervisor_when_clean_exit_fence_runs_then_old_name_repla
     """The real tmux compare-and-kill fence targets the supervisor's opaque ID."""
     server = tmux_server
     original_name = "c-session-1"
-    original = server.new_session(session_name=original_name, detach=True, window_command="sleep 30")
+    original = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
     generation = "supervisor-generation"
     assert server.cmd("set-option", "-t", original.id, "@ai_cli_session_generation", generation).returncode == 0
     assert server.cmd("rename-session", "-t", original.id, "c-session-1-renamed").returncode == 0
-    replacement = server.new_session(session_name=original_name, detach=True, window_command="sleep 30")
+    replacement = server.new_session(session_name=original_name, detach=True, window_command=_LIVE_CHILD_COMMAND)
 
     predicate = f"#{{==:#{{session_id}}|#{{@ai_cli_session_generation}},{original.id}|{generation}}}"
     result = server.cmd(
@@ -659,7 +676,7 @@ def test_given_extra_args_positional_name_when_launched_then_session_uses_positi
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):
@@ -686,7 +703,7 @@ def test_given_uppercase_registered_prefix_when_new_session_launched_then_output
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup") as emit_profile,
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
         patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
         patch("ai_cli.session.create_worktree", return_value=(worktree, True)) as create_worktree,
@@ -747,7 +764,7 @@ def test_given_uppercase_fleet_prefix_when_bare_session_launches_then_real_artif
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup") as emit_profile,
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         kwargs = _base_launch_kwargs(name="1")
@@ -872,7 +889,7 @@ def test_given_existing_session_when_relaunched_then_no_iterm_session_id_propaga
         patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
         patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
         patch("ai_cli.iterm2._configure_tmux_for_iterm2"),
-        patch("ai_cli.session_script.get_engine_script", return_value="sleep 5\n"),
+        patch("ai_cli.session_script.get_engine_script", return_value=f"{_LIVE_CHILD_COMMAND}\n"),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
     ):
         with pytest.raises(SystemExit):

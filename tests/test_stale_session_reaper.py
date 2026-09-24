@@ -138,6 +138,20 @@ _SOCKET_PARENT = "/tmp" if Path("/tmp").is_dir() else None
 # cleanup contract, which is how that file already handles `shutil.which`.
 _POSIX_HOST = os.name == "posix"
 
+# How long to let a real process take. These tests spawn real shells, supervisors, tmux
+# servers and signal relays, and the suite runs under `-n auto`, so several of them
+# compete for CPU with ~2,900 other tests. A timeout here exists to bound a genuine
+# hang, NOT to assert promptness -- and the short ones were doing the latter by
+# accident. Measured on this tree: the same two files give 1 failure serially and 9-34
+# under `-n auto`, and every one of those is a `subprocess.TimeoutExpired` after 5
+# seconds, or a poll deadline of 10, on a process that was merely descheduled.
+#
+# A generous bound loses nothing: every wait returns the moment its process exits or
+# its predicate holds, so the fast path is unchanged and a real hang is still caught --
+# it simply never exits. The worst case is a genuinely broken build taking a minute
+# longer to say so. Overridable so a slow runner can raise it without a code change.
+_PROCESS_WAIT_SECONDS = float(os.environ.get("AI_CLI_TEST_PROCESS_WAIT_SECONDS", "60"))
+
 
 def isolated_tmux_socket() -> Iterator[str]:
     """An isolated tmux server, torn down on EVERY exit path including a skip.
@@ -175,7 +189,7 @@ def real_tmux_socket() -> Iterator[str]:
 
 
 def _wait_for_dead_pane(socket: str, session_id: str) -> None:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         result = _tmux_run(socket, "list-panes", "-t", session_id, "-F", "#{pane_dead}")
         if result.returncode == 0 and result.stdout.strip() == "1":
@@ -194,7 +208,7 @@ def _create_dead_managed_session(socket: str, session_id: str, generation: str =
 
 
 def _wait_for_missing_session(socket: str, session_id: str) -> None:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         result = _tmux_run(socket, "has-session", "-t", session_id)
         if result.returncode != 0:
@@ -204,7 +218,7 @@ def _wait_for_missing_session(socket: str, session_id: str) -> None:
 
 
 def _wait_for_lines(path: Path, count: int) -> list[str]:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
     while time.monotonic() < deadline:
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
         if len(lines) >= count:
@@ -213,8 +227,8 @@ def _wait_for_lines(path: Path, count: int) -> list[str]:
     raise AssertionError(f"{path.name} did not contain {count} lines")
 
 
-def _wait_for_condition(description: str, predicate: Callable[[], bool], timeout: float = 10) -> None:
-    deadline = time.monotonic() + timeout
+def _wait_for_condition(description: str, predicate: Callable[[], bool], timeout: float | None = None) -> None:
+    deadline = time.monotonic() + (_PROCESS_WAIT_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
         if predicate():
             return
@@ -370,9 +384,7 @@ fi
     record = heartbeat_path(state_home, session_id, generation)
     _wait_for_condition("the first heartbeat record", record.exists)
     _assert_generation_lease_is_held(state_home, session_id, generation)
-    _wait_for_condition(
-        "the replacement child", lambda: launches.read_text(encoding="utf-8").strip() == "2", timeout=15
-    )
+    _wait_for_condition("the replacement child", lambda: launches.read_text(encoding="utf-8").strip() == "2")
 
     assert (
         _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}").stdout.strip()
@@ -1276,15 +1288,15 @@ def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it
         capture_output=True,
         text=True,
         check=False,
-        timeout=2,
+        timeout=_PROCESS_WAIT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("tmux ")
 
 
-def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float = 15) -> None:
-    deadline = time.monotonic() + timeout
+def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float | None = None) -> None:
+    deadline = time.monotonic() + (_PROCESS_WAIT_SECONDS if timeout is None else timeout)
     while time.monotonic() < deadline:
         if path.exists():
             return
@@ -1297,9 +1309,9 @@ def _wait_for_path(path: Path, process: subprocess.Popen[str], timeout: float = 
 
 def _communicate_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
     if process.stdout is None:
-        process.wait(timeout=5)
+        process.wait(timeout=_PROCESS_WAIT_SECONDS)
         return "", ""
-    return process.communicate(timeout=5)
+    return process.communicate(timeout=_PROCESS_WAIT_SECONDS)
 
 
 _SPAWNED_SUPERVISORS: list[subprocess.Popen[str]] = []
@@ -1333,7 +1345,7 @@ def _reap_leaked_supervisors() -> Iterator[None]:
                 with contextlib.suppress(psutil.NoSuchProcess):
                     descendant.kill()
         with contextlib.suppress(Exception):
-            process.wait(timeout=5)
+            process.wait(timeout=_PROCESS_WAIT_SECONDS)
 
 
 def _start_generated_supervisor(
@@ -1568,10 +1580,10 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
             os.close(slave_fd)
 
         try:
-            stdout, stderr = process.communicate(timeout=10)
+            stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
-            stdout, stderr = process.communicate(timeout=5)
+            stdout, stderr = process.communicate(timeout=_PROCESS_WAIT_SECONDS)
             pytest.fail(
                 "supervisor never exited after a failed foreground promotion -- it hung "
                 "waiting on a stopped child that never received SIGCONT (AI-CLI-jpnd); "
@@ -1582,7 +1594,7 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
         assert process.returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
     finally:
         owner.kill()
-        owner.wait(timeout=5)
+        owner.wait(timeout=_PROCESS_WAIT_SECONDS)
         os.close(master_fd)
 
 
