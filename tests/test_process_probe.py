@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -342,8 +343,21 @@ def test_given_different_procfs_start_ticks_when_matched_then_unproven(tmp_path)
     assert ProcfsProbe(tmp_path).start_time_match(4242, 777) is StartTimeMatch.UNPROVEN
 
 
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGCONT"),
+    reason="ProcfsProbe's escalation names SIGCONT/SIGKILL; Windows defines neither and uses PsutilProbe instead",
+)
 def test_given_pid_identity_swaps_before_termination_when_reclaimed_then_no_signal_is_sent(tmp_path, monkeypatch):
-    """A stale identity must block every signal, even after an earlier match succeeded."""
+    """A stale identity must block every signal, even after an earlier match succeeded.
+
+    Gated on the signal names rather than on the platform, because that is the actual
+    dependency. ``end_process`` evaluates ``signal.SIGCONT`` to build its argument
+    *before* ``send`` can refuse on the stale identity, so the attribute lookup
+    happens even on the path that sends nothing -- which is why asserting "no signal
+    is sent" still raised ``AttributeError`` on Windows. ``ProcfsProbe`` is the Linux
+    implementation and is never the probe selected there; the ``PsutilProbe``
+    equivalent below covers the same contract on Windows and macOS.
+    """
     _write_stat(tmp_path, 4242, starttime=777)
     probe = ProcfsProbe(tmp_path)
     assert probe.start_time_match(4242, 777) is StartTimeMatch.MATCH
