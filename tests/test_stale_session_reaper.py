@@ -131,6 +131,13 @@ def _tmux_new_session(
 # drive this generator's cleanup contract.
 _SOCKET_PARENT = "/tmp" if Path("/tmp").is_dir() else None
 
+# The real-tmux tests need POSIX process semantics, not merely a tmux binary: AF_UNIX
+# sockets, `remain-on-exit` panes, process groups, signals, and supervisors launched as
+# shell scripts. A module constant rather than an inline check so
+# tests/test_skip_hygiene.py can declare it satisfied while driving this generator's
+# cleanup contract, which is how that file already handles `shutil.which`.
+_POSIX_HOST = os.name == "posix"
+
 
 def isolated_tmux_socket() -> Iterator[str]:
     """An isolated tmux server, torn down on EVERY exit path including a skip.
@@ -146,6 +153,8 @@ def isolated_tmux_socket() -> Iterator[str]:
     The ``which`` check stays above the ``mkdtemp`` on purpose: a PATH lookup
     builds nothing, so there is nothing to clean up if it decides to skip.
     """
+    if not _POSIX_HOST:
+        pytest.skip("the real-tmux tests need POSIX process semantics, not just a tmux binary")
     if shutil.which("tmux") is None:
         pytest.skip("tmux binary not available on PATH")
     socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir=_SOCKET_PARENT))
@@ -1248,6 +1257,10 @@ def _write_isolated_tmux_wrapper(path: Path) -> None:
 
 
 @pytest.mark.real_tmux
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="the wrapper is a #!/bin/sh script, which Windows cannot execute (WinError 193)",
+)
 def test_given_isolated_tmux_wrapper_when_path_starts_with_its_directory_then_it_executes_system_tmux(tmp_path: Path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

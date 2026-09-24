@@ -57,6 +57,10 @@ def test_given_the_isolated_tmux_probe_fails_when_it_skips_then_the_tempdir_is_r
 
     monkeypatch.setattr(reaper.tempfile, "mkdtemp", _recording_mkdtemp)
     monkeypatch.setattr(reaper.shutil, "which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
+    # These two drive the generator's cleanup contract, so they declare the POSIX
+    # requirement satisfied for the same reason they fake tmux's presence: the
+    # subject under test is the try/finally, not the host.
+    monkeypatch.setattr(reaper, "_POSIX_HOST", True)
     # Every tmux call fails, which is precisely what an unusable isolated server
     # looks like -- the condition the fixture's second skip exists for.
     monkeypatch.setattr(
@@ -91,6 +95,10 @@ def test_given_the_isolated_tmux_probe_succeeds_when_used_then_it_still_cleans_u
 
     monkeypatch.setattr(reaper.tempfile, "mkdtemp", _recording_mkdtemp)
     monkeypatch.setattr(reaper.shutil, "which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
+    # These two drive the generator's cleanup contract, so they declare the POSIX
+    # requirement satisfied for the same reason they fake tmux's presence: the
+    # subject under test is the try/finally, not the host.
+    monkeypatch.setattr(reaper, "_POSIX_HOST", True)
     monkeypatch.setattr(
         reaper,
         "_tmux_run",
