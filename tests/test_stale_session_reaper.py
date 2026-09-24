@@ -781,10 +781,25 @@ def _fingerprint_diagnostic(socket: str, candidate: object) -> str:
         "#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|"
         "#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}",
     )
+    version = (
+        _tmux_run(socket, "-V")
+        if False
+        else subprocess.run(["tmux", "-V"], capture_output=True, text=True, check=False)
+    )
+    plain = _tmux_run(
+        socket,
+        "display-message",
+        "-p",
+        "-t",
+        getattr(candidate, "session_id", "?"),
+        "#{W:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}",
+    )
     return (
         f"candidate={candidate!r}\n"
+        f"tmux -V -> {version.stdout.strip()!r}\n"
         f"list-panes -> {raw.stdout.strip()!r} (rc={raw.returncode}, err={raw.stderr.strip()!r})\n"
-        f"fingerprint -> {shown.stdout.strip()!r} (rc={shown.returncode}, err={shown.stderr.strip()!r})"
+        f"fingerprint W/i -> {shown.stdout.strip()!r} (rc={shown.returncode}, err={shown.stderr.strip()!r})\n"
+        f"fingerprint W   -> {plain.stdout.strip()!r} (rc={plain.returncode}, err={plain.stderr.strip()!r})"
     )
 
 
