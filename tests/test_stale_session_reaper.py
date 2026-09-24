@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -27,6 +28,7 @@ import pytest
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import get_engine_script
 from ai_cli.stale_session_reaper import (
+    _TMUX_FINGERPRINT_FORMAT,
     Pane,
     SessionCandidate,
     StaleSessionReaper,
@@ -762,6 +764,32 @@ def test_given_managed_pane_with_remain_on_exit_when_process_exits_then_tmux_mar
     assert _tmux_run(real_tmux_socket, "has-session", "-t", "managed-pane").returncode == 0
 
 
+def test_given_the_fingerprint_format_when_inspected_then_it_uses_no_tmux_sort_argument():
+    """The fence's format must work on every tmux the fleet runs, including 3.4.
+
+    Frozen because the failure was total and silent. `#{W/i:...}` asks tmux to sort the
+    window loop by index, and per tmux(1) that suffix only exists on newer builds. On
+    tmux 3.4 -- Ubuntu 24.04's, which is what the Linux CI runner has -- tmux does not
+    error: it emits the literal text `W/i:` and then expands the body, so the
+    fingerprint came out as `$1|token|0|W/i:@1[%1=10290=1;]`. That matches
+    `_FINGERPRINT_RE` never, so `capture_fingerprint` returned None for every dead
+    managed session and the reaper could fence-and-kill nothing at all on that
+    platform, while passing on newer tmux.
+
+    Asserted against the format string, not against a live tmux, because the machine
+    with the affected tmux is the one that cannot run such a check -- a test requiring
+    tmux 3.4 would skip in exactly the place the bug lives.
+    """
+    windows_loop = re.search(r"#\{W([^:]*):", _TMUX_FINGERPRINT_FORMAT)
+
+    assert windows_loop is not None, f"no window loop found in {_TMUX_FINGERPRINT_FORMAT!r}"
+    assert windows_loop.group(1) == "", (
+        f"the window loop carries the sort argument {windows_loop.group(1)!r}. tmux 3.4 does not "
+        "support sort suffixes on W: and emits them literally, which makes the fingerprint "
+        "unmatchable and disables the fence entirely on that version"
+    )
+
+
 def _fingerprint_diagnostic(socket: str, candidate: object) -> str:
     """Why `capture_fingerprint` refused, in the terms it actually judges on.
 
@@ -778,28 +806,14 @@ def _fingerprint_diagnostic(socket: str, candidate: object) -> str:
         "-p",
         "-t",
         getattr(candidate, "session_id", "?"),
-        "#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|"
-        "#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}",
+        _TMUX_FINGERPRINT_FORMAT,
     )
-    version = (
-        _tmux_run(socket, "-V")
-        if False
-        else subprocess.run(["tmux", "-V"], capture_output=True, text=True, check=False)
-    )
-    plain = _tmux_run(
-        socket,
-        "display-message",
-        "-p",
-        "-t",
-        getattr(candidate, "session_id", "?"),
-        "#{W:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}",
-    )
+    version = subprocess.run(["tmux", "-V"], capture_output=True, text=True, check=False)
     return (
         f"candidate={candidate!r}\n"
         f"tmux -V -> {version.stdout.strip()!r}\n"
         f"list-panes -> {raw.stdout.strip()!r} (rc={raw.returncode}, err={raw.stderr.strip()!r})\n"
-        f"fingerprint W/i -> {shown.stdout.strip()!r} (rc={shown.returncode}, err={shown.stderr.strip()!r})\n"
-        f"fingerprint W   -> {plain.stdout.strip()!r} (rc={plain.returncode}, err={plain.stderr.strip()!r})"
+        f"fingerprint -> {shown.stdout.strip()!r} (rc={shown.returncode}, err={shown.stderr.strip()!r})"
     )
 
 
@@ -901,7 +915,11 @@ def test_given_valid_fingerprint_when_atomic_fence_runs_then_it_uses_one_argv_if
         "-F",
         "-t",
         "$1",
-        "#{==:#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]},$1|generation-token|0|@1[%1=9001=1;]}",
+        # Built from the production constant rather than copied. A second copy of this
+        # format is how it could change -- as it did, dropping an unsupported sort
+        # argument -- while a test kept asserting the old spelling and said nothing
+        # about the platform consequence.
+        f"#{{==:{_TMUX_FINGERPRINT_FORMAT},{fingerprint}}}",
         "kill-session -t '$1'",
         "display-message -p __ai_cli_fence_mismatch__",
     ]
