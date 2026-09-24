@@ -432,7 +432,13 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
     after = {s.name: s.id for s in server.sessions}
     assert "c-myproject-3" in after
     pane_dead = server.cmd("list-panes", "-t", "c-myproject-3", "-F", "#{pane_dead}")
-    assert pane_dead.stdout == ["0"]
+    assert pane_dead.stdout == ["0"], (
+        # A dead pane here means the recreated session's child did not survive the
+        # launch. Show what it was and what the pane holds, because "['1'] != ['0']"
+        # alone cannot distinguish a child that exited from one that never started.
+        f"the recreated session's pane is dead; child={_LIVE_CHILD_COMMAND!r} "
+        f"panes={server.cmd('list-panes', '-t', 'c-myproject-3', '-F', '#{pane_id}=#{pane_pid}=#{pane_dead}=#{pane_start_command}').stdout!r}"
+    )
 
 
 def test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives(

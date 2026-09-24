@@ -762,6 +762,32 @@ def test_given_managed_pane_with_remain_on_exit_when_process_exits_then_tmux_mar
     assert _tmux_run(real_tmux_socket, "has-session", "-t", "managed-pane").returncode == 0
 
 
+def _fingerprint_diagnostic(socket: str, candidate: object) -> str:
+    """Why `capture_fingerprint` refused, in the terms it actually judges on.
+
+    A bare `assert fingerprint is not None` says a dead managed session could not be
+    fenced and nothing about which of the four gates rejected it -- the candidate's
+    shape, the tmux call, the format regex, or the pane-for-pane pid comparison. That
+    left a Linux-only failure undiagnosable from CI output alone, so the message now
+    carries the two sides that have to agree.
+    """
+    raw = _tmux_run(socket, "list-panes", "-a", "-F", "#{pane_id}=#{pane_pid}=#{pane_dead}")
+    shown = _tmux_run(
+        socket,
+        "display-message",
+        "-p",
+        "-t",
+        getattr(candidate, "session_id", "?"),
+        "#{session_id}|#{@ai_cli_session_generation}|#{session_attached}|"
+        "#{W/i:#{window_id}[#{P:#{pane_id}=#{pane_pid}=#{pane_dead};}]}",
+    )
+    return (
+        f"candidate={candidate!r}\n"
+        f"list-panes -> {raw.stdout.strip()!r} (rc={raw.returncode}, err={raw.stderr.strip()!r})\n"
+        f"fingerprint -> {shown.stdout.strip()!r} (rc={shown.returncode}, err={shown.stderr.strip()!r})"
+    )
+
+
 @pytest.mark.real_tmux
 def test_given_matching_dead_managed_session_when_fence_runs_then_it_kills_the_exact_session(real_tmux_socket: str):
     _create_dead_managed_session(real_tmux_socket, "fence-positive")
@@ -769,7 +795,7 @@ def test_given_matching_dead_managed_session_when_fence_runs_then_it_kills_the_e
     candidate = adapter.sessions()[0]
     fingerprint = adapter.capture_fingerprint(candidate)
 
-    assert fingerprint is not None
+    assert fingerprint is not None, _fingerprint_diagnostic(real_tmux_socket, candidate)
     assert adapter.fence_and_kill(candidate.session_id, fingerprint)
     assert _tmux_run(real_tmux_socket, "has-session", "-t", candidate.session_id).returncode != 0
 
@@ -824,7 +850,7 @@ def test_given_respawn_before_atomic_fence_when_fence_runs_then_live_session_sur
     adapter = SubprocessTmuxAdapter(("tmux", "-S", real_tmux_socket))
     candidate = adapter.sessions()[0]
     fingerprint = adapter.capture_fingerprint(candidate)
-    assert fingerprint is not None
+    assert fingerprint is not None, _fingerprint_diagnostic(real_tmux_socket, candidate)
     respawned = _tmux_run(real_tmux_socket, "respawn-pane", "-k", "-t", candidate.panes[0].pane_id, "sleep", "30")
     assert respawned.returncode == 0, respawned.stderr
 
