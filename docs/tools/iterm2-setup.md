@@ -10,6 +10,36 @@ source: internal
 
 Quick reference for iTerm2 configuration and keyboard shortcuts for managing parallel Claude Code sessions.
 
+## Setting up a fresh Mac: what you do and do not have to do
+
+Measured on a clean install 2026-09-24, because the answer is smaller than this document's
+length suggests. **Everything ai-cli needs provisions itself on first use.** There is no
+install step, no file to copy out of `assets/`, and no profile to hand-author:
+
+| Piece | How it arrives |
+|---|---|
+| `~/.config/ai-cli-utils/iterm2.toml` (palette, per-project and per-session colors) | written with defaults on first use by `_load_iterm2_config()` |
+| Source logos for icon tinting | shipped inside the package at `src/ai_cli/data/icons/` |
+| Per-session tinted icon | generated at launch into `~/.local/state/ai-cli-utils/iterm2-icons/` |
+| Per-session Dynamic Profile | generated at launch into `DynamicProfiles/` (see below) |
+| Base / per-type profiles | **not required at all** — retired 2026-07-05 |
+| Shift+Enter newline binding | injected into every generated profile |
+
+What genuinely needs a human, and why each one cannot be scripted:
+
+1. **Option key → Esc+** — the one manual profile setting, covered immediately below. It is a
+   preference on *your* base profile (`Option Key Sends` / `Right Option Key Sends` in
+   `com.googlecode.iterm2.plist`), not something the generator sets, so word-skip in a
+   non-ai-cli tab depends on it too.
+2. **Layouts** — `~/.config/iterm2/layouts/*.yaml` are *your* definitions. Their absence is the
+   supported zero-config state: `ai c N` applies `<name>.yaml` if it exists and launches
+   normally if it does not. Nothing ships a default, because a pane arrangement is a preference.
+3. **A window arrangement** — `assets/iterm2-arrangements/*.iterm2arrangement` is imported
+   through the iTerm2 GUI (Window → Save/Restore Window Arrangement). Check the file for
+   machine-identifying content before importing or copying one; an arrangement captures whatever
+   was on screen, including hostnames.
+4. **The ntfy → iTerm2 bridge** — needs a working ntfy/NATS path first; see the section below.
+
 ## Essential Configuration
 
 ### Option Key as Word-Skip Modifier
@@ -115,7 +145,7 @@ terminal selection instead, hold **Option** while dragging.
 
 When `ai c N` launches a CC session, ai-cli automatically configures iTerm2 via escape sequences (requires `TERM_PROGRAM=iTerm.app`):
 
-1. **Profile switch** — generates a per-session Dynamic Profile JSON (`ai-cli:{ai_name}`) that inherits from the base profile (e.g. `ClaudeCode`) and writes it to `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/`. iTerm2 hot-reloads it instantly. Profile is activated via `SetProfile` escape sequence.
+1. **Profile switch** — generates a per-session Dynamic Profile JSON (`ai-cli:{ai_name}`) that inherits from iTerm2's built-in `Default` profile and writes it to `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-session-{ai_name}.json`. iTerm2 hot-reloads it instantly. Profile is activated via `SetProfile` escape sequence.
 2. **Collision-free tab color** — assigns a color from the configured palette using lease files at `~/.local/state/ai-cli/iterm2/color-leases.json`. Each session holds a lease on its slot; expired leases are reclaimed automatically. Color is set via `SetColors=tab=` escape.
 3. **Runtime tinted icon** — at session launch, `icon_generator.py` tints the source logo PNG (`src/ai_cli/data/icons/{type}-logo.png`) using a contrast color derived from the tab hex (180° HSL hue rotation + lightness adaptation). Written to `~/.local/state/ai-cli-utils/iterm2-icons/{ai_name}.png` and referenced in the Dynamic Profile. Falls back to Claude brand orange (`#da7756`) when no tab color is set.
 4. **Tab title** — set to the session name (e.g. `c-sw-1`) via `ai internal set-iterm2-name`, which uses AppleScript to target the specific iTerm pane by GUID (`ITERM_SESSION_ID`). GUID-targeted rename is used instead of broadcast OSC 1 (`\033]1;`) to prevent cross-session clobbering when multiple sessions share the same outer pane. The session reads its GUID from `tmux show-environment` (not the static shell env) so that re-attaching to a new pane picks up the correct GUID. The rename only fires when `tmux list-clients` confirms the session is currently attached to a terminal — detached sessions skip the rename to avoid clobbering a different session's pane.
@@ -135,20 +165,24 @@ If the preferred slot is already occupied, ai-cli falls back to the lowest free 
 
 ## Dynamic Profiles (Mac-local)
 
-**Base profiles:** `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-profiles.json`
+**Nothing here is hand-maintained, and that is the point.** There is no
+`ai-cli-profiles.json` to create and no per-type base profile to keep in sync. Every session
+type parents to iTerm2's built-in `Default` profile, which is guaranteed to exist, and the
+generator supplies the name, tab color, icon, key mappings and Semantic History itself. So a
+fresh machine needs no iTerm2 profile setup at all — launch a session and the profile appears.
 
-These are static base profiles. Per-session profiles are generated at runtime by ai-cli and inherit from these.
+The named per-type profiles (`ClaudeCode`, `GeminiCLI`, `ShellUtility`, `Caffeinate`,
+`ChromeDebug`, `SSHForward`) were **retired 2026-07-05**: the generator became the single
+source of truth for session profiles, which removed a whole class of "works on my machine"
+setup drift. `_BASE_PROFILES` in `src/ai_cli/icon_generator.py` is where a type's parent is
+overridden, and only if you deliberately want it to inherit from a custom base profile.
 
-| Profile | Icon | Use Case |
-|---------|------|----------|
-| ClaudeCode | `claude-icon-v3.png` | CC agent sessions |
-| GeminiCLI | `gemini-logo.png` | Gemini CLI sessions |
-| ShellUtility | Terminal icon | Shell, git, monitoring |
-| Caffeinate | Coffee icon | `caffeinate` keep-alive |
-| ChromeDebug | Chrome icon | Chrome CDP debug |
-| SSHForward | SSH key icon | Port forwarding |
-
-**Generated per-session profiles** live at `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-generated/{ai_name}.json`. Each inherits from the base profile above and adds the session's tab color and tinted icon path. These are created at session start and deleted at session end.
+**Generated per-session profiles** live **flat** in that directory as
+`ai-cli-session-{ai_name}.json` — not in an `ai-cli-generated/` subdirectory. The prefix is
+`_DYNAMIC_PROFILE_PREFIX`. Each adds the session's tab color and tinted icon path on top of
+`Default`, and is created at session start and deleted at session end, so an empty
+`DynamicProfiles/` directory on a machine that has run sessions is the normal resting state
+rather than a sign that generation failed.
 
 **Source logos** for runtime icon generation: `src/ai_cli/data/icons/` in the ai-cli-utils repo (128×128 RGBA PNG).
 
