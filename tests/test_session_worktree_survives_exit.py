@@ -96,6 +96,15 @@ def _run_teardown_cleanup(ai_name: str) -> None:
 
 
 def _registered(repo: Path, worktree: Path) -> bool:
+    """Whether git still lists this worktree, compared as paths rather than as text.
+
+    ``git worktree list --porcelain`` prints POSIX-style separators even on Windows
+    (``D:/repo/.worktrees/x``), while ``str(WindowsPath)`` renders ``D:\\repo\\...``,
+    so a substring test over the raw output reported a perfectly registered worktree
+    as deregistered. Comparing parsed paths normalizes the separator and the
+    drive-letter case, and it also drops the substring test's false positive on a
+    worktree whose path is a prefix of another's.
+    """
     listed = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
         cwd=repo,
@@ -103,7 +112,9 @@ def _registered(repo: Path, worktree: Path) -> bool:
         text=True,
         check=False,
     )
-    return str(worktree.resolve()) in listed.stdout
+    prefix = "worktree "
+    registered = {Path(line[len(prefix) :]).resolve() for line in listed.stdout.splitlines() if line.startswith(prefix)}
+    return worktree.resolve() in registered
 
 
 class TestSessionWorktreeSurvivesExit:
