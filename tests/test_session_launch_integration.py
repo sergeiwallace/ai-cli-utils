@@ -21,7 +21,7 @@ import libtmux
 import pytest
 from conftest import tmux_runnable
 
-from ai_cli import tmux_ownership
+from ai_cli import tmux_ownership, tmux_setup
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
@@ -86,6 +86,31 @@ def tmux_server():
     except Exception:
         pass
     shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+def _skip_if_tmux_versions_disagree() -> None:
+    """These tests cannot run where the launcher is right to refuse.
+
+    `_do_session_launch` exits 1 when the tmux client and the running server report
+    different versions, and that refusal is deliberate: a session created against a
+    mismatched server is unattachable, so refusing beats warning beside an
+    apparently-successful launch. The CI runner hits exactly that -- client 3.7c at
+    /usr/bin/tmux, running server 3.4 -- so the launch never reaches the
+    recreate-vs-attach decision these tests are about, and they failed on a dead pane
+    that the launch had never been given the chance to replace.
+
+    Asked through the product's own `probe()` so the condition cannot drift from the
+    guard it mirrors. This is an environment limitation, not a skip of the contract:
+    wherever client and server agree, including a correctly provisioned Linux, both
+    tests run.
+    """
+    report = tmux_setup.probe(query_versions=True)
+    if report.versions_disagree:
+        pytest.skip(
+            f"tmux client {report.client_version} disagrees with the running server "
+            f"{report.server_version}; the launcher refuses by design, so the recreate "
+            "path is unreachable here"
+        )
 
 
 @pytest.fixture
@@ -458,6 +483,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
     has a dead pane but tmux keeps the session alive. A naive reattach shows
     the frozen final output forever; ``_do_session_launch`` must instead kill
     the dead session and create a genuinely fresh one."""
+    _skip_if_tmux_versions_disagree()
     server = patched_subprocess
     _create_dead_session(server, "c-myproject-3")
 
@@ -495,6 +521,7 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
     capsys,
 ):
     """A live session that reuses a dead session's name must never be killed."""
+    _skip_if_tmux_versions_disagree()
     server = patched_subprocess
     session_name = "c-myproject-4"
     _create_dead_session(server, session_name)
