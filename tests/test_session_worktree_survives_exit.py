@@ -5,8 +5,8 @@ session's git worktree. The supervisor teardown trap invoked
 ``ai internal cleanup-worktree "$ai_name"``, which removed
 ``<repo>/.worktrees/<ai_name>`` whenever ``git status --porcelain`` was empty.
 
-Measured 2026-09-15 on a real session: ``.worktrees/kg-1`` and
-``.git/worktrees/kg-1`` both vanished the moment the session exited cleanly, the
+Measured 2026-09-15 on a real session: ``.worktrees/session-1`` and
+``.git/worktrees/session-1`` both vanished the moment the session exited cleanly, the
 worktree deregistered, and it disappeared from the editor's source-control view.
 Only the branch survived, because ``git worktree remove`` never touches one.
 
@@ -127,11 +127,11 @@ class TestSessionWorktreeSurvivesExit:
         """
         script = get_engine_script(
             engine="c",
-            ai_name="kg-1",
-            session="ai-kg-1",
+            ai_name="session-1",
+            session="ai-myproject-1",
             prefix="ai",
-            project_prefix="semkg",
-            worktree_dir="/tmp/repo/.worktrees/kg-1",
+            project_prefix="myproject",
+            worktree_dir="/tmp/repo/.worktrees/session-1",
         )
 
         assert "cleanup-worktree" not in script, (
@@ -143,19 +143,19 @@ class TestSessionWorktreeSurvivesExit:
     def test_teardown_leaves_a_clean_session_worktree_intact(self, tmp_path, monkeypatch):
         """A clean session worktree must still exist after teardown.
 
-        This is the positive contract, and the exact scenario measured on kg-1:
+        This is the positive contract, and the exact scenario measured on session-1:
         nothing uncommitted, nothing untracked, session exits, worktree gone.
         """
-        repo, worktree = _repo_with_session_worktree(tmp_path, "kg-9")
+        repo, worktree = _repo_with_session_worktree(tmp_path, "session-9")
         assert not _git("status", "--porcelain", cwd=worktree).stdout.strip(), (
             "fixture precondition: the worktree must be clean, which is the only state the old reap acted on"
         )
 
         monkeypatch.chdir(worktree)
-        _run_teardown_cleanup("kg-9")
+        _run_teardown_cleanup("session-9")
 
         assert worktree.is_dir(), "the session worktree checkout was deleted on session exit"
-        assert (repo / ".git" / "worktrees" / "kg-9").is_dir(), (
+        assert (repo / ".git" / "worktrees" / "session-9").is_dir(), (
             "the worktree's git admin entry was deleted, so it is deregistered"
         )
         assert _registered(repo, worktree), "the worktree is no longer registered with git"
@@ -168,7 +168,7 @@ class TestSessionWorktreeSurvivesExit:
         as disposable. The branch kept the commits reachable, but the checkout
         was destroyed.
         """
-        repo, worktree = _repo_with_session_worktree(tmp_path, "kg-8", with_remote=True)
+        repo, worktree = _repo_with_session_worktree(tmp_path, "session-8", with_remote=True)
         (worktree / "unpushed.txt").write_text("work that is on no remote\n", encoding="utf-8")
         _git("add", "unpushed.txt", cwd=worktree)
         _git("commit", "-q", "--no-verify", "-m", "unpushed work", cwd=worktree)
@@ -179,15 +179,15 @@ class TestSessionWorktreeSurvivesExit:
         )
 
         monkeypatch.chdir(worktree)
-        _run_teardown_cleanup("kg-8")
+        _run_teardown_cleanup("session-8")
 
         assert worktree.is_dir(), "a worktree holding commits that exist on no remote was deleted on session exit"
         assert (worktree / "unpushed.txt").is_file()
 
 
-@pytest.mark.parametrize("ai_name", ["kg-1", "aih-4", "ai-cli-1"])
+@pytest.mark.parametrize("ai_name", ["session-1", "aih-4", "ai-cli-1"])
 def test_no_internal_action_removes_a_canonical_session_worktree(tmp_path, monkeypatch, ai_name):
-    """Every conventionally named session worktree is covered, not just kg-1.
+    """Every conventionally named session worktree is covered, not just session-1.
 
     ai-harness's own ``is_canonical_session`` accepts each of these, so each was
     exposed to the same teardown reap.

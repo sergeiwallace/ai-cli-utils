@@ -1837,7 +1837,19 @@ def test_given_child_receives_ctrl_c_during_preflight_when_single_press_then_wra
     assert os.getpgid(child_pid) == process.pid
 
     os.killpg(process.pid, signal.SIGINT)
-    time.sleep(0.5)
+    # Wait for a definite outcome rather than a fixed 0.5s, then assert which one it was.
+    # The child's INT trap writes its 3-second escape deadline to
+    # $XDG_STATE_HOME/ai-cli-utils/session-int-escape-<session>, so that file appearing is
+    # evidence the trap ran; the wrapper exiting is the regression. Sleeping a fixed
+    # interval raced the signal against the trap's installation under load and reported
+    # "a single Ctrl+C during preflight killed the child wrapper" when the signal had
+    # merely arrived before the handler existed -- naming AI-CLI-s5cs as regressed on a
+    # loaded machine (AI-CLI-gcbo).
+    escape_dir = tmp_path / "state" / "ai-cli-utils"
+    _wait_for_condition(
+        "the child's INT trap to record the first Ctrl+C, or the wrapper to exit",
+        lambda: any(escape_dir.glob("session-int-escape-*")) or process.poll() is not None,
+    )
     assert process.poll() is None, "a single Ctrl+C during preflight killed the child wrapper (AI-CLI-s5cs)"
 
     os.killpg(process.pid, signal.SIGINT)

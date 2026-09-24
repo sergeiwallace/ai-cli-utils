@@ -3142,8 +3142,8 @@ by adding `--allow-test-execution` (write access to `:tmpdir`/`:slash_tmp` only,
 read-only). It reported real findings on stdout, but its write to this file was rejected twice
 (`patch rejected: writing outside of the project; rejected by user approval settings`), and `cx`'s
 own wrapper independently confirmed the target file was byte-identical before and after the run --
-this is a known cross-platform sandbox-refusal failure mode (the wrapper's own diagnostic labels it
-"KG-198"), not a successful audit round. **No findings from this attempt are recorded as a trusted
+this is a known cross-platform sandbox-refusal failure mode (the wrapper's own diagnostic labels it with an
+internal issue id), not a successful audit round. **No findings from this attempt are recorded as a trusted
 round** -- reproduced here only as input to the orchestrating session's own closure determination
 below, clearly marked as unverified-by-audit-write.
 
