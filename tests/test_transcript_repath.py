@@ -66,7 +66,7 @@ def test_rewrite_jsonl_line_embedded_in_content():
             {
                 "type": "message",
                 "role": "user",
-                "content": f"Read the file at {OLD}/data/file.txt",
+                "content": f"Read the file at {_under(OLD, 'data/file.txt')}",
                 "cwd": _under(OLD, "myproject"),
             }
         )
@@ -109,7 +109,7 @@ def test_rewrite_jsonl_line_nested_paths():
                 "type": "tool-result",
                 "tool": "read",
                 "args": {"path": _under(OLD, "src/main.py")},
-                "result": {"content": f"# File from {OLD}/src"},
+                "result": {"content": f"# File from {_under(OLD, 'src')}"},
                 "cwd": OLD,
             }
         )
@@ -475,19 +475,18 @@ def test_repath_all_detects_same_destination_collision(tmp_path):
 # what happens when it is not satisfied.
 
 
-def _seed_store(tmp_path, *, suffixes):
-    """Build a fake ~/.claude/projects holding one project dir per suffix."""
+def _seed_store(tmp_path, *, names):
+    """Build a fake ~/.claude/projects holding one project dir per relative name."""
     fake_home = tmp_path / ".claude"
     projects = fake_home / "projects"
     projects.mkdir(parents=True)
     old_root = OLD_ROOT
-    old_slug = _slugify_cwd(str(old_root))
     made = {}
-    for suffix in suffixes:
-        proj_dir = projects / (old_slug + _slugify_cwd(suffix))
+    for name in names:
+        proj_dir = projects / _slugify_cwd(_under(OLD, name))
         proj_dir.mkdir()
-        (proj_dir / "test.jsonl").write_text(json.dumps({"cwd": f"{OLD}{suffix}"}) + "\n")
-        made[suffix] = proj_dir
+        (proj_dir / "test.jsonl").write_text(json.dumps({"cwd": _under(OLD, name)}) + "\n")
+        made[name] = proj_dir
     return fake_home, old_root, made
 
 
@@ -498,7 +497,7 @@ def test_plan_repath_requires_a_dest_existence_source(tmp_path):
     SOURCE machine, every destination reads missing and a legitimate whole-store
     repath silently degrades to copying everything unrepathed.
     """
-    fake_home, old_root, _ = _seed_store(tmp_path, suffixes=["/myproject"])
+    fake_home, old_root, _ = _seed_store(tmp_path, names=["myproject"])
 
     with pytest.raises(ValueError) as exc:
         plan_repath(
@@ -515,7 +514,7 @@ def test_plan_repath_requires_a_dest_existence_source(tmp_path):
 
 def test_plan_repath_partitions_on_destination_existence(tmp_path):
     """A dir whose new cwd exists is repathable; one whose new cwd does not is not."""
-    fake_home, old_root, made = _seed_store(tmp_path, suffixes=["/live", "/reaped"])
+    fake_home, old_root, made = _seed_store(tmp_path, names=["live", "reaped"])
 
     plan = plan_repath(
         old_root,
@@ -525,15 +524,15 @@ def test_plan_repath_partitions_on_destination_existence(tmp_path):
         missing_dest_policy=MissingDestPolicy.UNREPATHED,
     )
 
-    assert [old for old, _ in plan.project_dirs] == [made["/live"]]
-    assert [m.old_dir for m in plan.missing_dest] == [made["/reaped"]]
-    assert plan.missing_dest[0].new_cwd == Path(NEW + "/reaped")
+    assert [old for old, _ in plan.project_dirs] == [made["live"]]
+    assert [m.old_dir for m in plan.missing_dest] == [made["reaped"]]
+    assert plan.missing_dest[0].new_cwd == Path(_under(NEW, "reaped"))
     assert plan.missing_dest[0].disposition == MissingDestPolicy.UNREPATHED
 
 
 def test_plan_repath_policy_repath_needs_no_existence_check(tmp_path):
     """The old unconditional behaviour stays reachable, but only by asking for it."""
-    fake_home, old_root, made = _seed_store(tmp_path, suffixes=["/live", "/reaped"])
+    fake_home, old_root, made = _seed_store(tmp_path, names=["live", "reaped"])
 
     plan = plan_repath(
         old_root,
@@ -548,7 +547,7 @@ def test_plan_repath_policy_repath_needs_no_existence_check(tmp_path):
 
 def test_repath_all_skip_policy_writes_nothing_for_a_missing_destination(tmp_path):
     """SKIP leaves the source alone and produces no destination directory."""
-    fake_home, old_root, made = _seed_store(tmp_path, suffixes=["/reaped"])
+    fake_home, old_root, made = _seed_store(tmp_path, names=["reaped"])
     dest_base = tmp_path / "dest"
     dest_base.mkdir()
 
@@ -564,7 +563,7 @@ def test_repath_all_skip_policy_writes_nothing_for_a_missing_destination(tmp_pat
     assert [r.disposition for r in results] == ["skipped"]
     assert results[0].jsonl_files == 0
     assert list(dest_base.iterdir()) == []
-    assert (made["/reaped"] / "test.jsonl").exists()
+    assert (made["reaped"] / "test.jsonl").exists()
 
 
 def test_repath_all_unrepathed_policy_copies_under_the_original_slug(tmp_path):
@@ -574,7 +573,7 @@ def test_repath_all_unrepathed_policy_copies_under_the_original_slug(tmp_path):
     path it names does not resolve on the new machine and Claude Code cannot offer
     it as a resumable session there.
     """
-    fake_home, old_root, made = _seed_store(tmp_path, suffixes=["/reaped"])
+    fake_home, old_root, made = _seed_store(tmp_path, names=["reaped"])
     dest_base = tmp_path / "dest"
     dest_base.mkdir()
 
@@ -590,18 +589,18 @@ def test_repath_all_unrepathed_policy_copies_under_the_original_slug(tmp_path):
     assert [r.disposition for r in results] == ["unrepathed"]
     assert results[0].lines_rewritten == 0
 
-    copied = dest_base / made["/reaped"].name
+    copied = dest_base / made["reaped"].name
     assert copied.is_dir(), f"expected an unrepathed copy at {copied}"
     body = (copied / "test.jsonl").read_text()
     assert _under(OLD, "reaped") in body
     assert NEW not in body
     # Byte-for-byte with the source
-    assert body == (made["/reaped"] / "test.jsonl").read_text()
+    assert body == (made["reaped"] / "test.jsonl").read_text()
 
 
 def test_repath_all_mixed_store_repaths_only_the_reachable_dirs(tmp_path):
     """One store, both dispositions, each reported honestly."""
-    fake_home, old_root, made = _seed_store(tmp_path, suffixes=["/live", "/reaped"])
+    fake_home, old_root, made = _seed_store(tmp_path, names=["live", "reaped"])
     dest_base = tmp_path / "dest"
     dest_base.mkdir()
 
@@ -621,6 +620,6 @@ def test_repath_all_mixed_store_repaths_only_the_reachable_dirs(tmp_path):
     assert repathed.is_dir()
     assert json.loads((repathed / "test.jsonl").read_text())["cwd"] == _under(NEW, "live")
 
-    unrepathed = dest_base / made["/reaped"].name
+    unrepathed = dest_base / made["reaped"].name
     assert unrepathed.is_dir()
     assert json.loads((unrepathed / "test.jsonl").read_text())["cwd"] == _under(OLD, "reaped")
