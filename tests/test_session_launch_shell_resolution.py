@@ -261,6 +261,15 @@ def test_given_zsh_on_path_when_session_launched_then_zsh_is_still_the_interpret
     fake_zsh.write_text(f'#!/bin/sh\necho ran > "{zsh_ran}"\nexec /bin/sh "$@"\n')
     fake_zsh.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir))
+    # Point XDG_DATA_HOME at tmp_path so ai-cli's own provisioned-binary directory,
+    # `get_xdg_data_home() / "native" / "bin"`, is empty here. The launcher prepends it
+    # to PATH -- deliberately, so `ai setup` provisioning zsh is enough -- which means a
+    # real zsh installed there SHADOWS this fake one. On CI another test provisions one
+    # into the real home, so whether this test could see its own fake depended on xdist
+    # ordering: it failed on a different Python version every run, reporting "the pane
+    # was not started with it" while `which('zsh')` pointed at the provisioned binary
+    # (AI-CLI-gcbo). Redirecting the variable is also simply what makes this hermetic.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     assert shutil.which("zsh") == str(fake_zsh)
 
     marker = tmp_path / "script-ran"
