@@ -8,6 +8,8 @@ test explicitly exercises production worktree creation or registry
 resolution.
 """
 
+import contextlib
+import dataclasses
 import json
 import os
 import shutil
@@ -21,7 +23,7 @@ import libtmux
 import pytest
 from conftest import tmux_runnable
 
-from ai_cli import tmux_ownership
+from ai_cli import tmux_ownership, tmux_setup
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
@@ -422,6 +424,40 @@ def _assert_launch_reached_exec(server, capsys) -> None:
     )
 
 
+@contextlib.contextmanager
+def _tmux_versions_agreeing():
+    """Neutralise the launch's client/server tmux version preflight.
+
+    `_do_session_launch` exits 1 when the tmux client and the running server report
+    different versions, which is correct -- a session created against a mismatched
+    server is unattachable. The CI runner trips it (`tmux -V` reports 3.7c while the
+    isolated server reports 3.4), so the launch refused and never reached the
+    recreate-vs-attach decision these tests are about; they then failed on a dead pane
+    the launch had never been given a chance to replace.
+
+    Patched rather than skipped. A skip after the tmux server is built is what
+    `test_skip_hygiene.py` forbids, and it made all three Windows jobs red when I tried
+    it. Patching also keeps these tests hermetic instead of environment-dependent, which
+    is what they were already doing for the registry, iterm2, and remote-probe
+    preflights.
+
+    No coverage is lost: the refusal itself is asserted in
+    tests/test_tmux_launch_report.py, including that the launch consults it. Only the
+    real versions are replaced, by making the server report the client's; every other
+    field of the report stays real.
+    """
+    real_probe = tmux_setup.probe
+
+    def agreeing_probe(*args, **kwargs):
+        report = real_probe(*args, **kwargs)
+        if report.server_version is None or report.client_version is None:
+            return report
+        return dataclasses.replace(report, server_version=report.client_version)
+
+    with patch.object(tmux_setup, "probe", agreeing_probe):
+        yield
+
+
 def _recreate_stage_diagnostic(server, session_name: str) -> str:
     """Which of the three recreate stages refused, in the launcher's own terms.
 
@@ -462,6 +498,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
     _create_dead_session(server, "c-myproject-3")
 
     with (
+        _tmux_versions_agreeing(),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
@@ -516,6 +553,7 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
     server._after_list_panes = replace_dead_session_with_live_replacement
 
     with (
+        _tmux_versions_agreeing(),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session.cleanup_stale_sessions"),
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
