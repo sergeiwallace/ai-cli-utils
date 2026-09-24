@@ -21,7 +21,7 @@ import libtmux
 import pytest
 from conftest import tmux_runnable
 
-from ai_cli import tmux_ownership, tmux_setup
+from ai_cli import tmux_ownership
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _do_session_launch
 
 _TMUX_RUNNABLE, _TMUX_SKIP_REASON = tmux_runnable()
@@ -88,28 +88,38 @@ def tmux_server():
     shutil.rmtree(sock_dir, ignore_errors=True)
 
 
-def _skip_if_tmux_versions_disagree() -> None:
+def _skip_if_tmux_versions_disagree(server) -> None:
     """These tests cannot run where the launcher is right to refuse.
 
     `_do_session_launch` exits 1 when the tmux client and the running server report
     different versions, and that refusal is deliberate: a session created against a
     mismatched server is unattachable, so refusing beats warning beside an
-    apparently-successful launch. The CI runner hits exactly that -- client 3.7c at
-    /usr/bin/tmux, running server 3.4 -- so the launch never reaches the
-    recreate-vs-attach decision these tests are about, and they failed on a dead pane
-    that the launch had never been given the chance to replace.
+    apparently-successful launch. The CI runner hits exactly that -- `tmux -V` reports
+    3.7c while the isolated server reports 3.4, because two tmux binaries are present --
+    so the launch never reaches the recreate-vs-attach decision these tests are about,
+    and they failed on a dead pane it had never been given the chance to replace.
 
-    Asked through the product's own `probe()` so the condition cannot drift from the
-    guard it mirrors. This is an environment limitation, not a skip of the contract:
-    wherever client and server agree, including a correctly provisioned Linux, both
-    tests run.
+    Compared directly rather than through `tmux_setup.probe()`, which was the first
+    attempt and does not work here: `patched_subprocess` replaces `subprocess.run` for
+    the whole test, so `probe()` interrogates the fixture's fake and sees no
+    disagreement. The server side therefore goes through libtmux's own Popen transport
+    and the client side through `Popen` directly, neither of which the fixture patches.
+
+    An environment limitation, not a skipped contract: wherever the two agree,
+    including a correctly provisioned Linux, both tests run.
     """
-    report = tmux_setup.probe(query_versions=True)
-    if report.versions_disagree:
+    import subprocess as _real
+
+    shown = server.cmd("display-message", "-p", "#{version}")
+    server_version = (shown.stdout or [""])[0].strip()
+    client_version = (
+        _real.Popen(["tmux", "-V"], stdout=_real.PIPE, text=True).communicate()[0].strip().removeprefix("tmux ")
+    )
+    if server_version and client_version and server_version != client_version:
         pytest.skip(
-            f"tmux client {report.client_version} disagrees with the running server "
-            f"{report.server_version}; the launcher refuses by design, so the recreate "
-            "path is unreachable here"
+            f"tmux client {client_version!r} disagrees with the isolated server "
+            f"{server_version!r}; the launcher refuses by design, so the recreate path "
+            "is unreachable here"
         )
 
 
@@ -483,7 +493,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
     has a dead pane but tmux keeps the session alive. A naive reattach shows
     the frozen final output forever; ``_do_session_launch`` must instead kill
     the dead session and create a genuinely fresh one."""
-    _skip_if_tmux_versions_disagree()
+    _skip_if_tmux_versions_disagree(patched_subprocess)
     server = patched_subprocess
     _create_dead_session(server, "c-myproject-3")
 
@@ -521,7 +531,7 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
     capsys,
 ):
     """A live session that reuses a dead session's name must never be killed."""
-    _skip_if_tmux_versions_disagree()
+    _skip_if_tmux_versions_disagree(patched_subprocess)
     server = patched_subprocess
     session_name = "c-myproject-4"
     _create_dead_session(server, session_name)
