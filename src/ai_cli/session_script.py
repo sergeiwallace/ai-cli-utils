@@ -14,6 +14,46 @@ from pathlib import Path
 # not the presence of zsh, is what this list encodes.
 SESSION_SHELL_PREFERENCE = ("zsh", "bash")
 
+# The child body's exec wrapper, run as `python3 -c CHILD_BODY_SHIM <shell> <script> --ai-cli-child-body`.
+# Extracted from the template so the terminal handoff can be exercised directly against a real pty
+# rather than asserted about as template text.
+#
+# It REPORTS the process group it created instead of leaving the supervisor to assume one. The
+# supervisor knows only `$!`, the pid it backgrounded, and that is the pid which calls `setpgrp()`
+# only when every wrapper in between execs through. One does not: where `python3` resolves to a
+# shell shim running `uv run`, uv SPAWNS the interpreter as a child and waits, so `setpgrp()` runs a
+# level further down and the new group's id is the grandchild's pid. Promoting `$!` then hands the
+# terminal to a process group with no members, and all three symptoms follow from that single fact --
+# the SIGCONT goes to the empty group so the stopped child never resumes and the pane stays blank,
+# the promotion loop burns its whole budget and fails, and Ctrl+C is delivered to a group containing
+# no processes, so the pane cannot even be interrupted.
+#
+# The write is `os.write` on a raw descriptor rather than `open(...).write(...)`: the very next
+# statement stops this process, and a buffered write flushed only when the file object is collected
+# would race that stop. The supervisor is what resumes the process, so losing the write deadlocks
+# the handoff rather than delaying it.
+CHILD_BODY_SHIM = (
+    "import os, signal, sys; "
+    'fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); '
+    'terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); '
+    'ready_path = os.environ.get("AI_CLI_SUPERVISOR_CHILD_READY_PATH"); '
+    "os.isatty(0) and (os.setpgrp(), "
+    "os.write(os.open(ready_path, os.O_WRONLY | os.O_TRUNC), str(os.getpgrp()).encode()), "
+    "os.kill(os.getpid(), signal.SIGSTOP)); "
+    "signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); "
+    "os.execvp(sys.argv[1], sys.argv[1:])"
+)
+
+# Hands the terminal to a process group and wakes it. Takes the group id as argv[1] so the caller
+# passes the group the child reported rather than a pid it inferred.
+PROMOTE_CHILD_SNIPPET = (
+    "import os, signal, sys; "
+    "signal.signal(signal.SIGTTOU, signal.SIG_IGN); "
+    "pgid = int(sys.argv[1]); "
+    "os.tcsetpgrp(0, pgid); "
+    "os.killpg(pgid, signal.SIGCONT)"
+)
+
 
 def resolve_session_shell() -> str | None:
     """Absolute path of the shell that should interpret the session script.
@@ -305,15 +345,37 @@ def get_engine_script(
       }}
       _supervisor_promote_child() {{
         # A terminal-backed child becomes its own process group in the exec
-        # wrapper. Wait for its explicit readiness acknowledgement before
-        # promoting that group, rather than racing its setpgrp() with a fixed
-        # polling window.
+        # wrapper and then reports that group. Promote the group the child
+        # REPORTED, never "$_child_pid": `$!` is the pid this shell backgrounded,
+        # which is the pid that called setpgrp() only if every wrapper in
+        # between exec'd through. Where `python3` is a shim running `uv run`, uv
+        # spawns the interpreter and waits, so the group belongs to a grandchild
+        # and promoting `$!` hands the terminal to a group with no members --
+        # measured live, and the cause of a pane that printed nothing, could not
+        # be promoted, and could not even be interrupted.
+        #
+        # Returns 0 promoted, 2 interrupted, 1 never reported or not promotable.
         [[ -t 0 ]] || return 0
         trap '' TTOU
         _promotion_attempt=0
+        _child_pgid=""
+        # Compare against a per-attempt baseline, not against zero. The INT
+        # counter is cumulative for the life of the supervisor, and this loop
+        # runs once per child: an earlier Ctrl+C that correctly restarted the
+        # agent would otherwise abort every later promotion before it began.
+        _promotion_int_baseline=$_supervisor_int_count
         while (( _promotion_attempt < 3000 )); do
+          if (( _supervisor_int_count > _promotion_int_baseline )); then
+            # Ctrl+C while the terminal is being transferred must end this wait.
+            # The INT trap only records, so without this check the keypress is
+            # counted and then ignored for the rest of a 30-second window.
+            return 2
+          fi
           if [[ -s "$_supervisor_child_ready_path" ]]; then
-            if python3 -c 'import os, signal, sys; signal.signal(signal.SIGTTOU, signal.SIG_IGN); pgid = int(sys.argv[1]); os.tcsetpgrp(0, pgid); os.killpg(pgid, signal.SIGCONT)' "$_child_pid" 2>/dev/null; then
+            _child_pgid=""
+            read -r _child_pgid < "$_supervisor_child_ready_path" 2>/dev/null || true
+            if [[ "$_child_pgid" =~ ^[0-9]+$ ]] \\
+              && python3 -c '{PROMOTE_CHILD_SNIPPET}' "$_child_pgid" 2>/dev/null; then
               rm -f "$_supervisor_child_ready_path"
               return 0
             fi
@@ -379,20 +441,41 @@ def get_engine_script(
         # SIGQUIT ignored and redirects stdin unless it is explicit. Reset the
         # dispositions in a short exec wrapper before the child shell starts,
         # retain stdin explicitly, and then wait interruptibly in this shell.
-        python3 -c 'import os, signal, sys; fd = os.environ.get("AI_CLI_SUPERVISOR_LEASE_FD"); fd and os.close(int(fd)); terminal_fd = os.environ.get("AI_CLI_SUPERVISOR_TERMINAL_FD"); terminal_fd and os.dup2(int(terminal_fd), 0); ready_path = os.environ.get("AI_CLI_SUPERVISOR_CHILD_READY_PATH"); os.isatty(0) and (os.setpgrp(), open(ready_path, "w").write("ready"), os.kill(os.getpid(), signal.SIGSTOP)); signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
+        python3 -c '{CHILD_BODY_SHIM}' \
           {shlex.quote(_session_shell)} "$_supervisor_script" --ai-cli-child-body <&0 &
         _child_pid=$!
-        if ! _supervisor_promote_child; then
-          printf '%s\n' "ai-cli: could not promote child process group to terminal foreground" >&2
+        _supervisor_promote_child
+        _promotion_status=$?
+        if (( _promotion_status != 0 )); then
+          if (( _promotion_status == 2 )); then
+            printf '%s\n' "ai-cli: interrupted before the session shell reached the terminal foreground" >&2
+          elif [[ -n "${{_child_pgid:-}}" ]]; then
+            printf '%s\n' "ai-cli: could not promote the session shell's process group $_child_pgid to the terminal foreground" >&2
+          else
+            printf '%s\n' "ai-cli: the session shell never reported a process group, so it was never promoted to the terminal foreground" >&2
+          fi
           # The child wrapper SIGSTOPs itself waiting for this promotion to
           # succeed. A stopped process only records a SIGTERM as pending; it
           # never acts on it until continued, so a bare SIGTERM here left the
           # wait below blocked forever on a child that could never die
           # (AI-CLI-jpnd). Continue its whole process group after the TERM so
           # it wakes, sees the pending signal, and actually exits.
+          #
+          # That CONT has to name the group the child REPORTED. It used to name
+          # "-$_child_pid", and when a spawning wrapper sits in between, that
+          # group has no members -- so the signal reached nothing and this wait
+          # blocked forever anyway, which is the wedge that was measured live.
           kill -TERM "$_child_pid" 2>/dev/null || true
-          kill -CONT -"$_child_pid" 2>/dev/null || true
+          if [[ -n "${{_child_pgid:-}}" ]] && [[ "$_child_pgid" =~ ^[0-9]+$ ]]; then
+            kill -CONT -"$_child_pgid" 2>/dev/null || true
+            kill -TERM -"$_child_pgid" 2>/dev/null || true
+          fi
+          kill -CONT "$_child_pid" 2>/dev/null || true
           _supervisor_wait_for_child || true
+          # Leave the terminal owned by this supervisor. Exiting with the
+          # foreground group pointing at something that never existed is why the
+          # wedged pane could not deliver Ctrl+C to anything.
+          _supervisor_restore_terminal || true
           rm -f "$_supervisor_child_ready_path"
           exit 1
         fi
