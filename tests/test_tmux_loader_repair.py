@@ -43,6 +43,18 @@ from ai_cli import tmux_setup
 from ai_cli.native_deps import InstallResult, LoaderRepair
 
 MISSING_LIB = "libevent_core-2.1.so.7"
+
+# Two tests below assert an outcome that only exists where tmux can host a session.
+# Production's own policy is that Windows is not such a platform -- tmux_setup's
+# manual hints say "(there is no native Windows tmux; bare mode is the right answer
+# here)", and main.py suppresses the tmux report entirely when win32 has no tmux. So
+# on Windows a launch correctly resolves to bare and emits no repair diagnostic, and
+# asserting "local, tmux" or the missing-library line there is asserting against the
+# documented behaviour.
+_needs_a_tmux_host = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="tmux cannot host a session on Windows; production chooses bare mode there by policy",
+)
 LIB_DIR = "/home/user/.local/lib/tmux-appimage/usr/lib"
 
 
@@ -331,6 +343,7 @@ def _launch_plan(capsys, **overrides):
     return captured.out, captured.err
 
 
+@_needs_a_tmux_host
 def test_given_an_unrepairable_tmux_when_a_launch_resolves_then_the_mode_is_bare(capsys, fake_tmux):
     """The measured failure. Before this the plan said ``tmux``, the launch said
     ``launching inside tmux``, and ``tmux new-session`` died on the loader."""
@@ -351,6 +364,7 @@ def test_given_an_unrepairable_tmux_when_a_launch_resolves_then_the_mode_is_bare
     assert _no_tmux_claim(err), "a broken tmux must never be reported as hosting the session"
 
 
+@_needs_a_tmux_host
 def test_given_a_repairable_tmux_when_a_launch_resolves_then_it_stays_under_tmux(capsys, fake_tmux):
     """The point of the repair: the session keeps detach/reattach instead of
     silently losing it. This is also the anti-vacuity control for the case

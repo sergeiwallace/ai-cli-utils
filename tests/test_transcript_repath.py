@@ -186,7 +186,9 @@ def test_repath_project_dir_writes_rewritten_files(tmp_path):
     old_dir = tmp_path / "old-proj"
     old_dir.mkdir()
     jsonl = old_dir / "session.jsonl"
-    content = json.dumps({"type": "init", "cwd": _under(OLD, "proj"), "content": f"file at {OLD}/data.txt"}) + "\n"
+    content = (
+        json.dumps({"type": "init", "cwd": _under(OLD, "proj"), "content": f"file at {_under(OLD, 'data.txt')}"}) + "\n"
+    )
     jsonl.write_text(content)
 
     new_dir = tmp_path / "new-proj"
@@ -592,8 +594,8 @@ def test_repath_all_unrepathed_policy_copies_under_the_original_slug(tmp_path):
     copied = dest_base / made["reaped"].name
     assert copied.is_dir(), f"expected an unrepathed copy at {copied}"
     body = (copied / "test.jsonl").read_text()
-    assert _under(OLD, "reaped") in body
-    assert NEW not in body
+    assert json.loads(body)["cwd"] == _under(OLD, "reaped")
+    assert NEW not in json.loads(body)["cwd"]
     # Byte-for-byte with the source
     assert body == (made["reaped"] / "test.jsonl").read_text()
 
