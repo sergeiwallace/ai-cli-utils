@@ -1649,7 +1649,11 @@ def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exit
                 f"stdout={stdout!r} stderr={stderr!r}"
             )
 
-        assert "could not promote child process group to terminal foreground" in stderr, stderr
+        # The message names the group it could not promote, because the supervisor now learns that
+        # group from the child rather than assuming it is `$!` (AI-CLI-dw1g). Assert the stable half
+        # of the wording; the trailing pgid is the useful part and varies per run.
+        assert "could not promote the session shell's process group" in stderr, stderr
+        assert "to the terminal foreground" in stderr, stderr
         assert process.returncode == 1, f"stdout={stdout!r} stderr={stderr!r}"
     finally:
         owner.kill()
