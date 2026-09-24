@@ -404,6 +404,24 @@ def _create_dead_session(server: "libtmux.Server", session_name: str) -> None:
     pytest.fail("tmux pane did not become dead")
 
 
+def _assert_launch_reached_exec(server, capsys) -> None:
+    """A launch that aborted is not a launch that ran.
+
+    `pytest.raises(SystemExit)` is satisfied by ANY exit, including the error exits
+    `_do_session_launch` takes when it refuses to replace a session it cannot prove it
+    owns. Every assertion after such an exit is then made against a session the launch
+    never touched, and the failure surfaces far from the cause -- which is how a dead
+    pane got reported as "recreates_not_attaches" failing rather than as the launch
+    declining. The normal end of a launch is the `execvp` into tmux, which the fixture
+    records, so requiring it pins the difference.
+    """
+    captured = capsys.readouterr()
+    assert server._execvp_calls, (
+        "the launch exited before exec'ing tmux, so it never reached the recreate "
+        f"decision; stdout={captured.out[-800:]!r} stderr={captured.err[-800:]!r}"
+    )
+
+
 def _recreate_stage_diagnostic(server, session_name: str) -> str:
     """Which of the three recreate stages refused, in the launcher's own terms.
 
@@ -434,6 +452,7 @@ def _recreate_stage_diagnostic(server, session_name: str) -> str:
 
 def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_not_attaches(
     patched_subprocess,
+    capsys,
 ):
     """A session left behind by a supervisor crash (AI-CLI-t8h5 sw-4 regression)
     has a dead pane but tmux keeps the session alive. A naive reattach shows
@@ -457,6 +476,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
         with pytest.raises(SystemExit):
             _do_session_launch(**_base_launch_kwargs(name="3"))
 
+    _assert_launch_reached_exec(server, capsys)
     after = {s.name: s.id for s in server.sessions}
     assert "c-myproject-3" in after
     pane_dead = server.cmd("list-panes", "-t", "c-myproject-3", "-F", "#{pane_dead}")
@@ -472,6 +492,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
 
 def test_given_dead_session_replaced_after_observation_when_relaunched_then_live_replacement_survives(
     patched_subprocess,
+    capsys,
 ):
     """A live session that reuses a dead session's name must never be killed."""
     server = patched_subprocess
@@ -509,7 +530,8 @@ def test_given_dead_session_replaced_after_observation_when_relaunched_then_live
         with pytest.raises(SystemExit):
             _do_session_launch(**_base_launch_kwargs(name="4"))
 
-    assert replacement_id is not None
+    _assert_launch_reached_exec(server, capsys)
+    assert replacement_id is not None, "the launch never called list-panes, so the replacement hook never fired"
     after = {session.name: session.id for session in server.sessions}
     assert after[session_name] == replacement_id
     generation = server.cmd("show-options", "-t", session_name, "-v", "@ai_cli_session_generation")
