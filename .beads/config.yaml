@@ -76,7 +76,7 @@ export:
     # than via BD_EXPORT_GIT_ADD because an env var reaches only the callers we wired.
     git-add: false
 sync:
-    remote: "git+ssh://git@github.com/sergeiwallace/ai-cli-utils.git"
+    remote: "git+ssh://gh-sergeiwallace-ai-cli-utils/sergeiwallace/ai-cli-utils.git"
 
 # Shared Dolt server mode (AIH-1yh2c, 2026-09-16). FLEET POLICY, deliberately tracked:
 # every machine runs its Beads store on the shared Dolt server, so this key carries the
