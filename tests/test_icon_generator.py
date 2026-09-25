@@ -228,10 +228,42 @@ class TestGenerateDynamicProfile:
         with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
             out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
         data = json.loads(out.read_text())
-        key_maps = data["Profiles"][0]["Key Mappings"]
+        key_maps = data["Profiles"][0]["Keyboard Map"]
         binding = key_maps["0xd-0x20000-0x24"]
         assert binding["Action"] == 10
         assert binding["Text"] == "[13;2u"
+
+    def test_key_bindings_filed_under_keyboard_map_not_key_mappings(self, tmp_path):
+        # A profile's bindings live under "Keyboard Map" (AI-CLI-gjtk). "Key Mappings"
+        # is the container of a standalone .itermkeymap EXPORT file, not a profile key:
+        # iTerm2 parses such a profile happily and ignores the bindings, so Shift+Enter
+        # silently did nothing in every generated session. Measured on iTerm2 3.7.3 —
+        # under "Key Mappings", four bindings across three keystroke serializations all
+        # emitted the unbound byte. Nothing else in the suite would catch a revert,
+        # because the wrong key name is still valid JSON in a valid profile.
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        profile = json.loads(out.read_text())["Profiles"][0]
+        assert "Keyboard Map" in profile
+        assert "Key Mappings" not in profile
+
+    def test_shift_enter_binding_keeps_the_serialization_iterm2_exports(self, tmp_path):
+        # These five fields are what iTerm2 itself wrote when the binding was still
+        # shipped as an .itermkeymap asset, so they are copied rather than invented:
+        # Action 10 = send escape sequence, and the 3-part keystroke key is
+        # character-modifiers-virtualkeycode (0xd = CR, 0x20000 = Shift, 0x24 = Return).
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        profile = json.loads(out.read_text())["Profiles"][0]
+        assert profile["Keyboard Map"] == {
+            "0xd-0x20000-0x24": {
+                "Version": 2,
+                "Apply Mode": 0,
+                "Action": 10,
+                "Text": "[13;2u",
+                "Escaping": 2,
+            }
+        }
 
     def test_write_is_atomic_no_tmp_files_left(self, tmp_path):
         # Atomic write must not leave .json.tmp files behind (AI-CLI-84).

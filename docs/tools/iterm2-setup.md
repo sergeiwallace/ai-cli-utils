@@ -222,7 +222,20 @@ Window title uses a heuristic derived from the active tmux session names (common
 
 ### Known Constraints
 
-- **Do NOT add `"Title Components"` key to Dynamic Profiles** — breaks all key mappings in that profile. This key conflicts with ai-cli's dynamic title management. Test confirmed 2026-04-01.
+- **Key bindings in a profile go under `"Keyboard Map"`, never `"Key Mappings"`.** `"Key Mappings"`
+  is the container of a standalone `.itermkeymap` **export** file — its sibling key there is
+  `"Touch Bar Items"`, which is not a profile key either. iTerm2 parses a profile that files
+  bindings under `"Key Mappings"` without complaint and ignores them, so the binding fails
+  silently. That is how Shift+Enter was dead in every generated session from 2026-04-11
+  (`4333b35`) until AI-CLI-gjtk: the dict was lifted verbatim out of the export file it replaced.
+- **Corrected 2026-09-25 — `"Title Components"` does NOT break key mappings.** This entry
+  previously said it "breaks all key mappings in that profile (test confirmed 2026-04-01)", and
+  `icon_generator.py` had been setting both keys ever since, so the doc read as a live warning
+  the code contradicted. Measured on iTerm2 3.7.3, in a real generated profile with
+  `"Title Components": 1` present: Shift+Enter emitted `1b 5b 31 33 3b 32 75` (CSI u) and a
+  control binding on Ctrl+G emitted its own sentinel. Both fired. The 2026-04-01 observation was
+  real but misattributed — the bindings were under the wrong profile key, which made every
+  binding in the profile inert whatever `"Title Components"` was set to.
 - **Do NOT add `_ai_zshrc_autoreload` to `precmd_functions`** — causes infinite sourcing loop inside CC sessions (source → mtime changes → source again). Attempted and reverted 2026-04-01.
 - Window title no longer uses `claude -p` subprocess — was spawning a headless CC process from within an active CC session, causing freezes. Fixed in ai-cli-utils commit `add120f` (heuristic only, written directly to file).
 - **Do NOT use badge overlays** — `"Badge Text"` in Dynamic Profiles creates an ugly text overlay. Tab colors + tinted icons + tab title carry all identity information.

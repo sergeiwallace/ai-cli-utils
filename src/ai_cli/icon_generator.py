@@ -229,7 +229,19 @@ def generate_dynamic_profile(
     }
     # Inject Shift+Enter → CSI u escape sequence automatically so CC sessions
     # handle newline-without-submit without any manual iTerm2 configuration.
-    profile["Key Mappings"] = {
+    #
+    # The key is "Keyboard Map". It is NOT "Key Mappings", which is what a standalone
+    # ``.itermkeymap`` export file wraps its bindings in — that export is a different
+    # format, and its other top-level key is "Touch Bar Items", not a profile key
+    # either. A profile filed under "Key Mappings" parses fine and is simply ignored,
+    # so the binding failed silently and nothing surfaced it (AI-CLI-gjtk). Measured
+    # on iTerm2 3.7.3: under "Key Mappings" four separate bindings across three
+    # keystroke serializations all emitted the unbound byte, while iTerm2's own
+    # Default profile carries a "Keyboard Map" dict and no "Key Mappings" at all.
+    #
+    # The keystroke serialization below is the 3-part char-modifiers-virtualkeycode
+    # form iTerm2 itself exports, so it stays exactly as it was.
+    profile["Keyboard Map"] = {
         "0xd-0x20000-0x24": {
             "Version": 2,
             "Apply Mode": 0,
