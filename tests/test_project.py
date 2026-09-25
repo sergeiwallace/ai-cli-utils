@@ -16,6 +16,7 @@ from ai_cli.main import (
     get_project_aliases,
     get_project_prefix,
     load_project_registry,
+    resolve_project_prefix_by_name,
     validate_registry_completeness,
 )
 
@@ -172,9 +173,84 @@ class TestProjectHelpers:
         assert result["ad"] == "ai-dojo"
 
     def test_get_project_aliases_when_no_registry_then_empty(self):
-        with patch("ai_cli.config._get_project_registry_path", return_value=None):
+        # Both sources must be absent. Patching only the legacy path is not enough since
+        # AI-CLI-dosx: ``get_fleet_registry_path`` DISCOVERS a registry from the projects
+        # directory, so an unpatched call here reads the developer's real fleet registry and
+        # this test would assert against live machine state.
+        with (
+            patch("ai_cli.config._get_project_registry_path", return_value=None),
+            patch("ai_cli.config.get_fleet_registry_path", return_value=None),
+        ):
             result = get_project_aliases()
         assert result == {}
+
+    def _write_fleet_registry(self, tmp_path, body: str) -> Path:
+        path = tmp_path / "fleet-projects.toml"
+        path.write_text(body)
+        return path
+
+    def test_get_project_aliases_when_fleet_registry_has_prefix_then_prefix_maps_to_name(self, tmp_path):
+        # AI-CLI-dosx AC1. The fleet registry is the source that is actually populated;
+        # the alias map read a different registry (``<main_project>/<main_project>.toml``)
+        # that is None unless [project] main_project is configured, so the map was empty and
+        # ``-p <prefix>`` fell through as if the prefix were a directory name.
+        fleet = self._write_fleet_registry(tmp_path, '[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n')
+        with (
+            patch("ai_cli.config._get_project_registry_path", return_value=None),
+            patch("ai_cli.config.get_fleet_registry_path", return_value=fleet),
+        ):
+            result = get_project_aliases()
+        assert result["mp"] == "myproject"
+
+    def test_get_project_aliases_when_prefix_used_then_resolves_same_prefix_as_full_name(self, tmp_path):
+        # AI-CLI-dosx AC2 — the user-visible behaviour. `ai c -p mp` must land on the same
+        # project as `ai c -p myproject`, so assert the pair the call sites actually compose:
+        # alias lookup, then prefix resolution.
+        fleet = self._write_fleet_registry(tmp_path, '[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n')
+        with (
+            patch("ai_cli.config._get_project_registry_path", return_value=None),
+            patch("ai_cli.config.get_fleet_registry_path", return_value=fleet),
+        ):
+            aliases = get_project_aliases()
+            by_prefix = resolve_project_prefix_by_name(aliases.get("mp", "mp"))
+            by_name = resolve_project_prefix_by_name(aliases.get("myproject", "myproject"))
+        assert by_prefix == "MP"
+        assert by_name == "MP"
+
+    def test_get_project_aliases_when_legacy_registry_present_then_still_contributes(self, tmp_path):
+        # AI-CLI-dosx AC3 — adding the fleet source must not drop the existing one.
+        legacy = tmp_path / "legacy.toml"
+        legacy.write_text('[[projects]]\nname = "webapp"\ntask_prefix = "WA"\n')
+        with (
+            patch("ai_cli.config._get_project_registry_path", return_value=legacy),
+            patch("ai_cli.config.get_fleet_registry_path", return_value=None),
+        ):
+            result = get_project_aliases()
+        assert result["wa"] == "webapp"
+
+    def test_get_project_aliases_when_sources_disagree_then_fleet_registry_wins(self, tmp_path):
+        # AI-CLI-dosx AC4. The fleet registry is tier 1 of resolve_project_prefix_by_name, so
+        # the alias map must not resolve a prefix to a project that the prefix resolver would
+        # then disagree about — that combination sends a session to the wrong repository.
+        fleet = self._write_fleet_registry(tmp_path, '[[projects]]\nname = "myproject"\ntask_prefix = "MP"\n')
+        legacy = tmp_path / "legacy.toml"
+        legacy.write_text('[[projects]]\nname = "other-project"\ntask_prefix = "MP"\n')
+        with (
+            patch("ai_cli.config._get_project_registry_path", return_value=legacy),
+            patch("ai_cli.config.get_fleet_registry_path", return_value=fleet),
+        ):
+            result = get_project_aliases()
+        assert result["mp"] == "myproject"
+
+    def test_get_project_aliases_when_prefix_equals_name_then_no_self_alias(self, tmp_path):
+        # AI-CLI-dosx AC5 — pre-existing behaviour, pinned so the new source cannot regress it.
+        fleet = self._write_fleet_registry(tmp_path, '[[projects]]\nname = "kg"\ntask_prefix = "kg"\n')
+        with (
+            patch("ai_cli.config._get_project_registry_path", return_value=None),
+            patch("ai_cli.config.get_fleet_registry_path", return_value=fleet),
+        ):
+            result = get_project_aliases()
+        assert "kg" not in result
 
 
 # --- _find_aicli_project_path ---
