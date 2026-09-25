@@ -20,18 +20,34 @@ exec-versus-spawn wrapper.
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
+# `fcntl`, `pty` and `termios` do not exist on Windows, so this module cannot be IMPORTED there.
+# An unguarded import is therefore a collection ERROR, not a failing test, and a collection error
+# aborts the entire run: it took all three Windows jobs red while Linux stayed green, which is what
+# made it look like a platform mystery rather than one missing guard.
+#
+# The skip must come before those imports and be module-level for that reason. It is not the
+# skip-after-expensive-setup pattern tests/test_skip_hygiene.py forbids — nothing has been set up
+# when it runs. Ruff permits the imports below it because a platform guard is an accepted reason for
+# a late import (verified against this repo's own select list, which includes E4).
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: needs fcntl/pty/termios, a controlling terminal, and real process groups",
+        allow_module_level=True,
+    )
+
 import fcntl
 import json
 import os
 import pty
 import signal
-import sys
 import tempfile
 import termios
 import time
 from pathlib import Path
-
-import pytest
 
 from ai_cli.session_script import CHILD_BODY_SHIM
 
