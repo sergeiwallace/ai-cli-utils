@@ -728,7 +728,11 @@ def _projects_table_entries(path: Path) -> dict[str, dict[str, str]]:
                 f"{prefixes_seen[prefix.lower()]!r}."
             )
         prefixes_seen[prefix.lower()] = name.strip()
-        entries[key] = {"prefix": prefix, "type": str(project.get("type", "tool"))}
+        # ``name`` keeps the directory's own casing, which ``key`` has lowercased for
+        # case-insensitive matching. ``get_project_aliases`` needs the original: its values
+        # feed ``_find_project_dir``, and a lowercased name resolves to nothing on a
+        # case-sensitive filesystem such as the Linux remote hosts (AI-CLI-dosx).
+        entries[key] = {"prefix": prefix, "type": str(project.get("type", "tool")), "name": name.strip()}
     return entries
 
 
@@ -1195,11 +1199,41 @@ def _get_project_prefix_by_name(project_name: str) -> str:
 
 
 def get_project_aliases() -> dict:
-    """Build project alias map: task_prefix.lower() -> project name from project registry."""
-    aliases = {}
-    for p in load_project_registry():
-        prefix = p.get("task_prefix", "").lower()
-        name = p.get("name", "")
+    """Build project alias map: ``task_prefix.lower()`` -> project name.
+
+    Both registries contribute and the fleet registry wins. It is tier 1 of
+    ``resolve_project_prefix_by_name``, so an alias that disagreed with it would resolve a
+    prefix to one repository while the prefix resolver named another — that mints a session
+    against the wrong project rather than failing.
+
+    This used to read only the legacy ``<main_project>/<main_project>.toml``, which
+    ``_get_project_registry_path`` returns as None unless ``[project] main_project`` is
+    configured *and* that file exists. That is not the normal state, so the map was usually
+    empty and every ``-p <prefix>`` call site degraded to ``aliases.get(raw, raw)`` — the
+    prefix passed through as if it were a directory name, failing with an error that named a
+    nonexistent local path (AI-CLI-dosx).
+    """
+    aliases: dict[str, str] = {}
+
+    def add(prefix: str, name: str) -> None:
+        # setdefault, not assignment: first writer wins, which is what makes fleet beat legacy.
+        # A project whose prefix equals its own name contributes no alias — there is nothing to
+        # translate, and storing it would shadow a real alias on a later source.
         if prefix and name and prefix != name:
-            aliases[prefix] = name
+            aliases.setdefault(prefix, name)
+
+    fleet_path = get_fleet_registry_path()
+    if fleet_path is not None and fleet_path.is_file():
+        try:
+            for entry in _projects_table_entries(fleet_path).values():
+                add(entry["prefix"].lower(), entry["name"])
+        except ProjectPrefixError:
+            # A malformed fleet registry must not make every launch unusable. The prefix
+            # resolvers read the same file and raise there, on the path that needs it, so the
+            # operator still gets the parse error rather than a silently wrong project.
+            pass
+
+    for p in load_project_registry():
+        add(p.get("task_prefix", "").lower(), p.get("name", ""))
+
     return aliases
