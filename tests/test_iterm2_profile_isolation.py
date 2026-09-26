@@ -1,18 +1,32 @@
 """Tests for the iTerm2 Dynamic Profile isolation installed in conftest (AI-CLI-tevy).
 
-Two separable things are covered, because they fail independently:
+Separable things are covered, because they fail independently:
 
-* :func:`snapshot_tree` / :func:`describe_tree_change` -- the guard's *detector*. A
-  guard that has never been observed to fire enforces nothing, so its failure modes
-  are asserted directly here rather than only exercised in passing by 3000 clean tests.
-* The HOME redirect -- the guard's *prevention*. These assert the property step 1 of
-  the task asked for: a test that knows nothing about profile writes still cannot
-  reach the operator's real directory.
+* :func:`home_redirect_breach` -- the guard's *enforced* check. This is what fails the
+  run when the redirect stops holding, so its failure modes are asserted directly; a
+  guard that has never been observed to fire enforces nothing.
+* :func:`snapshot_tree` / :func:`describe_tree_change` -- the reporting detector behind
+  the guard's warning.
+* The HOME redirect itself -- the *prevention*. These assert the property step 1 of the
+  task asked for: a test that knows nothing about profile writes still cannot reach the
+  operator's real directory.
+* A static check that no test hardcodes the real profile path, which is the one route
+  that would bypass the redirect without the enforced check noticing.
 """
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
-from conftest import _REAL_HOME, _REAL_ITERM2_PROFILE_DIR, describe_tree_change, snapshot_tree
+from conftest import (
+    _REAL_HOME,
+    _REAL_ITERM2_PROFILE_DIR,
+    describe_tree_change,
+    home_redirect_breach,
+    snapshot_tree,
+)
+
+_TESTS_DIR = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 # The detector
@@ -89,8 +103,83 @@ class TestDescribeTreeChange:
 
 
 # ---------------------------------------------------------------------------
+# The enforced check
+# ---------------------------------------------------------------------------
+
+
+class TestHomeRedirectBreach:
+    """Drives the detector by breaching the redirect on purpose.
+
+    Each breach is confined to a ``patch.dict`` block rather than applied with
+    ``monkeypatch``, because the autouse guard shares the test's ``monkeypatch``
+    instance and so runs its own check BEFORE monkeypatch's undo -- a breach left
+    standing past the test body correctly trips the guard on the test asserting it.
+    """
+
+    def test_given_an_intact_redirect_when_checked_then_reports_no_breach(self):
+        assert home_redirect_breach(Path.home()) == ""
+
+    def test_given_a_home_that_is_not_the_redirect_target_when_checked_then_reports_it(self, tmp_path):
+        # No environment mutation at all: pass a target Path.home() does not match.
+        breach = home_redirect_breach(tmp_path / "some-other-home")
+        assert "Path.home() resolved to" in breach
+        assert str(Path.home()) in breach
+
+    def test_given_home_restored_to_the_real_home_when_checked_then_reports_the_breach(self):
+        fake_home = Path.home()
+        with patch.dict(os.environ, {"HOME": str(_REAL_HOME), "USERPROFILE": str(_REAL_HOME)}):
+            breach = home_redirect_breach(fake_home)
+        assert "Path.home() resolved to" in breach
+        assert str(_REAL_HOME) in breach
+
+    def test_given_only_userprofile_repointed_when_checked_then_still_reports_it(self):
+        # On POSIX, Path.home() ignores USERPROFILE, so this breach is invisible to a
+        # Path.home() comparison alone and would leak on Windows only. Checking the raw
+        # variables is what makes the guard OS-portable rather than POSIX-only.
+        fake_home = Path.home()
+        with patch.dict(os.environ, {"USERPROFILE": str(_REAL_HOME)}):
+            assert "USERPROFILE was restored" in home_redirect_breach(fake_home)
+
+    def test_given_homedrive_and_homepath_reintroduced_when_checked_then_reports_them(self):
+        # ntpath.expanduser falls back to HOMEDRIVE+HOMEPATH when USERPROFILE is absent,
+        # so leaving them set would be a third route to the real home on Windows.
+        fake_home = Path.home()
+        with patch.dict(os.environ, {"HOMEDRIVE": "C:", "HOMEPATH": r"\Users\user"}):
+            breach = home_redirect_breach(fake_home)
+        assert "HOMEDRIVE was reintroduced" in breach
+        assert "HOMEPATH was reintroduced" in breach
+
+
+# ---------------------------------------------------------------------------
 # The prevention
 # ---------------------------------------------------------------------------
+
+
+class TestNoTestHardcodesTheRealProfilePath:
+    """The one route that bypasses the redirect without the enforced check noticing.
+
+    ``home_redirect_breach`` observes environment variables, so a test that builds the
+    profile path as a literal string never trips it. Closing that statically is
+    deterministic, where watching the directory for writes is not -- that directory has
+    other legitimate writers on a developer machine.
+    """
+
+    def test_given_the_test_suite_when_scanned_then_no_module_hardcodes_the_iterm2_profile_path(self):
+        # Both separators, because a Windows-flavoured literal leaks just as well as a
+        # POSIX one, and the quoted "Application Support" is the part no other path has.
+        literals = ("Application Support/iTerm2", "Application Support\\iTerm2")
+        offenders = []
+        for module in sorted(_TESTS_DIR.rglob("*.py")):
+            if module.name in {"conftest.py", Path(__file__).name}:
+                continue  # both legitimately name the real path in order to guard it
+            text = module.read_text(encoding="utf-8")
+            if any(literal in text for literal in literals):
+                offenders.append(module.relative_to(_TESTS_DIR).as_posix())
+        assert offenders == [], (
+            f"these test modules name the real iTerm2 profile path directly: {offenders}. "
+            "Build the path from Path.home() so the conftest HOME redirect covers it, or "
+            "use a tmp_path, rather than hardcoding a literal the redirect cannot reach."
+        )
 
 
 class TestHomeRedirect:
@@ -125,39 +214,43 @@ class TestHomeRedirect:
     def test_given_an_unpatched_generate_call_when_it_writes_then_the_real_directory_is_untouched(self):
         """The exact shape that leaked: generate a profile with nothing mocked.
 
-        This is the regression test for AI-CLI-tevy. Before the redirect this call
-        wrote into the operator's live iTerm2 directory; it must now land under the
-        redirected home and leave the real directory byte-identical. The real-directory
-        assertion is deliberately explicit here as well as in the autouse guard, so
-        this test still states its own contract if the guard is ever changed.
+        This is the regression test for AI-CLI-tevy. Before the redirect this call wrote
+        into the operator's live iTerm2 directory; it must now land under the redirected
+        home instead.
+
+        The assertion is on WHERE the write landed rather than on the real directory
+        being unchanged. Those are equivalent for this test's own write but not for the
+        machine: that directory has other legitimate writers, so asserting it unchanged
+        makes this test fail for someone else's write. Proving the write went under the
+        redirect proves this call cannot have been the writer.
         """
         from ai_cli.icon_generator import generate_dynamic_profile
-
-        before = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
 
         written = generate_dynamic_profile("session-1", "#5e35b1", "cc")
 
         assert written.exists()
         assert written.is_relative_to(Path.home())
         assert not written.is_relative_to(_REAL_HOME)
-        assert describe_tree_change(before, snapshot_tree(_REAL_ITERM2_PROFILE_DIR)) == ""
+        assert not written.is_relative_to(_REAL_ITERM2_PROFILE_DIR)
 
     def test_given_an_unpatched_stale_sweep_when_it_runs_then_it_deletes_nothing_real(self):
         """``_sweep_stale_iterm2_profiles`` unlinks, so isolation failure here DESTROYS state.
 
-        With an empty active-session set every ``ai-cli-session-*.json`` in the
-        resolved directory qualifies for deletion, which against the real directory
-        would remove the operator's live profiles.
+        With an empty active-session set every ``ai-cli-session-*.json`` in the resolved
+        directory qualifies for deletion, which against the real directory would remove
+        the operator's live profiles. Measured live against a throwaway home with the
+        redirect disabled, this sweep did exactly that.
         """
         from unittest.mock import patch
 
-        # Seed a profile in the REDIRECTED directory and prove the sweep removes that
-        # one, so the test fails if the call silently no-ops instead of isolating.
+        # Seed a profile in the REDIRECTED directory and require the sweep to delete
+        # THAT one: a sweep that silently no-ops would otherwise pass this test without
+        # proving anything about where it looked.
         from ai_cli.icon_generator import generate_dynamic_profile
         from ai_cli.session import _sweep_stale_iterm2_profiles
 
         seeded = generate_dynamic_profile("session-1", "#5e35b1", "cc")
-        before = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
+        assert seeded.is_relative_to(Path.home())
 
         with patch("ai_cli.session.subprocess.run") as run:
             run.return_value.returncode = 0
@@ -165,4 +258,4 @@ class TestHomeRedirect:
             _sweep_stale_iterm2_profiles()
 
         assert not seeded.exists()
-        assert describe_tree_change(before, snapshot_tree(_REAL_ITERM2_PROFILE_DIR)) == ""
+        assert home_redirect_breach(Path.home()) == ""

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -490,37 +491,76 @@ def _redirect_home_away_from_the_operator(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     monkeypatch.delenv("HOMEDRIVE", raising=False)
     monkeypatch.delenv("HOMEPATH", raising=False)
+    return fake_home
+
+
+def home_redirect_breach(fake_home: Path) -> str:
+    """Describe how the HOME redirect has been defeated; "" when it is intact.
+
+    Checks only THIS process's own state, which is what makes it a usable gate: the
+    answer cannot be changed by another process on the machine. Every route
+    ``Path.home()`` can take is covered -- POSIX ``expanduser`` reads ``HOME``,
+    ``ntpath.expanduser`` reads ``USERPROFILE`` and then ``HOMEDRIVE``/``HOMEPATH``.
+    """
+    if Path.home() != fake_home:
+        return f"Path.home() resolved to {Path.home()} rather than the redirect target {fake_home}"
+    breaches = [
+        f"{var} was restored to {os.environ[var]}"
+        for var in ("HOME", "USERPROFILE")
+        if os.environ.get(var) not in (None, str(fake_home))
+    ]
+    breaches += [
+        f"{var} was reintroduced as {os.environ[var]}" for var in ("HOMEDRIVE", "HOMEPATH") if var in os.environ
+    ]
+    return "; ".join(breaches)
 
 
 @pytest.fixture(autouse=True)
-def _guard_real_iterm2_profile_dir():
-    """Fail the test that touches the operator's real iTerm2 Dynamic Profiles dir.
+def _guard_real_iterm2_profile_dir(_redirect_home_away_from_the_operator):
+    """Fail any test that can reach the operator's real iTerm2 Dynamic Profiles dir.
 
-    The redirect above is the prevention; this is the proof. It deliberately does NOT
-    consult ``Path.home()`` -- it compares the directory resolved at import time, so it
-    keeps working (and starts failing) if the redirect is ever weakened or removed.
-    That independence is the whole point: a guard whose target moves with the thing it
-    is guarding against enforces nothing.
+    The redirect above is the prevention; this is the proof that it held.
 
-    Function-scoped so a failure names the test responsible. A concurrent real ``ai``
-    session launching or exiting during the run writes this directory legitimately and
-    would also trip this, so the message names that alternative explanation rather than
-    asserting the test is necessarily at fault.
+    The ENFORCED check is that the redirect is still intact at teardown, because that
+    is a property of this process alone and so is deterministic. Watching the real
+    directory for changes and failing on any of them was tried first and rejected: that
+    directory has other legitimate writers -- a concurrent ``ai c`` launch, or another
+    checkout of this repo running its own suite -- and a watch cannot tell their writes
+    from a test's. Measured, it charged 53 innocent tests with strays that peer runs of
+    this suite had created, and since the operator launches sessions while tests run, it
+    would have stayed flaky permanently rather than only until peers picked up the fix.
+    A guard that cries wolf gets deleted, so it enforces the attributable half and only
+    reports the rest.
+
+    A change to the real directory is therefore still surfaced, as a warning naming the
+    likely external writer. With the redirect intact a home-derived write is impossible
+    by construction, so such a change is provably not this test's doing; the one route
+    that would bypass the redirect is a hardcoded absolute path, and
+    ``test_public_repo_hygiene``-style static checking closes that deterministically
+    instead (see ``test_iterm2_profile_isolation.py``).
     """
+    fake_home = _redirect_home_away_from_the_operator
     before = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
     yield
-    after = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
-    change = describe_tree_change(before, after)
-    assert not change, (
-        f"test touched the REAL iTerm2 Dynamic Profiles directory "
-        f"{_REAL_ITERM2_PROFILE_DIR}: {change}. iTerm2 watches that directory and "
-        "re-enumerates every entry on any filesystem event, so this mutates the "
-        "operator's live terminal. Do not fix this at the call site -- the "
-        "_redirect_home_away_from_the_operator fixture should already have made the "
-        "real path unreachable, so either it was bypassed (an explicit HOME/"
-        "USERPROFILE setenv, or a hardcoded absolute path) or a concurrent real `ai` "
-        "session wrote the directory while this test ran."
+    breach = home_redirect_breach(fake_home)
+    assert not breach, (
+        f"the HOME redirect protecting {_REAL_ITERM2_PROFILE_DIR} was defeated during "
+        f"this test: {breach}. iTerm2 watches that directory and re-enumerates every "
+        "entry on any filesystem event, so a write there mutates the operator's live "
+        "terminal, and session._sweep_stale_iterm2_profiles deletes from it. Do not "
+        "re-point HOME/USERPROFILE at the real home; if this test needs a populated "
+        "home, build one under the redirect target instead."
     )
+    change = describe_tree_change(before, snapshot_tree(_REAL_ITERM2_PROFILE_DIR))
+    if change:
+        warnings.warn(
+            f"the real iTerm2 Dynamic Profiles directory {_REAL_ITERM2_PROFILE_DIR} "
+            f"changed while this test ran: {change}. The HOME redirect was intact, so "
+            "this test cannot have caused it via Path.home() -- the likely writer is a "
+            "concurrent `ai` session launch or another checkout of this repo running "
+            "its suite without this redirect.",
+            stacklevel=1,
+        )
 
 
 @pytest.fixture(autouse=True)
