@@ -1,8 +1,10 @@
 """Tests for ai cdp start/stop/status subcommand."""
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -629,27 +631,97 @@ class TestCmdCdpStop:
             sibling.wait(timeout=5)
 
     def test_given_full_process_identity_when_cdp_stop_runs_then_terminates_exact_process(self, tmp_path):
-        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        live = psutil.Process(sibling.pid)
-        pid_file = tmp_path / "cdp-9222.pid"
-        pid_file.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "pid": sibling.pid,
-                    "create_time": live.create_time(),
-                    "executable": live.exe(),
-                    "command": live.cmdline(),
-                    "port": 9222,
-                }
-            )
+        # `start_new_session` so this sleeper is its own process group and can be reaped as one: a
+        # test owns every process it starts, and the cleanup below must not depend on the assertions
+        # passing. Without it a failure here left a 60-second sleeper running, which is precisely how
+        # this suite accumulated orphans across runs.
+        sibling = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            start_new_session=True,
         )
+        try:
+            # Record the identity only once it has STOPPED CHANGING. On macOS psutil's `exe()` and
+            # `cmdline()[0]` both change within a process's first moments -- from the venv symlink
+            # that was exec'd to the resolved framework binary:
+            #   at spawn    .../.venv/bin/python
+            #   moments later .../Python.app/Contents/MacOS/Python
+            # `tunnel._matching_process` compares both with EXACT equality, so a pid file recorded
+            # inside that window can never match and `cdp stop` classifies its own record as stale
+            # and kills nothing. That is the whole reason this looked like flakiness rather than a
+            # bug: in isolation the test finished INSIDE the window, so the stale values matched each
+            # other and it passed; under the parallel suite the stop landed after the flip and it
+            # failed. The captured stdout said "Removed stale CDP record ... no process was stopped",
+            # which is a mismatch, not a slow kill.
+            #
+            # A FRESH `psutil.Process` per poll is required: psutil memoises `exe()` and `cmdline()`
+            # per instance, so polling one long-lived object compares a cached value with itself and
+            # "stabilises" immediately on the pre-flip reading.
+            def _identity_now() -> tuple[float, str, tuple[str, ...]]:
+                probe = psutil.Process(sibling.pid)
+                return probe.create_time(), probe.exe(), tuple(probe.cmdline())
 
-        with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
-            _cmd_cdp_stop(9222)
+            previous = None
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                current = _identity_now()
+                if current == previous:
+                    break
+                previous = current
+                time.sleep(0.05)
+            else:
+                pytest.fail("the sleeper's reported identity never stabilised, so no pid file could match it")
 
-        assert sibling.wait(timeout=5) is not None
-        assert not pid_file.exists()
+            create_time, executable, command = previous
+            pid_file = tmp_path / "cdp-9222.pid"
+            # Hand-built on purpose, and NOT through `tunnel._write_process_identity`: this module's
+            # autouse `_managed_process_state_writer` fixture replaces that writer with a stub that
+            # records only `{"pid", "port"}`. Routing through it here writes a record
+            # `_read_process_identity` rejects outright for its four missing fields, so the stop
+            # cannot even read its own file. This test needs the real six-field shape.
+            pid_file.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "pid": sibling.pid,
+                        "create_time": create_time,
+                        "executable": executable,
+                        "command": list(command),
+                        "port": 9222,
+                    }
+                )
+            )
+
+            with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
+                _cmd_cdp_stop(9222)
+
+            # Generous only for load: with the identity race gone the kill is prompt, but a fully
+            # parallel suite on a loaded machine still deserves more than the original 5s.
+            returncode = sibling.wait(timeout=30)
+            assert returncode is not None, "cdp stop did not terminate the process it was given"
+            assert not psutil.pid_exists(sibling.pid) or not psutil.Process(sibling.pid).is_running(), (
+                "the pid survived the stop, so the exact-process termination contract is broken"
+            )
+            assert not pid_file.exists()
+        finally:
+            # Reap the GROUP where there is one. `os.killpg`, `os.getpgid` and `signal.SIGKILL` are
+            # all POSIX-only, so the escalation is guarded on `os.killpg` existing -- referencing
+            # `signal.SIGKILL` unconditionally here raised `AttributeError: module 'signal' has no
+            # attribute 'SIGKILL'` and took all three Windows jobs red, which is the same
+            # platform-assumption defect this commit set out to remove from the macOS side.
+            #
+            # Windows has no process group to signal in this sense, and `start_new_session` is
+            # ignored there, so the `Popen` handle is the whole story. `kill()` covers both
+            # platforms and is harmless once the process has already exited.
+            if hasattr(os, "killpg"):
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(os.getpgid(sibling.pid), sig)
+                    except OSError:
+                        break
+            with contextlib.suppress(OSError):
+                sibling.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                sibling.wait(timeout=10)
 
     def test_when_process_already_dead_then_still_removes_pid_file(self, tmp_path):
         import psutil as _psutil
