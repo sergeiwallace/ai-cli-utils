@@ -703,13 +703,23 @@ class TestCmdCdpStop:
             )
             assert not pid_file.exists()
         finally:
-            # Reap the GROUP, escalating, and tolerate every process already being gone -- which is
-            # the expected case when the assertions passed.
-            for sig in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(os.getpgid(sibling.pid), sig)
-                except OSError:
-                    break
+            # Reap the GROUP where there is one. `os.killpg`, `os.getpgid` and `signal.SIGKILL` are
+            # all POSIX-only, so the escalation is guarded on `os.killpg` existing -- referencing
+            # `signal.SIGKILL` unconditionally here raised `AttributeError: module 'signal' has no
+            # attribute 'SIGKILL'` and took all three Windows jobs red, which is the same
+            # platform-assumption defect this commit set out to remove from the macOS side.
+            #
+            # Windows has no process group to signal in this sense, and `start_new_session` is
+            # ignored there, so the `Popen` handle is the whole story. `kill()` covers both
+            # platforms and is harmless once the process has already exited.
+            if hasattr(os, "killpg"):
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(os.getpgid(sibling.pid), sig)
+                    except OSError:
+                        break
+            with contextlib.suppress(OSError):
+                sibling.kill()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 sibling.wait(timeout=10)
 
