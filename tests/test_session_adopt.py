@@ -45,9 +45,11 @@ from ai_cli.session_adopt import (
     find_title_candidates,
     live_sessions,
     merge_task_namespace,
+    migrate_resume_artifacts,
     neutralise_worktree_state,
     next_free_index,
     probe_resolves,
+    resume_artifacts,
     retitle_transcript,
     split_ai_name,
     task_namespace_candidates,
@@ -1664,3 +1666,369 @@ def test_neutralise_given_the_replace_failing_when_called_then_the_original_surv
 
     assert path.read_bytes() == before
     assert not list(world["src_dir"].glob("*.worktree-tmp"))
+
+
+# ---- the resume hand-off tree (AI-CLI-p6tw) ----------------------------------
+#
+# The resume tree is keyed by session *name*, so a retitle orphans it. Every tree
+# below is built under tmp_path: no test reads or writes the real ~/.claude/resume,
+# which is live, hot and swept by a running supervisor.
+
+OLD_KEY = "oldname"
+NEW_KEY = "newname"
+
+#: A 32-hex attempt id and a 10-digit unix timestamp, the shapes the real tree uses.
+ATTEMPT = "3c2b4d35e474e4d970d849bd8f141fb4"
+OTHER_ATTEMPT = "b4a1493472762251eaa8b27bca72e483"
+STAMP = "1789956827"
+
+
+def _no_holders(_target: str) -> str:
+    """An ``lsof`` that reports the lock is held by nobody."""
+    return "\n"
+
+
+def _one_holder(_target: str) -> str:
+    """An ``lsof`` that reports a live pid holding the lock."""
+    return "4242\n"
+
+
+@pytest.fixture
+def resume_tree(tmp_path):
+    """A resume tree with every keying shape the real one was measured to use.
+
+    Includes three populations that must survive untouched: a *different* session
+    whose name merely extends this one's (``oldname-generic-dragon``, a shape
+    measured in the real tree), the hash-keyed and UUID-named files that share the
+    tree, and a ``disarmed/`` latch.
+    """
+    root = tmp_path / "resume"
+    files = {
+        # bare key, plus a compound suffix
+        "outbox": [f"{OLD_KEY}.md"],
+        "logs": [f"{OLD_KEY}.log"],
+        "history": [f"{OLD_KEY}.jsonl"],
+        "notices": [f"{OLD_KEY}.delivered.md", f"{OLD_KEY}.md"],
+        # hyphen separator
+        "attempts": [f"{OLD_KEY}-{ATTEMPT}.json", f"{OLD_KEY}-{OTHER_ATTEMPT}.json"],
+        "confirmed": [f"{OLD_KEY}-{STAMP}.md"],
+        "failed": [f"{OLD_KEY}-1790019934.md"],
+        "injected": [f"{OLD_KEY}-1790458317.md"],
+        # double underscore separator — missed entirely by a `<key>-` match
+        "pollers": [f"{OLD_KEY}__{ATTEMPT}.json"],
+    }
+    for subdir, names in files.items():
+        (root / subdir).mkdir(parents=True)
+        for name in names:
+            (root / subdir / name).write_text(f"content of {name}\n", encoding="utf-8")
+
+    # A different session whose name extends this key.
+    foreign = [
+        ("logs", f"{OLD_KEY}-generic-dragon.log"),
+        ("confirmed", f"{OLD_KEY}-generic-dragon-{STAMP}.md"),
+        ("pollers", f"{OLD_KEY}-generic-dragon__{ATTEMPT}.json"),
+        # `oldname-3` is a plausible sibling index, and `-3` is not an id.
+        ("logs", f"{OLD_KEY}-3.log"),
+    ]
+    # Not session-keyed at all: an attempt hash, a digest, a stage, a UUID log.
+    unkeyed = [
+        ("consumed", ATTEMPT),
+        ("sensing", "2a3e558d1f6eecefc4d3851c43b2a50e1f27051603201d704b9054575ef9330e.history"),
+        ("state", "stage-0.stage"),
+        ("logs", "038d5e2a-348f-4480-9c18-b571e79fe9e1.log"),
+    ]
+    for subdir, name in foreign + unkeyed:
+        (root / subdir).mkdir(parents=True, exist_ok=True)
+        (root / subdir / name).write_text(f"content of {name}\n", encoding="utf-8")
+
+    # Latch state, not a record.
+    (root / "disarmed").mkdir()
+    (root / "disarmed" / OLD_KEY).write_text(f"{int(time.time())} compact-budget\n", encoding="utf-8")
+
+    (root / "debug").mkdir()
+    return root
+
+
+@pytest.fixture
+def migrate(resume_tree):
+    """Migrate this tree's key, with the lock probe injected so no lsof is spawned."""
+
+    def _migrate(old=OLD_KEY, new=NEW_KEY, **kw):
+        kw.setdefault("resume_root", resume_tree)
+        kw.setdefault("lsof_fn", _no_holders)
+        return migrate_resume_artifacts(old, new, **kw)
+
+    return _migrate
+
+
+def _relative(paths, root) -> set[str]:
+    """Paths relative to ``root``, always with ``/`` separators.
+
+    `as_posix()` rather than `str()`: on Windows `str()` yields `attempts\\key.json`, which
+    never equals the `attempts/key.json` literals these tests compare against, so three
+    assertions failed there for a reason that has nothing to do with the behaviour under
+    test. The separator is an artefact of the assertion, so it is normalised in the helper
+    rather than by writing platform-specific expectations at every call site.
+    """
+    return {p.relative_to(root).as_posix() for p in paths}
+
+
+def test_artifacts_given_every_keying_shape_when_scanned_then_all_of_them_are_found(resume_tree):
+    """AC1: discovery covers every subdirectory, including both separators."""
+    found = _relative(resume_artifacts(resume_tree, OLD_KEY), resume_tree)
+
+    assert found == {
+        f"outbox/{OLD_KEY}.md",
+        f"logs/{OLD_KEY}.log",
+        f"history/{OLD_KEY}.jsonl",
+        f"notices/{OLD_KEY}.delivered.md",
+        f"notices/{OLD_KEY}.md",
+        f"attempts/{OLD_KEY}-{ATTEMPT}.json",
+        f"attempts/{OLD_KEY}-{OTHER_ATTEMPT}.json",
+        f"confirmed/{OLD_KEY}-{STAMP}.md",
+        "failed/oldname-1790019934.md",
+        "injected/oldname-1790458317.md",
+        f"pollers/{OLD_KEY}__{ATTEMPT}.json",
+    }
+
+
+def test_artifacts_given_a_session_whose_name_extends_the_key_when_scanned_then_its_files_are_not_claimed(
+    resume_tree,
+):
+    """A prefix match is not a key match: `oldname-generic-dragon` is someone else."""
+    found = _relative(resume_artifacts(resume_tree, OLD_KEY), resume_tree)
+
+    assert not [name for name in found if "generic-dragon" in name]
+    assert f"logs/{OLD_KEY}-3.log" not in found
+
+
+def test_artifacts_given_hash_and_uuid_named_files_when_scanned_then_they_are_not_claimed(resume_tree):
+    """`consumed/`, `sensing/`, `state/` and the UUID logs are not session-keyed."""
+    found = _relative(resume_artifacts(resume_tree, OLD_KEY), resume_tree)
+
+    assert not [name for name in found if name.startswith(("consumed/", "sensing/", "state/"))]
+    assert "logs/038d5e2a-348f-4480-9c18-b571e79fe9e1.log" not in found
+
+
+def test_artifacts_given_a_disarm_latch_when_scanned_then_it_is_excluded(resume_tree):
+    """A disarm marker suppresses arming, so re-keying it would carry the latch over."""
+    found = _relative(resume_artifacts(resume_tree, OLD_KEY), resume_tree)
+
+    assert f"disarmed/{OLD_KEY}" not in found
+    assert (resume_tree / "disarmed" / OLD_KEY).exists()
+
+
+def test_migrate_given_a_retitled_key_when_migrated_then_every_artifact_is_reachable_under_it(migrate, resume_tree):
+    """AC1: after the migration the new key finds everything and the old key nothing."""
+    migrate()
+
+    assert _relative(resume_artifacts(resume_tree, NEW_KEY), resume_tree) == {
+        f"outbox/{NEW_KEY}.md",
+        f"logs/{NEW_KEY}.log",
+        f"history/{NEW_KEY}.jsonl",
+        f"notices/{NEW_KEY}.delivered.md",
+        f"notices/{NEW_KEY}.md",
+        f"attempts/{NEW_KEY}-{ATTEMPT}.json",
+        f"attempts/{NEW_KEY}-{OTHER_ATTEMPT}.json",
+        f"confirmed/{NEW_KEY}-{STAMP}.md",
+        "failed/newname-1790019934.md",
+        "injected/newname-1790458317.md",
+        f"pollers/{NEW_KEY}__{ATTEMPT}.json",
+    }
+    assert resume_artifacts(resume_tree, OLD_KEY) == []
+
+
+def test_migrate_given_an_append_only_history_when_migrated_then_it_is_moved_not_copied(migrate, resume_tree):
+    """A copy would leave two partial series that both look authoritative."""
+    migrate()
+
+    assert not (resume_tree / "history" / f"{OLD_KEY}.jsonl").exists()
+    assert (resume_tree / "history" / f"{NEW_KEY}.jsonl").read_text() == f"content of {OLD_KEY}.jsonl\n"
+
+
+def test_migrate_given_archival_subdirs_when_migrated_then_they_are_rekeyed_too(migrate, resume_tree):
+    """The key is a lookup index: an audit trail no reader can find has failed."""
+    migrate()
+
+    assert (resume_tree / "confirmed" / f"{NEW_KEY}-{STAMP}.md").exists()
+    assert (resume_tree / "failed" / "newname-1790019934.md").exists()
+
+
+def test_migrate_given_a_foreign_session_when_migrated_then_its_files_are_untouched(migrate, resume_tree):
+    foreign = resume_tree / "pollers" / f"{OLD_KEY}-generic-dragon__{ATTEMPT}.json"
+    migrate()
+
+    assert foreign.exists()
+    assert (resume_tree / "logs" / f"{OLD_KEY}-generic-dragon.log").exists()
+    assert (resume_tree / "logs" / f"{OLD_KEY}-3.log").exists()
+
+
+def test_migrate_given_a_lock_with_no_live_holder_when_migrated_then_it_is_removed_not_rekeyed(migrate, resume_tree):
+    """AC2: a re-keyed stale lock blocks the very mechanism being repaired."""
+    lock = resume_tree / "pollers" / f"{OLD_KEY}__{ATTEMPT}.lock"
+    lock.write_text("", encoding="utf-8")
+
+    moves = migrate(lsof_fn=_no_holders)
+
+    assert not lock.exists()
+    assert not (resume_tree / "pollers" / f"{NEW_KEY}__{ATTEMPT}.lock").exists()
+    assert [m.action for m in moves if m.source == lock] == ["remove-stale-lock"]
+
+
+def test_migrate_given_a_lock_with_a_live_holder_when_migrated_then_it_follows_the_new_key(migrate, resume_tree):
+    """AC2's converse: deleting a held lock would break a running poller."""
+    lock = resume_tree / "pollers" / f"{OLD_KEY}__{ATTEMPT}.lock"
+    lock.write_text("", encoding="utf-8")
+
+    migrate(lsof_fn=_one_holder)
+
+    assert not lock.exists()
+    assert (resume_tree / "pollers" / f"{NEW_KEY}__{ATTEMPT}.lock").exists()
+
+
+def test_migrate_given_a_lock_whose_holder_cannot_be_probed_when_migrated_then_it_is_left_alone(migrate, resume_tree):
+    """Failure path: neither migrated (cannot block the new key) nor deleted."""
+    lock = resume_tree / "pollers" / f"{OLD_KEY}__{ATTEMPT}.lock"
+    lock.write_text("", encoding="utf-8")
+
+    def unavailable(_target: str) -> str:
+        raise OSError("lsof is not on PATH")
+
+    moves = migrate(lsof_fn=unavailable)
+
+    assert lock.exists()
+    assert not (resume_tree / "pollers" / f"{NEW_KEY}__{ATTEMPT}.lock").exists()
+    assert [m.action for m in moves if m.source == lock] == ["unprovable-lock"]
+
+
+def test_migrate_given_no_lsof_on_path_when_migrated_then_the_lock_is_left_alone(resume_tree, monkeypatch):
+    """Windows has no lsof, so the probe is unavailable rather than negative."""
+    from ai_cli import session_adopt
+
+    lock = resume_tree / "pollers" / f"{OLD_KEY}__{ATTEMPT}.lock"
+    lock.write_text("", encoding="utf-8")
+    monkeypatch.setattr(session_adopt.shutil, "which", lambda _name: None)
+
+    moves = migrate_resume_artifacts(OLD_KEY, NEW_KEY, resume_root=resume_tree)
+
+    assert lock.exists()
+    assert [m.action for m in moves if m.source == lock] == ["unprovable-lock"]
+
+
+def test_migrate_given_an_existing_target_when_migrated_then_it_is_kept_and_reported(migrate, resume_tree):
+    """AC3: the target belongs to whoever holds the new name and may be its only copy."""
+    occupied = resume_tree / "outbox" / f"{NEW_KEY}.md"
+    occupied.write_text("the new name's own hand-off\n", encoding="utf-8")
+
+    moves = migrate()
+
+    assert occupied.read_text() == "the new name's own hand-off\n"
+    assert (resume_tree / "outbox" / f"{OLD_KEY}.md").exists()
+    conflicts = [m for m in moves if m.action == "conflict"]
+    assert [m.source.name for m in conflicts] == [f"{OLD_KEY}.md"]
+    assert "SKIPPED (target exists)" in conflicts[0].describe()
+
+
+def test_migrate_given_a_dry_run_when_planned_then_the_plan_is_returned_and_nothing_moves(migrate, resume_tree):
+    """AC4: a migration that cannot be previewed is worse than none."""
+    before = sorted(p.name for p in resume_tree.rglob("*") if p.is_file())
+
+    moves = migrate(dry_run=True)
+
+    assert sorted(p.name for p in resume_tree.rglob("*") if p.is_file()) == before
+    assert len(moves) == 11
+    assert all(m.action == "move" for m in moves)
+    assert f"outbox/{OLD_KEY}.md -> {NEW_KEY}.md" in [m.describe() for m in moves]
+
+
+def test_migrate_given_a_dry_run_with_a_stale_lock_when_planned_then_the_lock_survives(migrate, resume_tree):
+    """AC4 covers the destructive branch too: a preview deletes nothing."""
+    lock = resume_tree / "pollers" / f"{OLD_KEY}__{ATTEMPT}.lock"
+    lock.write_text("", encoding="utf-8")
+
+    moves = migrate(dry_run=True, lsof_fn=_no_holders)
+
+    assert lock.exists()
+    assert [m.action for m in moves if m.source == lock] == ["remove-stale-lock"]
+
+
+def test_migrate_given_an_absent_tree_when_migrated_then_it_succeeds_silently(tmp_path):
+    """AC5: a machine that never wrote a resume artifact is not an error."""
+    assert migrate_resume_artifacts(OLD_KEY, NEW_KEY, resume_root=tmp_path / "nothing-here") == []
+
+
+def test_migrate_given_an_empty_tree_when_migrated_then_it_succeeds_silently(tmp_path):
+    root = tmp_path / "resume"
+    (root / "outbox").mkdir(parents=True)
+
+    assert migrate_resume_artifacts(OLD_KEY, NEW_KEY, resume_root=root) == []
+
+
+def test_migrate_given_an_unchanged_key_when_migrated_then_nothing_is_touched(resume_tree):
+    """An adoption that keeps the name leaves a tree that is already correct."""
+    before = sorted(p.name for p in resume_tree.rglob("*") if p.is_file())
+
+    assert migrate_resume_artifacts(OLD_KEY, OLD_KEY, resume_root=resume_tree) == []
+    assert sorted(p.name for p in resume_tree.rglob("*") if p.is_file()) == before
+
+
+def _adopt_resume_tree(home: Path, key: str) -> Path:
+    """One artifact per shape under a *fake* home's resume tree."""
+    root = home / "resume"
+    for subdir, name in (
+        ("outbox", f"{key}.md"),
+        ("history", f"{key}.jsonl"),
+        ("attempts", f"{key}-{ATTEMPT}.json"),
+        ("pollers", f"{key}__{ATTEMPT}.json"),
+    ):
+        (root / subdir).mkdir(parents=True, exist_ok=True)
+        (root / subdir / name).write_text(f"content of {name}\n", encoding="utf-8")
+    return root
+
+
+def test_adopt_given_a_retitle_when_adopted_then_the_resume_artifacts_follow_the_new_name(world, adopt, collision):
+    """AC1 through the command: the adopted session's next window still gets its hand-off."""
+    root = _adopt_resume_tree(world["home"], "myproject-2")
+
+    result = adopt(on_collision="retitle", new_title="myproject-1")
+
+    assert resume_artifacts(root, "myproject-2") == []
+    assert _relative(resume_artifacts(root, "myproject-1"), root) == {
+        "outbox/myproject-1.md",
+        "history/myproject-1.jsonl",
+        f"attempts/myproject-1-{ATTEMPT}.json",
+        f"pollers/myproject-1__{ATTEMPT}.json",
+    }
+    assert {m.action for m in result.resume_moves} == {"move"}
+
+
+def test_adopt_given_a_dry_run_retitle_when_planned_then_the_resume_tree_is_untouched(world, adopt, collision):
+    """AC4 through the command."""
+    root = _adopt_resume_tree(world["home"], "myproject-2")
+
+    result = adopt(on_collision="retitle", new_title="myproject-1", dry_run=True)
+
+    assert len(resume_artifacts(root, "myproject-2")) == 4
+    assert resume_artifacts(root, "myproject-1") == []
+    assert len(result.resume_moves) == 4
+
+
+def test_adopt_given_a_resume_target_that_exists_when_adopted_then_it_is_kept_and_warned_about(world, adopt, collision):
+    """AC3 and AC6 through the command: the conflict reaches the operator."""
+    root = _adopt_resume_tree(world["home"], "myproject-2")
+    occupied = root / "outbox" / "myproject-1.md"
+    occupied.write_text("myproject-1's own hand-off\n", encoding="utf-8")
+
+    result = adopt(on_collision="retitle", new_title="myproject-1")
+
+    assert occupied.read_text() == "myproject-1's own hand-off\n"
+    assert (root / "outbox" / "myproject-2.md").exists()
+    assert any("was NOT re-keyed" in w for w in result.warnings)
+
+
+def test_adopt_given_no_resume_tree_when_adopted_then_it_succeeds_with_no_moves(world, adopt, collision):
+    """AC5 through the command."""
+    result = adopt(on_collision="retitle", new_title="myproject-1")
+
+    assert result.resume_moves == []
+    assert not (world["home"] / "resume").exists()

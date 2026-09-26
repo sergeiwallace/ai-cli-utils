@@ -17,18 +17,20 @@ source: AI-CLI-168
 `ai cc-migrate` ([cc-session-migration.md](cc-session-migration.md)) moves the
 *transcript* and nothing else. That is the right scope for a transcript move, but
 it is not enough to adopt a session: several other pieces of state are keyed by
-the **project slug** rather than the session UUID, and those are exactly the ones
-that break. Adoption is the whole job.
+the **project slug** or the session's **name** rather than by the session UUID,
+and those are exactly the ones that break. Adoption is the whole job.
 
 ## What is keyed by what
 
-Claude Code splits per-session state across three keying schemes. Only the first
-is a problem, because it changes when the session's working directory changes.
+Per-session state is split across four keying schemes. Only the last is safe to
+ignore: the other three change when the session's working directory or its name
+changes, and adoption changes both.
 
 | Keyed by | Paths | Adoption |
 |---|---|---|
 | **Project slug** (cwd with every non-alphanumeric character replaced by `-`) | `~/.claude/projects/<slug>/<uuid>.jsonl`, `~/.claude/projects/<slug>/<uuid>/` (sidecar), `~/.claude/projects/<slug>/memory/` | **Handled** — transcript + sidecar moved, memory copied |
 | **Task namespace** (the ai_name when pinned; otherwise derived from the UUID) | `~/.claude/tasks/<namespace>/<n>.json` | **Handled** — merged into the pinned namespace, renumbering on collision |
+| **Session name** | `~/.claude/resume/<subdir>/<name>…` — the resume hand-off tree | **Handled on a retitle** — re-keyed to the new name; see step 4b |
 | **Session UUID** (unchanged by adoption) | `~/.claude/teams/session-<hex8>/`, `~/.claude/session-env/<uuid>/`, `~/.claude/file-history/<uuid>/`, `~/.claude/state/*-<uuid>*`, `~/.claude/sessions/<pid>.json` | **Deliberately untouched** — the UUID does not change, so these keep working exactly as they did |
 
 ### What is intentionally left alone, and why
@@ -51,6 +53,14 @@ is a problem, because it changes when the session's working directory changes.
   harmless.
 - **`~/.claude/shell-snapshots/`, `~/.claude/paste-cache/`.** Content-addressed
   or timestamp-named, not keyed by session or project at all.
+- **`~/.claude/resume/disarmed/<name>`.** A latch, not a record: its presence
+  suppresses arming, and it expires with age. Re-keying it would carry a live
+  suppression across the rename and could leave the adopted session's
+  auto-compact disarmed under its new name. Leaving it behind fails in the safe
+  direction — the latch stays under a name nothing derives any more.
+- **`~/.claude/resume/wake-ready-<name>-<id>.marker`.** A pending wake owned by
+  the context supervisor rather than a record of this session's hand-off, and it
+  carries its name in the *middle* of the filename. Left alone deliberately.
 - **The source project directory itself.** Left in place even when empty: other
   sessions may still be using that root, and an empty directory costs nothing.
 
@@ -315,6 +325,87 @@ Manually:
 cp -rn ~/.claude/projects/<source-slug>/memory/. \
        ~/.claude/projects/<dest-slug>/memory/     # -n: never clobber
 ```
+
+### 4b. Re-key the resume hand-off tree
+
+Only on a **retitle** — an adoption that keeps the session's name leaves a tree
+that is already keyed correctly.
+
+`~/.claude/resume/` holds the hand-off a session writes for itself so its next
+window, the one that comes up after a compaction, starts with its state instead
+of nothing. Every artifact is named after the session's **name**, so a retitle
+orphaned the whole set: the next window derived the new name, found nothing, and
+injected no hand-off at all. One measured rename stranded 19 files across 7
+subdirectories.
+
+The tree is *walked* and each filename tested, rather than globbed for a list of
+known patterns, because the patterns are not uniform:
+
+| Shape | Subdirectories |
+|---|---|
+| `<name>.…` | `outbox/`, `logs/`, `history/`, `notices/` (incl. `.delivered.md`) |
+| `<name>-<id>.…` | `attempts/`, `injected/`, `confirmed/`, `failed/` |
+| `<name>__<id>.…` | `pollers/` |
+
+A fix matching only `<name>-` misses `pollers/` entirely — which is how the first
+by-hand pass missed a whole subdirectory. Walking also means a subdirectory added
+later is covered without changing the code, and that the hash-keyed
+subdirectories (`consumed/`, `sensing/`, `state/`) and the UUID-named logs in
+`logs/` are skipped because their names do not match a session name, not because
+they are on an exclusion list.
+
+Four rules, each of which is wrong in the other direction:
+
+- **Move, never copy.** `history/<name>.jsonl` is append-only, so a copy leaves
+  two partial series that both look authoritative and double-count.
+- **Re-key the archival subdirectories too** (`confirmed/`, `failed/`,
+  `history/`). The name is a lookup index, not a historical assertion; the
+  session's identity never changed, only its title, and an audit trail no reader
+  can find has failed its one purpose. The old name survives in the file bodies.
+- **A lock is not a record.** Re-keying a stale `pollers/*.lock` hands the new
+  name a lock nobody will release, turning a harmless orphan into an active block
+  on the mechanism being repaired. The files are zero bytes, so holders are
+  probed by open handle: no holder means the lock is **removed**, a live holder
+  means it **follows the name**, and a probe that cannot run (Windows, or no
+  `lsof`) leaves it **where it is** — not migrated, so it cannot block the new
+  name, and not deleted, because nothing proved it dead.
+- **Never overwrite.** An existing target belongs to whoever already holds the
+  new name and may be its only copy, so it is reported and left alone.
+
+`--dry-run` reports every rename it would make and renames nothing, including the
+lock removals.
+
+Manually — glob the tree rather than assuming the shapes, anchor the name at the
+*start* of the basename, and never clobber:
+
+```bash
+old=oldname; new=newname
+for f in ~/.claude/resume/*/"$old"*; do          # anchored: not */*"$old"*
+  [ -e "$f" ] || continue
+  d=$(dirname "$f"); b=$(basename "$f")
+  case "$d" in */disarmed) continue ;; esac      # a latch, not a record
+  case "$b" in *.lock)
+    [ -n "$(lsof -t -- "$f" 2>/dev/null)" ] || { rm -f "$f"; continue ; } ;;
+  esac
+  t="$d/$new${b#"$old"}"
+  [ -e "$t" ] && { echo "SKIP (exists): $t"; continue ; }
+  mv "$f" "$t"
+done
+ls ~/.claude/resume/*/"$old"* 2>/dev/null        # must print nothing but skips
+```
+
+**Check the listing before running it.** Even anchored, this matches a *different*
+session whose name merely extends yours — `oldname-generic-dragon` and `oldname-3`
+both begin with `oldname`, and both were present in a real tree. The command
+distinguishes them by requiring an id or timestamp after the separator; by hand,
+eyeball the glob first and drop anything whose trailing text is a name rather than
+a hex id or a 10-digit stamp.
+
+**This is a bridge, not machinery to build on.** The key should never have been
+the name: a title is mutable, while the session UUID naming the transcript is
+stable, so keying the tree by UUID would make a rename free and delete this bug
+class. That change spans every producer of a key, so this code is expected to be
+**deleted** rather than extended once it lands. Tracked as `AI-CLI-p6tw`.
 
 ### 5. Verify that resume actually resolves it
 
