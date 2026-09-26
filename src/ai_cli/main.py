@@ -34,6 +34,14 @@ from . import tmux_setup as _tmux_setup
 from . import transport as _transport
 from . import tunnel as _tunnel
 from . import zsh_setup as _zsh_setup
+from .cc_migrate import (
+    # The single title resolver for the package. This module used to carry its
+    # own copy, and the two drifted into OPPOSITE semantics -- resume honoring a
+    # rename while adopt resolved by the original title forever. Importing the
+    # one implementation is what stops them diverging again; see
+    # `cc_migrate.transcript_title` for the measurements.
+    transcript_title as _cc_transcript_current_title,
+)
 
 # Backwards-compat re-exports so historical ``patch("ai_cli.main.<name>")``
 # call sites in the test suite keep working.
@@ -311,36 +319,6 @@ def _cc_project_dir(cwd: Path) -> Path:
     wrong directory for any path containing ``_`` and made session resume miss.
     """
     return Path.home() / ".claude" / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
-
-
-def _cc_transcript_current_title(path: Path) -> str | None:
-    """Return ``path``'s CURRENT ``customTitle``, honoring a later rename.
-
-    Claude Code appends a fresh ``custom-title`` record every time a session is
-    renamed rather than rewriting the first one, so the title in effect is
-    whichever record was written *last* — not the first.  Stopping at the
-    first non-empty record (the prior behavior here) made a renamed session
-    match its original name forever, which is exactly the AI-CLI-p3fg defect:
-    a session renamed away from ``ai-cli-1`` kept being resolved as
-    ``ai-cli-1`` because only its very first title was ever read.
-    """
-    current: str | None = None
-    try:
-        with path.open("rb") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                found = record.get("customTitle")
-                if found:
-                    current = found
-    except OSError:
-        return None
-    return current
 
 
 def _cc_registered_kind(session_id: str) -> str | None:
