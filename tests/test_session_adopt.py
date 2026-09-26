@@ -25,6 +25,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import psutil
@@ -50,6 +51,7 @@ from ai_cli.session_adopt import (
     next_free_index,
     probe_resolves,
     resume_artifacts,
+    resume_source_keys,
     retitle_transcript,
     split_ai_name,
     task_namespace_candidates,
@@ -2032,3 +2034,73 @@ def test_adopt_given_no_resume_tree_when_adopted_then_it_succeeds_with_no_moves(
 
     assert result.resume_moves == []
     assert not (world["home"] / "resume").exists()
+
+
+# ---- artifacts under an EARLIER key, with no retitle in sight ---------------
+#
+# Migrating only `old_key -> new_key` covered the retitle path and quietly did
+# nothing for every other case. Measured on a real adoption whose title was already
+# correct: 1 artifact under the current key and 46 under three older ones, every one
+# of which the retitle-only version left behind.
+
+
+def _give_transcript_a_naming_history(world, *earlier_titles: str) -> Path:
+    """Rewrite this world's transcript so it carries ``earlier_titles`` before its current one."""
+    path = world["src_dir"] / f"{UUID}.jsonl"
+    prelude = "\n".join(
+        _record(type="user", sessionId=UUID, cwd=str(world["repo"]), customTitle=title) for title in earlier_titles
+    )
+    path.write_text(prelude + "\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    return path
+
+
+def test_source_keys_given_a_renamed_transcript_when_collected_then_history_and_uuid_are_included(world):
+    """The naming history IS the record of where older artifacts were filed."""
+    path = _give_transcript_a_naming_history(world, "myproject-7", "myproject-8")
+
+    keys = resume_source_keys(path, "myproject-2")
+
+    # Oldest first, the current title dropped as the target, and the UUID last
+    # because a bare session's key falls back to it.
+    assert keys == ["myproject-7", "myproject-8", UUID]
+
+
+def test_adopt_given_no_retitle_when_adopted_then_an_earlier_name_s_artifacts_still_move(world, adopt):
+    """The regression this exists for: no rename happens, and the hand-off must STILL follow."""
+    _give_transcript_a_naming_history(world, "myproject-9")
+    root = _adopt_resume_tree(world["home"], "myproject-9")
+
+    result = adopt()  # adopting under its CURRENT title, so nothing is retitled
+
+    assert resume_artifacts(root, "myproject-9") == [], "artifacts were left under the old key"
+    assert len(resume_artifacts(root, "myproject-2")) == 4
+    assert {m.action for m in result.resume_moves} == {"move"}
+
+
+def test_adopt_given_uuid_keyed_artifacts_when_adopted_then_they_move_to_the_name(world, adopt):
+    """A bare session has no registry name, so its key is the session id."""
+    root = _adopt_resume_tree(world["home"], UUID)
+
+    result = adopt()
+
+    assert resume_artifacts(root, UUID) == []
+    assert len(resume_artifacts(root, "myproject-2")) == 4
+    assert {m.action for m in result.resume_moves} == {"move"}
+
+
+def test_adopt_given_two_earlier_names_sharing_a_filename_when_dry_run_then_the_second_is_a_conflict(world, adopt):
+    """A dry run must predict what the real run does, including the collision between two old keys.
+
+    Nothing moves during a dry run, so without tracking claims the second key would
+    not see the destination the first already planned and both would report as
+    moves — while a real run performs one move and one conflict.
+    """
+    _give_transcript_a_naming_history(world, "myproject-7", "myproject-8")
+    _adopt_resume_tree(world["home"], "myproject-7")
+    _adopt_resume_tree(world["home"], "myproject-8")
+
+    result = adopt(dry_run=True)
+
+    actions = Counter(m.action for m in result.resume_moves)
+    assert actions["move"] == 4, actions
+    assert actions["conflict"] == 4, actions

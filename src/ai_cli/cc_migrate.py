@@ -109,6 +109,43 @@ def transcript_title(path: Path) -> str | None:
     return current
 
 
+def transcript_titles(path: Path) -> list[str]:
+    """Every distinct ``customTitle`` this transcript has held, oldest first.
+
+    The naming HISTORY, not just the name in effect. Claude Code appends a record
+    per rename rather than rewriting the first, so a transcript is a complete log
+    of what it has been called — one measured here carried 3181 title records
+    across four distinct names.
+
+    That history is the only available answer to "what else was this session
+    called?", and anything keyed by session *name* needs it: artifacts written
+    under a name the session no longer holds are otherwise unreachable, because
+    nothing left on disk records the connection. See
+    :func:`ai_cli.session_adopt.migrate_resume_artifacts`.
+
+    Order is first-seen, so the last element is the current title and equals
+    :func:`transcript_title`. Duplicates are collapsed: a session renamed away and
+    back appears once.
+    """
+    seen: list[str] = []
+    try:
+        with path.open("rb") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                found = record.get("customTitle", "")
+                if found and found not in seen:
+                    seen.append(found)
+    except OSError:
+        return []
+    return seen
+
+
 def find_transcript(project_dir: Path, *, title: str | None = None, session_id: str | None = None) -> Path | None:
     """Locate a transcript in ``project_dir`` by session UUID or customTitle.
 
