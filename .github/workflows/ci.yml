@@ -30,6 +30,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Without this the matrix defaults to fail-fast, and the FIRST Python version
+      # to fail cancels its still-running siblings. Measured on run 35909917879: the
+      # 3.13 job reached 97% carrying only 3 failures and then reported
+      # `##[error]The operation was canceled`, so its result was unreadable and the
+      # partial output was easy to misread as a far larger failure surface than it
+      # was. `test-windows` below already sets this for the same reason; the two
+      # matrices should agree.
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     services:
@@ -80,3 +88,45 @@ jobs:
         run: uv sync --dev --python ${{ matrix.python-version }}
       - shell: msys2 {0}
         run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+
+  test-macos:
+    runs-on: macos-latest
+    # NON-BLOCKING ON PURPOSE, and expected to be RED when first added
+    # (AI-CLI-3cai). `continue-on-error` keeps a macOS-only failure from turning
+    # the whole workflow red, because adding a red job to a required matrix is
+    # how a required check gets quietly disabled. It is a signal job, not a gate.
+    #
+    # Why it exists at all: two recent defects were invisible to a
+    # ubuntu + windows matrix. AI-CLI-ta1l's macOS half, and AI-CLI-3cai, where
+    # test_supervisor_terminal_handoff fails 5 of 6 on macOS while both covered
+    # platforms pass. macOS is also the platform the iTerm2 and tmux surface
+    # actually targets, so it was the least covered and most exercised OS.
+    #
+    # PROMOTION TRIGGER, so this does not sit ignored forever: once AI-CLI-3cai
+    # is fixed and this job stays green across two weeks of PRs, delete
+    # `continue-on-error` and make it a required check. Decide that alongside
+    # AI-CLI-66mk, which owns which checks are required.
+    continue-on-error: true
+    # macOS runners are the slowest and the most expensive per minute, so bound a
+    # hang rather than discovering it on the bill.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # ONE version deliberately, not the three the other platforms run. This
+        # job's job is to reveal macOS-specific breakage, which is a property of
+        # the OS rather than of the interpreter, and 3.12 is already the version
+        # the Linux job uploads coverage from. Widen it if a macOS-only failure
+        # ever turns out to be version-dependent.
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      # No `services:` block, unlike the Linux job above: GitHub service
+      # containers are Linux-only, so a NATS sidecar cannot run here. The suite
+      # tolerates NATS being absent -- a full local run on macOS with no broker
+      # passed 3020 tests -- so the tests that need it skip rather than fail.
+      - run: uv sync --dev
+      - run: uv run pytest --tb=short -q
