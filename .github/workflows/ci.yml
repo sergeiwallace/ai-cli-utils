@@ -128,5 +128,17 @@ jobs:
       # containers are Linux-only, so a NATS sidecar cannot run here. The suite
       # tolerates NATS being absent -- a full local run on macOS with no broker
       # passed 3020 tests -- so the tests that need it skip rather than fail.
+      #
+      # tmux is NOT guaranteed on the macOS runner image, and its absence is not
+      # benign here: two consecutive runs of this job differed only in that, and
+      # produced 3034 passed / 33 skipped / 0 failed versus 3041 passed /
+      # 45 skipped / 3 failed. The three failures were tests that use tmux
+      # without guarding for it ("tmux binary not available on PATH"), and the
+      # twelve extra skips were tests that do guard. So the job silently changed
+      # what it covered from run to run, which makes a red result unreadable --
+      # exactly the failure mode `fail-fast: false` was added to the Linux matrix
+      # to avoid. Installing it makes coverage deterministic, and matches
+      # `test-windows`, which already installs tmux deliberately via MSYS2.
+      - run: brew install tmux
       - run: uv sync --dev
       - run: uv run pytest --tb=short -q
