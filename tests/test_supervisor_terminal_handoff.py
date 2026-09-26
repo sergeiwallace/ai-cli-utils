@@ -44,6 +44,7 @@ import json
 import os
 import pty
 import signal
+import subprocess
 import tempfile
 import termios
 import time
@@ -60,23 +61,43 @@ _READY_TIMEOUT_S = 20.0
 
 
 def _pgid_of(pid: int) -> int | None:
-    """The process group of `pid`, or None once it is gone."""
+    """The process group of `pid`, or None once it is gone.
+
+    `os.getpgid` rather than `/proc/<pid>/status`: procfs is Linux-only, and this module's whole
+    subject -- process groups and controlling terminals -- is POSIX, so reading it through a
+    Linux-only interface narrowed the tests to one platform for no reason. `os.getpgid` is the
+    portable syscall wrapper and needs no parsing.
+    """
     try:
-        with Path(f"/proc/{pid}/status").open(encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("NSpgid:"):
-                    return int(line.split()[1])
+        return os.getpgid(pid)
     except (OSError, ValueError):
         return None
-    return None
 
 
 def _group_members(pgid: int) -> list[int]:
-    """Every live pid in process group `pgid`. Empty means the group does not exist."""
+    """Every live pid in process group `pgid`. Empty means the group does not exist.
+
+    Enumerated with `ps` because there is no portable way to list all pids from stdlib: the previous
+    implementation iterated `/proc`, which does not exist on macOS. That mattered far more than a
+    skipped test, and the way it failed is the lesson -- see `_run_handoff`'s error path. The
+    uncaught `FileNotFoundError` from `Path("/proc").iterdir()` was raised *inside* the forked
+    session leader while it built its report, so the report was never written, the parent read an
+    empty pipe, and every assertion here died with `KeyError` on a field that had never existed.
+    Five tests reported a missing `promoted` key; none reported the missing directory that caused it.
+    """
+    proc = subprocess.run(
+        ["ps", "-A", "-o", "pid=,pgid="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
     members = []
-    for entry in Path("/proc").iterdir():
-        if entry.name.isdigit() and _pgid_of(int(entry.name)) == pgid:
-            members.append(int(entry.name))
+    for line in proc.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit() and int(fields[1]) == pgid:
+            members.append(int(fields[0]))
     return members
 
 
@@ -162,7 +183,16 @@ def _run_handoff(*, spawn_layer: bool, promote: str) -> dict:
             os.close(master)
             _supervise(ready_path, slave, write_fd, spawn_layer, promote)
             os._exit(0)
-        except BaseException:
+        except BaseException as exc:
+            # This pipe is the harness's ONLY channel, so a crash while building the report must not
+            # exit silently. It did, and that is what made this module so expensive to diagnose: the
+            # parent read an empty pipe, `result` became `{}`, and five tests died with `KeyError`
+            # naming whichever field they happened to read first. Every message described the
+            # symptom; none could describe the cause, because the cause never left this process.
+            try:
+                os.write(write_fd, json.dumps({"harness_error": f"{type(exc).__name__}: {exc}"}).encode())
+            except BaseException:
+                pass
             os._exit(1)
 
     os.close(write_fd)
@@ -174,10 +204,15 @@ def _run_handoff(*, spawn_layer: bool, promote: str) -> dict:
     os.waitpid(supervisor, 0)
     result = json.loads(payload) if payload else {}
 
-    if result:
+    # Clean up unconditionally before failing, so a harness crash cannot also leak the pty and the
+    # ready file on its way out.
+    if result and "harness_error" not in result:
         _reap(result)
     os.close(master)
     Path(ready_path).unlink()
+
+    if "harness_error" in result:
+        pytest.fail(f"the forked supervisor crashed before it could report: {result['harness_error']}")
     return result
 
 
@@ -227,6 +262,7 @@ def test_a_spawning_wrapper_makes_the_backgrounded_pid_the_wrong_group():
     """
     result = _run_handoff(spawn_layer=True, promote="reported")
 
+    assert result, "the forked supervisor reported nothing"
     assert result["reported"].isdigit()
     assert int(result["reported"]) != result["child"], (
         "the spawn layer added no process layer, so this suite no longer exercises the defect"
@@ -241,7 +277,11 @@ def test_promoting_the_reported_group_puts_a_live_group_in_the_foreground():
     """The fix's contract: the terminal ends up owned by a group that has members."""
     result = _run_handoff(spawn_layer=True, promote="reported")
 
-    assert result["promoted"], f"promotion failed with errno {result['errno']}"
+    assert result, "the forked supervisor reported nothing"
+    # `.get` in the message, not `[...]`: an absent report used to make this line raise KeyError on
+    # `errno` while rendering the explanation for the missing `promoted`, so the failure output
+    # described neither.
+    assert result["promoted"], f"promotion failed with errno {result.get('errno')!r}"
     assert result["foreground"] == int(result["reported"])
     assert result["reported_group_members"], "the promoted group is empty"
 
@@ -254,6 +294,7 @@ def test_promoting_the_backgrounded_pid_leaves_an_empty_foreground_group():
     """
     result = _run_handoff(spawn_layer=True, promote="backgrounded")
 
+    assert result, "the forked supervisor reported nothing"
     assert not result["backgrounded_group_members"], (
         "the group the old code promoted has members, so the wedge cannot have happened this way"
     )
