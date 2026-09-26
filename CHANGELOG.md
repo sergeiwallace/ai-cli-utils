@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ai cos` launches a machine's single chief-of-staff Claude Code session: it
+  resolves the chief home from `-k/--machine-key` (default `$AI_MACHINE_ID`) or
+  `-H/--fm-home`, refuses a missing or unseeded home and a second chief whose
+  tmux session is still running, writes `state/chief-session.json` and the
+  schema-2 `registry.json` (generation and route revision incremented, VP
+  entries preserved), and hands off to the ordinary Claude launch with the
+  session name fixed to `cos`, worktree isolation off, and `FM_HOME` plus
+  `AI_SESSION_ROLE=chief-of-staff` forwarded into the tmux pane. `--dry-run`
+  registers nothing.
+
 ### Changed
 
 - Documentation, tests and one source comment no longer name a real machine or
