@@ -84,7 +84,12 @@ ai c [N] [-p PROJECT] [-R] [--dry-run] [--verbose]
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
 
 - `N` — session number (default: auto-assigned). Creates worktree `.worktrees/sw-N` on branch `wt-sw-N`.
-- `-p PROJECT` — project alias (from `~/.config/ai-cli/config.toml` `[projects]` section)
+- `-p PROJECT` — the project to launch in, given either as a registered task prefix or as the
+  name of a repository directory under the projects directory. The launcher enters that
+  directory before it creates the worktree, and refuses the launch when the directory is not
+  there — naming the resolved path and the host it was sought on — rather than continuing in
+  whatever directory it started in. A value that is neither a registered prefix nor an
+  existing repository is reported as unknown input.
 - `-R` — remote session: mosh + tmux on the configured remote host (auto-switches to SSH when VPN is active)
 - `--dry-run` — print the resolved launch plan and exit. Reports the values you cannot
   read off the command line: the session index actually free, the tmux-vs-bare decision

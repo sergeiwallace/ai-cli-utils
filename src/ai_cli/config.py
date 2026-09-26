@@ -912,7 +912,19 @@ def resolve_project_prefix(path: Path | None = None) -> str:
 
 
 def resolve_project_prefix_by_name(project_name: str) -> str:
-    """Return one registered prefix for a project directory name, rejecting ambiguity."""
+    """Return one registered prefix for a project directory name, rejecting ambiguity.
+
+    ``-p`` accepts either a registered task prefix or a repository directory name,
+    so a value that is neither has to be reported as that: unknown *input*, not a
+    repository missing a prefix. Falling straight through to
+    ``resolve_project_prefix`` reported the latter, against the directory name
+    ``_find_project_dir`` would have used -- a path that by definition does not
+    exist -- and told the caller to ``ai register -p <that path>``, which
+    ``register_project`` rejects for exactly the same reason. With a terminal
+    attached it was worse than useless: the prompt tier accepted a prefix for the
+    absent directory and persisted it, minting the stale registry entry
+    ``_require_existing_repository`` exists to reject (AI-CLI-ok04).
+    """
     for tier in (_fleet_registry_prefix, _local_registry_prefix):
         prefix = tier(project_name)
         if prefix:
@@ -930,6 +942,12 @@ def resolve_project_prefix_by_name(project_name: str) -> str:
             f"Project name {project_name!r} matches multiple registered roots. Use a unique repository name."
         )
     candidate = _find_project_dir(project_name)
+    if not candidate.is_dir():
+        raise ProjectPrefixError(
+            f"Unknown project {project_name!r}: it is not a registered task prefix, and no repository "
+            f"of that name exists under {candidate.parent}. Pass -p with a registered prefix, or with "
+            f"the name of a repository that is checked out under {candidate.parent}."
+        )
     return resolve_project_prefix(candidate)
 
 

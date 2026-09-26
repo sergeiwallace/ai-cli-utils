@@ -12,7 +12,7 @@ import time
 import uuid as uuid_module
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import click
 
@@ -2363,6 +2363,48 @@ def _print_launch_plan(
     print("\n".join(lines))
 
 
+def _resolve_remote_project(project: str, config: dict) -> tuple[str, str]:
+    """Return the project a remote-side launch should enter, and what supplied it.
+
+    The three sources are tried in the order the launch trusts them, and strictly
+    one at a time: ``get_remote_machine`` raises when no default machine is
+    configured, so a launch that was handed ``--project`` must never reach it.
+    """
+    if project:
+        return project, "-p/--project"
+    configured = _config.get_remote_machine(config).get("project")
+    if configured:
+        return configured, "[remote] project in the config file"
+    main_project = _config._get_main_project_name()
+    if main_project:
+        return main_project, "[project] main_project in the config file"
+    return "", ""
+
+
+def _exit_missing_project_dir(project_name: str, project_dir: Path, source: str, relaunch: str) -> NoReturn:
+    """Refuse the launch when the project directory it must enter is not there.
+
+    Both chdir sites below used to be a bare ``if project_dir.exists()`` with no
+    else, so an absent directory skipped the chdir and carried on in whatever cwd
+    the process started in -- ``$HOME`` for an SSH-driven remote launch. The
+    session then created its worktree there and resolved every git command against
+    the wrong root, printing nothing at all; the only symptom was noticing much
+    later that the session was in the wrong place (AI-CLI-ok04). The directory is
+    the launch target, so its absence is fatal rather than skippable.
+    """
+    host = _config.detect_machine_profile()["host_id"]
+    print(
+        f"Error: the project directory for this session does not exist on {host}.\n"
+        f"  project: {project_name} (from {source})\n"
+        f"  expected at: {project_dir}\n"
+        f"  Fix: check out the repository at that path on {host}, or relaunch naming a project "
+        "that exists there:\n"
+        f"    {relaunch}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _do_session_launch(
     engine: str,
     name: str,
@@ -2820,21 +2862,25 @@ def _do_session_launch(
     # before creating the worktree so git commands work correctly.
     if is_remote:
         aliases = _config.get_project_aliases()
-        raw_project = project or _config.get_remote_machine(config).get("project") or _config._get_main_project_name()
+        raw_project, project_source = _resolve_remote_project(project, config)
         if raw_project:
             project_name = aliases.get(raw_project, raw_project)
             project_dir = _config._find_project_dir(project_name)
-            if project_dir.exists():
-                os.chdir(project_dir)
+            if not project_dir.is_dir():
+                _exit_missing_project_dir(project_name, project_dir, project_source, f"ai {engine} -R -p PROJECT")
+            os.chdir(project_dir)
     elif project:
         # Local session with explicit -p PROJECT: cd to the project directory so that
         # git worktrees and Gemini chats directories resolve relative to the correct root.
-        # Mirrors the is_remote path above.
+        # Mirrors the is_remote path above, refusal included -- an absent directory
+        # strands the session in the wrong root identically either way, and only the
+        # remote half of that is reachable without passing -p.
         aliases = _config.get_project_aliases()
         _local_project = aliases.get(project, project)
         _local_project_dir = _config._find_project_dir(_local_project)
-        if _local_project_dir.exists():
-            os.chdir(_local_project_dir)
+        if not _local_project_dir.is_dir():
+            _exit_missing_project_dir(_local_project, _local_project_dir, "-p/--project", f"ai {engine} -p PROJECT")
+        os.chdir(_local_project_dir)
 
     # THE dry-run exit, and it belongs here rather than lower down: the next
     # statement registers workspace trust, which writes. Everything from this
