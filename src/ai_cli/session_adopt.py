@@ -43,6 +43,8 @@ Adoption is the whole job, in one pass:
    rather than overwrite; references between tasks are remapped with the ids.
 5. **Auto-memory** — ``~/.claude/projects/<slug>/memory/``. See
    :func:`adopt_memory` for the rule and why it is a copy.
+5b. **Resume hand-off** — ``~/.claude/resume/``, keyed by the session *name*. See
+   :func:`migrate_resume_artifacts`, which is a deliberately temporary bridge.
 6. **Everything else** — inventoried in ``docs/tools/cc-session-adoption.md``.
    UUID-keyed state (``~/.claude/teams/session-<uuid8>/``,
    ``~/.claude/session-env/<uuid>/``, ``~/.claude/file-history/<uuid>/``) is
@@ -62,6 +64,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -172,6 +175,7 @@ class AdoptionResult:
     tasks_moved: list[TaskMove] = field(default_factory=list)
     memory_copied: list[Path] = field(default_factory=list)
     memory_conflicts: list[Path] = field(default_factory=list)
+    resume_moves: list[ResumeMove] = field(default_factory=list)
     retitled_from: str | None = None
     worktree_records_cleared: int = 0
     resolved: Path | None = None
@@ -628,6 +632,216 @@ def adopt_memory(
     return copied, conflicts
 
 
+# --- the resume hand-off tree -----------------------------------------------
+#
+# ``~/.claude/resume/`` holds the hand-off a session writes for itself so its
+# next window — the one that comes up after a compaction — starts with its state
+# instead of nothing. Every artifact in it is named after the session's **key**,
+# which is the session's *name*. A rename therefore orphans the whole set: the
+# next window derives the new name, finds no artifact under it, and injects
+# nothing. Adoption renames, so adoption has to carry the tree with it.
+#
+# THIS IS A BRIDGE (AI-CLI-p6tw), not machinery to build on. The key should never
+# have been the name: a title is mutable, while the session UUID naming the
+# transcript is stable, and keying the tree by UUID would make a rename free and
+# delete this bug class outright. That change spans every producer of a key and is
+# not this module's to make. So the code below exists to stop losing hand-offs
+# today, and is expected to be **deleted** — not extended — once the key becomes
+# the UUID.
+
+
+#: Subdirectories holding a *latch* rather than a record, never migrated.
+#:
+#: ``disarmed/<key>`` is the one measured case: its presence suppresses arming,
+#: and it is age-bounded, so re-keying it would carry a live suppression across
+#: the rename and could leave the adopted session's auto-compact disarmed under
+#: its new name. Leaving it behind fails in the safe direction — the latch stays
+#: under a key nothing derives any more, and arming works.
+_RESUME_LATCH_DIRS = frozenset({"disarmed"})
+
+#: Separators observed between a key and the id that follows it. ``pollers/`` uses
+#: a double underscore while ``attempts/``, ``confirmed/`` and ``failed/`` use a
+#: hyphen, so matching one separator silently misses whole subdirectories.
+_RESUME_SEPARATORS = ("__", "-")
+
+#: What may follow a separator and still prove the leading text was a whole key:
+#: a long hex id or a unix timestamp, optionally extended by a suffix.
+#:
+#: The bound matters, and is why this is not a looser match. Two sessions whose
+#: names share a prefix coexist in a real tree (measured: ``oldname`` alongside
+#: ``oldname-generic-dragon``), so accepting any hyphen-separated remainder would
+#: sweep a *different* session's artifacts into this one's rename. Requiring an id
+#: shape rejects ``-generic-dragon.log`` while accepting ``-1789956827.md``, and
+#: the lengths are floored well above a session index so ``oldname`` does not
+#: claim ``oldname-3.log`` from ``oldname-3``. Observed ids are 32 hex characters
+#: and observed timestamps 10 digits, in every file of a 14-subdirectory tree.
+_RESUME_ID_RE = re.compile(r"(?:[0-9a-f]{16,}|[0-9]{9,})(?:\..*)?$")
+
+
+@dataclass
+class ResumeMove:
+    """One resume artifact, and what the adoption decided to do with it.
+
+    ``dest`` is None exactly when nothing is renamed — a lock that is removed, or
+    one left alone. Every action other than ``"move"`` mutates nothing.
+    """
+
+    source: Path
+    dest: Path | None
+    action: str
+
+    def describe(self) -> str:
+        if self.action == "move":
+            return f"{self.source.parent.name}/{self.source.name} -> {self.dest.name}"
+        if self.action == "conflict":
+            return f"{self.source.parent.name}/{self.source.name} -> {self.dest.name} SKIPPED (target exists)"
+        if self.action == "remove-stale-lock":
+            return f"{self.source.parent.name}/{self.source.name} removed (lock, no live holder)"
+        return f"{self.source.parent.name}/{self.source.name} left alone ({self.action})"
+
+
+def _resume_key_match(name: str, key: str) -> bool:
+    """True when ``name`` is an artifact of ``key`` rather than of a longer key.
+
+    Accepts the key alone, the key plus a dotted suffix
+    (``<key>.log``, ``<key>.delivered.md``), and the key separated from an id or a
+    timestamp (``<key>-<ts>.md``, ``<key>__<id>.json``). Rejects a name that
+    merely *starts* with the key — see :data:`_RESUME_ID_RE`.
+    """
+    if not key or not name.startswith(key):
+        return False
+    rest = name[len(key) :]
+    if rest == "" or rest.startswith("."):
+        return True
+    for separator in _RESUME_SEPARATORS:
+        if rest.startswith(separator):
+            return bool(_RESUME_ID_RE.fullmatch(rest[len(separator) :]))
+    return False
+
+
+def resume_artifacts(resume_root: Path, key: str) -> list[Path]:
+    """Every file under ``resume_root`` that belongs to ``key``.
+
+    The tree is walked and each name tested, rather than globbed for a list of
+    known patterns: the patterns are not uniform, and an enumeration written from
+    a pattern list has already missed a whole subdirectory once. Walking also
+    means a subdirectory added later is covered without changing this code, and
+    that hash-keyed subdirectories (``consumed/``, ``sensing/``) and the
+    UUID-named logs in ``logs/`` are skipped because their names do not match a
+    session key — not because they are on a list.
+
+    Files sitting directly in ``resume_root`` are deliberately not touched. The
+    one measured case, ``wake-ready-<key>-<id>.marker``, carries its key in the
+    *middle* of the name and is a pending wake owned by the context supervisor,
+    not a record of this session's hand-off.
+    """
+    found: list[Path] = []
+    if not resume_root.is_dir():
+        return found
+    for subdir in sorted(resume_root.iterdir()):
+        if not subdir.is_dir() or subdir.name in _RESUME_LATCH_DIRS:
+            continue
+        try:
+            entries = sorted(subdir.iterdir())
+        except OSError:
+            continue
+        found += [path for path in entries if path.is_file() and _resume_key_match(path.name, key)]
+    return found
+
+
+def _lock_state(path: Path, lsof_fn: object = None) -> str:
+    """Classify a ``pollers/*.lock`` as ``"held"``, ``"stale"`` or ``"unprovable"``.
+
+    A lock is live coordination state, not a record, and the three outcomes exist
+    because migrating a lock and deleting one are both wrong in one direction.
+    Re-keying a *stale* lock hands the new key a lock nobody will ever release,
+    turning a harmless orphan into an active block on the very mechanism the
+    migration is repairing. Deleting a *held* one breaks a running poller.
+
+    The files are zero bytes, so there is no pid to read and holders have to be
+    probed by open handle. Where that probe cannot run — Windows, or no ``lsof``
+    on PATH — the answer is ``"unprovable"`` and the caller leaves the lock where
+    it is: not migrated (so it cannot block the new key) and not deleted (because
+    nothing proved it dead). ``lsof_fn`` is injectable so tests need no real
+    holder.
+    """
+    if lsof_fn is None:
+        if shutil.which("lsof") is None:
+            return "unprovable"
+
+        def lsof_fn(target: str) -> str:
+            return subprocess.run(
+                ["lsof", "-t", "--", target],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            ).stdout
+
+    try:
+        output = lsof_fn(str(path))
+    except Exception:
+        return "unprovable"
+    return "held" if any(line.strip().isdigit() for line in str(output).splitlines()) else "stale"
+
+
+def migrate_resume_artifacts(
+    old_key: str,
+    new_key: str,
+    *,
+    claude_home: Path | None = None,
+    resume_root: Path | None = None,
+    dry_run: bool = False,
+    lsof_fn: object = None,
+) -> list[ResumeMove]:
+    """Re-key ``old_key``'s resume artifacts to ``new_key``. Moves, never copies.
+
+    Moving is the point. ``history/<key>.jsonl`` is append-only, so a copy leaves
+    two partial series that both look authoritative and double-count when
+    aggregated. The archival subdirectories (``confirmed/``, ``failed/``,
+    ``history/``) are re-keyed along with the live ones: the key is a lookup
+    index, not a historical assertion, the session's identity never changed —
+    only its title — and an audit trail no reader can find has failed its one
+    purpose. The old name survives inside the files.
+
+    An existing target is never overwritten. It is reported as a ``"conflict"``
+    and left alone, because the destination artifact belongs to whoever already
+    holds the new name and is the only copy of it.
+    """
+    if not old_key or not new_key or old_key == new_key:
+        return []
+    home = claude_home if claude_home is not None else Path.home() / ".claude"
+    root = resume_root if resume_root is not None else home / "resume"
+
+    planned: list[ResumeMove] = []
+    for source in resume_artifacts(root, old_key):
+        dest = source.with_name(new_key + source.name[len(old_key) :])
+        if source.suffix == ".lock":
+            state = _lock_state(source, lsof_fn)
+            if state == "stale":
+                planned.append(ResumeMove(source=source, dest=None, action="remove-stale-lock"))
+                continue
+            if state == "unprovable":
+                planned.append(ResumeMove(source=source, dest=None, action="unprovable-lock"))
+                continue
+        planned.append(ResumeMove(source=source, dest=dest, action="conflict" if dest.exists() else "move"))
+
+    if dry_run:
+        return planned
+
+    # Only ``"move"`` reaches a rename and only ``"remove-stale-lock"`` reaches an
+    # unlink. Every other action is inert by construction rather than by a check
+    # placed next to the mutation.
+    for move in planned:
+        if move.action == "move":
+            assert move.dest is not None
+            move.dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            shutil.move(str(move.source), str(move.dest))
+        elif move.action == "remove-stale-lock":
+            move.source.unlink(missing_ok=True)
+    return planned
+
+
 # --- the post-adopt probe ---------------------------------------------------
 
 
@@ -832,11 +1046,25 @@ def adopt_session(
 
     memory_copied, memory_conflicts = adopt_memory(source_dir, dest_project_dir, dry_run)
 
+    # Keyed by the session *name*, so only a retitle has anything to move; an
+    # adoption that keeps the name leaves the tree already correctly keyed.
+    resume_moves = migrate_resume_artifacts(ai_name, target_title, claude_home=home, dry_run=dry_run)
+
     # ``migrate_session`` warns when the transcript's title differs from the
     # destination worktree's name. In the retitle path that mismatch is the
     # intent and is corrected immediately above, so the warning would be false;
     # the post-adopt probe below is the check that still applies.
     warnings: list[str] = [] if (migration is None or retitled_from) else list(migration.warnings)
+    for conflict in [m for m in resume_moves if m.action == "conflict"]:
+        warnings.append(
+            f"resume artifact {conflict.source} was NOT re-keyed: {conflict.dest} already exists and "
+            f"is the only copy of whatever wrote it — merge or remove it by hand, then re-run"
+        )
+    for stranded in [m for m in resume_moves if m.action == "unprovable-lock"]:
+        warnings.append(
+            f"resume lock {stranded.source} left in place: this platform cannot prove whether a "
+            f"process still holds it, and re-keying a stale lock would block the new key"
+        )
     resolved = None
     if not dry_run:
         assert migration is not None
@@ -866,6 +1094,7 @@ def adopt_session(
         tasks_moved=tasks_moved,
         memory_copied=memory_copied,
         memory_conflicts=memory_conflicts,
+        resume_moves=resume_moves,
         retitled_from=retitled_from,
         worktree_records_cleared=worktree_records_cleared,
         resolved=resolved,
