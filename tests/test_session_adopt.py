@@ -1762,7 +1762,15 @@ def migrate(resume_tree):
 
 
 def _relative(paths, root) -> set[str]:
-    return {str(p.relative_to(root)) for p in paths}
+    """Paths relative to ``root``, always with ``/`` separators.
+
+    `as_posix()` rather than `str()`: on Windows `str()` yields `attempts\\key.json`, which
+    never equals the `attempts/key.json` literals these tests compare against, so three
+    assertions failed there for a reason that has nothing to do with the behaviour under
+    test. The separator is an artefact of the assertion, so it is normalised in the helper
+    rather than by writing platform-specific expectations at every call site.
+    """
+    return {p.relative_to(root).as_posix() for p in paths}
 
 
 def test_artifacts_given_every_keying_shape_when_scanned_then_all_of_them_are_found(resume_tree):
