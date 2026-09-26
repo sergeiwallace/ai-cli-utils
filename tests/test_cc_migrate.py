@@ -99,8 +99,57 @@ def test_find_given_unknown_title_when_searched_then_returns_none(roots):
     assert find_transcript(roots["src_dir"], title="nope") is None
 
 
-def test_title_given_titled_transcript_when_read_then_first_title_returned(roots):
+def test_title_given_titled_transcript_when_read_then_title_returned(roots):
     assert transcript_title(roots["src_dir"] / f"{roots['uuid']}.jsonl") == "myproject-2"
+
+
+# ---- renamed transcripts: the title in effect is the LAST record ------------
+#
+# Claude Code appends a fresh ``customTitle`` record on every rename instead of
+# rewriting the first one, so a transcript carries its whole naming history and
+# the title in effect is whichever record was written last.  Reading the FIRST
+# record made a renamed-away session keep answering to a name it no longer has,
+# which both hid it under its current name and let it collide with whoever owns
+# the old one.
+
+
+@pytest.fixture
+def renamed(tmp_path):
+    """A transcript first titled ``myproject-old``, since renamed to ``myproject-new``."""
+    repo = tmp_path / "projects" / "myproject"
+    repo.mkdir(parents=True)
+    claude_home = tmp_path / "claude-home"
+    src_dir = cc_project_dir(repo, claude_home)
+    src_dir.mkdir(parents=True)
+    uuid = "99999999-8888-4777-8666-555555555555"
+    lines = [
+        _record(type="user", sessionId=uuid, cwd=str(repo), customTitle="myproject-old"),
+        _record(type="assistant", sessionId=uuid, cwd=str(repo)),
+        _record(type="user", sessionId=uuid, cwd=str(repo), customTitle="myproject-mid"),
+        _record(type="assistant", sessionId=uuid, cwd=str(repo), customTitle="myproject-new"),
+    ]
+    (src_dir / f"{uuid}.jsonl").write_text("\n".join(lines) + "\n")
+    return {"src_dir": src_dir, "uuid": uuid}
+
+
+def test_title_given_renamed_transcript_when_read_then_current_title_returned(renamed):
+    assert transcript_title(renamed["src_dir"] / f"{renamed['uuid']}.jsonl") == "myproject-new"
+
+
+def test_find_given_current_title_of_renamed_transcript_when_searched_then_found(renamed):
+    found = find_transcript(renamed["src_dir"], title="myproject-new")
+    assert found is not None and found.stem == renamed["uuid"]
+
+
+def test_find_given_superseded_title_of_renamed_transcript_when_searched_then_not_found(renamed):
+    """A name the transcript no longer holds must not resolve to it.
+
+    This is the half that manufactures phantom collisions: while a renamed-away
+    transcript still answered to its original title, it claimed that title
+    against the live session actually using it.
+    """
+    assert find_transcript(renamed["src_dir"], title="myproject-old") is None
+    assert find_transcript(renamed["src_dir"], title="myproject-mid") is None
 
 
 # ---- migrate_session: happy path --------------------------------------------

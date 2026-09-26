@@ -17,9 +17,18 @@ Adoption is the whole job, in one pass:
    ``origin/main`` by the ordinary session machinery when absent, reused as-is
    when present; never clobbered).
 2. **Duplicate-title collision** — refuse to proceed, unconditionally, when two
-   transcripts claim the same title. ``ai c`` resolves by *first* ``customTitle``
-   in a newest-first scan, so a duplicate makes resume nondeterministic: it would
-   silently pick one of two conversations. See ``TitleCollision``.
+   transcripts claim the same title. ``ai c`` resolves by the *current*
+   ``customTitle`` in a newest-first scan, so a duplicate makes resume
+   nondeterministic: it would silently pick one of two conversations. See
+   ``TitleCollision``.
+
+   This once read "resolves by *first* ``customTitle``", which was wrong about
+   the code it described and is worth naming because the error was
+   self-justifying: while :func:`ai_cli.cc_migrate.transcript_title` really did
+   read the first record, the sentence looked like a correct account of
+   observable behaviour rather than a bug report. A transcript renamed away from
+   a title therefore kept claiming it and blocked the adoption of whoever
+   legitimately held that name.
 3. **Transcript** — delegated to :func:`ai_cli.cc_migrate.migrate_session`, which
    rewrites recorded cwd fields and verifies the destination before removing the
    source.
@@ -398,9 +407,11 @@ def next_free_index(repo_root: Path, prefix: str, claude_home: Path | None = Non
 def retitle_transcript(path: Path, old_title: str, new_title: str) -> int:
     """Rewrite every ``customTitle`` equal to ``old_title`` in ``path``.
 
-    All matching records are rewritten, not just the first: resume matches the
-    first titled record, but a later record still claiming the old title would
-    make the file answer to both names and reintroduce the ambiguity.
+    All matching records are rewritten, not just the first. Resume matches the
+    *last* titled record, so rewriting only the first would leave the file still
+    answering to the old name — and rewriting only the last would leave the old
+    name in its history to be resurrected by any future reader that scans
+    forwards. Rewriting every match is what makes the rename total.
 
     Written to a sibling temp file and atomically replaced, so an interrupted retitle
     leaves the original transcript intact rather than a half-rewritten one.

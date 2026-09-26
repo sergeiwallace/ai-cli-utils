@@ -576,6 +576,38 @@ def test_find_candidates_given_candidates_when_described_then_size_lines_cwd_and
     assert all(c.mtime > 0 for c in found)
 
 
+def test_find_candidates_given_transcript_renamed_away_when_scanned_then_no_phantom_collision(world):
+    """A transcript that *used* to hold the title must not claim it against the live owner.
+
+    The collision check refuses to adopt when two transcripts claim one title,
+    so a transcript resolving under a name it no longer holds does not merely
+    report a cosmetic duplicate -- it blocks the adoption of the session that
+    legitimately owns that name, and the operator's only escape is to retitle.
+    Measured before this was fixed: a 16-line abandoned stub, renamed away two
+    days earlier, blocked a live 21 MB session from being adopted.
+    """
+    retired_dir = cc_project_dir(world["repo"], world["home"])
+    retired = retired_dir / f"{OTHER_UUID}.jsonl"
+    retired.write_text(
+        "\n".join(
+            [
+                _record(type="user", sessionId=OTHER_UUID, cwd=str(world["repo"]), customTitle="myproject-2"),
+                _record(type="assistant", sessionId=OTHER_UUID, cwd=str(world["repo"])),
+                _record(type="user", sessionId=OTHER_UUID, cwd=str(world["repo"]), customTitle="myproject-2-retired"),
+            ]
+        )
+        + "\n"
+    )
+
+    found = find_title_candidates(world["repo"], "myproject-2", world["home"])
+
+    assert [c.path for c in found] == [world["src_dir"] / f"{UUID}.jsonl"]
+    assert retired not in {c.path for c in found}
+    # ...and it is still reachable under the name it actually holds now.
+    renamed = find_title_candidates(world["repo"], "myproject-2-retired", world["home"])
+    assert [c.path for c in renamed] == [retired]
+
+
 def test_adopt_given_a_duplicate_title_when_adopted_then_gated_with_both_candidates(world, adopt, collision):
     with pytest.raises(TitleCollision) as caught:
         adopt()

@@ -10,8 +10,8 @@ a session started at a repo root and a session started inside that repo's
 and neither can see the other's history.
 
 ``ai c <n>`` (bare mode) resumes a worktree session by scanning the
-*worktree's* project directory for a transcript whose first ``customTitle``
-record matches the session's ai_name (e.g. ``myproject-1``), touching it, and
+*worktree's* project directory for a transcript whose *current* ``customTitle``
+matches the session's ai_name (e.g. ``myproject-1``), touching it, and
 launching ``claude --continue``. So a conversation that was accidentally run
 at the repo root (plain ``claude --name myproject-1`` instead of ``ai c 1``)
 is invisible to ``ai c 1`` until its transcript is moved into the worktree's
@@ -61,11 +61,34 @@ def cc_project_dir(cwd: Path, claude_home: Path | None = None) -> Path:
 
 
 def transcript_title(path: Path) -> str | None:
-    """Return the first non-empty ``customTitle`` in a transcript, else None.
+    """Return ``path``'s CURRENT ``customTitle``, honoring a later rename, else None.
 
-    Mirrors the resume logic in ``main._find_cc_session_by_title``: only the
-    first titled record matters — later ones repeat it.
+    Claude Code appends a fresh ``customTitle`` record every time a session is
+    renamed rather than rewriting the first one, so a transcript carries its
+    whole naming history and the title in effect is whichever record was written
+    *last*.
+
+    This is the single title resolver for the whole package: ``main`` imports it
+    under the name ``_cc_transcript_current_title`` for its resume path, and the
+    adopt path reaches it through :func:`find_transcript`.  Two resolvers with
+    opposite semantics used to exist side by side here, and this docstring
+    asserted that reading the first record "mirrors the resume logic in
+    ``main._find_cc_session_by_title``" and that later records "repeat it".
+    Both halves were false, and the adopt path was the one using the wrong one:
+
+    * the resume path had already moved to current-title semantics, to fix a
+      renamed-away session resolving under its old name forever;
+    * records do not repeat — measured on real transcripts, one carried three
+      distinct titles and another 3181 title records.
+
+    Two defects followed from reading the first record, the second worse than
+    the first: a session could not be adopted under the name its operator
+    actually sees, and a renamed-away transcript claimed its original title
+    forever, manufacturing phantom collisions against whoever legitimately
+    held that name.  A 16-line abandoned stub was measured blocking a live
+    session's adoption two days after being renamed away.
     """
+    current: str | None = None
     try:
         with path.open("rb") as fh:
             for raw in fh:
@@ -77,19 +100,22 @@ def transcript_title(path: Path) -> str | None:
                 except (json.JSONDecodeError, ValueError):
                     continue
                 found = record.get("customTitle", "")
+                # Only a non-empty title counts; an untitled record leaves the
+                # title in effect alone rather than clearing it.
                 if found:
-                    return found
+                    current = found
     except OSError:
         return None
-    return None
+    return current
 
 
 def find_transcript(project_dir: Path, *, title: str | None = None, session_id: str | None = None) -> Path | None:
     """Locate a transcript in ``project_dir`` by session UUID or customTitle.
 
     UUID wins when both are given (it is exact — the filename). Title search
-    scans newest-first and returns the first transcript whose first titled
-    record matches, the same file ``ai c`` would resume.
+    scans newest-first and returns the first transcript whose *current* title
+    matches, the same file ``ai c`` would resume — see :func:`transcript_title`
+    for why the current title rather than the original one is the match.
     """
     if session_id:
         candidate = project_dir / f"{session_id}.jsonl"
