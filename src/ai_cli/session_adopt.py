@@ -65,6 +65,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -691,13 +692,16 @@ class ResumeMove:
     action: str
 
     def describe(self) -> str:
-        if self.action == "move":
-            return f"{self.source.parent.name}/{self.source.name} -> {self.dest.name}"
-        if self.action == "conflict":
-            return f"{self.source.parent.name}/{self.source.name} -> {self.dest.name} SKIPPED (target exists)"
+        where = f"{self.source.parent.name}/{self.source.name}"
+        # `dest` is None for every action that renames nothing, so it is narrowed here
+        # rather than assumed from the action name -- the two are only kept in step by
+        # construction, and a type checker cannot see that.
+        if self.dest is not None and self.action in ("move", "conflict"):
+            renamed = f"{where} -> {self.dest.name}"
+            return renamed if self.action == "move" else f"{renamed} SKIPPED (target exists)"
         if self.action == "remove-stale-lock":
-            return f"{self.source.parent.name}/{self.source.name} removed (lock, no live holder)"
-        return f"{self.source.parent.name}/{self.source.name} left alone ({self.action})"
+            return f"{where} removed (lock, no live holder)"
+        return f"{where} left alone ({self.action})"
 
 
 def _resume_key_match(name: str, key: str) -> bool:
@@ -749,7 +753,18 @@ def resume_artifacts(resume_root: Path, key: str) -> list[Path]:
     return found
 
 
-def _lock_state(path: Path, lsof_fn: object = None) -> str:
+def _lsof_pids(target: str) -> str:
+    """Every pid holding ``target`` open, one per line, as ``lsof -t`` prints them."""
+    return subprocess.run(
+        ["lsof", "-t", "--", target],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    ).stdout
+
+
+def _lock_state(path: Path, lsof_fn: Callable[[str], str] | None = None) -> str:
     """Classify a ``pollers/*.lock`` as ``"held"``, ``"stale"`` or ``"unprovable"``.
 
     A lock is live coordination state, not a record, and the three outcomes exist
@@ -765,21 +780,14 @@ def _lock_state(path: Path, lsof_fn: object = None) -> str:
     nothing proved it dead). ``lsof_fn`` is injectable so tests need no real
     holder.
     """
-    if lsof_fn is None:
+    probe = lsof_fn
+    if probe is None:
         if shutil.which("lsof") is None:
             return "unprovable"
-
-        def lsof_fn(target: str) -> str:
-            return subprocess.run(
-                ["lsof", "-t", "--", target],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            ).stdout
+        probe = _lsof_pids
 
     try:
-        output = lsof_fn(str(path))
+        output = probe(str(path))
     except Exception:
         return "unprovable"
     return "held" if any(line.strip().isdigit() for line in str(output).splitlines()) else "stale"
@@ -792,7 +800,7 @@ def migrate_resume_artifacts(
     claude_home: Path | None = None,
     resume_root: Path | None = None,
     dry_run: bool = False,
-    lsof_fn: object = None,
+    lsof_fn: Callable[[str], str] | None = None,
 ) -> list[ResumeMove]:
     """Re-key ``old_key``'s resume artifacts to ``new_key``. Moves, never copies.
 
