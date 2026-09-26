@@ -23,6 +23,18 @@ from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
 _PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"})
 
+# Resolved at IMPORT time, before any fixture has redirected HOME, so the guard below
+# always names the operator's own directory rather than a redirected one. Re-reading
+# ``Path.home()`` from inside a fixture would return the redirect and guard nothing.
+_REAL_HOME = Path.home()
+
+# iTerm2 is macOS-only, but ``icon_generator._dynamic_profile_dir`` and
+# ``layout._dynamic_profile_dir`` both build this path from ``Path.home()`` with no
+# platform branch, so an unredirected test creates a stray ``~/Library/...`` tree on
+# Windows and Linux too. Guarding it everywhere is therefore correct rather than a
+# macOS special case.
+_REAL_ITERM2_PROFILE_DIR = _REAL_HOME / "Library" / "Application Support" / "iTerm2" / "DynamicProfiles"
+
 # Short directory name for the relocated Windows temp root -- see
 # _windows_temproot for why the length itself is the point.
 _WIN_TEMPROOT_NAME = "aipt"
@@ -394,6 +406,121 @@ def _cleanup_test_tmux_sessions_after_suite():
     """Backstop cleanup for test-only tmux names if an explicit mock is bypassed."""
     yield
     _cleanup_test_tmux_sessions(subprocess.run)
+
+
+def snapshot_tree(path: Path) -> dict[str, tuple[int, int]] | None:
+    """Fingerprint every entry under ``path``, or return None when it does not exist.
+
+    Returns a mapping of POSIX-relative name to ``(size, mtime_ns)``. ``None`` is a
+    distinct answer from ``{}`` on purpose: "the directory is absent" and "the
+    directory exists and is empty" are different states, and a test that merely
+    *creates* the real iTerm2 profile directory has already polluted the machine
+    even though it wrote no profile into it.
+
+    Exposed (not underscore-private) so the guard's detection logic can be tested
+    directly rather than only observed in passing.
+    """
+    if not path.is_dir():
+        return None
+    snapshot: dict[str, tuple[int, int]] = {}
+    for entry in sorted(path.rglob("*")):
+        try:
+            stat = entry.stat()
+        except OSError:
+            # Vanished mid-walk: record a sentinel so it still counts as a difference.
+            snapshot[entry.relative_to(path).as_posix()] = (-1, -1)
+            continue
+        snapshot[entry.relative_to(path).as_posix()] = (stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
+def describe_tree_change(
+    before: dict[str, tuple[int, int]] | None,
+    after: dict[str, tuple[int, int]] | None,
+) -> str:
+    """Describe how two :func:`snapshot_tree` results differ; "" when identical."""
+    if before == after:
+        return ""
+    if before is None:
+        return "directory did not exist before the test and does now"
+    if after is None:
+        return "directory existed before the test and was removed"
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    modified = sorted(name for name in set(before) & set(after) if before[name] != after[name])
+    parts = []
+    if added:
+        parts.append(f"added {added}")
+    if removed:
+        parts.append(f"removed {removed}")
+    if modified:
+        parts.append(f"modified {modified}")
+    return "; ".join(parts)
+
+
+@pytest.fixture(autouse=True)
+def _redirect_home_away_from_the_operator(monkeypatch, tmp_path_factory):
+    """Point ``Path.home()`` at a per-test temp dir so no test can write the real home.
+
+    Installed at the PROCESS BOUNDARY rather than per call site, because per-call
+    discipline demonstrably failed here (AI-CLI-tevy). ``test_icon_generator.py``
+    patches ``_dynamic_profile_dir`` at every one of its ~30 call sites and is not the
+    leak; the profiles that reached the operator's real
+    ``~/Library/Application Support/iTerm2/DynamicProfiles/`` came from session-launch
+    tests that drive ``iterm2.py``'s generator indirectly and had no reason to know a
+    profile write was involved. Patching one function could not have covered them all
+    either: there are three independent real-directory paths --
+    ``icon_generator._dynamic_profile_dir`` (writes a profile),
+    ``layout._dynamic_profile_dir`` (a SECOND, separately-defined copy that writes
+    layout profiles), and ``session._cleanup_stale_profiles`` (which ``unlink()``s every
+    ``ai-cli-session-*.json`` whose tmux session is not currently live, so a test with a
+    mocked-empty session list deletes the operator's LIVE profiles). All three derive
+    from ``Path.home()``, which is the one lever that covers them by construction.
+
+    A newly written test inherits this without opting in -- the property step 1 of the
+    task asked for -- and iTerm2 hot-reloads that directory on any filesystem event, so
+    a stray write there re-parses and re-enumerates the live terminal's profile set.
+
+    ``HOME`` alone is not portable: ``ntpath.expanduser`` consults ``USERPROFILE``
+    first and never reads ``HOME``, so Windows needs it set too, and the
+    ``HOMEDRIVE``/``HOMEPATH`` pair is cleared so it cannot serve as a third route.
+    """
+    fake_home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_iterm2_profile_dir():
+    """Fail the test that touches the operator's real iTerm2 Dynamic Profiles dir.
+
+    The redirect above is the prevention; this is the proof. It deliberately does NOT
+    consult ``Path.home()`` -- it compares the directory resolved at import time, so it
+    keeps working (and starts failing) if the redirect is ever weakened or removed.
+    That independence is the whole point: a guard whose target moves with the thing it
+    is guarding against enforces nothing.
+
+    Function-scoped so a failure names the test responsible. A concurrent real ``ai``
+    session launching or exiting during the run writes this directory legitimately and
+    would also trip this, so the message names that alternative explanation rather than
+    asserting the test is necessarily at fault.
+    """
+    before = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
+    yield
+    after = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
+    change = describe_tree_change(before, after)
+    assert not change, (
+        f"test touched the REAL iTerm2 Dynamic Profiles directory "
+        f"{_REAL_ITERM2_PROFILE_DIR}: {change}. iTerm2 watches that directory and "
+        "re-enumerates every entry on any filesystem event, so this mutates the "
+        "operator's live terminal. Do not fix this at the call site -- the "
+        "_redirect_home_away_from_the_operator fixture should already have made the "
+        "real path unreachable, so either it was bypassed (an explicit HOME/"
+        "USERPROFILE setenv, or a hardcoded absolute path) or a concurrent real `ai` "
+        "session wrote the directory while this test ran."
+    )
 
 
 @pytest.fixture(autouse=True)
