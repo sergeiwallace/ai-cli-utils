@@ -197,10 +197,18 @@ first `git push` stop and ask, which is the safe direction. If the branch exists
 nowhere at all, or the repository has no `origin` remote, worktree creation fails
 loudly instead of guessing.
 
-When a worktree's `.envrc` is byte-for-byte identical to a repository-root
-`.envrc` that `direnv` can successfully execute, `ai` approves that new
-worktree path automatically.
-Changed or unapproved `.envrc` files still require an explicit `direnv allow`.
+`direnv` approvals are per-path, so a brand new worktree's `.envrc` is unapproved
+even when the repository root's identical copy is approved. When `direnv` is
+installed, `ai` therefore approves the worktree itself — after creating it and
+before starting the agent — and prints the path it approved.
+
+The scope is exactly the worktrees `ai` creates under `.worktrees/`, and only
+their own `.envrc`. The repository root, an `.envrc` inherited from a parent
+directory, and worktrees registered anywhere else are never approved
+automatically: `ai` vouches for a directory because it created it, which is not
+something it can claim about a directory it merely launched in. A worktree
+`direnv` has already approved is left alone, and a host with no `direnv` skips
+the step silently. Set `AI_CLI_SKIP_DIRENV=1` to turn automatic approval off.
 Targeted session launches (`ai c <name>`, `ai g <name>`, `ai p <name>`, and `ai cx <name>`) do not pause for
 unrelated project-registry discovery prompts.
 

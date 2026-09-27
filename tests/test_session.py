@@ -1115,6 +1115,11 @@ def _porcelain(*worktree_paths):
     return "\n\n".join(blocks) + "\n\n"
 
 
+def _direnv_status(*, allowed: bool) -> str:
+    """``direnv status --json`` output. ``state.foundRC.allowed`` is 0 only when approved."""
+    return json.dumps({"state": {"foundRC": {"allowed": 0 if allowed else 1, "path": ".envrc"}}})
+
+
 def _stub_worktree_base(upstream="main"):
     """Stub base+upstream resolution for tests that mock ``subprocess.run`` wholesale.
 
@@ -1191,19 +1196,19 @@ class TestCreateWorktree:
                 result = create_worktree("session-2")
         assert result == wt_dir
 
-    def test_create_worktree_when_matching_root_envrc_is_usable_then_allows_new_worktree(self, tmp_path):
+    def test_create_worktree_when_new_worktree_carries_an_envrc_then_direnv_allows_that_path(self, tmp_path):
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         wt_dir = repo_root / ".worktrees" / "session-1"
         calls = []
-        direnv_calls = []
+        probes = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd[:2] == ["direnv", "export"]:
-                direnv_calls.append((cmd, kwargs["cwd"]))
-                return MagicMock(returncode=0 if kwargs["cwd"] == repo_root else 1, stdout="")
+            if cmd == ["direnv", "status", "--json"]:
+                probes.append(kwargs["cwd"])
+                return MagicMock(returncode=0, stdout=_direnv_status(allowed=False))
             if cmd[:3] == ["git", "worktree", "add"]:
                 wt_dir.mkdir(parents=True, exist_ok=True)
                 (wt_dir / ".envrc").write_text((repo_root / ".envrc").read_text())
@@ -1212,6 +1217,7 @@ class TestCreateWorktree:
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            patch("ai_cli.session.direnv_available", return_value=True),
             _stub_worktree_base(),
             patch("subprocess.run", side_effect=fake_run),
         ):
@@ -1219,12 +1225,17 @@ class TestCreateWorktree:
 
         assert result == wt_dir
         assert ["direnv", "allow", str(wt_dir)] in calls
-        assert direnv_calls == [
-            (["direnv", "export", "json"], wt_dir),
-            (["direnv", "export", "json"], repo_root),
-        ]
+        # Only the worktree is probed, and only for its approval state: `direnv
+        # export` would EVALUATE the .envrc and hit its credential provider.
+        assert probes == [wt_dir]
+        assert not any(call[:2] == ["direnv", "export"] for call in calls)
 
-    def test_create_worktree_when_root_envrc_is_unusable_then_does_not_allow_worktree(self, tmp_path):
+    def test_create_worktree_when_the_root_envrc_is_unapproved_then_the_worktree_is_still_allowed(self, tmp_path):
+        """An unapproved repository root must not veto the worktree the tool created.
+
+        Treating root approval as a precondition is what made this a silent no-op on
+        a host where no .envrc is approved at all -- the reported defect.
+        """
         repo_root = tmp_path / "repo"
         wt_dir = repo_root / ".worktrees" / "session-1"
         wt_dir.mkdir(parents=True)
@@ -1234,47 +1245,50 @@ class TestCreateWorktree:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd == ["direnv", "export", "json"] and kwargs["cwd"] in (wt_dir, repo_root):
-                return MagicMock(returncode=1, stdout="")
+            if cmd == ["direnv", "status", "--json"]:
+                return MagicMock(returncode=0, stdout=_direnv_status(allowed=False))
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
             return MagicMock(returncode=0, stdout="")
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            patch("ai_cli.session.direnv_available", return_value=True),
             patch("subprocess.run", side_effect=fake_run),
         ):
             result = create_worktree("session-1")
 
         assert result == wt_dir
-        assert not any(call[:2] == ["direnv", "allow"] for call in calls)
+        assert ["direnv", "allow", str(wt_dir)] in calls
+        assert not any(call[:2] == ["direnv", "allow"] and call[2] == str(repo_root) for call in calls)
 
-    def test_create_worktree_when_worktree_envrc_is_usable_then_skips_root_check(self, tmp_path):
+    def test_create_worktree_when_the_worktree_is_already_approved_then_nothing_is_reallowed(self, tmp_path):
         repo_root = tmp_path / "repo"
         wt_dir = repo_root / ".worktrees" / "session-1"
         wt_dir.mkdir(parents=True)
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         (wt_dir / ".envrc").write_text("export EXAMPLE=value\n")
         calls = []
-        direnv_calls = []
+        probes = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd == ["direnv", "export", "json"]:
-                direnv_calls.append((cmd, kwargs["cwd"]))
-                return MagicMock(returncode=0, stdout="")
+            if cmd == ["direnv", "status", "--json"]:
+                probes.append(kwargs["cwd"])
+                return MagicMock(returncode=0, stdout=_direnv_status(allowed=True))
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
             return MagicMock(returncode=0, stdout="")
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            patch("ai_cli.session.direnv_available", return_value=True),
             patch("subprocess.run", side_effect=fake_run),
         ):
             result = create_worktree("session-1")
 
         assert result == wt_dir
-        assert direnv_calls == [(["direnv", "export", "json"], wt_dir)]
+        assert probes == [wt_dir]
         assert not any(call[:2] == ["direnv", "allow"] for call in calls)
 
 
@@ -1492,7 +1506,7 @@ class TestCreateWorktreeEdgeCases2:
             patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
             _stub_worktree_base(),
             patch("ai_cli.session._set_upstream_or_raise", side_effect=fail_creator_upstream) as set_upstream,
-            patch("ai_cli.session._allow_trusted_worktree_envrc") as allow_envrc,
+            patch("ai_cli.session._authorize_session_worktree_envrc") as authorize_envrc,
             patch("ai_cli.trust.ensure_workspace_trusted") as ensure_trusted,
             patch("portalocker.Lock", SlotLock),
             patch("subprocess.run", side_effect=fake_run),
@@ -1515,7 +1529,7 @@ class TestCreateWorktreeEdgeCases2:
         else:
             assert (wt_dir / ".venv").is_symlink()
         ensure_trusted.assert_called_once_with([tmp_path, wt_dir])
-        allow_envrc.assert_called_once_with(tmp_path, wt_dir)
+        authorize_envrc.assert_called_once_with(tmp_path, wt_dir)
         assert set_upstream.call_count == 1
         assert [
             "git",
