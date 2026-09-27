@@ -380,8 +380,13 @@ def test_given_no_injected_winreg_when_refreshing_path_then_the_real_registry_is
     # Its own roots, not a bogus handle: a real ``winreg`` opens these and would make
     # a bogus-handle OSError look like the guard working.
     ambient = sys.modules["winreg"]
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="shadowed in tests"):
         ambient.OpenKey(ambient.HKEY_CURRENT_USER, "Environment")
+    # And ONLY those keys: anything else is the real module's problem, so the guard cannot
+    # surprise a standard-library or dependency consumer that imports winreg late.
+    with pytest.raises(OSError) as other:
+        ambient.OpenKey(ambient.HKEY_CURRENT_USER, r"Software\NotTheEnvironment")
+    assert "shadowed in tests" not in str(other.value)
 
     assert refresh_windows_path() is False
     assert os.environ["PATH"] == r"C:\existing"

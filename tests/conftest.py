@@ -53,6 +53,15 @@ _DESKTOP_ESCAPE_IMPORT = "plyer"
 # would restore as a module that cannot be imported from.
 _MISSING = object()
 
+# The two registry keys that hold a persisted ``Path``, lowercased for comparison. Exactly
+# the pair ``direnv_setup.refresh_windows_path`` reads and merges into this process.
+_WINDOWS_ENVIRONMENT_SUBKEYS = frozenset(
+    {
+        r"system\currentcontrolset\control\session manager\environment",
+        "environment",
+    }
+)
+
 # Attempts are RECORDED as well as refused, because refusing alone does not report.
 # ``notifications._send_os_notification`` wraps its spawn in ``except Exception`` and
 # returns a failed result, so the guard's RuntimeError never reaches the test that
@@ -548,21 +557,42 @@ def _refuse_real_windows_registry_reads():
     the desktop-escape guards, because reading a registry key harms nobody -- there is
     no escape to report, only a shared mutable to keep out of the suite.
 
+    Only the two environment subkeys are refused, and every other key is handed to the
+    real module. ``winreg`` is shared with the standard library and with dependencies --
+    ``mimetypes`` and ``webbrowser`` both reach for it on Windows -- and any of them
+    importing it late enough to see this stub would get an unrelated, hard-to-place
+    failure from a blanket refusal. Narrowing to the keys that carry PATH leaves the
+    guard total for the hazard and invisible to everything else.
+
     Installed on every platform, for the reason the plyer guard is: the branch is
     selected by ``sys.platform`` and tests force that value to exercise it from a Mac or
     Linux host, so gating the guard on the host OS would leave it off exactly where the
     branch is live. Tests that want the behaviour inject their own fake over this one
     (``monkeypatch.setitem(sys.modules, "winreg", ...)``), which still wins.
     """
+    try:
+        import winreg as real
+    except ImportError:
+        real = None  # type: ignore[assignment]
 
-    def _refuse(*_args, **_kwargs):
-        raise OSError("winreg is shadowed in tests; inject a fake to exercise this branch")
+    def _open_key(root, subkey, *args, **kwargs):
+        if str(subkey).lower() in _WINDOWS_ENVIRONMENT_SUBKEYS:
+            raise OSError(f"{subkey!r} is shadowed in tests; inject a fake winreg to exercise this branch")
+        if real is None:
+            raise OSError("no winreg on this platform")
+        return real.OpenKey(root, subkey, *args, **kwargs)
 
     stub = types.ModuleType("winreg")
-    stub.HKEY_LOCAL_MACHINE = 0  # type: ignore[attr-defined]
-    stub.HKEY_CURRENT_USER = 1  # type: ignore[attr-defined]
-    stub.OpenKey = _refuse  # type: ignore[attr-defined]
-    stub.QueryValueEx = _refuse  # type: ignore[attr-defined]
+    if real is None:
+        # Enough surface for the Windows branch to be reachable from a POSIX host.
+        stub.HKEY_LOCAL_MACHINE = 0  # type: ignore[attr-defined]
+        stub.HKEY_CURRENT_USER = 1  # type: ignore[attr-defined]
+    else:
+        for name in dir(real):
+            if not name.startswith("__"):
+                setattr(stub, name, getattr(real, name))
+    stub.OpenKey = _open_key  # type: ignore[attr-defined]
+    stub.OpenKeyEx = _open_key  # type: ignore[attr-defined]
     saved = sys.modules.get("winreg", _MISSING)
     sys.modules["winreg"] = stub
     try:
