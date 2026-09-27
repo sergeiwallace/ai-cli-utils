@@ -61,10 +61,50 @@ Tracked separately. Fix them on their merits; do not silence CI again to hide th
 
 ## Required status checks
 
-`lint` and `test` are **not** currently required by the `main` ruleset. They were removed during the
-retirement and have deliberately not been re-added yet: making a failing check required would block
-every merge, which is how a well-intentioned gate becomes an outage. Re-add them once the failures
-above are fixed, `lint` first since it already passes.
+All four CI jobs are required on `main`: **`lint`, `test`, `test-windows`, `test-macos`**. They were
+removed during the retirement, left out while the failures above were live, and restored together
+once those were fixed (AI-CLI-66mk).
+
+Two things had to change alongside registering the names. `test-macos` lost its
+`continue-on-error: true`, because a job permitted to fail cannot gate anything — requiring one is
+how a required check gets quietly disabled. And the names themselves are post-consolidation: the
+`python-version` matrices are gone, so the contexts are bare job names with no `(3.12)` suffix. A
+context that never reports blocks a PR forever, so **read the names off a completed run before
+changing this set**, never off a doc:
+
+```bash
+gh pr view <n> --json statusCheckRollup --jq '.statusCheckRollup[] | .name'
+```
+
+### Checking whether `main` is protected — use the rulesets endpoint
+
+**`gh api repos/user/ai-cli-utils/branches/main/protection` returns `404 Branch not protected` even
+when `main` is fully protected.** That endpoint reports only *classic* branch protection. This repo
+uses a **ruleset** (`main-protection`), and rulesets do not surface there at all. The 404 is not
+evidence of anything.
+
+That is not a hypothetical trap: it was read as "there is no protection on `main`" once already.
+Commands that tell the truth:
+
+```bash
+# Every rule in force on the branch, whatever the mechanism
+gh api repos/user/ai-cli-utils/rules/branches/main --jq '.[].type'
+
+# The ruleset itself, including the required contexts
+gh api repos/user/ai-cli-utils/rulesets --jq '.[] | "\(.id) \(.name) \(.enforcement)"'
+gh api repos/user/ai-cli-utils/rulesets/<id>
+
+# Cheapest one-line answer
+gh api repos/user/ai-cli-utils/branches/main --jq '.protected'
+```
+
+Add rules by `PUT`ting the ruleset, which **replaces** it — send the existing rules and
+`bypass_actors` back or you will silently drop them. The ruleset also enforces
+`required_linear_history`, `deletion` and `non_fast_forward`.
+
+Repository admins keep `bypass_mode: always`. That is what preserves the direct-push path for
+commits touching only `.beads/`, and it means a flaky required check holds a merge rather than
+hard-locking the repo.
 
 ## Session checklist
 

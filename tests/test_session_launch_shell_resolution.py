@@ -35,7 +35,7 @@ from unittest.mock import patch
 
 import libtmux
 import pytest
-from conftest import tmux_runnable
+from conftest import TMUX_REQUIRED_REMEDY, tmux_runnable
 
 from ai_cli.main import _do_session_launch
 from ai_cli.session_script import SESSION_SHELL_PREFERENCE, get_engine_script
@@ -633,6 +633,28 @@ def test_given_three_slow_agent_failures_when_session_runs_then_restart_loop_sto
 # tests above covers it. It carried the same two hardcodes.
 
 
+def _once_exec_diagnosis(file: str) -> str:
+    """Explain a ``--once`` exec target that is not tmux, naming tmux when it is absent.
+
+    The bare ``assert file == "tmux"`` below used to report ``'claude' == 'tmux'`` or
+    ``'direnv' == 'tmux'`` on a host without tmux (AI-CLI-qzf2), which sends the reader
+    straight to shell resolution -- the thing these tests are about -- when the real
+    cause is provisioning. ``_clean_bin`` can only symlink what the host actually has,
+    so an absent tmux quietly removes it from the hermetic PATH and the launch path
+    correctly exec's the engine instead.
+    """
+    if not _TMUX_RUNNABLE:
+        return (
+            f"--once exec'd {file!r} instead of `tmux` because tmux is not usable on this host "
+            f"({_TMUX_SKIP_REASON}), so the hermetic PATH this test builds has no tmux to "
+            f"choose. This is NOT a shell-resolution defect. {TMUX_REQUIRED_REMEDY}"
+        )
+    return (
+        f"--once exec'd {file!r} instead of `tmux`, and tmux IS usable here -- so this is a real "
+        "defect in the --once launch path, not a missing dependency."
+    )
+
+
 def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
     """Return the argv ``--once`` hands to ``os.execvp`` for a real tmux exec."""
     captured: list = []
@@ -660,7 +682,7 @@ def _capture_once_argv(tmp_path: Path, engine: str = "c") -> list:
 
     assert captured, "--once never reached os.execvp"
     file, argv = captured[0]
-    assert file == "tmux"
+    assert file == "tmux", _once_exec_diagnosis(file)
     return argv
 
 

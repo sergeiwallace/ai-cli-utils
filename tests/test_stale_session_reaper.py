@@ -24,6 +24,7 @@ from unittest.mock import patch
 import portalocker
 import psutil
 import pytest
+from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import get_engine_script
@@ -172,13 +173,19 @@ def isolated_tmux_socket() -> Iterator[str]:
     if not _POSIX_HOST:
         pytest.skip("the real-tmux tests need POSIX process semantics, not just a tmux binary")
     if shutil.which("tmux") is None:
-        pytest.skip("tmux binary not available on PATH")
+        pytest.skip(tmux_unusable_skip_reason("tmux binary not available on PATH"))
     socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir=_SOCKET_PARENT))
     socket = str(socket_dir / "socket")
     try:
         probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
         if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
-            pytest.skip(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
+            # Marked as a tmux-provisioning skip, unlike the POSIX check above: tmux is
+            # installed here and still cannot host a session, so the coverage this
+            # module provides has silently gone away and the session-level check in
+            # conftest should say so rather than let the run look green.
+            pytest.skip(
+                tmux_unusable_skip_reason(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
+            )
         yield socket
     finally:
         _tmux_run(socket, "kill-server")
@@ -1390,7 +1397,11 @@ def _zsh_rc_free_home(tmp_path: Path) -> Path:
 
 def _write_isolated_tmux_wrapper(path: Path) -> None:
     tmux_binary = shutil.which("tmux")
-    assert tmux_binary is not None, "tmux binary not available on PATH"
+    # Deliberately an assertion and not a skip: the test below is one of the three that
+    # treat tmux as guaranteed (AI-CLI-qzf2). The message therefore has to name the
+    # missing binary AND what to do about it, because a reader who sees only a failure
+    # here has no reason to suspect provisioning.
+    assert tmux_binary is not None, f"tmux binary not available on PATH. {TMUX_REQUIRED_REMEDY}"
     _write_executable(
         path,
         f'#!/bin/sh\nexec {shlex.quote(tmux_binary)} -S "$AI_CLI_TEST_TMUX_SOCKET" "$@"\n',

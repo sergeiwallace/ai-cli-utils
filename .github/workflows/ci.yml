@@ -62,6 +62,19 @@ jobs:
         with:
           # Kept in sync with `.python-version` by the lint job's version-sync step.
           python-version: "3.14"
+      # tmux is a HARD requirement of this suite (AI-CLI-qzf2), so every platform
+      # provisions it explicitly and this was the last job that did not. It relied on
+      # the runner image happening to ship one, which is the same implicit dependency
+      # `test-macos` below removed -- and "happens to be there" is not a dependency, it
+      # is a coincidence that decides how much this job covers. `tmux -V` is part of the
+      # step rather than a nicety: an install that succeeds while producing a binary
+      # that cannot run is a real failure mode here (AI-CLI-i2ih), and it would
+      # otherwise surface as unexplained test failures much later in the job.
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
       - run: uv sync --dev
       - run: uv run pytest --cov=ai_cli --cov-report=xml --tb=short -q
       - name: Upload coverage
@@ -104,10 +117,19 @@ jobs:
 
   test-macos:
     runs-on: macos-latest
-    # NON-BLOCKING ON PURPOSE, and expected to be RED when first added
-    # (AI-CLI-3cai). `continue-on-error` keeps a macOS-only failure from turning
-    # the whole workflow red, because adding a red job to a required matrix is
-    # how a required check gets quietly disabled. It is a signal job, not a gate.
+    # A REQUIRED CHECK as of AI-CLI-66mk, alongside `lint`, `test` and
+    # `test-windows`. It used to carry `continue-on-error: true` because it was
+    # expected to be red when first added (AI-CLI-3cai) and a job permitted to fail
+    # cannot gate anything -- so promoting it meant removing that flag, not merely
+    # naming it in branch protection. Requiring a job that is allowed to fail is how
+    # a required check gets quietly disabled.
+    #
+    # The promotion trigger the flag used to carry was "once AI-CLI-3cai is fixed and
+    # this job stays green across two weeks of PRs". It was met early on the first
+    # half and short on the second: the operator chose all three platform tiers
+    # deliberately, and the pytest step itself (not merely the job conclusion, which
+    # `continue-on-error` would have painted green regardless) passed on run
+    # 36290320909 and on PR #193.
     #
     # Why it exists at all: two recent defects were invisible to a
     # ubuntu + windows matrix. AI-CLI-ta1l's macOS half, and AI-CLI-3cai, where
@@ -115,11 +137,6 @@ jobs:
     # platforms pass. macOS is also the platform the iTerm2 and tmux surface
     # actually targets, so it was the least covered and most exercised OS.
     #
-    # PROMOTION TRIGGER, so this does not sit ignored forever: once AI-CLI-3cai
-    # is fixed and this job stays green across two weeks of PRs, delete
-    # `continue-on-error` and make it a required check. Decide that alongside
-    # AI-CLI-66mk, which owns which checks are required.
-    continue-on-error: true
     # macOS runners are the slowest and the most expensive per minute, so bound a
     # hang rather than discovering it on the bill.
     timeout-minutes: 20
@@ -140,10 +157,11 @@ jobs:
       # 45 skipped / 3 failed. The three failures were tests that use tmux
       # without guarding for it ("tmux binary not available on PATH"), and the
       # twelve extra skips were tests that do guard. So the job silently changed
-      # what it covered from run to run, which makes a red result unreadable --
-      # exactly the failure mode `fail-fast: false` was added to the Linux matrix
-      # to avoid. Installing it makes coverage deterministic, and matches
-      # `test-windows`, which already installs tmux deliberately via MSYS2.
+      # what it covered from run to run, which makes a red result unreadable.
+      # Installing it makes coverage deterministic, and every other job now does
+      # the same -- MSYS2 for `test-windows`, apt for `test`. The suite enforces the
+      # converse too: it fails a run that skips a tmux test while tmux IS usable,
+      # so this install going missing can no longer pass as a smaller green run.
       - run: brew install tmux
       - run: uv sync --dev
       - run: uv run pytest --tb=short -q

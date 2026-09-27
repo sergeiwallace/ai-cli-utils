@@ -211,7 +211,22 @@ Ask a CC session to verify these before flipping:
 
 #### Step 6: Enable branch protection rulesets
 
-Run this command (failed earlier because repo was private):
+> **DONE, but not as written below.** Protection is live on `main` via classic branch
+> protection (`gh api repos/user/ai-cli-utils/branches/main/protection`), not via a ruleset,
+> and the required contexts are all four CI jobs — `lint`, `test`, `test-windows`,
+> `test-macos` — not the `lint` + `test (3.12)` pair prescribed here. Two reasons the
+> prescription below is stale: the Python matrix was consolidated onto a single version, so
+> no `test (3.12)` context exists to require any more, and the choice of all four jobs
+> rather than two was made deliberately (AI-CLI-66mk). `test-macos` lost its
+> `continue-on-error` in the same change, because a job permitted to fail cannot gate
+> anything.
+>
+> Still NOT implemented, and deliberately so: `required_linear_history`, `deletion` and
+> `non_fast_forward`. Those were never part of the decision that enabled protection, and
+> adding governance nobody asked for is its own kind of defect. Pick them up as their own
+> decision if you want them.
+
+The original prescription, kept for the reasoning rather than the commands:
 
 ```bash
 gh api repos/user/ai-cli-utils/rulesets -X POST --input - <<'JSON'

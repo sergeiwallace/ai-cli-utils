@@ -276,6 +276,37 @@ def remote_demanding_credentials():
         thread.join(timeout=5)
 
 
+#: Prefix on every skip reason that means "tmux itself could not be used here", so the
+#: session-level check below can recognise one without pattern-matching English.
+#:
+#: A plain substring search for "tmux" is NOT good enough, and that is the whole reason
+#: this marker exists. Several deliberate skips mention tmux while saying nothing about
+#: whether it is installed -- "real tmux server behavior unverified under MSYS2 CI", which
+#: fires on Windows where tmux IS provisioned, and "the real-tmux tests need POSIX process
+#: semantics, not just a tmux binary". Both would match a naive search and neither is a
+#: provisioning problem, so a naive check would fail the Windows job on every run.
+TMUX_UNUSABLE_SKIP = "tmux unusable"
+
+#: What to do about it, shared so every tmux-provisioning failure says the same thing.
+#: tmux is a HARD requirement of this suite, not an optional one (AI-CLI-qzf2): the tests
+#: that drive a real tmux server fail rather than skip without it, and every CI platform
+#: installs it explicitly.
+TMUX_REQUIRED_REMEDY = (
+    "tmux is a hard requirement of this test suite, not an optional one: install tmux and "
+    "re-run. Every CI platform provisions it explicitly -- see .github/workflows/ci.yml."
+)
+
+
+def tmux_unusable_skip_reason(detail: str) -> str:
+    """Format ``detail`` as a skip reason the session-level tmux check recognises."""
+    return f"{TMUX_UNUSABLE_SKIP}: {detail}"
+
+
+def is_tmux_unusable_skip(reason: str) -> bool:
+    """Was this skip caused by tmux being unusable, rather than merely about tmux?"""
+    return TMUX_UNUSABLE_SKIP in reason
+
+
 def tmux_runnable() -> tuple[bool, str]:
     """Can ``tmux`` actually be executed here? Returns ``(runnable, reason)``.
 
@@ -297,20 +328,25 @@ def tmux_runnable() -> tuple[bool, str]:
 
     Shared by every module that gates on a live tmux. It used to be copied per
     module, and the copies had already drifted in what they reported.
+
+    Every failure reason carries :data:`TMUX_UNUSABLE_SKIP`, so a skip taken on one
+    is machine-recognisable by :func:`pytest_sessionfinish` below.
     """
     if shutil.which("tmux") is None:
-        return False, "tmux binary not available on PATH"
+        return False, tmux_unusable_skip_reason("tmux binary not available on PATH")
 
     def _probe() -> tuple[bool, str]:
         try:
             probe = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=30, check=False)
         except OSError as exc:
-            return False, f"tmux could not be executed: {exc}"
+            return False, tmux_unusable_skip_reason(f"tmux could not be executed: {exc}")
         except subprocess.TimeoutExpired:
-            return False, "tmux -V timed out"
+            return False, tmux_unusable_skip_reason("tmux -V timed out")
         if probe.returncode != 0:
             detail = (probe.stderr or probe.stdout or "").strip().splitlines()
-            return False, f"tmux is on PATH but does not run: {detail[0] if detail else f'exit {probe.returncode}'}"
+            return False, tmux_unusable_skip_reason(
+                f"tmux is on PATH but does not run: {detail[0] if detail else f'exit {probe.returncode}'}"
+            )
         return True, ""
 
     runnable, reason = _probe()
@@ -323,6 +359,81 @@ def tmux_runnable() -> tuple[bool, str]:
     if not repair.repaired:
         return False, f"{reason} (loader repair did not help: {repair.detail})"
     return _probe()
+
+
+#: Every skip this session took because tmux was unusable, as ``(nodeid, reason)``.
+_tmux_unusable_skips: list[tuple[str, str]] = []
+
+
+def _report_skip_reason(report) -> str:
+    """The human reason from a skip report, or ``""`` if this is not a skip.
+
+    Shape-tolerant on purpose. pytest represents a skip's ``longrepr`` as a
+    ``(path, lineno, "Skipped: <reason>")`` triple, but this suite runs under
+    ``-n auto`` and xdist round-trips every report through a serializer, so the
+    triple can arrive at the controller as a list. An xfail's ``longrepr`` is
+    neither shape.
+    """
+    longrepr = report.longrepr
+    if not report.skipped or not isinstance(longrepr, (tuple, list)) or len(longrepr) != 3:
+        return ""
+    return str(longrepr[2])
+
+
+def pytest_runtest_logreport(report):
+    """Collect skips caused by an unusable tmux, for :func:`pytest_sessionfinish`."""
+    reason = _report_skip_reason(report)
+    if reason and is_tmux_unusable_skip(reason):
+        _tmux_unusable_skips.append((report.nodeid, reason))
+
+
+def tmux_skip_regression_message(skips, tmux_is_runnable: bool) -> str | None:
+    """Why this run's tmux skips are a coverage regression, or ``None`` if they are not.
+
+    Separated from the hook so the verdict is testable without driving a whole pytest
+    session: the interesting part is the pairing of the two inputs, not the plumbing.
+
+    A tmux skip on a host with no usable tmux is correct and reports nothing. The same
+    skip on a host where tmux runs fine means the suite quietly covered less than it
+    could, and that is the case worth failing on.
+    """
+    if not skips or not tmux_is_runnable:
+        return None
+    listed = "\n".join(f"  {nodeid}: {reason}" for nodeid, reason in skips)
+    return (
+        f"{len(skips)} test(s) skipped for lack of a usable tmux, on a host where tmux DOES run. "
+        "That means this run covered less than the last one while looking just as green. It is "
+        "the failure mode that hid a twelve-skip divergence until three unrelated tests happened "
+        "to fail beside it (AI-CLI-qzf2): either tmux stopped working mid-run, or one of these "
+        f"skips is misreporting its cause.\n{listed}"
+    )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail a run that skipped tmux tests despite tmux being usable (AI-CLI-qzf2).
+
+    Session-scoped rather than per test because the signal is a COUNT: each individual
+    skip looks reasonable in isolation, and it is only the total moving between two runs
+    of the same commit that reveals coverage was lost.
+
+    Under ``-n auto`` this must decide on the controller alone. Workers each see only
+    their own shard, and the controller receives every worker's reports, so a worker
+    deciding would report a fraction of the truth and set an exit status xdist does not
+    use for the run's verdict.
+
+    ``tmux_runnable`` is probed here rather than at import so the cost -- a real
+    subprocess -- is paid only by a run that has something to decide.
+    """
+    if hasattr(session.config, "workerinput"):
+        return
+    message = tmux_skip_regression_message(_tmux_unusable_skips, tmux_runnable()[0])
+    if message is None:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", "tmux coverage regression", red=True, bold=True)
+        reporter.write_line(message)
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def _reject_real_agent_process(command, allowed_binaries=frozenset()):

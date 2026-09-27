@@ -50,6 +50,32 @@ uv run pytest
 
 ## Running Tests
 
+### tmux is required, not optional
+
+Install `tmux` before running the suite. It is a hard test dependency: several tests drive
+a real tmux server rather than a mock, and they fail rather than skip without it.
+
+```bash
+# macOS
+brew install tmux
+
+# Debian/Ubuntu
+sudo apt-get install tmux
+
+# Windows: via MSYS2, which is what CI uses
+pacman -S tmux
+```text
+
+Every CI job installs it explicitly, on all three platforms. That is deliberate rather than
+belt-and-braces: two runs of the same commit once differed only in whether the runner image
+happened to ship tmux, and reported 33 skips / 0 failures versus 45 skips / 3 failures. A
+suite whose coverage moves with the host is a suite whose green is not worth much, so the
+dependency is guaranteed instead of tolerated.
+
+The suite enforces the other half of that: if tmux IS usable and a test still skips for lack
+of it, the run fails at the end with a `tmux coverage regression` summary naming the tests.
+A skip count that quietly drifts is exactly what went unnoticed before.
+
 ```bash
 # Full test suite
 uv run pytest
