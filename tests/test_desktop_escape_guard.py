@@ -71,18 +71,30 @@ class TestTheOriginalMistakeIsCaught:
         test. Nothing is raised here -- deliberately -- and the attempt is still
         recorded, which is what the autouse teardown check turns into a failure.
         """
+        if sys.platform == "win32":
+            pytest.skip("the Windows branch notifies through plyer, covered by the test below")
+        expected = "osascript" if sys.platform == "darwin" else "notify-send"
+
         result = notifications._send_os_notification("title", "body")
 
-        assert result.success is False
-        expected = "osascript" if sys.platform == "darwin" else "notify-send"
-        if sys.platform == "win32":
-            # The Windows branch goes through plyer, not a subprocess, so there is no
-            # spawn to refuse and nothing to record. Asserting that explicitly keeps
-            # this test honest rather than silently vacuous there.
-            assert expect_desktop_escape == []
-            assert result.success is False or result.success is True
-        else:
-            assert expect_desktop_escape == [expected]
+        assert result.success is False, "the swallowed failure is the guard's refusal"
+        assert expect_desktop_escape == [expected]
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the plyer branch only runs on Windows")
+    def test_given_windows_when_notifying_then_there_is_no_spawn_to_refuse(self, expect_desktop_escape):
+        """Windows notifies through plyer, in-process, so this guard cannot see it.
+
+        Stated as its own test rather than as a branch of the one above, because the
+        outcome is genuinely different: with the optional ``[notify-win]`` extra absent
+        the call is a silent no-op and reports SUCCESS, so asserting a failed result
+        there -- which is what an unbranched version did -- fails on Windows only.
+
+        Recording the gap explicitly: a real Windows toast is NOT guarded by this
+        mechanism, because there is no subprocess to intercept.
+        """
+        notifications._send_os_notification("title", "body")
+
+        assert expect_desktop_escape == []
 
 
 class TestTheGuardDoesNotBlockLegitimateTests:
