@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI now refuses to install from a stale lockfile.** All four jobs synced with
+  `uv sync --dev`, which RE-RESOLVES silently whenever `pyproject.toml` and `uv.lock`
+  disagree — so a pull request could pass every required check having installed versions
+  that were not the ones it shipped, and merge a stale lock, with no log line saying so.
+  Every sync step now passes `--locked`, which fails with ``The lockfile at `uv.lock`
+  needs to be updated`` and names `uv lock` as the remedy. `--frozen` was rejected as the
+  alternative on measurement: against one deliberately staled lock, `--frozen` exited 0
+  and installed the stale versions while `--locked` exited 1, so `--frozen` makes the
+  disagreement quiet rather than loud. Local `uv sync --dev` is unchanged and still
+  re-resolves, so an edit-and-run loop needs no relock at every step; CI is the boundary
+  where it stops. `tests/test_ci_lock_assertion.py` fails if any workflow sync step stops
+  asserting the lock, since the flag is one word that a later unrelated step rewrite would
+  drop silently. (`AI-CLI-qqnx`)
 - **BREAKING: Python 3.14 is now the only supported version.** `requires-python` was
   `>=3.11` and is now `>=3.14,<3.15`, so installing under 3.11, 3.12 or 3.13 is refused
   rather than silently unsupported, and installing under a future 3.15 will be refused
