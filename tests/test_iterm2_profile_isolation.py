@@ -82,7 +82,7 @@ class TestDescribeTreeChange:
         assert change == "added ['ai-cli-session-session-1.json']"
 
     def test_given_a_removed_file_when_described_then_names_it(self):
-        # session._cleanup_stale_profiles unlinks profiles, so deletion is a real
+        # session._sweep_stale_iterm2_profiles unlinks profiles, so deletion is a real
         # failure mode here and not just an added-file problem.
         change = describe_tree_change({"ai-cli-session-session-1.json": (9, 9)}, {})
         assert change == "removed ['ai-cli-session-session-1.json']"

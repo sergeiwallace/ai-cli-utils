@@ -473,7 +473,7 @@ def _redirect_home_away_from_the_operator(monkeypatch, tmp_path_factory):
     either: there are three independent real-directory paths --
     ``icon_generator._dynamic_profile_dir`` (writes a profile),
     ``layout._dynamic_profile_dir`` (a SECOND, separately-defined copy that writes
-    layout profiles), and ``session._cleanup_stale_profiles`` (which ``unlink()``s every
+    layout profiles), and ``session._sweep_stale_iterm2_profiles`` (which ``unlink()``s every
     ``ai-cli-session-*.json`` whose tmux session is not currently live, so a test with a
     mocked-empty session list deletes the operator's LIVE profiles). All three derive
     from ``Path.home()``, which is the one lever that covers them by construction.
