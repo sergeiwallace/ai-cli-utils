@@ -4,12 +4,35 @@ Thanks for your interest in contributing! This guide covers everything you need 
 
 ## Development Setup
 
+### One Python version
+
+This project supports **exactly one** Python version, currently **3.14**, and `.python-version`
+is the canonical place it is declared. `requires-python` is `>=3.14,<3.15`, every CI job pins
+3.14, and `uv sync` builds the local venv from `.python-version`, so a local run is on the same
+interpreter CI uses.
+
+That is not a style preference. When the local venv ran 3.14 and CI ran 3.11/3.12/3.13, a defect
+turned out to be *unobservable* locally rather than merely unobserved — `pathlib` allows a
+`WindowsPath` on POSIX on 3.14 and refuses it at or below 3.13, so a test passed every local run
+and went red on four CI jobs, and no amount of local care could have caught it.
+
+`scripts/check_python_version_sync.py` enforces this. It runs as a pre-commit hook and as the
+first step of CI's lint job, and it fails if `.python-version`, `requires-python`, the pyright
+target, the trove classifiers, any workflow's pinned version, or the interpreter running the
+check disagree. Changing the supported version means editing `.python-version` and then fixing
+everything the check names.
+
+The cost is stated plainly: cross-version coverage is gone. A behaviour that differs between
+interpreters will no longer be caught by CI, so when you rely on one, write a test that forces
+the behaviour explicitly instead of trusting the interpreter to exhibit it.
+
 ```bash
 # Clone the repo
 git clone https://github.com/sergeiwallace/ai-cli-utils.git # public-hygiene: allow
 cd ai-cli-utils
 
 # Create virtual environment and install dev dependencies
+# (uv reads .python-version and provisions Python 3.14)
 uv sync --dev
 
 # Configure Claude Code session config for your environment
@@ -19,6 +42,7 @@ uv run ai setup
 uv run pre-commit install
 
 # Verify everything works
+uv run python scripts/check_python_version_sync.py
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 uv run pytest

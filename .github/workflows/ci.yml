@@ -40,6 +40,10 @@ jobs:
           # Kept in sync with `.python-version` by the version-sync step below.
           python-version: "3.14"
       - run: uv sync --dev
+      # Runs BEFORE the other checks on purpose: if the interpreter this job is
+      # running does not match what the repo declares, every result below it is
+      # about the wrong Python and a green tick would be misleading.
+      - run: uv run python scripts/check_python_version_sync.py
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
       - run: uv run pyright src/

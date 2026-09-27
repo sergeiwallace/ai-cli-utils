@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: Python 3.14 is now the only supported version.** `requires-python` was
+  `>=3.11` and is now `>=3.14,<3.15`, so installing under 3.11, 3.12 or 3.13 is refused
+  rather than silently unsupported, and installing under a future 3.15 will be refused
+  until that version is adopted deliberately. The trove classifiers advertise only 3.14.
+  The reason is that the version was declared in six independent places that disagreed —
+  the local venv on 3.14 while CI ran 3.11/3.12/3.13 — and under that arrangement a defect
+  could be *unobservable* locally rather than merely unobserved: `pathlib` allows a
+  `WindowsPath` on POSIX on 3.14 and refuses it at or below 3.13, so a test passed every
+  local run and went red on four CI jobs. Every CI job now pins 3.14, matching the
+  interpreter `.python-version` gives the local venv, so a local run predicts CI.
+  `scripts/check_python_version_sync.py` runs as a pre-commit hook and as CI's first lint
+  step and fails if `.python-version`, `requires-python`, the pyright target, the
+  classifiers, any workflow's pinned version or the running interpreter disagree. The cost
+  is real and is not hidden: CI no longer runs more than one interpreter, so
+  version-dependent behaviour has to be pinned down by a test that forces it explicitly
+  instead of by the matrix. (`AI-CLI-6rwp`)
 - Documentation, tests and one source comment no longer name a real machine or
   network. A VPN-range IP address was used as a test fixture and appeared in an
   archived plan document's example config, and several provenance notes
