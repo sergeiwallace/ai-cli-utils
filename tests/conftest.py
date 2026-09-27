@@ -1071,12 +1071,19 @@ def _run_cli_with_args(argv, config_override=None):
     config = config_override or {}
 
     def remote_preflight(command, **_kwargs):
+        if isinstance(command, (list, tuple)) and any("dolt_server.py" in str(part) for part in command):
+            # Not a remote-SSH command at all -- _ensure_dolt_server's local advisory
+            # probe runs before every session launch and shares this same mocked
+            # subprocess.run. Its argv has no shell string to parse below.
+            return make_subprocess_result(stdout='{"status": "healthy"}')
         if _command_program(command) == "tmux":
             return make_subprocess_result(returncode=1)
         if command[-1] == _REMOTE_SHELL_PROBE_CMD:
             return make_subprocess_result(stdout="zsh\n")
         remote_command = shlex.split(command[-1])[-1]
         tokens = shlex.split(remote_command)
+        if "update" in tokens and "ai" in tokens:
+            return make_subprocess_result(stdout="current")
         allocation_index = tokens.index("allocate-session-name")
         engine, project_prefix, name = tokens[allocation_index + 1 : allocation_index + 4]
         session_id, ai_name = _session_module.build_session_name(engine, project_prefix, name, is_remote=True)

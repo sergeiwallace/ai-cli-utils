@@ -51,6 +51,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also sends `SIGCONT` to the child's process group, so it wakes, processes
   the queued terminate signal, and the supervisor exits normally instead of
   hanging. (`AI-CLI-jpnd`)
+- The fix above could itself be silently defeated. The supervisor promoted
+  `$!` — the pid it backgrounded — as a process group id, but `$!` is the pid
+  that calls `setpgrp()` only if every wrapper in between execs through, and
+  where `python3` resolves through a `uv run` shim, `uv` spawns the
+  interpreter as a child of its own and `setpgrp()` runs a level further down.
+  The promoted group had no members, so the earlier fix's `SIGCONT` went to an
+  empty group and the child never resumed. The child now reports its real
+  pgid through the readiness file; the supervisor promotes the reported group
+  instead of the pid it backgrounded. (`AI-CLI-dw1g`)
+- A remote launch (`ai c`/`g`/`p`/`cx -R`) runs the generated supervisor
+  entirely from the remote host's own installed `ai-cli-utils`, not the local
+  one, and nothing kept that installation current — measured 40 and 34
+  commits stale on the two configured remote machines, including missing
+  both fixes above. Every remote launch now runs `ai update --quiet` on it
+  first; a failed or timed-out update degrades to a warning rather than
+  blocking the launch, and `--dry-run` skips it. (`AI-CLI-qmnd`)
 
 ## [0.8.0] - 2026-09-22
 

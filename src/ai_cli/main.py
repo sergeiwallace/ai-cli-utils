@@ -1325,6 +1325,49 @@ def _resolve_remote_shell(preflight_ssh_args: list[str]) -> str:
     return "bash"
 
 
+def _update_remote_ai_cli(preflight_ssh_args: list[str], remote_shell: str) -> tuple[bool, str]:
+    """Best-effort: bring the remote host's own ai-cli-utils to current origin/main.
+
+    A remote launch runs the generated supervisor entirely from the REMOTE
+    host's own installed ai-cli-utils, not the local one -- a fix merged here
+    does nothing for a remote session until that host's checkout is pulled and
+    reinstalled. Nothing else keeps it current: the local session-launch
+    auto-update (``_auto_update_if_stale``) only reinstalls when the local
+    tree's packaged-source fingerprint drifts from what is installed, which
+    says nothing about whether that local tree itself is behind origin. A
+    remote host's checkout is not actively worked in day to day, so without
+    this it silently falls behind -- measured at 40 (Framework) and 34
+    (Hetzner) commits stale, including the fix (AI-CLI-dw1g) for the exact
+    "could not promote child process group to terminal foreground" hang this
+    gap let two live remote sessions hit.
+
+    ``ai update --quiet`` already does the pull + version-busted reinstall and
+    is quiet by design for exactly this call site (see its own docstring). A
+    failure here must never block the actual session launch -- swallowed and
+    reported, not raised -- and is bounded by a timeout so a stalled fetch
+    cannot hang the launch the way the promotion bug itself did.
+    """
+    remote_command = 'export PATH="$HOME/.local/bin:$PATH"; ai update --quiet'
+    try:
+        result = subprocess.run(
+            [*preflight_ssh_args, f"{remote_shell} -l -c {shlex.quote(remote_command)}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "timed out after 30s"
+    except Exception as exc:
+        # A preflight step must never crash the launch -- matches
+        # _resolve_remote_shell's own catch-all fallback for the same reason.
+        return False, str(exc)
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        return False, output or f"exit {result.returncode}"
+    return True, output or "current"
+
+
 def _request_remote_session_allocation(
     ssh_args: list[str], engine: str, project_prefix: str, name: str, remote_shell: str
 ) -> tuple[str, str]:
@@ -2740,6 +2783,21 @@ def _do_session_launch(
             remote_shell = _resolve_remote_shell(preflight_ssh_args)
         if reporter is not None:
             reporter.phase("Remote").outcome("host ready")
+        # A write, unlike the read-only shell probe above it -- it runs `ai
+        # update` on the remote host. Gated the same way as every other write
+        # below the dry-run exit (see the comment on that check): a dry run
+        # must not mutate the remote host any more than it may mutate this one.
+        if not dry_run:
+            with (
+                reporter.phase("Update", "syncing remote ai-cli-utils")
+                if reporter is not None
+                else contextlib.nullcontext()
+            ):
+                _remote_update_ok, _remote_update_detail = _update_remote_ai_cli(preflight_ssh_args, remote_shell)
+            if reporter is not None:
+                reporter.phase("Update").outcome(
+                    _remote_update_detail if _remote_update_ok else f"skipped ({_remote_update_detail})"
+                )
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (<remote_shell> -l -c)
         # that does not source the shell's rc file where the uv env PATH setup
