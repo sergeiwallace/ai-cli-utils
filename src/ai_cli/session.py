@@ -24,7 +24,7 @@ from .config import (
     load_project_registry,
     resolve_project_prefix,
 )
-from .direnv_setup import envrc_loads
+from .direnv_setup import allow_envrc, direnv_available, envrc_allowed, is_bypassed
 from .git_repair import _git_env, repair_bare_worktree_config
 
 
@@ -1107,7 +1107,11 @@ def _initialize_worktree(
     from .trust import ensure_workspace_trusted
 
     ensure_workspace_trusted([repo_root, worktree_path])
-    _allow_trusted_worktree_envrc(repo_root, worktree_path)
+    # Ordering is load-bearing: the worktree exists by now, and this runs before
+    # create_worktree returns -- so the launcher's own direnv preflight, and the
+    # agent process itself, both see an approved directory. Approving any later
+    # means direnv has already printed the blocked-directory complaint.
+    _authorize_session_worktree_envrc(repo_root, worktree_path)
 
 
 @overload
@@ -1301,48 +1305,64 @@ def create_worktree(
         ) from exc
 
 
-def _allow_trusted_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:
-    """Approve a worktree .envrc only when it exactly matches an approved root file.
+def _is_session_worktree_slot(repo_root: Path, directory: Path) -> bool:
+    """True when ``directory`` is one of the session worktree slots this tool creates.
 
-    direnv approvals are path-specific.  Git creates the worktree's tracked
-    ``.envrc`` during checkout, but that new path is not approved just because
-    the repository root's identical file is.  Restrict automatic approval to
-    an exact byte-for-byte copy of an already-approved root .envrc; a changed,
-    missing, or unapproved file remains subject to direnv's normal prompt.
+    Path containment, deliberately, rather than asking git whether something is a
+    worktree: the question is not "is this a worktree" but "did this tool make
+    it". Only ``<repo>/.worktrees/<name>`` qualifies. The repository root, any
+    parent that merely happens to hold an ``.envrc``, and a worktree registered
+    from some other directory are all somebody else's to approve.
     """
-    root_envrc = repo_root / ".envrc"
-    worktree_envrc = worktree_dir / ".envrc"
-    if not root_envrc.is_file() or not worktree_envrc.is_file():
-        return
-
+    slots = repo_root / WORKTREE_DIR
     try:
-        if root_envrc.read_bytes() != worktree_envrc.read_bytes():
-            return
+        return directory.resolve().parent == slots.resolve()
     except OSError:
-        return
+        return directory.parent == slots
 
-    # An existing worktree should not re-evaluate the root .envrc on every
-    # launch.  Besides avoiding unnecessary work, that file may load
-    # credentials from a network-backed provider.
-    #
-    # Both probes go through the shared portable helper. They previously ran
-    # ``direnv exec <dir> true``, which ALWAYS fails on Windows because ``true``
-    # is a shell builtin with no ``true.exe`` to resolve -- so the root trust
-    # check below returned False on healthy setups and this function silently
-    # refused to approve anything, which is why the launcher nagged forever.
-    if envrc_loads(worktree_dir):
-        return
-    if not envrc_loads(repo_root):
-        return
 
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(
-            ["direnv", "allow", str(worktree_dir)],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
+def _authorize_session_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:
+    """Approve the ``.envrc`` of a session worktree this tool created, and say so.
+
+    direnv approvals are path-specific. Git writes the worktree's tracked
+    ``.envrc`` during checkout, and that new path is unapproved even when the
+    repository root holds a byte-identical approved copy -- so without this the
+    operator is told to run ``direnv allow`` by hand for every session worktree,
+    which is the complaint this exists to answer.
+
+    The authority to approve comes from having *created the directory*, so the
+    scope is exactly the slots this tool creates. That is the whole security
+    boundary: approval is never generalised to "wherever a launch happens", and
+    it deliberately does not depend on the repository root's own approval state.
+    Requiring that made the feature a no-op on a host where nothing is approved
+    -- the host that needs it most, and the one that reported it broken.
+
+    An operator who wants no automatic approval at all still has the module's
+    documented switch: ``AI_CLI_SKIP_DIRENV=1``. It is read from the environment
+    here because worktree creation is not handed the launcher's config; the
+    ``[direnv] enabled`` key applies to the launcher's own direnv preflight.
+
+    Best effort throughout -- direnv is an enhancement, never a launch
+    precondition, so an absent direnv is a silent no-op rather than an error.
+    """
+    if is_bypassed():
+        return
+    if not _is_session_worktree_slot(repo_root, worktree_dir):
+        return
+    # The worktree's OWN file. An inherited parent .envrc lives in a directory
+    # this tool did not create, so it stays subject to direnv's normal prompt.
+    if not (worktree_dir / ".envrc").is_file():
+        return
+    if not direnv_available():
+        return
+    # Already approved: a long-lived worktree relaunches often, and reprinting
+    # the notice every time would be noise about something that did not happen.
+    if envrc_allowed(worktree_dir) is True:
+        return
+    if allow_envrc(worktree_dir):
+        print(
+            f"[launch] direnv: authorized {worktree_dir / '.envrc'} (session worktree created by this tool)",
+            file=sys.stderr,
         )
 
 
