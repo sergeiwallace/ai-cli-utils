@@ -21,6 +21,29 @@ from conftest import tmux_runnable  # noqa: F401  (imported for parity with sibl
 from ai_cli import transport as _transport
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _run_transport_loop, cli
 
+
+@pytest.fixture(autouse=True)
+def supported_platform_for_remote_unit_tests():
+    """Exercise remote command construction independently of the host OS.
+
+    Mirrors ``tests/test_remote.py``'s fixture of the same name, and it is required
+    rather than tidy: remote SSH transport is deliberately REFUSED on native Windows,
+    exiting 1 at ``main.py``'s platform check before the launch reaches the transport
+    at all. Without this pin, every test here that drives a real ``ai c --remote``
+    asserts against a launch that never happened -- measured on test-windows, where
+    exactly that failed while Linux and macOS passed.
+
+    ``shutil.which`` is pinned alongside it because its own stdlib win32 branch needs
+    ``_winapi``, so patching the platform alone crashes it on a non-Windows host
+    before the code under test is reached.
+    """
+    with (
+        patch("ai_cli.main.sys.platform", "linux"),
+        patch("ai_cli.main.shutil.which", return_value="/usr/bin/tmux"),
+    ):
+        yield
+
+
 MOSH_ARGS = ["mosh", "user@host", "--", "bash", "-l", "-c", "ai c"]
 CLEANUP_CMD = ["ai", "internal", "cleanup-session-files", "c-r-session-1"]
 SESSION = "c-r-session-1"
