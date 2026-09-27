@@ -53,6 +53,15 @@ _DESKTOP_ESCAPE_IMPORT = "plyer"
 # would restore as a module that cannot be imported from.
 _MISSING = object()
 
+# The two registry keys that hold a persisted ``Path``, lowercased for comparison. Exactly
+# the pair ``direnv_setup.refresh_windows_path`` reads and merges into this process.
+_WINDOWS_ENVIRONMENT_SUBKEYS = frozenset(
+    {
+        r"system\currentcontrolset\control\session manager\environment",
+        "environment",
+    }
+)
+
 # Attempts are RECORDED as well as refused, because refusing alone does not report.
 # ``notifications._send_os_notification`` wraps its spawn in ``except Exception`` and
 # returns a failed result, so the guard's RuntimeError never reaches the test that
@@ -522,6 +531,77 @@ def _refuse_real_plyer_toasts():
             del sys.modules[_DESKTOP_ESCAPE_IMPORT]
         else:
             sys.modules[_DESKTOP_ESCAPE_IMPORT] = saved
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_real_windows_registry_reads():
+    """Shadow ``winreg`` for the whole run so no test can reread the real PATH (AI-CLI-8elu).
+
+    ``direnv_setup.refresh_windows_path`` is the sole consumer. It exists to merge the
+    machine's persisted ``Path`` into THIS process after an installer wrote the registry
+    rather than the environment -- so it mutates ``os.environ["PATH"]`` as its whole
+    purpose. On the launch path that runs inside ``ensure_direnv``, and a launch test
+    that blanket-mocks ``subprocess.run`` to succeed makes every package manager "exit
+    0", which is what carries the real registry into a test process' own PATH.
+
+    That produced an order-dependent, Windows-only failure. The mutation is not undone
+    unless the test happens to wrap ``os.environ`` in a restoring ``patch.dict``, so the
+    FIRST launch test to run in an xdist worker changed PATH for every later test in it.
+    A test asserting that the environment it set is the environment forwarded to ``tmux
+    new-session`` then passed or failed purely on whether it drew that first slot --
+    green on the same commit one run later.
+
+    Refusing the read, rather than the mutation, is what makes this total: with both
+    registry roots unreadable the function takes its own documented "unreadable
+    registry" branch and returns False without touching PATH. Refusing quietly, unlike
+    the desktop-escape guards, because reading a registry key harms nobody -- there is
+    no escape to report, only a shared mutable to keep out of the suite.
+
+    Only the two environment subkeys are refused, and every other key is handed to the
+    real module. ``winreg`` is shared with the standard library and with dependencies --
+    ``mimetypes`` and ``webbrowser`` both reach for it on Windows -- and any of them
+    importing it late enough to see this stub would get an unrelated, hard-to-place
+    failure from a blanket refusal. Narrowing to the keys that carry PATH leaves the
+    guard total for the hazard and invisible to everything else.
+
+    Installed on every platform, for the reason the plyer guard is: the branch is
+    selected by ``sys.platform`` and tests force that value to exercise it from a Mac or
+    Linux host, so gating the guard on the host OS would leave it off exactly where the
+    branch is live. Tests that want the behaviour inject their own fake over this one
+    (``monkeypatch.setitem(sys.modules, "winreg", ...)``), which still wins.
+    """
+    try:
+        import winreg as real
+    except ImportError:
+        real = None  # type: ignore[assignment]
+
+    def _open_key(root, subkey, *args, **kwargs):
+        if str(subkey).lower() in _WINDOWS_ENVIRONMENT_SUBKEYS:
+            raise OSError(f"{subkey!r} is shadowed in tests; inject a fake winreg to exercise this branch")
+        if real is None:
+            raise OSError("no winreg on this platform")
+        return real.OpenKey(root, subkey, *args, **kwargs)
+
+    stub = types.ModuleType("winreg")
+    if real is None:
+        # Enough surface for the Windows branch to be reachable from a POSIX host.
+        stub.HKEY_LOCAL_MACHINE = 0  # type: ignore[attr-defined]
+        stub.HKEY_CURRENT_USER = 1  # type: ignore[attr-defined]
+    else:
+        for name in dir(real):
+            if not name.startswith("__"):
+                setattr(stub, name, getattr(real, name))
+    stub.OpenKey = _open_key  # type: ignore[attr-defined]
+    stub.OpenKeyEx = _open_key  # type: ignore[attr-defined]
+    saved = sys.modules.get("winreg", _MISSING)
+    sys.modules["winreg"] = stub
+    try:
+        yield stub
+    finally:
+        if saved is _MISSING:
+            del sys.modules["winreg"]
+        else:
+            sys.modules["winreg"] = saved
 
 
 def _cleanup_test_tmux_sessions(run):

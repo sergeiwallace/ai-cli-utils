@@ -198,18 +198,24 @@ def test_without_dry_run_the_remote_launch_still_reaches_the_network():
     """
     config = {"remote": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"}}
     with (
+        # The SSH transport refuses outright on Windows and exits 1 before it
+        # reaches the handoff patched below, so without this the control asserted a
+        # POSIX-only path: `pytest.raises(SystemExit)` was satisfied by the refusal and
+        # `mock_exec.called` was then False, failing the whole test-windows job.
+        # Forcing the branch is the repo's established pattern for a
+        # platform-dependent path (test_remote.py does the mirror image to reach
+        # the Windows refusal from POSIX), and it is the stronger fix here: the
+        # ordering this control exists to prove is not platform-specific, so it
+        # should be proven on every platform rather than skipped on one. Nothing
+        # between here and that handoff branches on the platform -- the local tmux
+        # preflight that does is already skipped for a remote launch.
+        # Turned `main` red on test-windows at a274bcb, and two sessions fixed it the same
+        # way concurrently -- which is how this line came to be applied twice.
+        patch("ai_cli.main.sys.platform", "linux"),
         patch(
             "ai_cli.main.subprocess.run",
             return_value=MagicMock(returncode=0, stdout="bash\n", stderr=""),
         ) as mock_run,
-        # Windows refuses the SSH transport and exits 1 at main.py's platform check,
-        # BEFORE the handoff below -- so `pytest.raises(SystemExit)` was satisfied by
-        # the refusal and `mock_exec.called` was False on Windows only, which turned
-        # `main` red on test-windows at a274bcb. Pinned to linux, mirroring what
-        # tests/test_remote.py's own autouse fixture already does, so this control
-        # proves the same ordering on every platform instead of silently not applying
-        # on one. Diagnosed concurrently by the uvlock-privatedep agent (PR #200).
-        patch("ai_cli.main.sys.platform", "linux"),
         # The pure-SSH handoff is `transport.run_ssh_with_reconnect`, not an exec:
         # that path runs in-process now so a dropped link can be reattached
         # (AI-CLI-w679). What this control proves is unchanged -- without

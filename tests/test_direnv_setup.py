@@ -309,6 +309,31 @@ def test_given_a_new_registry_entry_when_refreshing_path_then_it_is_appended(mon
     assert os.environ["PATH"].startswith(r"C:\existing")
 
 
+def test_given_an_entry_in_both_registry_roots_when_refreshing_path_then_it_is_added_once(monkeypatch):
+    """Machine and user ``Path`` overlap, and PATH must not grow a copy per root.
+
+    The two roots are read into one list and each entry is then checked against the
+    PATH this process started with -- so an entry absent from PATH but present in both
+    roots clears that check twice. Every refresh that finds it appends another copy,
+    against a hard 32767-character limit for the whole block, and the launcher forwards
+    the result into the tmux pane where it is duplicated again.
+    """
+    # Colon-free entries and ``os.pathsep``: the drive-letter shape the sibling tests use
+    # comes apart under an exact comparison on a POSIX host, where ``:`` IS the separator.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", "/existing")
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=1,
+        HKEY_CURRENT_USER=2,
+        OpenKey=lambda *a, **k: contextlib.nullcontext("key"),
+        QueryValueEx=lambda _key, _name: ("/in-both-roots", 1),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+
+    assert refresh_windows_path() is True
+    assert os.environ["PATH"] == os.pathsep.join(["/existing", "/in-both-roots"])
+
+
 def test_given_no_new_entries_when_refreshing_path_then_unchanged(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("PATH", r"C:\existing")
@@ -337,6 +362,34 @@ def test_given_unreadable_registry_when_refreshing_path_then_no_raise(monkeypatc
     monkeypatch.setitem(sys.modules, "winreg", fake)
 
     assert refresh_windows_path() is False
+
+
+def test_given_no_injected_winreg_when_refreshing_path_then_the_real_registry_is_unreachable(monkeypatch):
+    """The suite-wide guard, pinned from the consumer side (AI-CLI-8elu).
+
+    Every test above injects its own ``winreg``, so none of them would notice the
+    ambient one going live. This is the one that would: it forces the Windows branch
+    and then reaches for whatever ``winreg`` the run supplies. On a Windows host an
+    unguarded run reads the operator's real ``Path`` here and appends it to this
+    process, and the mutation outlives the test -- which is what made a launch test
+    in ``test_cli.py`` pass or fail on its position in a randomised xdist shard.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\existing")
+
+    # Its own roots, not a bogus handle: a real ``winreg`` opens these and would make
+    # a bogus-handle OSError look like the guard working.
+    ambient = sys.modules["winreg"]
+    with pytest.raises(OSError, match="shadowed in tests"):
+        ambient.OpenKey(ambient.HKEY_CURRENT_USER, "Environment")
+    # And ONLY those keys: anything else is the real module's problem, so the guard cannot
+    # surprise a standard-library or dependency consumer that imports winreg late.
+    with pytest.raises(OSError) as other:
+        ambient.OpenKey(ambient.HKEY_CURRENT_USER, r"Software\NotTheEnvironment")
+    assert "shadowed in tests" not in str(other.value)
+
+    assert refresh_windows_path() is False
+    assert os.environ["PATH"] == r"C:\existing"
 
 
 def test_given_install_succeeding_only_after_path_refresh_then_reported_installed(monkeypatch):
