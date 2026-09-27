@@ -114,9 +114,18 @@ def sleeper():
     The leader is returned as its ``Popen``, which gives each test an exit oracle
     (``poll()``) that owes nothing to the code under test -- and reaps it, so a
     terminated child never lingers as a zombie that the next assertion misreads.
+
+    The wrapped grandchild has no ``Popen`` here, so it is held as a
+    ``psutil.Process`` captured while it was still alive. That is what arms
+    psutil's own pid-reuse guard: the object caches ``(pid, create_time)`` and
+    ``kill()`` refuses once that no longer identifies the pid's occupant. Reaping
+    it by bare number instead cannot refuse, because most of these tests end the
+    grandchild themselves and its number is already free by teardown -- measured,
+    the ordinary path rather than a rare race -- so the reap would aim at whatever
+    the OS had since given that number to.
     """
     leaders: list[subprocess.Popen] = []
-    wrapped: list[int] = []
+    wrapped: list[psutil.Process] = []
 
     def spawn(with_child: bool = False) -> tuple[subprocess.Popen, int]:
         if not with_child:
@@ -129,14 +138,15 @@ def sleeper():
         assert proc.stdout is not None
         child_pid = int(proc.stdout.readline())
         proc.stdout.close()
-        wrapped.append(child_pid)
+        with contextlib.suppress(psutil.Error, OSError):
+            wrapped.append(psutil.Process(child_pid))
         return proc, child_pid
 
     yield spawn
 
-    for pid in wrapped:
+    for child in wrapped:
         with contextlib.suppress(psutil.Error, OSError):
-            psutil.Process(pid).kill()
+            child.kill()
     for proc in leaders:
         with contextlib.suppress(OSError):
             proc.kill()
