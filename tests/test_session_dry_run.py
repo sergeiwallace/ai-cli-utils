@@ -198,18 +198,6 @@ def test_without_dry_run_the_remote_launch_still_reaches_the_network():
     """
     config = {"remote": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"}}
     with (
-        # The SSH transport refuses outright on Windows and exits 1 before it
-        # reaches the exec, so without this the control asserted a POSIX-only
-        # code path: `pytest.raises(SystemExit)` was satisfied by the refusal and
-        # `mock_exec.called` was then False, failing the whole test-windows job.
-        # Forcing the branch is the repo's established pattern for a
-        # platform-dependent path (test_remote.py does the mirror image to reach
-        # the Windows refusal from POSIX), and it is the stronger fix here: the
-        # ordering this control exists to prove is not platform-specific, so it
-        # should be proven on every platform rather than skipped on one. Nothing
-        # between here and the exec branches on the platform -- the local tmux
-        # preflight that does is already skipped for a remote launch.
-        patch("ai_cli.main.sys.platform", "linux"),
         patch(
             "ai_cli.main.subprocess.run",
             return_value=MagicMock(returncode=0, stdout="bash\n", stderr=""),
