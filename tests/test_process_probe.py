@@ -168,6 +168,28 @@ def _report_stopped(monkeypatch, pid: int) -> None:
     monkeypatch.setattr(psutil.Process, "status", status)
 
 
+def _record_aimed_pids(monkeypatch) -> list[int]:
+    """Record every pid the escalation aims a psutil termination call at.
+
+    The real call still runs, so a guard that stopped excluding a pid would really
+    end that process -- this only adds an account of what was aimed at, which
+    answers "was it signalled" directly instead of inferring it from whether the
+    process is still alive afterwards.
+    """
+    aimed: list[int] = []
+
+    for action in ("terminate", "resume", "kill"):
+        real = getattr(psutil.Process, action)
+
+        def record(self, _real=real):
+            aimed.append(self.pid)
+            return _real(self)
+
+        monkeypatch.setattr(psutil.Process, action, record)
+
+    return aimed
+
+
 # --- inspection: presence, state, and what those states mean --------------------
 
 
@@ -450,18 +472,45 @@ def test_given_a_pid_that_is_already_gone_when_ended_then_it_reports_ended(sleep
     assert PsutilProbe().end_process(proc.pid, identity, timeout=0.5) is True
 
 
+def test_given_the_callers_own_pid_when_targets_are_collected_then_it_is_excluded(sleeper):
+    """The guard itself, read off the target set, with nothing impersonated.
+
+    The caller here is the pytest worker, whose liveness is not in question because
+    it is running this assertion. So this covers the exclusion unconditionally, on
+    every platform, whatever happens to any other process on the host.
+    """
+    sleeper()  # a real child, so the descendant walk has something to return
+
+    targets = PsutilProbe()._tree(os.getpid())
+
+    assert os.getpid() not in [target.pid for target in targets]
+
+
 def test_given_the_recorded_pid_is_the_caller_when_ended_then_it_is_not_signalled(sleeper, monkeypatch):
     """``ai c`` can be launched from inside the session being reclaimed.
 
     The launcher is impersonated by pointing ``os.getpid`` at the sleeper, so the
     guard can be driven through the real entry point without the test asking a
     process to kill the pytest worker it is running in.
+
+    The oracle is which pids the escalation aims at, never whether the sleeper is
+    still breathing afterwards. A real process can be ended by something outside
+    this test, and was: on Windows CI this test failed twice while the guard was
+    working perfectly, both times reporting the sleeper as ``status='terminated'``
+    -- so ``end_process`` honestly answered "it has ended" and the old
+    ``is False`` assertion, which read the sleeper's liveness rather than this
+    code's behavior, failed for it (AI-CLI-l6hv).
     """
     proc, _ = sleeper()
+    probe = PsutilProbe()
+    identity = psutil.Process(proc.pid).create_time()
+    aimed = _record_aimed_pids(monkeypatch)
     monkeypatch.setattr(os, "getpid", lambda: proc.pid)
 
-    assert PsutilProbe().end_process(proc.pid, psutil.Process(proc.pid).create_time(), timeout=0.3) is False
-    assert proc.poll() is None, "the caller's own process must never be signalled"
+    assert [target.pid for target in probe._tree(proc.pid)] == []
+    probe.end_process(proc.pid, identity, timeout=0)
+
+    assert proc.pid not in aimed, "the caller's own process must never be signalled"
 
 
 def test_given_a_platform_without_procfs_when_a_manual_hint_is_asked_for_then_it_is_ascii(sleeper):
