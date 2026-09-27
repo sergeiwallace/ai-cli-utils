@@ -1062,11 +1062,19 @@ def _suppress_auto_update():
         yield
 
 
-def _run_cli_with_args(argv, config_override=None):
+def _run_cli_with_args(argv, config_override=None, capture_ssh_runner=False):
     """Helper: invoke cli() with argv, capturing execvp calls.
 
     os.execvp replaces the process in real usage, so we raise SystemExit
     to simulate that — otherwise execution falls through to later exec calls.
+
+    ``capture_ssh_runner=True`` returns the mock for
+    ``transport.run_ssh_with_reconnect`` instead of the ``execvp`` mock. The
+    pure-SSH remote path stopped ``execvp``-ing a shell in AI-CLI-w679 -- it runs
+    in-process now so a dropped link can be reattached and the terminal handed
+    back -- so tests of THAT path assert against the ssh argv list passed to the
+    runner, rather than against a joined shell string. Every other path (mosh,
+    ``ai ssh``, tmux attach) still execs and still uses the default.
     """
     config = config_override or {}
 
@@ -1095,6 +1103,7 @@ def _run_cli_with_args(argv, config_override=None):
         patch("ai_cli.session.is_current_project_resolved", return_value=True),
         patch("ai_cli.session.get_project_prefix", return_value="test-project"),
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        patch("ai_cli.transport.run_ssh_with_reconnect", return_value=0) as mock_ssh_runner,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main._auto_update_if_stale"),
         patch("ai_cli.main.subprocess.run", side_effect=remote_preflight),
@@ -1105,7 +1114,7 @@ def _run_cli_with_args(argv, config_override=None):
             cli()
         except SystemExit:
             pass
-        return mock_exec
+        return mock_ssh_runner if capture_ssh_runner else mock_exec
 
 
 def run_cli(argv, config=None, env=None):

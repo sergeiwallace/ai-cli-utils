@@ -450,6 +450,36 @@ Polls `_is_vpn_active()` every `remote.vpn_poll_interval` seconds (default: 3). 
 
 Logs VPN transitions to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL).
 
+**Connection durability (AI-CLI-w679).** On the `transport = "ssh"` path a dropped link no
+longer ends the session. The remote side runs under `tmux`, so a drop leaves it detached and
+intact — `ai c -R` reattaches, bounded by `[remote] reconnect_attempts` (default 10) with
+`reconnect_backoff` seconds before the first retry, doubling to a 30s cap. A clean exit (ssh
+0) or an interrupt (130) is treated as *you* ending the session and is never reconnected;
+anything else, 255 above all, is a transport failure. mosh needs none of this: it survives a
+dropped link and a roaming address by design.
+
+This is deliberately indifferent to *why* the link dropped, because from the client side an
+intermediary's idle timeout, its absolute session cap and a real network failure are not
+distinguishable — reattaching covers all three.
+
+The interactive session also sets `ServerAliveInterval` (default 30s) and
+`ServerAliveCountMax` (default 3), configurable as `[remote] server_alive_interval` and
+`server_alive_count_max`. That is **hardening, not the fix** for the above: it makes
+behaviour independent of whatever `~/.ssh/config` a machine carries, and stops an idle
+session being collected by a NAT or firewall that reaps silent flows. On the setup that
+produced the original report, `ssh -G` showed those options were *already* in effect, so a
+missing keepalive was not the cause there. The effective give-up time is
+`interval × count_max`.
+
+**Terminal restore on exit.** Both transports restore the local terminal when a session
+ends, however it ended. A remote `tmux` or agent enables mouse reporting, bracketed paste,
+focus reporting and an extended key mode, and clears them only on its own clean exit — so a
+dropped connection used to leave them set locally, at which point mouse movement arrives in
+your shell as literal text like `35;66;6M` (an SGR mouse report) and the only fix was
+killing the terminal. The mosh path restores in the transport loop's `finally`; the pure-SSH
+path appends the restore to its own `zsh -c` command line, because that path `exec`s and no
+Python cleanup survives it.
+
 ### ai cdp
 
 ```bash

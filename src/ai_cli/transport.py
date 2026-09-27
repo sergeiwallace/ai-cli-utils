@@ -19,6 +19,118 @@ from .config import get_xdg_state_home
 # Module-level alias so tests can patch _monotonic without affecting asyncio internals
 _monotonic = time.monotonic
 
+#: Terminal modes a remote ``tmux`` or agent turns ON for the duration of a session and
+#: turns back OFF only on its own clean exit. A dropped connection never gives it that
+#: chance, so the LOCAL terminal keeps them and starts reading ordinary input as protocol:
+#: mouse motion arrives as a typed ``CSI < 35 ; 66 ; 6 M``, a paste arrives wrapped in
+#: ``200~``/``201~``, and switching windows emits a stray ``I`` or ``O``. The operator's
+#: only recourse was killing the terminal (AI-CLI-w679).
+#:
+#: The whole set goes out unconditionally rather than being tracked, because the disable
+#: form is idempotent and harmless for a mode that was never set -- and tracking would
+#: require knowing what the remote did, which is exactly what a dropped connection denies.
+#: Tracking modes are disabled BEFORE their coordinate encodings: clearing the encoding
+#: first can leave a report already in flight to be decoded the old way.
+_TERMINAL_RESTORE = (
+    "\x1b[?1000l"  # mouse: X10/normal tracking
+    "\x1b[?1002l"  # mouse: button-event tracking
+    "\x1b[?1003l"  # mouse: any-event (motion) tracking
+    "\x1b[?1005l"  # mouse: UTF-8 coordinate encoding
+    "\x1b[?1006l"  # mouse: SGR coordinate encoding -- the one in the report
+    "\x1b[?1015l"  # mouse: urxvt coordinate encoding
+    "\x1b[?1004l"  # focus in/out reporting
+    "\x1b[?2004l"  # bracketed paste
+    "\x1b[?1049l"  # leave the alternate screen
+    "\x1b[?7h"  # re-enable autowrap
+    "\x1b[?25h"  # show the cursor
+    "\x1b[>4;0m"  # xterm modifyOtherKeys off
+    "\x1b[<u"  # pop the kitty keyboard-protocol stack
+    "\x1b[0m"  # reset colour and attribute state
+)
+
+
+def restore_terminal(stream=None) -> None:
+    """Undo the terminal modes a remote session left set, on the way out.
+
+    Writes nothing unless *stream* is a real terminal. These are control sequences, so a
+    redirected or piped run would otherwise corrupt its own output with them -- and a run
+    that is not attached to a terminal has no terminal state to repair in the first place.
+    """
+    stream = sys.stdout if stream is None else stream
+    try:
+        if not stream.isatty():
+            return
+        stream.write(_TERMINAL_RESTORE)
+        stream.flush()
+    except (OSError, ValueError):
+        # A stream already closed or detached by the time we unwind is not worth raising
+        # over: the session has ended and there is no longer anything to protect.
+        pass
+
+
+#: ssh exit codes that mean the OPERATOR ended the session, so reconnecting would fight the
+#: user rather than help. 0 is a clean detach or a finished remote command; 130 is SIGINT.
+#: Everything else -- 255 above all, which is ssh's own "connection failed or was lost" --
+#: is a transport failure, and the remote tmux session is still sitting there detached.
+_SSH_OPERATOR_EXIT_CODES = frozenset({0, 130})
+
+
+def run_ssh_with_reconnect(
+    ssh_args: list[str],
+    cleanup_cmd: list[str],
+    max_attempts: int = 10,
+    backoff_seconds: float = 2.0,
+    max_backoff_seconds: float = 30.0,
+) -> int:
+    """Run the interactive SSH session, reattaching if the connection drops.
+
+    The pure-SSH transport previously ``execvp``'d a single ``ssh`` and therefore ended the
+    moment that connection died, even though **nothing on the remote side had ended**: the
+    session runs under ``tmux`` there, so a dropped link leaves it detached and intact and
+    reattaching costs nothing and loses nothing. The mosh path already loops; this path did
+    not, which is why a transport blip ended the operator's session outright (AI-CLI-w679).
+
+    This is deliberately indifferent to *why* the link dropped. The measured environment
+    reaches its host through a ``ProxyCommand`` with ``ControlPersist`` in play, and an
+    intermediary's idle timeout, its absolute session cap and a genuine network drop are
+    not distinguishable from this side -- so reattaching covers all three, where tuning a
+    keepalive covers only the first.
+
+    Returns ssh's last exit code. Reconnects are bounded and backed off so a host that is
+    genuinely gone produces a handful of attempts rather than an infinite loop.
+    """
+    attempt = 0
+    delay = backoff_seconds
+    returncode = 0
+    try:
+        while True:
+            returncode = subprocess.call(ssh_args)
+            if returncode in _SSH_OPERATOR_EXIT_CODES:
+                break
+            attempt += 1
+            if attempt >= max_attempts:
+                print(
+                    f"\nConnection lost (ssh exit {returncode}) and {max_attempts} reconnect "
+                    "attempts did not restore it — giving up. The remote session is most "
+                    "likely still running; reattach with the same command.",
+                    file=sys.stderr,
+                )
+                break
+            # Restore before printing, so the notice is readable even when the drop left
+            # the terminal in a remote application's input modes.
+            restore_terminal()
+            print(
+                f"\nConnection lost (ssh exit {returncode}) — reattaching in {delay:.0f}s "
+                f"(attempt {attempt}/{max_attempts})...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, max_backoff_seconds)
+    finally:
+        restore_terminal()
+        subprocess.run(cleanup_cmd, capture_output=True, check=False)
+    return returncode
+
 
 def _is_vpn_active() -> bool:
     """Return True if a VPN (Mullvad or any tunnel interface) is currently active.
@@ -419,6 +531,13 @@ async def _run_transport_loop(
             break  # Normal exit (user detached or session ended)
     finally:
         transport_file.unlink(missing_ok=True)
+        # Before anything else in this block, and unconditionally rather than only on a
+        # clean exit: every way out of the loop above -- normal detach, a killed child, a
+        # give-up branch, an exception -- leaves the terminal in whatever modes the remote
+        # set, and the paths that skipped a graceful shutdown are precisely the ones where
+        # the remote never sent its own disable sequences. Restoring first also means the
+        # messages below are printed to a sane terminal.
+        restore_terminal()
         # Not covered: requires NATS close to raise after connect succeeds
         with contextlib.suppress(Exception):
             await nc.close()

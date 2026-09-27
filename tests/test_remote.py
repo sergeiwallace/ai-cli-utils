@@ -1,5 +1,6 @@
 import io
 import json
+import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -68,14 +69,15 @@ def test_given_windows_when_remote_flag_used_then_exits_with_documented_error(ca
 
 def test_remote_flag_when_host_configured_then_sshs_to_host():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)
-    mock_exec.assert_called_once()
-    cmd, args = mock_exec.call_args[0]
-    assert cmd == "zsh"
-    bash_cmd = args[2]
-    assert "ubuntu@1.2.3.4" in bash_cmd
-    assert "-t" in bash_cmd
-    assert "--is-remote" in bash_cmd and "1" in bash_cmd
+    # Asserted against the ssh argv list rather than a joined shell string: this
+    # path runs in-process now so a dropped link can be reattached (AI-CLI-w679).
+    runner = _run_cli_with_args(["ai", "c", "1", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    ssh_args = runner.call_args[0][0]
+    assert ssh_args[0] == "ssh"
+    assert "ubuntu@1.2.3.4" in ssh_args
+    assert "-t" in ssh_args
+    assert "--is-remote" in ssh_args[-1] and "1" in ssh_args[-1]
 
 
 def test_given_named_remote_default_when_remote_flag_used_then_ssh_uses_default_machine():
@@ -88,9 +90,10 @@ def test_given_named_remote_default_when_remote_flag_used_then_ssh_uses_default_
             },
         }
     }
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "-R"], config)
-    assert "dev@framework.example.com" in mock_exec.call_args[0][1][2]
-    assert "-p 2222" in mock_exec.call_args[0][1][2]
+    runner = _run_cli_with_args(["ai", "c", "1", "-R"], config, capture_ssh_runner=True)
+    ssh_args = runner.call_args[0][0]
+    assert "dev@framework.example.com" in ssh_args
+    assert ssh_args[ssh_args.index("-p") + 1] == "2222"
 
 
 def test_given_named_remote_alias_when_remote_machine_selected_then_ssh_uses_selected_machine():
@@ -103,9 +106,10 @@ def test_given_named_remote_alias_when_remote_machine_selected_then_ssh_uses_sel
             },
         }
     }
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "-R", "-m", "hz"], config)
-    assert "root@server.example.com" in mock_exec.call_args[0][1][2]
-    assert "-p 2200" in mock_exec.call_args[0][1][2]
+    runner = _run_cli_with_args(["ai", "c", "1", "-R", "-m", "hz"], config, capture_ssh_runner=True)
+    ssh_args = runner.call_args[0][0]
+    assert "root@server.example.com" in ssh_args
+    assert ssh_args[ssh_args.index("-p") + 1] == "2200"
 
 
 def test_given_unknown_remote_alias_when_remote_machine_selected_then_prints_configured_aliases(capsys):
@@ -222,12 +226,11 @@ def test_given_alias_with_no_host_when_ssh_called_then_exits_without_exec(capsys
 
 def test_remote_flag_when_host_configured_then_passes_is_remote_flag():
     config = {"remote": {"host": "hetzner-dev", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "g", "research", "--remote"], config)
-    mock_exec.assert_called_once()
-    _, args = mock_exec.call_args[0]
-    bash_cmd = args[2]
-    assert "ubuntu@hetzner-dev" in bash_cmd
-    assert "ai g --is-remote" in bash_cmd and "research" in bash_cmd
+    runner = _run_cli_with_args(["ai", "g", "research", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    ssh_args = runner.call_args[0][0]
+    assert "ubuntu@hetzner-dev" in ssh_args
+    assert "ai g --is-remote" in ssh_args[-1] and "research" in ssh_args[-1]
 
 
 def test_remote_flag_when_called_then_passes_project_prefix_to_server():
@@ -237,23 +240,23 @@ def test_remote_flag_when_called_then_passes_project_prefix_to_server():
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
         patch("ai_cli.session.get_project_prefix", return_value="session"),
-        patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        patch("ai_cli.transport.run_ssh_with_reconnect", return_value=0) as runner,
         patch("ai_cli.main.trigger_background_update"),
     ):
         try:
             cli()
         except SystemExit:
             pass
-    _, args = mock_exec.call_args[0]
-    assert any("--project-prefix session" in a for a in args)
+    ssh_args = runner.call_args[0][0]
+    assert any("--project-prefix session" in a for a in ssh_args)
 
 
 def test_remote_flag_with_resume_when_called_then_forwards_resume_to_server():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "c", "-r", "1", "--remote"], config)
-    mock_exec.assert_called_once()
-    _, args = mock_exec.call_args[0]
-    assert any("--resume" in a for a in args)
+    runner = _run_cli_with_args(["ai", "c", "-r", "1", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    ssh_args = runner.call_args[0][0]
+    assert any("--resume" in a for a in ssh_args)
 
 
 # --- remote shell resolution (AI-CLI-gg9s regression) ---
@@ -375,24 +378,26 @@ def test_given_remote_host_lacks_zsh_when_launched_then_uses_probed_shell_not_ha
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
         patch("ai_cli.session.get_project_prefix", return_value="session"),
-        patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        patch("ai_cli.transport.run_ssh_with_reconnect", return_value=0) as runner,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main.subprocess.run", side_effect=fake_probe),
     ):
         with pytest.raises(SystemExit):
             cli()
 
-    _, args = mock_exec.call_args[0]
-    bash_cmd = args[2]
-    assert "bin/bash -l -c" in bash_cmd
-    assert "zsh" not in bash_cmd
+    # The remote command is the last argv element. "zsh" must be absent from the
+    # whole argv now, not merely from that element: this path no longer wraps the
+    # session in a `zsh -c`, so a stray "zsh" anywhere would be the old hardcoding.
+    ssh_args = runner.call_args[0][0]
+    assert "bin/bash -l -c" in ssh_args[-1]
+    assert not any("zsh" in a for a in ssh_args)
 
 
 def test_remote_flag_without_resume_when_called_then_no_resume_in_cmd():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)
-    _, args = mock_exec.call_args[0]
-    assert not any("--resume" in a for a in args)
+    runner = _run_cli_with_args(["ai", "c", "1", "--remote"], config, capture_ssh_runner=True)
+    ssh_args = runner.call_args[0][0]
+    assert not any("--resume" in a for a in ssh_args)
 
 
 def test_remote_flag_when_identity_file_set_then_passes_i_flag():
@@ -405,9 +410,9 @@ def test_remote_flag_when_identity_file_set_then_passes_i_flag():
             "transport": "ssh",
         }
     }
-    mock_exec = _run_cli_with_args(["ai", "c", "--remote"], config)
-    mock_exec.assert_called_once()
-    bash_cmd = mock_exec.call_args[0][1][2]
+    runner = _run_cli_with_args(["ai", "c", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    bash_cmd = shlex.join(runner.call_args[0][0])
     assert "-i" in bash_cmd
 
 
@@ -512,11 +517,15 @@ class TestRemoteSessionIterm2Emit:
                 with pytest.raises(SystemExit):
                     cli()
             return mock_slot, mock_emit, None, call_order
-        mock_exec = MagicMock()
+        # The SSH branch's handoff is `transport.run_ssh_with_reconnect`, not an exec:
+        # it runs in-process so a dropped link can be reattached (AI-CLI-w679). The
+        # ordering under test is unchanged -- the profile must be emitted before the
+        # session is handed off -- only the boundary that marks the handoff moved.
+        mock_handoff = MagicMock()
         mock_emit = MagicMock()
         mock_slot = MagicMock(return_value="#ff0000")
         mock_emit.side_effect = lambda *a, **kw: call_order.append("emit")
-        mock_exec.side_effect = lambda *a, **kw: (call_order.append("exec"), (_ for _ in ()).throw(SystemExit(0)))[1]
+        mock_handoff.side_effect = lambda *a, **kw: (call_order.append("exec"), 0)[1]
         with (
             patch("sys.argv", argv),
             patch("ai_cli.config.load_config", return_value=config),
@@ -526,11 +535,11 @@ class TestRemoteSessionIterm2Emit:
             patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
             patch("ai_cli.main.subprocess.run", mock_preflight_run),
-            patch("os.execvp", mock_exec),
+            patch("ai_cli.transport.run_ssh_with_reconnect", mock_handoff),
         ):
             with pytest.raises(SystemExit):
                 cli()
-        return mock_slot, mock_emit, mock_exec, call_order
+        return mock_slot, mock_emit, mock_handoff, call_order
 
     def test_given_remote_host_lacks_zsh_when_mosh_launched_then_uses_probed_shell_not_hardcoded_zsh(self):
         """The mosh_args path is the one that actually broke against Framework
@@ -642,7 +651,13 @@ class TestRemoteSessionIterm2Emit:
         assert mock_slot.call_args[0][0] == remote_session_id
         assert mock_emit.call_args[0][0] == remote_session_id
         assert mock_emit.call_args[0][2] == remote_session_id
-        assert remote_session_id in mock_exec.call_args[0][1][2]
+        # Both argv lists the handoff receives, joined. The old form read a single
+        # index of a joined `zsh -c` string that carried the ssh command and the
+        # cleanup command together; the handoff now takes them as two arguments, so
+        # searching both preserves the original claim -- the locally-allocated
+        # identity reaches the handoff -- without betting on which half holds it.
+        handoff = shlex.join([*mock_exec.call_args[0][0], *mock_exec.call_args[0][1]])
+        assert remote_session_id in handoff
         assert len(remote_allocations) == 1
 
     def test_given_unnamed_remote_launches_when_dispatched_then_each_uses_its_own_remote_identity(self):
