@@ -241,6 +241,22 @@ def generate_dynamic_profile(
     #
     # The keystroke serialization below is the 3-part char-modifiers-virtualkeycode
     # form iTerm2 itself exports, so it stays exactly as it was.
+    # Cmd+Backspace -> Ctrl+U (0x15), the readline "discard to start of line" control.
+    # macOS itself has no terminal encoding for Cmd+Backspace: Cmd is swallowed by the
+    # app layer, so without a mapping the key reaches the shell as a bare DEL and erases
+    # one character. Only the terminal emulator can turn it into something a line editor
+    # understands, which is why this belongs here and not in tmux or the agent.
+    #
+    # Action 11 is KEY_ACTION_HEX_CODE and 10 is KEY_ACTION_ESCAPE_SEQUENCE, read from
+    # iTerm2's own sources/Keyboard/iTermKeyBindingAction.h rather than inferred -- and
+    # 10 cross-checks against the Shift+Enter binding above, which iTerm2 itself wrote.
+    # A hex code sends the raw byte; an escape sequence would prepend ESC and produce
+    # something no line editor binds.
+    #
+    # Keystroke serialization, same 3-part char-modifiers-virtualkeycode form: 0x7f is
+    # the DEL character the Backspace key produces, 0x100000 is
+    # NSEventModifierFlagCommand (1 << 20), and 0x33 is kVK_Delete. Compare the
+    # Shift+Enter key: 0x20000 is NSEventModifierFlagShift (1 << 17) and 0x24 kVK_Return.
     profile["Keyboard Map"] = {
         "0xd-0x20000-0x24": {
             "Version": 2,
@@ -248,7 +264,13 @@ def generate_dynamic_profile(
             "Action": 10,
             "Text": "[13;2u",
             "Escaping": 2,
-        }
+        },
+        "0x7f-0x100000-0x33": {
+            "Version": 2,
+            "Apply Mode": 0,
+            "Action": 11,
+            "Text": "0x15",
+        },
     }
     if vscode_authority:
         from .vscode import build_iterm2_semantic_history

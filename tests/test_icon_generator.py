@@ -262,8 +262,38 @@ class TestGenerateDynamicProfile:
                 "Action": 10,
                 "Text": "[13;2u",
                 "Escaping": 2,
-            }
+            },
+            "0x7f-0x100000-0x33": {
+                "Version": 2,
+                "Apply Mode": 0,
+                "Action": 11,
+                "Text": "0x15",
+            },
         }
+
+    def test_cmd_backspace_sends_the_line_discard_control_byte(self, tmp_path):
+        # Cmd+Backspace has no terminal encoding on macOS -- Cmd is consumed by the app
+        # layer, so unmapped the key arrives as a bare DEL and erases one character. The
+        # emulator is the only layer that can turn it into a line-editor control, which
+        # is why this is a profile binding and not a tmux or agent setting.
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        binding = json.loads(out.read_text())["Profiles"][0]["Keyboard Map"]["0x7f-0x100000-0x33"]
+        # 11 is KEY_ACTION_HEX_CODE, read from iTerm2's own iTermKeyBindingAction.h.
+        # Action 10 (escape sequence) would prepend ESC and produce a sequence no line
+        # editor binds, so the action number is load-bearing, not incidental.
+        assert binding["Action"] == 11
+        assert binding["Text"] == "0x15"  # Ctrl+U, readline's discard-to-line-start
+        assert "Escaping" not in binding  # escaping applies to text, not to a hex code
+
+    def test_both_key_bindings_coexist_in_one_keyboard_map(self, tmp_path):
+        # iTerm2 replaces the whole "Keyboard Map" dict when it reloads a dynamic
+        # profile, so a second binding added as its own dict -- or a profile carrying two
+        # "Keyboard Map" keys -- silently drops one of them. They must share one dict.
+        with patch("ai_cli.icon_generator._dynamic_profile_dir", return_value=tmp_path):
+            out = generate_dynamic_profile("test-session", "#5e35b1", "cc")
+        key_maps = json.loads(out.read_text())["Profiles"][0]["Keyboard Map"]
+        assert set(key_maps) == {"0xd-0x20000-0x24", "0x7f-0x100000-0x33"}
 
     def test_write_is_atomic_no_tmp_files_left(self, tmp_path):
         # Atomic write must not leave .json.tmp files behind (AI-CLI-84).
