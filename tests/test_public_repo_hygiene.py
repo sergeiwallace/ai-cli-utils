@@ -191,7 +191,9 @@ def _line_is_exempted(relative_path: Path, line: str) -> bool:
     )
 
 
-def _scanned_text_files(root: Path, scanned_paths: tuple[str, ...] = _SCANNED_PATHS) -> Iterator[tuple[Path, Path, str]]:
+def _scanned_text_files(
+    root: Path, scanned_paths: tuple[str, ...] = _SCANNED_PATHS
+) -> Iterator[tuple[Path, Path, str]]:
     """Yield ``(path, path relative to root, text)`` for every scanned text file.
 
     Files that are not UTF-8 text (images, compiled artefacts) are skipped, so

@@ -1416,8 +1416,7 @@ def _authorize_session_worktree_envrc(repo_root: Path, worktree_dir: Path) -> No
 # editor's source-control view. Only the branch survived, because `git worktree
 # remove` never touches one.
 #
-# It contradicted the ratified fleet rule (AIH-771, ai-harness
-# `docs/procedures/worktree-workflow.md`): a canonical `ai c`/`ai g` session
+# It contradicted the ratified rule that a canonical `ai c`/`ai g` session
 # worktree is a long-lived session home and is "never a cleanup candidate
 # whatever their merge status or cleanliness". Cleanliness was exactly the
 # condition the teardown used to justify removing one, and ai-harness's own
