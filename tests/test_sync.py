@@ -13,6 +13,7 @@ from ai_cli.sync import (
     _detect_foreign_home,
     _detect_foreign_home_in_history,
     _find_project_worktrees,
+    _home_relative,
     _parse_flags,
     _pre_pull_push_memories,
     _push_to_remote,
@@ -2098,9 +2099,61 @@ def test_notify_conflicts_when_conflicts_exist_then_writes_log(tmp_path):
     assert "project1" in content
 
 
-def test_notify_conflicts_when_empty_then_noop(tmp_path):
-    with patch("ai_cli.sync.CONFLICT_LOG", tmp_path / "nonexistent-test-log.log"):
-        notify_conflicts([])  # Should not raise
+def test_notify_conflicts_when_empty_then_no_notification_and_no_log(tmp_path):
+    """An empty call must shell out to nothing and leave no log behind.
+
+    Regression: this fired a real macOS notification with an empty body on every
+    pytest run, naming a log the patched CONFLICT_LOG meant it never wrote.
+    """
+    log_path = tmp_path / "conflicts.log"
+    with (
+        patch("subprocess.run") as mock_run,
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
+        notify_conflicts([])
+
+    assert mock_run.call_args_list == []
+    assert not log_path.exists()
+
+
+def test_notify_conflicts_when_notifying_then_log_is_written_first(tmp_path):
+    """The notification names the log as the remedy, so the log must already exist."""
+    log_path = tmp_path / "conflicts.log"
+    existed_at_notify_time = []
+
+    with (
+        patch("subprocess.run", side_effect=lambda *a, **k: existed_at_notify_time.append(log_path.exists())),
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
+        notify_conflicts(["memory myproject/memory/MEMORY.md — .conflict file written"])
+
+    assert existed_at_notify_time == [True]
+
+
+def test_notify_conflicts_when_log_relocated_then_notification_names_the_real_path(tmp_path):
+    """The remedy text must name the log actually in use, not a hardcoded default."""
+    log_path = tmp_path / "relocated-conflicts.log"
+    with (
+        patch("subprocess.run") as mock_run,
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
+        notify_conflicts(["a"])
+
+    subtitle = mock_run.call_args_list[0][0][0][-2]
+    assert subtitle.endswith(str(log_path))
+
+
+def test_home_relative_when_path_under_home_then_collapses_to_tilde():
+    assert _home_relative(Path.home() / "sub" / "conflicts.log") == "~/sub/conflicts.log"
+
+
+def test_home_relative_when_path_outside_home_then_returns_absolute(tmp_path):
+    outside = tmp_path / "outside-home.log"
+    assert not outside.is_relative_to(Path.home())
+    assert _home_relative(outside) == str(outside)
 
 
 # ---------------------------------------------------------------------------
