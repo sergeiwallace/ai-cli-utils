@@ -20,9 +20,10 @@ from check_python_version_sync import (
     check_pyproject,
     check_running_interpreter,
     check_workflow,
-    expected_requires_python,
     parse_minor,
+    parse_requires_python_floor,
     read_declared_version,
+    supported_minors,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -58,9 +59,9 @@ jobs:
 
 
 def _pyproject(
-    requires_python: str = ">=3.14,<3.15",
+    requires_python: str = ">=3.11",
     pyright: str = "3.14",
-    minors: tuple[str, ...] = ("3.14",),
+    minors: tuple[str, ...] = ("3.11", "3.12", "3.13", "3.14"),
 ) -> str:
     classifiers = "\n".join(f'    "Programming Language :: Python :: {m}",' for m in minors)
     return PYPROJECT_TEMPLATE.format(requires_python=requires_python, classifiers=classifiers, pyright=pyright)
@@ -87,8 +88,20 @@ def test_given_a_non_version_string_when_parsed_then_none():
     assert parse_minor("pypy3.10") is None
 
 
-def test_given_a_declared_version_when_building_the_bound_then_it_spans_one_minor():
-    assert expected_requires_python((3, 14)) == ">=3.14,<3.15"
+def test_given_a_bare_floor_when_parsed_then_the_floor_is_returned():
+    assert parse_requires_python_floor(">=3.11") == (3, 11)
+    assert parse_requires_python_floor(">= 3.11") == (3, 11)
+
+
+def test_given_a_bounded_range_when_parsed_then_it_is_rejected():
+    """An upper bound is not a floor, and must not be read as one."""
+    assert parse_requires_python_floor(">=3.14,<3.15") is None
+    assert parse_requires_python_floor("==3.14.*") is None
+
+
+def test_given_a_floor_and_a_dev_version_when_listed_then_every_minor_between_is_named():
+    assert supported_minors((3, 11), (3, 14)) == ["3.11", "3.12", "3.13", "3.14"]
+    assert supported_minors((3, 14), (3, 14)) == ["3.14"]
 
 
 # --- .python-version -------------------------------------------------------
@@ -118,23 +131,45 @@ def test_given_agreeing_pyproject_fields_when_checked_then_no_errors():
     assert check_pyproject(_pyproject(), (3, 14)) == []
 
 
-def test_given_an_open_ended_requires_python_when_checked_then_error():
-    errors = check_pyproject(_pyproject(requires_python=">=3.14"), (3, 14))
+def test_given_an_upper_bound_on_requires_python_when_checked_then_error():
+    """The case this check exists to refuse, and the one it used to REQUIRE.
 
-    assert len(errors) == 1
-    assert "requires-python" in errors[0]
-    assert ">=3.14,<3.15" in errors[0]
+    An upper bound makes an already-published release uninstallable the day the
+    next Python ships -- for everyone, until a human cuts a new release -- and a
+    resolver cannot route around metadata baked into the published artifact
+    (AI-CLI-dgbd). The classifier check also fires, because a bounded range has no
+    floor to compute the advertised set from.
+    """
+    errors = check_pyproject(_pyproject(requires_python=">=3.14,<3.15"), (3, 14))
+
+    assert any("requires-python" in e and "upper bound" in e for e in errors)
 
 
-def test_given_a_requires_python_for_another_version_when_checked_then_error():
-    errors = check_pyproject(_pyproject(requires_python=">=3.11,<3.12"), (3, 14))
+def test_given_a_floor_above_the_dev_version_when_checked_then_error():
+    """Developing on an interpreter the package tells installers it does not support."""
+    errors = check_pyproject(_pyproject(requires_python=">=3.15", minors=("3.15",)), (3, 14))
 
-    assert len(errors) == 1
-    assert "requires-python" in errors[0]
+    assert any("floor is 3.15" in e for e in errors)
+
+
+def test_given_a_floor_equal_to_the_dev_version_when_checked_then_no_errors():
+    """A single supported version is still allowed -- it is just no longer required."""
+    assert check_pyproject(_pyproject(requires_python=">=3.14", minors=("3.14",)), (3, 14)) == []
 
 
 def test_given_a_requires_python_with_spaces_when_checked_then_no_errors():
-    assert check_pyproject(_pyproject(requires_python=">=3.14, <3.15"), (3, 14)) == []
+    assert check_pyproject(_pyproject(requires_python=">= 3.11"), (3, 14)) == []
+
+
+def test_given_classifiers_that_omit_a_supported_minor_when_checked_then_error():
+    """PyPI shows the classifiers to installers, so they must agree with the resolver.
+
+    Advertising fewer versions than `requires-python` accepts is a self-contradicting
+    claim: a resolver would install on 3.12 while the page says it is unsupported.
+    """
+    errors = check_pyproject(_pyproject(requires_python=">=3.11", minors=("3.11", "3.14")), (3, 14))
+
+    assert any("classifiers" in e for e in errors)
 
 
 def test_given_a_missing_requires_python_when_checked_then_error():
@@ -154,7 +189,7 @@ def test_given_a_stale_pyright_target_when_checked_then_error():
 
 
 def test_given_no_pyright_target_when_checked_then_error():
-    pyproject = '[project]\nname = "x"\nrequires-python = ">=3.14,<3.15"\nclassifiers = []\n'
+    pyproject = '[project]\nname = "x"\nrequires-python = ">=3.14"\nclassifiers = []\n'
 
     errors = check_pyproject(pyproject, (3, 14))
 
@@ -205,7 +240,7 @@ def test_given_classifiers_for_several_minors_when_checked_then_error():
 
 
 def test_given_only_the_bare_major_classifier_when_checked_then_the_minor_is_still_required():
-    pyproject = PYPROJECT_TEMPLATE.format(requires_python=">=3.14,<3.15", classifiers="", pyright="3.14")
+    pyproject = PYPROJECT_TEMPLATE.format(requires_python=">=3.14", classifiers="", pyright="3.14")
 
     errors = check_pyproject(pyproject, (3, 14))
 
@@ -341,7 +376,7 @@ def test_given_a_fully_consistent_tree_when_checked_then_no_errors(tmp_path):
     minor = sys.version_info[1]
     (tmp_path / "pyproject.toml").write_text(
         _pyproject(
-            requires_python=f">=3.{minor},<3.{minor + 1}",
+            requires_python=f">=3.{minor}",
             pyright=f"3.{minor}",
             minors=(f"3.{minor}",),
         )
@@ -388,3 +423,69 @@ def test_given_this_repository_when_the_suite_runs_then_it_is_on_the_declared_in
 
     assert errors == []
     assert sys.version_info[:2] == declared
+
+
+# --- the requires-python floor exception (AI-CLI-dgbd) -------------------------
+
+
+_FLOOR_WORKFLOW = """\
+name: CI
+on: [push]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+      - run: uv run --python {version} --no-project python -m compileall -q src/
+"""
+
+
+def test_given_a_uv_python_flag_on_the_requires_python_floor_when_checked_then_no_errors():
+    """The one step that makes the wider consumer claim falsifiable must be allowed.
+
+    Without this exception the check forbids the only thing in CI that parses the
+    shipped source as the oldest interpreter the package claims to support.
+    """
+    errors = check_workflow("ci.yml", _FLOOR_WORKFLOW.format(version="3.11"), (3, 14), floor=(3, 11))
+
+    assert errors == []
+
+
+def test_given_a_uv_python_flag_below_the_floor_when_checked_then_error():
+    """The exception is the floor exactly, not "anything old" -- otherwise it is a hole."""
+    errors = check_workflow("ci.yml", _FLOOR_WORKFLOW.format(version="3.10"), (3, 14), floor=(3, 11))
+
+    assert len(errors) == 1
+    assert "--python 3.10" in errors[0]
+
+
+def test_given_a_uv_python_flag_between_the_floor_and_the_declared_version_when_checked_then_error():
+    """A supported-but-not-floor version is still refused: it would be a second matrix."""
+    errors = check_workflow("ci.yml", _FLOOR_WORKFLOW.format(version="3.12"), (3, 14), floor=(3, 11))
+
+    assert len(errors) == 1
+    assert "--python 3.12" in errors[0]
+
+
+def test_given_no_floor_when_a_uv_python_flag_names_another_version_then_it_is_still_refused():
+    """With no floor known, the original one-version rule applies unchanged."""
+    errors = check_workflow("ci.yml", _FLOOR_WORKFLOW.format(version="3.11"), (3, 14), floor=None)
+
+    assert len(errors) == 1
+    assert "--python 3.11" in errors[0]
+
+
+def test_given_a_python_version_key_naming_the_floor_when_checked_then_error():
+    """The exception covers `--python` only.
+
+    A `python-version:` key selects the interpreter a whole job runs on, so allowing
+    the floor there would let a job quietly run its entire suite on the floor and
+    reintroduce the matrix this check exists to prevent.
+    """
+    workflow = _FLOOR_WORKFLOW.format(version="3.11").replace('python-version: "3.14"', 'python-version: "3.11"')
+
+    errors = check_workflow("ci.yml", workflow, (3, 14), floor=(3, 11))
+
+    assert any("python-version" in e and "3.11" in e for e in errors)
