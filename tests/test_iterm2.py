@@ -28,7 +28,7 @@ class TestResolveIterm2Config:
 
     def test_when_no_overrides_then_returns_empty(self):
         cfg = make_iterm2_config()
-        result = _resolve_iterm2_config(cfg, "c-sw-1")
+        result = _resolve_iterm2_config(cfg, "c-session-1")
         assert result == {}
 
     def test_when_codex_engine_then_uses_codex_profile_type(self):
@@ -36,7 +36,7 @@ class TestResolveIterm2Config:
 
     def test_defaults_returned_when_no_project_or_session(self):
         cfg = make_iterm2_config(defaults={"tab_color": "blue"})
-        result = _resolve_iterm2_config(cfg, "c-sw-1")
+        result = _resolve_iterm2_config(cfg, "c-session-1")
         assert result["tab_color"] == "blue"
 
     def test_project_overrides_defaults(self):
@@ -44,25 +44,25 @@ class TestResolveIterm2Config:
             defaults={"tab_color": "blue"},
             projects={"myproject": {"tab_color": "green"}},
         )
-        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="myproject")
+        result = _resolve_iterm2_config(cfg, "c-session-1", project_name="myproject")
         assert result["tab_color"] == "green"
 
     def test_session_overrides_project(self):
         cfg = make_iterm2_config(
             projects={"myproject": {"tab_color": "green"}},
-            sessions={"c-sw-1": {"tab_color": "red"}},
+            sessions={"c-session-1": {"tab_color": "red"}},
         )
-        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="myproject")
+        result = _resolve_iterm2_config(cfg, "c-session-1", project_name="myproject")
         assert result["tab_color"] == "red"
 
     def test_session_icon_color_returned(self):
-        cfg = make_iterm2_config(sessions={"c-sw-1": {"tab_color": "orange", "icon_color": "#4a7535"}})
-        result = _resolve_iterm2_config(cfg, "c-sw-1")
+        cfg = make_iterm2_config(sessions={"c-session-1": {"tab_color": "orange", "icon_color": "#4a7535"}})
+        result = _resolve_iterm2_config(cfg, "c-session-1")
         assert result["icon_color"] == "#4a7535"
 
     def test_project_name_empty_skips_project_lookup(self):
         cfg = make_iterm2_config(projects={"myproject": {"tab_color": "teal"}})
-        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="")
+        result = _resolve_iterm2_config(cfg, "c-session-1", project_name="")
         assert "tab_color" not in result
 
     def test_unknown_session_and_project_returns_defaults_only(self):
@@ -71,7 +71,7 @@ class TestResolveIterm2Config:
             projects={"other": {"tab_color": "teal"}},
             sessions={"other-session": {"tab_color": "red"}},
         )
-        result = _resolve_iterm2_config(cfg, "c-sw-1", project_name="myproject")
+        result = _resolve_iterm2_config(cfg, "c-session-1", project_name="myproject")
         assert result["tab_color"] == "purple"
 
 
@@ -80,7 +80,7 @@ class TestEmitIterm2ProfileSetup:
 
     def test_when_not_iterm2_then_writes_nothing(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": ""}, clear=False):
-            _emit_iterm2_profile_setup("sw-1", "c")
+            _emit_iterm2_profile_setup("session-1", "c")
         assert capsys.readouterr().out == ""
 
     def test_when_lc_terminal_is_iterm2_and_claude_engine_then_emits_dynamic_profile_and_color(self, capsys):
@@ -88,9 +88,9 @@ class TestEmitIterm2ProfileSetup:
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        _emit_iterm2_profile_setup("sw-3", "c")
+                        _emit_iterm2_profile_setup("session-3", "c")
         out = capsys.readouterr().out
-        assert "SetProfile=ai-cli:sw-3" in out
+        assert "SetProfile=ai-cli:session-3" in out
         assert "SetColors=tab=" in out
 
     def test_when_lc_terminal_is_iterm2_and_gemini_engine_then_emits_dynamic_profile(self, capsys):
@@ -108,17 +108,17 @@ class TestEmitIterm2ProfileSetup:
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        _emit_iterm2_profile_setup("sw-1", "c")
-        assert "SetProfile=ai-cli:sw-1" in capsys.readouterr().out
+                        _emit_iterm2_profile_setup("session-1", "c")
+        assert "SetProfile=ai-cli:session-1" in capsys.readouterr().out
 
     def test_when_session_arg_provided_then_profile_uses_ai_name_not_session(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+                        _emit_iterm2_profile_setup("session-1", "c", session="c-session-1")
         out = capsys.readouterr().out
-        assert "SetProfile=ai-cli:sw-1" in out
+        assert "SetProfile=ai-cli:session-1" in out
         assert "SetColors=tab=" in out
 
     def test_uses_osc1_not_osc0_for_title(self, capsys):
@@ -126,7 +126,7 @@ class TestEmitIterm2ProfileSetup:
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
+                        _emit_iterm2_profile_setup("session-1", "c", session="c-session-1")
         out = capsys.readouterr().out
         assert "\033]1;" in out
         assert "\033]0;" not in out
@@ -136,27 +136,27 @@ class TestEmitIterm2ProfileSetup:
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
-                        _emit_iterm2_profile_setup("sw-5", "c", session="c-sw-5", slot="#1abc9c")
+                        _emit_iterm2_profile_setup("session-5", "c", session="c-session-5", slot="#1abc9c")
         out = capsys.readouterr().out
-        assert "SetProfile=ai-cli:sw-5" in out
+        assert "SetProfile=ai-cli:session-5" in out
         assert "SetColors=tab=1abc9c" in out
 
     def test_icon_generation_failure_does_not_block_launch(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", side_effect=RuntimeError("fail")):
-                    _emit_iterm2_profile_setup("sw-1", "c")
+                    _emit_iterm2_profile_setup("session-1", "c")
         out = capsys.readouterr().out
-        assert "SetProfile=ai-cli:sw-1" in out
+        assert "SetProfile=ai-cli:session-1" in out
 
     def test_given_vscode_authority_when_emitting_then_forwards_it_to_profile_generator(self, capsys):
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._load_iterm2_config", return_value={}):
                 with patch("ai_cli.icon_generator.generate_session_icon", return_value=None):
                     with patch("ai_cli.icon_generator.generate_dynamic_profile") as generate_profile:
-                        _emit_iterm2_profile_setup("sw-1", "c", vscode_authority="framework")
+                        _emit_iterm2_profile_setup("session-1", "c", vscode_authority="framework")
 
-        assert "SetProfile=ai-cli:sw-1" in capsys.readouterr().out
+        assert "SetProfile=ai-cli:session-1" in capsys.readouterr().out
         assert generate_profile.call_args.kwargs["vscode_authority"] == "framework"
 
 
@@ -233,7 +233,7 @@ class TestIterm2Palette:
 class TestAssignIterm2ColorSlot:
     def test_when_not_iterm2_then_returns_none(self, tmp_path):
         with patch.dict(os.environ, {"LC_TERMINAL": "", "TERM_PROGRAM": ""}, clear=False):
-            result = _assign_iterm2_color_slot("sw-1", "c")
+            result = _assign_iterm2_color_slot("session-1", "c")
         assert result is None
 
     def test_when_iterm2_then_returns_hex_string(self, tmp_path):
@@ -241,7 +241,7 @@ class TestAssignIterm2ColorSlot:
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    result = _assign_iterm2_color_slot("sw-1", "c")
+                    result = _assign_iterm2_color_slot("session-1", "c")
         assert result is not None
         assert isinstance(result, str)
         assert len(result.lstrip("#")) == 6
@@ -251,34 +251,38 @@ class TestAssignIterm2ColorSlot:
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    slot1 = _assign_iterm2_color_slot("sw-1", "c")
-                    slot2 = _assign_iterm2_color_slot("sw-2", "c")
-                    slot3 = _assign_iterm2_color_slot("sw-3", "c")
+                    slot1 = _assign_iterm2_color_slot("session-1", "c")
+                    slot2 = _assign_iterm2_color_slot("session-2", "c")
+                    slot3 = _assign_iterm2_color_slot("session-3", "c")
         assert len({slot1, slot2, slot3}) == 3
 
     def test_when_all_slots_occupied_uses_hash_based_fallback(self, tmp_path):
-        # When all palette slots are occupied, fallback is MD5(ai_name) % len(palette)
-        # md5("sw-3") % 2 == 1, so slot 1 = blue (#1e88e5)
+        # When all palette slots are occupied, fallback is MD5(ai_name) % len(palette).
+        # md5("session-4") % 2 == 1, so slot 1 = blue (#1e88e5). The third name is
+        # chosen for that parity on purpose: a name hashing to 0 would expect the
+        # FIRST palette entry, which is also what a broken fallback that ignored the
+        # hash and returned slot 0 would give -- so the assertion would hold for the
+        # wrong reason and stop distinguishing hash-based fallback from no fallback.
         cfg = make_iterm2_config(palette={"red": "#e74c3c", "blue": "#1e88e5"})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    _assign_iterm2_color_slot("sw-1", "c")
-                    _assign_iterm2_color_slot("sw-2", "c")
-                    slot3 = _assign_iterm2_color_slot("sw-3", "c")
+                    _assign_iterm2_color_slot("session-1", "c")
+                    _assign_iterm2_color_slot("session-2", "c")
+                    slot3 = _assign_iterm2_color_slot("session-4", "c")
         assert slot3 == "1e88e5"
 
     def test_stale_lease_pruned_on_assignment(self, tmp_path):
         cfg = make_iterm2_config()
         lease_file = tmp_path / "color-leases.json"
-        lease_file.write_text(json.dumps({"leases": {"sw-dead": {"slot": 0, "pid": 999999999, "ts": "0"}}}))
+        lease_file.write_text(json.dumps({"leases": {"session-dead": {"slot": 0, "pid": 999999999, "ts": "0"}}}))
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    slot = _assign_iterm2_color_slot("sw-1", "c")
+                    slot = _assign_iterm2_color_slot("session-1", "c")
         leases = json.loads(lease_file.read_text())["leases"]
-        assert "sw-dead" not in leases
-        assert "sw-1" in leases
+        assert "session-dead" not in leases
+        assert "session-1" in leases
         assert slot is not None
 
     def test_when_collision_avoidance_disabled_uses_modulo(self, tmp_path):
@@ -286,7 +290,7 @@ class TestAssignIterm2ColorSlot:
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    slot = _assign_iterm2_color_slot("sw-2", "c")
+                    slot = _assign_iterm2_color_slot("session-2", "c")
         assert slot is not None
         assert slot.lstrip("#") == "1e88e5"
 
@@ -295,7 +299,7 @@ class TestAssignIterm2ColorSlot:
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    slot = _assign_iterm2_color_slot("sw-1", "c", project_name="myproject")
+                    slot = _assign_iterm2_color_slot("session-1", "c", project_name="myproject")
         assert slot is not None
         assert slot.lstrip("#") == "2ecc71"
 
@@ -305,28 +309,28 @@ class TestAssignIterm2ColorSlot:
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
                     _assign_iterm2_color_slot("other-session", "c")
-                    slot = _assign_iterm2_color_slot("sw-1", "c", project_name="myproject")
+                    slot = _assign_iterm2_color_slot("session-1", "c", project_name="myproject")
         assert slot is not None
         assert slot.lstrip("#") != "e74c3c"
 
     def test_session_tab_color_pins_preferred_slot(self, tmp_path):
-        cfg = make_iterm2_config(sessions={"c-sw-1": {"tab_color": "blue"}})
+        cfg = make_iterm2_config(sessions={"c-session-1": {"tab_color": "blue"}})
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    slot = _assign_iterm2_color_slot("c-sw-1", "c")
+                    slot = _assign_iterm2_color_slot("c-session-1", "c")
         assert slot is not None
         assert slot.lstrip("#") == "1e88e5"
 
     def test_session_overrides_project_tab_color(self, tmp_path):
         cfg = make_iterm2_config(
             projects={"myproject": {"tab_color": "red"}},
-            sessions={"c-sw-1": {"tab_color": "blue"}},
+            sessions={"c-session-1": {"tab_color": "blue"}},
         )
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    slot = _assign_iterm2_color_slot("c-sw-1", "c", project_name="myproject")
+                    slot = _assign_iterm2_color_slot("c-session-1", "c", project_name="myproject")
         assert slot is not None
         assert slot.lstrip("#") == "1e88e5"  # session wins over project
 
@@ -335,7 +339,7 @@ class TestAssignIterm2ColorSlot:
         with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with patch("ai_cli.iterm2._load_iterm2_config", return_value=cfg):
-                    slot = _assign_iterm2_color_slot("c-sw-1", "c")
+                    slot = _assign_iterm2_color_slot("c-session-1", "c")
         assert slot is not None
         assert slot.lstrip("#") == "2ecc71"
 
@@ -343,34 +347,34 @@ class TestAssignIterm2ColorSlot:
 class TestReleaseIterm2ColorSlot:
     def test_when_lease_exists_then_removes_it(self, tmp_path):
         lease_file = tmp_path / "color-leases.json"
-        lease_file.write_text(json.dumps({"leases": {"sw-5": {"slot": 2, "pid": 123, "ts": "0"}}}))
+        lease_file.write_text(json.dumps({"leases": {"session-5": {"slot": 2, "pid": 123, "ts": "0"}}}))
         with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
-            _release_iterm2_color_slot("sw-5")
+            _release_iterm2_color_slot("session-5")
         leases = json.loads(lease_file.read_text())["leases"]
-        assert "sw-5" not in leases
+        assert "session-5" not in leases
 
     def test_when_lease_missing_then_no_error(self, tmp_path):
         lease_file = tmp_path / "color-leases.json"
         lease_file.write_text(json.dumps({"leases": {}}))
         with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
-            _release_iterm2_color_slot("sw-99")
+            _release_iterm2_color_slot("session-99")
 
     def test_when_file_missing_then_no_error(self, tmp_path):
         with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
-            _release_iterm2_color_slot("sw-1")
+            _release_iterm2_color_slot("session-1")
 
 
 class TestReleaseColorSlotCommand:
     def test_release_color_slot_internal_command(self, tmp_path):
         lease_file = tmp_path / "color-leases.json"
-        lease_file.write_text(json.dumps({"leases": {"sw-3": {"slot": 0, "pid": 1, "ts": "0"}}}))
-        with patch("sys.argv", ["ai", "internal", "release-color-slot", "sw-3"]):
+        lease_file.write_text(json.dumps({"leases": {"session-3": {"slot": 0, "pid": 1, "ts": "0"}}}))
+        with patch("sys.argv", ["ai", "internal", "release-color-slot", "session-3"]):
             with patch("ai_cli.iterm2._iterm2_state_dir", return_value=tmp_path):
                 with pytest.raises(SystemExit) as exc:
                     cli()
         assert exc.value.code == 0
         leases = json.loads(lease_file.read_text())["leases"]
-        assert "sw-3" not in leases
+        assert "session-3" not in leases
 
     def test_release_color_slot_missing_arg_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "release-color-slot"]):
@@ -402,52 +406,52 @@ class TestGetEngineScriptIterm2Slot:
         cfg = {"iterm2": {"tab_title": {"show_type_symbol": True, "show_status_symbol": True}}}
         script = get_engine_script(
             "c",
-            "sw-1",
-            "c-sw-1",
-            "c-sw-",
-            "sw",
+            "session-1",
+            "c-session-1",
+            "c-session-",
+            "session",
             iterm2_slot="#ff5722",
             iterm2_cfg=cfg,
         )
         assert '_iterm2_color="ff5722"' in script
 
     def test_slot_with_hash_prefix_stripped_in_script(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", iterm2_slot="#1e88e5")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", iterm2_slot="#1e88e5")
         assert '_iterm2_color="1e88e5"' in script
 
     def test_when_show_type_symbol_false_then_flag_is_0_in_script(self):
         cfg = {"iterm2": {"tab_title": {"show_type_symbol": False, "show_status_symbol": True}}}
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", iterm2_cfg=cfg)
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", iterm2_cfg=cfg)
         assert '_iterm2_show_type_sym="0"' in script
 
     def test_when_show_status_symbol_false_then_flag_is_0_in_script(self):
         cfg = {"iterm2": {"tab_title": {"show_type_symbol": True, "show_status_symbol": False}}}
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", iterm2_cfg=cfg)
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", iterm2_cfg=cfg)
         assert '_iterm2_show_status_sym="0"' in script
 
     def test_when_no_slot_then_fallback_color_embedded(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert '_iterm2_color="e74c3c"' in script
 
     def test_no_static_profile_vars_in_script(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "_iterm2_claude_profile" not in script
         assert "_iterm2_gemini_profile" not in script
 
     def test_iterm2_status_function_does_not_use_local_status_variable(self):
         # zsh treats `status` as a read-only special variable; using `local status=`
         # causes an immediate error in zsh sessions, breaking `ai g` launch.
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "local status=" not in script
 
     def test_script_calls_fleet_setup_with_prefixed_session_name(self):
-        # Display the full engine-prefixed session id (c-sw-1 for Claude, g-… for
+        # Display the full engine-prefixed session id (c-session-1 for Claude, g-… for
         # Gemini) so panes are distinguishable by engine — NOT the stripped ai_name.
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert '_iterm2_fleet_setup "$tmux_session"' in script
 
     def test_script_release_color_slot_in_exit_trap(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert 'ai internal release-color-slot "$ai_name"' in script
 
     def test_gemini_engine_when_default_cmd_then_uses_gemini(self):
@@ -460,23 +464,23 @@ class TestGetEngineScriptIterm2Slot:
         assert "gemini -y" not in script
 
     def test_script_cleanup_session_files_in_exit_trap(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert 'ai internal cleanup-session-files "$ai_name"' in script
 
     def test_fleet_setup_uses_osc1_not_osc0(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "\\033]1;" in script
         assert "\\033]0;" not in script
 
     def test_script_waits_for_tmux_client_on_first_run_before_fleet_setup(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "tmux list-clients -t" in script
         assert "$first_run" in script
 
     def test_script_uses_stable_path_not_self_delete(self):
         # Script no longer self-deletes (stable path persists for mtime-based hot-reload).
         # The stable path lives under the XDG state dir, not /tmp.
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "/tmp/ai-session-" not in script
         assert "_script_stable_path" in script
 
@@ -484,7 +488,7 @@ class TestGetEngineScriptIterm2Slot:
         # set-iterm2-name must resolve the pane by the tmux session's live client
         # tty — never a stored/inherited $ITERM_SESSION_ID GUID (AI-CLI-59 root
         # cause).  The script passes "$tmux_session" so the pane is resolved live.
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert 'ai internal set-iterm2-name "$tmux_session"' in script
         # No GUID plumbing left in the script.
         assert "$ITERM_SESSION_ID" not in script
@@ -492,10 +496,10 @@ class TestGetEngineScriptIterm2Slot:
         assert "show-environment ITERM_SESSION_ID" not in script
 
     def test_script_displays_engine_prefixed_session_id(self):
-        # The pane label must be the engine-prefixed session id (c-sw-1 / g-…),
+        # The pane label must be the engine-prefixed session id (c-session-1 / g-…),
         # not the stripped short name — so Claude vs Gemini sessions are
         # visually distinguishable. Callers pass "$tmux_session".
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert '_iterm2_fleet_setup "$tmux_session"' in script
         assert '_iterm2_status "running" "$_session_type" "$tmux_session"' in script
         # The stripped short-name form must be gone.
@@ -509,14 +513,14 @@ class TestSetIterm2NameByTty:
         with patch("ai_cli.iterm2.subprocess") as mock_sp:
             with patch("ai_cli.iterm2.sys") as mock_sys:
                 mock_sys.platform = "linux"
-                _set_iterm2_name_by_tty("/dev/ttys000", "sw-1")
+                _set_iterm2_name_by_tty("/dev/ttys000", "session-1")
         mock_sp.run.assert_not_called()
 
     def test_given_empty_tty_when_called_then_no_subprocess(self):
         with patch("ai_cli.iterm2.sys") as mock_sys:
             mock_sys.platform = "darwin"
             with patch("ai_cli.iterm2.subprocess") as mock_sp:
-                _set_iterm2_name_by_tty("", "sw-1")
+                _set_iterm2_name_by_tty("", "session-1")
         mock_sp.run.assert_not_called()
 
     def test_given_darwin_with_tty_then_runs_osascript_matching_tty(self):
@@ -526,13 +530,13 @@ class TestSetIterm2NameByTty:
             mock_sys.platform = "darwin"
             with patch("ai_cli.iterm2.subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(stdout="ok")
-                result = _set_iterm2_name_by_tty("/dev/ttys007", "sw-1")
+                result = _set_iterm2_name_by_tty("/dev/ttys007", "session-1")
         mock_sp.run.assert_called_once()
         cmd = mock_sp.run.call_args[0][0]
         assert cmd[0] == "osascript"
         assert "/dev/ttys007" in cmd[2]
         assert "tty of s" in cmd[2]  # matches on tty, not unique id
-        assert "sw-1" in cmd[2]
+        assert "session-1" in cmd[2]
         assert result is True
 
     def test_returns_false_when_no_pane_matches_tty(self):
@@ -542,7 +546,7 @@ class TestSetIterm2NameByTty:
             mock_sys.platform = "darwin"
             with patch("ai_cli.iterm2.subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(stdout="miss")
-                result = _set_iterm2_name_by_tty("/dev/ttys099", "sw-1")
+                result = _set_iterm2_name_by_tty("/dev/ttys099", "session-1")
         assert result is False
 
 
@@ -554,17 +558,17 @@ class TestItermPaneTtyForTmuxSession:
 
         with patch("ai_cli.iterm2.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="/dev/ttys000\n")
-            tty = _iterm_pane_tty_for_tmux_session("c-sw-3")
+            tty = _iterm_pane_tty_for_tmux_session("c-session-3")
         assert tty == "/dev/ttys000"
         cmd = mock_run.call_args[0][0]
-        assert cmd[:4] == ["tmux", "list-clients", "-t", "c-sw-3"]
+        assert cmd[:4] == ["tmux", "list-clients", "-t", "c-session-3"]
 
     def test_returns_empty_when_detached(self):
         from unittest.mock import MagicMock
 
         with patch("ai_cli.iterm2.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="\n")
-            assert _iterm_pane_tty_for_tmux_session("c-sw-3") == ""
+            assert _iterm_pane_tty_for_tmux_session("c-session-3") == ""
 
     def test_returns_empty_when_tmux_fails(self):
         from unittest.mock import MagicMock
@@ -613,24 +617,24 @@ class TestSetIterm2NameInternalCommand:
     """Tests for ai internal set-iterm2-name — resolves pane by tty."""
 
     def test_tmux_session_arg_resolves_tty_then_renames(self):
-        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "c-sw-5", "sw-5"]):
+        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "c-session-5", "session-5"]):
             with patch("ai_cli.iterm2._iterm_pane_tty_for_tmux_session", return_value="/dev/ttys009") as mock_tty:
                 with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_set:
                     with pytest.raises(SystemExit) as exc:
                         cli()
         assert exc.value.code == 0
-        mock_tty.assert_called_once_with("c-sw-5")
-        mock_set.assert_called_once_with("/dev/ttys009", "sw-5")
+        mock_tty.assert_called_once_with("c-session-5")
+        mock_set.assert_called_once_with("/dev/ttys009", "session-5")
 
     def test_tty_arg_passed_through_directly(self):
-        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "/dev/ttys003", "sw-5"]):
+        with patch("sys.argv", ["ai", "internal", "set-iterm2-name", "/dev/ttys003", "session-5"]):
             with patch("ai_cli.iterm2._iterm_pane_tty_for_tmux_session") as mock_tty:
                 with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_set:
                     with pytest.raises(SystemExit) as exc:
                         cli()
         assert exc.value.code == 0
         mock_tty.assert_not_called()  # already a tty — no lookup
-        mock_set.assert_called_once_with("/dev/ttys003", "sw-5")
+        mock_set.assert_called_once_with("/dev/ttys003", "session-5")
 
     def test_set_iterm2_name_missing_args_exits_1(self):
         with patch("sys.argv", ["ai", "internal", "set-iterm2-name"]):
@@ -650,8 +654,8 @@ class TestEmitIterm2ProfileSetupRenamesByTty:
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         with patch("ai_cli.iterm2._current_pane_tty", return_value="/dev/ttys002"):
                             with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
-                                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        mock_fn.assert_called_once_with("/dev/ttys002", "c-sw-1")
+                                _emit_iterm2_profile_setup("session-1", "c", session="c-session-1")
+        mock_fn.assert_called_once_with("/dev/ttys002", "c-session-1")
 
     def test_emit_passes_empty_tty_when_not_a_terminal(self):
         env = {"LC_TERMINAL": "iTerm2", "TMUX": ""}
@@ -661,8 +665,8 @@ class TestEmitIterm2ProfileSetupRenamesByTty:
                     with patch("ai_cli.icon_generator.generate_dynamic_profile"):
                         with patch("ai_cli.iterm2._current_pane_tty", return_value=""):
                             with patch("ai_cli.iterm2._set_iterm2_name_by_tty") as mock_fn:
-                                _emit_iterm2_profile_setup("sw-1", "c", session="c-sw-1")
-        mock_fn.assert_called_once_with("", "c-sw-1")
+                                _emit_iterm2_profile_setup("session-1", "c", session="c-session-1")
+        mock_fn.assert_called_once_with("", "c-session-1")
 
 
 class TestRenameAttachmentGuard:
@@ -679,7 +683,7 @@ class TestRenameAttachmentGuard:
         return script[start:end]
 
     def test_rename_guards_with_client_count_check_before_set_name(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         body = self._rename_body(script)
         assert 'tmux list-clients -t "$tmux_session"' in body
         assert "ai internal set-iterm2-name" in body
@@ -688,17 +692,17 @@ class TestRenameAttachmentGuard:
         assert guard_offset < rename_offset, "attachment guard must precede set-iterm2-name"
 
     def test_rename_guard_requires_at_least_one_client(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "-gt 0" in self._rename_body(script)
 
     def test_rename_falls_back_to_osc1_when_detached(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         body = self._rename_body(script)
         assert "\\033]1;" in body  # OSC 1 = title only
         assert "\\033]0;" not in body  # OSC 0 = title+icon, must not appear
 
     def test_both_fleet_and_status_delegate_to_rename(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         fleet_pos = script.index("_iterm2_fleet_setup() ")
         status_pos = script.index("_iterm2_status() ", fleet_pos)
         fleet_body = script[fleet_pos:status_pos]

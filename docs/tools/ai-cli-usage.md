@@ -83,7 +83,7 @@ ai c [N] [-p PROJECT] [-R] [--dry-run] [--verbose]
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
 
-- `N` — session number (default: auto-assigned). Creates worktree `.worktrees/sw-N` on branch `wt-sw-N`.
+- `N` — session number (default: auto-assigned). Creates worktree `.worktrees/session-N` on branch `wt-session-N`.
 - `-p PROJECT` — the project to launch in, given either as a registered task prefix or as the
   name of a repository directory under the projects directory. The launcher enters that
   directory before it creates the worktree, and refuses the launch when the directory is not
@@ -153,7 +153,7 @@ no live engine process as a reusable slot.
 - `allow-passthrough all` — enables DCS passthrough so iTerm2-specific escape sequences (OSC 1, `SetProfile`, etc.) sent from inside tmux reach the outer terminal. Without this, name-setting sequences are silently dropped.
 - `automatic-rename off` — prevents tmux from sending OSC 0/2 sequences for the running process name (e.g. `zsh`, `claude`), which would override the session name and flip the Session Title dropdown from "Name" to "Shell".
 
-The result: the Session Name field in iTerm2's Edit Session → General tab is always set to the tmux session name (e.g. `c-ai-cli-2`, `c-r-sw-1`), and the Session Title dropdown stays on "Name".
+The result: the Session Name field in iTerm2's Edit Session → General tab is always set to the tmux session name (e.g. `c-ai-cli-2`, `c-r-session-1`), and the Session Title dropdown stays on "Name".
 
 ### ai g
 
@@ -333,7 +333,7 @@ Default falls back to `core-cli-local.code-workspace` if not configured.
 Workspace: ~/projects/myproject/core-cli-local.code-workspace (13 repos)
 
   ✓  myproject          main
-  ✓  companion            main   +  .worktrees/sw-1   .worktrees/sw-2
+  ✓  companion            main   +  .worktrees/session-1   .worktrees/session-2
   ⚠  core-cli         main  (stashed+pulled)
   ✓  ai-cli-utils    main
   ↷  ai-cli-utils/ai-cli-1  (dirty, skipped)

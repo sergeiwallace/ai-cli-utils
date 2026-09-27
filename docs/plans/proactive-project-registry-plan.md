@@ -562,4 +562,4 @@ Update README first-time setup section. Add `ai register` to CLI reference. Docu
 
 | Date | Round | Notes |
 |------|-------|-------|
-| 2026-04-25 | 0 | Plan drafted from design discussion in myproject sw-1 session; D1–D5 + 6 OQs pending user review |
+| 2026-04-25 | 0 | Plan drafted from design discussion in myproject session-1 session; D1–D5 + 6 OQs pending user review |

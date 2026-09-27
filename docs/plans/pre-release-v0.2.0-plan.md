@@ -142,11 +142,11 @@ Scrub all proprietary and personal references from code, tests, docs, and commen
 | `src/ai_cli/gemini.py:155` | `"<private-project-name>"` hardcoded as Doppler project name | Make configurable via config key |
 | `src/ai_cli/messaging.py:18` | `"companion"` hardcoded as NATS topic | Remove or make fully configurable |
 | `src/ai_cli/messaging.py:50–55` | `"<private-project-name>"`, `"192.0.2.1"` as hardcoded defaults | Remove defaults or use `None` |
-| `src/ai_cli/main.py:443,564,566` | `sw-1`, `companion-2` in comments | Replace with generic examples (`myproject-1`, `session-2`) |
+| `src/ai_cli/main.py:443,564,566` | `session-1`, `companion-2` in comments | Replace with generic examples (`myproject-1`, `session-2`) |
 | `src/ai_cli/main.py:720` | `# <private-project-name> = "purple"` commented-out personal config | Remove |
 | `tests/test_project.py` | `<private-project-name>.toml`, `"<private-project-name>"` project name, personal home-dir paths | Rename to `registry.toml`, `"myproject"`, `/home/user/` |
 | `tests/test_sync.py:50–51` | `_MAC_PREFIX`/`_SERVER_PREFIX` hardcode personal home-dir prefixes | Generalize to `-Users-user-projects-`, `-home-user-projects-` |
-| `tests/test_cli.py:378` | `{"sw": "<private-project-name>"}` alias | Generic: `{"mp": "myproject"}` |
+| `tests/test_cli.py:378` | `{"session": "<private-project-name>"}` alias | Generic: `{"mp": "myproject"}` |
 | `tests/test_cli.py:1059` | `<private-project-name>.toml` registry path | `registry.toml` |
 | `tests/test_cli.py:1608` | `"192.0.2.1"`, `"<private-project-name>"` in tunnel config | `"192.0.2.1"`, `"user"` |
 | `tests/test_cli.py:1821,1830,1837` | `ai-ide-mobile`, `"<private-project-name>"` project names | Generic names |

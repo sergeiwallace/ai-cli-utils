@@ -14,7 +14,7 @@ source: ai-cli-utils
 
 ## Overview
 
-Replace static `cc sw-N` titles with actual tmux session names (e.g. `c-sw-5`, `c-r-sw-1`). Abbreviate multi-session tabs with per-session status symbols. Show Claude logo + pane-type symbols in tab/pane headers. Generate descriptive window titles via hybrid heuristic + async Claude Haiku.
+Replace static `cc session-N` titles with actual tmux session names (e.g. `c-session-5`, `c-r-session-1`). Abbreviate multi-session tabs with per-session status symbols. Show Claude logo + pane-type symbols in tab/pane headers. Generate descriptive window titles via hybrid heuristic + async Claude Haiku.
 
 ---
 
@@ -46,29 +46,29 @@ Replace static `cc sw-N` titles with actual tmux session names (e.g. `c-sw-5`, `
 ## Tab Title Format
 
 ### Single pane
-`* ▶ c-sw-5`
+`* ▶ c-session-5`
 
 ### Multi-pane — shared prefix
 Abbreviation: longest common prefix (min 4 chars) + `{symbol+suffix|…}` per session.
 
-`**** c-r-sw-{▶1|⏸2|✓3|✓4}`
-`*$ c-sw-{▶5}` (CC top/left, shell bottom/right)
-`$* c-sw-{▶5}` (shell top/left, CC bottom/right)
+`**** c-r-session-{▶1|⏸2|✓3|✓4}`
+`*$ c-session-{▶5}` (CC top/left, shell bottom/right)
+`$* c-session-{▶5}` (shell top/left, CC bottom/right)
 
 ### Multi-pane — no shared prefix
-Space-joined: `*$ ▶ c-sw-5 $→sh`
+Space-joined: `*$ ▶ c-session-5 $→sh`
 
 ### Status symbols
 
 | State | Symbol | Example |
 |---|---|---|
-| Running | `▶` | `▶ c-sw-5` |
-| Waiting | `⏸` | `⏸ c-sw-5` |
-| Done | `✓` | `✓ c-sw-5` |
-| Error | `✗` | `✗ c-sw-5` |
-| Resuming | `↻` | `↻ c-sw-5` |
+| Running | `▶` | `▶ c-session-5` |
+| Waiting | `⏸` | `⏸ c-session-5` |
+| Done | `✓` | `✓ c-session-5` |
+| Error | `✗` | `✗ c-session-5` |
+| Resuming | `↻` | `↻ c-session-5` |
 
-Multi-pane: per-session status inside brackets: `c-r-sw-{▶1|⏸2|✓3|✓4}`.
+Multi-pane: per-session status inside brackets: `c-r-session-{▶1|⏸2|✓3|✓4}`.
 
 ### Pane ordering for symbol prefix
 Use pane creation index (from `ITERM_SESSION_ID` `p{N}`) as proxy for spatial order. Creation order typically matches: top-left → top-right → bottom-left → bottom-right for standard splits.
@@ -78,9 +78,9 @@ Use pane creation index (from `ITERM_SESSION_ID` `p{N}`) as proxy for spatial or
 ## Split Pane Headers
 
 Each pane's title bar shows independently:
-- CC pane: `[Claude logo] ▶ c-sw-5`
-- Shell pane: `[terminal icon] $ → c-sw-5` (paired CC session name)
-- Gemini pane: `[Gemini icon] ▶ g-sw-1`
+- CC pane: `[Claude logo] ▶ c-session-5`
+- Shell pane: `[terminal icon] $ → c-session-5` (paired CC session name)
+- Gemini pane: `[Gemini icon] ▶ g-session-1`
 
 Profile icon comes from the applied profile (real PNG). Title text set via OSC 0 per-session.
 
@@ -102,13 +102,13 @@ Shell companion pane uses `ShellUtility` profile. A `>_` style terminal icon PNG
 ## Window Title (Option C — Hybrid)
 
 1. **Heuristic fires instantly** on CC start:
-   - Parse session prefixes → label: `c-r-sw-*` → `SW Remote CC`, `c-sw-*` → `SW Local CC`, mixed → `CC Sessions`
+   - Parse session prefixes → label: `c-r-session-*` → `Remote CC`, `c-session-*` → `Local CC`, mixed → `CC Sessions`
    - Emit `\033]2;{label}\007` immediately
 
 2. **Claude Haiku refines async**:
    - Collect all session names in window from registry `/tmp/iterm2-win-{win_key}`
    - Spawn: `claude -p "..." --model claude-haiku-4-5-20251001 --output-format text > /tmp/iterm2-win-title-{win_key} 2>/dev/null &`
-   - Prompt: `"2-4 word iTerm2 window title for terminal window with these Claude Code sessions: {sessions}. Concise, descriptive. Examples: 'SW Remote CC', 'Local Dev Sessions'. Title only."`
+   - Prompt: `"2-4 word iTerm2 window title for terminal window with these Claude Code sessions: {sessions}. Concise, descriptive. Examples: 'Remote CC', 'Local Dev Sessions'. Title only."`
    - Falls back to heuristic permanently if `claude` not in PATH
 
 3. **precmd hook** checks title file on next prompt; emits `\033]2;{title}\007` once when updated.
@@ -121,7 +121,7 @@ Shell companion pane uses `ShellUtility` profile. A `>_` style terminal icon PNG
 
 ## Gemini Sessions
 
-Same rules. `g-sw-1`, `g-r-proj-2` — same abbreviation, same status symbols, `◇` symbol, `GeminiCLI` profile icon.
+Same rules. `g-session-1`, `g-r-proj-2` — same abbreviation, same status symbols, `◇` symbol, `GeminiCLI` profile icon.
 
 ---
 

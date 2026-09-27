@@ -490,7 +490,7 @@ def test_given_existing_session_with_dead_pane_when_relaunched_then_recreates_no
     patched_subprocess,
     capsys,
 ):
-    """A session left behind by a supervisor crash (AI-CLI-t8h5 sw-4 regression)
+    """A session left behind by a supervisor crash (AI-CLI-t8h5 session-4 regression)
     has a dead pane but tmux keeps the session alive. A naive reattach shows
     the frozen final output forever; ``_do_session_launch`` must instead kill
     the dead session and create a genuinely fresh one."""

@@ -42,7 +42,7 @@ source: ai-cli-utils
 
 This system provides visual identity and status feedback for parallel AI coding sessions managed by ai-cli in iTerm2. It controls three visual properties per tab/pane:
 
-1. **Tab/pane title text** — shows session name and status symbol (e.g., `▶ c-sw-5`)
+1. **Tab/pane title text** — shows session name and status symbol (e.g., `▶ c-session-5`)
 2. **Tab background color** — a rolling color from a 12-color palette, unique among currently open tabs
 3. **Profile icon** — Claude logo, Gemini logo, or terminal icon shown in the tab bar and pane headers
 
@@ -69,19 +69,19 @@ The system operates at two timing layers:
 |----------|-------|
 | **Profile** | One of `ClaudeCode-{color}` variants (see [Icon Color System](#icon-color-system)) |
 | **Tab color** | Rolling color from 12-color palette, assigned by collision-free slot (see [Color Assignment Strategy](#color-assignment-strategy)) |
-| **Tab title** | `▶ c-sw-5` (status symbol + tmux session name) |
-| **Pane header** | `[Claude logo] * ▶ c-sw-5` (type symbol + status + name) |
+| **Tab title** | `▶ c-session-5` (status symbol + tmux session name) |
+| **Pane header** | `[Claude logo] * ▶ c-session-5` (type symbol + status + name) |
 | **Status updates** | `▶` running, `✓` done, `✗` error, `↻` resuming, `⏸` waiting |
 
 **Tab title vs. pane header distinction:** In the tab bar, the profile icon (Claude logo) already communicates session type, so the `*` type symbol is redundant and omitted. In pane headers (visible in split-pane layouts), the profile icon may not render or may be too small, so the `*` type symbol is included as a text fallback.
 
 **Title format:**
-- Tab bar: `{status_sym} {session_name}` — e.g., `▶ c-sw-5`
-- Pane header: `* {status_sym} {session_name}` — e.g., `* ▶ c-sw-5`
+- Tab bar: `{status_sym} {session_name}` — e.g., `▶ c-session-5`
+- Pane header: `* {status_sym} {session_name}` — e.g., `* ▶ c-session-5`
 
 **Implementation note:** OSC 0 sets both the tab title and the pane header title to the same string. iTerm2 does not offer separate sequences for tab-only vs. pane-header-only title. Therefore, the pane header format (with type symbol) is what gets set via OSC 0, and the tab bar displays the same string alongside the profile icon. The type symbol in the tab bar is a minor redundancy that is acceptable given the constraint. If the user finds this unacceptable, the alternative is to omit the type symbol entirely and rely solely on the profile icon in both contexts.
 
-> **Feedback (2026-04-03):** Drop `type_sym` and `status_sym` from the title for the initial implementation — use plain session name only (e.g., `c-sw-5`). Symbols deferred to a follow-up iteration.
+> **Feedback (2026-04-03):** Drop `type_sym` and `status_sym` from the title for the initial implementation — use plain session name only (e.g., `c-session-5`). Symbols deferred to a follow-up iteration.
 
 ### CC Remote (mosh)
 
@@ -89,7 +89,7 @@ The system operates at two timing layers:
 |----------|-------|
 | **Profile** | One of `ClaudeCode-{color}` variants, set pre-launch (before mosh) |
 | **Tab color** | Rolling color, set pre-launch (before mosh) |
-| **Tab title** | `[mosh] ▶ c-r-sw-1` — mosh prepends `[mosh]` to all OSC 0 titles; this is unavoidable |
+| **Tab title** | `[mosh] ▶ c-r-session-1` — mosh prepends `[mosh]` to all OSC 0 titles; this is unavoidable |
 | **Pane header** | Same as tab title (mosh controls it) |
 | **Status updates** | Initial title only; in-session status updates are filtered by mosh |
 
@@ -107,10 +107,10 @@ The in-session bash functions (`_iterm2_fleet_setup`, `_iterm2_status`) will sil
 **What works for remote sessions:**
 - Profile icon (Claude logo) — set pre-launch, persists for tab lifetime
 - Tab color — set pre-launch, persists for tab lifetime
-- Initial title — set pre-launch: `▶ c-r-sw-1`
+- Initial title — set pre-launch: `▶ c-r-session-1`
 
 **What does NOT work for remote sessions:**
-- In-session status symbol updates in the tab title (the `_iterm2_status` OSC 0 updates go through mosh and arrive as `[mosh] ✓ c-r-sw-1` — the status symbol works but the `[mosh]` prefix is unavoidable)
+- In-session status symbol updates in the tab title (the `_iterm2_status` OSC 0 updates go through mosh and arrive as `[mosh] ✓ c-r-session-1` — the status symbol works but the `[mosh]` prefix is unavoidable)
 - Profile/color changes during the session (filtered by mosh)
 - Re-emit of profile/color on session restart within the while loop (filtered)
 
@@ -180,7 +180,7 @@ Title update behavior is unchanged — `_ai_iterm2_precmd` in `~/.zshrc` handles
 
 ### Problem
 
-The current implementation uses `(num - 1) % 12` where `num` is the trailing digit of the session name (e.g., `sw-2` -> `2`). This means all sessions with the same trailing number across different projects get the same color (Bug 1: `c-ai-cli-2`, `c-proj-2`, `c-other-2` all get orange).
+The current implementation uses `(num - 1) % 12` where `num` is the trailing digit of the session name (e.g., `session-2` -> `2`). This means all sessions with the same trailing number across different projects get the same color (Bug 1: `c-ai-cli-2`, `c-proj-2`, `c-other-2` all get orange).
 
 ### Design: Local state file with lease-based assignment
 
@@ -190,7 +190,7 @@ The current implementation uses `(num - 1) % 12` where `num` is the trailing dig
 // color-leases.json
 {
   "leases": {
-    "c-sw-5": { "slot": 0, "pid": 12345, "ts": "2026-04-02T10:30:00" },
+    "c-session-5": { "slot": 0, "pid": 12345, "ts": "2026-04-02T10:30:00" },
     "c-proj-2": { "slot": 1, "pid": 12346, "ts": "2026-04-02T10:31:00" },
     "g-art-1": { "slot": 2, "pid": 12347, "ts": "2026-04-02T10:32:00" }
   }
@@ -229,7 +229,7 @@ The iTerm2 system is configured via a TOML file at `~/.config/ai-cli-utils/iterm
 enabled = true                  # master switch — set false to disable all iTerm2 integration
 
 [iterm2.tab_title]
-show_type_symbol = true         # include *, ✦ type prefix in tab/pane title (e.g. "* ▶ c-sw-5")
+show_type_symbol = true         # include *, ✦ type prefix in tab/pane title (e.g. "* ▶ c-session-5")
 show_status_symbol = true       # include ▶ ✓ ✗ ↻ ⏸ status prefix in tab/pane title
 
 [iterm2.color]
@@ -299,10 +299,10 @@ Every profile type — not just Claude and Gemini — uses the runtime generatio
 ```json
 {
   "Profiles": [{
-    "Name": "ai-cli:c-sw-5",
-    "Guid": "ai-cli-c-sw-5",
+    "Name": "ai-cli:c-session-5",
+    "Guid": "ai-cli-c-session-5",
     "Dynamic Profile Parent Name": "ClaudeCode",
-    "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/c-sw-5.png"
+    "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/c-session-5.png"
   }]
 }
 ```text
@@ -467,7 +467,7 @@ This ensures the `cd {worktree_dir}` command in the bash script template and the
 
 | Component | Reason |
 |-----------|--------|
-| Multi-pane abbreviation logic (`c-r-sw-{▶1|⏸2}`) | Requirement 1: no combined titles |
+| Multi-pane abbreviation logic (`c-r-session-{▶1|⏸2}`) | Requirement 1: no combined titles |
 | Window title via Claude Haiku subprocess | Was causing freezes; dropped from scope |
 | Window registry files (`/tmp/iterm2-win-{win_key}`) | Only needed for window titles |
 | Badge text overlays | Never used — off the table entirely (aesthetic decision, not a tradeoff) |

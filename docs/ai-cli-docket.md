@@ -39,7 +39,7 @@ derived `score`.
 | P1 | `AI-CLI-17` | **Resolve last 2% coverage gap in main.py** | — (no open decision; ready to work) | — | — | `1.5` |
 | P1 | `AI-CLI-16` | **Handoff queue reliability — testing and hardening** | — (no open decision; ready to work) | — | — | `1.46` |
 | P1 | `AI-CLI-154` | **Handoff v2 Phase 2: hook-based delivery (Stop/UserPromptSubmit/SessionStart); retire restart-based delivery and pre-claim** | — (no open decision; ready to work) | — | unblocks 1 | `1.41*` |
-| P1 | `AI-CLI-live-verify-rc-nxkm` | **Live-verify RC zero-touch auto-reconnect on a Mac sw-* session after the AI-CLI-an5r auto-update-race fix** | — (no open decision; ready to work) | — | — | `0.83*` |
+| P1 | `AI-CLI-live-verify-rc-nxkm` | **Live-verify RC zero-touch auto-reconnect on a Mac session-* session after the AI-CLI-an5r auto-update-race fix** | — (no open decision; ready to work) | — | — | `0.83*` |
 | P1 | `AI-CLI-exiting-cc-session-vkck` | **Exiting a CC session can leave it STOPPED not dead, so the launcher reads the name as in use and starts a new session instead of resuming** | — (no open decision; ready to work) | — | — | `0.83*` |
 | P1 | `AI-CLI-ai-c-1-msxj` | **ai c 1 — stale orphan worktree directory blocks launch on Windows** | — (no open decision; ready to work) | — | — | `0.83*` |
 | P1 | `AI-CLI-ai-c-bare-xzzf` | **ai c bare-mode Windows — TUI corruption and keyboard handling broken (random chars, Shift+Enter, Ctrl+C)** | — (no open decision; ready to work) | — | — | `0.83*` |

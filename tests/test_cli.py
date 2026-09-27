@@ -120,7 +120,7 @@ class TestCliDispatch:
                     mock_fn.assert_called_once_with("art-1")
 
     def test_cli_when_internal_update_session_map_then_updates(self, tmp_path):
-        with patch("sys.argv", ["ai", "internal", "update-session-map", "g", "sw-1", "uuid123"]):
+        with patch("sys.argv", ["ai", "internal", "update-session-map", "g", "session-1", "uuid123"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("ai_cli.config.get_session_map", return_value={}):
                     with patch("ai_cli.config.save_session_map") as mock_save:
@@ -379,7 +379,7 @@ class TestCliDispatch:
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
         probe_result = MagicMock()
         probe_result.returncode = 0
-        probe_result.stdout = "c-r-sw-1\nc-r-sw-2\nother-session\n"
+        probe_result.stdout = "c-r-session-1\nc-r-session-2\nother-session\n"
 
         with patch("sys.argv", ["ai", "reconnect"]):
             with patch("ai_cli.config.load_config", return_value=config):
@@ -430,7 +430,7 @@ class TestCliDispatch:
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
         probe_result = MagicMock()
         probe_result.returncode = 0
-        probe_result.stdout = "c-r-sw-1\n"
+        probe_result.stdout = "c-r-session-1\n"
 
         with patch("sys.argv", ["ai", "reconnect", "99"]):
             with patch("ai_cli.config.load_config", return_value=config):
@@ -444,7 +444,7 @@ class TestCliDispatch:
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
         probe_result = MagicMock()
         probe_result.returncode = 0
-        probe_result.stdout = "c-r-sw-1\n"
+        probe_result.stdout = "c-r-session-1\n"
 
         with patch("sys.argv", ["ai", "reconnect"]):
             with patch("ai_cli.config.load_config", return_value=config):
@@ -516,7 +516,7 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "c", "--bare"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
             patch("ai_cli.session.create_worktree", return_value=(tmp_path, False)),
             patch("ai_cli.config.get_session_map", return_value={}),
@@ -550,7 +550,7 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "g", "--bare"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
             patch("ai_cli.session.create_worktree", return_value=(tmp_path, False)),
             patch("ai_cli.main.trigger_background_update"),
@@ -568,16 +568,16 @@ class TestCliSessionSetupBranches:
         """Gemini must be launched with --no-sandbox unless -s is passed.
 
         ``create_worktree`` is stubbed out: without it this test created a real
-        ``.worktrees/sw-1`` worktree (and branch) inside the developer's own
+        ``.worktrees/session-1`` worktree (and branch) inside the developer's own
         checkout, and it asserted nothing at all.
         """
         monkeypatch.chdir(tmp_path)
         with (
             patch("sys.argv", ["ai", "g", "--bare"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
-            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")),
+            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "session-1")),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
@@ -595,9 +595,9 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "g", "--sandbox", "--bare"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.session.is_current_project_resolved", return_value=True),
-            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")),
+            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "session-1")),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
@@ -620,11 +620,12 @@ class TestCliSessionSetupBranches:
 
         with patch("sys.argv", ["ai", "g", "1", "--sandbox"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
                             with patch(
-                                "ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")
+                                "ai_cli.session.create_worktree",
+                                return_value=_successful_worktree(tmp_path, "session-1"),
                             ):
                                 # See _run_c_with_fake_subprocess's comment: the blanket
                                 # subprocess.run mock's generic success default incidentally
@@ -634,7 +635,7 @@ class TestCliSessionSetupBranches:
                                     with patch("subprocess.run", side_effect=_run):
                                         with patch(
                                             "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
-                                            return_value=TmuxSessionIdentity("$42", "g-sw-1", "generation-token"),
+                                            return_value=TmuxSessionIdentity("$42", "g-session-1", "generation-token"),
                                         ):
                                             with patch(
                                                 "ai_cli.main._tmux_ownership.kill_owned_tmux_session",
@@ -657,10 +658,10 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "g", "1", "--sandbox"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
-            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")),
+            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "session-1")),
             patch("ai_cli.session.detect_repo_root", return_value=None),
             patch("subprocess.run", side_effect=_run),
             patch("ai_cli.main._tmux_ownership.capture_tmux_session_identity", return_value=None),
@@ -687,7 +688,7 @@ class TestCliSessionSetupBranches:
 
         with patch("sys.argv", ["ai", "g", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
                             # See _run_c_with_fake_subprocess's comment: the blanket
@@ -723,11 +724,12 @@ class TestCliSessionSetupBranches:
 
         with patch("sys.argv", ["ai", "g", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
                             with patch(
-                                "ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "sw-1")
+                                "ai_cli.session.create_worktree",
+                                return_value=_successful_worktree(tmp_path, "session-1"),
                             ):
                                 with patch("ai_cli.session.detect_repo_root", return_value=None):
                                     with patch("subprocess.run", side_effect=fake_run):
@@ -765,7 +767,7 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "c", "-R", "-p", "myproj"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.config.resolve_project_prefix_by_name", return_value="mp"),
             patch("ai_cli.main.trigger_background_update"),
@@ -789,10 +791,10 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-session-1", "session-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -821,10 +823,10 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-session-1", "session-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=False),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -857,10 +859,10 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-session-1", "session-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=True),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -890,10 +892,10 @@ class TestCliSessionSetupBranches:
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
-            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-sw-1", "sw-1")),
+            patch("ai_cli.main._request_remote_session_allocation", return_value=("c-r-session-1", "session-1")),
             patch("ai_cli.transport._is_vpn_active", return_value=True),
             patch("ai_cli.transport._run_transport_loop", side_effect=fake_transport_loop),
             patch("ai_cli.transport._ensure_vpn_watcher"),
@@ -908,7 +910,7 @@ class TestCliSessionSetupBranches:
 class TestCliReconnectContinueBranch:
     def test_cli_when_reconnect_session_name_too_short_then_continues(self, capsys):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu"}}
-        probe = MagicMock(returncode=0, stdout="c-r-x\nc-r-sw-1\n")
+        probe = MagicMock(returncode=0, stdout="c-r-x\nc-r-session-1\n")
         with patch("sys.argv", ["ai", "reconnect"]):
             with patch("ai_cli.config.load_config", return_value=config):
                 with patch("subprocess.run", return_value=probe):
@@ -925,9 +927,9 @@ class TestCliResumePath:
     def test_cli_when_resume_and_session_found_then_attaches(self):
         with patch("sys.argv", ["ai", "c", "-r", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.session.resolve_session", return_value="c-sw-1"):
+                        with patch("ai_cli.session.resolve_session", return_value="c-session-1"):
                             with patch("os.execvp", side_effect=SystemExit(0)) as mock_exec:
                                 with pytest.raises(SystemExit):
                                     cli()
@@ -937,7 +939,7 @@ class TestCliResumePath:
     def test_cli_when_resume_and_no_session_then_exits_1(self, capsys):
         with patch("sys.argv", ["ai", "c", "-r", "nonexistent"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.resolve_session", return_value=None):
                             with pytest.raises(SystemExit) as exc:
@@ -950,13 +952,13 @@ class TestCliOncePath:
     def test_cli_when_once_and_claude_non_root_then_execvp_with_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "sw-1"),
+                                    return_value=_worktree_with_envrc(tmp_path, "session-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -976,13 +978,13 @@ class TestCliOncePath:
     def test_cli_when_once_and_claude_root_then_execvp_without_perms(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "-o", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "sw-1"),
+                                    return_value=_worktree_with_envrc(tmp_path, "session-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -1001,18 +1003,19 @@ class TestCliOncePath:
     def test_cli_when_once_and_gemini_with_uuid_then_resumes(self, tmp_path):
         with patch("sys.argv", ["ai", "g", "-o", "research"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
                             with patch(
-                                "ai_cli.session.build_session_name", return_value=("g-sw-research", "sw-research")
+                                "ai_cli.session.build_session_name",
+                                return_value=("g-session-research", "session-research"),
                             ):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "sw-research"),
+                                    return_value=_worktree_with_envrc(tmp_path, "session-research"),
                                 ):
                                     with patch(
-                                        "ai_cli.config.get_session_map", return_value={"sw-research": "uuid123"}
+                                        "ai_cli.config.get_session_map", return_value={"session-research": "uuid123"}
                                     ):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
                                             with patch(
@@ -1029,15 +1032,16 @@ class TestCliOncePath:
     def test_cli_when_once_and_gemini_no_uuid_then_uses_resume_load(self, tmp_path):
         with patch("sys.argv", ["ai", "g", "-o", "research"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
                             with patch(
-                                "ai_cli.session.build_session_name", return_value=("g-sw-research", "sw-research")
+                                "ai_cli.session.build_session_name",
+                                return_value=("g-session-research", "session-research"),
                             ):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_worktree_with_envrc(tmp_path, "sw-research"),
+                                    return_value=_worktree_with_envrc(tmp_path, "session-research"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session.detect_repo_root", return_value=None):
@@ -1057,14 +1061,18 @@ class TestConfigureTmuxForIterm2:
     def test_sets_allow_passthrough(self):
         run_calls = []
         with patch("subprocess.run", side_effect=lambda cmd, **kw: run_calls.append(cmd)):
-            _configure_tmux_for_iterm2("c-sw-1")
-        assert any(cmd == ["tmux", "set-option", "-p", "-t", "c-sw-1", "allow-passthrough", "all"] for cmd in run_calls)
+            _configure_tmux_for_iterm2("c-session-1")
+        assert any(
+            cmd == ["tmux", "set-option", "-p", "-t", "c-session-1", "allow-passthrough", "all"] for cmd in run_calls
+        )
 
     def test_disables_automatic_rename(self):
         run_calls = []
         with patch("subprocess.run", side_effect=lambda cmd, **kw: run_calls.append(cmd)):
-            _configure_tmux_for_iterm2("c-sw-1")
-        assert any(cmd == ["tmux", "set-window-option", "-t", "c-sw-1", "automatic-rename", "off"] for cmd in run_calls)
+            _configure_tmux_for_iterm2("c-session-1")
+        assert any(
+            cmd == ["tmux", "set-window-option", "-t", "c-session-1", "automatic-rename", "off"] for cmd in run_calls
+        )
 
 
 @pytest.mark.usefixtures("tmux_available")
@@ -1072,13 +1080,13 @@ class TestCliSessionExecvp:
     def test_cli_when_existing_session_then_attaches_with_detach(self, tmp_path):
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_successful_worktree(tmp_path, "session-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
@@ -1096,7 +1104,7 @@ class TestCliSessionExecvp:
                                                                 cli()
                                                     assert "attach-session" in mock_exec.call_args[0][1]
                                                     assert "-d" in mock_exec.call_args[0][1]
-                                                    mock_rename.assert_called_once_with("c-sw-1", "sw-1")
+                                                    mock_rename.assert_called_once_with("c-session-1", "session-1")
 
     def test_cli_when_no_existing_session_then_creates_new(self, tmp_path):
         run_calls = []
@@ -1116,13 +1124,13 @@ class TestCliSessionExecvp:
 
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_successful_worktree(tmp_path, "session-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
@@ -1130,7 +1138,7 @@ class TestCliSessionExecvp:
                                                 with patch(
                                                     "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
                                                     return_value=TmuxSessionIdentity(
-                                                        "$42", "c-sw-1", "test-generation"
+                                                        "$42", "c-session-1", "test-generation"
                                                     ),
                                                 ):
                                                     with patch("ai_cli.iterm2._rename_tmux_window") as mock_rename:
@@ -1140,7 +1148,7 @@ class TestCliSessionExecvp:
                                             # New session: detached new-session via subprocess, then attach via execvp
                                             assert any("new-session" in c for c in run_calls)
                                             assert "attach-session" in mock_exec.call_args[0][1]
-                                            mock_rename.assert_called_once_with("$42", "sw-1")
+                                            mock_rename.assert_called_once_with("$42", "session-1")
 
     def test_given_new_session_when_created_then_enables_mouse_and_osc52_clipboard(self, tmp_path):
         run_calls = []
@@ -1155,13 +1163,13 @@ class TestCliSessionExecvp:
 
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_successful_worktree(tmp_path, "session-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
@@ -1175,7 +1183,7 @@ class TestCliSessionExecvp:
                                                     with patch(
                                                         "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
                                                         return_value=TmuxSessionIdentity(
-                                                            "$42", "c-sw-1", "test-generation"
+                                                            "$42", "c-session-1", "test-generation"
                                                         ),
                                                     ):
                                                         with patch("os.execvp", side_effect=SystemExit(0)):
@@ -1195,18 +1203,19 @@ class TestCliIsRemotePath:
 
         with patch("sys.argv", ["ai", "c", "--is-remote", "--project", "myproj"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.config.get_project_aliases", return_value={}):
                             with patch("ai_cli.config._find_project_dir", return_value=project_dir):
                                 with patch("ai_cli.config.resolve_project_prefix_by_name", return_value="myproj"):
                                     with patch("ai_cli.session.cleanup_stale_sessions"):
                                         with patch(
-                                            "ai_cli.session.build_session_name", return_value=("cr-sw-1", "sw-1")
+                                            "ai_cli.session.build_session_name",
+                                            return_value=("cr-session-1", "session-1"),
                                         ):
                                             with patch(
                                                 "ai_cli.session.create_worktree",
-                                                return_value=_successful_worktree(tmp_path, "sw-1"),
+                                                return_value=_successful_worktree(tmp_path, "session-1"),
                                             ):
                                                 with patch("ai_cli.config.get_session_map", return_value={}):
                                                     with patch(
@@ -1224,7 +1233,7 @@ class TestCliIsRemotePath:
 @pytest.mark.usefixtures("tmux_available")
 class TestCliWorktreeGitPull:
     def test_cli_when_worktree_created_then_runs_git_pull(self, tmp_path):
-        worktree_path = tmp_path / ".worktrees" / "sw-1"
+        worktree_path = tmp_path / ".worktrees" / "session-1"
         worktree_path.mkdir(parents=True)
 
         git_pull_calls = []
@@ -1236,10 +1245,10 @@ class TestCliWorktreeGitPull:
 
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch("ai_cli.session.create_worktree", return_value=worktree_path):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
@@ -1252,14 +1261,14 @@ class TestCliWorktreeGitPull:
 
     def _run_c_with_fake_subprocess(self, tmp_path, subprocess_side_effect):
         """Helper: run `ai c 1` with create_worktree returning a real path and subprocess mocked."""
-        worktree_path = tmp_path / ".worktrees" / "sw-1"
+        worktree_path = tmp_path / ".worktrees" / "session-1"
         worktree_path.mkdir(parents=True)
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch("ai_cli.session.create_worktree", return_value=worktree_path):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="script"):
@@ -1303,7 +1312,7 @@ class TestCliWorktreeGitPull:
         git(remote, "add", "f.txt")
         git(remote, "commit", "-q", "-m", "init")
 
-        worktree_path = tmp_path / ".worktrees" / "sw-1"
+        worktree_path = tmp_path / ".worktrees" / "session-1"
         subprocess.run(["git", "clone", "-q", str(remote), str(worktree_path)], check=True)
         # Strand it first, so the conflict genuinely predates the launch below.
         (worktree_path / "f.txt").write_text("local-change\n")
@@ -1327,10 +1336,10 @@ class TestCliWorktreeGitPull:
         with (
             patch("sys.argv", ["ai", "c", "1"]),
             patch("ai_cli.config.load_config", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.session.cleanup_stale_sessions"),
-            patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")),
+            patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")),
             patch("ai_cli.session.create_worktree", return_value=worktree_path),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.session_script.get_engine_script", return_value="script"),
@@ -1448,23 +1457,23 @@ class TestCliAttachDispatch:
         assert "Usage" in capsys.readouterr().err
 
     def test_when_session_does_not_exist_then_exits_1_with_message(self, capsys):
-        with patch("sys.argv", ["ai", "attach", "c-sw-99"]):
+        with patch("sys.argv", ["ai", "attach", "c-session-99"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=MagicMock(returncode=1)):
                     with pytest.raises(SystemExit) as exc:
                         cli()
         assert exc.value.code == 1
-        assert "c-sw-99" in capsys.readouterr().err
+        assert "c-session-99" in capsys.readouterr().err
 
     def test_when_session_exists_then_execs_tmux_attach(self):
-        with patch("sys.argv", ["ai", "attach", "c-sw-1"]):
+        with patch("sys.argv", ["ai", "attach", "c-session-1"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                     with patch("os.execvp") as mock_exec:
                         mock_exec.side_effect = SystemExit(0)
                         with pytest.raises(SystemExit):
                             cli()
-        mock_exec.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", "c-sw-1"])
+        mock_exec.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", "c-session-1"])
 
 
 class TestCliLsDispatch:
@@ -1505,7 +1514,7 @@ class TestCliLsDispatch:
 
     def test_when_fzf_unavailable_then_prints_numbered_list(self, capsys):
         now = int(time.time())
-        sessions = [("c-sw-1", now - 120), ("c-sw-2", now - 3600)]
+        sessions = [("c-session-1", now - 120), ("c-session-2", now - 3600)]
         with patch("sys.argv", ["ai", "ls"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=self._fake_tmux_sessions(sessions)):
@@ -1514,14 +1523,14 @@ class TestCliLsDispatch:
                             cli()
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "c-sw-1" in out
-        assert "c-sw-2" in out
+        assert "c-session-1" in out
+        assert "c-session-2" in out
         assert "ai attach" in out
 
     def test_when_fzf_available_and_selection_made_then_execs_attach(self):
         now = int(time.time())
-        sessions = [("c-sw-1", now - 60)]
-        fzf_result = MagicMock(returncode=0, stdout="c-sw-1\tsw\t1m\n")
+        sessions = [("c-session-1", now - 60)]
+        fzf_result = MagicMock(returncode=0, stdout="c-session-1\tsw\t1m\n")
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and "tmux" in cmd:
@@ -1536,11 +1545,11 @@ class TestCliLsDispatch:
                             mock_exec.side_effect = SystemExit(0)
                             with pytest.raises(SystemExit):
                                 cli()
-        mock_exec.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", "c-sw-1"])
+        mock_exec.assert_called_once_with("tmux", ["tmux", "attach-session", "-t", "c-session-1"])
 
     def test_when_fzf_cancelled_then_exits_0_without_attaching(self):
         now = int(time.time())
-        sessions = [("c-sw-1", now - 60)]
+        sessions = [("c-session-1", now - 60)]
         fzf_cancelled = MagicMock(returncode=130, stdout="")
 
         def fake_run(cmd, *args, **kwargs):
@@ -1560,7 +1569,7 @@ class TestCliLsDispatch:
 
     def test_when_all_flag_set_then_shows_non_ai_sessions_too(self, capsys):
         now = int(time.time())
-        sessions = [("c-sw-1", now - 60), ("random-session", now - 120)]
+        sessions = [("c-session-1", now - 60), ("random-session", now - 120)]
         with patch("sys.argv", ["ai", "ls", "--all"]):
             with patch("ai_cli.config.load_config", return_value={}):
                 with patch("subprocess.run", return_value=self._fake_tmux_sessions(sessions)):
@@ -1573,7 +1582,7 @@ class TestCliLsDispatch:
 
     def test_when_tmux_output_has_blank_lines_then_skips_them(self, capsys):
         now = int(time.time())
-        raw_output = f"c-sw-1 {now - 300}\n\nc-sw-2 {now - 600}\n"
+        raw_output = f"c-session-1 {now - 300}\n\nc-session-2 {now - 600}\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1582,11 +1591,11 @@ class TestCliLsDispatch:
                         with pytest.raises(SystemExit):
                             cli()
         out = capsys.readouterr().out
-        assert "c-sw-1" in out
-        assert "c-sw-2" in out
+        assert "c-session-1" in out
+        assert "c-session-2" in out
 
     def test_when_tmux_activity_is_non_integer_then_defaults_to_zero(self, capsys):
-        raw_output = "c-sw-1 not-a-number\n"
+        raw_output = "c-session-1 not-a-number\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1594,11 +1603,11 @@ class TestCliLsDispatch:
                     with patch("shutil.which", return_value=None):
                         with pytest.raises(SystemExit):
                             cli()
-        assert "c-sw-1" in capsys.readouterr().out
+        assert "c-session-1" in capsys.readouterr().out
 
     def test_when_session_age_is_seconds_then_displays_s_suffix(self, capsys):
         now = int(time.time())
-        raw_output = f"c-sw-1 {now - 10}\n"
+        raw_output = f"c-session-1 {now - 10}\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1610,7 +1619,7 @@ class TestCliLsDispatch:
 
     def test_when_session_age_is_days_then_displays_d_suffix(self, capsys):
         now = int(time.time())
-        raw_output = f"c-sw-1 {now - 90000}\n"
+        raw_output = f"c-session-1 {now - 90000}\n"
         tmux_result = MagicMock(returncode=0, stdout=raw_output)
         with patch("sys.argv", ["ai", "ls"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1622,7 +1631,7 @@ class TestCliLsDispatch:
 
     def test_when_fzf_absent_but_apt_available_then_installs_fzf(self, capsys):
         now = int(time.time())
-        raw_output = f"c-sw-1 {now - 60}\n"
+        raw_output = f"c-session-1 {now - 60}\n"
         apt_install_calls = []
 
         def fake_which(cmd):
@@ -1895,25 +1904,27 @@ class TestGetVersion:
 
 class TestGetEngineScript:
     def test_get_engine_script_when_claude_then_contains_claude_commands(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "claude" in script
         assert "engine=c" in script
-        assert "ai_name=sw-1" in script
+        assert "ai_name=session-1" in script
         assert "CC_TMUX_SESSION" in script
 
     def test_get_engine_script_when_gemini_then_contains_gemini_commands(self):
-        script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw")
+        script = get_engine_script("g", "session-1", "g-session-1", "g-session-", "session")
         assert "gemini" in script
         assert "engine=g" in script
         assert "GG_TMUX_SESSION" in script
 
     def test_get_engine_script_when_worktree_then_cds(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", worktree_dir="/tmp/wt")
         assert "cd -- /tmp/wt" in script
 
     def test_given_shell_metacharacters_when_rendering_then_worktree_is_shell_quoted(self):
         marker = "/tmp/marker"
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir=f"/tmp/project; touch {marker}")
+        script = get_engine_script(
+            "c", "session-1", "c-session-1", "c-session-", "session", worktree_dir=f"/tmp/project; touch {marker}"
+        )
         assert f"cd -- '/tmp/project; touch {marker}'" in script
         # The raw value also appears once more inside the session-meta JSON blob
         # (pre-existing metadata capture, unrelated to shell-quoting safety); that
@@ -1923,56 +1934,58 @@ class TestGetEngineScript:
         assert script.count("touch /tmp/marker") == 2
 
     def test_get_engine_script_when_no_worktree_then_noop_cd(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "    :" in script
 
     def test_get_engine_script_when_notify_then_includes_notify_cmd(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", notify=True)
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", notify=True)
         assert "ai internal notify" in script
 
     def test_get_engine_script_when_no_notify_then_no_notify_cmd(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", notify=False)
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", notify=False)
         assert "ai internal notify" not in script
 
     def test_get_engine_script_when_sandbox_then_has_s_flag(self):
-        script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw", sandbox=True)
+        script = get_engine_script("g", "session-1", "g-session-1", "g-session-", "session", sandbox=True)
         assert "-s" in script
 
     def test_get_engine_script_when_no_sandbox_then_explicit_no_sandbox_flag(self):
-        script = get_engine_script("g", "sw-1", "g-sw-1", "g-sw-", "sw", sandbox=False)
+        script = get_engine_script("g", "session-1", "g-session-1", "g-session-", "session", sandbox=False)
         assert "--no-sandbox" in script
         assert "gemini -y --no-sandbox" in script
 
     def test_get_engine_script_when_valid_uuid_then_includes_it(self):
         valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", session_id_uuid=valid_uuid)
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", session_id_uuid=valid_uuid)
         assert f"uuid={valid_uuid}" in script
 
     def test_get_engine_script_when_invalid_uuid_then_clears_it(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", session_id_uuid="../../evil; rm -rf /")
+        script = get_engine_script(
+            "c", "session-1", "c-session-1", "c-session-", "session", session_id_uuid="../../evil; rm -rf /"
+        )
         assert "uuid=''" in script
 
     def test_get_engine_script_uses_xdg_state_dir_not_tmp(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "/tmp/cc-exit" not in script
         assert "_ai_state_dir" in script
         assert 'mkdir -p "$_ai_state_dir/iterm2"' in script
 
     def test_get_engine_script_when_remote_then_execs_shell(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=True)
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", is_remote=True)
         assert '"$SHELL"; exit 79' in script
 
     def test_get_engine_script_when_local_then_exits(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", is_remote=False)
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", is_remote=False)
         assert "exit 0" in script
 
     def test_get_engine_script_includes_ai_session_started_guard(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "AI_SESSION_STARTED" in script
         assert "first_run=false" in script
 
     def test_get_engine_script_includes_stable_path_mtime_check(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "_script_stable_path" in script
         assert "_script_start_mtime" in script
         # The hot-reload exec must name an interpreter that actually exists on
@@ -1985,7 +1998,7 @@ class TestGetEngineScript:
         assert f'exec "{shell}" "$_script_stable_path"' not in script
 
     def test_get_engine_script_includes_set_environment_after_first_run(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session")
         assert "tmux set-environment" in script
         assert "AI_SESSION_STARTED 1" in script
 
@@ -2011,13 +2024,13 @@ class TestCliSessionStablePath:
 
         with patch("sys.argv", ["ai", "c", "1"]):
             with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
                     with patch("ai_cli.main.trigger_background_update"):
                         with patch("ai_cli.session.cleanup_stale_sessions"):
-                            with patch("ai_cli.session.build_session_name", return_value=("c-sw-1", "sw-1")):
+                            with patch("ai_cli.session.build_session_name", return_value=("c-session-1", "session-1")):
                                 with patch(
                                     "ai_cli.session.create_worktree",
-                                    return_value=_successful_worktree(tmp_path, "sw-1"),
+                                    return_value=_successful_worktree(tmp_path, "session-1"),
                                 ):
                                     with patch("ai_cli.config.get_session_map", return_value={}):
                                         with patch("ai_cli.session_script.get_engine_script", return_value="# script"):
@@ -2026,7 +2039,7 @@ class TestCliSessionStablePath:
                                                     with patch(
                                                         "ai_cli.main._tmux_ownership.capture_tmux_session_identity",
                                                         return_value=TmuxSessionIdentity(
-                                                            "$42", "c-sw-1", "test-generation"
+                                                            "$42", "c-session-1", "test-generation"
                                                         ),
                                                     ):
                                                         with patch("os.execvp", side_effect=SystemExit(0)):
@@ -2039,14 +2052,14 @@ class TestCliSessionStablePath:
             tmp_path,
             {"has-session": 1, "new-session": 0, "set-window-option": 0, "set-option": 0},
         )
-        script_path = tmp_path / "sessions" / "c-sw-1.sh"
+        script_path = tmp_path / "sessions" / "c-session-1.sh"
         assert script_path.exists()
         assert "# script" in script_path.read_text()
 
     def test_when_existing_session_then_script_written_to_stable_path(self, tmp_path):
         # has-session → 0 (session exists)
         self._run_cli(tmp_path, {"has-session": 0})
-        script_path = tmp_path / "sessions" / "c-sw-1.sh"
+        script_path = tmp_path / "sessions" / "c-session-1.sh"
         assert script_path.exists()
         assert "# script" in script_path.read_text()
 
@@ -2057,16 +2070,16 @@ class TestCliSessionStablePath:
         assert sessions_dir.is_dir()
         files = list(sessions_dir.iterdir())
         assert len(files) == 1
-        assert files[0].name == "c-sw-1.sh"
+        assert files[0].name == "c-session-1.sh"
 
 
 class TestGetEngineScriptSelfUpdate:
     def test_engine_script_embeds_template_version(self):
-        script = get_engine_script("c", "c-sw-1", "c-sw-1", "c", "myapp")
+        script = get_engine_script("c", "c-session-1", "c-session-1", "c", "myapp")
         assert "_template_version=" in script
 
     def test_engine_script_contains_version_check_no_exec(self):
-        script = get_engine_script("c", "c-sw-1", "c-sw-1", "c", "myapp")
+        script = get_engine_script("c", "c-session-1", "c-session-1", "c", "myapp")
         assert "ai internal get-version" in script
         assert "_current_ver" in script
         assert "exec ai" not in script
@@ -2074,11 +2087,13 @@ class TestGetEngineScriptSelfUpdate:
 
 class TestEngineScriptProjectName:
     def test_get_engine_script_when_project_name_set_then_included_in_template(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="ai-cli-utils")
+        script = get_engine_script(
+            "c", "session-1", "c-session-1", "c-session-", "session", project_name="ai-cli-utils"
+        )
         assert f"project_name={shlex.quote('ai-cli-utils')}" in script
 
     def test_get_engine_script_exit_trap_cleans_session_metadata(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", project_name="app")
         assert "session-meta-$tmux_session.json" in script
 
     def test_given_supervisor_clean_exit_when_generating_script_then_opaque_generation_fence_controls_kill(self):
@@ -2092,7 +2107,7 @@ class TestEngineScriptProjectName:
         assert 'tmux kill-session -t "$tmux_session"' not in script
 
     def test_get_engine_script_when_generated_then_has_no_handoff_integration(self):
-        script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", project_name="app")
+        script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", project_name="app")
         assert "handoff" not in script
 
 
@@ -2995,7 +3010,7 @@ class TestLocalProjectChdir:
             patch("sys.argv", ["ai", "g", "1", "-p", "myproject"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.config.get_project_aliases", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config._find_project_dir", return_value=project_dir),
             patch("ai_cli.config.resolve_project_prefix_by_name", return_value="myproject"),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
@@ -3027,19 +3042,19 @@ class TestLocalProjectChdir:
             patch("sys.argv", ["ai", "g", "1"]),
             patch("ai_cli.config.load_config", return_value={}),
             patch("ai_cli.config.get_project_aliases", return_value={}),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.validate_registry_completeness", return_value=True),
             patch("ai_cli.session.cleanup_stale_sessions"),
-            patch("ai_cli.config.get_current_project_name", return_value="sw"),
+            patch("ai_cli.config.get_current_project_name", return_value="session"),
             patch(
                 "ai_cli.session.build_session_name",
-                return_value=("pytest-leak-guard-g-sw-1", "pytest-leak-guard-sw-1"),
+                return_value=("pytest-leak-guard-g-session-1", "pytest-leak-guard-session-1"),
             ),
             patch("ai_cli.config.get_session_map", return_value={}),
             patch("ai_cli.session._find_latest_gemini_uuid", return_value=None),
             patch(
                 "ai_cli.session.create_worktree",
-                return_value=_successful_worktree(tmp_path, "pytest-leak-guard-sw-1"),
+                return_value=_successful_worktree(tmp_path, "pytest-leak-guard-session-1"),
             ),
             patch("ai_cli.config.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup"),

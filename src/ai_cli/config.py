@@ -219,7 +219,7 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 [gemini]
 ## Projects that should NOT be sandboxed by default
 ## (Matches the project prefix in your project registry TOML)
-# sandbox_whitelist = ["sw"]
+# sandbox_whitelist = ["session"]
 ## Set true only after AI-CLI-43 confirms billing credit status.
 ## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
 # paid_fallback_enabled = false

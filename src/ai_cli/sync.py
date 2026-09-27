@@ -359,7 +359,7 @@ def normalize_project_path(cc_dir_name: str, local_prefix: str) -> str | None:
     """Convert a CC project dir name to a bare project name.
 
     E.g. '-Users-username-projects-myproject' -> 'myproject'
-    '-Users-username-projects-myproject--worktrees-sw-1' -> 'myproject--worktrees-sw-1'
+    '-Users-username-projects-myproject--worktrees-session-1' -> 'myproject--worktrees-session-1'
     Returns None if the dir name does not match the local prefix.
     """
     if cc_dir_name.startswith(local_prefix):
@@ -1523,7 +1523,7 @@ def _replicate_to_worktrees(
             wt_cc_dir.mkdir(parents=True, exist_ok=True)
             wt_cwd = str(wt_path)
 
-            # Worktree name is the directory name (e.g. "sw-5" from .worktrees/sw-5)
+            # Worktree name is the directory name (e.g. "session-5" from .worktrees/session-5)
             wt_session_name = wt_path.name
 
             # Copy and translate JSONL files — only those belonging to this worktree's session.

@@ -245,13 +245,13 @@ Badges appear as large, faint text in the top-right corner of a terminal session
 ```bash
 # Set badge (value must be base64-encoded)
 printf '\e]1337;SetBadgeFormat=%s\a' \
-  "$(echo -n 'CC sw-\(user.sessionNum)' | base64)"
+  "$(echo -n 'CC session-\(user.sessionNum)' | base64)"
 ```text
 
 **Via profile (Dynamic Profile JSON):**
 ```json
 {
-  "Badge Text": "\\(user.sessionType) sw-\\(user.sessionNum)"
+  "Badge Text": "\\(user.sessionType) session-\\(user.sessionNum)"
 }
 ```text
 
@@ -266,10 +266,10 @@ printf '\e]1337;SetUserVar=%s=%s\a' \
 printf '\e]1337;SetUserVar=%s=%s\a' \
   "sessionNum" "$(echo -n '3' | base64)"
 printf '\e]1337;SetUserVar=%s=%s\a' \
-  "tmuxSession" "$(echo -n 'c-r-sw-3' | base64)"
+  "tmuxSession" "$(echo -n 'c-r-session-3' | base64)"
 ```text
 
-Badge text can then interpolate: `\(user.sessionType) sw-\(user.sessionNum)` [VERIFIABLE FACT]
+Badge text can then interpolate: `\(user.sessionType) session-\(user.sessionNum)` [VERIFIABLE FACT]
 
 ### Badge Formatting Options
 
@@ -339,7 +339,7 @@ The tmux Dashboard is available via Shell > tmux > Dashboard when using tmux int
 - `Cmd+T` creates a new tmux window on the server
 - `Cmd+1/2/3` switches between tmux windows as tabs
 
-**Critical limitation for your use case:** tmux -CC maps one tmux session to one iTerm2 window. You would need to attach to each CC tmux session (`c-r-sw-1`, `c-r-sw-2`, etc.) separately with `tmux -CC`, which creates a separate window per session. This is useful for individual session management but does NOT give you a unified fleet view of all sessions in one window with splits. [SYNTHESIZED INFERENCE from tmux -CC architecture.]
+**Critical limitation for your use case:** tmux -CC maps one tmux session to one iTerm2 window. You would need to attach to each CC tmux session (`c-r-session-1`, `c-r-session-2`, etc.) separately with `tmux -CC`, which creates a separate window per session. This is useful for individual session management but does NOT give you a unified fleet view of all sessions in one window with splits. [SYNTHESIZED INFERENCE from tmux -CC architecture.]
 
 **Also:** "A tab with a tmux window may not contain non-tmux split panes." This means you cannot mix tmux -CC tabs with regular split panes. [VERIFIABLE FACT: [tmux Integration docs](https://iterm2.com/documentation-tmux-integration.html)]
 
@@ -415,12 +415,12 @@ _iterm2_setup() {
     "sessionNum" "$(echo -n "$session_num" | base64)"
 
   # 4. Set badge directly
-  local badge_text="$session_type sw-$session_num"
+  local badge_text="$session_type session-$session_num"
   printf '\e]1337;SetBadgeFormat=%s\a' \
     "$(echo -n "$badge_text" | base64)"
 
   # 5. Set tab title
-  printf '\e]0;%s\a' "CC sw-$session_num"
+  printf '\e]0;%s\a' "CC session-$session_num"
 }
 
 # Called from ai-cli after tmux attach succeeds:
@@ -435,8 +435,8 @@ tell application "iTerm2"
     -- Create a new tab with the ClaudeCode profile
     create tab with profile "ClaudeCode"
     tell current session of current tab
-      set name to "CC sw-3"
-      write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-3 || tmux new -s c-r-sw-3'"
+      set name to "CC session-3"
+      write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-session-3 || tmux new -s c-r-session-3'"
     end tell
   end tell
 end tell
@@ -472,7 +472,7 @@ async def launch_cc_session(connection, session_num):
     color = CC_COLORS[(session_num - 1) % len(CC_COLORS)]
     customizations.set_tab_color(color)
     customizations.set_use_tab_color(True)
-    customizations.set_badge_text(f"CC sw-{session_num}")
+    customizations.set_badge_text(f"CC session-{session_num}")
 
     tab = await window.async_create_tab(
         profile="ClaudeCode",
@@ -482,8 +482,8 @@ async def launch_cc_session(connection, session_num):
     session = tab.current_session
     await session.async_send_text(
         f"ssh user@192.0.2.1 -t "
-        f"'tmux attach -t c-r-sw-{session_num} || "
-        f"tmux new -s c-r-sw-{session_num}'\n"
+        f"'tmux attach -t c-r-session-{session_num} || "
+        f"tmux new -s c-r-session-{session_num}'\n"
     )
 
 async def main(connection):
@@ -547,7 +547,7 @@ Create the file `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-ses
       "Name": "ClaudeCode",
       "Guid": "ai-cli-claude-code-001",
       "Dynamic Profile Parent Name": "Default",
-      "Badge Text": "\\(user.sessionType) sw-\\(user.sessionNum)",
+      "Badge Text": "\\(user.sessionType) session-\\(user.sessionNum)",
       "Use Tab Color": true,
       "Tab Color": {
         "Red Component": 0.39,
@@ -670,8 +670,8 @@ tell application "iTerm2"
   tell current window
     create tab with profile "ClaudeCode"
     tell current session of current tab
-      set name to "CC sw-$num"
-      write text "ssh $SERVER -t 'tmux attach -t c-r-sw-$num 2>/dev/null || echo No session c-r-sw-$num'"
+      set name to "CC session-$num"
+      write text "ssh $SERVER -t 'tmux attach -t c-r-session-$num 2>/dev/null || echo No session c-r-session-$num'"
     end tell
   end tell
 end tell
@@ -689,12 +689,12 @@ tell application "iTerm2"
   tell current window
     tell current session of current tab
       set name to "Monitor 1"
-      write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-1'"
+      write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-session-1'"
       -- Split right
       set rightPane to (split vertically with profile "ShellUtility")
       tell rightPane
         set name to "Monitor 2"
-        write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-2'"
+        write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-session-2'"
       end tell
     end tell
     -- Split current pane down
@@ -702,7 +702,7 @@ tell application "iTerm2"
       set bottomLeft to (split horizontally with profile "ShellUtility")
       tell bottomLeft
         set name to "Monitor 3"
-        write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-sw-3'"
+        write text "ssh user@192.0.2.1 -t 'tmux attach -t c-r-session-3'"
       end tell
     end tell
   end tell
@@ -779,7 +779,7 @@ tmux Dashboard, per-session profiles). I already know the basics: renaming tab/w
 setting tab colors, doing 2-way and 4-way splits, and setting per-pane session names.
 
 Session types: Claude Code (5-10, rolling colors), Shell/utility (coffee, SSH, Chrome icons).
-All SSH to same Hetzner server, attach to different tmux sessions (c-r-sw-1, c-r-sw-2, etc.).
+All SSH to same Hetzner server, attach to different tmux sessions (c-r-session-1, c-r-session-2, etc.).
 
 QUESTIONS:
 1. Tab/pane icons: custom images in tabs, formats, programmatic setting, icon sources

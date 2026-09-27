@@ -4,7 +4,7 @@ Prevents the recurring ``core.bare=true`` / stale ``core.worktree`` corruption
 class on a repo's main working tree. Root cause: worktree tooling runs ``git``
 subprocesses that INHERIT the parent process's environment. When the parent is
 itself running inside a git worktree (e.g. a nested CC session launched from
-``.worktrees/sw-N``), git context env vars (``GIT_DIR``, ``GIT_WORK_TREE``, ...)
+``.worktrees/session-N``), git context env vars (``GIT_DIR``, ``GIT_WORK_TREE``, ...)
 leak into ``git worktree add/remove`` subprocess calls. Because many
 sessions/worktrees share one gitdir, this can write ``core.bare``/
 ``core.worktree`` onto the SHARED main-repo config, corrupting every session

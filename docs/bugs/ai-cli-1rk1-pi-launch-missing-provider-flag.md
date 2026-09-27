@@ -43,7 +43,7 @@ ChatGPT backend — but `pi`'s provider identifier for that backend is `openai-c
 
 ## Reproduction
 
-Live-reproduced on `framework-26-sw` (2026-09-14):
+Live-reproduced on a Linux laptop host (2026-09-14):
 
 ```console
 ai p 2 -R

@@ -168,7 +168,7 @@ def generate_session_icon(
     """Generate a tinted PNG icon for this session and write it to the cache.
 
     Args:
-        session_name: e.g. "c-sw-5"
+        session_name: e.g. "c-session-5"
         tab_hex: tab background color, e.g. "#5e35b1"
         session_type: "cc", "gemini", "pi", "codex", "shell", "chrome", "caffeinate", "ssh"
         icon_color: explicit tint override; auto-derived from tab_hex if None

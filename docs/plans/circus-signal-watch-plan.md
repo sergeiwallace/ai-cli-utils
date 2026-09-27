@@ -98,8 +98,13 @@ def _ensure_circusd() -> str:
 def _cmd_signal_watch_start(project: str, session: str) -> None:
 ```text
 
+> The watcher-name prefix below abbreviates **signal-watch**. It collides
+> letter-for-letter with a session-name prefix the public-hygiene guard forbids,
+> so the lines quoting it carry a per-line exemption marker. The prefix is
+> recorded as the removed implementation actually spelled it.
+
 1. `endpoint = _ensure_circusd()`
-2. `watcher_name = f"sw-{session}"`
+2. `watcher_name = f"sw-{session}"` <!-- public-hygiene: allow -->
 3. `cmd = f"{ai_bin} internal signal-watch {project} {session}"`
 4. Try `client.send_message("rm", name=watcher_name)` — swallow exception if not found (idempotent)
 5. `client.send_message("add", name=watcher_name, cmd=cmd, options={...}, start=True)`
@@ -116,7 +121,7 @@ Options:
 def _cmd_signal_watch_stop(session: str) -> None:
 ```text
 
-Sends `rm sw-{session}` to circusd. **Never raises** — EXIT trap calls this unconditionally; circusd may not be running.
+Sends `rm sw-{session}` to circusd. **Never raises** — EXIT trap calls this unconditionally; circusd may not be running. <!-- public-hygiene: allow -->
 
 ### 5. `ai signal-watch status`
 
@@ -124,7 +129,7 @@ Sends `rm sw-{session}` to circusd. **Never raises** — EXIT trap calls this un
 def _cmd_signal_watch_status() -> None:
 ```text
 
-Calls `circusd status`, filters to `sw-*` watchers, prints `{session}: {status}`.
+Calls `circusd status`, filters to `sw-*` watchers, prints `{session}: {status}`. <!-- public-hygiene: allow -->
 
 ### 6. Bash template changes
 
@@ -160,9 +165,9 @@ New `TestSignalWatchCircus` class in `tests/test_main.py`:
 | `test_ensure_circusd_when_not_running_then_starts_daemon_and_writes_ini` | Writes ini + starts daemon |
 | `test_cmd_signal_watch_start_registers_watcher_with_copy_env` | `add` called with `copy_env=True, start=True` |
 | `test_cmd_signal_watch_start_idempotent_on_second_call` | `rm` exception swallowed |
-| `test_cmd_signal_watch_stop_when_circusd_running` | `rm` sent with `name="sw-c-sw-1"` |
+| `test_cmd_signal_watch_stop_when_circusd_running` | `rm` sent with `name="sw-c-session-1"` | <!-- public-hygiene: allow -->
 | `test_cmd_signal_watch_stop_when_circusd_not_running_then_silent` | ZMQError swallowed, exits 0 |
-| `test_cmd_signal_watch_status_filters_sw_prefix` | Only `sw-*` watchers printed |
+| `test_cmd_signal_watch_status_filters_sw_prefix` | Only `sw-*` watchers printed | <!-- public-hygiene: allow -->
 | `test_cli_signal_watch_start_dispatches` | CLI routes to `_cmd_signal_watch_start` |
 | `test_cli_signal_watch_stop_dispatches` | CLI routes to `_cmd_signal_watch_stop` |
 | `test_cli_signal_watch_missing_args_exits_1` | Missing args → exit 1 |

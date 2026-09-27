@@ -235,7 +235,7 @@ def test_remote_flag_when_called_then_passes_project_prefix_to_server():
     with (
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
-        patch("ai_cli.session.get_project_prefix", return_value="sw"),
+        patch("ai_cli.session.get_project_prefix", return_value="session"),
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main.trigger_background_update"),
     ):
@@ -244,7 +244,7 @@ def test_remote_flag_when_called_then_passes_project_prefix_to_server():
         except SystemExit:
             pass
     _, args = mock_exec.call_args[0]
-    assert any("--project-prefix sw" in a for a in args)
+    assert any("--project-prefix session" in a for a in args)
 
 
 def test_remote_flag_with_resume_when_called_then_forwards_resume_to_server():
@@ -314,7 +314,7 @@ def test_given_remote_host_lacks_zsh_when_launched_then_uses_probed_shell_not_ha
     with (
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
-        patch("ai_cli.session.get_project_prefix", return_value="sw"),
+        patch("ai_cli.session.get_project_prefix", return_value="session"),
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main.subprocess.run", side_effect=fake_probe),
@@ -437,7 +437,7 @@ class TestRemoteSessionIterm2Emit:
             with (
                 patch("sys.argv", argv),
                 patch("ai_cli.config.load_config", return_value=config),
-                patch("ai_cli.session.get_project_prefix", return_value="sw"),
+                patch("ai_cli.session.get_project_prefix", return_value="session"),
                 patch("ai_cli.config.get_project_aliases", return_value={}),
                 patch("ai_cli.main.trigger_background_update"),
                 patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
@@ -460,7 +460,7 @@ class TestRemoteSessionIterm2Emit:
         with (
             patch("sys.argv", argv),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
@@ -492,7 +492,7 @@ class TestRemoteSessionIterm2Emit:
         with (
             patch("sys.argv", ["ai", "c", "1", "--remote"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
@@ -521,7 +521,7 @@ class TestRemoteSessionIterm2Emit:
         with (
             patch("sys.argv", ["ai", "c", "1", "--remote"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
@@ -567,14 +567,14 @@ class TestRemoteSessionIterm2Emit:
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="zsh\n", stderr="")
             remote_allocations.append(command)
-            session_id, ai_name = build_session_name("c", "sw", "Planning", is_remote=True)
+            session_id, ai_name = build_session_name("c", "session", "Planning", is_remote=True)
             return MagicMock(returncode=0, stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}), stderr="")
 
         with patch("ai_cli.session._matching_tmux_sessions", return_value=[]):
             mock_slot, mock_emit, mock_exec, _ = self._run_remote(
                 ["ai", "c", "Planning", "--remote"], transport="ssh", preflight_run=remote_preflight
             )
-            remote_session_id, _ = build_session_name("c", "sw", "Planning", is_remote=True)
+            remote_session_id, _ = build_session_name("c", "session", "Planning", is_remote=True)
 
         assert mock_exec is not None
         assert mock_slot.call_args[0][0] == remote_session_id
@@ -585,7 +585,7 @@ class TestRemoteSessionIterm2Emit:
 
     def test_given_unnamed_remote_launches_when_dispatched_then_each_uses_its_own_remote_identity(self):
         """Closing one wrapper must not clean up another wrapper's transport state."""
-        allocations = iter(["c-r-sw-1", "c-r-sw-2"])
+        allocations = iter(["c-r-session-1", "c-r-session-2"])
         transport_calls = []
 
         def remote_preflight(command, **_kwargs):
@@ -605,7 +605,7 @@ class TestRemoteSessionIterm2Emit:
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main.subprocess.run", side_effect=remote_preflight),
@@ -621,8 +621,8 @@ class TestRemoteSessionIterm2Emit:
                     cli()
 
         assert transport_calls == [
-            ("c-r-sw-1", ["ai", "internal", "cleanup-session-files", "c-r-sw-1"]),
-            ("c-r-sw-2", ["ai", "internal", "cleanup-session-files", "c-r-sw-2"]),
+            ("c-r-session-1", ["ai", "internal", "cleanup-session-files", "c-r-session-1"]),
+            ("c-r-session-2", ["ai", "internal", "cleanup-session-files", "c-r-session-2"]),
         ]
 
     def test_when_remote_gemini_then_emit_called_with_gemini_engine(self):

@@ -64,7 +64,7 @@ This document defines the platform-wide event-driven architecture — what NATS 
 
 | # | Decision | Options Considered | Chosen | Rationale | Status |
 |---|----------|-------------------|--------|-----------|--------|
-| 1 | Subject naming scheme | (a) flat `verb.noun` (b) `domain.entity.verb` (c) `domain.entity.id.verb` | **(c) `domain.entity.id.verb`** | Enables per-entity subscriptions (`fleet.worker.sw-1.*`), wildcards (`fleet.worker.*.heartbeat`), and domain isolation. Matches existing `fleet.worker.{id}.heartbeat` design. | Approved (fleet-management.md) |
+| 1 | Subject naming scheme | (a) flat `verb.noun` (b) `domain.entity.verb` (c) `domain.entity.id.verb` | **(c) `domain.entity.id.verb`** | Enables per-entity subscriptions (`fleet.worker.session-1.*`), wildcards (`fleet.worker.*.heartbeat`), and domain isolation. Matches existing `fleet.worker.{id}.heartbeat` design. | Approved (fleet-management.md) |
 | 2 | NATS tier | (a) Core only (b) JetStream from day 1 (c) Core now, JetStream when needed | **(b) JetStream from day 1** | 4 of 14 candidate systems already require durable delivery; building 10+ integrations on Core creates a guaranteed migration. JetStream is a superset — Core-style pub/sub still works unchanged. Config overhead is a one-time cost. See Decision 2 deep-dive. | **Decided 2026-03-25** |
 | 3 | Cross-machine events | (a) Shared NATS cluster (b) NATS Cloud (c) Staging repo as transport (d) SSH exec | **(c) Staging repo as transport for now** | No shared network between Mac and Hetzner without VPN/tunnel. Staging repo already exists. NATS handles intra-machine delivery; staging repo handles cross-machine. Revisit when VPN or persistent tunnel is in place. | **Approved 2026-03-25** |
 | 4 | Telemetry storage | (a) SQLite WAL (b) External pipeline (Segment, PostHog) | **(a) SQLite WAL** | JetStream is the delivery transport, not a storage option — removed. SQLite: zero dependencies, full SQL, already in platform, works offline, no cost. External pipeline warranted at ~1,000 MAU. Pattern: UI/CLI → JetStream stream → background writer → SQLite. See `docs/research/telemetry-event-design-early-stage-apps.md`. | **Approved 2026-03-25** |
@@ -319,7 +319,7 @@ class NATSClient:
 
 ```json
 {
-  "subject": "fleet.worker.sw-1.heartbeat",
+  "subject": "fleet.worker.session-1.heartbeat",
   "machine": "server",
   "ts": 1742832000,
   "data": { ... subject-specific payload ... }

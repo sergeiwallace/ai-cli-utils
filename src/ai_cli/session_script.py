@@ -841,7 +841,7 @@ def get_engine_script(
       _iterm2_rename "${{type_sym}}${{sym}}$sname"
     }}
 
-    # Extract session number from ai_name (e.g., "sw-3" → "3") for downstream hooks.
+    # Extract session number from ai_name (e.g., "session-3" → "3") for downstream hooks.
     _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"
