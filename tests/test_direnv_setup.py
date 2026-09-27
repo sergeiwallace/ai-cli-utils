@@ -339,6 +339,29 @@ def test_given_unreadable_registry_when_refreshing_path_then_no_raise(monkeypatc
     assert refresh_windows_path() is False
 
 
+def test_given_no_injected_winreg_when_refreshing_path_then_the_real_registry_is_unreachable(monkeypatch):
+    """The suite-wide guard, pinned from the consumer side (AI-CLI-8elu).
+
+    Every test above injects its own ``winreg``, so none of them would notice the
+    ambient one going live. This is the one that would: it forces the Windows branch
+    and then reaches for whatever ``winreg`` the run supplies. On a Windows host an
+    unguarded run reads the operator's real ``Path`` here and appends it to this
+    process, and the mutation outlives the test -- which is what made a launch test
+    in ``test_cli.py`` pass or fail on its position in a randomised xdist shard.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\existing")
+
+    # Its own roots, not a bogus handle: a real ``winreg`` opens these and would make
+    # a bogus-handle OSError look like the guard working.
+    ambient = sys.modules["winreg"]
+    with pytest.raises(OSError):
+        ambient.OpenKey(ambient.HKEY_CURRENT_USER, "Environment")
+
+    assert refresh_windows_path() is False
+    assert os.environ["PATH"] == r"C:\existing"
+
+
 def test_given_install_succeeding_only_after_path_refresh_then_reported_installed(monkeypatch):
     """Regression: a good install was reported as a failure because PATH was stale.
 

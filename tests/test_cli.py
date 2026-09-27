@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import shlex
@@ -5,12 +6,14 @@ import shutil
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
 
+from ai_cli import direnv_setup
 from ai_cli.main import (
     _auto_update_if_stale,
     _cmd_tunnel_start,
@@ -757,6 +760,92 @@ class TestCliSessionSetupBranches:
         assert f"XDG_STATE_HOME={state_home}" in new_session_cmd
         # ITERM_SESSION_ID must NOT be propagated (tty-based rename, no stored GUID).
         assert not any("ITERM_SESSION_ID" in a for a in new_session_cmd)
+
+    def test_cli_when_direnv_preflight_refreshes_path_then_the_refreshed_path_reaches_the_pane(self, tmp_path):
+        """The collision behind AI-CLI-8elu, pinned as the behaviour it actually is.
+
+        The launch reads PATH for ``tmux new-session`` *after* its direnv preflight,
+        and on Windows that preflight may legitimately append the machine's persisted
+        ``Path`` to this process -- the entire point of ``refresh_windows_path``, since
+        an installer writes the registry and not the already-running process. So the
+        pane must get the refreshed value: forwarding a snapshot taken earlier would
+        hand it a PATH on which the just-installed direnv is still not findable.
+
+        Its sibling above asserts exact equality against the PATH it set, and that
+        held on POSIX only because the refresh is a no-op there. This test is the
+        POSIX-runnable half of that Windows branch, so the next change to either side
+        of the ordering fails here rather than in a randomised Windows shard.
+        """
+        run_calls = []
+        state_home = tmp_path / "state"
+        # No ``:`` in the sentinel: the code under test splits on ``os.pathsep``, so a
+        # Windows-shaped value would come apart on a POSIX host running this test.
+        registry_only = "/registry-only-entry"
+        # The real PATH, because the launch resolves the pane's shell off it and aborts
+        # before ``new-session`` if it cannot find one.
+        path = os.environ["PATH"]
+
+        def fake_run(cmd, *args, **kwargs):
+            run_calls.append(list(cmd))
+            if cmd[0] == "git":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "has-session" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if "new-session" in cmd:
+                return MagicMock(returncode=0, stdout="$42\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        real_refresh = direnv_setup.refresh_windows_path
+        # Distinct values per root, as a real machine has: only the user root holds the
+        # entry this process is missing.
+        fake_winreg = types.SimpleNamespace(
+            HKEY_LOCAL_MACHINE=1,
+            HKEY_CURRENT_USER=2,
+            OpenKey=lambda root, _subkey: contextlib.nullcontext(root),
+            QueryValueEx=lambda key, _name: ((registry_only if key == 2 else path), 1),
+        )
+
+        def windows_refresh():
+            # The real body, with only the platform gate and the registry supplied --
+            # which is all a Windows host contributes. Forcing the gate for the length
+            # of one call keeps the rest of the launch on this host's own platform.
+            with patch.object(sys, "platform", "win32"), patch.dict(sys.modules, {"winreg": fake_winreg}):
+                return real_refresh()
+
+        with patch("sys.argv", ["ai", "g", "1"]):
+            with patch("ai_cli.config.load_config", return_value={}):
+                with patch("ai_cli.session.get_project_prefix", return_value="session"):
+                    with patch("ai_cli.main.trigger_background_update"):
+                        with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
+                            with patch(
+                                "ai_cli.session.create_worktree",
+                                return_value=_successful_worktree(tmp_path, "session-1"),
+                            ):
+                                with patch("ai_cli.session.detect_repo_root", return_value=None):
+                                    # No direnv on the host is what sends the preflight
+                                    # into an install attempt, which the blanket
+                                    # subprocess.run mock then reports as succeeding.
+                                    with patch("ai_cli.direnv_setup.direnv_available", return_value=False):
+                                        with patch(
+                                            "ai_cli.direnv_setup.refresh_windows_path",
+                                            side_effect=windows_refresh,
+                                        ):
+                                            with patch("subprocess.run", side_effect=fake_run):
+                                                with patch.dict(
+                                                    os.environ,
+                                                    {
+                                                        "PATH": path,
+                                                        "XDG_STATE_HOME": str(state_home),
+                                                    },
+                                                    clear=False,
+                                                ):
+                                                    with patch("os.execvp", side_effect=SystemExit(0)):
+                                                        with pytest.raises(SystemExit):
+                                                            cli()
+
+        new_session_cmd = next((c for c in run_calls if "new-session" in c), None)
+        assert new_session_cmd is not None, "tmux new-session was not called"
+        assert f"PATH={os.pathsep.join([path, registry_only])}" in new_session_cmd
 
     def test_cli_when_remote_with_project_flag_then_uses_project_prefix(self):
         config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "transport": "mosh"}}
