@@ -22,7 +22,29 @@ from ai_cli.git_repair import _GIT_TARGETING_VARS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"})
+
+# Anything that puts a banner on the operator's screen or scripts their live
+# terminal. Guarded at the process boundary rather than per call site because per-call
+# discipline has now failed twice here, in two different subsystems: AI-CLI-jk7v (one
+# test of seven siblings patched the log path but not ``subprocess.run``, so EVERY
+# pytest run in this repo raised a real desktop notification, for weeks) and
+# AI-CLI-tevy (tests writing the real iTerm2 profile directory).
+#
+# ``osascript`` covers both, and on purpose: ``notifications.py`` uses it for the
+# banner and ``iterm2.py:313`` uses it to script the running terminal, which is the
+# same kind of escape. ``notify-send`` is the non-macOS branch of the same function,
+# so it is reached on Linux AND Windows and is guarded everywhere rather than only
+# where it happens to exist.
+_DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
+
+_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+
+# Attempts are RECORDED as well as refused, because refusing alone does not report.
+# ``notifications._send_os_notification`` wraps its spawn in ``except Exception`` and
+# returns a failed result, so the guard's RuntimeError never reaches the test that
+# caused it. Prevention without a report is how this class survived for weeks: the
+# notification was visible on screen and invisible in the run.
+_desktop_escape_attempts: list[str] = []
 
 # Resolved at IMPORT time, before any fixture has redirected HOME, so the guard below
 # always names the operator's own directory rather than a redirected one. Re-reading
@@ -308,6 +330,15 @@ def _reject_real_agent_process(command, allowed_binaries=frozenset()):
     program = _command_program(command)
     if program == "tmux" and _tmux_argv_is_read_only(command):
         return
+    if program in _DESKTOP_ESCAPE_BINARIES - allowed_binaries:
+        _desktop_escape_attempts.append(program)
+        raise RuntimeError(
+            f"test attempted to reach the operator's desktop through a real `{program}` process. "
+            "Patch subprocess.run (or the notifier itself), not only the paths it writes: "
+            "redirecting the log while leaving the spawn live is exactly how AI-CLI-jk7v put a "
+            "banner on the screen on every run for weeks. Asserting a notification WOULD be sent "
+            "is fine -- do it against a mock."
+        )
     if program in _PROTECTED_TEST_BINARIES - allowed_binaries:
         raise RuntimeError(
             f"test attempted to spawn a real `{program}` process — "
@@ -400,6 +431,42 @@ def _reject_real_agent_processes(request):
         patch("os.execvp", side_effect=guarded_execvp),
     ):
         yield
+
+
+@pytest.fixture
+def expect_desktop_escape():
+    """Opt out of the teardown check below, for tests that DRIVE the guard on purpose.
+
+    Returns the record so a test can assert what was attempted. Requesting this fixture
+    is what suppresses the failure, checked by name rather than by fixture finalisation
+    order, because that order is not something to bet a guard on -- which is also why
+    this fixture has no teardown of its own to sequence.
+    """
+    return _desktop_escape_attempts
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_desktop_escape(request):
+    """Fail any test that tried to put a banner on the operator's screen (AI-CLI-8n4h).
+
+    The refusal in :func:`_reject_real_agent_process` is the prevention; this is the
+    report. Both are needed: ``notifications._send_os_notification`` catches
+    ``Exception`` and returns a failed result, so a test that reaches it would be
+    silently protected and never told. A guard that prevents without reporting leaves
+    the next author free to write the same mistake.
+    """
+    _desktop_escape_attempts.clear()
+    yield
+    attempted = list(_desktop_escape_attempts)
+    _desktop_escape_attempts.clear()
+    if "expect_desktop_escape" in request.fixturenames:
+        return
+    assert not attempted, (
+        f"this test tried to spawn {sorted(set(attempted))} and reach the operator's desktop. "
+        "The spawn was refused, so nothing appeared on screen -- but patch the notifier or "
+        "subprocess.run in the test rather than relying on this guard. Patching only the paths "
+        "the notifier writes is not enough: that is exactly AI-CLI-jk7v."
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
