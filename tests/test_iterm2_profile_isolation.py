@@ -116,38 +116,47 @@ class TestHomeRedirectBreach:
     standing past the test body correctly trips the guard on the test asserting it.
     """
 
-    def test_given_an_intact_redirect_when_checked_then_reports_no_breach(self):
-        assert home_redirect_breach(Path.home()) == ""
+    def test_given_the_conftest_redirect_when_checked_then_reports_no_breach(self):
+        assert home_redirect_breach() == ""
 
-    def test_given_a_home_that_is_not_the_redirect_target_when_checked_then_reports_it(self, tmp_path):
-        # No environment mutation at all: pass a target Path.home() does not match.
-        breach = home_redirect_breach(tmp_path / "some-other-home")
-        assert "Path.home() resolved to" in breach
-        assert str(Path.home()) in breach
+    def test_given_home_repointed_at_another_tmp_dir_when_checked_then_reports_no_breach(self, tmp_path):
+        # The property is "not the real home", not "exactly this fixture's directory".
+        # A test that isolates HOME its own way is doing the right thing and must pass.
+        with patch.dict(os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}):
+            assert home_redirect_breach() == ""
 
     def test_given_home_restored_to_the_real_home_when_checked_then_reports_the_breach(self):
-        fake_home = Path.home()
         with patch.dict(os.environ, {"HOME": str(_REAL_HOME), "USERPROFILE": str(_REAL_HOME)}):
-            breach = home_redirect_breach(fake_home)
-        assert "Path.home() resolved to" in breach
+            breach = home_redirect_breach()
+        assert "resolved to the operator's real home" in breach
         assert str(_REAL_HOME) in breach
 
-    def test_given_only_userprofile_repointed_when_checked_then_still_reports_it(self):
+    def test_given_only_userprofile_pointed_at_the_real_home_when_checked_then_still_reports_it(self):
         # On POSIX, Path.home() ignores USERPROFILE, so this breach is invisible to a
         # Path.home() comparison alone and would leak on Windows only. Checking the raw
         # variables is what makes the guard OS-portable rather than POSIX-only.
-        fake_home = Path.home()
         with patch.dict(os.environ, {"USERPROFILE": str(_REAL_HOME)}):
-            assert "USERPROFILE was restored" in home_redirect_breach(fake_home)
+            assert "USERPROFILE points at the real home" in home_redirect_breach()
 
-    def test_given_homedrive_and_homepath_reintroduced_when_checked_then_reports_them(self):
+    def test_given_homedrive_and_homepath_reconstructing_the_real_home_when_checked_then_reports_it(self):
         # ntpath.expanduser falls back to HOMEDRIVE+HOMEPATH when USERPROFILE is absent,
-        # so leaving them set would be a third route to the real home on Windows.
-        fake_home = Path.home()
-        with patch.dict(os.environ, {"HOMEDRIVE": "C:", "HOMEPATH": r"\Users\user"}):
-            breach = home_redirect_breach(fake_home)
-        assert "HOMEDRIVE was reintroduced" in breach
-        assert "HOMEPATH was reintroduced" in breach
+        # so this pair is a third route to the real home on Windows.
+        #
+        # The pair is built by splitting the real home at its last separator rather than
+        # with os.path.splitdrive, which returns an EMPTY drive on POSIX and so would
+        # exercise nothing here. What matters to the guard is that the two values
+        # concatenate to the real home, and this split reproduces that on either OS.
+        home = str(_REAL_HOME)
+        cut = home.rindex(os.sep)
+        with patch.dict(os.environ, {"HOMEDRIVE": home[:cut], "HOMEPATH": home[cut:]}):
+            assert "HOMEDRIVE + HOMEPATH reconstruct the real home" in home_redirect_breach()
+
+    def test_given_homedrive_and_homepath_pointing_elsewhere_when_checked_then_reports_no_breach(self):
+        # Checked as a pair against the real home rather than merely for presence: on
+        # Windows these are set for every process, so flagging their existence would
+        # fail the whole suite there.
+        with patch.dict(os.environ, {"HOMEDRIVE": "C:", "HOMEPATH": r"\Users\someone-else"}):
+            assert home_redirect_breach() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -258,4 +267,4 @@ class TestHomeRedirect:
             _sweep_stale_iterm2_profiles()
 
         assert not seeded.exists()
-        assert home_redirect_breach(Path.home()) == ""
+        assert home_redirect_breach() == ""

@@ -494,24 +494,31 @@ def _redirect_home_away_from_the_operator(monkeypatch, tmp_path_factory):
     return fake_home
 
 
-def home_redirect_breach(fake_home: Path) -> str:
-    """Describe how the HOME redirect has been defeated; "" when it is intact.
+def home_redirect_breach() -> str:
+    """Describe how the operator's real home is still reachable; "" when it is not.
 
-    Checks only THIS process's own state, which is what makes it a usable gate: the
-    answer cannot be changed by another process on the machine. Every route
+    The property enforced is "home is not the REAL home", deliberately NOT "home is
+    exactly this fixture's redirect target". Plenty of tests legitimately re-point
+    ``HOME`` at a ``tmp_path`` of their own; that is correct isolation reaching the same
+    end by its own route, and demanding they match this fixture's directory failed 72 of
+    them for doing the right thing. What must never happen is ``Path.home()`` resolving
+    back to the directory iTerm2 is watching.
+
+    Checks only THIS process's own environment, which is what makes it usable as a gate:
+    the answer cannot be changed by another process on the machine. Every route
     ``Path.home()`` can take is covered -- POSIX ``expanduser`` reads ``HOME``,
-    ``ntpath.expanduser`` reads ``USERPROFILE`` and then ``HOMEDRIVE``/``HOMEPATH``.
+    ``ntpath.expanduser`` reads ``USERPROFILE`` and then ``HOMEDRIVE`` + ``HOMEPATH``.
+    The last two are checked as a pair because neither alone reconstructs a home.
     """
-    if Path.home() != fake_home:
-        return f"Path.home() resolved to {Path.home()} rather than the redirect target {fake_home}"
-    breaches = [
-        f"{var} was restored to {os.environ[var]}"
-        for var in ("HOME", "USERPROFILE")
-        if os.environ.get(var) not in (None, str(fake_home))
-    ]
+    breaches = []
+    if Path.home() == _REAL_HOME:
+        breaches.append(f"Path.home() resolved to the operator's real home {_REAL_HOME}")
     breaches += [
-        f"{var} was reintroduced as {os.environ[var]}" for var in ("HOMEDRIVE", "HOMEPATH") if var in os.environ
+        f"{var} points at the real home" for var in ("HOME", "USERPROFILE") if os.environ.get(var) == str(_REAL_HOME)
     ]
+    drive, tail = os.environ.get("HOMEDRIVE"), os.environ.get("HOMEPATH")
+    if drive and tail and Path(drive + tail) == _REAL_HOME:
+        breaches.append("HOMEDRIVE + HOMEPATH reconstruct the real home")
     return "; ".join(breaches)
 
 
@@ -521,35 +528,38 @@ def _guard_real_iterm2_profile_dir(_redirect_home_away_from_the_operator):
 
     The redirect above is the prevention; this is the proof that it held.
 
-    The ENFORCED check is that the redirect is still intact at teardown, because that
-    is a property of this process alone and so is deterministic. Watching the real
-    directory for changes and failing on any of them was tried first and rejected: that
-    directory has other legitimate writers -- a concurrent ``ai c`` launch, or another
-    checkout of this repo running its own suite -- and a watch cannot tell their writes
-    from a test's. Measured, it charged 53 innocent tests with strays that peer runs of
-    this suite had created, and since the operator launches sessions while tests run, it
-    would have stayed flaky permanently rather than only until peers picked up the fix.
-    A guard that cries wolf gets deleted, so it enforces the attributable half and only
-    reports the rest.
+    Depending on that fixture is what orders the TEARDOWNS: pytest finalises a fixture
+    before the ones it depends on, so this check runs while the redirect is still in
+    place. Dropping the argument as unused made every test fail here, because
+    monkeypatch had already restored the real ``HOME`` by the time the check ran.
+
+    The ENFORCED check is that the real home is unreachable at teardown, because that is
+    a property of this process alone and so is deterministic. Watching the real directory
+    for changes and failing on any of them was tried first and rejected: that directory
+    has other legitimate writers -- a concurrent ``ai c`` launch, or another checkout of
+    this repo running its own suite -- and a watch cannot tell their writes from a test's.
+    Measured, it charged 53 innocent tests with strays that peer runs of this suite had
+    created, and since the operator launches sessions while tests run, it would have
+    stayed flaky permanently rather than only until peers picked up the fix. A guard that
+    cries wolf gets deleted, so it enforces the attributable half and reports the rest.
 
     A change to the real directory is therefore still surfaced, as a warning naming the
-    likely external writer. With the redirect intact a home-derived write is impossible
-    by construction, so such a change is provably not this test's doing; the one route
-    that would bypass the redirect is a hardcoded absolute path, and
-    ``test_public_repo_hygiene``-style static checking closes that deterministically
-    instead (see ``test_iterm2_profile_isolation.py``).
+    likely external writer. With the real home unreachable a home-derived write is
+    impossible by construction, so such a change is provably not this test's doing; the
+    one route that would bypass it is a hardcoded absolute path, and static checking
+    closes that deterministically instead (see ``test_iterm2_profile_isolation.py``).
     """
-    fake_home = _redirect_home_away_from_the_operator
     before = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
     yield
-    breach = home_redirect_breach(fake_home)
+    breach = home_redirect_breach()
     assert not breach, (
-        f"the HOME redirect protecting {_REAL_ITERM2_PROFILE_DIR} was defeated during "
-        f"this test: {breach}. iTerm2 watches that directory and re-enumerates every "
-        "entry on any filesystem event, so a write there mutates the operator's live "
-        "terminal, and session._sweep_stale_iterm2_profiles deletes from it. Do not "
-        "re-point HOME/USERPROFILE at the real home; if this test needs a populated "
-        "home, build one under the redirect target instead."
+        f"the operator's real home became reachable during this test, exposing "
+        f"{_REAL_ITERM2_PROFILE_DIR}: {breach}. iTerm2 watches that directory and "
+        "re-enumerates every entry on any filesystem event, so a write there mutates the "
+        "operator's live terminal, and session._sweep_stale_iterm2_profiles deletes from "
+        "it. Re-pointing HOME at a tmp_path of your own is fine; pointing it back at the "
+        "real home is not, and neither is a bare monkeypatch.undo(), which reverts this "
+        "fixture's redirect along with the test's own patches."
     )
     change = describe_tree_change(before, snapshot_tree(_REAL_ITERM2_PROFILE_DIR))
     if change:
