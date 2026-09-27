@@ -476,6 +476,76 @@ fi
     assert record.stat().st_mtime_ns == final_mtime, "a crashed supervisor must stop its detached ticker"
 
 
+def _find_detached_ticker(supervisor_script: Path) -> psutil.Process:
+    """Return the detached heartbeat ticker that ``supervisor_script`` spawned.
+
+    Matched on the script path, which is unique per ``tmp_path``. Matching on
+    ``--ai-cli-heartbeat-ticker`` alone would also match a concurrent xdist worker's
+    ticker, and -- worse -- a ticker stranded by an EARLIER run, which is the exact
+    thing the caller is asserting does not survive.
+    """
+    target = str(supervisor_script)
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        for process in psutil.process_iter(["cmdline"]):
+            with contextlib.suppress(psutil.Error):
+                cmdline = process.info["cmdline"] or []
+                if "--ai-cli-heartbeat-ticker" in cmdline and target in cmdline:
+                    return process
+        time.sleep(0.05)
+    pytest.fail("the supervisor never spawned its detached heartbeat ticker")
+
+
+@pytest.mark.real_tmux
+def test_given_real_supervisor_crash_when_the_ticker_is_detached_then_the_ticker_process_exits(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
+):
+    """A crashed pane leader must not leave its heartbeat ticker process running.
+
+    The sibling test above asserts the heartbeat RECORD stops moving, and the ticker
+    satisfies that while looping forever: ``publish-heartbeat`` merely refuses once the
+    generation lease is gone, and ``|| true`` swallows the refusal. So that assertion
+    stayed green for as long as this defect existed, while one immortal ticker per
+    pytest run accumulated behind it -- 21 of them, from 21 distinct run directories,
+    when this was measured.
+
+    Nothing outside the ticker can end it. The supervisor's EXIT trap kills it, but
+    SIGKILL never runs a trap, and the ticker is spawned through ``os.setsid()`` so
+    that foreground-group changes cannot reach it -- which also places it outside every
+    process group a reaper could signal. It has to exit on its own, so the assertion is
+    on the PROCESS and not on the record it stopped writing.
+    """
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  while true; do sleep 0.05; done
+fi
+"""
+    session_id, state_home, _ = _start_real_tmux_supervisor(
+        real_tmux_socket, tmp_path, real_supervisor_shell, is_remote=False, child_body=child_body
+    )
+    _wait_for_condition("the live child", lambda: (tmp_path / "child-ready").exists())
+    generation = _tmux_generation(real_tmux_socket, session_id)
+    _wait_for_condition("the initial heartbeat", heartbeat_path(state_home, session_id, generation).exists)
+    ticker = _find_detached_ticker(tmp_path / "supervisor.sh")
+    pane = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}")
+    assert pane.returncode == 0, pane.stderr
+
+    try:
+        os.kill(int(pane.stdout.strip()), signal.SIGKILL)
+        _wait_for_missing_session(real_tmux_socket, session_id)
+        _wait_for_condition(
+            "the detached heartbeat ticker to exit once its supervisor was killed",
+            lambda: not ticker.is_running() or ticker.status() == psutil.STATUS_ZOMBIE,
+        )
+    finally:
+        # This test is the one proving the ticker ends itself, so it cannot assume that:
+        # reap it here whichever way the assertion went, or a red run leaks the very
+        # process the run was measuring.
+        with contextlib.suppress(psutil.Error):
+            ticker.kill()
+
+
 @pytest.mark.real_tmux
 def test_given_renamed_supervisor_during_ownership_bootstrap_when_clean_exit_then_replacement_survives(
     real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
