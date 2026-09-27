@@ -135,6 +135,29 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # python-version unification (AI-CLI-6rwp, 2026-09-27): this project
+      # supports exactly ONE Python version, and it used to be declared in six
+      # independent places that disagreed -- local venv on 3.14, CI on
+      # 3.11/3.12/3.13. That is not untidiness: `pathlib` allows a WindowsPath
+      # on POSIX on 3.14 and refuses it at or below 3.13, so a defect passed
+      # every local run and went red on four CI jobs, unobservable locally at
+      # any effort. `.python-version` is now canonical and this gate fails the
+      # commit if `requires-python`, the pyright target, the classifiers, any
+      # workflow's pinned version or the interpreter running the check
+      # disagrees with it.
+      #
+      # `uv run --no-sync`, not bare `python3`: the check's whole point includes
+      # the interpreter, and a `language: system` hook otherwise runs under
+      # whatever python3 is first on the committing shell's PATH -- measuring
+      # the wrong environment, which is the exact conflation being guarded
+      # against. `--no-sync` so a commit never silently provisions a venv; a
+      # missing or wrong-version environment fails loudly instead.
+      - id: python-version-sync
+        name: python version sync (.python-version == CI == requires-python == interpreter)
+        entry: uv run --no-sync python scripts/check_python_version_sync.py
+        language: system
+        pass_filenames: false
+        always_run: true
       # docs-index-check REMOVED (CORE-55). The generated docs/README.md index had
       # no reader -- nothing in the fleet consumed it -- yet the gate blocked every
       # docs commit until it was regenerated. It also could not be regenerated
