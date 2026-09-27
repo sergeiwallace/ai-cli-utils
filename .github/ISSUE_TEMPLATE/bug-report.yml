@@ -39,7 +39,7 @@ body:
     id: python-version
     attributes:
       label: Python version
-      placeholder: "3.12.3"
+      placeholder: "3.14.7"
     validations:
       required: true
   - type: dropdown

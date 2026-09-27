@@ -4,7 +4,14 @@ version = "0.8.0"
 description = "Unified AI session manager for Claude Code and Gemini CLI"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11"
+# ONE supported interpreter, upper bound included on purpose. The project is
+# built, linted, type-checked and tested on exactly one Python version, so
+# declaring an open `>=` range would claim support for interpreters nothing ever
+# runs. The canonical declaration of that version is `.python-version`;
+# `scripts/check_python_version_sync.py` fails if this bound, the workflow
+# matrices, the pyright target, the classifiers and the running interpreter do
+# not all agree with it.
+requires-python = ">=3.14,<3.15"
 authors = [
     { name = "AI CLI Utils Contributors" },
 ]
@@ -15,9 +22,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Systems Administration",
     "Topic :: Utilities",
@@ -126,7 +131,7 @@ markers = [
 fleet-testkit = { git = "https://github.com/sergeiwallace/ai-harness.git", rev = "1741cb32935f569dc47665c20102a16708e7d1fe", subdirectory = "packages/fleet-testkit" } # public-hygiene: allow
 
 [tool.pyright]
-pythonVersion = "3.11"
+pythonVersion = "3.14"
 pythonPlatform = "Linux"
 typeCheckingMode = "basic"
 venvPath = "."
@@ -135,6 +140,23 @@ include = ["src", "tests"]
 extraPaths = ["src", "scripts"]
 
 [tool.ruff]
+# PINNED, never inferred (AI-CLI-6rwp). Ruff infers `target-version` from
+# `requires-python` when this key is absent, which quietly couples the SYNTAX
+# ruff writes to the RUNTIME the project is tested on -- two separate questions.
+# Measured when `requires-python` moved to 3.14: the inferred py314 target made
+# `ruff format` rewrite `except (A, B):` into PEP 758's `except A, B:` across 29
+# files, and `ruff check` raise 19 UP037 findings. That rewrite is valid ONLY on
+# 3.14, so accepting it would have made the source unparseable by every earlier
+# interpreter -- a one-way source-syntax migration arriving as a side effect of a
+# CI configuration change, and one that would make ever re-widening the
+# supported range a 29-file revert rather than a one-line edit.
+#
+# So this is the source-compatibility floor, deliberately decoupled from
+# `requires-python`, and `scripts/check_python_version_sync.py` requires it to
+# stay explicitly pinned. Raising it is a real decision about what syntax this
+# codebase is written in; make it on purpose, in its own change, not by editing
+# `requires-python`.
+target-version = "py311"
 # No fleet ai-harness `extend` pointer here on purpose (AI-CLI-bmt0/AI-CLI-u3zc): this repo
 # is public and must lint cleanly on GitHub's CI and for external contributors, neither of
 # which has ~/projects/ai-harness present. The select list below already carries every rule
