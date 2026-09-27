@@ -48,6 +48,24 @@ uv run ruff format --check src/ tests/
 uv run pytest
 ```text
 
+### Relock after changing a dependency
+
+If you edit a dependency in `pyproject.toml`, run `uv lock` and commit the updated `uv.lock` in the
+same change. CI syncs with `uv sync --locked`, which refuses to install when the two disagree:
+
+```text
+error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.
+
+hint: To update the lockfile, run `uv lock`.
+```
+
+Local `uv sync --dev` deliberately keeps re-resolving, so an edit-and-run loop still works without
+a relock on every step. CI is the boundary where it has to stop, because a plain `uv sync` there
+re-resolved silently: a pull request could pass every check having installed versions that were not
+the ones it shipped, and no log line said so. `--frozen` is not a substitute — it installs from the
+lock without comparing it to `pyproject.toml`, which hides the disagreement rather than reporting
+it. `tests/test_ci_lock_assertion.py` fails if a workflow sync step stops asserting the lock.
+
 ## Running Tests
 
 ### A test owns every process it starts

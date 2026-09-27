@@ -39,7 +39,14 @@ jobs:
         with:
           # Kept in sync with `.python-version` by the version-sync step below.
           python-version: "3.14"
-      - run: uv sync --dev
+      # `--locked` refuses to re-resolve: it fails with "the lockfile at `uv.lock`
+      # needs to be updated" and names `uv lock` as the remedy. Without it, `uv sync`
+      # silently RE-RESOLVES whenever `pyproject.toml` and `uv.lock` disagree, so a
+      # pull request could go green having tested versions that are not the ones it
+      # ships, and nothing in the log said so (AI-CLI-qqnx). Every sync step in this
+      # file carries the flag, and `tests/test_ci_lock_assertion.py` fails if one
+      # stops carrying it.
+      - run: uv sync --locked --dev
       # Runs BEFORE the other checks on purpose: if the interpreter this job is
       # running does not match what the repo declares, every result below it is
       # about the wrong Python and a green tick would be misleading.
@@ -75,7 +82,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tmux
           tmux -V
-      - run: uv sync --dev
+      - run: uv sync --locked --dev
       - run: uv run pytest --cov=ai_cli --cov-report=xml --tb=short -q
       - name: Upload coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
@@ -111,7 +118,7 @@ jobs:
       # picking that one up. The version-sync check reads these flags too, so
       # they cannot drift away from `.python-version`.
       - shell: msys2 {0}
-        run: uv sync --dev --python 3.14
+        run: uv sync --locked --dev --python 3.14
       - shell: msys2 {0}
         run: uv run --python 3.14 pytest --tb=short -q
 
@@ -163,5 +170,5 @@ jobs:
       # converse too: it fails a run that skips a tmux test while tmux IS usable,
       # so this install going missing can no longer pass as a smaller green run.
       - run: brew install tmux
-      - run: uv sync --dev
+      - run: uv sync --locked --dev
       - run: uv run pytest --tb=short -q
