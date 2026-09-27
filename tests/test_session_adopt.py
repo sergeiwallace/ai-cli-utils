@@ -771,6 +771,33 @@ def test_adopt_given_a_retitle_whose_original_stops_resolving_when_adopted_then_
     assert any("no longer resolves" in w for w in result.warnings)
 
 
+def test_adopt_given_the_title_holder_is_a_bare_session_when_retitled_then_it_is_not_reported_as_lost(world, adopt):
+    """A holder that never had a worktree still counts as resolving (AI-CLI-37a7).
+
+    The probe used to look only in ``.worktrees/<old title>``. A bare session — the
+    population this command exists to migrate — never had a worktree, so that path
+    cannot exist and the warning fired on every successful bare adoption. Measured
+    on a real adoption before the fix.
+
+    A warning that always fires is worse than none: it trains the operator to
+    ignore the channel meant to carry real failures. Deliberately does NOT patch
+    ``probe_resolves`` -- the whole point is which directories the real one is
+    pointed at.
+    """
+    _add_worktree(world["repo"], "myproject-1")
+    # A SECOND claimant on the same title, in the repo ROOT's project dir rather
+    # than in a worktree. That is what makes it the bare case: the `collision`
+    # fixture puts its claimant inside .worktrees/myproject-2, where the old probe
+    # happened to be looking.
+    _write_transcript(world["src_dir"], OTHER_UUID, "myproject-2", world["repo"], extra_lines=40)
+
+    result = adopt(on_collision="retitle", new_title="myproject-1")
+
+    assert result.retitled_from == "myproject-2"
+    assert not (world["repo"] / ".worktrees" / "myproject-2").exists()
+    assert not any("no longer resolves" in w for w in result.warnings), result.warnings
+
+
 def test_adopt_given_move_semantics_when_adopted_then_source_transcript_is_gone(world, adopt, existing_worktree):
     adopt()
     assert not (world["src_dir"] / f"{UUID}.jsonl").exists()
