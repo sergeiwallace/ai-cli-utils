@@ -119,6 +119,32 @@ class TestHomeRedirectBreach:
     def test_given_the_conftest_redirect_when_checked_then_reports_no_breach(self):
         assert home_redirect_breach() == ""
 
+    def test_given_os_name_patched_to_nt_when_checked_then_it_answers_instead_of_raising(self, monkeypatch):
+        """``pathlib`` must not be the guard's only route to the resolved home.
+
+        ``test_runaway_loop_guards.py`` patches ``os.name`` to ``"nt"`` to exercise a
+        Windows branch, and the guard's teardown runs BEFORE monkeypatch's undo, so the
+        patch is still live there. ``pathlib`` then builds a ``WindowsPath``, which
+        refuses to instantiate on POSIX below Python 3.14, and the raise converted a
+        PASSING test into a teardown ERROR -- red on three Linux jobs and on macOS while
+        a local 3.14 run, where the instantiation is allowed, was clean.
+
+        Patching it here also exercises the real thing: this test's own teardown runs the
+        autouse guard under ``os.name == "nt"``, so a regression fails twice over.
+        """
+        monkeypatch.setattr(os, "name", "nt")
+        assert home_redirect_breach() == ""
+
+    def test_given_pathlib_refuses_to_resolve_home_when_checked_then_it_still_answers(self):
+        """Version-independent control for the test above.
+
+        The ``os.name`` route only raises below Python 3.14, so on a newer interpreter
+        that test cannot fail and therefore cannot guard anything. Forcing the refusal
+        directly makes the regression detectable on every version.
+        """
+        with patch.object(Path, "home", side_effect=NotImplementedError("cannot instantiate 'WindowsPath'")):
+            assert home_redirect_breach() == ""
+
     def test_given_home_repointed_at_another_tmp_dir_when_checked_then_reports_no_breach(self, tmp_path):
         # The property is "not the real home", not "exactly this fixture's directory".
         # A test that isolates HOME its own way is doing the right thing and must pass.

@@ -510,16 +510,47 @@ def home_redirect_breach() -> str:
     ``ntpath.expanduser`` reads ``USERPROFILE`` and then ``HOMEDRIVE`` + ``HOMEPATH``.
     The last two are checked as a pair because neither alone reconstructs a home.
     """
+    real_home = str(_REAL_HOME)
     breaches = []
-    if Path.home() == _REAL_HOME:
-        breaches.append(f"Path.home() resolved to the operator's real home {_REAL_HOME}")
+    resolved = _pathlib_home()
+    if resolved is not None and resolved == real_home:
+        breaches.append(f"Path.home() resolved to the operator's real home {real_home}")
     breaches += [
-        f"{var} points at the real home" for var in ("HOME", "USERPROFILE") if os.environ.get(var) == str(_REAL_HOME)
+        f"{var} points at the real home" for var in ("HOME", "USERPROFILE") if os.environ.get(var) == real_home
     ]
     drive, tail = os.environ.get("HOMEDRIVE"), os.environ.get("HOMEPATH")
-    if drive and tail and Path(drive + tail) == _REAL_HOME:
+    # Compared in string space, not by constructing a Path: see _pathlib_home for why
+    # pathlib cannot be relied on to answer here.
+    if drive and tail and os.path.normpath(drive + tail) == os.path.normpath(real_home):
         breaches.append("HOMEDRIVE + HOMEPATH reconstruct the real home")
     return "; ".join(breaches)
+
+
+def _pathlib_home() -> str | None:
+    """``Path.home()`` as a string, or None when pathlib refuses to answer.
+
+    ``pathlib.Path`` dispatches on ``os.name``, and a test that patches ``os.name``
+    to ``"nt"`` to exercise a Windows branch -- ``test_runaway_loop_guards.py`` does --
+    makes every subsequent ``Path(...)`` a ``WindowsPath``, which refuses to
+    instantiate on POSIX below Python 3.14 (``NotImplementedError`` to 3.12,
+    ``pathlib.UnsupportedOperation`` in 3.13).
+
+    The guard below runs during teardown, and its teardown runs BEFORE monkeypatch's
+    undo -- it depends on the redirect fixture, which depends on ``monkeypatch``, so
+    ``monkeypatch`` finalises last. The patch is therefore still in force here, and
+    raising would turn a PASSING test into a teardown ERROR. That is exactly how this
+    first reached CI: three Linux jobs and the macOS job went red reporting
+    ``3125 passed ... 1 error`` while a local run on 3.14, where the instantiation is
+    allowed, was clean.
+
+    Returning None loses no enforcement. On POSIX ``Path.home()`` reads ``HOME``, and
+    on Windows ``USERPROFILE`` then ``HOMEDRIVE``+``HOMEPATH``; the caller checks all
+    four directly, in string space, unaffected by ``os.name``.
+    """
+    try:
+        return str(Path.home())
+    except Exception:
+        return None
 
 
 @pytest.fixture(autouse=True)
