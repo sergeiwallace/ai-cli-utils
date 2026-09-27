@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host-name prefixes are matched with a left-only word boundary so a suffixed
   hostname cannot slip past.
 
+### Removed
+
+- The optional `internal-testkit` extra and dependency group, which pinned a package
+  to a private git repository. Nothing about it was reachable for a public
+  contributor, and its presence in the resolution graph made every dependency bump
+  fail: an optional, never-installed extra is still resolved, so a change to
+  `pyproject.toml` with no matching relock forced `uv` to re-resolve and fetch a
+  revision from a repository the runner cannot read. All four required checks then
+  failed before a single test ran, with a git clone error naming neither the cause
+  nor the remedy, and the automated dependency updater's own lock-file update failed
+  the same way — which is why its pull requests arrived without the relock that would
+  have avoided the fetch at all. A new guard
+  (`tests/test_dependency_source_hygiene.py`) fails if any dependency or locked
+  package is reintroduced from a VCS or direct URL rather than a package index.
+  The now-orphaned `testkit_enabled` pytest option went with it, which also silences
+  the `Unknown config option` warning every run emitted. (`AI-CLI-f8la`, `AI-CLI-qrkr`)
+
 ### Fixed
 
 - A remote session could hang on a blank pane, ignoring repeated Ctrl+C, and
