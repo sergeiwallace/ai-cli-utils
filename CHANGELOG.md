@@ -67,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both fixes above. Every remote launch now runs `ai update --quiet` on it
   first; a failed or timed-out update degrades to a warning rather than
   blocking the launch, and `--dry-run` skips it. (`AI-CLI-qmnd`)
+- `ai c/g/p/cx <name> --remote --dry-run` performed a real launch: a real SSH
+  shell probe, a real `ai update` on the remote host, real session allocation,
+  and a real SSH/mosh handoff — confirmed live, where it created a real tmux
+  session and used a real, pre-existing worktree on the target host. The
+  documented dry-run contract ("nothing was created, started, or reaped") was
+  implemented only for the local launch path; the `if remote:` branch exited
+  via `sys.exit(0)` (mosh) or `os.execvp` (SSH) long before ever reaching that
+  shared check. `--dry-run` now exits before any remote network call and
+  prints the resolved plan (target host, transport, session identity, the
+  remote command that would run) instead. (`AI-CLI-shpu`)
 
 ## [0.8.0] - 2026-09-22
 

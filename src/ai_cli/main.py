@@ -2406,6 +2406,49 @@ def _print_launch_plan(
     print("\n".join(lines))
 
 
+def _print_remote_launch_plan(
+    *,
+    engine: str,
+    user: str,
+    host: str,
+    vpn_host: str,
+    port: str,
+    transport: str,
+    remote_project: str,
+    remote_prefix: str,
+    name: str,
+    resume: bool,
+    bare: bool,
+) -> None:
+    """Report what a remote launch would do, having probed or mutated nothing.
+
+    Mirrors ``_print_launch_plan``'s contract for the ``--remote`` path: no
+    SSH/mosh connection at all (not even the read-only shell probe), no remote
+    ``ai update``, no remote session allocation, no iTerm2 profile write. An
+    unnamed launch's session identity can therefore not be resolved here --
+    that requires asking the remote host for its next free slot -- so the plan
+    states the request that would be made rather than a resolved id.
+    """
+    target = f"{user}@{vpn_host}" if vpn_host != host else f"{user}@{host}"
+    remote_cmd = (
+        f"ai {engine} --is-remote --project-prefix {shlex.quote(remote_prefix)} --project {shlex.quote(remote_project)}"
+    )
+    if resume:
+        remote_cmd += " --resume"
+    remote_cmd += f" {shlex.quote(name)}" if name else " <session name resolved via remote allocation at launch time>"
+    lines = [
+        "ai-cli-utils: dry run -- nothing was created, started, or reaped.",
+        f"  engine       {_engine_display_name(engine)}",
+        f"  mode         remote, {'bare' if bare else 'tmux'}",
+        f"  target host  {target}:{port} ({transport})",
+        "  session      "
+        + (name or f"next available {remote_prefix}-prefixed slot on the remote host (not allocated)"),
+        f"  project      {remote_project}   (prefix {remote_prefix})",
+        f"  remote cmd   {remote_cmd}",
+    ]
+    print("\n".join(lines))
+
+
 def _resolve_remote_project(project: str, config: dict) -> tuple[str, str]:
     """Return the project a remote-side launch should enter, and what supplied it.
 
@@ -2768,6 +2811,28 @@ def _do_session_launch(
         # which becomes unreachable when a split-tunneling VPN like Mullvad takes over routing).
         # Falls back to host when not set.
         vpn_host = remote_cfg.get("vpn_host", "") or host
+
+        # THE remote dry-run exit, placed before any network I/O (not even the
+        # read-only shell probe below): everything from this point on either
+        # talks to the remote host or hands off to it. Mirrors the local dry-run
+        # exit's placement rule (see the comment on that check) -- one return
+        # above every remote side effect, not a guard bolted onto each one.
+        if dry_run:
+            _print_remote_launch_plan(
+                engine=engine,
+                user=user,
+                host=host,
+                vpn_host=vpn_host,
+                port=port,
+                transport=transport,
+                remote_project=remote_project,
+                remote_prefix=remote_prefix,
+                name=name,
+                resume=resume,
+                bare=bare,
+            )
+            return
+
         ssh_args = ["ssh", "-t", "-p", port]
         # ConnectTimeout=10 bounds the shell probe + session allocation
         # preflight the same way mosh_args's own ConnectTimeout does below --
@@ -2784,20 +2849,18 @@ def _do_session_launch(
         if reporter is not None:
             reporter.phase("Remote").outcome("host ready")
         # A write, unlike the read-only shell probe above it -- it runs `ai
-        # update` on the remote host. Gated the same way as every other write
-        # below the dry-run exit (see the comment on that check): a dry run
-        # must not mutate the remote host any more than it may mutate this one.
-        if not dry_run:
-            with (
-                reporter.phase("Update", "syncing remote ai-cli-utils")
-                if reporter is not None
-                else contextlib.nullcontext()
-            ):
-                _remote_update_ok, _remote_update_detail = _update_remote_ai_cli(preflight_ssh_args, remote_shell)
-            if reporter is not None:
-                reporter.phase("Update").outcome(
-                    _remote_update_detail if _remote_update_ok else f"skipped ({_remote_update_detail})"
-                )
+        # update` on the remote host. Unconditional here because the remote
+        # dry-run exit above already returned before this line is ever reached.
+        with (
+            reporter.phase("Update", "syncing remote ai-cli-utils")
+            if reporter is not None
+            else contextlib.nullcontext()
+        ):
+            _remote_update_ok, _remote_update_detail = _update_remote_ai_cli(preflight_ssh_args, remote_shell)
+        if reporter is not None:
+            reporter.phase("Update").outcome(
+                _remote_update_detail if _remote_update_ok else f"skipped ({_remote_update_detail})"
+            )
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (<remote_shell> -l -c)
         # that does not source the shell's rc file where the uv env PATH setup

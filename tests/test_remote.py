@@ -353,10 +353,9 @@ class TestUpdateRemoteAiCli:
 def test_given_dry_run_when_remote_launch_previewed_then_remote_update_is_not_attempted():
     """A dry run must not mutate the remote host any more than it may mutate this one.
 
-    NOTE: as of this writing ``--dry-run`` is not actually honored anywhere
-    else in the remote launch path (filed separately) -- this test pins only
-    the guard this change adds around ``_update_remote_ai_cli`` itself, not a
-    claim that the rest of a remote ``--dry-run`` is side-effect-free yet.
+    Full network-call coverage for the remote dry-run path (AI-CLI-shpu) lives
+    in ``test_session_dry_run.py`` alongside its local-path sibling; this test
+    pins the cli()-level integration through ``_run_cli_with_args``.
     """
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
     with patch("ai_cli.main._update_remote_ai_cli") as mock_update:
