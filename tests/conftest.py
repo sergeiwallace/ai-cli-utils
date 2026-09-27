@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -38,6 +39,19 @@ _TEST_TMUX_PREFIX = "pytest-leak-guard-"
 _DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
 
 _PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+
+# The Windows branch of the same function, which the binary interception above cannot
+# see at all (AI-CLI-e9nm). ``notifications._send_os_notification`` raises a toast there
+# by calling ``plyer.notification.notify`` IN-PROCESS -- there is no subprocess to
+# intercept, so a test that reaches that branch on Windows puts a real toast on the
+# operator's screen while the guard reports nothing. Recorded under this name rather
+# than a binary name because it is not a binary.
+_DESKTOP_ESCAPE_IMPORT = "plyer"
+
+# Distinguishes "``plyer`` was absent from ``sys.modules``" from "it was present and
+# bound to ``None``", which is a real state a failed import can leave behind. ``None``
+# would restore as a module that cannot be imported from.
+_MISSING = object()
 
 # Attempts are RECORDED as well as refused, because refusing alone does not report.
 # ``notifications._send_os_notification`` wraps its spawn in ``except Exception`` and
@@ -455,6 +469,59 @@ def _reject_real_agent_process(command, allowed_binaries=frozenset()):
             f"test attempted to spawn a real `{program}` process — "
             "mock subprocess.run, subprocess.Popen, or os.execvp explicitly in this test"
         )
+
+
+class _RefusingPlyerNotification:
+    """Stands in for ``plyer.notification`` so a Windows toast is refused and recorded."""
+
+    @staticmethod
+    def notify(**kwargs):
+        """Refuse the toast the way :func:`_reject_real_agent_process` refuses a spawn.
+
+        ``RuntimeError`` rather than ``ImportError`` on purpose, and that choice is the
+        whole mechanism: ``_send_os_notification`` wraps the plyer call in
+        ``except ImportError: pass`` to degrade silently when the optional
+        ``[notify-win]`` extra is absent, so an ``ImportError`` here would be swallowed
+        into a SUCCESS result with nothing recorded -- the exact blindness being closed.
+        A ``RuntimeError`` falls through to the outer ``except Exception``, which
+        reports failure, and the record below is what the teardown check turns into a
+        test failure.
+        """
+        del kwargs
+        _desktop_escape_attempts.append(_DESKTOP_ESCAPE_IMPORT)
+        raise RuntimeError(
+            "test attempted to reach the operator's desktop through a real plyer toast. "
+            "This branch takes no subprocess, so patch `ai_cli.notifications` itself (or "
+            "the plyer import) rather than a spawn boundary. Asserting a notification "
+            "WOULD be sent is fine -- do it against a mock."
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_real_plyer_toasts():
+    """Shadow ``plyer`` for the whole run so the Windows toast branch cannot fire.
+
+    Installed unconditionally, on every platform, for the same reason the binary guard
+    is: the branch is selected by ``sys.platform``, and tests force that value in order
+    to exercise the Windows path from a Mac or Linux host. Gating this on the host OS
+    would leave the branch unguarded on the one platform where it is the live one.
+
+    Shadowing rather than ``setdefault``: where the optional ``[notify-win]`` extra IS
+    installed, the real module would otherwise win and raise a real toast. Where it is
+    absent, the import would raise ``ImportError`` and be swallowed -- so without this,
+    neither case is observable.
+    """
+    stub = types.ModuleType(_DESKTOP_ESCAPE_IMPORT)
+    stub.notification = _RefusingPlyerNotification  # type: ignore[attr-defined]
+    saved = sys.modules.get(_DESKTOP_ESCAPE_IMPORT, _MISSING)
+    sys.modules[_DESKTOP_ESCAPE_IMPORT] = stub
+    try:
+        yield stub
+    finally:
+        if saved is _MISSING:
+            del sys.modules[_DESKTOP_ESCAPE_IMPORT]
+        else:
+            sys.modules[_DESKTOP_ESCAPE_IMPORT] = saved
 
 
 def _cleanup_test_tmux_sessions(run):

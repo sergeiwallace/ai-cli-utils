@@ -70,31 +70,62 @@ class TestTheOriginalMistakeIsCaught:
         and returns a failed result, so the guard's ``RuntimeError`` never reaches the
         test. Nothing is raised here -- deliberately -- and the attempt is still
         recorded, which is what the autouse teardown check turns into a failure.
+
+        Runs on every platform rather than skipping Windows: since AI-CLI-e9nm the plyer
+        branch is refused by a ``sys.modules`` stub, so all three branches now swallow a
+        refusal and all three are recorded. The skip this used to carry was a real
+        coverage loss on the one platform whose branch had no other guard.
         """
-        if sys.platform == "win32":
-            pytest.skip("the Windows branch notifies through plyer, covered by the test below")
-        expected = "osascript" if sys.platform == "darwin" else "notify-send"
+        expected = {"darwin": "osascript", "win32": "plyer"}.get(sys.platform, "notify-send")
 
         result = notifications._send_os_notification("title", "body")
 
         assert result.success is False, "the swallowed failure is the guard's refusal"
         assert expect_desktop_escape == [expected]
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="the plyer branch only runs on Windows")
-    def test_given_windows_when_notifying_then_there_is_no_spawn_to_refuse(self, expect_desktop_escape):
-        """Windows notifies through plyer, in-process, so this guard cannot see it.
+    def test_given_the_windows_toast_branch_when_notifying_then_the_import_guard_catches_it(
+        self, expect_desktop_escape
+    ):
+        """The in-process branch the subprocess interception cannot see (AI-CLI-e9nm).
 
-        Stated as its own test rather than as a branch of the one above, because the
-        outcome is genuinely different: with the optional ``[notify-win]`` extra absent
-        the call is a silent no-op and reports SUCCESS, so asserting a failed result
-        there -- which is what an unbranched version did -- fails on Windows only.
+        Windows raises its toast by calling ``plyer.notification.notify`` in-process, so
+        there is no spawn to refuse and the binary guard is structurally blind to it.
+        ``sys.modules["plyer"]`` is shadowed for the whole session instead.
 
-        Recording the gap explicitly: a real Windows toast is NOT guarded by this
-        mechanism, because there is no subprocess to intercept.
+        Forced rather than skipped off Windows, matching every other test here: the
+        branch is chosen by ``sys.platform``, so gating this on the host OS would leave
+        it unguarded on the only platform where it is live.
         """
-        notifications._send_os_notification("title", "body")
+        with patch.object(notifications.sys, "platform", "win32"):
+            result = notifications._send_os_notification("title", "body")
 
-        assert expect_desktop_escape == []
+        assert result.success is False, "the swallowed failure is the stub's refusal"
+        assert expect_desktop_escape == ["plyer"]
+
+    def test_given_the_toast_is_refused_when_reported_then_the_message_names_the_right_boundary(
+        self, expect_desktop_escape
+    ):
+        """Pointing the reader at a spawn boundary here would send them somewhere that
+        does not exist, so the message has to name the import instead."""
+        with pytest.raises(RuntimeError) as raised:
+            sys.modules["plyer"].notification.notify(title="t", message="b")
+
+        message = str(raised.value)
+        assert "real plyer toast" in message
+        assert "no subprocess" in message
+        assert expect_desktop_escape == ["plyer"]
+
+    def test_given_a_non_windows_platform_when_notifying_then_the_toast_stub_stays_silent(self, expect_desktop_escape):
+        """Negative control for the import guard: it must record the plyer branch only.
+
+        Without this, a stub that recorded on every call -- or a platform check that
+        selected the Windows branch unconditionally -- would satisfy the test above
+        while making every notification look like a toast.
+        """
+        with patch.object(notifications.sys, "platform", "darwin"):
+            notifications._send_os_notification("title", "body")
+
+        assert expect_desktop_escape == ["osascript"]
 
 
 class TestTheGuardDoesNotBlockLegitimateTests:
