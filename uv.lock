@@ -32,9 +32,6 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
-internal-testkit = [
-    { name = "fleet-testkit" },
-]
 notify-win = [
     { name = "plyer" },
 ]
@@ -52,15 +49,11 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
-internal-testkit = [
-    { name = "fleet-testkit" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "circus", specifier = ">=0.18.0" },
     { name = "click", specifier = ">=8.1" },
-    { name = "fleet-testkit", marker = "extra == 'internal-testkit'", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" },
     { name = "libtmux", specifier = ">=0.30.0" },
     { name = "nats-py", specifier = ">=2.9.0" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -78,7 +71,7 @@ requires-dist = [
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2025.2" },
     { name = "watchdog", specifier = ">=4.0.0" },
 ]
-provides-extras = ["notify-win", "dev", "internal-testkit"]
+provides-extras = ["notify-win", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -93,7 +86,6 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3" },
     { name = "ruff", specifier = "==0.16.5" },
 ]
-internal-testkit = [{ name = "fleet-testkit", git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe" }]
 
 [[package]]
 name = "annotated-types"
@@ -387,11 +379,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/6d/30/03b03951873a1a0ff
 wheels = [
     { url = "https://files.pythonhosted.org/packages/01/a4/9b63d595d748e3aff8812b65eacc1a2c4bd90b7c2012e08e72373b4835eb/filelock-3.32.4-py3-none-any.whl", hash = "sha256:22e58ca3b1ae3b98993b762d7338367ae64fe50252bf78d59da3bfebcdf1cedd", size = 99864, upload-time = "2026-08-23T17:37:53.913Z" },
 ]
-
-[[package]]
-name = "fleet-testkit"
-version = "0.1.0"
-source = { git = "https://github.com/sergeiwallace/ai-harness.git?subdirectory=packages%2Ffleet-testkit&rev=1741cb32935f569dc47665c20102a16708e7d1fe#1741cb32935f569dc47665c20102a16708e7d1fe" }
 
 [[package]]
 name = "freezegun"
