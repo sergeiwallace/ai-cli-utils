@@ -55,6 +55,21 @@ jobs:
       - run: uv run ruff format --check src/ tests/
       - run: uv run pyright src/
       - run: python scripts/lint_doc_alignment.py
+      # The published package declares `requires-python = ">=3.11"` while this repo
+      # develops and tests on 3.14 alone (AI-CLI-dgbd). Those are different claims,
+      # but the wider one still has to be falsifiable or it is just an assertion --
+      # so the floor interpreter byte-compiles the shipped source here.
+      #
+      # This is not a second test matrix and must not grow into one: no dependencies
+      # are installed and no tests run, which is why it costs seconds. What it catches
+      # is the realistic regression -- somebody uses syntax newer than the floor and
+      # the published package stops importing for every user below 3.14, silently,
+      # because nothing else in CI ever parses the source as an older Python.
+      #
+      # `--no-project` keeps uv from refusing the interpreter for disagreeing with
+      # `requires-python`'s own project context.
+      - name: Shipped source parses on the declared floor interpreter
+        run: uv run --python 3.11 --no-project python -m compileall -q src/
 
   test:
     runs-on: ubuntu-latest

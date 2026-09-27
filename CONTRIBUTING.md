@@ -6,10 +6,17 @@ Thanks for your interest in contributing! This guide covers everything you need 
 
 ### One Python version
 
-This project supports **exactly one** Python version, currently **3.14**, and `.python-version`
-is the canonical place it is declared. `requires-python` is `>=3.14,<3.15`, every CI job pins
-3.14, and `uv sync` builds the local venv from `.python-version`, so a local run is on the same
-interpreter CI uses.
+This project **develops and tests on exactly one** Python version, currently **3.14**, and
+`.python-version` is the canonical place it is declared. Every CI job pins 3.14, and `uv sync`
+builds the local venv from `.python-version`, so a local run is on the same interpreter CI uses.
+
+That is separate from what an installed copy of the published package supports, which is
+`requires-python = ">=3.11"` with no upper bound. Those are two different questions and conflating
+them is a real defect: `>=3.14,<3.15` briefly shipped here and would have refused installation for
+every user on 3.11–3.13, and refused 3.15 on the day it was released, until somebody cut a new
+release. An upper bound cannot be routed around by a resolver, because it is baked into the
+published artifact. CI byte-compiles the shipped source on 3.11 so the wider claim is checked
+rather than merely asserted.
 
 That is not a style preference. When the local venv ran 3.14 and CI ran 3.11/3.12/3.13, a defect
 turned out to be *unobservable* locally rather than merely unobserved — `pathlib` allows a

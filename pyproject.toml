@@ -11,7 +11,16 @@ license = "MIT"
 # `scripts/check_python_version_sync.py` fails if this bound, the workflow
 # matrices, the pyright target, the classifiers and the running interpreter do
 # not all agree with it.
-requires-python = ">=3.14,<3.15"
+# The floor for CONSUMERS of the published package, which is a different question from
+# the one interpreter this repo develops and tests on (`.python-version`, 3.14). See
+# AI-CLI-dgbd. Measured before widening: all shipped modules compile under 3.11, 3.12
+# and 3.13, the package imports and `ai --help` runs on 3.13, and the config/quota test
+# slice passes 210/210 on 3.12 and 51/51 on 3.11.
+#
+# No upper bound, deliberately: one makes an already-published release uninstallable the
+# day the next Python ships, for everyone, until a human cuts a new release -- and a
+# resolver cannot route around metadata baked into the published artifact.
+requires-python = ">=3.11"
 authors = [
     { name = "AI CLI Utils Contributors" },
 ]
@@ -22,6 +31,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Systems Administration",
