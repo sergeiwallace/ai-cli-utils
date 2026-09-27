@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import psutil
 import pytest
 from conftest import _make_list_panes_output
+from process_ownership import OWNED_PROCESS_LIFETIME, reap, spawn_owned_sleeper
 
 import ai_cli.session as _session_module
 from ai_cli.main import (
@@ -452,25 +453,18 @@ def bg_spare_stand_in():
         # unverified under CI (observed: TimeoutExpired and a state mismatch on
         # 2026-08-16, PR #37 first run). Same rationale as the real_tmux skips.
         pytest.skip("bg-spare stand-in process teardown timing unverified on win32 (PR #37)")
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import time; time.sleep(300)",
-            "claude",
-            "bg-spare",
-            "--bg-spare",
-            "/tmp/test-spare.sock",
-        ]
+    # Owned, and bounded well below the old 300 seconds: the group reap below is
+    # the normal path, but a killed xdist worker or a suite timeout skips
+    # teardown entirely, and then the sleep is the only thing that ends it.
+    process = spawn_owned_sleeper(
+        OWNED_PROCESS_LIFETIME,
+        "claude",
+        "bg-spare",
+        "--bg-spare",
+        "/tmp/test-spare.sock",
     )
     yield process
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=2)
+    reap(process)
 
 
 def _write_claude_session_state(sessions_dir, process, *, name="test-1", started_at=None):

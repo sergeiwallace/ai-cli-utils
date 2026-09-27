@@ -1,12 +1,9 @@
 """Tests for ai cdp start/stop/status subcommand."""
 
-import contextlib
 import json
 import os
 import shutil
-import signal
 import socket
-import subprocess
 import sys
 import time
 import urllib.request
@@ -15,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
+from process_ownership import owned_sleeper, reap, spawn_owned, spawn_owned_sleeper
 
 from ai_cli import tunnel
 from ai_cli.main import (
@@ -543,8 +541,12 @@ class TestCdpStartRealChromeBoundary:
         stdout_log = tmp_path / "chrome-stdout.log"
         stderr_log = tmp_path / "chrome-stderr.log"
         popen_env = {**os.environ, **tunnel._linux_display_env()}
+        # Owned, because Chrome is a process TREE: it forks a zygote, a GPU
+        # process and a renderer per tab, and `proc.terminate()` on the launcher
+        # alone leaves every one of them running and reparented. Only a group
+        # reap ends the whole browser.
         with stdout_log.open("wb") as out_fh, stderr_log.open("wb") as err_fh:
-            proc = subprocess.Popen(
+            proc = spawn_owned(
                 [
                     chrome,
                     f"--remote-debugging-port={port}",
@@ -576,9 +578,7 @@ class TestCdpStartRealChromeBoundary:
                     f"stdout={stdout_log.read_text(errors='replace')!r}"
                 )
         finally:
-            if proc.poll() is None:
-                proc.terminate()
-                proc.wait(timeout=5)
+            reap(proc)
 
 
 # ---------------------------------------------------------------------------
@@ -615,30 +615,22 @@ class TestCmdCdpStop:
         assert "No CDP process registered" in capsys.readouterr().out
 
     def test_given_legacy_pid_reused_when_cdp_stop_runs_then_live_process_survives(self, tmp_path, capsys):
-        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        pid_file = tmp_path / "cdp-9222.pid"
-        pid_file.write_text(str(sibling.pid))
-        try:
+        with owned_sleeper() as sibling:
+            pid_file = tmp_path / "cdp-9222.pid"
+            pid_file.write_text(str(sibling.pid))
             with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
                 _cmd_cdp_stop(9222)
 
             assert sibling.poll() is None
             assert not pid_file.exists()
             assert "no process was stopped" in capsys.readouterr().out
-        finally:
-            if sibling.poll() is None:
-                sibling.terminate()
-            sibling.wait(timeout=5)
 
     def test_given_full_process_identity_when_cdp_stop_runs_then_terminates_exact_process(self, tmp_path):
-        # `start_new_session` so this sleeper is its own process group and can be reaped as one: a
-        # test owns every process it starts, and the cleanup below must not depend on the assertions
-        # passing. Without it a failure here left a 60-second sleeper running, which is precisely how
-        # this suite accumulated orphans across runs.
-        sibling = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
-            start_new_session=True,
-        )
+        # Owned so this sleeper is its own process group and can be reaped as one: a test owns every
+        # process it starts, and the cleanup below must not depend on the assertions passing. Without
+        # it a failure here left a 60-second sleeper running, which is precisely how this suite
+        # accumulated orphans across runs.
+        sibling = spawn_owned_sleeper(60)
         try:
             # Record the identity only once it has STOPPED CHANGING. On macOS psutil's `exe()` and
             # `cmdline()[0]` both change within a process's first moments -- from the venv symlink
@@ -703,25 +695,13 @@ class TestCmdCdpStop:
             )
             assert not pid_file.exists()
         finally:
-            # Reap the GROUP where there is one. `os.killpg`, `os.getpgid` and `signal.SIGKILL` are
-            # all POSIX-only, so the escalation is guarded on `os.killpg` existing -- referencing
-            # `signal.SIGKILL` unconditionally here raised `AttributeError: module 'signal' has no
-            # attribute 'SIGKILL'` and took all three Windows jobs red, which is the same
-            # platform-assumption defect this commit set out to remove from the macOS side.
-            #
-            # Windows has no process group to signal in this sense, and `start_new_session` is
-            # ignored there, so the `Popen` handle is the whole story. `kill()` covers both
-            # platforms and is harmless once the process has already exited.
-            if hasattr(os, "killpg"):
-                for sig in (signal.SIGTERM, signal.SIGKILL):
-                    try:
-                        os.killpg(os.getpgid(sibling.pid), sig)
-                    except OSError:
-                        break
-            with contextlib.suppress(OSError):
-                sibling.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                sibling.wait(timeout=10)
+            # Reap the GROUP, through the shared helper rather than by hand here. The hand-rolled
+            # version of this referenced `signal.SIGKILL` unconditionally and raised
+            # `AttributeError: module 'signal' has no attribute 'SIGKILL'` on Windows, taking all
+            # three Windows jobs red: `os.killpg`, `os.getpgid` and `signal.SIGKILL` are POSIX-only,
+            # and `start_new_session` is ignored on Windows. One implementation of that platform
+            # split, in `tests/process_ownership.py`, is the point.
+            reap(sibling)
 
     def test_when_process_already_dead_then_still_removes_pid_file(self, tmp_path):
         import psutil as _psutil

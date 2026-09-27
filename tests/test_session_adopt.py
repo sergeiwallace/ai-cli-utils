@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -31,6 +30,7 @@ from pathlib import Path
 import psutil
 import pytest
 from conftest import run_cli
+from process_ownership import reap, spawn_owned_python, spawn_owned_sleeper
 
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
 from ai_cli.session_adopt import (
@@ -177,11 +177,6 @@ def _mark_live(world, pid: int, name: str, cwd: Path) -> None:
 # ``sessionId`` / ``cwd``. One must refuse and the other must succeed, so the
 # outcome can only be explained by the code having read that payload.
 
-#: Seconds the owned process sleeps for. It exits on its own well inside a test
-#: run, so a killed worker or a timeout that skips teardown entirely still
-#: cannot leave the process behind.
-_OWNED_PROCESS_LIFETIME = 30
-
 
 def _registry_payload(pid: int, name: str, cwd: Path, session_id: str) -> dict:
     """A full-shaped ``~/.claude/sessions/<pid>.json`` payload.
@@ -216,79 +211,24 @@ def _register(world, pid: int, *, name: str, cwd: Path, session_id: str) -> Path
     return record
 
 
-def _spawn_owned(*code: str) -> subprocess.Popen:
-    """Spawn a python child in its OWN session, so its group can be signalled safely.
-
-    ``start_new_session=True`` is not optional here. Without it the child shares
-    the pytest worker's process group, and the ``os.killpg`` in :func:`_reap`
-    then signals the test runner itself — observed live while writing these
-    tests: the suite died at SIGTERM part-way through the file.
-    """
-    return subprocess.Popen(
-        [sys.executable, "-c", *code],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-
-def _reap(proc: subprocess.Popen) -> None:
-    """Reap the process GROUP: SIGTERM, wait, then SIGKILL.
-
-    The group rather than the child, because killing only the direct child
-    orphans any grandchildren it started. Always ends in a ``wait()`` so the
-    child is not left a zombie — a zombie keeps its ``/proc/<pid>`` entry and
-    would therefore still read as *live*.
-    """
-    if sys.platform == "win32":
-        proc.terminate()
-        proc.wait(timeout=5)
-        return
-
-    try:
-        group = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        group = None
-    # Refuse to signal our own group even if the spawn somehow did not detach:
-    # that would take down the test runner rather than the child.
-    if group == os.getpgrp():
-        group = None
-
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        if proc.poll() is not None:
-            break
-        try:
-            if group is not None:
-                os.killpg(group, sig)
-            else:
-                proc.send_signal(sig)
-        except (ProcessLookupError, PermissionError):
-            break
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            continue
-    proc.wait()
-
-
 @pytest.fixture
 def owned_process():
     """A real process this test owns, spawned in its own session and reaped here.
 
-    ``start_new_session=True`` puts it in a fresh process group so the whole
-    group can be signalled, and it sleeps for a bounded time so that even a
-    teardown that never runs — a killed xdist worker, a suite-level timeout —
-    cannot leave it behind. Never a pattern-matched ``pkill``, which would also
+    The group ownership and the group reap both come from
+    ``tests/process_ownership.py``, which is the single implementation of the
+    rule for the whole suite and is the only place that knows how the reap
+    differs on Windows. Never a pattern-matched ``pkill``, which would also
     match processes this suite does not own.
     """
-    proc = _spawn_owned(f"import time; time.sleep({_OWNED_PROCESS_LIFETIME})")
+    proc = spawn_owned_sleeper()
     # Assert liveness with psutil rather than with the code under test, so a
     # process that failed to start cannot be mistaken for a passing refusal.
     assert psutil.pid_exists(proc.pid), "the spawned process must really be running"
     try:
         yield proc
     finally:
-        _reap(proc)
+        reap(proc)
 
 
 @pytest.fixture
@@ -299,9 +239,9 @@ def reaped_pid():
     a ``/proc/<pid>`` entry, so an unreaped pid would read as live and the
     negative control would pass for the wrong reason.
     """
-    proc = _spawn_owned("")
+    proc = spawn_owned_python("")
     pid = proc.pid
-    _reap(proc)
+    reap(proc)
     deadline = time.monotonic() + 5
     while psutil.pid_exists(pid) and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -661,7 +601,6 @@ def test_retitle_given_a_transcript_when_retitled_then_every_matching_record_is_
 
 
 def test_retitle_given_a_transcript_when_retitled_then_mtime_is_preserved(world):
-    import os
 
     path = world["src_dir"] / f"{UUID}.jsonl"
     os.utime(path, (1_000_000_000, 1_000_000_000))

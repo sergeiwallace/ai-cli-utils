@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from unittest.mock import MagicMock, patch
 
 import psutil
+from process_ownership import owned_sleeper
 
 from ai_cli.process_hygiene import (
     ORPHAN_THRESHOLD,
@@ -600,25 +599,20 @@ class TestAutoCleanOrphans:
         assert killed == []
 
     def test_given_changed_process_identity_when_cleaned_then_live_process_survives(self, tmp_path):
-        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        proc = _proc(
-            pid=sibling.pid,
-            verdict="orphaned",
-            score=90,
-            machine="local",
-            create_time=psutil.Process(sibling.pid).create_time() - 1,
-        )
-        output: list[str] = []
-        try:
+        with owned_sleeper() as sibling:
+            proc = _proc(
+                pid=sibling.pid,
+                verdict="orphaned",
+                score=90,
+                machine="local",
+                create_time=psutil.Process(sibling.pid).create_time() - 1,
+            )
+            output: list[str] = []
             killed = auto_clean_orphans([proc], log_path=tmp_path / "log.txt", stdout_fn=output.append)
 
             assert killed == []
             assert sibling.poll() is None
             assert output == [f"Skipped PID {sibling.pid}: process identity changed after inventory."]
-        finally:
-            if sibling.poll() is None:
-                sibling.terminate()
-            sibling.wait(timeout=5)
 
     def test_given_permission_error_when_cleaned_then_not_in_killed(self, tmp_path):
         import psutil as _psutil
@@ -864,16 +858,15 @@ class TestCmdPs:
 
     def test_given_live_sibling_mosh_server_when_ps_cron_runs_then_process_survives(self, tmp_path):
         """Background maintenance must never terminate a process by heuristic."""
-        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        score, detail = score_mosh_server(
-            sibling.pid,
-            25 * 3600,
-            "mosh-server new -s -c 256 -l LANG=en_US.UTF-8",
-            set(),
-            {"c-r-myproject-1": True},
-        )
-        classified = _proc(pid=sibling.pid, score=score, verdict=_verdict_for(score), detail=detail)
-        try:
+        with owned_sleeper() as sibling:
+            score, detail = score_mosh_server(
+                sibling.pid,
+                25 * 3600,
+                "mosh-server new -s -c 256 -l LANG=en_US.UTF-8",
+                set(),
+                {"c-r-myproject-1": True},
+            )
+            classified = _proc(pid=sibling.pid, score=score, verdict=_verdict_for(score), detail=detail)
             with (
                 patch("ai_cli.process_hygiene.collect_local_processes", return_value=[classified]),
                 patch("ai_cli.process_hygiene.collect_remote_processes", return_value=([], None)),
@@ -884,10 +877,6 @@ class TestCmdPs:
             assert rc == 0
             assert score == ORPHAN_THRESHOLD, detail
             assert sibling.poll() is None, "cron terminated a live sibling mosh transport"
-        finally:
-            if sibling.poll() is None:
-                sibling.terminate()
-            sibling.wait(timeout=5)
 
     def test_given_ps_cron_when_no_orphans_then_no_output(self):
         output: list[str] = []

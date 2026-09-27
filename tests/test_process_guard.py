@@ -19,6 +19,10 @@ class TestRealProcessGuard:
             os.execvp("claude", ["claude"])
 
     def test_given_unmocked_agent_popen_when_called_then_fails_loudly(self):
+        # An assertion TARGET, not a spawn: the guard raises before any process
+        # exists, so there is nothing to own and nothing to reap. Routing this
+        # through `process_ownership.spawn_owned` would test the helper instead
+        # of the guard.
         with pytest.raises(RuntimeError, match="attempted to spawn a real `gemini` process"):
             subprocess.Popen(["gemini"])
 
