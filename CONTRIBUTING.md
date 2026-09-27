@@ -68,6 +68,41 @@ it. `tests/test_ci_lock_assertion.py` fails if a workflow sync step stops assert
 
 ## Running Tests
 
+### A test owns every process it starts
+
+A test that spawns a real process must spawn it through `tests/process_ownership.py`, not
+through a bare `subprocess.Popen`:
+
+```python
+from process_ownership import owned_sleeper, reap, spawn_owned
+
+with owned_sleeper() as proc:      # spawned in its own group, reaped on the way out
+    ...
+
+proc = spawn_owned([sys.executable, "-c", "..."])  # when you need the handle yourself
+try:
+    ...
+finally:
+    reap(proc)                     # ends the GROUP, not just the direct child
+```text
+
+Two reasons it is a helper and not a convention. A child in a group of its own can be ended
+as a whole tree, where terminating the direct child leaves its own children running and
+reparented. And the platforms genuinely differ: `start_new_session=True` is POSIX and is
+silently *ignored* on Windows, where the group has to come from `CREATE_NEW_PROCESS_GROUP`
+and there is no `killpg` to signal it with — `os.killpg`, `os.getpgid`, `os.getpgrp` and
+`signal.SIGKILL` do not exist there at all. Hand-rolling that split is how a change goes
+green locally and takes the Windows jobs red.
+
+Do not rely on `finally:` alone. It does not run when the run is killed, when a suite-level
+timeout fires, or when an xdist worker dies, which is why the helper's spawned children also
+sleep for a bounded time and exit by themselves. Never clean up with a pattern-matched
+`pkill`: it matches processes the suite does not own.
+
+A spawn whose *subject* is the process group — one asserting that a child shares the runner's
+group, or whose payload calls `os.setsid()` itself — is the exception, and says so in a
+comment at the call site.
+
 ### tmux is required, not optional
 
 Install `tmux` before running the suite. It is a hard test dependency: several tests drive

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
+from process_ownership import owned_sleeper
 
 from ai_cli import direnv_setup
 from ai_cli.main import (
@@ -2988,44 +2989,34 @@ class TestTunnel:
             _cmd_tunnel_stop(9222)
 
     def test_given_legacy_pid_reused_when_tunnel_stop_runs_then_live_process_survives(self, tmp_path, capsys):
-        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        (tmp_path / "tunnel-9222.pid").write_text(str(sibling.pid))
-        try:
+        with owned_sleeper() as sibling:
+            (tmp_path / "tunnel-9222.pid").write_text(str(sibling.pid))
             with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
                 _cmd_tunnel_stop(9222)
 
             assert sibling.poll() is None
             assert not (tmp_path / "tunnel-9222.pid").exists()
             assert "no process was stopped" in capsys.readouterr().out
-        finally:
-            if sibling.poll() is None:
-                sibling.terminate()
-            sibling.wait(timeout=5)
 
     def test_given_command_identity_mismatch_when_tunnel_stop_runs_then_live_process_survives(self, tmp_path):
-        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        live = psutil.Process(sibling.pid)
-        (tmp_path / "tunnel-9222.pid").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "pid": sibling.pid,
-                    "create_time": live.create_time(),
-                    "executable": live.exe(),
-                    "command": ["unrelated-command"],
-                    "port": 9222,
-                }
+        with owned_sleeper() as sibling:
+            live = psutil.Process(sibling.pid)
+            (tmp_path / "tunnel-9222.pid").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "pid": sibling.pid,
+                        "create_time": live.create_time(),
+                        "executable": live.exe(),
+                        "command": ["unrelated-command"],
+                        "port": 9222,
+                    }
+                )
             )
-        )
-        try:
             with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
                 _cmd_tunnel_stop(9222)
 
             assert sibling.poll() is None
-        finally:
-            if sibling.poll() is None:
-                sibling.terminate()
-            sibling.wait(timeout=5)
 
     def test_cmd_tunnel_status_lists_active_tunnels(self, tmp_path, capsys):
         (tmp_path / "tunnel-9222.pid").write_text("4242")
