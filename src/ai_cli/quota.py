@@ -157,7 +157,7 @@ class QuotaSnapshot:
     session_pct: float | None = None  # "Current session"
     # Secondary per-model weekly limit — the "Current week (<model>)" line that is NOT
     # "all models". Its label is a MODEL NAME that changes over time (was "Sonnet only",
-    # now "Fable", AIH-120). The pct keeps the historical field name for DB/KV back-compat;
+    # now "Fable"). The pct keeps the historical field name for DB/KV back-compat;
     # weekly_model_name carries the label so the statusline can name it correctly.
     weekly_sonnet_pct: float | None = None
     weekly_model_name: str | None = None  # e.g. "Fable", "Sonnet only", "Opus"
@@ -380,7 +380,7 @@ def _parse_usage_output(output: str) -> QuotaSnapshot | None:
 
     session_match = re.search(r"Current session.*?(\d+(?:\.\d+)?)\s*%\s*used", output, re.DOTALL | re.IGNORECASE)
 
-    # Secondary per-model weekly limit (AIH-120): CC used to label this "Current week
+    # Secondary per-model weekly limit: CC used to label this "Current week
     # (Sonnet only)"; it is now a model name ("Current week (Fable)") and will keep
     # changing as model tiers shift. Match every "Current week (<label>)" line generically
     # and take the first one that is NOT the "all models" aggregate. re.DOTALL + non-greedy
@@ -607,7 +607,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
         # Poll for usage output, max 40s. Accept as soon as "Current week (all models)"
         # and "% used" are both present, then give a grace window for the secondary
         # per-model line to render — CC renders the all-models line before the per-model
-        # line ("Current week (Fable)", AIH-120), which can lag several seconds, so exiting
+        # line ("Current week (Fable)"), which can lag several seconds, so exiting
         # on the first valid parse silently drops weekly_sonnet_pct/weekly_model_name.
         snapshot = None
         for _ in range(200):
@@ -667,7 +667,7 @@ def _scrape_usage_hidden_pane() -> QuotaSnapshot | None:
 def _get_usage_via_print_mode() -> QuotaSnapshot | None:
     """Fetch /usage non-interactively via ``claude -p /usage``.
 
-    Robust primary path (AIH-120 follow-up / AI-CLI-94). Print mode runs the slash
+    Robust primary path (AI-CLI-94). Print mode runs the slash
     command, waits for the data, prints the complete result to stdout, and exits —
     deterministic, ~1-2s, and $0 (measured: num_turns=0, zero tokens, total_cost_usd=0;
     /usage is metadata, not a model turn). It has none of the interactive-TUI hidden-pane
@@ -697,7 +697,7 @@ def _get_usage_via_print_mode() -> QuotaSnapshot | None:
 def _get_claude_usage_snapshot() -> QuotaSnapshot | None:
     """Return a QuotaSnapshot via the hidden-pane ``/usage`` scrape.
 
-    AIH-164: print mode (``claude -p /usage``) is **retired** from this capture path — on CC
+    Print mode (``claude -p /usage``) is **retired** from this capture path — on CC
     2.1.207 it emits an insights-only view with no quota bars, so it always returned ``None``.
     The all-models weekly + 5-hour numbers now come from the official statusLine ``rate_limits``
     stdin (see :func:`quota_statusline_part`); this scrape remains the capture fallback and the
@@ -968,7 +968,7 @@ _SCRAPE_TTL_MINUTES = 30
 _SCRAPE_LOCK_STALE_MINUTES = 15
 _SCRAPER_BROKEN_PREFIX = "🚨 BROKEN 🚨 "
 
-# AIH-164 T-06: rate-limit-aware Fable (secondary per-model cap) scrape scheduling. The Fable
+# Rate-limit-aware Fable (secondary per-model cap) scrape scheduling. The Fable
 # `Current week (<model>)` line is the ONLY per-model datum /usage exposes and is NOT in the
 # stdin rate_limits — so it still needs the TUI scrape. Its "Per-model breakdown" is frequently
 # server-side "rate limited"; back off progressively (10→20→40→80→120 min) while it stays
@@ -993,7 +993,7 @@ def _save_fable_backoff(state: dict) -> None:
 def _maybe_trigger_fable_scrape(now, fable_ts: str | None) -> None:
     """Trigger the /usage scrape on a FABLE-specific cadence with progressive backoff.
 
-    Decoupled from all-models snapshot freshness (AIH-164 T-06): T-02's rate_limits env path
+    Decoupled from all-models snapshot freshness: the rate_limits env path
     keeps the all-models snapshot fresh, so the old snapshot-age trigger would never fire and the
     Fable cap would go stale forever. Fires when the last non-null Fable snapshot is older than
     ``_FABLE_SCRAPE_TTL_MINUTES``; while the breakdown stays rate-limited (Fable not refreshing)
@@ -1038,7 +1038,7 @@ def _get_last_fable_snapshot(week_start: str):
     """Return (weekly_sonnet_pct, weekly_model_name, snapshotted_at) for the most recent snapshot
     this week whose Fable value is non-null, or (None, None, None). Unbounded (not LIMIT 3) so a
     last-good Fable value survives even after the T-02 env snapshots push it past the 3 rows the
-    render reads (AIH-164 T-06 / audit F-04 interaction). Never raises."""
+    render reads (audit F-04 interaction). Never raises."""
     import sqlite3
 
     from .quota_db import _get_quota_db_path, _init_db
@@ -1424,13 +1424,13 @@ def _check_scrape_mismatch_prefix() -> None:
         pass
 
 
-# AIH-164: throttle env-sourced snapshot writes so the acceleration arrow keeps its ~10-min
+# Throttle env-sourced snapshot writes so the acceleration arrow keeps its ~10-min
 # cadence — an un-throttled per-render write would pin the arrow to "steady" (audit F-04/AD-1).
 _QUOTA_ENV_SNAPSHOT_THROTTLE_SECONDS = 600
 
 
 def _record_rate_limits_env_snapshot(now) -> None:
-    """AIH-164 T-02: persist CC's ``rate_limits`` (exported by the statusline as env vars) as a
+    """Persist CC's ``rate_limits`` (exported by the statusline as env vars) as a
     THROTTLED quota snapshot, so the official all-models weekly % (+ 5h session %) flows through
     the existing render + history path as the authoritative source.
 
@@ -1536,7 +1536,7 @@ def _render_env_statusline_segment(segment_name: str) -> str:
 def quota_statusline_part() -> int:
     """Print a compact quota indicator for use in the statusline.
 
-    Authoritative source (AIH-164): CC's official ``rate_limits`` stdin, exported by the
+    Authoritative source: CC's official ``rate_limits`` stdin, exported by the
     statusline as ``AI_CLI_QUOTA_*`` env vars and persisted here as a throttled snapshot.
     Then: NATS KV (shared across machines) when local data is stale; local SQLite fast path
     when fresh. The three provider windows share ``QuotaStatuslineSegment`` for their
@@ -1565,7 +1565,7 @@ def quota_statusline_part() -> int:
         from datetime import datetime
 
         now = datetime.now(UTC)
-        # AIH-164 T-02: consume the official rate_limits env vars (throttled) BEFORE reading rows,
+        # Consume the official rate_limits env vars (throttled) BEFORE reading rows,
         # so the fresh all-models value is the newest snapshot the render below picks up.
         _record_rate_limits_env_snapshot(now)
         week_start_str = _get_current_week_start(now)
