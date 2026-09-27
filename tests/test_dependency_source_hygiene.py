@@ -44,6 +44,12 @@ def _dependency_specifiers(pyproject: dict) -> list[tuple[str, str]]:
     Runtime dependencies, every extra and every dependency group are all
     included: a private pin is equally unresolvable wherever it is declared, and
     the pin this guard was written for lived in the two least-visited of those.
+
+    The last three sites are the ones a guard written only against that pin would
+    omit, and each takes PEP 508 strings that may carry a direct reference:
+    ``[tool.uv]``'s constraints and overrides both participate in resolution (this
+    project already declares a constraint), and ``build-system.requires`` is
+    fetched before the project is even built.
     """
     specifiers: list[tuple[str, str]] = []
     project = pyproject.get("project", {})
@@ -55,6 +61,12 @@ def _dependency_specifiers(pyproject: dict) -> list[tuple[str, str]]:
         specifiers.extend(
             (f"dependency-groups.{group}", requirement) for requirement in requirements if isinstance(requirement, str)
         )
+    uv = pyproject.get("tool", {}).get("uv", {})
+    for key in ("constraint-dependencies", "override-dependencies"):
+        specifiers.extend((f"tool.uv.{key}", requirement) for requirement in uv.get(key, []))
+    specifiers.extend(
+        ("build-system.requires", requirement) for requirement in pyproject.get("build-system", {}).get("requires", [])
+    )
     return specifiers
 
 
@@ -138,6 +150,33 @@ def test_given_a_direct_url_specifier_when_scanned_then_it_is_flagged(tmp_path):
     findings = scan_for_non_index_dependencies(tmp_path)
 
     assert findings == ["project.dependencies: example-pkg @ git+https://example.com/private.git"]
+
+
+def test_given_a_constraint_and_a_build_requirement_when_scanned_then_both_are_flagged(tmp_path):
+    """Control for the three sites a guard written only against the original pin would omit.
+
+    Constraints and overrides participate in resolution without appearing in any
+    dependency list, and ``build-system.requires`` is fetched before the project
+    builds -- so a private pin in any of them breaks exactly the same way while
+    reading as unrelated configuration.
+    """
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        'dependencies = ["click>=8.1"]\n'
+        "[tool.uv]\n"
+        'constraint-dependencies = ["example-lib @ git+https://example.com/private.git"]\n'
+        'override-dependencies = ["example-other @ https://example.com/private.tar.gz"]\n'
+        "[build-system]\n"
+        'requires = ["example-backend @ git+https://example.com/backend.git"]\n'
+    )
+
+    findings = scan_for_non_index_dependencies(tmp_path)
+
+    assert findings == [
+        "tool.uv.constraint-dependencies: example-lib @ git+https://example.com/private.git",
+        "tool.uv.override-dependencies: example-other @ https://example.com/private.tar.gz",
+        "build-system.requires: example-backend @ git+https://example.com/backend.git",
+    ]
 
 
 def test_given_a_git_sourced_locked_package_when_scanned_then_it_is_flagged(tmp_path):
