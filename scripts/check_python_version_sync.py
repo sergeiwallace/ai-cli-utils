@@ -55,15 +55,67 @@ def format_version(version: Version) -> str:
     return f"{version[0]}.{version[1]}"
 
 
-def expected_requires_python(version: Version) -> str:
-    """The only `requires-python` value consistent with supporting one version.
+REQUIRES_PYTHON_RE = re.compile(r"^>=(\d+)\.(\d+)$")
 
-    An open `>=X.Y` range would claim support for every future interpreter, none
-    of which anything in this repo runs. The upper bound is what makes the claim
-    match the evidence, and it is what forces a deliberate decision when the
-    next Python is released rather than a silent widening.
+
+def parse_requires_python_floor(raw: str) -> Version | None:
+    """Return the `>=X.Y` floor from `requires-python`, or None if it is not that shape."""
+    match = REQUIRES_PYTHON_RE.match(raw.replace(" ", ""))
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def check_requires_python(raw: str | None, declared: Version) -> list[str]:
+    """Check `requires-python` -- a claim about CONSUMERS, not about this checkout.
+
+    This deliberately does NOT require `requires-python` to name the one version
+    the project develops on (AI-CLI-dgbd). It used to, producing
+    `>=3.14,<3.15`, and that conflates two different questions:
+
+    * which interpreter this repo builds, lints, type-checks and tests on -- one
+      version, declared by `.python-version`, which is what the consolidation
+      asked for and is unaffected here;
+    * which interpreters an installed copy of a PUBLISHED package runs on.
+
+    Measured 2026-09-27 before widening this: all 43 shipped modules compile
+    under 3.11, 3.12 and 3.13; the package imports and `ai --help` runs on 3.13;
+    the full `test_config`/`test_quota` slice passes 210/210 on 3.12 and 51/51 on
+    3.11. So the narrow pin was not describing a real incompatibility.
+
+    The upper bound is refused outright rather than merely not required. An upper
+    bound on `requires-python` makes an already-published release uninstallable
+    the day the next Python ships, for everyone, until a human cuts a new
+    release -- and a resolver cannot route around it because the metadata is
+    baked into the published artifact. "Forces a deliberate decision" was the
+    argument for it, but the decision it forces is taken under an outage rather
+    than before one.
     """
-    return f">={version[0]}.{version[1]},<{version[0]}.{version[1] + 1}"
+    if raw is None:
+        return [
+            "python-version-sync: pyproject.toml declares no requires-python -- an installer "
+            "would then accept any interpreter, including ones this package cannot run on."
+        ]
+    floor = parse_requires_python_floor(raw)
+    if floor is None:
+        return [
+            f"python-version-sync: requires-python is {raw!r}, which is not a bare '>=X.Y' floor. "
+            "An upper bound makes an already-published release uninstallable the day the next "
+            "Python ships, until a human cuts a new one; a consumer cannot route around metadata "
+            "baked into the artifact. Declare the floor only."
+        ]
+    if floor > declared:
+        return [
+            f"python-version-sync: requires-python floor is {format_version(floor)} but "
+            f".python-version declares {format_version(declared)} -- the project would be "
+            "developed on an interpreter it tells installers it does not support."
+        ]
+    return []
+
+
+def supported_minors(floor: Version, declared: Version) -> list[str]:
+    """Every minor version from the `requires-python` floor up to the dev version."""
+    return [f"{floor[0]}.{minor}" for minor in range(floor[1], declared[1] + 1)]
 
 
 def read_declared_version(root: Path) -> tuple[Version | None, list[str]]:
@@ -89,16 +141,7 @@ def check_pyproject(text: str, declared: Version) -> list[str]:
     data = tomllib.loads(text)
 
     requires_python = data.get("project", {}).get("requires-python")
-    wanted = expected_requires_python(declared)
-    if requires_python is None:
-        errors.append(f"python-version-sync: pyproject.toml declares no requires-python (expected {wanted!r})")
-    elif requires_python.replace(" ", "") != wanted:
-        errors.append(
-            f"python-version-sync: pyproject.toml requires-python is {requires_python!r} "
-            f"but .python-version declares {expected} -- expected {wanted!r}. A range "
-            "wider than one minor version claims support for interpreters nothing "
-            "here builds, lints, type-checks or tests."
-        )
+    errors.extend(check_requires_python(requires_python, declared))
 
     pyright_version = data.get("tool", {}).get("pyright", {}).get("pythonVersion")
     if pyright_version is None:
@@ -137,12 +180,22 @@ def check_pyproject(text: str, declared: Version) -> list[str]:
     # `Programming Language :: Python :: 3` is a bare-major classifier, not a
     # claim about a minor version, so it is left alone.
     minors = [v for v in versioned if "." in v]
-    if minors != [expected]:
-        errors.append(
-            f"python-version-sync: pyproject.toml classifiers advertise Python {minors or ['(none)']} "
-            f"but .python-version declares {expected} -- the classifiers are what PyPI "
-            "shows installers, so they must name exactly the one supported version."
-        )
+    # The classifiers advertise the SUPPORTED RANGE, so they are checked against
+    # `requires-python`'s floor and the dev version together rather than against one
+    # version. They are what PyPI shows an installer, so an installer reading them must
+    # reach the same conclusion as a resolver reading `requires-python`: disagreement
+    # between the two is a claim that contradicts itself.
+    floor = parse_requires_python_floor(requires_python) if isinstance(requires_python, str) else None
+    if floor is not None:
+        wanted_minors = supported_minors(floor, declared)
+        if minors != wanted_minors:
+            errors.append(
+                f"python-version-sync: pyproject.toml classifiers advertise Python "
+                f"{minors or ['(none)']} but requires-python declares a floor of "
+                f"{format_version(floor)} and .python-version declares {expected} -- "
+                f"expected {wanted_minors}. The classifiers are what PyPI shows installers, "
+                "so they must agree with the range a resolver would compute."
+            )
 
     return errors
 
@@ -183,8 +236,21 @@ def _walk_run_steps(node: Any) -> list[str]:
     return found
 
 
-def check_workflow(name: str, text: str, declared: Version) -> list[str]:
-    """Check one workflow file's `python-version` keys and uv `--python` flags."""
+def check_workflow(name: str, text: str, declared: Version, floor: Version | None = None) -> list[str]:
+    """Check one workflow file's `python-version` keys and uv `--python` flags.
+
+    ``floor`` is the ``requires-python`` floor, and a ``--python`` flag naming it
+    exactly is permitted alongside the declared version. That is one narrow
+    exception, for the step that byte-compiles the shipped source on the oldest
+    interpreter the package claims to support: the wider consumer claim has to be
+    falsifiable somewhere, and this check would otherwise forbid the only step that
+    tests it (AI-CLI-dgbd).
+
+    It stays narrow deliberately. Only the floor is allowed, not any older version,
+    and only via ``--python`` -- a ``python-version:`` key still has to name the
+    declared version, so a job cannot quietly start running its whole suite on the
+    floor and reintroduce the matrix this check exists to prevent.
+    """
     expected = format_version(declared)
     errors: list[str] = []
     data = yaml.safe_load(text)
@@ -218,23 +284,27 @@ def check_workflow(name: str, text: str, declared: Version) -> list[str]:
     for script in _walk_run_steps(data):
         for match in UV_PYTHON_FLAG_RE.finditer(script):
             found = parse_minor(match.group(1))
-            if found != declared:
-                errors.append(
-                    f"python-version-sync: {name} passes `--python {match.group(1)}` but "
-                    f".python-version declares {expected}"
-                )
+            if found == declared or (floor is not None and found == floor):
+                continue
+            allowed = (
+                expected if floor is None or floor == declared else f"{expected} or the floor {format_version(floor)}"
+            )
+            errors.append(
+                f"python-version-sync: {name} passes `--python {match.group(1)}` but "
+                f".python-version declares {expected} -- allowed: {allowed}"
+            )
 
     return errors
 
 
-def check_workflows(root: Path, declared: Version) -> list[str]:
+def check_workflows(root: Path, declared: Version, floor: Version | None = None) -> list[str]:
     workflow_dir = root / ".github" / "workflows"
     if not workflow_dir.is_dir():
         return []
     errors: list[str] = []
     for path in sorted(workflow_dir.iterdir()):
         if path.suffix in {".yml", ".yaml"}:
-            errors.extend(check_workflow(f".github/workflows/{path.name}", path.read_text(), declared))
+            errors.extend(check_workflow(f".github/workflows/{path.name}", path.read_text(), declared, floor))
     return errors
 
 
@@ -266,10 +336,16 @@ def check(root: Path) -> list[str]:
     if declared is None:
         return errors
 
+    floor: Version | None = None
     pyproject_path = root / "pyproject.toml"
     if pyproject_path.exists():
-        errors.extend(check_pyproject(pyproject_path.read_text(), declared))
-    errors.extend(check_workflows(root, declared))
+        pyproject_text = pyproject_path.read_text()
+        errors.extend(check_pyproject(pyproject_text, declared))
+        # Read once and threaded through, so the workflow check and the classifier
+        # check cannot disagree about what the floor is.
+        raw = tomllib.loads(pyproject_text).get("project", {}).get("requires-python")
+        floor = parse_requires_python_floor(raw) if isinstance(raw, str) else None
+    errors.extend(check_workflows(root, declared, floor))
     errors.extend(check_running_interpreter(declared))
     return errors
 
