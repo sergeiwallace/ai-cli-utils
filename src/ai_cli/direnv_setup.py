@@ -214,7 +214,16 @@ def refresh_windows_path() -> bool:
 
     current = [part for part in os.environ.get("PATH", "").split(os.pathsep) if part]
     seen = {part.rstrip("\\").lower() for part in current}
-    added = [part for part in persisted if part.rstrip("\\").lower() not in seen]
+    added: list[str] = []
+    for part in persisted:
+        key = part.rstrip("\\").lower()
+        if key in seen:
+            continue
+        # Growing ``seen`` as we go, not just checking the starting PATH: the two roots
+        # overlap on real machines, and an entry missing from PATH but present in both
+        # would otherwise clear the check once per root and be appended twice.
+        seen.add(key)
+        added.append(part)
     if not added:
         return False
     os.environ["PATH"] = os.pathsep.join([*current, *added])
