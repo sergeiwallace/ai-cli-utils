@@ -294,7 +294,7 @@ def generate_dynamic_profile(
     # Guid it's about to replace. Stage the temp file in the DynamicProfiles dir's
     # PARENT instead: guaranteed same filesystem (required for Path.replace() atomicity)
     # and confirmed outside iTerm2's watched folder set, which covers only
-    # DynamicProfiles/ itself, never its parent (AIH-478).
+    # DynamicProfiles/ itself, never its parent.
     staging_dir = profile_dir.parent
     with tempfile.NamedTemporaryFile(
         mode="w",

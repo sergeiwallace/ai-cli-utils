@@ -27,7 +27,7 @@ def decode_project_name(dir_name: str) -> str:
     """Extract project name from Claude's encoded project directory name.
 
     Handles both macOS (-Users-foo-projects-myapp) and Linux (-home-foo-projects-myapp)
-    path encodings, plus worktree suffixes (--worktrees-sw-1).
+    path encodings, plus worktree suffixes (--worktrees-myapp-1).
     """
     # Strip leading path up to and including "projects-" (case-insensitive)
     name = re.sub(r"^.*-(?:P|p)rojects-", "", dir_name)
