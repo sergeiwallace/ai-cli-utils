@@ -1,12 +1,13 @@
 import io
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import _run_cli_with_args
 
-from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _resolve_remote_shell, cli
+from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _resolve_remote_shell, _update_remote_ai_cli, cli
 from ai_cli.session import build_session_name
 
 # --- --remote flag tests ---
@@ -303,6 +304,65 @@ class TestResolveRemoteShell:
         assert result == "bash"
 
 
+# --- remote host auto-update (AI-CLI-dw1g deployment-gap follow-up) ---
+#
+# A remote launch runs the generated supervisor entirely from the REMOTE
+# host's own installed ai-cli-utils. A fix merged to this repo's own main does
+# nothing for a remote session until that host's checkout is pulled and
+# reinstalled, and nothing else keeps a remote host's checkout current --
+# measured stale on both configured remote machines by the time this was
+# written. `_update_remote_ai_cli` closes that gap by running `ai update
+# --quiet` on the remote host before every remote launch.
+
+
+class TestUpdateRemoteAiCli:
+    def test_given_update_succeeds_when_called_then_returns_true_with_its_output(self):
+        with patch(
+            "ai_cli.main.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="0.8.0 → 0.8.0.post20260927120000\n", stderr=""),
+        ) as mock_run:
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is True
+        assert "0.8.0.post20260927120000" in detail
+        remote_command = mock_run.call_args[0][0][-1]
+        assert "ai update --quiet" in remote_command
+
+    def test_given_update_fails_when_called_then_returns_false_without_raising(self):
+        with patch(
+            "ai_cli.main.subprocess.run",
+            return_value=MagicMock(returncode=1, stdout="", stderr="git pull failed: no network"),
+        ):
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is False
+        assert "no network" in detail
+
+    def test_given_update_times_out_when_called_then_returns_false_without_raising(self):
+        with patch("ai_cli.main.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=30)):
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is False
+        assert "timed out" in detail
+
+    def test_given_update_raises_unexpectedly_when_called_then_returns_false_without_raising(self):
+        """A preflight step must never crash the launch -- any failure degrades, never raises."""
+        with patch("ai_cli.main.subprocess.run", side_effect=RuntimeError("unexpected")):
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is False
+        assert "unexpected" in detail
+
+
+def test_given_dry_run_when_remote_launch_previewed_then_remote_update_is_not_attempted():
+    """A dry run must not mutate the remote host any more than it may mutate this one.
+
+    Full network-call coverage for the remote dry-run path (AI-CLI-shpu) lives
+    in ``test_session_dry_run.py`` alongside its local-path sibling; this test
+    pins the cli()-level integration through ``_run_cli_with_args``.
+    """
+    config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
+    with patch("ai_cli.main._update_remote_ai_cli") as mock_update:
+        _run_cli_with_args(["ai", "c", "1", "--remote", "--dry-run"], config)
+    mock_update.assert_not_called()
+
+
 def test_given_remote_host_lacks_zsh_when_launched_then_uses_probed_shell_not_hardcoded_zsh():
     config = {"remote": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"}}
 
@@ -566,6 +626,8 @@ class TestRemoteSessionIterm2Emit:
                 return MagicMock(returncode=1, stdout="")
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="zsh\n", stderr="")
+            if "ai update" in command[-1]:
+                return MagicMock(returncode=0, stdout="current", stderr="")
             remote_allocations.append(command)
             session_id, ai_name = build_session_name("c", "session", "Planning", is_remote=True)
             return MagicMock(returncode=0, stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}), stderr="")
@@ -591,6 +653,8 @@ class TestRemoteSessionIterm2Emit:
         def remote_preflight(command, **_kwargs):
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="zsh\n", stderr="")
+            if "ai update" in command[-1]:
+                return MagicMock(returncode=0, stdout="current", stderr="")
             session_id = next(allocations)
             return MagicMock(
                 returncode=0,
