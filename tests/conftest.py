@@ -3,6 +3,7 @@ import http.server
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -39,6 +40,65 @@ _TEST_TMUX_PREFIX = "pytest-leak-guard-"
 _DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
 
 _PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+
+# Programs that RUN a command string handed to them, which is what makes a guard on the
+# program name alone insufficient (AI-CLI-013v). Measured: a test drove
+# ``os.execvp("zsh", ["zsh", "-c", "<real ssh command>; ..."])``, the program was ``zsh``
+# and so not protected, ``ssh`` was only a substring of the payload the guard never read,
+# and the exec REPLACED the pytest process -- the run ended mid-collection with exit 0, no
+# summary and no results, while a real outbound SSH connection was attempted.
+#
+# Banning the shells themselves was rejected: many tests here legitimately run one (the
+# generated engine script, the supervisor, the lease-redirection probes), and a blanket
+# ban is the kind of rule that gets switched off or worked around. So a shell stays
+# allowed and its command string is inspected instead.
+#
+# Both the bare and ``.exe`` spellings, because ``_command_program`` returns a basename and
+# Windows argv carries the suffix.
+_SHELL_PROGRAMS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ash",
+        "ksh",
+        "mksh",
+        "fish",
+        "csh",
+        "tcsh",
+        "cmd",
+        "cmd.exe",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+    }
+)
+
+# A POSIX shell takes its command STRING after an option cluster ending in ``c`` -- ``-c``,
+# but also ``-lc`` and ``-ic``, which production uses (``main.py`` builds a mosh remote
+# command as ``<shell> -l -c <cmd>``). Anything else after the options is a script PATH,
+# which is not a command string and is deliberately not scanned: a path is what the
+# supervisor and engine-script tests pass.
+_POSIX_SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
+
+# The Windows equivalents, compared lowercased. ``-encodedcommand`` takes base64 and so
+# cannot be inspected; it is listed anyway so the payload is at least consumed as a
+# command rather than mistaken for a script path.
+_WINDOWS_SHELL_COMMAND_FLAGS = frozenset({"/c", "/k", "-command", "-encodedcommand"})
+
+# Words inside a shell command string, split on the shell metacharacters that can abut a
+# program name. A regex rather than ``shlex.split`` on purpose: shlex leaves ``(ssh`` and
+# ``&&ssh`` as single tokens and raises on an unbalanced quote, and a guard that stops
+# seeing a hazard because the payload quoting is odd is not a guard.
+_SHELL_PAYLOAD_WORD = re.compile(r"[^\s;&|()<>'\"`$={}]+")
+
+# Shell-laundered spawn attempts, recorded as well as refused for the reason the desktop
+# escapes are: refusing alone does not report. A caller that swallows the exception --
+# ``cli()`` is driven under ``except SystemExit`` and ``except Exception`` in several
+# tests -- would otherwise be silently protected and never told.
+_protected_spawn_attempts: list[str] = []
 
 # The Windows branch of the same function, which the binary interception above cannot
 # see at all (AI-CLI-e9nm). ``notifications._send_os_notification`` raises a toast there
@@ -459,8 +519,108 @@ def pytest_sessionfinish(session, exitstatus):
     session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
-def _reject_real_agent_process(command, allowed_binaries=frozenset()):
-    """Fail loudly when a test reaches a real agent, transport, or tmux boundary."""
+def _command_argv(command) -> list[str]:
+    """Return ``command`` as an argv list, however subprocess was handed it."""
+    if isinstance(command, (list, tuple)):
+        return [str(part) for part in command]
+    if isinstance(command, str):
+        try:
+            return shlex.split(command)
+        except ValueError:
+            return command.split()
+    return []
+
+
+def shell_command_payloads(argv) -> list[str]:
+    """Command STRINGS this argv hands a shell to run, in argv order.
+
+    Only the argument of a command-string option is returned. A script path is not a
+    command string and is excluded on purpose -- ``zsh -o NO_BG_NICE /tmp/supervisor`` and
+    ``bash script.sh`` are how several tests here run a generated script, and scanning a
+    path would charge them for the directory they happen to sit in.
+
+    Exposed (not underscore-private) so the extraction can be tested directly rather than
+    only observed through a refusal.
+    """
+    tokens = _command_argv(argv)
+    payloads = []
+    for index, token in enumerate(tokens[1:], start=1):
+        is_command_flag = _POSIX_SHELL_COMMAND_FLAG.match(token) or token.lower() in _WINDOWS_SHELL_COMMAND_FLAGS
+        if is_command_flag and index + 1 < len(tokens):
+            payloads.append(tokens[index + 1])
+    return payloads
+
+
+def _test_temp_roots() -> tuple[str, ...]:
+    """Every root a pytest temp directory can live under, as real paths.
+
+    ``PYTEST_DEBUG_TEMPROOT`` is included because :func:`pytest_configure` relocates the
+    Windows root to a short path on the drive anchor, which is NOT under
+    ``tempfile.gettempdir()``.
+    """
+    roots = [tempfile.gettempdir()]
+    relocated = os.environ.get("PYTEST_DEBUG_TEMPROOT")
+    if relocated:
+        roots.append(relocated)
+    return tuple(os.path.realpath(root) for root in roots)
+
+
+def payload_word_reaches_a_real_binary(word: str) -> bool:
+    """Would a shell running ``word`` reach a binary outside this run's temp tree?
+
+    The question the guard actually needs, and the reason it is not simply "does the payload
+    mention a protected name". Tests here legitimately run a protected NAME through a shell
+    after putting their own stub on a clean PATH -- ``test_session_launch_shell_resolution``
+    writes a ``claude`` and a ``direnv`` into a temp bin directory and drives the generated
+    launch command through the interpreter it chose, which is the only way that path is
+    observed end to end. Refusing those would be a regression wearing a guard's clothes, the
+    same trap :func:`_tmux_argv_is_read_only` exists to avoid for ``tmux -V``.
+
+    Resolution mirrors what the shell itself would do: a word carrying a separator is used as
+    the path it is, a bare name goes through ``PATH`` as the test has set it. An unresolvable
+    name is not a hazard, because the shell could not run it either.
+    """
+    looks_like_path = os.sep in word or (os.altsep is not None and os.altsep in word)
+    resolved = word if looks_like_path else shutil.which(word)
+    if resolved is None:
+        return False
+    try:
+        real = os.path.realpath(resolved)
+    except OSError:
+        return True  # cannot prove it is a stub, so treat it as the operator's own
+    return not any(real.startswith(root + os.sep) for root in _test_temp_roots())
+
+
+def shell_payload_protected_binary(program, argv, allowed_binaries=frozenset()) -> str | None:
+    """The protected binary a shell's command string would really run, or ``None``.
+
+    This is the AI-CLI-013v half of the guard: the program is allowed, the string it is
+    told to run is not. Matching is on each word's BASENAME, so ``/usr/bin/ssh`` and a
+    bare ``ssh`` are the same finding, and each candidate is then checked against
+    :func:`payload_word_reaches_a_real_binary` so a test's own stub stays usable.
+
+    ``allowed_binaries`` is honoured exactly as it is for a direct spawn -- a ``real_tmux``
+    test may drive tmux through a shell for the same reason it may drive it directly.
+    """
+    if program not in _SHELL_PROGRAMS:
+        return None
+    protected = _PROTECTED_TEST_BINARIES - allowed_binaries
+    for payload in shell_command_payloads(argv):
+        for word in _SHELL_PAYLOAD_WORD.findall(payload):
+            name = os.path.basename(word)  # noqa: PTH119 -- a shell word, not a filesystem path
+            if name in protected and payload_word_reaches_a_real_binary(word):
+                return name
+    return None
+
+
+def _reject_real_agent_process(command, allowed_binaries=frozenset(), argv=None):
+    """Fail loudly when a test reaches a real agent, transport, or tmux boundary.
+
+    ``argv`` carries the full argument vector when the caller cannot pass it as
+    ``command``: ``os.execvp`` takes the program and the argv as two separate arguments, so
+    the guard would otherwise see only ``zsh`` and never the ``-c`` string that is the
+    whole hazard in AI-CLI-013v.
+    """
     program = _command_program(command)
     if program == "tmux" and _tmux_argv_is_read_only(command):
         return
@@ -477,6 +637,17 @@ def _reject_real_agent_process(command, allowed_binaries=frozenset()):
         raise RuntimeError(
             f"test attempted to spawn a real `{program}` process — "
             "mock subprocess.run, subprocess.Popen, or os.execvp explicitly in this test"
+        )
+    laundered = shell_payload_protected_binary(program, argv if argv is not None else command, allowed_binaries)
+    if laundered:
+        _protected_spawn_attempts.append(laundered)
+        raise RuntimeError(
+            f"test attempted to run a real `{laundered}` through a `{program}` command string. "
+            "A shell is allowed here; using one as a laundering route to a protected binary is "
+            "not. Measured (AI-CLI-013v): an os.execvp of a shell whose -c payload ran ssh "
+            "REPLACED the pytest process, so the run ended mid-collection with exit 0, no "
+            "summary and no results, and a real outbound connection was attempted. Mock "
+            "subprocess.run, subprocess.Popen or os.execvp explicitly in this test."
         )
 
 
@@ -680,7 +851,10 @@ def _reject_real_agent_processes(request):
 
     def guarded_execvp(*args, **kwargs):
         command = args[0] if args else kwargs.get("file")
-        _reject_real_agent_process(command)
+        # execvp's argv is its SECOND argument, and it carries the -c payload the
+        # program name alone cannot reveal (AI-CLI-013v).
+        argv = args[1] if len(args) > 1 else kwargs.get("args")
+        _reject_real_agent_process(command, argv=argv)
         return real_execvp(*args, **kwargs)
 
     with (
@@ -724,6 +898,40 @@ def _fail_on_desktop_escape(request):
         "The spawn was refused, so nothing appeared on screen -- but patch the notifier or "
         "subprocess.run in the test rather than relying on this guard. Patching only the paths "
         "the notifier writes is not enough: that is exactly AI-CLI-jk7v."
+    )
+
+
+@pytest.fixture
+def expect_protected_spawn():
+    """Opt out of the laundered-spawn report below, for tests that DRIVE that guard.
+
+    Returns the record so a test can assert what was attempted. Requesting the fixture is
+    what suppresses the failure, checked by name rather than by finalisation order, for the
+    reason :func:`expect_desktop_escape` is.
+    """
+    return _protected_spawn_attempts
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_laundered_protected_spawn(request):
+    """Fail any test that ran a protected binary through a shell command string (AI-CLI-013v).
+
+    The refusal in :func:`_reject_real_agent_process` is the prevention; this is the report,
+    and both are needed for the same reason they are for the desktop escapes: the refusal
+    travels as a ``RuntimeError`` through code that catches broadly, so a test can be
+    silently protected and never told it wrote the mistake.
+    """
+    _protected_spawn_attempts.clear()
+    yield
+    attempted = list(_protected_spawn_attempts)
+    _protected_spawn_attempts.clear()
+    if "expect_protected_spawn" in request.fixturenames:
+        return
+    assert not attempted, (
+        f"this test asked a shell to run {sorted(set(attempted))}, which is a protected binary. "
+        "The spawn was refused, so nothing real was reached -- but mock subprocess.run, "
+        "subprocess.Popen or os.execvp in the test rather than relying on this guard. An "
+        "unrefused one replaces the pytest process and the run reports success with no results."
     )
 
 
