@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from process_ownership import spawn_owned_python
 
 from ai_cli.main import (
     _bare_engine_command,
@@ -93,7 +94,7 @@ def _write_proc_stat(proc_dir: Path, pid: int, starttime: int, comm: str = "clau
 
 def _reaped_pid() -> int:
     """A pid that has exited and been reaped -- i.e. one that is provably dead."""
-    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc = spawn_owned_python("")
     proc.wait()
     return proc.pid
 

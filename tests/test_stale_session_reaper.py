@@ -25,6 +25,7 @@ import portalocker
 import psutil
 import pytest
 from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
+from process_ownership import reap, spawn_owned_sleeper
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import get_engine_script
@@ -1103,7 +1104,7 @@ def test_given_real_pid_with_changed_identity_during_revalidation_then_evaluator
     reaper_state: Path, candidate: SessionCandidate
 ):
     """A controlled reuse mutation must reject a real live process boundary."""
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    process = spawn_owned_sleeper()
 
     class IdentityChangesDuringRevalidation(ProcessProbe):
         ended_states = frozenset({"Z"})
@@ -1155,8 +1156,7 @@ def test_given_real_pid_with_changed_identity_during_revalidation_then_evaluator
         assert _reaper(reaper_state, tmux, IdentityChangesDuringRevalidation()).evaluate_once() == []
         assert tmux.kills == []
     finally:
-        process.kill()
-        process.wait()
+        reap(process)
 
 
 def test_given_token_or_name_mismatch_when_heartbeat_is_stale_then_preserves_session(

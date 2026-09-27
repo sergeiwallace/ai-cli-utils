@@ -147,6 +147,17 @@ def sleeper():
     spawned: list[int] = []
 
     def spawn(members: int = 0, detach: bool = True) -> list[int]:
+        # Deliberately NOT `process_ownership.spawn_owned`, and this is the one
+        # shape in the suite that must not be. The process group IS the subject
+        # here: `detach=False` exists so a sleeper lands in the RUNNER's own
+        # group, which is what the test at `detach=False` below asserts
+        # (`os.getpgid(leader) == os.getpgrp()`) before proving the production
+        # code refuses to signal it. Detaching the spawn would make that
+        # assertion fail and the test would no longer cover the hazard.
+        # Ownership is still complete: `_SLEEPER` reports every pid it creates
+        # and the teardown below SIGCONTs and SIGKILLs each one by pid, which a
+        # group signal could not do anyway -- the payload `os.setsid()`s itself
+        # out of any group the test could name.
         proc = subprocess.Popen(
             [sys.executable, "-c", _SLEEPER, str(members), "detach" if detach else "attach"],
             stdout=subprocess.PIPE,

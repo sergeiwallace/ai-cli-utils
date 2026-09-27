@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from process_ownership import reap, spawn_owned
 
 from ai_cli.main import _auto_update_if_stale, cli
 
@@ -162,11 +163,16 @@ class TestPlatformPremise:
         py = venv / BIN_DIR / PY_EXE
         assert py.exists()
 
-        holder = subprocess.Popen(
+        # `start_new_session=True` was the only ownership here, and Python IGNORES
+        # it on Windows -- the one platform this class runs on, since it is skipped
+        # everywhere else. So the holder had no process group at all where it
+        # mattered. `spawn_owned` asks for `CREATE_NEW_PROCESS_GROUP` instead, and
+        # `reap` sweeps descendants with psutil rather than signalling a group that
+        # does not exist on this platform.
+        holder = spawn_owned(
             [str(py), "-c", "import time; time.sleep(60)"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
         )
         try:
             subprocess.run([str(py), "-c", "pass"], check=True, capture_output=True, timeout=60)
@@ -174,9 +180,4 @@ class TestPlatformPremise:
                 shutil.rmtree(venv / BIN_DIR)
             assert getattr(exc.value, "winerror", None) == 5
         finally:
-            holder.terminate()
-            try:
-                holder.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                holder.kill()
-                holder.wait(timeout=15)
+            reap(holder)
