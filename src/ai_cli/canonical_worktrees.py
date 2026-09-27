@@ -108,6 +108,30 @@ def _load_registry(path: Path) -> dict:
     return payload
 
 
+def prune_missing_worktrees(payload: dict) -> int:
+    """Drop entries whose path no longer exists, returning how many were removed.
+
+    A registry entry only exists to answer "is this path a canonical session worktree",
+    which a path that is gone cannot be. Without this the file only ever grows: a removed
+    session worktree leaves a dead entry behind forever, and a run of the test suite used to
+    leave one per test (AI-CLI-u2ox measured 935 dead pytest temp paths out of 938 entries,
+    which made the registry useless for the question deletion guards ask it).
+
+    Applied on WRITE, under the exclusive lock the caller already holds, rather than on
+    read. The read path (:func:`registered_canonical_worktrees`) is the fail-closed reader a
+    deletion guard consults, and filtering there would turn "I cannot see this path right
+    now" -- an unmounted network volume, a stale handle -- into "this path is not protected",
+    which is the one direction that guard must not fail in.
+
+    A live worktree wrongly pruned because its storage was briefly unreachable is re-added
+    by the next launch, which registers unconditionally, so the loss is bounded.
+    """
+    kept = [entry for entry in payload["worktrees"] if Path(entry["path"]).exists()]
+    removed = len(payload["worktrees"]) - len(kept)
+    payload["worktrees"] = kept
+    return removed
+
+
 def _write_registry(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -139,6 +163,7 @@ def register_canonical_worktree(path: Path, *, engine: str, session_name: str) -
         registry_path.parent.mkdir(parents=True, exist_ok=True)
         with portalocker.Lock(str(lock_path), mode="a", timeout=10):
             payload = _load_registry(registry_path)
+            prune_missing_worktrees(payload)
             for entry in payload["worktrees"]:
                 if entry["path"] != canonical_path:
                     continue

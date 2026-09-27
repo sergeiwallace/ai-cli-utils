@@ -20,6 +20,7 @@ import pytest
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
 import ai_cli.trust as _trust_module
+from ai_cli.canonical_worktrees import REGISTRY_FILENAME, get_canonical_worktree_registry_path
 from ai_cli.git_repair import _GIT_TARGETING_VARS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 
@@ -140,6 +141,11 @@ _REAL_HOME = Path.home()
 # Windows and Linux too. Guarding it everywhere is therefore correct rather than a
 # macOS special case.
 _REAL_ITERM2_PROFILE_DIR = _REAL_HOME / "Library" / "Application Support" / "iTerm2" / "DynamicProfiles"
+
+# Likewise resolved at IMPORT time, through the production resolver and before any fixture
+# has redirected HOME or the registry override, so it names the file the operator's own
+# launches write rather than a redirected one (AI-CLI-u2ox).
+_REAL_CANONICAL_WORKTREE_REGISTRY = get_canonical_worktree_registry_path()
 
 # Short directory name for the relocated Windows temp root -- see
 # _windows_temproot for why the length itself is the point.
@@ -1133,6 +1139,109 @@ def _guard_real_iterm2_profile_dir(_redirect_home_away_from_the_operator):
             "this test cannot have caused it via Path.home() -- the likely writer is a "
             "concurrent `ai` session launch or another checkout of this repo running "
             "its suite without this redirect.",
+            stacklevel=1,
+        )
+
+
+def _file_fingerprint(path: Path) -> tuple[bool, int, int]:
+    """``(exists, size, mtime_ns)`` for one file, tolerant of it being absent."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return (False, -1, -1)
+    return (True, stat.st_size, stat.st_mtime_ns)
+
+
+def canonical_registry_breach() -> str:
+    """Describe how the operator's real canonical-worktree registry is reachable; "" if not.
+
+    The enforced property is "the registry this process resolves is not the operator's own",
+    which is a fact about this process alone and so deterministic -- the same choice
+    :func:`home_redirect_breach` makes, and for the same reason: the real file has other
+    legitimate writers (a live ``ai c`` launch, another checkout running its suite), so
+    watching it for changes would charge innocent tests for a peer's write.
+
+    Resolution goes through the production resolver rather than a copy of its rules, so a
+    later change to where the registry lives cannot leave this guard checking the wrong
+    path. It answers ``""`` when pathlib refuses to construct a path at all, for the reason
+    :func:`_pathlib_home` returns None -- a test that patches ``os.name`` to ``"nt"`` is
+    still under that patch during teardown, and raising here would turn a passing test into
+    a teardown error.
+    """
+    try:
+        resolved = str(get_canonical_worktree_registry_path())
+    except Exception:
+        return ""
+    real_registry = str(_REAL_CANONICAL_WORKTREE_REGISTRY)
+    if os.path.normpath(resolved) == os.path.normpath(real_registry):
+        return f"the registry resolved to the operator's real {real_registry}"
+    # Compared in string space, and under the real HOME rather than only against the one
+    # POSIX path, because the resolver is platform-branched: on Windows it reads
+    # LOCALAPPDATA, which the HOME redirect does not clear, so a Windows run resolves a
+    # DIFFERENT file that is just as much the operator's own.
+    real_home = os.path.normpath(str(_REAL_HOME)) + os.sep
+    if os.path.normpath(resolved).startswith(real_home):
+        return f"the registry resolved to {resolved}, inside the operator's real home"
+    return ""
+
+
+@pytest.fixture(autouse=True)
+def _redirect_canonical_worktree_registry(monkeypatch, tmp_path_factory):
+    """Point the canonical-worktree registry at a per-test file (AI-CLI-u2ox).
+
+    Measured 2026-09-27: the operator's real registry held 938 entries, 935 of them pytest
+    temp paths like ``.../pytest-of-<user>/pytest-1/popen-gw6/test_.../worktrees/<name>-1``
+    -- per-test worktrees that registered themselves into live operator state and were never
+    removed when their temp directory was. The registry is the authoritative answer to "is
+    this path a canonical session worktree", which deletion guards ask before removing one,
+    and one that is 99.7% test noise cannot answer it.
+
+    At the PROCESS BOUNDARY, not per call site, because per-call discipline has already
+    failed twice in this file for exactly this class (AI-CLI-jk7v, AI-CLI-tevy): a launch
+    test reaches ``register_canonical_worktree`` several frames down and has no reason to
+    know a registry write is involved.
+
+    Via the registry's own absolute-path override rather than by redirecting HOME or
+    XDG_DATA_HOME, because the override is consulted FIRST and on every platform. The HOME
+    redirect above happens to cover the POSIX route, but ``get_xdg_data_home`` reads
+    LOCALAPPDATA on Windows and ignores XDG_DATA_HOME entirely there, so neither of those
+    levers isolates a Windows run. Tests that exercise resolution itself set or delete this
+    variable themselves, and their inner ``monkeypatch`` still wins.
+    """
+    registry = tmp_path_factory.mktemp("canonical_worktrees") / REGISTRY_FILENAME
+    monkeypatch.setenv("AI_CLI_CANONICAL_WORKTREE_REGISTRY", str(registry))
+    return registry
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registry):
+    """Fail any test that could still reach the operator's real registry (AI-CLI-u2ox).
+
+    The redirect above is the prevention; this is the proof that it held. Depending on that
+    fixture is what orders the teardowns -- pytest finalises a fixture before the ones it
+    depends on, so this runs while the redirect is still in force rather than after
+    ``monkeypatch`` has restored the operator's own environment.
+
+    A change to the real file is reported as a warning rather than a failure, because with
+    the resolution redirected this test provably did not cause it and the likely writer is a
+    concurrent ``ai`` launch or another checkout running its own suite.
+    """
+    before = _file_fingerprint(_REAL_CANONICAL_WORKTREE_REGISTRY)
+    yield
+    breach = canonical_registry_breach()
+    assert not breach, (
+        f"this test could write the operator's real canonical-worktree registry: {breach}. That "
+        "registry is what deletion guards read to decide whether a path is a canonical session "
+        "worktree, and test entries make it unusable for that (AI-CLI-u2ox: 935 of 938 entries "
+        "were pytest temp paths). Point AI_CLI_CANONICAL_WORKTREE_REGISTRY at a tmp_path of your "
+        "own if this test needs its own registry; do not point it back at the real one."
+    )
+    if _file_fingerprint(_REAL_CANONICAL_WORKTREE_REGISTRY) != before:
+        warnings.warn(
+            f"the operator's real canonical-worktree registry {_REAL_CANONICAL_WORKTREE_REGISTRY} "
+            "changed while this test ran. The redirect was intact, so this test cannot have "
+            "written it -- the likely writer is a concurrent `ai` session launch or another "
+            "checkout of this repo running its suite without the redirect.",
             stacklevel=1,
         )
 
