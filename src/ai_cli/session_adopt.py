@@ -892,8 +892,11 @@ def probe_resolves(dest_root: Path, title: str, claude_home: Path | None = None)
     """Return the transcript ``ai c`` would resume for ``title`` in ``dest_root``.
 
     This is the *same* lookup the launcher performs — a newest-first scan of the
-    destination project directory for the first transcript whose first
-    ``customTitle`` matches — so a pass means resume genuinely finds the file,
+    destination project directory for the first transcript whose *current* title
+    matches (see :func:`~ai_cli.cc_migrate.transcript_title`: a rename APPENDS a
+    ``customTitle`` record rather than rewriting the first one, so the last record
+    is the live name and the first is only the original) — so a pass means resume
+    genuinely finds the file,
     and a miss returns None. It reports failure whenever adoption did nothing,
     landed the transcript in the wrong project directory, or left it under the
     wrong title.
@@ -1145,11 +1148,21 @@ def adopt_session(
                 f"{target_title!r}, not the adopted {migration.dest_jsonl}"
             )
         if retitled_from:
-            original = probe_resolves(repo_root / ".worktrees" / retitled_from, retitled_from, home)
-            if original is None:
+            # Stepping aside from a taken title only makes sense if whoever already
+            # holds it still resolves, so this checks that they do. It has to look in
+            # BOTH places a holder can live, because the two are not alternatives:
+            # an already-adopted session resolves from its own worktree, while a bare
+            # session — the population this command exists to migrate — never had one
+            # and resolves from the project root.
+            #
+            # Probing only the worktree path made the warning fire on every
+            # successful bare adoption, which is worse than no warning: it trains the
+            # operator to ignore the channel meant to carry real failures.
+            searched = [repo_root / ".worktrees" / retitled_from, source_root]
+            if all(probe_resolves(root, retitled_from, home) is None for root in searched):
                 warnings.append(
-                    f"post-adopt check: title {retitled_from!r} no longer resolves in "
-                    f"{repo_root / '.worktrees' / retitled_from} — the transcript that kept the "
+                    f"post-adopt check: title {retitled_from!r} no longer resolves in any of "
+                    f"{', '.join(str(root) for root in searched)} — the transcript that kept the "
                     f"original title may live elsewhere; verify it by hand"
                 )
 
