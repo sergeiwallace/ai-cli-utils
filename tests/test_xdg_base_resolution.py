@@ -127,21 +127,25 @@ def test_given_ignorable_state_home_when_process_hygiene_resolves_then_cache_sta
 
 
 @pytest.mark.parametrize("value", IGNORED_VALUES)
-def test_given_ignorable_state_home_when_cc_usage_is_imported_then_state_dir_is_absolute(
-    value, monkeypatch, cwd_outside_home
-):
+def test_given_ignorable_state_home_when_cc_usage_is_imported_then_state_dir_is_absolute(value, cwd_outside_home):
     """cc_usage binds its state dir at import time, so the env must be right on reload."""
-    monkeypatch.setenv("XDG_STATE_HOME", value)
-
-    cc_usage = importlib.reload(importlib.import_module("ai_cli.cc_usage"))
+    cc_usage = importlib.import_module("ai_cli.cc_usage")
     try:
-        assert cc_usage._STATE_DIR.is_absolute(), f"XDG_STATE_HOME={value!r} produced {cc_usage._STATE_DIR}"
-        assert cwd_outside_home not in cc_usage._STATE_DIR.parents
-        assert cc_usage._CURSOR_FILE.is_absolute()
+        # A nested context rather than the function-scoped `monkeypatch` fixture,
+        # because this test has to undo its own setenv BEFORE the final reload, and
+        # `monkeypatch.undo()` on the shared instance reverts the whole conftest
+        # isolation with it -- the HOME redirect and XDG_STATE_HOME included, leaving
+        # the rest of the test pointed at the operator's real home.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("XDG_STATE_HOME", value)
+            importlib.reload(cc_usage)
+
+            assert cc_usage._STATE_DIR.is_absolute(), f"XDG_STATE_HOME={value!r} produced {cc_usage._STATE_DIR}"
+            assert cwd_outside_home not in cc_usage._STATE_DIR.parents
+            assert cc_usage._CURSOR_FILE.is_absolute()
     finally:
-        # Restore the module to a state consistent with the real environment so
-        # later tests patching its constants see the ordinary values.
-        monkeypatch.undo()
+        # Restore the module to a state consistent with the surrounding (isolated)
+        # environment so later tests patching its constants see ordinary values.
         importlib.reload(cc_usage)
 
 
