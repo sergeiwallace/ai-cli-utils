@@ -70,9 +70,12 @@ def test_given_the_isolated_tmux_probe_fails_when_it_skips_then_the_tempdir_is_r
     )
 
     generator = reaper.isolated_tmux_socket()
-    with pytest.raises(Exception, match="isolated tmux server unavailable") as caught:
+    # ``pytest.skip.Exception`` by name, NOT ``Exception``: a pytest skip derives from
+    # BaseException, so ``pytest.raises(Exception)`` does not catch it. It escaped
+    # instead, and this test reported itself SKIPPED on every run without ever reaching
+    # a single assertion below -- a guard that measured nothing while looking green.
+    with pytest.raises(pytest.skip.Exception, match="isolated tmux server unavailable"):
         next(generator)
-    assert caught.typename == "Skipped", f"expected a pytest skip, got {caught.typename}"
 
     assert created, "positive control: the fixture must actually have created a temp dir to leak"
     for path in created:
@@ -157,9 +160,10 @@ def test_given_a_case_sensitive_filesystem_when_the_fixture_is_requested_then_it
     import conftest
 
     monkeypatch.setattr(conftest, "filesystem_is_case_insensitive", lambda path: False)
-    with pytest.raises(Exception) as caught:
+    # Named explicitly for the same reason as the tmux case above: a skip is a
+    # BaseException and slips straight through ``pytest.raises(Exception)``.
+    with pytest.raises(pytest.skip.Exception) as caught:
         next(conftest._case_insensitive_filesystem_impl(pathlib.Path.cwd()))
-    assert caught.typename == "Skipped"
     assert "case" in str(caught.value).lower()
 
 
