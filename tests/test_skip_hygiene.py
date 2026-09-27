@@ -27,6 +27,7 @@ import ast
 import pathlib
 import shutil
 import subprocess
+from unittest.mock import patch
 
 import pytest
 
@@ -358,3 +359,119 @@ def test_shutil_which_is_the_cheap_probe_for_a_missing_binary():
     """The hoisted `script`/`zsh` checks are pure PATH lookups, so there is never
     a reason to build anything before them."""
     assert shutil.which("definitely-not-a-real-binary-xyzzy") is None
+
+
+# ---------------------------------------------------------------------------
+# A skip that should not have happened (AI-CLI-qzf2)
+#
+# tmux is a hard requirement of this suite, so a tmux skip on a host that HAS a
+# working tmux means coverage silently shrank. That went unnoticed once already:
+# two runs of the same macOS job reported 33 and 45 skips, and the difference was
+# only investigated because three tests happened to fail alongside it.
+# ---------------------------------------------------------------------------
+
+
+# Reasons that MENTION tmux while saying nothing about whether it is installed. Both
+# are live in the suite, and the Windows one fires on a runner where tmux IS
+# provisioned -- so a check that searched the reason text for "tmux" would fail
+# test-windows on every single run.
+_TMUX_MENTIONING_NON_PROVISIONING_REASONS = (
+    "real tmux server behavior unverified under MSYS2 CI (PR #35 hang)",
+    "the real-tmux tests need POSIX process semantics, not just a tmux binary",
+    "generated tmux session signals require a POSIX shell",
+    "tmux cannot host a session on Windows; production chooses bare mode there by policy",
+)
+
+
+@pytest.mark.parametrize("detail", ["tmux binary not available on PATH", "tmux -V timed out"])
+def test_given_an_unusable_tmux_reason_when_classified_then_it_is_a_provisioning_skip(detail):
+    from conftest import is_tmux_unusable_skip, tmux_unusable_skip_reason
+
+    assert is_tmux_unusable_skip(tmux_unusable_skip_reason(detail))
+
+
+@pytest.mark.parametrize("reason", _TMUX_MENTIONING_NON_PROVISIONING_REASONS)
+def test_given_a_reason_that_only_mentions_tmux_when_classified_then_it_is_not_a_provisioning_skip(reason):
+    """The negative control that makes the marker worth having rather than a synonym
+    for a substring search."""
+    from conftest import is_tmux_unusable_skip
+
+    assert not is_tmux_unusable_skip(reason)
+
+
+def test_given_every_unusable_tmux_reason_when_probed_then_each_one_carries_the_marker():
+    """Whichever way the probe fails, the reason must be recognisable.
+
+    Without this, a future branch added to ``tmux_runnable`` would return an unmarked
+    reason and disable the session check for exactly the host it matters on.
+
+    ``unittest.mock.patch`` rather than ``monkeypatch`` for ``subprocess.run``, which
+    matters here and is not a style choice: conftest's autouse process guard has already
+    replaced that attribute for the duration of this test, and monkeypatch's undo is
+    ordered AFTER the guard's own restore -- so a monkeypatch of it re-installs the
+    guard's MagicMock permanently and the suite's session-scoped tmux cleanup then calls
+    a mock. Measured: it errored at teardown of whichever test happened to run last.
+    """
+    import conftest
+
+    from ai_cli import tmux_setup
+
+    stubbed_probe = subprocess.CompletedProcess(args=["tmux", "-V"], returncode=1, stderr="no libevent", stdout="")
+    # The production loader repair runs on the failed-probe path. Stubbed to fail rather
+    # than invoked for real: the real one edits this process's environment variables,
+    # which a test about reason text has no business doing. The detail it appends is
+    # part of what has to stay recognisable.
+    no_repair = tmux_setup.LoaderRepair(repaired=False, detail="stubbed: nothing to repair")
+
+    with patch.object(conftest.shutil, "which", return_value=None):
+        assert conftest.is_tmux_unusable_skip(conftest.tmux_runnable()[1])
+
+    with (
+        patch.object(conftest.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"),
+        patch.object(conftest.subprocess, "run", return_value=stubbed_probe),
+        patch.object(tmux_setup, "repair_tmux_loader_path", return_value=no_repair),
+    ):
+        assert conftest.is_tmux_unusable_skip(conftest.tmux_runnable()[1])
+
+
+def test_given_a_tmux_skip_when_tmux_is_runnable_then_the_run_is_reported_as_a_regression():
+    from conftest import tmux_skip_regression_message
+
+    message = tmux_skip_regression_message([("tests/test_x.py::test_y", "tmux unusable: gone")], True)
+
+    assert message is not None
+    assert "tests/test_x.py::test_y" in message, "the report must name the tests that skipped"
+    assert "1 test(s)" in message
+
+
+def test_given_a_tmux_skip_when_tmux_is_not_runnable_then_nothing_is_reported():
+    """The whole point of pairing the two inputs: on a host without tmux the skip is
+    the correct outcome and must not fail the run."""
+    from conftest import tmux_skip_regression_message
+
+    assert tmux_skip_regression_message([("tests/test_x.py::test_y", "tmux unusable: gone")], False) is None
+
+
+def test_given_no_tmux_skips_when_tmux_is_runnable_then_nothing_is_reported():
+    """Anti-vacuity control: a message returned unconditionally would pass the case
+    above and fail every healthy run."""
+    from conftest import tmux_skip_regression_message
+
+    assert tmux_skip_regression_message([], True) is None
+
+
+def test_given_a_serialised_skip_report_when_read_then_its_reason_is_still_found():
+    """xdist round-trips every report, and this suite runs under ``-n auto``, so the
+    ``(path, lineno, reason)`` triple can arrive at the controller as a list."""
+    from conftest import _report_skip_reason
+
+    class _Report:
+        def __init__(self, longrepr, skipped=True):
+            self.longrepr = longrepr
+            self.skipped = skipped
+
+    assert _report_skip_reason(_Report(["p.py", 1, "Skipped: tmux unusable: gone"])) == "Skipped: tmux unusable: gone"
+    assert _report_skip_reason(_Report(("p.py", 1, "Skipped: x"))) == "Skipped: x"
+    assert _report_skip_reason(_Report(("p.py", 1, "Skipped: x"), skipped=False)) == ""
+    assert _report_skip_reason(_Report(None)) == ""
+    assert _report_skip_reason(_Report("a bare xfail string")) == ""
