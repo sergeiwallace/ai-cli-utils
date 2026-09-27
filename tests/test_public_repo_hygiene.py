@@ -191,13 +191,17 @@ def _line_is_exempted(relative_path: Path, line: str) -> bool:
     )
 
 
-def _scanned_text_files(root: Path) -> Iterator[tuple[Path, Path, str]]:
+def _scanned_text_files(root: Path, scanned_paths: tuple[str, ...] = _SCANNED_PATHS) -> Iterator[tuple[Path, Path, str]]:
     """Yield ``(path, path relative to root, text)`` for every scanned text file.
 
     Files that are not UTF-8 text (images, compiled artefacts) are skipped, so
     the scan needs no extension allowlist that a new file type could slip past.
+
+    ``scanned_paths`` is a parameter because the tracker-id guard below covers a
+    deliberately narrower set than the name guard, and defaults to the full set so
+    every existing caller is unchanged.
     """
-    for scanned_path in _SCANNED_PATHS:
+    for scanned_path in scanned_paths:
         candidate = root / scanned_path
         if not candidate.exists():
             continue
@@ -233,6 +237,72 @@ def scan_for_private_names(root: Path) -> list[str]:
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_names_remain():
     findings = scan_for_private_names(_repo_root())
     assert not findings, "private project names in a public package:\n" + "\n".join(findings)
+
+
+# Identifiers from private issue trackers. A published reference to a tracker no reader can
+# open names work they cannot see, so these belong to the same rule as the names above --
+# but they are scanned over a NARROWER set of paths, on purpose.
+#
+# `AI-CLI-` is deliberately absent from the pattern: it is this repository's own prefix, its
+# issues ship in `.beads/issues.jsonl`, and the ids already appear in merged commit messages.
+# Forbidding them would delete references a reader can actually follow.
+_PRIVATE_TRACKER_ID = re.compile(r"\b(?:AIH|SW|CORE)-[0-9A-Za-z]{2,}\b")  # public-hygiene: allow
+
+# `src` and `scripts` only, and the omission of `tests` and `docs` is a measured scope
+# decision rather than an oversight -- the mistake the `scripts` gap above taught.
+#
+# Measured 2026-09-27 with `grep -r`, after the shipped-source scrub: `src` holds 1
+# occurrence and `scripts` holds 0, while `tests` holds 18 across 8 files and `docs` holds
+# 224 across 33. Widening now would make this guard red on work in flight and would force a
+# 224-occurrence documentation scrub in the same change -- and in `docs` specifically, an id
+# is often the only provenance link a maintainer has, so removing it is a judgement call that
+# has not been made yet rather than a cleanup.
+#
+# Measure with `grep -r`, NOT `git grep`: git's regex engine does not honour `\b` on every
+# host, and the same pattern that matches 42 files under `grep -rlE` matched 0 under
+# `git grep -lE`. A future reader re-measuring with `git grep` will wrongly conclude the
+# remaining work is already done.
+_TRACKER_ID_SCANNED_PATHS = ("src", "scripts")
+
+
+def scan_for_private_tracker_ids(root: Path) -> list[str]:
+    """Return ``path:lineno: line`` for every private tracker id under the scanned paths."""
+    findings: list[str] = []
+    for path, relative_path, text in _scanned_text_files(root, _TRACKER_ID_SCANNED_PATHS):
+        del path
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _PRIVATE_TRACKER_ID.search(line) and not _line_is_exempted(relative_path, line):
+                findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
+    return findings
+
+
+def test_given_the_shipped_package_and_its_scripts_when_scanned_then_no_private_tracker_ids_remain():
+    """Locks in the scrub so a future comment cannot quietly republish a private id."""
+    findings = scan_for_private_tracker_ids(_repo_root())
+    assert not findings, "private tracker ids in a public package:\n" + "\n".join(findings)
+
+
+class TestTheTrackerIdGuardCanActuallyFail:
+    """Positive controls. A guard nobody has watched go red enforces nothing.
+
+    These drive the pattern rather than the file walk, because the walk is already
+    covered by the name guard's own controls and re-walking a temp tree here would
+    test the shared helper twice instead of testing this pattern once.
+    """
+
+    def test_given_a_line_carrying_a_private_tracker_id_when_matched_then_it_is_flagged(self):
+        for identifier in ("AIH-443", "SW-873", "CORE-196", "AIH-emit-safe-subset-jznr"):  # public-hygiene: allow
+            assert _PRIVATE_TRACKER_ID.search(f"# fixed in {identifier}"), identifier
+
+    def test_given_this_repositorys_own_id_when_matched_then_it_is_not_flagged(self):
+        """The whole point of the exclusion: these references are followable."""
+        assert not _PRIVATE_TRACKER_ID.search("# Robust primary path (AI-CLI-94).")
+        assert not _PRIVATE_TRACKER_ID.search("# see AI-CLI-2jwm for the scripts gap")
+
+    def test_given_an_ordinary_word_when_matched_then_it_is_not_flagged(self):
+        """Guards against the pattern being loose enough to fire on prose."""
+        for line in ("# a software-defined switch", "# SWITCH-case handling", "# core-196 lowercase"):
+            assert not _PRIVATE_TRACKER_ID.search(line), line
 
 
 def _ip_is_allowed(address: str) -> bool:
