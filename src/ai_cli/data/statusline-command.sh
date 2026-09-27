@@ -2,12 +2,12 @@
 # Claude Code status line — compact layout
 # Shows: clock | model | project:branch ⎇ worktree | [tmux session — only when NOT in a worktree] |
 #   ctx% | quota (cc+Fable) / cache↑% | cxWk (Codex weekly, live account/rateLimits/read
-#   telemetry, AIH-274) | ccWk reset datetime (7/21 2 PM) | cxWk reset datetime | tip
+#   telemetry) | ccWk reset datetime (7/21 2 PM) | cxWk reset datetime | tip
 #
 # CC_BILLING_MODE=subscription (default) — show OAuth quota via `ai quota statusline-part`
 # CC_BILLING_MODE=api                   — show cache-hit % only. The four cost items
 #   ($X.XX session, 24h:, Σ24h:, Σ7d:) were removed 2026-06-08 pending an accuracy
-#   fix — the dollar figures were wildly inflated (tracked by roadmap AIH-23).
+#   fix — the dollar figures were wildly inflated.
 
 # --- Single-flight guard (prevents the render fork-bomb) ---
 # CC re-invokes the status line on every render (many times/sec while streaming).
@@ -22,7 +22,7 @@
 #
 # Key on CLAUDE_CODE_SESSION_ID — the real per-session env var CC exports (inherited
 # by this hook). The old key used CLAUDE_SESSION_ID, which CC never sets (same bug
-# SW-873/AIH-67 fixed for the context sentinel below): it fell through to $PPID, and
+# already fixed for the context sentinel below): it fell through to $PPID, and
 # on Windows Git-Bash CC spawns the statusline reparented to PID 1, so EVERY session
 # collapsed to key "1" — one shared lock + last-line cache across all sessions. Result:
 # one session reprinted another's cached line, so concurrent sessions showed an
@@ -108,7 +108,7 @@ esac
 #    explicit [1m] tag, CC-reported 1M size, token count already past 200k, or an
 #    API-gateway backend (CC_BILLING_MODE=api → Foundry/Vertex, where 1M-capable
 #    models always run the full 1M window). The last signal closes the sub-200k gap
-#    (AIH-53): without it, a 1M session under 200k tokens (e.g. right after /compact)
+#    -- without it, a 1M session under 200k tokens (e.g. right after /compact)
 #    fails all other signals and falls back to CC's inflated 200k-based %.
 _win_active_1m=0
 if [[ "$model_id" == *"[1m]"* ]] \
@@ -145,13 +145,13 @@ if [[ "${used_int:-}" =~ ^-?[0-9]+$ ]]; then
   [ "$used_int" -gt 100 ] && used_int=100
 fi
 
-# --- AIH-67: Context-high sentinel for /save-state automation ---
+# --- Context-high sentinel for /save-state automation ---
 # Writes ~/.claude/state/context-high-<session> when context reaches 50%.
 # UserPromptSubmit hook (context-high-notice.sh) reads this flag and injects
 # a one-time notice to invoke /save-state. The hook writes a "noticed" marker
 # so the notice fires once per crossing; when context drops below 50% (e.g.
 # after /compact), the noticed marker is cleared so the cycle can restart.
-# SW-873 bug-fix: key on the payload .session_id (== the agent's CLAUDE_CODE_SESSION_ID).
+# Bug fix: key on the payload .session_id (== the agent's CLAUDE_CODE_SESSION_ID).
 # The old key `${CLAUDE_SESSION_ID:-unknown}` used an env var CC never sets (the real one
 # is CLAUDE_CODE_SESSION_ID), so every session wrote `context-high-unknown` → concurrent
 # sessions collided on one shared flag. Prefer the payload id; fall back to the env id.
@@ -170,7 +170,7 @@ if [[ "${used_int:-}" =~ ^[0-9]+$ ]]; then
     fi
 fi
 
-# --- SW-873: persist the numeric ctx% so the agent can read its own context state ---
+# --- Persist the numeric ctx% so the agent can read its own context state ---
 # The agent has no native context-% signal (it guesses — said "nearly full" at 34%).
 # Write the corrected/displayed `used_int` (+ tokens/window/cwd/updated_at) to a per-session
 # JSON state file plus a cwd-keyed pointer, so the `ctx-pct` helper can resolve THIS
@@ -344,7 +344,7 @@ cache_hit_part=""
 
 if [[ "$_billing_mode" == "api" ]]; then
   # API billing cost items (session $, 24h:, Σ24h:, Σ7d:) REMOVED 2026-06-08 pending
-  # an accuracy fix — the dollar figures were wildly inflated (see roadmap AIH-23).
+  # an accuracy fix — the dollar figures were wildly inflated.
   # The per-session cost-write infrastructure (~/.claude/.sl-sessions) is gone with
   # them; only the cache-hit indicator remains on API-billing machines.
   _dc_now=$(date +%s)
@@ -390,7 +390,7 @@ if [[ "$_billing_mode" == "api" ]]; then
 else
   # Subscription billing: show OAuth quota via ai CLI.
 
-  # --- AIH-164 T-01: capture CC rate_limits (stdin) → account-global quota.json + env ---
+  # --- Capture CC rate_limits (stdin) → account-global quota.json + env ---
   # CC v2.1.80+ hands the statusLine command a rate_limits object on stdin:
   #   .rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}
   # This is the official, $0/zero-token source for the weekly all-models % + 5h window +
@@ -510,7 +510,7 @@ else
 
 fi
 
-# --- Shared quota-segment palette (AIH-274) ---
+# --- Shared quota-segment palette ---
 # Consolidates the ANSI codes/icons the reset-datetime and Codex segments both use, so
 # they read as one visual language instead of independently-invented dim/gray text (the
 # original "hard to read" complaint — DIM (\033[2m) is low-contrast on many terminal
@@ -560,7 +560,7 @@ _sl_fmt_epoch_min() {
   printf '%s' "$out"
 }
 
-# --- Claude weekly quota reset datetime (AIH-239; recolored/reformatted/relabeled AIH-274) ---
+# --- Claude weekly quota reset datetime ---
 # The weekly all-models ("all sessions") reset and the weekly Fable cap reset are the
 # SAME cycle, so one datetime covers both. Prefer the value exported from this render's
 # rate_limits; fall back to the persisted quota.json cache. Labeled "ccWk" (Claude Code
@@ -573,7 +573,7 @@ if _wk_str=$(_sl_fmt_epoch "$_wk_reset"); then
   reset_part="${_SLC_ANTHROPIC}ccWk${_SLC_RESET} 🔄 ${_SLC_CYAN}${_wk_str}${_SLC_RESET}"
 fi
 
-# --- Codex WEEKLY usage quota (AIH-274) — live account/rateLimits/read telemetry ---
+# --- Codex WEEKLY usage quota — live account/rateLimits/read telemetry ---
 # codex-weekly-pct reads a REAL backend percentage (OpenAI doesn't publish the weekly
 # denominator, but the app-server exposes actual usedPercent/resetsAt for the account's
 # 7-day window — see docs/research/codex-dual-model-orchestration.md's "Weekly quota"
@@ -581,7 +581,7 @@ fi
 # locally) — 300s cache, far longer than a cheap local-file read would need; weekly usage
 # doesn't move render-to-render. Absent entirely until the first successful reading.
 #
-# The Codex 5h-window heuristic segment (`codex-pct`, AIH-255) was REMOVED from the
+# The Codex 5h-window heuristic segment (`codex-pct`) was REMOVED from the
 # statusline by explicit request (2026-07-19) — not close to that cap, not worth the
 # space; `codex-pct` itself is untouched and still used elsewhere (e.g. `cx`'s own
 # tracking).
@@ -693,7 +693,7 @@ fi
 # session name (e.g. "c-aih-2" vs worktree "aih-2") is redundant — drop it to free space.
 [ -n "$tmux_part" ] && [ -z "$worktree_name" ] && line="${line} ${sep} ${tmux_part}"
 line="${line} ${sep} ${ctx_part}"
-# Quota-gauge segments grouped together (AIH-274): cc+Fable (quota_part) -> cxWk (Codex
+# Quota-gauge segments grouped together: cc+Fable (quota_part) -> cxWk (Codex
 # weekly) -> both reset datetimes, then the rest. The Codex 5h segment (codex_part) that
 # used to render here was removed by explicit request (2026-07-19) — see the cxWk block
 # above for why.
