@@ -812,36 +812,35 @@ class TestCliSessionSetupBranches:
             with patch.object(sys, "platform", "win32"), patch.dict(sys.modules, {"winreg": fake_winreg}):
                 return real_refresh()
 
-        with patch("sys.argv", ["ai", "g", "1"]):
-            with patch("ai_cli.config.load_config", return_value={}):
-                with patch("ai_cli.session.get_project_prefix", return_value="session"):
-                    with patch("ai_cli.main.trigger_background_update"):
-                        with patch("ai_cli.iterm2._emit_iterm2_profile_setup"):
-                            with patch(
-                                "ai_cli.session.create_worktree",
-                                return_value=_successful_worktree(tmp_path, "session-1"),
-                            ):
-                                with patch("ai_cli.session.detect_repo_root", return_value=None):
-                                    # No direnv on the host is what sends the preflight
-                                    # into an install attempt, which the blanket
-                                    # subprocess.run mock then reports as succeeding.
-                                    with patch("ai_cli.direnv_setup.direnv_available", return_value=False):
-                                        with patch(
-                                            "ai_cli.direnv_setup.refresh_windows_path",
-                                            side_effect=windows_refresh,
-                                        ):
-                                            with patch("subprocess.run", side_effect=fake_run):
-                                                with patch.dict(
-                                                    os.environ,
-                                                    {
-                                                        "PATH": path,
-                                                        "XDG_STATE_HOME": str(state_home),
-                                                    },
-                                                    clear=False,
-                                                ):
-                                                    with patch("os.execvp", side_effect=SystemExit(0)):
-                                                        with pytest.raises(SystemExit):
-                                                            cli()
+        real_which = shutil.which
+
+        def resolving_which(name, *args, **kwargs):
+            return "/probe/pkgmgr" if name == "pkgmgr" else real_which(name, *args, **kwargs)
+
+        with (
+            patch("sys.argv", ["ai", "g", "1"]),
+            patch("ai_cli.config.load_config", return_value={}),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
+            patch("ai_cli.main.trigger_background_update"),
+            patch("ai_cli.iterm2._emit_iterm2_profile_setup"),
+            patch("ai_cli.session.create_worktree", return_value=_successful_worktree(tmp_path, "session-1")),
+            patch("ai_cli.session.detect_repo_root", return_value=None),
+            # No direnv on the host is what sends the preflight into an install attempt,
+            # which the blanket subprocess.run mock then reports as succeeding.
+            patch("ai_cli.direnv_setup.direnv_available", return_value=False),
+            # One rootless candidate that resolves everywhere, rather than whichever
+            # manager the host happens to have: the real lists differ per platform and
+            # Linux's are all root managers, which attempt_installs skips before any exit
+            # status exists -- so the hook under test would never fire there.
+            patch.dict(direnv_setup._INSTALLERS, {sys.platform: [("pkgmgr", ["pkgmgr", "install", "direnv"])]}),
+            patch("ai_cli.native_deps.shutil.which", side_effect=resolving_which),
+            patch("ai_cli.direnv_setup.refresh_windows_path", side_effect=windows_refresh),
+            patch("subprocess.run", side_effect=fake_run),
+            patch.dict(os.environ, {"PATH": path, "XDG_STATE_HOME": str(state_home)}, clear=False),
+            patch("os.execvp", side_effect=SystemExit(0)),
+            pytest.raises(SystemExit),
+        ):
+            cli()
 
         new_session_cmd = next((c for c in run_calls if "new-session" in c), None)
         assert new_session_cmd is not None, "tmux new-session was not called"
