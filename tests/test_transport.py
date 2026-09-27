@@ -18,8 +18,8 @@ from ai_cli.main import (
 
 SSH_ARGS = ["ssh", "-t", "user@host", "bash -l -c 'ai c'"]
 MOSH_ARGS = ["mosh", "user@host", "--", "bash", "-l", "-c", "ai c"]
-CLEANUP_CMD = ["ai", "internal", "cleanup-session-files", "c-r-sw-1"]
-SESSION = "c-r-sw-1"
+CLEANUP_CMD = ["ai", "internal", "cleanup-session-files", "c-r-session-1"]
+SESSION = "c-r-session-1"
 CONFIG = {"messaging": {"nats_servers": ["nats://localhost:4222"]}}
 
 
@@ -50,7 +50,7 @@ def _run(coro):
 
 class TestWriteTransportState:
     def test_when_called_then_writes_json_file(self, tmp_path):
-        f = tmp_path / "transport-c-r-sw-1.json"
+        f = tmp_path / "transport-c-r-session-1.json"
         _write_transport_state(f, SESSION, 999, 12345, "mosh")
         data = json.loads(f.read_text())
         assert data["parent_pid"] == 999
@@ -60,7 +60,7 @@ class TestWriteTransportState:
         assert "started_at" in data
 
     def test_when_called_with_ssh_then_records_ssh(self, tmp_path):
-        f = tmp_path / "transport-c-r-sw-1.json"
+        f = tmp_path / "transport-c-r-session-1.json"
         _write_transport_state(f, SESSION, 1, 2, "ssh")
         assert json.loads(f.read_text())["transport"] == "ssh"
 
@@ -88,7 +88,7 @@ class TestEnsureVpnWatcher:
 
     def test_when_transport_files_exist_then_skips_circus(self, tmp_path):
         # Another session already running — watcher already started
-        existing = tmp_path / "transport-c-r-sw-2.json"
+        existing = tmp_path / "transport-c-r-session-2.json"
         existing.write_text('{"parent_pid": 999}')
         mock_client = MagicMock()
         with (
@@ -138,7 +138,7 @@ class TestMaybeStopVpnWatcher:
         mock_client.send_message.assert_called_once_with("rm", name="vpn-watch")
 
     def test_when_sessions_remain_then_does_not_stop(self, tmp_path):
-        existing = tmp_path / "transport-c-r-sw-2.json"
+        existing = tmp_path / "transport-c-r-session-2.json"
         existing.write_text('{"parent_pid": 999}')
         mock_client = MagicMock()
         with (

@@ -367,9 +367,9 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
-                return (128, "", "fatal: no upstream configured for branch 'wt-sw-1'")
+                return (128, "", "fatal: no upstream configured for branch 'wt-session-1'")
             return (0, "", "")
 
         with patch("ai_cli.workspace._run", side_effect=run):
@@ -381,9 +381,9 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
-                return (0, "origin/wt-sw-1\n", "")
+                return (0, "origin/wt-session-1\n", "")
             return (0, "", "")
 
         with (
@@ -392,7 +392,7 @@ class TestUpstreamDrift:
         ):
             result = _upstream_drift(tmp_path)
         assert result is not None
-        assert "origin/wt-sw-1" in result
+        assert "origin/wt-session-1" in result
 
     def test_wt_branch_tracking_repo_integration_branch_returns_none(self, tmp_path):
         """A worktree tracking a non-main integration branch is NOT drift (AI-CLI-193).
@@ -404,7 +404,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/workspace\n", "")
             return (0, "", "")
@@ -421,7 +421,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/main\n", "")
             return (0, "", "")
@@ -441,7 +441,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/anything\n", "")
             return (0, "", "")
@@ -456,7 +456,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/main\n", "")
             return (0, "", "")

@@ -54,7 +54,7 @@ Download/create PNG icons (64x64, transparent bg) for each session type:
 
 Create `~/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-profiles.json` with profiles:
 
-- **ClaudeCode** — Claude logo icon, Anthropic purple base tab color, badge template `\(user.sessionType) sw-\(user.sessionNum)`, dark color scheme
+- **ClaudeCode** — Claude logo icon, Anthropic purple base tab color, badge template `\(user.sessionType) session-\(user.sessionNum)`, dark color scheme
 - **ShellUtility** — terminal icon, grey tab color, badge with session type
 - **Caffeinate** — coffee icon, warm amber tab color
 - **ChromeDebug** — Chrome icon, blue tab color
@@ -72,7 +72,7 @@ Add `_iterm2_setup()` function to ai-cli that runs after tmux attach:
 2. Set rolling tab color via `\e]1337;SetColors=tab=hex\a` (10-color palette, assigned by session number mod 10)
 3. Set user variables for badge interpolation (`sessionType`, `sessionNum`, `tmuxSession`)
 4. Set badge via `\e]1337;SetBadgeFormat=base64\a`
-5. Set tab title via `\e]0;CC sw-N\a`
+5. Set tab title via `\e]0;CC session-N\a`
 
 Detect iTerm2 via `$TERM_PROGRAM == "iTerm.app"` — skip on other terminals (Ghostty, Windows Terminal).
 
@@ -85,10 +85,10 @@ Set up and save a named Window Arrangement in iTerm2:
 
 ```text
 ┌──────────────────┬──────────┐
-│                  │ sw-2     │
-│     sw-1         │          │
+│                  │ session-2     │
+│     session-1         │          │
 │   (main CC)      ├──────────┤
-│                  │ sw-3     │
+│                  │ session-3     │
 │                  │          │
 └──────────────────┴──────────┘
 ```text

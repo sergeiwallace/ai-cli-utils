@@ -26,7 +26,7 @@ class TestTelemetryDB:
         db_path = tmp_path / "test.db"
         conn = init_db(db_path)
         write_event(
-            conn, "telemetry.action.click", {"button": "save"}, machine="test-host", session="c-sw-1", ts=1000.0
+            conn, "telemetry.action.click", {"button": "save"}, machine="test-host", session="c-session-1", ts=1000.0
         )
 
         row = conn.execute("SELECT * FROM events").fetchone()
@@ -34,7 +34,7 @@ class TestTelemetryDB:
         assert row[1] == 1000.0  # ts
         assert row[2] == "telemetry.action.click"  # subject
         assert row[3] == "test-host"  # machine
-        assert row[4] == "c-sw-1"  # session
+        assert row[4] == "c-session-1"  # session
         assert json.loads(row[5]) == {"button": "save"}  # data
         conn.close()
 
@@ -201,7 +201,7 @@ class TestTelemetryWriter:
                     "subject": "telemetry.action.click",
                     "data": {"btn": "ok"},
                     "machine": "host",
-                    "session": "c-sw-1",
+                    "session": "c-session-1",
                     "ts": 1234.0,
                 }
             )

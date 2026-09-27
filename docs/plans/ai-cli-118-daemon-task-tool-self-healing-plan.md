@@ -78,7 +78,7 @@ session spawning, background subagents, and — per the research — the `Task*`
 restart mid-session, most often to apply an auto-update. When it does, an already-attached,
 long-lived foreground CC session can **silently lose `Task*` tool availability** (`TaskList`/
 `TaskCreate`/`TaskUpdate`/`TaskGet` vanish from the `ToolSearch` deferred-tool catalog) with **no
-error surfaced to the agent or the user**. On 2026-07-22 (session `sw-1`) the timing was observed to
+error surfaced to the agent or the user**. On 2026-07-22 (session `session-1`) the timing was observed to
 correlate: `~/.claude/daemon.log` showed an upgrade-restart
 (`shutting down (cause=upgrade, …, live_workers=2)`, v2.1.216→v2.1.217) roughly 46 seconds after the
 session's last successful `Task*` call, and no `Task*` call succeeded afterward; the same session's

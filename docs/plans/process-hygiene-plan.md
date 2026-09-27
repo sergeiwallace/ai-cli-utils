@@ -162,7 +162,7 @@ ai ps clean --force      # kill all orphaned (score ≥ 80) without prompting
 LOCAL (mac)
   mosh-server   pid=9414   age=27d  score=90  ⚠ orphaned (no client)
   mosh-server   pid=24205  age=0h   score=0   ✓ active (client: artelier)
-  signal-watch  pid=33021  age=2h   score=0   ✓ active (project: sw)
+  signal-watch  pid=33021  age=2h   score=0   ✓ active (project: myproject)
   autossh       pid=29914  age=20h  score=0   ✓ active (tunnel: R:9222)
   autossh       pid=62702  age=6d   score=0   ✓ active (tunnel: L:4222)
   circusd       pid=75058  age=5d   score=0   ✓ active

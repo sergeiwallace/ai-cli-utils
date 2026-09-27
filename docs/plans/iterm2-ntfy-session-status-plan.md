@@ -43,7 +43,7 @@ related_task: SW-732
 |---|-------------|-----------|-----------|
 | 1 | Local Mac shell | None (default/transparent) | No SSH, no tmux, no ai-cli |
 | 2 | Dev server shell | Grey (`#666666`) | SSH to Hetzner, no CC session |
-| 3 | CC session (sw-1) | Rolling unique color (from 10+ palette) | ai-cli engine=c, assigned by session number |
+| 3 | CC session (session-1) | Rolling unique color (from 10+ palette) | ai-cli engine=c, assigned by session number |
 | 4 | Gemini CLI session | Rolling unique color (same palette) | ai-cli engine=g |
 | 5 | SSH tunnel / reverse tunnel | Green (`#2ecc71`) | Launch context |
 | 6 | Chrome debug | Blue (`#4a90d9`) | Launch context |
@@ -55,11 +55,11 @@ Colors set programmatically via `\e]1337;SetColors=tab=RRGGBB\a` — unlimited h
 
 | # | State | Badge | Tab Title | Detection | Icon Behavior |
 |---|-------|-------|-----------|-----------|--------------|
-| 1 | Running | `▶ cc sw-3` | `▶ cc sw-3` | ai-cli: CC process active | Session type icon (Claude/Gemini logo) |
-| 2 | Waiting for input | `⏸ WAIT sw-3` | `⏸ WAIT sw-3` | CC Notification hook fires | Session type icon |
-| 3 | Done | `✓ DONE sw-3` | `✓ DONE sw-3` | ai-cli: CC exited normally | Session type icon |
-| 4 | Error | `✗ ERROR sw-3` | `✗ ERROR sw-3` | ai-cli: CC exited <3 seconds | Session type icon |
-| 5 | Resuming | `↻ sw-3` | `↻ sw-3` | ai-cli: between exit and restart | Session type icon |
+| 1 | Running | `▶ cc session-3` | `▶ cc session-3` | ai-cli: CC process active | Session type icon (Claude/Gemini logo) |
+| 2 | Waiting for input | `⏸ WAIT session-3` | `⏸ WAIT session-3` | CC Notification hook fires | Session type icon |
+| 3 | Done | `✓ DONE session-3` | `✓ DONE session-3` | ai-cli: CC exited normally | Session type icon |
+| 4 | Error | `✗ ERROR session-3` | `✗ ERROR session-3` | ai-cli: CC exited <3 seconds | Session type icon |
+| 5 | Resuming | `↻ session-3` | `↻ session-3` | ai-cli: between exit and restart | Session type icon |
 
 ### Icons
 
@@ -140,10 +140,10 @@ Layer 3: Mac daemon → iTerm2 Python API (Mac-side, 1-5s)
 ### Task 1: ai-cli status escape sequences (Hetzner)
 
 Add `_iterm2_status()` to ai-cli script. Updates badge + tab title (NOT color) on state changes:
-- Session start → `▶ cc sw-N`
-- CC exits normally → `✓ DONE sw-N`
-- CC exits <3s → `✗ ERROR sw-N`
-- Loop resuming → `↻ sw-N`
+- Session start → `▶ cc session-N`
+- CC exits normally → `✓ DONE session-N`
+- CC exits <3s → `✗ ERROR session-N`
+- Loop resuming → `↻ session-N`
 
 **Files:** `~/projects/ai-cli-utils/src/ai_cli/main.py`
 
@@ -151,8 +151,8 @@ Add `_iterm2_status()` to ai-cli script. Updates badge + tab title (NOT color) o
 
 Extend `~/.claude/hooks/notify.sh` to emit iTerm2 escape sequence when CC fires a Notification (= waiting for input):
 ```bash
-printf '\e]1337;SetBadgeFormat=%s\a' "$(echo -n '⏸ WAIT sw-N' | base64)"
-printf '\e]0;⏸ WAIT sw-N\a'
+printf '\e]1337;SetBadgeFormat=%s\a' "$(echo -n '⏸ WAIT session-N' | base64)"
+printf '\e]0;⏸ WAIT session-N\a'
 ```text
 
 Need to extract the session number from the environment (`$AI_TMUX_SESSION`).

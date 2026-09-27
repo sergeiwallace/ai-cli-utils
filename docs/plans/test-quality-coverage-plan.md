@@ -192,14 +192,14 @@ def test_get_claude_usage_snapshot_when_scraper_returns_snapshot_then_returns_it
 
 **M4 — `test_session.py:115` — `test_build_session_name_with_index_when_called_then_respects_index` calls real subprocess**
 
-`build_session_name("c", "sw", "3")` — passes a numeric string as name. Depending on the implementation path, this may or may not hit subprocess. Regardless, it should mock subprocess to ensure test isolation and CI safety:
+`build_session_name("c", "session", "3")` — passes a numeric string as name. Depending on the implementation path, this may or may not hit subprocess. Regardless, it should mock subprocess to ensure test isolation and CI safety:
 ```python
 def test_build_session_name_with_index_when_called_then_respects_index():
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1)
-        session_id, ai_name = build_session_name("c", "sw", "3")
-    assert session_id == "c-sw-3"
-    assert ai_name == "sw-3"
+        session_id, ai_name = build_session_name("c", "session", "3")
+    assert session_id == "c-session-3"
+    assert ai_name == "session-3"
 ```text
 
 **M5 — `test_session.py:343` — real `time.sleep(0.01)` to get distinct mtimes**
@@ -357,21 +357,21 @@ def test_assign_iterm2_color_slot_when_iterm2_disabled_then_returns_none(tmp_pat
     cfg = {"iterm2": {"enabled": False}}
     with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}):
         with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
-            assert _assign_iterm2_color_slot("sw-1", "c") is None
+            assert _assign_iterm2_color_slot("session-1", "c") is None
 
 # iterm2.color.enabled = false
 def test_assign_iterm2_color_slot_when_color_disabled_then_returns_none(tmp_path):
     cfg = {"iterm2": {"color": {"enabled": False}}}
     with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}):
         with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
-            assert _assign_iterm2_color_slot("sw-1", "c") is None
+            assert _assign_iterm2_color_slot("session-1", "c") is None
 
 # empty palette
 def test_assign_iterm2_color_slot_when_palette_empty_then_returns_none(tmp_path):
     cfg = {"iterm2": {"palette": {}}}
     with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}):
         with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
-            assert _assign_iterm2_color_slot("sw-1", "c") is None
+            assert _assign_iterm2_color_slot("session-1", "c") is None
 ```text
 
 **Lines 770-771 — corrupt lease file JSON**
@@ -383,7 +383,7 @@ def test_assign_iterm2_color_slot_when_lease_file_corrupt_then_continues(tmp_pat
     with patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}):
         with patch("ai_cli.main._iterm2_state_dir", return_value=tmp_path):
             with patch("ai_cli.main._load_iterm2_config", return_value=cfg):
-                result = _assign_iterm2_color_slot("sw-1", "c")
+                result = _assign_iterm2_color_slot("session-1", "c")
     assert result is not None  # recovered from corrupt file
 ```text
 

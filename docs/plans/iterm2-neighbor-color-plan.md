@@ -135,7 +135,7 @@ New top-level command `ai recolor` (and optionally `ai recolor -w <window>` for 
 
 #### **Option C: Config-driven per-session color pins**
 
-Let users manually pin colors per session in `config.toml` (`[iterm2.sessions."c-sw-5"] tab_color = "purple"`). User manually ensures no adjacent sessions share similar colors.
+Let users manually pin colors per session in `config.toml` (`[iterm2.sessions."c-session-5"] tab_color = "purple"`). User manually ensures no adjacent sessions share similar colors.
 
 **Pros:**
 - Zero code — already supported today

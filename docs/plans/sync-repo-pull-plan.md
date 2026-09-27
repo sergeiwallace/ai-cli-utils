@@ -3,7 +3,7 @@ title: "sync repo pull — Auto-pull affected project repos after ai sync pull"
 category: plan
 tags: [sync, git, worktrees, repos, safety]
 status: approved
-source: sw-2
+source: session-2
 date: 2026-04-25
 linked_task: AI-CLI-63
 template_version: "plan-1.0.0"
@@ -180,14 +180,14 @@ Git status is the only gate. Don't inspect tmux or process state.
 
 #### (b) State affects log severity
 
-Map worktree path → tmux session name (`c-<project>-N` from `.worktrees/sw-N`). Check:
+Map worktree path → tmux session name (`c-<project>-N` from `.worktrees/session-N`). Check:
 1. `tmux has-session -t <name>` — session exists?
 2. `ps -o state= -p <claude_pid>` — `S` (sleeping/idle) vs `R` (running/active)?
 
 Use result to vary log message severity and detail only. Same action (skip) for all dirty worktrees.
 
 **Pros:**
-- Better diagnostics: "sw-2 dirty, CC idle — pull manually when ready" vs "sw-2 dirty, CC actively executing — do not touch"
+- Better diagnostics: "session-2 dirty, CC idle — pull manually when ready" vs "session-2 dirty, CC actively executing — do not touch"
 - Useful for future: could escalate to system notification when a CC session is blocking a sync
 
 **Cons:**
@@ -273,7 +273,7 @@ Logic:
 4. **Each worktree** (`git worktree list --porcelain` → parse `worktree` lines, skip bare/main):
    - `git -C <worktree> status --porcelain` → if clean, `git -C <worktree> pull --rebase`
    - If dirty:
-     - Derive session name: worktree basename `sw-N` → `c-<project>-N`
+     - Derive session name: worktree basename `session-N` → `c-<project>-N`
      - `tmux has-session -t <name>` → if no session: log "dirty, no active session"
      - If session: check `ps -o state=` of `claude` process in that pane → `S` or `R` → log severity accordingly
      - Skip (do not touch working tree)

@@ -72,8 +72,8 @@ def test_normalize_project_path_when_mac_prefix_then_returns_bare_name():
 
 
 def test_normalize_project_path_when_worktree_suffix_then_preserves_it():
-    result = normalize_project_path("-Users-user-projects-myproject--worktrees-sw-1", _MAC_PREFIX)
-    assert result == "myproject--worktrees-sw-1"
+    result = normalize_project_path("-Users-user-projects-myproject--worktrees-session-1", _MAC_PREFIX)
+    assert result == "myproject--worktrees-session-1"
 
 
 def test_normalize_project_path_when_server_prefix_then_returns_bare_name():
@@ -89,8 +89,8 @@ def test_normalize_project_path_when_different_project_then_correct():
 
 
 def test_normalize_project_path_when_server_worktree_then_preserves_suffix():
-    result = normalize_project_path("-home-user-projects-myproject--worktrees-sw-2", _SERVER_PREFIX)
-    assert result == "myproject--worktrees-sw-2"
+    result = normalize_project_path("-home-user-projects-myproject--worktrees-session-2", _SERVER_PREFIX)
+    assert result == "myproject--worktrees-session-2"
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +103,8 @@ def test_denormalize_project_name_when_bare_name_then_returns_mac_cc_dir():
 
 
 def test_denormalize_project_name_when_worktree_suffix_then_preserves_it():
-    result = denormalize_project_name("myproject--worktrees-sw-1", _MAC_PREFIX)
-    assert result == "-Users-user-projects-myproject--worktrees-sw-1"
+    result = denormalize_project_name("myproject--worktrees-session-1", _MAC_PREFIX)
+    assert result == "-Users-user-projects-myproject--worktrees-session-1"
 
 
 def test_denormalize_project_name_when_server_prefix_then_correct():
@@ -113,7 +113,7 @@ def test_denormalize_project_name_when_server_prefix_then_correct():
 
 
 def test_denormalize_normalize_roundtrip():
-    cc_dir = "-Users-user-projects-myproject--worktrees-sw-3"
+    cc_dir = "-Users-user-projects-myproject--worktrees-session-3"
     bare = normalize_project_path(cc_dir, _MAC_PREFIX)
     assert bare is not None
     assert denormalize_project_name(bare, _MAC_PREFIX) == cc_dir
@@ -436,7 +436,7 @@ _FOREIGN_HOME = "/home/foreign-user"  # Fake path — must not match actual home
 
 def test_detect_foreign_home_when_foreign_cwd_then_returns_home_prefix(tmp_path):
     f = tmp_path / "conv.jsonl"
-    f.write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1"}}\n')
+    f.write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/session-1"}}\n')
     result = _detect_foreign_home(f)
     assert result == _FOREIGN_HOME
 
@@ -444,14 +444,14 @@ def test_detect_foreign_home_when_foreign_cwd_then_returns_home_prefix(tmp_path)
 def test_detect_foreign_home_when_local_cwd_then_returns_none(tmp_path):
     f = tmp_path / "conv.jsonl"
     local_home = str(Path.home())
-    f.write_text(f'{{"type":"user","cwd":"{local_home}/projects/myproject/.worktrees/sw-1"}}\n')
+    f.write_text(f'{{"type":"user","cwd":"{local_home}/projects/myproject/.worktrees/session-1"}}\n')
     result = _detect_foreign_home(f)
     assert result is None
 
 
 def test_detect_foreign_home_when_no_cwd_then_returns_none(tmp_path):
     f = tmp_path / "conv.jsonl"
-    f.write_text('{"type":"custom-title","customTitle":"sw-1"}\n')
+    f.write_text('{"type":"custom-title","customTitle":"session-1"}\n')
     result = _detect_foreign_home(f)
     assert result is None
 
@@ -966,10 +966,10 @@ def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
     """
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
-    staged_wt = staging_dir / "myproject--worktrees-sw-1"
+    staged_wt = staging_dir / "myproject--worktrees-session-1"
     staged_wt.mkdir(parents=True)
     (staged_wt / "conv.jsonl").write_text(
-        f'{{"cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1","customTitle":"sw-1"}}\n'
+        f'{{"cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/session-1","customTitle":"session-1"}}\n'
     )
 
     with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
@@ -982,7 +982,7 @@ def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
             dry_run=False,
         )
 
-    dst = cc_projects_dir / "-Users-user-projects-myproject--worktrees-sw-1" / "conv.jsonl"
+    dst = cc_projects_dir / "-Users-user-projects-myproject--worktrees-session-1" / "conv.jsonl"
     assert dst.exists()
     content = dst.read_text()
     assert _FOREIGN_HOME not in content
@@ -995,10 +995,10 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
 
     # Remote has worktree CC dir with conversation
     remote_cc = tmp_path / "remote_cc"
-    wt_cc = remote_cc / f"{_foreign_prefix}foo--worktrees-sw-2"
+    wt_cc = remote_cc / f"{_foreign_prefix}foo--worktrees-session-2"
     wt_cc.mkdir(parents=True)
     (wt_cc / "session.jsonl").write_text(
-        f'{{"cwd":"{_FOREIGN_HOME}/projects/foo/.worktrees/sw-2","customTitle":"sw-2","type":"user"}}\n'
+        f'{{"cwd":"{_FOREIGN_HOME}/projects/foo/.worktrees/session-2","customTitle":"session-2","type":"user"}}\n'
     )
 
     # Remote stages
@@ -1012,7 +1012,7 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
         verbose=False,
         dry_run=False,
     )
-    assert (staging_dir / "foo--worktrees-sw-2" / "session.jsonl").exists()
+    assert (staging_dir / "foo--worktrees-session-2" / "session.jsonl").exists()
 
     # Local machine applies with MAC_PREFIX
     local_cc = tmp_path / "local_cc"
@@ -1027,7 +1027,7 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
             dry_run=False,
         )
 
-    mac_wt_dir = local_cc / "-Users-user-projects-foo--worktrees-sw-2"
+    mac_wt_dir = local_cc / "-Users-user-projects-foo--worktrees-session-2"
     assert mac_wt_dir.is_dir()
     applied = (mac_wt_dir / "session.jsonl").read_text()
     assert _FOREIGN_HOME not in applied
@@ -5946,7 +5946,7 @@ def test_sync_repos_when_clean_worktree_then_pulls(tmp_path):
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-1"
+    wt = project / ".worktrees" / "session-1"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")  # minimal worktree marker
 
@@ -5973,7 +5973,7 @@ def test_sync_repos_when_dirty_worktree_no_session_then_skips_with_log(tmp_path,
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-2"
+    wt = project / ".worktrees" / "session-2"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")
 
@@ -6006,7 +6006,7 @@ def test_sync_repos_when_dirty_worktree_idle_session_then_skips_with_idle_log(tm
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-3"
+    wt = project / ".worktrees" / "session-3"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")
 
@@ -6045,7 +6045,7 @@ def test_sync_repos_when_dirty_worktree_active_session_then_skips_with_active_lo
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-4"
+    wt = project / ".worktrees" / "session-4"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")
 
@@ -6130,7 +6130,7 @@ def test_sync_repos_when_worktree_bare_name_then_maps_to_base_project(tmp_path):
         return m
 
     with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
-        sync_repos({"myproject--worktrees-sw-1"}, tmp_path, verbose=False)
+        sync_repos({"myproject--worktrees-session-1"}, tmp_path, verbose=False)
 
     assert any(Path(args[2]) == project for args in pulled), "base project not pulled from worktree bare name"
 

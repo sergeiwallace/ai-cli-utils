@@ -76,7 +76,7 @@ Checks Mullvad CLI (`mullvad status`) first, falls back to scanning `ifconfig` f
 
 ### Signal-Watch / Circus Infrastructure
 
-Each CC session has a Circus-managed `signal-watch` watcher (`sw-{session}`) that subscribes to NATS for handoff delivery. Circus provides:
+Each CC session has a Circus-managed `signal-watch` watcher (`session-{session}`) that subscribes to NATS for handoff delivery. Circus provides:
 
 - IPC endpoint at `~/.local/state/ai-cli-utils/circus.endpoint`
 - Dynamic watcher add/remove via `CircusClient`
@@ -218,7 +218,7 @@ Write `{state_dir}/transport-{session}.json` containing:
   "parent_pid": 12345,
   "child_pid": 12346,
   "transport": "mosh",
-  "session": "c-r-sw-1",
+  "session": "c-r-session-1",
   "host": "1.2.3.4",
   "started": "2026-04-06T10:00:00Z"
 }
@@ -439,7 +439,7 @@ Location: `~/.local/state/ai-cli-utils/transport-{session_name}.json`
   "parent_pid": 12345,
   "child_pid": 12346,
   "transport": "mosh",
-  "session": "c-r-sw-1",
+  "session": "c-r-session-1",
   "host": "192.0.2.1",
   "started_at": "2026-04-06T10:00:00Z"
 }
@@ -451,8 +451,8 @@ Written when a transport process starts, deleted on clean exit (in `finally` blo
 
 The `ai ps` command can read transport state files to show:
 ```text
-c-r-sw-1  mosh  192.0.2.1  pid=12346  2h uptime
-c-r-sw-2  ssh   192.0.2.1  pid=12350  5m uptime (VPN active)
+c-r-session-1  mosh  192.0.2.1  pid=12346  2h uptime
+c-r-session-2  ssh   192.0.2.1  pid=12350  5m uptime (VPN active)
 ```text
 
 ### Integration with `ai reconnect`

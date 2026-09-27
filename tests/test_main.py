@@ -235,10 +235,10 @@ class TestGetEngineScript:
         ):
             result = get_engine_script(
                 engine="c",
-                ai_name="sw-1",
-                session="c-sw-1",
-                prefix="c-sw-",
-                project_prefix="sw",
+                ai_name="session-1",
+                session="c-session-1",
+                prefix="c-session-",
+                project_prefix="session",
                 session_id_uuid="",
                 sandbox=False,
                 notify=False,

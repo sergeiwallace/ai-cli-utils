@@ -199,7 +199,7 @@ The tool installs as a single `ai` command. There is no server component — all
 
 **Dual-path quota state** — `quota.py` writes each snapshot to both NATS KV (`quota.claude.current`) and local SQLite. The statusline reads KV first with a 300ms thread timeout, falls back to SQLite. This keeps Mac and Hetzner statuslines aligned without requiring a local scrape on every machine.
 
-**Git worktree isolation** — each `ai c N` session runs in `.worktrees/sw-N/` on branch `wt-sw-N`, **created at, and tracking, the repository's integration branch**. That branch resolves from the `[worktree_upstream]` config table if the repository declares one, otherwise from the branch the repository's own main checkout is on — so a repository on `main` is created at and tracks `origin/main`, unchanged. Created and destroyed by `main.py`.
+**Git worktree isolation** — each `ai c N` session runs in `.worktrees/session-N/` on branch `wt-session-N`, **created at, and tracking, the repository's integration branch**. That branch resolves from the `[worktree_upstream]` config table if the repository declares one, otherwise from the branch the repository's own main checkout is on — so a repository on `main` is created at and tracks `origin/main`, unchanged. Created and destroyed by `main.py`.
 
 Base and upstream are resolved together, from one call, so they can never disagree. Three properties are deliberate:
 

@@ -183,8 +183,8 @@ class TestGenerateLayoutProfiles:
         assert paths[0].suffix == ".json"
 
     def test_profile_name_is_deterministic(self, tmp_path):
-        assert _layout_profile_name("sw-dev", "sw-5") == "ai-cli-layout:sw-dev:sw-5"
-        assert _layout_profile_guid("sw-dev", "sw-5") == "ai-cli-layout-sw-dev-sw-5"
+        assert _layout_profile_name("session-dev", "session-5") == "ai-cli-layout:session-dev:session-5"
+        assert _layout_profile_guid("session-dev", "session-5") == "ai-cli-layout-session-dev-session-5"
 
     def test_generated_profile_has_correct_parent(self, tmp_path):
         layout = Layout(**_MINIMAL_LAYOUT)
@@ -324,11 +324,11 @@ class TestPaneToCode:
 
 class TestCmdLayoutList:
     def test_prints_available_layouts(self, tmp_path, capsys):
-        _write_layout(tmp_path, "sw-dev", _MINIMAL_LAYOUT)
+        _write_layout(tmp_path, "session-dev", _MINIMAL_LAYOUT)
         with patch("ai_cli.layout._layouts_dir", return_value=tmp_path):
             rc = cmd_layout_list()
         assert rc == 0
-        assert "sw-dev" in capsys.readouterr().out
+        assert "session-dev" in capsys.readouterr().out
 
     def test_empty_directory(self, tmp_path, capsys):
         with patch("ai_cli.layout._layouts_dir", return_value=tmp_path):

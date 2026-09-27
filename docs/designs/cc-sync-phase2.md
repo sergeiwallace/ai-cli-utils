@@ -175,13 +175,13 @@ CC encodes project paths into directory names under `~/.claude/projects/`. The e
 |---------|---------------|---------|
 | Mac | `-Users-user-projects-` | `-Users-user-projects-myproject/` |
 | Server | `-home-user-projects-` | `-home-user-projects-myproject/` |
-| Worktree (Mac) | `-Users-user-projects-myproject--worktrees-sw-1/` | Glob: `*--worktrees-*` |
-| Worktree (Server) | `-home-user-projects-myproject--worktrees-sw-1/` | Same glob pattern |
+| Worktree (Mac) | `-Users-user-projects-myproject--worktrees-session-1/` | Glob: `*--worktrees-*` |
+| Worktree (Server) | `-home-user-projects-myproject--worktrees-session-1/` | Same glob pattern |
 
 **Normalization rules (push direction):**
 
 1. Strip the machine-specific prefix: `-Users-user-projects-` or `-home-user-projects-`
-2. The remainder is the bare project name, possibly with a worktree suffix: `myproject/`, `myproject--worktrees-sw-1/`, `aurion/`
+2. The remainder is the bare project name, possibly with a worktree suffix: `myproject/`, `myproject--worktrees-session-1/`, `aurion/`
 3. Commit under that bare name in the staging repo
 
 **Denormalization rules (pull direction):**
@@ -192,7 +192,7 @@ CC encodes project paths into directory names under `~/.claude/projects/`. The e
 
 **Implementation detail:** The path prefix is determined at runtime by checking which machine the command is running on. The simplest heuristic: if `os.path.expanduser("~")` starts with `/Users/`, use the Mac prefix; otherwise use the server prefix. This is stored in `ai-cli` config as `[sync] local_prefix` for explicit override if needed.
 
-**Worktree handling:** Worktree directories contain `--worktrees-` in their name. The glob `~/.claude/projects/*--worktrees-*` captures them. They are normalized the same way — the `--worktrees-sw-N` suffix is preserved in the bare name since it distinguishes the worktree's CC state from the main project's CC state.
+**Worktree handling:** Worktree directories contain `--worktrees-` in their name. The glob `~/.claude/projects/*--worktrees-*` captures them. They are normalized the same way — the `--worktrees-session-N` suffix is preserved in the bare name since it distinguishes the worktree's CC state from the main project's CC state.
 
 ### Memory File Merge (Three-Way Git)
 
@@ -401,11 +401,11 @@ The staging repo mirrors the `~/.claude/projects/` structure but with normalized
 │   └── tool-results/
 │       └── <uuid>/
 │           └── ...
-├── myproject--worktrees-sw-1/
+├── myproject--worktrees-session-1/
 │   ├── memory/
 │   │   └── MEMORY.md
 │   └── conversations.jsonl
-├── myproject--worktrees-sw-2/
+├── myproject--worktrees-session-2/
 │   ├── ...
 ├── aurion/
 │   ├── memory/
@@ -419,7 +419,7 @@ The staging repo mirrors the `~/.claude/projects/` structure but with normalized
 **Key properties:**
 - Each top-level directory is a bare project name (or project + worktree suffix)
 - No machine-specific path prefixes anywhere in the repo
-- Worktree directories preserve the `--worktrees-sw-N` suffix as part of the directory name
+- Worktree directories preserve the `--worktrees-session-N` suffix as part of the directory name
 - The staging repo is append-only in normal operation (files are added/updated, never deleted by the sync process)
 
 ### Commit Message Format
