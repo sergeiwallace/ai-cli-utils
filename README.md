@@ -202,13 +202,24 @@ even when the repository root's identical copy is approved. When `direnv` is
 installed, `ai` therefore approves the worktree itself — after creating it and
 before starting the agent — and prints the path it approved.
 
-The scope is exactly the worktrees `ai` creates under `.worktrees/`, and only
-their own `.envrc`. The repository root, an `.envrc` inherited from a parent
-directory, and worktrees registered anywhere else are never approved
-automatically: `ai` vouches for a directory because it created it, which is not
-something it can claim about a directory it merely launched in. A worktree
-`direnv` has already approved is left alone, and a host with no `direnv` skips
-the step silently. Set `AI_CLI_SKIP_DIRENV=1` to turn automatic approval off.
+The scope is exactly the worktrees `ai` creates under `.worktrees/`, only their
+own `.envrc`, and only when that file is **byte-identical to the repository
+root's**. The repository root, an `.envrc` inherited from a parent directory, and
+worktrees registered anywhere else are never approved automatically: `ai` vouches
+for a directory because it created it, which is not something it can claim about a
+directory it merely launched in. It does not vouch for the file's *contents* at
+all — git writes whatever the checked-out branch carries — so an `.envrc` that
+differs from the root's keeps `direnv`'s normal prompt, including one a branch
+legitimately edits and one the session itself rewrote. Automatic approval
+therefore only ever spares you re-approving content you already have at the
+repository root.
+
+Note that this requires the root's `.envrc` to *exist and match*, not to be
+approved. Requiring an approved root would make the feature do nothing on a host
+where nothing is approved yet, which is exactly the host that needs it. A
+worktree `direnv` has already approved is left alone, and a host with no `direnv`
+skips the step silently. Set `AI_CLI_SKIP_DIRENV=1` to turn automatic approval
+off.
 Targeted session launches (`ai c <name>`, `ai g <name>`, `ai p <name>`, and `ai cx <name>`) do not pause for
 unrelated project-registry discovery prompts.
 

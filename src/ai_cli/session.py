@@ -1321,6 +1321,27 @@ def _is_session_worktree_slot(repo_root: Path, directory: Path) -> bool:
         return directory.parent == slots
 
 
+def _matches_repository_root_envrc(repo_root: Path, worktree_dir: Path) -> bool:
+    """True when the worktree's ``.envrc`` is byte-identical to the repository root's.
+
+    This is the CONTENT half of the trust boundary, and it is separate from the
+    root's *approval* state on purpose -- depending on that made the whole feature
+    a no-op on a host where nothing is approved. What is required here is only that
+    the file already sits at the repository root, which means direnv will raise its
+    own prompt for that copy independently: automatic approval then generalises an
+    approval decision the operator still gets to make, across a path they never
+    chose, instead of making a content decision on their behalf.
+
+    A missing root ``.envrc`` is "nothing to compare against", so it refuses --
+    as does an unreadable one. Refusing costs one direnv prompt; trusting on
+    doubt costs arbitrary shell execution.
+    """
+    try:
+        return (worktree_dir / ".envrc").read_bytes() == (repo_root / ".envrc").read_bytes()
+    except OSError:
+        return False
+
+
 def _authorize_session_worktree_envrc(repo_root: Path, worktree_dir: Path) -> None:
     """Approve the ``.envrc`` of a session worktree this tool created, and say so.
 
@@ -1330,12 +1351,29 @@ def _authorize_session_worktree_envrc(repo_root: Path, worktree_dir: Path) -> No
     operator is told to run ``direnv allow`` by hand for every session worktree,
     which is the complaint this exists to answer.
 
-    The authority to approve comes from having *created the directory*, so the
-    scope is exactly the slots this tool creates. That is the whole security
-    boundary: approval is never generalised to "wherever a launch happens", and
-    it deliberately does not depend on the repository root's own approval state.
-    Requiring that made the feature a no-op on a host where nothing is approved
-    -- the host that needs it most, and the one that reported it broken.
+    Two things must hold, and both are load-bearing:
+
+    *Provenance of the directory* -- the slot is one this tool created, so the
+    scope is never generalised to "wherever a launch happens". This deliberately
+    does not depend on the repository root's own approval state; requiring that
+    made the feature a no-op on a host where nothing is approved, the host that
+    needs it most and the one that reported it broken.
+
+    *Provenance of the content* -- the file is byte-identical to the repository
+    root's. Directory provenance alone is not enough, because the file inside the
+    slot is not this tool's work: git writes whatever the checked-out branch
+    carries, and anything with write access to the worktree can rewrite it
+    afterwards. That includes the agent session running there, and this function
+    runs again on every relaunch -- including a *reused* worktree -- so without a
+    content check a session that edited its own ``.envrc`` would have that shell
+    approved for it, unreviewed, on the next launch. Requiring identity with the
+    root confines automatic approval to content the operator already has on disk,
+    where direnv prompts for it in its own right.
+
+    The cost, stated rather than hidden: a branch that legitimately edits
+    ``.envrc`` is not auto-approved, and the operator sees direnv's prompt once
+    for that worktree. That is the correct direction for content this host has
+    never reviewed.
 
     An operator who wants no automatic approval at all still has the module's
     documented switch: ``AI_CLI_SKIP_DIRENV=1``. It is read from the environment
@@ -1352,6 +1390,8 @@ def _authorize_session_worktree_envrc(repo_root: Path, worktree_dir: Path) -> No
     # The worktree's OWN file. An inherited parent .envrc lives in a directory
     # this tool did not create, so it stays subject to direnv's normal prompt.
     if not (worktree_dir / ".envrc").is_file():
+        return
+    if not _matches_repository_root_envrc(repo_root, worktree_dir):
         return
     if not direnv_available():
         return
