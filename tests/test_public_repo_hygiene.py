@@ -14,7 +14,22 @@ import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
-_SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
+_SCANNED_PATHS = (
+    "src",
+    "tests",
+    "docs",
+    # ``scripts`` was omitted until AI-CLI-2jwm, and the omission was invisible
+    # rather than documented: ``_EXPECTED_TOP_LEVEL_DIRS`` below lists "scripts",
+    # so a grep for the name in this file finds a hit and suggests it is covered.
+    # It is a different guard. Every file here is tracked and published, so a
+    # private name in a maintenance script is as public as one in the package.
+    "scripts",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "pyproject.toml",
+    ".github",
+)
 
 # Every top-level directory this repository legitimately tracks. Anything else
 # appearing in the index is a generated or machine-specific artefact until proven

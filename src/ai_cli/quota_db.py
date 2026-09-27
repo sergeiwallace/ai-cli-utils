@@ -156,7 +156,7 @@ def _migrate_snapshot_columns(conn: sqlite3.Connection) -> None:
     new_cols = [
         ("weekly_sonnet_pct", "REAL"),
         ("extra_pct", "REAL"),
-        ("weekly_model_name", "TEXT"),  # AIH-120: label for the secondary per-model weekly line
+        ("weekly_model_name", "TEXT"),  # label for the secondary per-model weekly line
     ]
     for col, typedef in new_cols:
         if col not in existing:

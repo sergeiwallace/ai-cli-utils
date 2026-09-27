@@ -1979,7 +1979,7 @@ def _do_update_or_deploy(force_reinstall: bool, config: dict, quiet: bool = Fals
     subprocess.run(["git", "checkout", "--", "pyproject.toml"], cwd=project_path, capture_output=quiet, check=False)
     if not quiet:
         print("Pulling latest from origin...")
-    # AIH-443 Shape B: `git pull --rebase --autostash` exits 0 even when its
+    # Shape B: `git pull --rebase --autostash` exits 0 even when its
     # automatic stash pop conflicted, so the exit code alone cannot be trusted
     # (measured on git 2.43.0 and 2.55.0). Left unchecked this strands the
     # checkout: the index keeps conflict stages, every later pull refuses with
@@ -3223,7 +3223,7 @@ def _do_session_launch(
                     file=sys.stderr,
                 )
             # Sync worktree with any changes that landed on main from other sessions.
-            # AIH-443 Shape B: this pull exits 0 even when its automatic stash pop
+            # Shape B: this pull exits 0 even when its automatic stash pop
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
@@ -3265,7 +3265,7 @@ def _do_session_launch(
                 )
             if stranded:
                 # Refuse the launch. Dropping an agent into a worktree whose index
-                # carries conflict stages is how AIH-443's phantom deletions spread
+                # carries conflict stages is how phantom deletions spread
                 # across six worktrees. Nothing is auto-repaired: the user's work is
                 # in the stash and only they can say how to reconcile it.
                 print(
@@ -3281,7 +3281,7 @@ def _do_session_launch(
             # Repair backstop again after this launch's git work.
             if _repair_root:
                 repair_bare_worktree_config(_repair_root)
-            # AIH-443 Shape A: a Claude Code `isolation: worktree` checkout can silently
+            # Shape A: a Claude Code `isolation: worktree` checkout can silently
             # drop tracked symlinks (confirmed: 21 symlinks missing from disk in one
             # sub-agent worktree while HEAD and origin/main both had them, no error
             # anywhere). Not something this launcher can fix at the source, but it can
@@ -3295,7 +3295,7 @@ def _do_session_launch(
                     f"`git -C {worktree_path} checkout -- <path>`.",
                     file=sys.stderr,
                 )
-            # AIH-443 Shape C: a tracked REGULAR file the index still holds but that
+            # Shape C: a tracked REGULAR file the index still holds but that
             # is gone from disk. Neither check above can see it — there is no stranded
             # stash (pre-commit uses its own patch file under ~/.cache/pre-commit, not
             # `git stash`) and the mode is not 120000. pre-commit's `staged_files_only`
