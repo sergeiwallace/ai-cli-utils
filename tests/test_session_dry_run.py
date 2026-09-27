@@ -202,7 +202,12 @@ def test_without_dry_run_the_remote_launch_still_reaches_the_network():
             "ai_cli.main.subprocess.run",
             return_value=MagicMock(returncode=0, stdout="bash\n", stderr=""),
         ) as mock_run,
-        patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        # The pure-SSH handoff is `transport.run_ssh_with_reconnect`, not an exec:
+        # that path runs in-process now so a dropped link can be reattached
+        # (AI-CLI-w679). What this control proves is unchanged -- without
+        # --dry-run the launch still reaches the network -- only the boundary
+        # that evidences "reached it" moved.
+        patch("ai_cli.transport.run_ssh_with_reconnect", side_effect=SystemExit(0)) as mock_exec,
     ):
         with pytest.raises(SystemExit):
             _do_session_launch(

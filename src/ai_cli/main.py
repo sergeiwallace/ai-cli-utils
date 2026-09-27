@@ -2833,7 +2833,37 @@ def _do_session_launch(
             )
             return
 
-        ssh_args = ["ssh", "-t", "-p", port]
+        # KEEPALIVE on the one connection that is long-lived. This is HARDENING, and
+        # explicitly NOT the fix for AI-CLI-w679 -- saying so because the obvious reading
+        # is wrong. `ssh -G` against the reporting operator's own configured target already
+        # resolved `serveraliveinterval 30` and `serveralivecountmax 3` out of their
+        # ssh_config, so the drop they reported was not caused by a missing keepalive.
+        # `transport.run_ssh_with_reconnect` is what actually addresses that report.
+        #
+        # Setting them here regardless is still worth doing: it makes this tool's behaviour
+        # independent of whatever ~/.ssh/config a given machine happens to carry, and an
+        # established session otherwise sends nothing while the operator reads rather than
+        # types, which is what lets an idle-flow reaper -- a NAT, a corporate firewall, a
+        # managed channel's idle timeout -- collect it. Every other ssh invocation in this
+        # function sets ConnectTimeout, which bounds *setup* and says nothing about an
+        # established session; tunnel.py already set exactly this pair for its own
+        # short-lived forward.
+        #
+        # Configurable because no single value serves both a 20-minute reaper and a
+        # 60-second one, and an operator on a hostile network should not have to edit
+        # source to survive it.
+        alive_interval = remote_cfg.get("server_alive_interval", 30)
+        alive_count_max = remote_cfg.get("server_alive_count_max", 3)
+        ssh_args = [
+            "ssh",
+            "-t",
+            "-p",
+            port,
+            "-o",
+            f"ServerAliveInterval={alive_interval}",
+            "-o",
+            f"ServerAliveCountMax={alive_count_max}",
+        ]
         # ConnectTimeout=10 bounds the shell probe + session allocation
         # preflight the same way mosh_args's own ConnectTimeout does below --
         # neither should hang silently when the host is unreachable.
@@ -2977,7 +3007,21 @@ def _do_session_launch(
                 reporter.phase("Transport").outcome("SSH selected")
             if reporter is not None:
                 reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
-            os.execvp("zsh", ["zsh", "-c", f"{shlex.join(ssh_args)}; {shlex.join(_cleanup_cmd)} 2>/dev/null"])
+            # Runs the session in-process instead of `execvp`-ing a shell (AI-CLI-w679).
+            # The exec was what made this path fragile: it replaced this process, so a
+            # dropped connection ended the session outright and left no Python behind to
+            # reconnect or to hand the terminal back -- even though the remote side runs
+            # under tmux and was still sitting there, detached and intact. Keeping the
+            # interpreter alive costs one idle parent process and buys bounded reattach
+            # plus a real `finally`. The mosh path has always looped like this.
+            sys.exit(
+                _transport.run_ssh_with_reconnect(
+                    ssh_args,
+                    _cleanup_cmd,
+                    max_attempts=remote_cfg.get("reconnect_attempts", 10),
+                    backoff_seconds=remote_cfg.get("reconnect_backoff", 2.0),
+                )
+            )
 
     # When running as the remote side of an --remote session, cd into the project directory
     # before creating the worktree so git commands work correctly.

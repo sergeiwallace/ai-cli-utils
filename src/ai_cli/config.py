@@ -326,6 +326,22 @@ stale_after_seconds = 600
 # vscode_authority = "server"
 ## VPN poll interval in seconds for the vpn-watch daemon (default: 3)
 # vpn_poll_interval = 3
+## SSH keepalive for the interactive session (AI-CLI-w679). An established session sends
+## nothing while you read rather than type, and an idle flow is what gets reaped -- by a
+## managed SSH channel's idle timeout (20 minutes by default), or by a NAT or corporate
+## firewall on a shorter one, which shows up as `Shared connection to <host> closed.` The
+## probes both detect a dead peer and, being real traffic, stop the flow counting as idle.
+## Lower the interval on a network that disconnects sooner than the default survives.
+# server_alive_interval = 30
+## How many unanswered probes before ssh gives up (default: 3, so 3 x interval).
+# server_alive_count_max = 3
+## Reattach after a dropped link (AI-CLI-w679). The remote session runs under tmux, so a
+## dropped connection leaves it detached and intact -- reattaching loses nothing. Bounded so
+## a host that is genuinely gone produces a few attempts rather than an infinite loop.
+## Applies to the `transport = "ssh"` path; mosh already survives a drop by design.
+# reconnect_attempts = 10
+## Seconds before the first reattach; doubles per attempt, capped at 30s.
+# reconnect_backoff = 2
 
 [sync]
 ## Remote host for cc sync (SSH user@host format). Derived from the default remote machine if not set.
