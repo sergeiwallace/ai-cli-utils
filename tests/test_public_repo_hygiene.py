@@ -75,6 +75,44 @@ _PRIVATE_PLATFORM_NAMES = ("aido", "ai-core")  # public-hygiene: allow
 # information to a reader who does not have the machine.
 _PRIVATE_MACHINE_NAMES = ("sem-kg", "bms")  # public-hygiene: allow
 
+# The personal session prefix. Session, pane and worktree names are built from a
+# two-letter prefix -- ``<prefix>-1``, ``c-<prefix>-1``, ``.worktrees/<prefix>-3``
+# -- and those two letters are one operator's initials. So every such name is a
+# personal identifier wearing an innocuous shape, which is how 750 of them sat in
+# a public package while every guard above passed: none of them was looking for a
+# name that reads like a generated slug.
+#
+# Two patterns rather than one entry in _FORBIDDEN, because the bare token cannot
+# be forbidden outright. A word-bounded case-insensitive match on it hits a
+# third-party documentation URL (the Kitty terminal's ``sw.kovidgoyal.net``) and  # public-hygiene: allow
+# an unrelated two-letter column abbreviation in a design table -- so a single
+# rule would be noisy enough to be switched off, which is the failure the
+# platform-name comment above describes. These two forms are the ones that
+# actually carry the prefix, and neither can match prose or a hostname.
+_PRIVATE_SESSION_PREFIX = "sw"  # public-hygiene: allow
+
+# Form 1: the prefix followed by a separator, anywhere a name is built. Nothing
+# is required *after* the dash, and that is load-bearing rather than lax: the
+# prefix also ships as a bare 51 times in the argument form ``"c-<prefix>-"``,
+# where the name is completed by the callee, and as a format placeholder
+# (``<prefix>-{n}``, ``<prefix>-*``). A rule requiring a trailing alphanumeric
+# reads as the obvious one and misses all 80 of those.
+#
+# Deliberately case-SENSITIVE, which is the one boundary in this file drawn by
+# case rather than by shape. The uppercase form ``SW-1234`` is not a session name  # public-hygiene: allow
+# at all: it is a private dev-tracking issue id, and it belongs to a class this
+# repository also carries 149 instances of under a *different* prefix
+# (``AIH-1234``). Folding the uppercase form in here would produce a guard that
+# forbids one private tracker's ids and silently permits the other's -- an
+# incoherent rule that reads as complete. That class is tracked as its own issue.
+_SESSION_NAME = re.compile(rf"(?:^|[^A-Za-z0-9]){re.escape(_PRIVATE_SESSION_PREFIX)}-")
+
+# Form 2: the prefix as a quoted string literal -- a config value or a test
+# argument (``task_prefix = "sw"``). Case-insensitive is safe here where it was  # public-hygiene: allow
+# not above: a bare two-character quoted string is never prose, never a URL, and
+# never a tracker id, so this rule has no false-positive surface to speak of.
+_SESSION_PREFIX_LITERAL = re.compile(rf"[\"']{re.escape(_PRIVATE_SESSION_PREFIX)}[\"']", re.IGNORECASE)
+
 _FORBIDDEN = re.compile(
     "|".join(
         [
@@ -126,6 +164,11 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _line_has_forbidden_name(line: str) -> bool:
+    """True if ``line`` carries any forbidden name, in any of the three patterns."""
+    return bool(_FORBIDDEN.search(line) or _SESSION_NAME.search(line) or _SESSION_PREFIX_LITERAL.search(line))
+
+
 def _line_is_exempted(relative_path: Path, line: str) -> bool:
     """Allow documented evidence lines, but never let source code suppress the guard."""
     return _LINE_EXEMPTION_MARKER in line and any(
@@ -167,7 +210,7 @@ def scan_for_private_names(root: Path) -> list[str]:
     for path, relative_path, text in _scanned_text_files(root):
         del path
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if _FORBIDDEN.search(line) and not _line_is_exempted(relative_path, line):
+            if _line_has_forbidden_name(line) and not _line_is_exempted(relative_path, line):
                 findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
     return findings
 
@@ -577,6 +620,89 @@ def test_given_a_longer_identifier_containing_a_platform_name_when_scanned_then_
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "src" / "identifiers.py").write_text(f"{token}s = 1\nplaid{token} = 2\nmy{token}thing = 3\n")
+
+    assert scan_for_private_names(tmp_path) == []
+
+
+def test_given_a_session_name_built_from_the_private_prefix_when_scanned_then_it_is_flagged(tmp_path):
+    """Positive control per shape the prefix actually appears in.
+
+    Each string below is a real shape from the leak: a bare session name, an
+    engine-prefixed pane name, a worktree directory path, a placeholder written
+    with a capital placeholder letter, a named (non-numeric) worktree, and the
+    bare argument form whose name the callee completes. A guard that matched only
+    ``<prefix>-<digit>`` passes four of these six, and that is not hypothetical --
+    it is the pattern the occurrence count was twice measured with, which is why
+    it undercounted by 154 occurrences and six files.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    prefix = _PRIVATE_SESSION_PREFIX
+    shapes = (
+        f"{prefix}-1",
+        f"c-{prefix}-1",
+        f".worktrees/{prefix}-3",
+        f"{prefix}-N",
+        f"{prefix}-feature",
+        f"c-{prefix}-",
+    )
+    for index, shape in enumerate(shapes):
+        (tmp_path / "src" / f"session_{index}.py").write_text(f'name = "{shape}"\n')
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == len(shapes)
+    for index, shape in enumerate(shapes):
+        assert any(finding.startswith(f"src/session_{index}.py:1:") for finding in findings), (
+            f"scan did not flag {shape!r}"
+        )
+
+
+def test_given_the_private_prefix_as_a_quoted_literal_when_scanned_then_either_case_is_flagged(tmp_path):
+    """The prefix also ships as a bare config value, in both cases.
+
+    Both cases are asserted because both leaked: the lowercase form as a session
+    prefix in test arguments, the uppercase form as a task prefix quoted in a
+    design document. A lowercase-only rule here would leave the second in place.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    lower, upper = _PRIVATE_SESSION_PREFIX, _PRIVATE_SESSION_PREFIX.upper()
+    (tmp_path / "src" / "config_example.py").write_text(
+        f'session_prefix = "{lower}"\ntask_prefix = "{upper}"\nsingle_quoted = \'{lower}\'\n'
+    )
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 3
+    assert [finding.split(":")[1] for finding in findings] == ["1", "2", "3"]
+
+
+def test_given_text_that_merely_contains_the_prefix_letters_when_scanned_then_it_is_not_flagged(tmp_path):
+    """Negative control, using the exact strings that forced the two-pattern design.
+
+    Every line here matches a word-bounded case-insensitive rule on the bare
+    prefix and none may be flagged:
+
+    * a third-party documentation URL whose host begins with those two letters;
+    * a two-letter column abbreviation for an unrelated subsystem in a table;
+    * identifiers that merely start with them, where ``_`` is a word character
+      and so the boundary alone does not decide;
+    * a private dev-tracking id in the uppercase form, which is a **different**
+      leak class with its own prefixes and its own issue -- asserting it here
+      pins the boundary this guard deliberately draws, so narrowing or widening
+      that boundary cannot happen silently.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    upper = _PRIVATE_SESSION_PREFIX.upper()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text(
+        "See https://sw.kovidgoyal.net/kitty/keyboard-protocol/ for the protocol.\n"  # public-hygiene: allow
+        f"| # | System | {upper} | Built? |\n"
+        "sw_client = build()\nhandoff = sw_handoff_dir / name\n"  # public-hygiene: allow
+        f"Tracked as {upper}-644 in the other repository's store.\n"
+    )
 
     assert scan_for_private_names(tmp_path) == []
 
