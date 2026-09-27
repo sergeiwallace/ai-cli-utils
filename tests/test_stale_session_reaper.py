@@ -1501,7 +1501,14 @@ def _start_generated_supervisor(
     fast_heartbeat: bool = False,
     child_group_delay: float = 0,
     pseudo_terminal: bool = False,
-    ready_timeout: float = 15,
+    # 45s, not 15s: every test through here starts a REAL supervisor, under `script` and a
+    # pseudo-terminal, and a reload test starts two children in sequence. Measured on one
+    # host, `test_given_reload_exit_when_supervisor_starts_second_child_then_it_is_promoted`
+    # completed in 6-8s alone and exceeded 15s in two of three full `-n auto` runs, so the
+    # budget was failing on wall clock rather than on the promotion defect it exists to
+    # catch. A child that genuinely is left STOPPED never writes its ready file at all, so a
+    # longer budget still fails -- only later.
+    ready_timeout: float = 45,
     extra_commands: dict[str, str] | None = None,
     stdin_fd: int | None = None,
     fast_promotion_retry: bool = False,
@@ -2148,7 +2155,6 @@ def test_given_delayed_child_process_group_when_supervisor_promotes_then_it_wait
         lease_acquired=False,
         child_group_delay=12.0,
         pseudo_terminal=True,
-        ready_timeout=30,
     )
 
     assert process.poll() is None
