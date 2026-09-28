@@ -3199,8 +3199,7 @@ def _do_session_launch(
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
-            _sync_phase = reporter.phase("Worktree", "synchronizing")
-            with _sync_phase:
+            with reporter.phase("Worktree", "synchronizing") as _sync_phase:
                 pull, stranded = pull_rebase_autostash(worktree_path)
                 if pull.returncode != 0 and not stranded and not _conflicted_before:
                     # Reset only when the tree was clean beforehand, so this cleanup can

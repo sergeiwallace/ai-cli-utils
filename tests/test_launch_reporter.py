@@ -574,3 +574,42 @@ def test_given_a_handoff_when_reported_then_the_line_is_flushed_before_returning
     LaunchReporter(stream=stream).handoff(engine="Claude Code", session="c-myproject-1")
 
     assert stream.flushed_after[-1] == "[launch] Ready: handing off to Claude Code (c-myproject-1)\n"
+
+
+def test_given_the_launch_path_when_scanned_then_every_started_phase_is_a_with_block_holding_no_exec():
+    """A started phase arms a self-re-arming heartbeat that only ``__exit__`` cancels.
+
+    Two shapes would let it print onto a terminal the engine already owns: a phase
+    started outside a ``with`` (never exited), or an exec/attach inside the block.
+    """
+    starts_outside_with: list[str] = []
+    execs_inside_with: list[str] = []
+    for function in _launch_functions():
+        with_starts = set()
+        for node in ast.walk(function):
+            if not isinstance(node, ast.With):
+                continue
+            for item in node.items:
+                call = item.context_expr
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "phase":
+                    with_starts.add(id(call))
+                    if len(call.args) < 2:
+                        starts_outside_with.append(f"{function.name}:{call.lineno} with-phase has no start line")
+            for inner in ast.walk(node):
+                if (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr in {"execvp", "handoff", "run_ssh_with_reconnect", "_run_transport_loop"}
+                ):
+                    execs_inside_with.append(f"{function.name}:{inner.lineno} {inner.func.attr}")
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "phase"
+                and len(node.args) >= 2
+                and id(node) not in with_starts
+            ):
+                starts_outside_with.append(f"{function.name}:{node.lineno} started phase outside a with block")
+    assert starts_outside_with == []
+    assert execs_inside_with == []
