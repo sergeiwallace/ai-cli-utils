@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import launch_reporter
 from .native_deps import Candidate, InstallResult, attempt_installs
 
 BYPASS_ENV = "AI_CLI_SKIP_DIRENV"
@@ -312,7 +313,7 @@ def remediation(envrc: Path | None = None, result: InstallResult | None = None) 
     exact command for *this* OS, the bash requirement, how to hook the shell,
     and how to carry on without direnv.
     """
-    lines = ["", "=" * 72, "ai-cli-utils: direnv is not usable on this machine."]
+    lines = ["direnv is not usable on this machine."]
     if envrc is not None:
         lines.append(f"  A project environment exists at {envrc}, so it will NOT be loaded.")
     if result is not None and result.detail:
@@ -359,8 +360,6 @@ def remediation(envrc: Path | None = None, result: InstallResult | None = None) 
         f"      {BYPASS_ENV}=1        (env var; PowerShell: $env:{BYPASS_ENV}='1')",
         "      ai c <n> -D                (per-launch flag)",
         "      [direnv] enabled = false   (config.toml, permanent)",
-        "=" * 72,
-        "",
     ]
     return "\n".join(lines)
 
@@ -391,8 +390,8 @@ def ensure_direnv(
 
     result = install_direnv() if auto_install and not have_direnv else InstallResult(False, detail="")
     if result.installed and bash_available():
-        print(f"ai-cli-utils: installed direnv via {result.tool}.", file=sys.stderr)
+        launch_reporter.active().phase("direnv").outcome(f"installed via {result.tool}")
         return result
 
-    print(remediation(envrc, result), file=sys.stderr)
+    launch_reporter.active().warning(remediation(envrc, result))
     return InstallResult(False, tool=result.tool, detail=result.detail)

@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, overload
 
+from . import launch_reporter
 from .config import (
     WORKTREE_DIR,
     _get_main_project_name,
@@ -1038,10 +1039,9 @@ def _relocate_worktree_to_slot(repo_root: Path, holder: Path, wt_dir: Path) -> N
             f"branch is checked out at {holder} instead of this session's slot {wt_dir}, and moving it "
             f"failed: {_git_stderr(res)}. Move it by hand: {manual}"
         )
-    print(
-        f"[launch] Relocated session worktree: moved {holder} -> {wt_dir} "
-        "(checkout, uncommitted changes and unpushed commits preserved)",
-        file=sys.stderr,
+    launch_reporter.active().phase("Worktree").outcome(
+        f"relocated session worktree: moved {holder} -> {wt_dir} "
+        "(checkout, uncommitted changes and unpushed commits preserved)"
     )
 
 
@@ -1063,12 +1063,11 @@ def _initialize_worktree(
             elif configured_upstream != f"origin/{upstream}":
                 _set_upstream_or_raise(repo_root, branch, upstream)
         elif upstream is None:
-            print(
-                f"Warning: worktree branch {branch!r} was created with NO upstream — no integration "
+            launch_reporter.active().warning(
+                f"worktree branch {branch!r} was created with NO upstream — no integration "
                 f"branch could be resolved for {repo_root.name}. `git push` will stop and ask rather "
                 f"than guess. Declare the branch under [worktree_upstream] in config.toml, or push "
-                f"the branch this repository is on and run `git fetch origin`.",
-                file=sys.stderr,
+                f"the branch this repository is on and run `git fetch origin`."
             )
             _unset_upstream(repo_root, branch)
         else:
@@ -1207,10 +1206,8 @@ def create_worktree(
                         f"create_worktree: could not recover orphaned directory {wt_dir} by moving it to "
                         f"{recovered_path}: {exc}"
                     ) from exc
-                print(
-                    f"[launch] Recovered orphaned directory: moved {wt_dir} -> {recovered_path} "
-                    "(not deleted; review manually)",
-                    file=sys.stderr,
+                launch_reporter.active().phase("Worktree").outcome(
+                    f"recovered orphaned directory: moved {wt_dir} -> {recovered_path} (not deleted; review manually)"
                 )
 
             branch = f"wt-{ai_name}"
@@ -1400,9 +1397,8 @@ def _authorize_session_worktree_envrc(repo_root: Path, worktree_dir: Path) -> No
     if envrc_allowed(worktree_dir) is True:
         return
     if allow_envrc(worktree_dir):
-        print(
-            f"[launch] direnv: authorized {worktree_dir / '.envrc'} (session worktree created by this tool)",
-            file=sys.stderr,
+        launch_reporter.active().phase("direnv").outcome(
+            f"authorized {worktree_dir / '.envrc'} (session worktree created by this tool)"
         )
 
 
