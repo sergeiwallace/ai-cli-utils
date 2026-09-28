@@ -517,7 +517,24 @@ def test_given_the_recorded_pid_is_the_caller_when_ended_then_it_is_not_signalle
     aimed = _record_aimed_pids(monkeypatch)
     monkeypatch.setattr(os, "getpid", lambda: proc.pid)
 
-    assert [target.pid for target in probe._tree(proc.pid)] == []
+    # The property is that the CALLER was excluded, not that the tree is empty.
+    #
+    # `== []` was the same environment-falsifiable oracle AI-CLI-l6hv removed from the
+    # assertion below, left behind in the precondition: it also claims no unrelated
+    # process on the host reports this pid as its parent. Windows cannot promise that.
+    # It never reparents an orphan, so a process whose parent has exited keeps the dead
+    # parent's pid recorded, and Windows recycles pids aggressively -- so once our
+    # sleeper is given a recently-freed number, unrelated processes start looking like
+    # its children. Measured on Windows CI (run 36360403720): `assert [1820] == []`,
+    # with the guard working correctly. Intermittent on main for the same reason,
+    # failing at 843811f and 466984d while passing at 34f5f57, 209e554 and 564d3c1.
+    #
+    # Asserting the caller's absence is falsifiable by this code and by nothing else:
+    # only a regression in _tree's own "the current process is never a target" filter
+    # can break it, which is exactly the behavior under test.
+    assert proc.pid not in [target.pid for target in probe._tree(proc.pid)], (
+        "_tree must exclude the calling process, since `ai c` can be launched from inside the session being reclaimed"
+    )
     probe.end_process(proc.pid, identity, timeout=0)
 
     assert proc.pid not in aimed, "the caller's own process must never be signalled"

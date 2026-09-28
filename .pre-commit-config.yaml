@@ -164,6 +164,38 @@ repos:
       # correctly from a linked worktree (AIH-396), so the only in-worktree remedy
       # was its own forbidden SKIP=docs-index-check bypass. Removed deliberately,
       # gate-first: docs/README.md content is untouched by this change.
+      # pyright (AI-CLI-ckzk, 2026-09-27): CI's lint job runs FOUR checks and the
+      # local gate ran two of them, so a type error passed every local gate and
+      # landed on main. That is not hypothetical -- it was caught here by running
+      # pyright by hand on a branch whose author's gate had reported clean:
+      # `main.py:3156` passed `Path | None` where `Path` was required.
+      #
+      # pre-push, not pre-commit: 5.3s warm on this repo, which is too slow to pay on
+      # every commit and fast enough to pay before code leaves the machine. That also
+      # matches the actual failure mode -- the defect is type errors reaching `main`,
+      # not type errors existing briefly in a local commit.
+      #
+      # `uv run --no-sync` for the reason python-version-sync uses it: a
+      # `language: system` hook otherwise resolves whatever pyright is first on the
+      # committing shell's PATH, which is a different binary and possibly a different
+      # version than the one CI runs, and `--no-sync` keeps a push from silently
+      # provisioning a venv.
+      - id: pyright
+        name: pyright (type check src/ -- parity with CI's lint job)
+        entry: uv run --no-sync pyright src/
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+      # doc-alignment (AI-CLI-ckzk): the other check CI's lint job ran and the local
+      # gate did not. 0.26s measured, so unlike pyright it is cheap enough to run on
+      # every commit rather than only before a push.
+      - id: doc-alignment
+        name: doc alignment (shared CLAUDE.md/GEMINI.md sections match)
+        entry: python3 scripts/lint_doc_alignment.py
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: test-gate
         name: test gate (mise-aware, tech-stack auto-detect)
         entry: test-gate

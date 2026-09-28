@@ -207,8 +207,29 @@ unrelated ones.
 All contributions must pass this before merge:
 
 ```bash
-uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run pytest
+uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ \
+  && uv run pyright src/ && uv run pytest
 ```text
+
+**`pyright` is part of the gate, not an extra.** It used to be missing here while CI's
+lint job ran it, which meant type errors passed every local check and landed on `main`
+with nothing to catch them (AI-CLI-ckzk). That is not a theoretical gap — it was found
+by running pyright by hand on a branch whose gate had been reported clean, and it
+reported `main.py:3156 - Argument of type "Path | None" cannot be assigned to
+parameter "path" of type "Path"`.
+
+It also runs as a `pre-push` pre-commit hook rather than a `pre-commit` one. At around
+five seconds it is too slow to pay on every commit and cheap enough to pay before code
+leaves the machine, which is also where the defect actually lives: the problem was type
+errors reaching `main`, not type errors existing briefly in a local commit.
+
+`tests/test_local_gate_matches_ci_lint.py` keeps the two definitions aligned. Every
+check in CI's lint job must be either enforced locally by a named pre-commit hook or
+recorded as intentionally CI-only with a reason — adding one to CI without deciding
+which fails that test. Two checks are deliberately CI-only: `uv sync --locked` is
+environment provisioning rather than a check, and the 3.11 floor `compileall` needs a
+second interpreter that every contributor would otherwise have to download to verify a
+claim about the published artifact.
 
 **Run it through `uv run`, not a bare `ruff`/`pytest`.** A bare `ruff` resolves through
 `PATH`, which may be a different version than `pyproject.toml` pins — and the ruff version
