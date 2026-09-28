@@ -89,10 +89,30 @@ error: Pulling is not possible because you have unmerged files.
 fatal: Exiting because of an unresolved conflict.        (exit 128)
 ```
 
-`check=False` discarded that code too. And `_auto_update_if_stale` (`main.py:243`) writes its
+`check=False` discarded that code too. And `_auto_update_if_stale` (then `main.py:243`) wrote its
 stamp file keyed on the *current* HEAD **before** running the update, so with HEAD frozen the
-early-return at `main.py:253` matches forever and auto-update never retries. Verified on the live
+early-return at `main.py:253` matched forever and auto-update never retried. Verified on the live
 box: stamp file and HEAD were both `4711d4e`.
+
+That latch was tracked separately as `AI-CLI-6bg`, because moving the write is not a one-line fix:
+writing the stamp only on success means every later launch retries a failing update. Both halves are
+now closed, in `_auto_update_if_stale` and in the `ai update` success block:
+
+* The staleness signal is a content fingerprint of the packaged source rather than HEAD, so a frozen
+  HEAD can no longer be mistaken for a current install at all.
+* The stamp is written only after the install exits 0 — so a failed update is never remembered as
+  done.
+* A failed attempt is recorded in `~/.local/state/ai-cli-utils/last_install_failure.json` and the
+  next launch backs off rather than retrying at once. The record is keyed on the fingerprint, so any
+  edit to a packaged file retries immediately; the wait doubles from 15 minutes to a 6-hour ceiling,
+  so a host repaired without touching the source retries on its own; and an absent, malformed or
+  pre-clock-correction record resolves to "attempt it now", because the failure mode of the backoff
+  must be an extra attempt and never a second latch. A successful update, from either path, clears
+  the record.
+
+Still open by construction: an update that exits 0 without installing the new source is remembered
+as done, because the post-update fingerprint is read from the source tree rather than from the
+installed one.
 
 ## Blast radius (live incident)
 
