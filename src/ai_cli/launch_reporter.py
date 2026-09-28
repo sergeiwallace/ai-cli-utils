@@ -126,7 +126,7 @@ class _Phase(AbstractContextManager["_Phase"]):
         self.has_outcome = True
         self.reporter._emit(self.name, self._with_elapsed(message))
 
-    def __exit__(self, exc_type, exc, traceback) -> bool:
+    def __exit__(self, exc_type, exc, traceback) -> None:
         self._finish()
         if isinstance(exc, KeyboardInterrupt):
             self.reporter._emit(
@@ -151,7 +151,6 @@ class _Phase(AbstractContextManager["_Phase"]):
             # A started phase owes an outcome line; make the omission visible
             # rather than leaving the start line dangling.
             self.outcome("done")
-        return False
 
 
 class LaunchReporter:
@@ -175,10 +174,7 @@ class LaunchReporter:
 
     def activate(self) -> LaunchReporter | None:
         """Make this the reporter :func:`active` returns; give back the previous one."""
-        global _active
-        previous = _active
-        _active = self
-        return previous
+        return activate(self)
 
     def _render(self, phase: str, outcome: str, phase_style: dict, outcome_style: dict | None) -> str:
         label = click.style(f"{phase}:", **phase_style)
@@ -234,6 +230,14 @@ class LaunchReporter:
 
 
 _active: LaunchReporter | None = None
+
+
+def activate(reporter: LaunchReporter | None) -> LaunchReporter | None:
+    """Install ``reporter`` as the active one (``None`` clears it); return the previous."""
+    global _active
+    previous = _active
+    _active = reporter
+    return previous
 
 
 def active() -> LaunchReporter:

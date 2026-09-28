@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import ast
 import io
 import logging
 import os
 import sys
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import click
 import pytest
 
+from ai_cli import direnv_setup as direnv_setup_module
 from ai_cli import launch_reporter
+from ai_cli import main as main_module
+from ai_cli import session as session_module
+from ai_cli import tmux_setup as tmux_setup_module
 from ai_cli.launch_reporter import InstallOrigin, LaunchReporter
 from ai_cli.main import _do_session_launch, _launch_install_origin, cli
 
@@ -401,3 +407,170 @@ def test_given_an_activated_reporter_when_active_is_asked_then_its_policy_applie
 
     previous.activate()
     assert launch_reporter.active() is default
+
+
+# --- the launch path uses one reporter ---------------------------------------------
+
+
+def _launch_functions() -> list[ast.FunctionDef]:
+    tree = ast.parse(Path(main_module.__file__).read_text(encoding="utf-8"))
+    wanted = {"_do_session_launch", "_session_command", "_exit_missing_project_dir"}
+    return [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in wanted]
+
+
+def test_given_the_launch_path_when_scanned_then_no_line_bypasses_the_reporter():
+    """Every launcher-owned line goes through the reporter, never a bare print.
+
+    The two dry-run plan printers are the deliberate exception: they are a stdout
+    report of resolved values, not progress, and stdout is the right stream for it.
+    """
+    functions = _launch_functions()
+    assert {node.name for node in functions} == {"_do_session_launch", "_session_command", "_exit_missing_project_dir"}
+    prints = [
+        f"{node.name}:{call.lineno}"
+        for node in functions
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "print"
+    ]
+    assert prints == []
+    source = Path(main_module.__file__).read_text(encoding="utf-8")
+    assert "if reporter is not None" not in source
+
+
+@pytest.mark.parametrize(
+    ("module", "forbidden"),
+    [
+        (session_module, '"[launch]'),
+        (tmux_setup_module, "ai-cli-utils: "),
+        (tmux_setup_module, "ai-cli: "),
+        (direnv_setup_module, "ai-cli-utils: "),
+    ],
+)
+def test_given_a_launch_adjacent_module_when_scanned_then_no_copied_prefix_remains(module, forbidden):
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert forbidden not in source
+
+
+def test_given_no_reporter_when_launching_then_the_active_reporter_is_used(tmp_path, monkeypatch, capsys):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.setattr(launch_reporter, "_active", None)
+    with (
+        patch("ai_cli.main._direnv_setup.ensure_direnv", return_value=MagicMock(installed=True, detail="")),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.session.build_session_name", return_value=("c-myproject-1", "myproject-1")),
+        patch("ai_cli.session.detect_repo_root", return_value=None),
+        patch("ai_cli.session.create_worktree", return_value=(worktree, True)),
+        patch("ai_cli.main.pull_rebase_autostash", return_value=(MagicMock(returncode=0), None)),
+        patch("ai_cli.main.detect_missing_tracked_symlinks", return_value=[]),
+        patch("ai_cli.main.detect_phantom_deleted_files", return_value=[]),
+        patch("ai_cli.config.get_current_project_name", return_value="myproject"),
+        patch("ai_cli.main.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
+        patch("ai_cli.main._exec_with_direnv", side_effect=SystemExit(0)),
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(
+                engine="c",
+                name="1",
+                resume=False,
+                once=False,
+                bare=True,
+                notify=False,
+                sandbox=False,
+                no_worktree=False,
+                remote=False,
+                project="",
+                is_remote=False,
+                project_prefix_override="myproject",
+                extra_args=[],
+                config={"worktree": {"enabled": True}},
+            )
+
+    err = capsys.readouterr().err
+    assert "[launch] Worktree: creating isolated worktree" in err
+    assert f"[launch] Worktree: created {worktree} (disable with -W/--no-worktree" in err
+    assert "[launch] Ready: handing off to Claude Code (myproject-1)" in err
+
+
+def test_given_a_resume_with_no_matching_session_when_launching_then_the_refusal_is_an_error_line(capsys):
+    reporter = LaunchReporter()
+    with (
+        patch("ai_cli.main._direnv_setup.ensure_direnv", return_value=MagicMock(installed=True, detail="")),
+        patch("ai_cli.session._resolve_is_remote", return_value=False),
+        patch("ai_cli.main._tmux_setup.tmux_runs", return_value=True),
+        patch("ai_cli.main._tmux_setup.formats_expand", return_value=True),
+        patch("ai_cli.main._tmux_setup.probe", return_value=MagicMock(versions_disagree=False)),
+        patch("ai_cli.main._tmux_setup.report_lines", return_value=[]),
+        patch("ai_cli.trust.ensure_workspace_trusted"),
+        patch("ai_cli.session.resolve_session", return_value=None),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _do_session_launch(
+                engine="c",
+                name="7",
+                resume=True,
+                once=False,
+                bare=False,
+                notify=False,
+                sandbox=False,
+                no_worktree=True,
+                remote=False,
+                project="",
+                is_remote=False,
+                project_prefix_override="myproject",
+                extra_args=[],
+                config={},
+                reporter=reporter,
+            )
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[launch] Error: no matching session found for 'c-myproject-7'" in captured.err
+
+
+def test_given_quiet_session_command_when_it_starts_then_the_active_reporter_carries_the_policy(monkeypatch):
+    monkeypatch.setattr(launch_reporter, "_active", None)
+    seen: dict[str, LaunchReporter] = {}
+
+    def _capture(**kwargs):
+        seen["active"] = launch_reporter.active()
+        seen["passed"] = kwargs["reporter"]
+
+    with (
+        patch("sys.argv", ["ai", "c", "-q"]),
+        patch("ai_cli.main._ensure_dolt_server"),
+        patch("ai_cli.main._auto_update_if_stale", return_value=False),
+        patch("ai_cli.main._do_session_launch", side_effect=_capture),
+        patch("ai_cli.main.trigger_background_update"),
+        patch("ai_cli.tunnel._ensure_nats_tunnel"),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            cli()
+
+    assert exc_info.value.code == 0
+    assert seen["active"] is seen["passed"]
+    assert seen["active"].quiet is True
+    # The launch's reporter is bound to this process's stderr and launch log; once
+    # the launch has unwound it must not stay active for whatever runs next.
+    assert launch_reporter.active() is not seen["active"]
+
+
+class _FlushRecorder(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushed_after: list[str] = []
+
+    def flush(self) -> None:
+        super().flush()
+        self.flushed_after.append(self.getvalue())
+
+
+def test_given_a_handoff_when_reported_then_the_line_is_flushed_before_returning():
+    """The exec that follows replaces the process; a buffered line would vanish."""
+    stream = _FlushRecorder()
+
+    LaunchReporter(stream=stream).handoff(engine="Claude Code", session="c-myproject-1")
+
+    assert stream.flushed_after[-1] == "[launch] Ready: handing off to Claude Code (c-myproject-1)\n"
