@@ -568,7 +568,11 @@ def _test_temp_roots() -> tuple[str, ...]:
     relocated = os.environ.get("PYTEST_DEBUG_TEMPROOT")
     if relocated:
         roots.append(relocated)
-    return tuple(os.path.realpath(root) for root in roots)
+    # normcase as well as realpath: Windows paths compare case-insensitively, and a drive
+    # letter reaches this in both spellings (``C:\aipt`` from the relocated root,
+    # ``c:\aipt\...`` from a resolved stub). A case-sensitive comparison would call a stub
+    # inside the temp tree the operator's own binary and refuse a legitimate test.
+    return tuple(os.path.normcase(os.path.realpath(root)) for root in roots)
 
 
 def payload_word_reaches_a_real_binary(word: str) -> bool:
@@ -591,7 +595,7 @@ def payload_word_reaches_a_real_binary(word: str) -> bool:
     if resolved is None:
         return False
     try:
-        real = os.path.realpath(resolved)
+        real = os.path.normcase(os.path.realpath(resolved))
     except OSError:
         return True  # cannot prove it is a stub, so treat it as the operator's own
     return not any(real.startswith(root + os.sep) for root in _test_temp_roots())

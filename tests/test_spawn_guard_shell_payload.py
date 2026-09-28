@@ -12,11 +12,14 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
 from conftest import (
     _PROTECTED_TEST_BINARIES,
+    _SHELL_PROGRAMS,
+    _WINDOWS_SHELL_COMMAND_FLAGS,
     _command_program,
     payload_word_reaches_a_real_binary,
     shell_command_payloads,
@@ -85,12 +88,24 @@ def test_given_a_shell_payload_touching_nothing_protected_when_run_then_it_still
 
     Run for real rather than asserted against the predicate, because the regression this
     guards against is the guard refusing a legitimate spawn -- which only a real call proves.
+
+    The shell is the host's own, and the flag comes from the guard's own Windows list so the
+    test and the rule cannot drift apart. ``bash -c`` was hardcoded and returned 1 on the
+    Windows runner -- a ``bash`` that resolves there is not necessarily one that runs -- which
+    made a portability bug in this test look like the guard refusing a benign payload.
     """
+    if sys.platform == "win32":
+        shell, flag = "cmd.exe", "/c"
+        assert flag in _WINDOWS_SHELL_COMMAND_FLAGS, "the guard no longer treats /c as a command string"
+    else:
+        shell, flag = "bash", "-c"
+    assert _command_program(shell) in _SHELL_PROGRAMS, f"{shell} is not a shell the guard inspects"
+
     completed = subprocess.run(
-        ["bash", "-c", "echo guarded-but-allowed"], capture_output=True, text=True, timeout=30, check=False
+        [shell, flag, "echo guarded-but-allowed"], capture_output=True, text=True, timeout=30, check=False
     )
 
-    assert completed.returncode == 0
+    assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "guarded-but-allowed"
 
 
