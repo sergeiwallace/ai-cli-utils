@@ -2036,7 +2036,20 @@ def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_rec
     process, events, _ = _start_generated_supervisor(tmp_path, supported_session_shell, lease_acquired=False)
 
     os.kill(process.pid, signal.SIGTERM)
-    time.sleep(0.05)
+    # Wait for the relay to be OBSERVABLE rather than sleeping a guessed 50ms. The sibling
+    # test below already does this; this one did not, and it was the difference between a
+    # stable test and an intermittently red macOS job -- 50ms is not enough for the child's
+    # TERM trap to create the file on a loaded runner, so `events.read_text()` below raised
+    # FileNotFoundError while the supervisor was behaving correctly.
+    #
+    # It also makes the assertion mean what it says. The subject is that a REPEATED SIGTERM
+    # still produces exactly one relay, so the first relay has to have happened before the
+    # second signal is sent; with a fixed sleep, a fast machine could deliver the second
+    # TERM first and the test would be measuring a different sequence than it describes.
+    #
+    # _wait_for_path cannot mask the defect it guards: it fails if the supervisor exits
+    # early, and fails on timeout, so a child that never relays still fails -- only later.
+    _wait_for_path(events, process)
     if process.poll() is None:
         os.kill(process.pid, signal.SIGTERM)
     stdout, stderr = _communicate_supervisor(process)
