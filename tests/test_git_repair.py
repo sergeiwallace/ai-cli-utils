@@ -1,5 +1,5 @@
 """Tests for the core.bare=true / stale core.worktree corruption fix (AI-CLI-99),
-plus the AIH-443 phantom-deletion detection guards."""
+plus the phantom-deletion detection guards."""
 
 import contextlib
 import http.server
@@ -237,7 +237,7 @@ def test_repair_when_real_repo_corrupted_then_fixes_it_end_to_end(tmp_path):
     assert worktree_cfg.returncode != 0  # unset
 
 
-# --- pull_rebase_autostash / unmerged_paths / stash_entries (AIH-443 Shape B) ---
+# --- pull_rebase_autostash / unmerged_paths / stash_entries (Shape B) ---
 #
 # These drive real `git` subprocesses on real repos on purpose. The defect IS
 # git's exit-code behaviour, so a mocked subprocess would assert only what the
@@ -691,11 +691,11 @@ def test_pull_rebase_autostash_when_state_unverifiable_then_reports_strand(tmp_p
     assert "could not be verified" in stranded
 
 
-# --- detect_missing_tracked_symlinks (AIH-443 Shape A) ---
+# --- detect_missing_tracked_symlinks (Shape A) ---
 
 
 def test_detect_missing_tracked_symlinks_when_symlink_missing_from_disk_then_reports_it(tmp_path):
-    """Reproduces AIH-443 Shape A's exact signature: a tracked symlink HEAD still
+    """Reproduces Shape A's exact signature: a tracked symlink HEAD still
     lists is absent from disk (verified `os.path.lexists` failure), with no git
     error anywhere — the same shape a Claude Code `isolation: worktree` checkout
     produced for 21 real symlinks in one sub-agent worktree."""
@@ -743,7 +743,7 @@ def test_detect_missing_tracked_symlinks_when_regular_file_missing_then_ignored(
     assert detect_missing_tracked_symlinks(repo) == []
 
 
-# --- detect_phantom_deleted_files (AIH-443 Shape C) ---
+# --- detect_phantom_deleted_files (Shape C) ---
 
 
 def _init_repo(tmp_path):

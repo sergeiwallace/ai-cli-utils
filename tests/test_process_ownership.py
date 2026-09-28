@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from time import monotonic, sleep
 
 import psutil
 import pytest
@@ -35,12 +36,38 @@ _PARENT_OF_A_GRANDCHILD = (
 )
 
 
-def _gone(pid: int) -> bool:
-    """True once *pid* is neither running nor a zombie holding its own entry."""
-    try:
-        return not psutil.Process(pid).is_running() or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return True
+def _gone(pid: int, timeout: float = 10.0) -> bool:
+    """True once *pid* is neither running nor a zombie holding its own entry.
+
+    Polled rather than read once, because "has exited" and "is observably gone" are
+    not the same instant and the gap is platform-dependent. Reading it once made this
+    file's tree test intermittently red on Windows CI and nowhere else -- failing on
+    main at 843811f and on two unrelated pull requests, always as a bare
+    ``assert False`` on a pid whose process the reap had in fact ended.
+
+    Two Windows mechanisms can each produce that, and this bound is correct under
+    either, which is why no attempt is made to distinguish them from a host that
+    cannot run Windows. A pid stays valid there while any handle to it remains open,
+    and ``Popen`` holds one until it is collected, so an exited process can still
+    answer ``is_running()``. And Windows recycles pids aggressively, so a freed
+    number can be occupied by something new between the reap and the read.
+
+    For a process spawned through ``Popen`` prefer ``proc.poll() is not None``, which
+    is authoritative: it reports the exit status of *that* child and cannot be
+    confused by another process holding the same number. This helper is for a
+    grandchild, where no handle is available and a pid is all there is.
+    """
+    deadline = monotonic() + timeout
+    while True:
+        try:
+            process = psutil.Process(pid)
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        if monotonic() >= deadline:
+            return False
+        sleep(0.05)
 
 
 def test_given_an_owned_spawn_when_it_starts_then_it_is_really_running():
@@ -54,7 +81,7 @@ def test_given_an_owned_spawn_when_reaped_then_the_process_is_gone():
     reap(proc)
 
     assert proc.poll() is not None, "reap returned before the process had actually exited"
-    assert _gone(proc.pid)
+    assert _gone(proc.pid), "the reaped process is still observable as running"
 
 
 def test_given_an_already_reaped_process_when_reaped_again_then_it_is_a_no_op():
@@ -75,7 +102,11 @@ def test_given_a_child_with_a_grandchild_when_reaped_then_the_whole_tree_is_gone
 
     reap(proc)
 
-    assert _gone(proc.pid)
+    # poll() for the child we own, _gone() only for the grandchild we do not: poll()
+    # reports THIS child's exit status and cannot be answered by another process that
+    # inherited its number, which on Windows is a real possibility rather than a
+    # theoretical one.
+    assert proc.poll() is not None, "reap returned before the child had actually exited"
     assert _gone(grandchild), f"the grandchild {grandchild} outlived the reap of its group"
 
 

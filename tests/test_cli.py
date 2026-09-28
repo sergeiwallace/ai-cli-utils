@@ -2379,7 +2379,7 @@ class TestDeploy:
         assert not any(a.startswith("--link-mode") for a in install), f"unexpected --link-mode in {install}"
 
     def test_deploy_when_autostash_pop_conflicts_then_aborts_instead_of_installing(self, tmp_path, capsys):
-        """AIH-443 Shape B, end to end through the real `ai update` path against
+        """The autostash-pop-conflict shape, end to end through the real `ai update` path against
         real git. The pull exits 0 while its autostash pop conflicts; `ai update`
         must refuse rather than install from the half-applied checkout.
 
