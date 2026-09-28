@@ -117,7 +117,7 @@ _PRIVATE_SESSION_PREFIX = "sw"  # public-hygiene: allow
 # case rather than by shape. The uppercase form ``SW-1234`` is not a session name  # public-hygiene: allow
 # at all: it is a private dev-tracking issue id, and it belongs to a class this
 # repository also carries 149 instances of under a *different* prefix
-# (``AIH-1234``). Folding the uppercase form in here would produce a guard that
+# (``AIH-1234``). Folding the uppercase form in here would produce a guard that  # public-hygiene: allow
 # forbids one private tracker's ids and silently permits the other's -- an
 # incoherent rule that reads as complete. That class is tracked as its own issue.
 _SESSION_NAME = re.compile(rf"(?:^|[^A-Za-z0-9]){re.escape(_PRIVATE_SESSION_PREFIX)}-")
@@ -250,21 +250,35 @@ def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_na
 # Forbidding them would delete references a reader can actually follow.
 _PRIVATE_TRACKER_ID = re.compile(r"\b(?:AIH|SW|CORE)-[0-9A-Za-z]{2,}\b")  # public-hygiene: allow
 
-# `src` and `scripts` only, and the omission of `tests` and `docs` is a measured scope
+# `src`, `scripts` and now `tests`. The omission of `docs` remains a measured scope
 # decision rather than an oversight -- the mistake the `scripts` gap above taught.
 #
-# Measured 2026-09-27 with `grep -r`, after the shipped-source scrub: `src` holds 1
-# occurrence and `scripts` holds 0, while `tests` holds 18 across 8 files and `docs` holds
-# 224 across 33. Widening now would make this guard red on work in flight and would force a
-# 224-occurrence documentation scrub in the same change -- and in `docs` specifically, an id
-# is often the only provenance link a maintainer has, so removing it is a judgement call that
-# has not been made yet rather than a cleanup.
+# Measured 2026-09-27 with `grep -r`: after the shipped-source scrub `src` and `scripts`
+# both hold 0. `tests` held 22 occurrences across 8 files and is now scrubbed, so it joins
+# the scan. `docs` still holds 224 across 33 files and deliberately does NOT: there, an id
+# is often the only provenance link a maintainer has, so removing one is a judgement call
+# nobody has made rather than a cleanup, and folding a 224-occurrence documentation rewrite
+# into any other change would make it unreviewable.
 #
 # Measure with `grep -r`, NOT `git grep`: git's regex engine does not honour `\b` on every
 # host, and the same pattern that matches 42 files under `grep -rlE` matched 0 under
-# `git grep -lE`. A future reader re-measuring with `git grep` will wrongly conclude the
-# remaining work is already done.
-_TRACKER_ID_SCANNED_PATHS = ("src", "scripts")
+# `git grep -lE`. Re-confirmed on `tests` while scrubbing it -- 8 files under `grep -rlE`,
+# 0 under `git grep -lE`. A future reader re-measuring with `git grep` will wrongly conclude
+# the remaining work is already done.
+_TRACKER_ID_SCANNED_PATHS = ("src", "scripts", "tests")
+
+# One file inside a scanned path is held out, and it is named here rather than exempted
+# with an inline marker so the debt is visible in one place instead of hidden at the line.
+#
+# `tests/conftest.py` carries a single id in a comment. It is excluded only because a
+# delegated agent is editing that file right now, and editing another session's file is
+# what produced the one merge collision earlier in this batch. An inline
+# `public-hygiene: allow` marker would have been the wrong tool: it says "this line is
+# legitimate", and this line is not -- it is pending.
+#
+# Removing the entry is the whole remaining task for `tests`, and the test below asserts
+# the set's exact contents, so it cannot silently grow into a general escape hatch.
+_TRACKER_ID_PENDING_PATHS = frozenset({Path("tests") / "conftest.py"})
 
 
 def scan_for_private_tracker_ids(root: Path) -> list[str]:
@@ -272,10 +286,28 @@ def scan_for_private_tracker_ids(root: Path) -> list[str]:
     findings: list[str] = []
     for path, relative_path, text in _scanned_text_files(root, _TRACKER_ID_SCANNED_PATHS):
         del path
+        if relative_path in _TRACKER_ID_PENDING_PATHS:
+            continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             if _PRIVATE_TRACKER_ID.search(line) and not _line_is_exempted(relative_path, line):
                 findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
     return findings
+
+
+def test_given_the_pending_holdout_set_when_read_then_it_is_exactly_the_known_debt():
+    """The held-out set is pinned so it cannot quietly become a general escape hatch.
+
+    A per-file exclusion is the kind of mechanism that starts as one pending file and ends
+    as the reason the guard enforces nothing. Pinning the exact contents means adding a
+    second file has to be deliberate and reviewed, and means deleting the last entry --
+    the actual goal -- shows up here as a required edit rather than being forgotten.
+    """
+    held_out = sorted(path.as_posix() for path in _TRACKER_ID_PENDING_PATHS)
+
+    assert held_out == ["tests/conftest.py"], (
+        f"the pending holdout set changed: {held_out}. Scrub the file and remove it from the set; "
+        "do not add new entries to work around the guard."
+    )
 
 
 def test_given_the_shipped_package_and_its_scripts_when_scanned_then_no_private_tracker_ids_remain():

@@ -10,8 +10,7 @@ Measured 2026-09-15 on a real session: ``.worktrees/session-1`` and
 worktree deregistered, and it disappeared from the editor's source-control view.
 Only the branch survived, because ``git worktree remove`` never touches one.
 
-That contradicted the ratified fleet rule (AIH-771, ai-harness
-``docs/procedures/worktree-workflow.md``): a canonical ``ai c``/``ai g`` session
+That contradicted this project's ratified worktree rule: a canonical ``ai c``/``ai g`` session
 worktree is a long-lived session home and is "never a cleanup candidate whatever
 their merge status or cleanliness". Cleanliness was precisely the condition the
 teardown used to justify removing one.
@@ -136,7 +135,7 @@ class TestSessionWorktreeSurvivesExit:
 
         assert "cleanup-worktree" not in script, (
             "the supervisor teardown still invokes the worktree reap; "
-            "a canonical session worktree must outlive its session (AIH-771)"
+            "a canonical session worktree must outlive its session"
         )
         assert "worktree remove" not in script, "the generated session script still contains a git worktree removal"
 
