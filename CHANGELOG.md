@@ -114,6 +114,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with every main tree read-only under the worktree model, a chief running in a
   repo root was the anomaly. `-W/--no-worktree` still turns isolation off.
 
+- **A commit that deletes a file still live on the default branch is now rejected.**
+  Files have gone missing from worktrees repeatedly and silently — `git status` reports
+  a tracked path as deleted, every exit code reads fine, and the loss only surfaces
+  later as someone else's work missing from `main`. Three investigations failed to
+  identify what removes the file in the first place, and the cause is not identifiable
+  even in principle: `rm` + `git add -A` and `git rm` produce identical index states,
+  so an accidental deletion and an intentional one are structurally indistinguishable.
+  The outcome is guardable, so that is what is now guarded — a missing file is harmless
+  and recoverable from `HEAD`, only the commit is not. A new pre-commit-stage hook
+  (`live-file-deletion-guard`, `scripts/check_live_file_deletions.py`) compares HEAD
+  against the index and refuses any staged deletion of a path that still exists on the
+  last-fetched upstream default branch. Only what *that* commit removes can block it,
+  so a deletion an earlier commit on the branch made on purpose does not fail every
+  later one. Intentional deletions are acknowledged per path with
+  `ALLOW_DELETIONS=path/a,path/b git commit` — per path rather than all-or-nothing,
+  because an intentional deletion riding along with an accidental one is precisely the
+  case worth catching; `ALLOW_DELETIONS=1` and `SKIP=live-file-deletion-guard` are the
+  blanket forms. An unresolvable comparison ref fails CLOSED when deletions are staged
+  (and passes silently when none are): an unavailable probe treated as "no problem" is
+  how a guard comes to enforce nothing while every exit code still reads fine. It never
+  touches the network, so the comparison is a lower bound on what is live upstream — a
+  stale ref can miss a deletion but cannot invent one, and a false positive is the
+  failure mode that gets a guard switched off. The pre-commit framework itself is not
+  patched or worked around; restoring unstaged changes after hooks run is its correct
+  designed behaviour. Standard library and `git` only, with no import from this
+  package, so the checker is copyable into any repo. (`AI-CLI-9sy`)
+
 ### Changed
 
 - **CI now refuses to install from a stale lockfile.** All four jobs synced with
