@@ -270,7 +270,6 @@ src/ai_cli/
   quota.py         # API quota tracking
   setup.py         # `ai setup` — environment detection and CLAUDE.md configuration
   telemetry.py     # Usage telemetry
-  handoff.py       # Cross-session task handoff queue
 
 tests/
   test_main.py     # Session management tests
