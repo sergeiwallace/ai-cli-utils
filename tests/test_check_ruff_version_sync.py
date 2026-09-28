@@ -1,4 +1,4 @@
-"""Tests for scripts/check_ruff_version_sync.py (AIH-473 ruff pin/rev gate)."""
+"""Tests for scripts/check_ruff_version_sync.py (the ruff pin/rev gate)."""
 
 from __future__ import annotations
 
