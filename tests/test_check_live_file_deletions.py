@@ -179,6 +179,41 @@ def test_given_deletion_committed_in_an_earlier_commit_when_next_commit_checked_
     assert check(repo) == [], "only what THIS commit deletes may block it"
 
 
+def test_given_staged_deletion_of_a_tracked_symlink_when_checked_then_rejects(repo: Path):
+    """A tracked symlink counts. One of the established loss shapes is exactly this.
+
+    A checkout that failed to materialise 21 git-tracked symlinks, with every
+    regular file arriving correctly, is a confirmed cause of this class of loss --
+    so a guard blind to mode 120000 would miss it entirely. This is a real risk
+    rather than a theoretical one: `git_repair.detect_phantom_deleted_files`
+    deliberately EXCLUDES symlinks, to avoid double-reporting against its sibling
+    detector, and a later refactor that made this guard mirror that exclusion
+    would silently reopen the shape. Committing a deleted symlink loses just as
+    much as committing a deleted file, so the exclusion must not be copied here.
+
+    The symlink is created through git plumbing (`update-index --cacheinfo`)
+    rather than `os.symlink`: that writes the mode-120000 index entry with no
+    filesystem symlink at all, which IS the shape's signature -- and it needs
+    none of the privilege Windows requires to create a real symlink.
+    """
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+        input="plan.md",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    _git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},docs/link.md")
+    assert _git(repo, "commit", "-q", "--no-verify", "-m", "add a tracked symlink").returncode == 0
+    _git(repo, "update-ref", "refs/remotes/origin/main", _git(repo, "rev-parse", "HEAD").stdout.strip())
+    assert "120000" in _git(repo, "ls-files", "-s", "--", "docs/link.md").stdout, "fixture must stage a symlink"
+
+    # What `git add -A` produces once the symlink has vanished from the checkout.
+    _git(repo, "update-index", "--force-remove", "docs/link.md")
+
+    assert "docs/link.md" in "\n".join(check(repo))
+
+
 # --- the acknowledgement path (it has to stay usable or it gets bypassed) ---
 
 
