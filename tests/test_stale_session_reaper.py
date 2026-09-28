@@ -7,6 +7,7 @@ asserts that no ID-targeted kill is issued.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import os
 import re
@@ -1575,12 +1576,24 @@ def _start_generated_supervisor(
     sessions_dir.mkdir(parents=True)
     child_script = (
         child_body
+        # Traps FIRST, then the ready file (AI-CLI-51lw). The ready file is the only
+        # signal every caller here has that the child may be signalled, so it must not
+        # be published until the child can actually observe a signal. Written the other
+        # way round it leaves a window in which the child is "ready" but still carries
+        # the DEFAULT dispositions -- and the default for TERM and INT is to die
+        # silently. A signal landing in that window kills the child without writing the
+        # event the test is about to assert on, the supervisor then finds no child to
+        # relay to and exits 0, and the test fails as "supervisor exited before its
+        # child was ready" with an empty event log, blaming the supervisor for a race
+        # in this harness. Measured directly: with a delay between the two statements
+        # the child exits on signal -15 and never writes the event; with this order it
+        # exits 0 and the event is always there.
         or f"""#!{shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
-  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; sleep 0.4; exit 77' TERM
   trap 'printf "INT\\n" >> "$AI_CLI_TEST_EVENTS"' INT
   trap 'printf "WINCH\\n" >> "$AI_CLI_TEST_EVENTS"' WINCH
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   while true; do sleep 0.05; done
 fi
 """
@@ -1660,6 +1673,76 @@ def _finish_supervisor(process: subprocess.Popen[str]) -> tuple[str, str]:
         os.kill(process.pid, signal.SIGTERM)
     stdout, stderr = _communicate_supervisor(process)
     return stdout, stderr
+
+
+_READY_WRITE = '> "$AI_CLI_TEST_CHILD_READY"'
+_EVENT_TRAP = re.compile(r"^[ \t]*trap .*AI_CLI_TEST_EVENTS", re.MULTILINE)
+
+
+def _shell_literals() -> list[tuple[int, str]]:
+    """Every string literal in this module, with interpolations collapsed.
+
+    The child bodies are f-strings, so an interpolation splits the shell source
+    across several AST constants. Rejoining a ``JoinedStr``'s parts preserves the
+    statement ORDER, which is all the ordering guard below reads.
+    """
+    module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    literals: list[tuple[int, str]] = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.JoinedStr):
+            text = "".join(
+                part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else "${...}"
+                for part in node.values
+            )
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value
+        else:
+            continue
+        literals.append((node.lineno, text))
+    return literals
+
+
+def test_given_a_child_body_that_traps_a_signal_when_inspected_then_the_trap_precedes_the_ready_file():
+    """No child body may publish readiness before it can observe a signal (AI-CLI-51lw).
+
+    The ready file is the only evidence any caller here has that the child may be
+    signalled, so publishing it while the child still carries the DEFAULT signal
+    dispositions makes it a false witness: the default action for TERM and INT is
+    to die silently, so a signal landing in that window kills the child without
+    writing the event the test then asserts on. The supervisor finds no child left
+    to relay to, exits 0, and the test fails as "supervisor exited before its child
+    was ready" with an empty event log -- blaming the supervisor for a race in this
+    harness. That is what made
+    ``test_given_child_exits_during_term_relay_when_supervisor_receives_term_then_it_relays_only_once``
+    intermittently red on the macOS job while the supervisor was behaving correctly.
+
+    A bounded wait cannot fix this and none was missing: the test already waited
+    for the right file, but the file meant "the child is running" when the test
+    needed "the child can observe a signal". Ordering the trap first makes those
+    the same instant, and this guard keeps them that way -- the whole class is one
+    statement swap away from returning, in any of the bodies in this file.
+    """
+    # A set, because ast.walk yields an f-string and its own fragments, so one
+    # offending body would otherwise be reported once per fragment it spans.
+    offenders = set()
+    for lineno, text in _shell_literals():
+        if _READY_WRITE not in text:
+            continue
+        # The LAST write is when readiness is finally published; an earlier one can
+        # belong to a deliberately trap-free generation that exits before it is
+        # signalled, as in the child-restart bodies.
+        ready_at = text.rindex(_READY_WRITE)
+        offenders.update(
+            f"line {lineno}: {match.group(0).strip()!r}"
+            for match in _EVENT_TRAP.finditer(text)
+            if match.start() > ready_at
+        )
+
+    assert not offenders, (
+        "child body publishes $AI_CLI_TEST_CHILD_READY before installing its event trap, "
+        "so a signal sent once the test sees the ready file can kill the child on its default "
+        "disposition and lose the event: " + "; ".join(sorted(offenders))
+    )
 
 
 def test_given_noncontrolling_terminal_when_promotion_fails_then_supervisor_exits_and_child_dies(
@@ -1842,8 +1925,8 @@ if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
     sleep 0.2
     exit 0
   fi
-  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   while true; do sleep 0.05; done
 fi
 """
@@ -2069,8 +2152,8 @@ def test_given_child_exits_during_term_relay_when_supervisor_receives_term_then_
 ):
     child_body = f"""#!{supported_session_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
-  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   trap 'printf "TERM\\n" >> "$AI_CLI_TEST_EVENTS"; exit 0' TERM
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   while true; do sleep 0.05; done
 fi
 """
@@ -2093,8 +2176,8 @@ def test_given_shared_supervisor_process_group_when_direct_group_signal_arrives_
 ):
     child_body = f"""#!{supported_session_shell}
 if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
-  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   trap 'printf "INT\\n" >> "$AI_CLI_TEST_EVENTS"' INT
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
   IFS= read -r line
   printf 'READ=%s\\n' "$line" >> "$AI_CLI_TEST_EVENTS"
   while true; do sleep 0.05; done
