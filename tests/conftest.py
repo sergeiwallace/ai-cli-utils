@@ -1258,7 +1258,7 @@ def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registr
 
 @pytest.fixture(autouse=True)
 def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
-    """Hermetic XDG state dir — never touch the real ~/.local/state/ai-cli-utils (AI-CLI-121).
+    """Hermetic XDG state and cache dirs, on every platform (AI-CLI-121, AI-CLI-6al2).
 
     `config.get_xdg_state_home()`/`process_hygiene._get_state_dir()` both fall back to the
     real ``~/.local/state`` when unset. Several git tests create ephemeral temp git
@@ -1266,8 +1266,32 @@ def _isolate_xdg_state_home(monkeypatch, tmp_path_factory):
     whatever else (other test runs, live `ai` CLI processes) is concurrently reading/writing the
     real one, producing exactly the `git commit`/`git init` failures this task fixed by proving
     the isolation empirically (`XDG_STATE_HOME=$(mktemp -d)` made the full suite deterministic).
+
+    ``LOCALAPPDATA`` is redirected too, and that is the AI-CLI-6al2 half rather than
+    belt-and-braces: setting ``XDG_STATE_HOME`` alone made this fixture a **no-op on
+    Windows**. ``config.get_xdg_state_home`` and ``get_xdg_cache_home`` branch on
+    ``sys.platform == "win32"`` to ``resolve_base_dir("LOCALAPPDATA", ...)`` and never consult
+    the XDG variable there (``config.py:191-205``), so a Windows run reached the operator's
+    real state and cache directories while this fixture reported success. Same shape as
+    AI-CLI-u2ox, which was the canonical registry escaping the same way.
+
+    Setting it on POSIX is harmless, because the resolvers only read it on Windows -- so the
+    fixture stays one branch-free statement instead of acquiring a platform test that only one
+    CI job could ever exercise.
+
+    ``XDG_CACHE_HOME`` is included because ``get_xdg_cache_home`` has the same POSIX fallback
+    into the real home, and nothing else was isolating it.
+
+    Tests that exercise base-directory RESOLUTION set or delete these variables themselves
+    (``tests/test_xdg_base_resolution.py``), and their inner ``monkeypatch`` still wins, so
+    redirecting here does not weaken them. Verified rather than assumed: that file passes with
+    this fixture in force.
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg_state_home")))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg_cache_home")))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg_config_home")))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata")))
+    monkeypatch.setenv("APPDATA", str(tmp_path_factory.mktemp("appdata")))
 
 
 @pytest.fixture(autouse=True)
