@@ -24,6 +24,7 @@ import click
 from . import config as _config
 from . import direnv_setup as _direnv_setup
 from . import iterm2 as _iterm2
+from . import launch_reporter as _launch_reporter
 from . import native_deps as _native_deps
 from . import process_manager as _process_manager
 from . import session as _session
@@ -755,18 +756,6 @@ def _is_root() -> bool:
     return os.getuid() == 0
 
 
-def _announce_worktree_isolation(worktree_path: Path, created: bool) -> None:
-    """Report the actual worktree outcome before entering the session."""
-    if created:
-        print(
-            f"Creating isolated worktree for this session: {worktree_path}\n"
-            f"  (disable with -W/--no-worktree, or [worktree] enabled = false in config.toml)",
-            file=sys.stderr,
-        )
-    else:
-        print(f"Using existing worktree: {worktree_path}", file=sys.stderr)
-
-
 def _engine_display_name(engine: str) -> str:
     """Return the public engine name used in launch progress output."""
     return {"c": "Claude Code", "g": "Gemini", "p": "Pi", "cx": "Codex"}[engine]
@@ -1024,17 +1013,15 @@ def _auto_update_if_stale(config: dict) -> bool:
             # environment before characterising the failure.
             self_venv = _running_uv_tool_venv()
             if self_venv is not None and not _tool_env_can_import(self_venv):
-                print(
-                    "Error: auto-update failed AND left the installation broken — "
+                _launch_reporter.active().error(
+                    "auto-update failed AND left the installation broken — "
                     f"{self_venv} can no longer import ai_cli.\n"
                     f"  Repair it with:\n"
-                    f"    uv tool install -e {project_path} --force --reinstall",
-                    file=sys.stderr,
+                    f"    uv tool install -e {project_path} --force --reinstall"
                 )
             else:
-                print(
-                    "Warning: auto-update failed; the existing installation is intact and still in use.",
-                    file=sys.stderr,
+                _launch_reporter.active().warning(
+                    "auto-update failed; the existing installation is intact and still in use."
                 )
             # Quieting the success path must never quiet a failure: with the
             # transcript captured rather than streamed, it is the only diagnostic
@@ -1082,10 +1069,7 @@ def trigger_background_update():
         # the user actually asked for (the AIH bug: bare "uv" + Popen without a shell
         # -> Windows CreateProcess raises FileNotFoundError -> `ai c 1` traceback).
         # Silent-skip would hide a permanently broken auto-updater, so warn on stderr.
-        print(
-            "Warning: 'uv' not found on PATH — skipping background update check.",
-            file=sys.stderr,
-        )
+        _launch_reporter.active().warning("'uv' not found on PATH — skipping background update check.")
         return
     # Pass the resolved absolute path, not the bare name — see above.
     upgrade_cmd = [uv_bin, "tool", "upgrade", "ai-cli-utils"]
@@ -1100,7 +1084,7 @@ def trigger_background_update():
         )
     except OSError as exc:
         # Same reasoning: report, never propagate, so the foreground command survives.
-        print(f"Warning: background update check failed to launch: {exc}", file=sys.stderr)
+        _launch_reporter.active().warning(f"background update check failed to launch: {exc}")
 
 
 def _pkg_version_string() -> str:
@@ -2479,14 +2463,13 @@ def _exit_missing_project_dir(project_name: str, project_dir: Path, source: str,
     the launch target, so its absence is fatal rather than skippable.
     """
     host = _config.detect_machine_profile()["host_id"]
-    print(
-        f"Error: the project directory for this session does not exist on {host}.\n"
+    _launch_reporter.active().error(
+        f"the project directory for this session does not exist on {host}.\n"
         f"  project: {project_name} (from {source})\n"
         f"  expected at: {project_dir}\n"
         f"  Fix: check out the repository at that path on {host}, or relaunch naming a project "
         "that exists there:\n"
-        f"    {relaunch}",
-        file=sys.stderr,
+        f"    {relaunch}"
     )
     sys.exit(1)
 
@@ -2512,6 +2495,11 @@ def _do_session_launch(
     launch_log_path: str | None = None,
     dry_run: bool = False,
 ) -> None:
+    # One reporter for every line this launch prints. Defaulting to the active one
+    # keeps this function and the helpers below it (worktree creation, the direnv
+    # and tmux preflights) on the same quiet/verbose policy and the same stream.
+    if reporter is None:
+        reporter = _launch_reporter.active()
     # tmux is a C binary, not a Python package -- `libtmux` in [dependencies] is
     # only the client library, so tmux can never be auto-installed by pip/uv and
     # must be preflighted here.
@@ -2562,7 +2550,12 @@ def _do_session_launch(
     # on it is the exact regression AI-CLI-ai-c-direnv-jsqn fixed. So this
     # auto-installs when it can and otherwise prints remediation and continues.
     if not no_direnv:
-        _direnv_setup.ensure_direnv(Path.cwd(), config)
+        _direnv_result = _direnv_setup.ensure_direnv(Path.cwd(), config)
+        # ensure_direnv reports its own installs and remediation through the active
+        # reporter; the fast no-op is verbose-only so a routine launch is not told
+        # about a check that took milliseconds and changed nothing.
+        if _direnv_result.installed:
+            reporter.detail("direnv", _direnv_result.detail or "ready")
 
     # Auto-promote to remote mode when running directly on a non-Mac host so
     # the c-r- / g-r- prefix is applied even without an explicit --is-remote flag.
@@ -2573,7 +2566,7 @@ def _do_session_launch(
         try:
             remote_cfg = _config.get_remote_machine(config, remote_machine)
         except _config.RemoteMachineError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            reporter.error(str(exc))
             sys.exit(1)
 
     # Discovery is useful when creating an unqualified session, but a named
@@ -2591,20 +2584,20 @@ def _do_session_launch(
         try:
             project_prefix = _config.validate_task_prefix(project_prefix_override)
         except _config.ProjectPrefixError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            reporter.error(str(exc))
             sys.exit(1)
     elif project:
         # An explicit project always derives its prefix from that project's
         # registered root, whether the session is local or remote.
         if "/" in project or "\\" in project:
-            print("Error: --project name must not contain path separators", file=sys.stderr)
+            reporter.error("--project name must not contain path separators")
             sys.exit(1)
         _lp_aliases = _config.get_project_aliases()
         _lp_name = _lp_aliases.get(project, project)
         try:
             project_prefix = _config.resolve_project_prefix_by_name(_lp_name)
         except _config.ProjectPrefixError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            reporter.error(str(exc))
             sys.exit(1)
     else:
         # No explicit project and no prefix override: the prefix would be derived
@@ -2613,18 +2606,17 @@ def _do_session_launch(
         # fabricating a session from an unrelated directory (the old silent
         # "myproject"/cwd-derived fallback). Escape hatch: pass -p <project>.
         if not is_remote and not _session.is_current_project_resolved():
-            print(
-                "Error: no task prefix is registered for this repository.\n"
+            reporter.error(
+                "no task prefix is registered for this repository.\n"
                 f"  cwd: {Path.cwd()}\n"
                 "  Fix: register the repository once, then retry:\n"
-                f"    ai register -p {Path.cwd()} -x PREFIX",
-                file=sys.stderr,
+                f"    ai register -p {Path.cwd()} -x PREFIX"
             )
             sys.exit(1)
         try:
             project_prefix = _session.get_project_prefix()
         except _config.ProjectPrefixError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            reporter.error(str(exc))
             sys.exit(1)
     # Now that the inputs are known good, resolve whether tmux can actually host
     # this session. The question is whether tmux RUNS, not whether it is on PATH:
@@ -2716,13 +2708,16 @@ def _do_session_launch(
         # reporting "version not queried" for a binary we just watched fail would
         # hide the one fact the operator needs.
         _tmux_report = _tmux_setup.probe(query_versions=not bare or tmux_degraded)
-        for _tmux_line in _tmux_setup.report_lines(
+        for _tmux_phase, _tmux_outcome in _tmux_setup.report_lines(
             report=_tmux_report,
             bare=bare,
             reason=tmux_reason,
             auto_installed=tmux_auto_installed,
         ):
-            print(_tmux_line, file=sys.stderr)
+            if _tmux_phase == "Warning":
+                reporter.warning(_tmux_outcome)
+            else:
+                reporter.phase(_tmux_phase).outcome(_tmux_outcome)
 
         # REFUSE before creating anything when the client and the running server
         # are different versions (AI-CLI-tmuxmix). Measured 2026-09-06: with a
@@ -2744,8 +2739,8 @@ def _do_session_launch(
         # beside a successful-looking launch is the shape that produced the
         # incident.
         if _tmux_report.versions_disagree:
-            print(
-                "Error: tmux client is "
+            reporter.error(
+                "tmux client is "
                 f"{_tmux_report.client_version} but the running server is "
                 f"{_tmux_report.server_version}.\n"
                 "  A session created now would be unattachable: the server "
@@ -2756,8 +2751,7 @@ def _do_session_launch(
                 "exits, so either:\n"
                 "    - exit every session on the running server, then relaunch "
                 "(it restarts at the client's version), or\n"
-                "    - launch with -b/--bare, which uses no tmux at all.",
-                file=sys.stderr,
+                "    - launch with -b/--bare, which uses no tmux at all."
             )
             sys.exit(1)
 
@@ -2771,10 +2765,10 @@ def _do_session_launch(
     pi_provider = config.get("pi", {}).get("provider", "openai-codex")
 
     if engine == "p" and not shutil.which("pi"):
-        print("Error: pi executable not found on PATH. Install pi, then retry.", file=sys.stderr)
+        reporter.error("pi executable not found on PATH. Install pi, then retry.")
         sys.exit(1)
     if engine == "cx" and not shutil.which("codex"):
-        print("Error: codex executable not found on PATH. Install Codex, then retry.", file=sys.stderr)
+        reporter.error("codex executable not found on PATH. Install Codex, then retry.")
         sys.exit(1)
 
     if not name and extra_args:
@@ -2786,7 +2780,7 @@ def _do_session_launch(
             raise RuntimeError("remote machine was not resolved")
         host = remote_cfg.get("host", "")
         if not host:
-            print("Error: [remote] host not set in ~/.config/ai-cli-utils/config.toml", file=sys.stderr)
+            reporter.error("[remote] host not set in ~/.config/ai-cli-utils/config.toml")
             sys.exit(1)
         user = remote_cfg.get("user", "ubuntu")
         port = str(remote_cfg.get("port", 22))
@@ -2795,7 +2789,7 @@ def _do_session_launch(
         aliases = _config.get_project_aliases()
         raw_project = project or _config.get_current_project_name()
         if project and ("/" in project or "\\" in project):
-            print("Error: --project name must not contain path separators", file=sys.stderr)
+            reporter.error("--project name must not contain path separators")
             sys.exit(1)
         remote_project = aliases.get(raw_project, raw_project)
         # When -p is provided, derive prefix from the target project's task_prefix
@@ -2803,7 +2797,7 @@ def _do_session_launch(
             try:
                 remote_prefix = _config.resolve_project_prefix_by_name(remote_project)
             except _config.ProjectPrefixError as exc:
-                print(f"Error: {exc}", file=sys.stderr)
+                reporter.error(str(exc))
                 sys.exit(1)
         else:
             remote_prefix = project_prefix
@@ -2874,23 +2868,15 @@ def _do_session_launch(
             preflight_ssh_args += ["-i", identity_file]
         ssh_args.append(f"{user}@{vpn_host}")
         preflight_ssh_args.append(f"{user}@{vpn_host}")
-        with reporter.phase("Remote", "probing configured host") if reporter is not None else contextlib.nullcontext():
+        with reporter.phase("Remote", "probing configured host") as _remote_phase:
             remote_shell = _resolve_remote_shell(preflight_ssh_args)
-        if reporter is not None:
-            reporter.phase("Remote").outcome("host ready")
+            _remote_phase.outcome("host ready")
         # A write, unlike the read-only shell probe above it -- it runs `ai
         # update` on the remote host. Unconditional here because the remote
         # dry-run exit above already returned before this line is ever reached.
-        with (
-            reporter.phase("Update", "syncing remote ai-cli-utils")
-            if reporter is not None
-            else contextlib.nullcontext()
-        ):
+        with reporter.phase("Update", "syncing remote ai-cli-utils") as _update_phase:
             _remote_update_ok, _remote_update_detail = _update_remote_ai_cli(preflight_ssh_args, remote_shell)
-        if reporter is not None:
-            reporter.phase("Update").outcome(
-                _remote_update_detail if _remote_update_ok else f"skipped ({_remote_update_detail})"
-            )
+            _update_phase.outcome(_remote_update_detail if _remote_update_ok else f"skipped ({_remote_update_detail})")
         # Prepend ~/.local/bin to PATH so `ai` is found on the remote side even
         # when the shell is a non-interactive login shell (<remote_shell> -l -c)
         # that does not source the shell's rc file where the uv env PATH setup
@@ -2906,20 +2892,17 @@ def _do_session_launch(
         # its own canonical identity and needs no allocation preflight.
         remote_session_id = ""
         if not name or not name.isdigit():
-            try:
-                with (
-                    reporter.phase("Session", "allocating remote session")
-                    if reporter is not None
-                    else contextlib.nullcontext()
-                ):
+            with reporter.phase("Session", "allocating remote session") as _session_phase:
+                try:
                     remote_session_id, _ = _request_remote_session_allocation(
                         preflight_ssh_args, engine, remote_prefix, name, remote_shell
                     )
-            except RuntimeError as exc:
-                print(f"Error: {exc}", file=sys.stderr)
-                sys.exit(1)
-        if reporter is not None:
-            reporter.phase("Session").outcome(f"resolved {remote_session_id or name}")
+                except RuntimeError as exc:
+                    reporter.error(str(exc))
+                    sys.exit(1)
+                _session_phase.outcome(f"resolved {remote_session_id}")
+        else:
+            reporter.phase("Session").outcome(f"resolved {name}")
         if remote_session_id:
             remote_cmd += f" {shlex.quote(remote_session_id)}"
         elif name:
@@ -2975,14 +2958,12 @@ def _do_session_launch(
         mosh_args += ["--", remote_shell, "-l", "-c", mosh_remote_cmd]
 
         if transport == "mosh":
-            if reporter is not None:
-                reporter.phase("Transport").outcome("mosh selected")
+            reporter.phase("Transport").outcome("mosh selected")
             _transport._ensure_vpn_watcher(config)
             import asyncio as _asyncio
 
             try:
-                if reporter is not None:
-                    reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
+                reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
                 _asyncio.run(
                     _transport._run_transport_loop(
                         ssh_args,
@@ -3001,12 +2982,10 @@ def _do_session_launch(
         else:
             # Pure SSH transport — no VPN switching.
             if sys.platform == "win32":
-                print("Error: remote SSH transport is not supported on Windows", file=sys.stderr)
+                reporter.error("remote SSH transport is not supported on Windows")
                 sys.exit(1)
-            if reporter is not None:
-                reporter.phase("Transport").outcome("SSH selected")
-            if reporter is not None:
-                reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
+            reporter.phase("Transport").outcome("SSH selected")
+            reporter.handoff(engine=_engine_display_name(engine), session=_r_ai_name)
             # Runs the session in-process instead of `execvp`-ing a shell (AI-CLI-w679).
             # The exec was what made this path fragile: it replaced this process, so a
             # dropped connection ended the session outright and left no Python behind to
@@ -3070,7 +3049,7 @@ def _do_session_launch(
                 use_tmux=not bare,
             )
         except _session.SessionSlotAmbiguityError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            reporter.error(str(exc))
             sys.exit(1)
         _print_launch_plan(
             engine=engine,
@@ -3112,10 +3091,9 @@ def _do_session_launch(
     if resume and not bare:
         session = _session.resolve_session(prefix, name)
         if not session:
-            print(f"No matching session found for '{prefix}{name or '*'}'")
+            reporter.error(f"no matching session found for '{prefix}{name or '*'}'")
             sys.exit(1)
-        if reporter is not None:
-            reporter.handoff(engine=_engine_display_name(engine), session=session)
+        reporter.handoff(engine=_engine_display_name(engine), session=session)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session])
 
     # Stale-session sweeping and index discovery both drive tmux. In bare mode
@@ -3129,10 +3107,9 @@ def _do_session_launch(
             engine, project_prefix, name, config, is_remote=is_remote, use_tmux=not bare
         )
     except _session.SessionSlotAmbiguityError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        reporter.error(str(exc))
         sys.exit(1)
-    if reporter is not None:
-        reporter.phase("Session").outcome(f"resolved {ai_name}")
+    reporter.phase("Session").outcome(f"resolved {ai_name}")
 
     # Worktree setup
     worktree_path = None
@@ -3145,43 +3122,39 @@ def _do_session_launch(
         _repair_root = _session.detect_repo_root()
         if _repair_root:
             repair_bare_worktree_config(_repair_root)
-        try:
-            with (
-                reporter.phase("Worktree", "creating isolated worktree")
-                if reporter is not None
-                else contextlib.nullcontext()
-            ):
+        with reporter.phase("Worktree", "creating isolated worktree") as _worktree_phase:
+            try:
                 worktree_result = _session.create_worktree(ai_name, with_status=True)
-        except RuntimeError as exc:
-            print(
-                # Deliberately does NOT offer -W/--no-worktree as the way out: it
-                # launches in the repository root, which is the exact outcome this
-                # message is refusing, so advertising it here talks the user into
-                # breaking session isolation to escape a message about isolation.
-                f"Error: could not create or reuse the isolated session worktree; refusing to launch in the "
-                f"repository root. {exc} Re-run once the git worktree error above is resolved.",
-                file=sys.stderr,
+            except RuntimeError as exc:
+                reporter.error(
+                    # Deliberately does NOT offer -W/--no-worktree as the way out: it
+                    # launches in the repository root, which is the exact outcome this
+                    # message is refusing, so advertising it here talks the user into
+                    # breaking session isolation to escape a message about isolation.
+                    f"could not create or reuse the isolated session worktree; refusing to launch in the "
+                    f"repository root. {exc} Re-run once the git worktree error above is resolved."
+                )
+                sys.exit(1)
+            if isinstance(worktree_result, tuple):
+                worktree_path, worktree_created = worktree_result
+            else:
+                # Compatibility for callers that replace create_worktree in-process.
+                worktree_path, worktree_created = worktree_result, False
+            if not worktree_path:
+                reporter.error(
+                    # Same reasoning as the RuntimeError branch above: -W/--no-worktree
+                    # is not the escape hatch from a refusal to use the repository root.
+                    "could not create or reuse the isolated session worktree; refusing to launch in the "
+                    "repository root. Re-run once the git worktree error above is resolved."
+                )
+                sys.exit(1)
+            # The opt-out is named on creation only: a directory appearing under
+            # .worktrees/ is the surprise, and reuse has nothing to opt out of.
+            _worktree_phase.outcome(
+                f"created {worktree_path} (disable with -W/--no-worktree, or [worktree] enabled = false in config.toml)"
+                if worktree_created
+                else f"reusing {worktree_path}"
             )
-            sys.exit(1)
-        if isinstance(worktree_result, tuple):
-            worktree_path, worktree_created = worktree_result
-        else:
-            # Compatibility for callers that replace create_worktree in-process.
-            worktree_path, worktree_created = worktree_result, False
-        if not worktree_path:
-            print(
-                # Same reasoning as the RuntimeError branch above: -W/--no-worktree
-                # is not the escape hatch from a refusal to use the repository root.
-                "Error: could not create or reuse the isolated session worktree; refusing to launch in the "
-                "repository root. Re-run once the git worktree error above is resolved.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if reporter is not None:
-            outcome = "created" if worktree_created else "reusing"
-            reporter.phase("Worktree").outcome(f"{outcome} {worktree_path}")
-        else:
-            _announce_worktree_isolation(worktree_path, worktree_created)
         from .canonical_worktrees import CanonicalWorktreeRegistryError, register_canonical_worktree
 
         try:
@@ -3189,9 +3162,9 @@ def _do_session_launch(
                 worktree_path, engine=engine, session_name=session_id
             )
         except CanonicalWorktreeRegistryError as exc:
-            print(f"Error: {exc}; refusing to launch an unprotected canonical session worktree.", file=sys.stderr)
+            reporter.error(f"{exc}; refusing to launch an unprotected canonical session worktree.")
             sys.exit(1)
-        print(f"Canonical worktree registry {registry_action}: {registry_path}", file=sys.stderr)
+        reporter.detail("Worktree", f"canonical registry {registry_action}: {registry_path}")
         if worktree_path:
             # Self-healing: detect index corruption (many staged deletions that don't reflect
             # disk state) BEFORE --autostash captures the corrupt state. If left unfixed,
@@ -3217,102 +3190,99 @@ def _do_session_launch(
                     env=_git_env(),
                     check=False,
                 )
-                print(
-                    f"Info: index corruption auto-healed in {worktree_path.name} "
-                    f"({len(_deleted.stdout.strip().splitlines())} staged deletions reset to HEAD).",
-                    file=sys.stderr,
+                reporter.phase("Worktree").outcome(
+                    f"index corruption auto-healed in {worktree_path.name} "
+                    f"({len(_deleted.stdout.strip().splitlines())} staged deletions reset to HEAD)"
                 )
             # Sync worktree with any changes that landed on main from other sessions.
             # Shape B: this pull exits 0 even when its automatic stash pop
             # conflicted, so `returncode` alone cannot gate the launch. pull_rebase_autostash
             # measures repo state either side of the call instead.
             _conflicted_before = _has_conflict_or_unknown(worktree_path)
-            with reporter.phase("Worktree", "synchronizing") if reporter is not None else contextlib.nullcontext():
+            with reporter.phase("Worktree", "synchronizing") as _sync_phase:
                 pull, stranded = pull_rebase_autostash(worktree_path)
-            if pull.returncode != 0 and not stranded and not _conflicted_before:
-                # Reset only when the tree was clean beforehand, so this cleanup can
-                # only ever undo work THIS launch started. Doing it unconditionally
-                # would abort a rebase the user is part-way through and wipe their
-                # conflict resolution — the opposite of the intent.
-                subprocess.run(
-                    ["git", "rebase", "--abort"], capture_output=True, cwd=worktree_path, env=_git_env(), check=False
-                )
-                subprocess.run(
-                    ["git", "restore", "--staged", "."],
-                    capture_output=True,
-                    cwd=worktree_path,
-                    env=_git_env(),
-                    check=False,
-                )
-                # Quote git's own last line. An exit code alone does not say whether
-                # this was no network, missing credentials for the remote, or something
-                # that needs attention, and the user cannot re-run the pull to find out
-                # once the index has been restored.
-                _reason = (pull.stderr or pull.stdout or "").strip().splitlines()
-                _detail = f" Last git error: {_reason[-1]}" if _reason else ""
-                print(
-                    f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
-                    f"(exit {pull.returncode}) — starting the session on the branch as-is "
-                    f"(it may be behind main). Index restored to HEAD.{_detail}",
-                    file=sys.stderr,
-                )
-            elif pull.returncode != 0 and not stranded:
-                print(
-                    f"Warning: git pull --rebase failed in worktree {worktree_path.name} "
-                    f"(exit {pull.returncode}). Left as-is — this worktree already had "
-                    f"a conflict in progress and nothing here will discard it.",
-                    file=sys.stderr,
-                )
-            if stranded:
-                # Refuse the launch. Dropping an agent into a worktree whose index
-                # carries conflict stages is how phantom deletions spread
-                # across six worktrees. Nothing is auto-repaired: the user's work is
-                # in the stash and only they can say how to reconcile it.
-                print(
-                    f"Error: syncing worktree {worktree_path.name} stranded it ({stranded}).\n"
-                    f"  `git pull --rebase --autostash` exited {pull.returncode} but did not finish cleanly.\n"
-                    f"  Refusing to launch a session into a conflicted worktree.\n"
-                    f"  Nothing was discarded. Inspect, then resolve:\n"
-                    f"    git -C {worktree_path} status\n"
-                    f"    git -C {worktree_path} stash list",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            # Repair backstop again after this launch's git work.
-            if _repair_root:
-                repair_bare_worktree_config(_repair_root)
-            # Shape A: a Claude Code `isolation: worktree` checkout can silently
-            # drop tracked symlinks (confirmed: 21 symlinks missing from disk in one
-            # sub-agent worktree while HEAD and origin/main both had them, no error
-            # anywhere). Not something this launcher can fix at the source, but it can
-            # stop it from being silent.
-            _missing_symlinks = detect_missing_tracked_symlinks(worktree_path)
-            if _missing_symlinks:
-                print(
-                    f"WARNING: {worktree_path.name} is missing {len(_missing_symlinks)} tracked "
-                    f"symlink(s) present in HEAD (checkout dropped them silently) — "
-                    f"e.g. {_missing_symlinks[0]}. Restore with "
-                    f"`git -C {worktree_path} checkout -- <path>`.",
-                    file=sys.stderr,
-                )
-            # Shape C: a tracked REGULAR file the index still holds but that
-            # is gone from disk. Neither check above can see it — there is no stranded
-            # stash (pre-commit uses its own patch file under ~/.cache/pre-commit, not
-            # `git stash`) and the mode is not 120000. pre-commit's `staged_files_only`
-            # then re-applies the deletion after every hook run, so the worktree never
-            # self-heals and `git status` looks identical each time.
-            _phantom = detect_phantom_deleted_files(worktree_path)
-            if _phantom:
-                print(
-                    f"WARNING: {worktree_path.name} is missing {len(_phantom)} tracked "
-                    f"file(s) that the index still holds — e.g. {_phantom[0]}. "
-                    f"Committing now would delete content that is still live on the "
-                    f"remote. Restore with "
-                    f"`git -C {worktree_path} checkout -- <path>` before committing.",
-                    file=sys.stderr,
-                )
-            if reporter is not None:
-                reporter.phase("Worktree").outcome("ready")
+                if pull.returncode != 0 and not stranded and not _conflicted_before:
+                    # Reset only when the tree was clean beforehand, so this cleanup can
+                    # only ever undo work THIS launch started. Doing it unconditionally
+                    # would abort a rebase the user is part-way through and wipe their
+                    # conflict resolution — the opposite of the intent.
+                    subprocess.run(
+                        ["git", "rebase", "--abort"],
+                        capture_output=True,
+                        cwd=worktree_path,
+                        env=_git_env(),
+                        check=False,
+                    )
+                    subprocess.run(
+                        ["git", "restore", "--staged", "."],
+                        capture_output=True,
+                        cwd=worktree_path,
+                        env=_git_env(),
+                        check=False,
+                    )
+                    # Quote git's own last line. An exit code alone does not say whether
+                    # this was no network, missing credentials for the remote, or something
+                    # that needs attention, and the user cannot re-run the pull to find out
+                    # once the index has been restored.
+                    _reason = (pull.stderr or pull.stdout or "").strip().splitlines()
+                    _detail = f" Last git error: {_reason[-1]}" if _reason else ""
+                    reporter.warning(
+                        f"git pull --rebase failed in worktree {worktree_path.name} "
+                        f"(exit {pull.returncode}) — starting the session on the branch as-is "
+                        f"(it may be behind main). Index restored to HEAD.{_detail}"
+                    )
+                elif pull.returncode != 0 and not stranded:
+                    reporter.warning(
+                        f"git pull --rebase failed in worktree {worktree_path.name} "
+                        f"(exit {pull.returncode}). Left as-is — this worktree already had "
+                        f"a conflict in progress and nothing here will discard it."
+                    )
+                if stranded:
+                    # Refuse the launch. Dropping an agent into a worktree whose index
+                    # carries conflict stages is how phantom deletions spread
+                    # across six worktrees. Nothing is auto-repaired: the user's work is
+                    # in the stash and only they can say how to reconcile it.
+                    reporter.error(
+                        f"syncing worktree {worktree_path.name} stranded it ({stranded}).\n"
+                        f"  `git pull --rebase --autostash` exited {pull.returncode} but did not finish cleanly.\n"
+                        f"  Refusing to launch a session into a conflicted worktree.\n"
+                        f"  Nothing was discarded. Inspect, then resolve:\n"
+                        f"    git -C {worktree_path} status\n"
+                        f"    git -C {worktree_path} stash list"
+                    )
+                    sys.exit(1)
+                # Repair backstop again after this launch's git work.
+                if _repair_root:
+                    repair_bare_worktree_config(_repair_root)
+                # Shape A: a Claude Code `isolation: worktree` checkout can silently
+                # drop tracked symlinks (confirmed: 21 symlinks missing from disk in one
+                # sub-agent worktree while HEAD and origin/main both had them, no error
+                # anywhere). Not something this launcher can fix at the source, but it can
+                # stop it from being silent.
+                _missing_symlinks = detect_missing_tracked_symlinks(worktree_path)
+                if _missing_symlinks:
+                    reporter.warning(
+                        f"{worktree_path.name} is missing {len(_missing_symlinks)} tracked "
+                        f"symlink(s) present in HEAD (checkout dropped them silently) — "
+                        f"e.g. {_missing_symlinks[0]}. Restore with "
+                        f"`git -C {worktree_path} checkout -- <path>`."
+                    )
+                # Shape C: a tracked REGULAR file the index still holds but that
+                # is gone from disk. Neither check above can see it — there is no stranded
+                # stash (pre-commit uses its own patch file under ~/.cache/pre-commit, not
+                # `git stash`) and the mode is not 120000. pre-commit's `staged_files_only`
+                # then re-applies the deletion after every hook run, so the worktree never
+                # self-heals and `git status` looks identical each time.
+                _phantom = detect_phantom_deleted_files(worktree_path)
+                if _phantom:
+                    reporter.warning(
+                        f"{worktree_path.name} is missing {len(_phantom)} tracked "
+                        f"file(s) that the index still holds — e.g. {_phantom[0]}. "
+                        f"Committing now would delete content that is still live on the "
+                        f"remote. Restore with "
+                        f"`git -C {worktree_path} checkout -- <path>` before committing."
+                    )
+                _sync_phase.outcome("ready")
 
     # For Gemini, always check the chats directory for the latest session — the
     # session map may be stale if the user exited and restarted directly via gemini CLI.
@@ -3336,7 +3306,7 @@ def _do_session_launch(
         try:
             os.chdir(target_root)
         except OSError as exc:
-            print(f"Error: cannot enter session directory {target_root}: {exc}", file=sys.stderr)
+            reporter.error(f"cannot enter session directory {target_root}: {exc}")
             sys.exit(1)
         if engine == "c":
             # Pin the task-list namespace to ai_name, matching the tmux session
@@ -3367,17 +3337,15 @@ def _do_session_launch(
                 bare = False
             else:
                 pid_detail = f" (pid {exc.pid})" if exc.pid is not None else ""
-                print(
-                    f"Error: session '{exc.title}' is still running{pid_detail}; bare mode cannot reattach "
+                reporter.error(
+                    f"session '{exc.title}' is still running{pid_detail}; bare mode cannot reattach "
                     f"to {exc.transcript}.\n"
                     "Launch aborted to avoid starting a duplicate Claude Code process. "
-                    "Return to the terminal running the existing session.",
-                    file=sys.stderr,
+                    "Return to the terminal running the existing session."
                 )
                 sys.exit(1)
         else:
-            if reporter is not None:
-                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             _exec_with_direnv(target_root, command)
 
     # tmux panes inherit their session environment from the long-lived server,
@@ -3400,8 +3368,7 @@ def _do_session_launch(
             if not _is_root():
                 command.append("--dangerously-skip-permissions")
             command += ["--name", ai_name]
-            if reporter is not None:
-                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
             os.execvp(
                 "tmux",
                 [
@@ -3420,8 +3387,7 @@ def _do_session_launch(
             command = [*shlex.split(gemini_cmd), "-y", sandbox_flag]
             if uuid:
                 command += ["-r", uuid]
-                if reporter is not None:
-                    reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
                 os.execvp(
                     "tmux",
                     [
@@ -3438,8 +3404,7 @@ def _do_session_launch(
                 )
             else:
                 command += ["-i", f"/resume load {ai_name}"]
-                if reporter is not None:
-                    reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+                reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
                 os.execvp(
                     "tmux",
                     [
@@ -3458,8 +3423,7 @@ def _do_session_launch(
             command = ["pi", "--provider", pi_provider, "--name", ai_name]
         else:
             command = ["codex"]
-        if reporter is not None:
-            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+        reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp(
             "tmux",
             [
@@ -3510,16 +3474,10 @@ def _do_session_launch(
     if existing.returncode == 0 and sandbox:
         identity = _tmux_ownership.capture_tmux_session_identity(session_id)
         if identity is None:
-            print(
-                f"Error: tmux session '{session_id}' exists but is not owned by this tool; refusing to replace it",
-                file=sys.stderr,
-            )
+            reporter.error(f"tmux session '{session_id}' exists but is not owned by this tool; refusing to replace it")
             sys.exit(1)
         if not _tmux_ownership.kill_owned_tmux_session(identity):
-            print(
-                f"Error: tmux session '{session_id}' changed before replacement; refusing to kill it",
-                file=sys.stderr,
-            )
+            reporter.error(f"tmux session '{session_id}' changed before replacement; refusing to kill it")
             sys.exit(1)
         existing = subprocess.run(["tmux", "has-session", "-t", session_id], capture_output=True, check=False)
     if existing.returncode == 0:
@@ -3560,8 +3518,7 @@ def _do_session_launch(
         # reconcile here on re-attach.
         _iterm2._configure_tmux_for_iterm2(session_id)
         _iterm2._rename_tmux_window(session_id, ai_name)
-        if reporter is not None:
-            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+        reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", session_id])
     else:
         # New session: create detached so tmux options can be set before attaching.
@@ -3613,9 +3570,9 @@ def _do_session_launch(
                 raw2 = result2.stderr
                 stderr2 = _decode_tmux_stderr(raw2).strip()
                 Path(_script_path).unlink()
-                print(f"Error: failed to create tmux session '{session_id}'", file=sys.stderr)
-                print(f"  (with --): {stderr}", file=sys.stderr)
-                print(f"  (without --): {stderr2}", file=sys.stderr)
+                reporter.error(
+                    f"failed to create tmux session '{session_id}'\n  (with --): {stderr}\n  (without --): {stderr2}"
+                )
                 sys.exit(1)
             result = result2
         _id_status, created_session_id = _tmux_ownership.classify_new_session_output(
@@ -3623,36 +3580,32 @@ def _do_session_launch(
         )
         if _id_status != "ok":
             Path(_script_path).unlink(missing_ok=True)
-            print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
+            _ownership_lines = [f"failed to establish ownership of tmux session '{session_id}'"]
             if _id_status == "format-not-expanded":
-                print(
+                _ownership_lines += [
                     f"  tmux returned the literal {created_session_id!r} rather than a session id"
                     " like '$0', so it is not expanding format strings.",
-                    file=sys.stderr,
-                )
-                # The server-restart suggestion this used to carry was FALSE and is
-                # deliberately gone: measured on an MSYS2 build with no server
-                # running beforehand, a brand-new server started by the same client
-                # answered `#session_id` and `#version` exactly the same way, so a
-                # restart cannot change the outcome. Sending the operator to restart
-                # was sending them to a dead end (AI-CLI-siow).
-                print(
+                    # The server-restart suggestion this used to carry was FALSE and is
+                    # deliberately gone: measured on an MSYS2 build with no server
+                    # running beforehand, a brand-new server started by the same client
+                    # answered `#session_id` and `#version` exactly the same way, so a
+                    # restart cannot change the outcome. Sending the operator to restart
+                    # was sending them to a dead end (AI-CLI-siow).
                     "  Retrying will not help, and neither will restarting the tmux server:"
                     " a freshly started\n"
                     "  server on such a build does not expand formats either. Relaunch with"
                     " -b/--bare to skip tmux,\n"
                     "  or use a tmux build whose format strings work.",
-                    file=sys.stderr,
-                )
+                ]
             # new-session reported success, so a session under this name probably exists.
             # It is deliberately NOT killed here: without an opaque id or generation marker
             # it cannot be fenced, and an unfenced `kill-session -t <name>` would destroy a
             # replacement another process created in the interim -- the exact race the
             # *_replacement_survives_* launch tests pin. Report it and let the operator act.
-            print(
-                f"  A session named '{session_id}' may remain; remove it with: tmux kill-session -t {session_id}",
-                file=sys.stderr,
+            _ownership_lines.append(
+                f"  A session named '{session_id}' may remain; remove it with: tmux kill-session -t {session_id}"
             )
+            reporter.error("\n".join(_ownership_lines))
             sys.exit(1)
         generation = secrets.token_urlsafe(32)
         marked = subprocess.run(
@@ -3662,12 +3615,12 @@ def _do_session_launch(
         )
         if marked.returncode != 0:
             Path(_script_path).unlink(missing_ok=True)
-            print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
+            reporter.error(f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
         identity = _tmux_ownership.capture_tmux_session_identity(created_session_id, expected_generation=generation)
         if identity is None:
             Path(_script_path).unlink(missing_ok=True)
-            print(f"Error: failed to establish ownership of tmux session '{session_id}'", file=sys.stderr)
+            reporter.error(f"failed to establish ownership of tmux session '{session_id}'")
             sys.exit(1)
         tmux_options = (
             ["tmux", "set-window-option", "-t", identity.session_id, "remain-on-exit", "on"],
@@ -3679,12 +3632,11 @@ def _do_session_launch(
             if configured.returncode != 0:
                 _tmux_ownership.kill_owned_tmux_session(identity)
                 Path(_script_path).unlink(missing_ok=True)
-                print(f"Error: failed to configure tmux session '{session_id}'", file=sys.stderr)
+                reporter.error(f"failed to configure tmux session '{session_id}'")
                 sys.exit(1)
         _iterm2._configure_tmux_for_iterm2(identity.session_id)
         _iterm2._rename_tmux_window(identity.session_id, ai_name)
-        if reporter is not None:
-            reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
+        reporter.handoff(engine=_engine_display_name(engine), session=ai_name)
         os.execvp("tmux", ["tmux", "attach-session", "-d", "-t", identity.session_id])
 
 
@@ -3726,52 +3678,59 @@ def _session_command(engine: str):
         launch_log = create_launch_log(name or engine)
         launch_log.install_stderr()
         reporter = LaunchReporter(quiet=quiet, verbose=verbose, logger=launch_log.logger, stream=launch_log.live_stderr)
-        mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
-        reporter.start(
-            engine=_engine_display_name(engine),
-            mode=mode,
-            continuing=os.environ.pop(_LAUNCH_REEXEC_ENV, "") == "1",
-        )
-        config = _config.load_config()
-        reporter.detail("Request", "configuration loaded")
-        # A dry run must not reinstall this CLI or start a tunnel either. Both
-        # sit above _do_session_launch, so its own dry-run exit cannot cover
-        # them: measured, `ai c 98 --dry-run` re-installed the tool and re-exec'd
-        # itself before printing a plan that claimed nothing had happened.
-        if not dry_run:
-            _ensure_dolt_server()
-            trigger_background_update()
-            with reporter.phase("Install", "checking installed version") as install_phase:
-                reexec = _auto_update_if_stale(config) is True
-                origin = _launch_install_origin()
-                decision = "reinstalled; restarting" if reexec else "current"
-                install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
-            if reexec:
-                ai_bin = shutil.which("ai") or "ai"
-                os.environ[_LAUNCH_REEXEC_ENV] = "1"
-                os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
-            _tunnel._ensure_nats_tunnel(config)
-        _do_session_launch(
-            engine=engine,
-            name=name,
-            resume=resume,
-            once=once,
-            bare=bare,
-            notify=notify,
-            sandbox=sandbox,
-            no_worktree=no_worktree,
-            remote=remote,
-            project=project,
-            is_remote=is_remote,
-            project_prefix_override=project_prefix,
-            extra_args=list(ctx.args),
-            config=config,
-            remote_machine=remote_machine,
-            no_direnv=no_direnv,
-            reporter=reporter,
-            launch_log_path=str(launch_log.path),
-            dry_run=dry_run,
-        )
+        # Active for exactly the launch: a successful launch execs and never returns,
+        # and a refused one unwinds through the finally, so a reporter bound to this
+        # process's stderr and log never outlives the launch that created it.
+        previous_reporter = reporter.activate()
+        try:
+            mode = f"{'remote' if remote else 'local'}, {'bare' if bare else 'tmux'}"
+            reporter.start(
+                engine=_engine_display_name(engine),
+                mode=mode,
+                continuing=os.environ.pop(_LAUNCH_REEXEC_ENV, "") == "1",
+            )
+            config = _config.load_config()
+            reporter.detail("Request", "configuration loaded")
+            # A dry run must not reinstall this CLI or start a tunnel either. Both
+            # sit above _do_session_launch, so its own dry-run exit cannot cover
+            # them: measured, `ai c 98 --dry-run` re-installed the tool and re-exec'd
+            # itself before printing a plan that claimed nothing had happened.
+            if not dry_run:
+                _ensure_dolt_server()
+                trigger_background_update()
+                with reporter.phase("Install", "checking installed version") as install_phase:
+                    reexec = _auto_update_if_stale(config) is True
+                    origin = _launch_install_origin()
+                    decision = "reinstalled; restarting" if reexec else "current"
+                    install_phase.outcome(f"{origin.value} {_pkg_version_string()}; {decision}")
+                if reexec:
+                    ai_bin = shutil.which("ai") or "ai"
+                    os.environ[_LAUNCH_REEXEC_ENV] = "1"
+                    os.execvp(ai_bin, [ai_bin, *sys.argv[1:]])
+                _tunnel._ensure_nats_tunnel(config)
+            _do_session_launch(
+                engine=engine,
+                name=name,
+                resume=resume,
+                once=once,
+                bare=bare,
+                notify=notify,
+                sandbox=sandbox,
+                no_worktree=no_worktree,
+                remote=remote,
+                project=project,
+                is_remote=is_remote,
+                project_prefix_override=project_prefix,
+                extra_args=list(ctx.args),
+                config=config,
+                remote_machine=remote_machine,
+                no_direnv=no_direnv,
+                reporter=reporter,
+                launch_log_path=str(launch_log.path),
+                dry_run=dry_run,
+            )
+        finally:
+            _launch_reporter.activate(previous_reporter)
 
     _impl.__name__ = f"cmd_session_{engine}"
     return _impl

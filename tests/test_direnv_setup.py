@@ -536,7 +536,7 @@ def test_given_direnv_missing_when_ensuring_then_it_installs_and_reports(tmp_pat
         result = ensure_direnv(tmp_path)
 
     assert result.installed is True
-    assert "installed direnv via scoop" in capsys.readouterr().err
+    assert "[launch] direnv: installed via scoop" in capsys.readouterr().err
 
 
 def test_given_install_failing_when_ensuring_then_it_warns_loudly_without_raising(tmp_path, monkeypatch, capsys):

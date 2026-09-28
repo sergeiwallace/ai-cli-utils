@@ -144,7 +144,7 @@ class TestEnsureTmux:
         ):
             result = tmux_setup.ensure_tmux()
         assert result.installed is True
-        assert "installed tmux via micromamba" in capsys.readouterr().err
+        assert "[launch] tmux: installed via micromamba" in capsys.readouterr().err
 
     def test_when_the_install_fails_then_it_returns_false_and_prints_remediation(self, capsys):
         with (

@@ -169,6 +169,8 @@ ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
 ai c -s/--sandbox      # Explicitly enable sandboxing
 ai c -W/--no-worktree  # Disable git worktree isolation
+ai c -q/--quiet        # Suppress launch progress (warnings and errors still print)
+ai c -v/--verbose      # Add skipped steps, resolved paths and timings to the launch progress
 ```
 
 #### What a new worktree tracks
@@ -340,6 +342,36 @@ Two escape hatches:
 - `ai update --force` — reinstall on demand, bypassing uv's cache and
   reinstalling dependencies. It never consults the fingerprint, so it is the way
   to force a refresh when the installed build is suspect.
+
+### Launch output
+
+Every line the launcher prints on its own behalf follows one grammar on stderr, so
+a launch can be read at a glance and its log replayed later:
+
+```text
+[launch] Starting Claude Code session: local, tmux
+[launch] Install: editable checkout 0.8.0; current
+[launch] tmux: 3.7c at /opt/homebrew/bin/tmux
+[launch] Mode: launching inside tmux (tmux is the default session mode)
+[launch] Session: resolved myproject-3
+[launch] Worktree: creating isolated worktree
+[launch] Worktree: still creating isolated worktree (10s elapsed)
+[launch] Worktree: created /home/user/src/myproject/.worktrees/myproject-3 (12.4s)
+[launch] Ready: handing off to Claude Code (myproject-3)
+```
+
+- A phase that may block prints a line before it starts and one with its outcome;
+  while it runs, a heartbeat with the elapsed time repeats every 10 seconds so a
+  slow worktree sync or remote probe never looks hung. Outcomes that took two
+  seconds or more carry their duration.
+- `Warning:` and `Error:` lines are never suppressed; `Ready:` is always the last
+  line before the launcher hands the terminal to the engine.
+- `-q/--quiet` keeps only warnings and errors; `-v/--verbose` adds skipped steps,
+  resolved paths and every duration.
+- Colour is used only when stderr is a terminal. Redirected output, CI logs and the
+  per-launch log under the state directory receive the plain text. Set `NO_COLOR`
+  to any non-empty value (or `TERM=dumb`) to turn colour off on a terminal too.
+- `--dry-run` prints its plan of resolved values on stdout instead of launching.
 
 ## Configuration
 

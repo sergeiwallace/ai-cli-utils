@@ -31,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import native_deps
+from . import launch_reporter, native_deps
 from .native_deps import Candidate, InstallResult, LoaderRepair, attempt_installs
 from .tmux_ownership import classify_new_session_output
 
@@ -140,7 +140,7 @@ def remediation(result: InstallResult | None = None) -> str:
     the last line matters, because an operator who has chosen bare should not
     keep being told.
     """
-    lines = ["", "=" * 72, "ai-cli-utils: tmux is not usable here — launching in bare mode instead."]
+    lines = ["tmux is not usable here — launching in bare mode instead."]
     if result is not None and result.detail:
         lines.append(f"  Auto-install did not succeed: {result.detail}")
     lines += [
@@ -163,8 +163,6 @@ def remediation(result: InstallResult | None = None) -> str:
         "",
         "  Or make bare mode permanent on this machine and silence this notice:",
         "      [session] use_tmux = false   in ~/.config/ai-cli-utils/config.toml",
-        "=" * 72,
-        "",
     ]
     return "\n".join(lines)
 
@@ -213,7 +211,7 @@ def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult
             # on a repair that happened to leave its free-text field empty.
             summary = f"{', '.join(repair.missing)} resolved from {', '.join(repair.added_dirs)} via {repair.variable}"
             if not quiet:
-                print(f"ai-cli-utils: repaired tmux — {summary}.", file=sys.stderr)
+                launch_reporter.active().phase("tmux").outcome(f"repaired: {summary}")
             return InstallResult(True, tool="loader-path", detail=summary)
 
         if not repair.missing:
@@ -226,17 +224,17 @@ def ensure_tmux(auto_install: bool = True, quiet: bool = False) -> InstallResult
 
         failure = InstallResult(False, detail=repair.detail, unusable=True)
         if not quiet:
-            print(remediation(failure), file=sys.stderr)
+            launch_reporter.active().warning(remediation(failure))
         return failure
 
     result = install_tmux() if auto_install else InstallResult(False, detail="auto-install not attempted")
     if result.installed:
         if not quiet:
-            print(f"ai-cli-utils: installed tmux via {result.tool}.", file=sys.stderr)
+            launch_reporter.active().phase("tmux").outcome(f"installed via {result.tool}")
         return result
 
     if not quiet:
-        print(remediation(result), file=sys.stderr)
+        launch_reporter.active().warning(remediation(result))
     # Absent from PATH and not installed: positively established, unlike the
     # ambiguous case above.
     return InstallResult(False, tool=result.tool, detail=result.detail, unusable=True)
@@ -463,52 +461,59 @@ def report_lines(
     bare: bool,
     reason: str,
     auto_installed: str | None = None,
-) -> list[str]:
-    """The launch-time tmux block, as lines.
+) -> list[tuple[str, str]]:
+    """The launch-time tmux block, as ``(phase, outcome)`` pairs for the launch reporter.
 
     Answers the operator's actual questions in order: is this session inside
-    tmux, which tmux, and did anything get installed on my machine just now.
+    tmux, which tmux, and did anything get installed on my machine just now. A
+    ``"Warning"`` phase is the one line the reporter must show even under --quiet.
     """
-    lines: list[str] = []
+    lines: list[tuple[str, str]] = []
     if auto_installed:
-        lines.append(f"ai-cli: tmux was auto-installed via {auto_installed}.")
+        lines.append(("tmux", f"auto-installed via {auto_installed}"))
 
     if not report.present:
-        lines.append(f"ai-cli: tmux not found on PATH — launching bare ({reason}).")
+        lines.append(("Mode", f"launching bare, tmux not found on PATH ({reason})"))
         return lines
 
     if not report.versions_probed:
         # Presence only. Saying "version unavailable" here would report a broken
         # binary when nothing was ever asked.
-        lines.append(f"ai-cli: tmux found at {report.path} (version not queried)")
-        lines.append(f"ai-cli: launching bare, not under tmux ({reason}).")
+        lines.append(("tmux", f"found at {report.path} (version not queried)"))
+        lines.append(("Mode", f"launching bare, not under tmux ({reason})"))
         return lines
 
     detail = report.client_version or "version unavailable (binary does not run)"
-    lines.append(f"ai-cli: tmux {detail} at {report.path}")
+    lines.append(("tmux", f"{detail} at {report.path}"))
 
     if report.server_version and not report.formats_unexpanded:
-        lines.append(f"ai-cli: running tmux server reports {report.server_version}")
+        lines.append(("tmux", f"running server reports {report.server_version}"))
     if report.formats_unexpanded:
         # Naming the observation rather than printing `#version` as if it were a
         # version: the literal IS the finding, and reporting it as a version is
         # what made this look like a mismatch.
         lines.append(
-            "ai-cli: running tmux server does not expand format strings "
-            f"(it answered {report.server_version!r} for its own version)"
+            (
+                "tmux",
+                "running server does not expand format strings "
+                f"(it answered {report.server_version!r} for its own version)",
+            )
         )
     if report.versions_disagree:
         lines.append(
-            f"ai-cli: WARNING — client {report.client_version} but the running "
-            f"server is {report.server_version}. The server answers every "
-            f"format query, so it decides compatibility; relaunch every session "
-            f"to converge."
+            (
+                "Warning",
+                f"tmux client {report.client_version} but the running "
+                f"server is {report.server_version}. The server answers every "
+                f"format query, so it decides compatibility; relaunch every session "
+                f"to converge.",
+            )
         )
 
     if bare:
-        lines.append(f"ai-cli: launching bare, not under tmux ({reason}).")
+        lines.append(("Mode", f"launching bare, not under tmux ({reason})"))
     else:
-        lines.append(f"ai-cli: launching inside tmux ({reason}).")
+        lines.append(("Mode", f"launching inside tmux ({reason})"))
     return lines
 
 
