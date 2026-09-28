@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +10,8 @@ import pytest
 from conftest import make_iterm2_config, run_cli
 
 from ai_cli.main import (
+    _UPDATE_RETRY_BASE_SECONDS,
+    _UPDATE_RETRY_MAX_SECONDS,
     _assign_iterm2_color_slot,
     _auto_update_if_stale,
     _bare_engine_command,
@@ -23,6 +26,7 @@ from ai_cli.main import (
     _release_iterm2_color_slot,
     _resolve_is_remote,
     _sweep_stale_iterm2_profiles,
+    _update_retry_delay,
     cli,
     get_engine_script,
     get_xdg_cache_home,
@@ -759,6 +763,122 @@ class TestAutoUpdateIfStaleLockContention:
 
         assert updates and len(updates) == 1
         assert loser_reexec is True, "the loser must restart after its peer replaced the installed files"
+
+
+class TestAutoUpdateRetryBackoff:
+    """A failed update is neither remembered as done nor retried on every single launch.
+
+    AI-CLI-6bg. The stamp used to be written before the install ran, so a host whose
+    update could not succeed was latched behind forever: the stamp read "current",
+    the install had never worked, and nothing ever retried -- measured on one build
+    host as five days without an auto-update. Writing the stamp only on success
+    removes that latch and buys the opposite cost, which is what these tests pin:
+    an unchanged, still-failing source is retried on a capped backoff instead of on
+    every launch, and anything that changes the odds of succeeding -- a source edit,
+    a successful update, a record that cannot be read -- retries at once.
+    """
+
+    def _tree(self, tmp_path: Path) -> tuple[Path, Path]:
+        """A packaged source tree plus an empty state dir, as separate roots.
+
+        Separate so the failure record and the fingerprint stamp cannot themselves
+        land inside the tree being fingerprinted, which would change the fingerprint
+        every time one was written and make every launch look stale for the wrong
+        reason.
+        """
+        project = tmp_path / "myproject"
+        (project / "src" / "demo").mkdir(parents=True)
+        (project / "pyproject.toml").write_text('[project]\nname = "myproject"\nversion = "0.1.0"\n')
+        (project / "src" / "demo" / "value.py").write_text('VALUE = "before"\n')
+        state = tmp_path / "state"
+        state.mkdir()
+        return project, state
+
+    def _record(self, state: Path) -> Path:
+        return state / "last_install_failure.json"
+
+    def _launch(self, project: Path, state: Path, *, returncode: int) -> list[list[str]]:
+        """Run one session-launch auto-update; return the ``ai update`` calls it made."""
+        updates: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            cmd = list(cmd)
+            if len(cmd) >= 2 and cmd[1] == "update":
+                updates.append(cmd)
+                return MagicMock(returncode=returncode, stdout="", stderr="uv: no space left on device\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("ai_cli.main._find_aicli_project_path", return_value=project),
+            patch("ai_cli.config.get_xdg_state_home", return_value=state),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/ai"),
+        ):
+            _auto_update_if_stale({"deploy": {"project_path": str(project)}})
+        return updates
+
+    def _age_record(self, state: Path, seconds: float) -> None:
+        """Move the recorded attempt ``seconds`` into the past (negative = the future)."""
+        record = json.loads(self._record(state).read_text())
+        record["last_attempt"] = time.time() - seconds
+        self._record(state).write_text(json.dumps(record))
+
+    def test_given_a_failed_update_when_the_next_launch_starts_then_it_does_not_retry_immediately(
+        self, tmp_path, capsys
+    ):
+        project, state = self._tree(tmp_path)
+        assert self._launch(project, state, returncode=1), "the first launch must attempt the update"
+        capsys.readouterr()
+
+        second = self._launch(project, state, returncode=1)
+
+        assert second == [], "a launch inside the backoff window must not re-run a known-failing update"
+        assert "skipping auto-update" in capsys.readouterr().err, "a skipped update must say so, not go silent"
+
+    def test_given_the_backoff_elapsed_when_a_launch_starts_then_the_update_is_retried(self, tmp_path):
+        project, state = self._tree(tmp_path)
+        self._launch(project, state, returncode=1)
+        self._age_record(state, _UPDATE_RETRY_BASE_SECONDS + 1)
+
+        assert self._launch(project, state, returncode=1), "the wait is a backoff, not a second latch"
+        assert json.loads(self._record(state).read_text())["attempts"] == 2
+
+    def test_given_the_source_changed_after_a_failure_when_a_launch_starts_then_it_retries_at_once(self, tmp_path):
+        project, state = self._tree(tmp_path)
+        self._launch(project, state, returncode=1)
+        (project / "src" / "demo" / "value.py").write_text('VALUE = "after"\n')
+
+        assert self._launch(project, state, returncode=1), "a changed source is a new attempt with new odds"
+        assert json.loads(self._record(state).read_text())["attempts"] == 1, "a new source restarts the count"
+
+    def test_given_a_failure_then_a_successful_update_when_it_finishes_then_the_record_is_cleared(self, tmp_path):
+        project, state = self._tree(tmp_path)
+        self._launch(project, state, returncode=1)
+        assert self._record(state).exists()
+        (project / "src" / "demo" / "value.py").write_text('VALUE = "after"\n')
+
+        assert self._launch(project, state, returncode=0)
+
+        assert not self._record(state).exists(), "a recovered host must not carry the old attempt count"
+
+    def test_given_an_unreadable_failure_record_when_a_launch_starts_then_it_retries(self, tmp_path):
+        project, state = self._tree(tmp_path)
+        self._record(state).write_text("{ not json")
+
+        assert self._launch(project, state, returncode=1), "an unusable record must fail toward retrying"
+
+    def test_given_the_clock_moved_backwards_since_the_failure_when_a_launch_starts_then_it_retries(self, tmp_path):
+        project, state = self._tree(tmp_path)
+        self._launch(project, state, returncode=1)
+        self._age_record(state, -3600)  # the attempt now claims to be an hour in the future
+
+        assert self._launch(project, state, returncode=1), "a backwards clock must not read as a near-endless wait"
+
+    def test_given_consecutive_failures_when_the_delay_is_computed_then_it_doubles_to_the_ceiling(self):
+        assert _update_retry_delay(0) == 0.0
+        assert _update_retry_delay(1) == _UPDATE_RETRY_BASE_SECONDS
+        assert _update_retry_delay(2) == 2 * _UPDATE_RETRY_BASE_SECONDS
+        assert _update_retry_delay(99) == _UPDATE_RETRY_MAX_SECONDS
 
 
 # --- Group 11: _cmd_tunnel_start no remote host ---
