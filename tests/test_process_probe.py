@@ -354,11 +354,46 @@ def test_given_a_procfs_tick_count_when_matched_without_procfs_then_unrecorded(s
     assert PsutilProbe().start_time_match(proc.pid, 777) is StartTimeMatch.UNRECORDED
 
 
-def test_given_a_pid_that_no_longer_exists_when_matched_then_unproven(sleeper):
+def test_given_psutil_cannot_see_the_process_when_matched_then_unproven(monkeypatch):
+    """The branch is "psutil cannot see it", so simulate exactly that and nothing else.
+
+    This used to kill a real sleeper and assert UNPROVEN on its pid, which is a POSIX-only
+    observation dressed as a portable one. On Windows a pid stays queryable while ANY handle
+    to it is open, and the ``sleeper`` fixture deliberately holds the ``Popen`` for teardown
+    -- so ``create_time()`` still returned the dead process's real birth time, it still
+    matched ``recorded``, and the probe answered MATCH. Correctly: that pid genuinely was
+    still identified as the recorded process. Measured on main at ``c27c983``, test-windows
+    of run 36368188335.
+
+    Mocking at the psutil boundary is the honest way to reach this branch, because the
+    branch is about what the probe does with an unavailable answer, not about how the OS
+    decides to release a pid. The real-process behaviour is covered by the test below.
+    """
+
+    def raise_no_such_process(_pid):
+        raise psutil.NoSuchProcess(4242)
+
+    monkeypatch.setattr(psutil, "Process", raise_no_such_process)
+
+    assert PsutilProbe().start_time_match(4242, _filetime(time.time())) is StartTimeMatch.UNPROVEN
+
+
+def test_given_a_live_pid_and_a_mismatched_record_when_matched_then_never_claims_a_match(sleeper):
+    """The safety property that must hold on every platform: no MATCH for a wrong identity.
+
+    That is what would otherwise let a reclaim signal the wrong process after a pid was
+    reused. Asserted against a LIVE process on purpose. A first attempt killed the process
+    first, which looked stronger and was actually weaker: on POSIX the dead pid raises
+    ``NoSuchProcess`` and the probe returns UNPROVEN from the exception path, so the
+    comparison under test was never reached and the assertion passed for the wrong reason.
+    Measured -- widening ``_START_TIME_TOLERANCE_SECONDS`` to 999999 left that version
+    green, which is the definition of a test that cannot fail.
+
+    A live process forces the comparison on every platform, so the same widening now turns
+    this red.
+    """
     proc, _ = sleeper()
-    recorded = _filetime(psutil.Process(proc.pid).create_time())
-    proc.kill()
-    proc.wait(timeout=15)
+    recorded = _filetime(psutil.Process(proc.pid).create_time() - 3600)
 
     assert PsutilProbe().start_time_match(proc.pid, recorded) is StartTimeMatch.UNPROVEN
 
