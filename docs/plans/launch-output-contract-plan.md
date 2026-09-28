@@ -1,6 +1,6 @@
 # Launcher Output Contract — Implementation Plan
 
-**Status:** DRAFT
+**Status:** IMPLEMENTED (awaiting review of the launching session)
 **Created:** 2026-09-27
 **Task:** AI-CLI-1o9b
 **Research:** [📄 docs/research/launch-sequence-progress-logging-cli-ux.md](../research/launch-sequence-progress-logging-cli-ux.md)
@@ -183,25 +183,25 @@ Extend `src/ai_cli/launch_reporter.py`. No new dependency.
 
 **Acceptance criteria:**
 
-- [ ] Parity: every inventory behavior above still holds (existing tests pass unchanged except where
+- [x] Parity: every inventory behavior above still holds (existing tests pass unchanged except where
       the new `Warning:`/`Error:` never-quiet rule is asserted).
-- [ ] When the target stream `isatty()` is true and `NO_COLOR` is unset, the emitted line contains
+- [x] When the target stream `isatty()` is true and `NO_COLOR` is unset, the emitted line contains
       ANSI style sequences around `[launch]`, the phase label, and `Ready`/`Warning`/`Error`.
-- [ ] When the target stream is not a TTY, the emitted bytes contain no `\x1b` (negative control).
-- [ ] If `NO_COLOR` is set non-empty, or `TERM=dumb`, then no `\x1b` is emitted even on a TTY.
-- [ ] When a started phase records no outcome within the heartbeat threshold, the reporter emits
+- [x] When the target stream is not a TTY, the emitted bytes contain no `\x1b` (negative control).
+- [x] If `NO_COLOR` is set non-empty, or `TERM=dumb`, then no `\x1b` is emitted even on a TTY.
+- [x] When a started phase records no outcome within the heartbeat threshold, the reporter emits
       `<Phase>: still <start> (Ns elapsed)` and repeats every threshold until the phase ends; a phase
       created without a start line never emits a heartbeat.
-- [ ] When a started phase records its outcome after >= 2 s, the outcome line carries ` (X.Ys)`;
+- [x] When a started phase records its outcome after >= 2 s, the outcome line carries ` (X.Ys)`;
       under 2 s it does not unless `verbose` is set.
-- [ ] If a started phase exits cleanly without an outcome, then `done` is emitted as its outcome.
-- [ ] If `KeyboardInterrupt` escapes a started phase, then `interrupted after X.Ys` is emitted and the
+- [x] If a started phase exits cleanly without an outcome, then `done` is emitted as its outcome.
+- [x] If `KeyboardInterrupt` escapes a started phase, then `interrupted after X.Ys` is emitted and the
       exception propagates; `SystemExit` emits nothing extra (the error line was already printed).
-- [ ] `warning(text)` and `error(text)` emit `Warning: text` / `Error: text` on stderr even when
+- [x] `warning(text)` and `error(text)` emit `Warning: text` / `Error: text` on stderr even when
       `quiet` is set, and log at WARNING / ERROR.
-- [ ] `active()` returns the reporter installed by `activate()`, or a plain default reporter when
+- [x] `active()` returns the reporter installed by `activate()`, or a plain default reporter when
       none is installed; `activate()` returns the previously active reporter so a test can restore it.
-- [ ] The logger receives the plain, unstyled text.
+- [x] The logger receives the plain, unstyled text.
 
 **Dependencies:** None
 
@@ -226,19 +226,19 @@ is recorded inside the block (so elapsed time and the heartbeat cover the real w
 
 **Acceptance criteria:**
 
-- [ ] `grep -c 'print(' ` over `_do_session_launch` + `_session_command` is 0 after the change,
+- [x] `grep -c 'print(' ` over `_do_session_launch` + `_session_command` is 0 after the change,
       excluding `_print_launch_plan` / `_print_remote_launch_plan` calls (dry-run stdout report).
-- [ ] `grep -c 'if reporter is not None'` over `main.py` is 0.
-- [ ] Every launch `Error:` exit path emits `[launch] Error: ...` on stderr and exits 1 (existing
+- [x] `grep -c 'if reporter is not None'` over `main.py` is 0.
+- [x] Every launch `Error:` exit path emits `[launch] Error: ...` on stderr and exits 1 (existing
       tests asserting `"Error: ..." in err` keep passing because the substring is preserved).
-- [ ] The tmux block appears as `[launch] tmux: ...` / `[launch] Mode: launching inside tmux (...)`
+- [x] The tmux block appears as `[launch] tmux: ...` / `[launch] Mode: launching inside tmux (...)`
       lines; the `launching inside tmux` / `launching bare` markers existing tests rely on are kept.
-- [ ] `Remote`, `Update`, `Session` (remote), `Worktree` creating and synchronizing phases record their
+- [x] `Remote`, `Update`, `Session` (remote), `Worktree` creating and synchronizing phases record their
       outcome inside the `with` block.
-- [ ] Every `os.execvp` / attach / `run_ssh_with_reconnect` / `_run_transport_loop` on the launch path
+- [x] Every `os.execvp` / attach / `run_ssh_with_reconnect` / `_run_transport_loop` on the launch path
       is immediately preceded by `reporter.handoff(...)`, and nothing between the handoff and the exec
       requires teardown (no thread, no renderer, no terminal mode change).
-- [ ] If the reporter is omitted by a caller, then the launch still reports through a default reporter
+- [x] If the reporter is omitted by a caller, then the launch still reports through a default reporter
       (no `None` path remains).
 
 **Dependencies:** T-01
@@ -262,12 +262,12 @@ single `warning` so quiet mode still shows them.
 
 **Acceptance criteria:**
 
-- [ ] `grep -n '"\[launch\]' src/ai_cli/session.py` returns nothing: no hand-copied prefix remains.
-- [ ] `grep -n 'ai-cli-utils: \|ai-cli: ' src/ai_cli/{tmux_setup,direnv_setup}.py` returns nothing.
-- [ ] When `_session_command` runs, the reporter it builds is the one `active()` returns, so a
+- [x] `grep -n '"\[launch\]' src/ai_cli/session.py` returns nothing: no hand-copied prefix remains.
+- [x] `grep -n 'ai-cli-utils: \|ai-cli: ' src/ai_cli/{tmux_setup,direnv_setup}.py` returns nothing.
+- [x] When `_session_command` runs, the reporter it builds is the one `active()` returns, so a
       worktree relocation inside `create_worktree` is printed with the launch's quiet/verbose policy
       and mirrored into the launch log.
-- [ ] If no launch is in progress (for example `create_worktree` called from another command), then
+- [x] If no launch is in progress (for example `create_worktree` called from another command), then
       `active()` still prints the line through a default reporter, so nothing goes silent.
 
 **Dependencies:** T-01
@@ -282,7 +282,7 @@ touches `README.md`, so a conflict there stays cheap.
 
 **Acceptance criteria:**
 
-- [ ] README has a "Launch output" section showing the grammar and the `-q`/`-v`/`NO_COLOR` controls.
+- [x] README has a "Launch output" section showing the grammar and the `-q`/`-v`/`NO_COLOR` controls.
 
 **Dependencies:** T-02, T-03
 
@@ -302,40 +302,40 @@ touches `README.md`, so a conflict there stays cheap.
 
 ### T-01
 
-- [ ] Parity with inventory
-- [ ] TTY colour on
-- [ ] Non-TTY: no `\x1b`
-- [ ] `NO_COLOR` / `TERM=dumb`: no `\x1b`
-- [ ] Heartbeat after threshold, only for started phases
-- [ ] Elapsed on slow outcome / always with verbose
-- [ ] `done` fallback
-- [ ] Interrupt / SystemExit handling
-- [ ] `warning`/`error` never quiet
-- [ ] `active()` / `activate()`
-- [ ] Logger gets plain text
+- [x] Parity with inventory
+- [x] TTY colour on
+- [x] Non-TTY: no `\x1b`
+- [x] `NO_COLOR` / `TERM=dumb`: no `\x1b`
+- [x] Heartbeat after threshold, only for started phases
+- [x] Elapsed on slow outcome / always with verbose
+- [x] `done` fallback
+- [x] Interrupt / SystemExit handling
+- [x] `warning`/`error` never quiet
+- [x] `active()` / `activate()`
+- [x] Logger gets plain text
 
 ### T-02
 
-- [ ] No `print(` on the launch path (dry-run report excepted)
-- [ ] No `if reporter is not None`
-- [ ] `Error:` exits through the reporter
-- [ ] tmux block as reporter lines with markers kept
-- [ ] Outcomes inside `with` blocks
-- [ ] Handoff immediately before every exec/attach, nothing needing teardown
-- [ ] Default reporter when omitted
+- [x] No `print(` on the launch path (dry-run report excepted)
+- [x] No `if reporter is not None`
+- [x] `Error:` exits through the reporter
+- [x] tmux block as reporter lines with markers kept
+- [x] Outcomes inside `with` blocks
+- [x] Handoff immediately before every exec/attach, nothing needing teardown
+- [x] Default reporter when omitted
 
 ### T-03
 
-- [ ] No `"[launch]` in session.py
-- [ ] No `ai-cli-utils: ` / `ai-cli: ` in tmux_setup/direnv_setup
-- [ ] `activate()` called by `_session_command`
-- [ ] Default reporter outside a launch
+- [x] No `"[launch]` in session.py
+- [x] No `ai-cli-utils: ` / `ai-cli: ` in tmux_setup/direnv_setup
+- [x] `activate()` called by `_session_command`
+- [x] Default reporter outside a launch
 
 ### T-04
 
-- [ ] README section present
+- [x] README section present
 
-**Audit completed:** <!-- YYYY-MM-DD -->
+**Audit completed:** 2026-09-27 — every AC verified against the worktree at the T-02/T-03 commit; `ruff check .`, `ruff format --check .`, `uv run pyright src/` and `pytest` green (see the delegation report for the verbatim summary lines).
 
 ## Human Gates
 
