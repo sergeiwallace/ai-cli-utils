@@ -6323,13 +6323,18 @@ def test_git_env_when_containment_added_then_ai_sync_identity_is_preserved():
     assert _GIT_ENV["GIT_COMMITTER_EMAIL"] == "ai-sync@local"
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(180)
 def test_push_to_remote_when_remote_demands_credentials_then_fails_without_prompting(
     tmp_path, remote_demanding_credentials
 ):
     """The real network path, against a real 401 remote. _PUSH_TIMEOUT is 300s, so an
     unfixed git prompting on /dev/tty stalls `ai sync` for five minutes per push; the
-    60s cap here fails the test rather than letting the suite absorb the hang."""
+    cap here fails the test rather than letting the suite absorb the hang.
+
+    180s, not 60s: the budget has to cover a real git CLI's wall clock on a loaded host,
+    and the sibling test in test_workspace.py timed out at 60s in a full parallel run
+    while passing in 15-48s alone on the same machine. Still well inside _PUSH_TIMEOUT,
+    so a genuine prompt-driven hang is still caught here rather than absorbed."""
     from ai_cli.sync import _push_to_remote
 
     staging = tmp_path / "staging"

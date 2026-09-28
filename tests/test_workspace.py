@@ -569,13 +569,18 @@ def _real_repo_with_remote(path: Path, url: str) -> Path:
     return path
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(180)
 def test_pull_rebase_when_remote_demands_credentials_then_fails_without_prompting(
     tmp_path, remote_demanding_credentials
 ):
     """Drives the real `git` CLI against a real 401 remote, because the defect IS
     git's prompting behaviour -- a mocked _run would only assert what the mock said.
-    Unattended, git must fail fast; prompting instead blocks `ai ws` forever."""
+    Unattended, git must fail fast; prompting instead blocks `ai ws` forever.
+
+    180s, not 60s: every step here is a real git subprocess, and measured on one host this
+    test takes 15-48s alone and exceeded 60s inside a full parallel run -- the timeout was
+    firing on host load rather than on the hang it exists to catch. The failure mode it
+    guards against is an unbounded block, which a longer budget still catches."""
     repo = _real_repo_with_remote(tmp_path / "repo", remote_demanding_credentials)
 
     rc, output = _pull_rebase(repo)
