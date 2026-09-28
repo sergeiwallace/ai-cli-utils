@@ -737,6 +737,30 @@ def test_adopt_given_the_title_holder_is_a_bare_session_when_retitled_then_it_is
     assert not any("no longer resolves" in w for w in result.warnings), result.warnings
 
 
+def test_adopt_given_a_retitle_with_no_collision_when_adopted_then_the_old_title_is_not_reported_as_lost(world, adopt):
+    """With no other claimant there is nothing for the old title to lose (AI-CLI-2ul).
+
+    ``-c retitle`` is also how an operator corrects a title ``ai c <n>`` can never
+    address — a generated name carrying a leading dash or a doubled index. In that
+    use there is exactly one claimant, so after the retitle the old title is
+    *expected* to resolve nowhere, and the check fired anyway and told the operator
+    to go verify a transcript that never existed. The warning describes a resolved
+    collision: whoever kept the title should still resolve. With no collision
+    there is no such party, so there is nothing to check.
+
+    Deliberately does NOT patch ``probe_resolves`` — what is under test is whether
+    the check runs at all, not where it looks.
+    """
+    _add_worktree(world["repo"], "myproject-1")
+    assert len(find_title_candidates(world["repo"], "myproject-2", world["home"])) == 1
+
+    result = adopt(on_collision="retitle", new_title="myproject-1")
+
+    assert result.retitled_from == "myproject-2"
+    assert result.resolved is not None
+    assert not any("no longer resolves" in w for w in result.warnings), result.warnings
+
+
 def test_adopt_given_move_semantics_when_adopted_then_source_transcript_is_gone(world, adopt, existing_worktree):
     adopt()
     assert not (world["src_dir"] / f"{UUID}.jsonl").exists()

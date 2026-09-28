@@ -1079,7 +1079,13 @@ def adopt_session(
         )
 
     candidates = find_title_candidates(repo_root, ai_name, home, extra_dirs=[source_dir])
-    if len(candidates) > 1:
+    # Whether another transcript was also claiming ``ai_name``, measured here
+    # because this is the last moment it is true: the migration below moves and
+    # retitles this one, so counting the claimants afterwards counts a different
+    # population. It survives past the raise only when a new title was supplied,
+    # which is exactly the "the human resolved a collision" case.
+    collision_resolved = len(candidates) > 1
+    if collision_resolved:
         split = split_ai_name(ai_name)
         prefix = split[0] if split else None
         free = next_free_index(repo_root, prefix, home) if prefix else None
@@ -1166,7 +1172,7 @@ def adopt_session(
                 f"post-adopt check FAILED: `ai c` in {dest_root} resolves {resolved} for title "
                 f"{target_title!r}, not the adopted {migration.dest_jsonl}"
             )
-        if retitled_from:
+        if retitled_from and collision_resolved:
             # Stepping aside from a taken title only makes sense if whoever already
             # holds it still resolves, so this checks that they do. It has to look in
             # BOTH places a holder can live, because the two are not alternatives:
@@ -1174,9 +1180,15 @@ def adopt_session(
             # session — the population this command exists to migrate — never had one
             # and resolves from the project root.
             #
-            # Probing only the worktree path made the warning fire on every
-            # successful bare adoption, which is worse than no warning: it trains the
-            # operator to ignore the channel meant to carry real failures.
+            # Gated on a collision because a retitle is not always stepping aside:
+            # it is also how an operator corrects a title `ai c <n>` can never
+            # address. With one claimant there is no other party, so the old title
+            # is *expected* to resolve nowhere afterwards and the check has nothing
+            # to verify — it fired on every such adoption and sent the operator
+            # looking for a transcript that never existed. Probing only the worktree
+            # path was the same failure one layer down. A warning that always fires
+            # is worse than none: it trains the operator to ignore the channel meant
+            # to carry real failures.
             searched = [repo_root / ".worktrees" / retitled_from, source_root]
             if all(probe_resolves(root, retitled_from, home) is None for root in searched):
                 warnings.append(
