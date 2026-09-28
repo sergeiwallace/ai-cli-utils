@@ -187,6 +187,45 @@ repos:
         stages: [pre-push]
         pass_filenames: false
         always_run: true
+      # live-file-deletion-guard (AI-CLI-9sy, 2026-09-27): reject a commit that
+      # deletes a tracked file which still exists on the upstream default branch.
+      # Files have gone missing from worktrees repeatedly, silently -- `git status`
+      # reports the path as deleted and every exit code reads fine -- and the loss
+      # only surfaces later as someone else's work missing from `main`.
+      #
+      # The cause is deliberately NOT guarded, because it cannot be: `rm` + `git
+      # add -A` and `git rm` produce identical index states, so an accidental
+      # deletion and an intentional one are structurally indistinguishable. The
+      # OUTCOME is guardable, and guarding it holds however many ways a file can go
+      # missing. A missing file is also harmless and recoverable from HEAD; only the
+      # commit is not.
+      #
+      # pre-commit itself is NOT patched or worked around by this. Its
+      # `staged_files_only` saving unstaged changes and restoring them after hooks
+      # run is correct designed behaviour, and a deletion someone made on purpose is
+      # a legitimate unstaged change that has to survive. This guard sits at the
+      # commit boundary instead, where the irreversible step happens.
+      #
+      # pre-commit stage, not pre-push: the commit is the point of no return for the
+      # content, and a rejected push leaves the bad commit sitting on the branch.
+      #
+      # Bypass, in preference order:
+      #   ALLOW_DELETIONS=path/a,path/b git commit   # acknowledge exact paths
+      #   ALLOW_DELETIONS=1 git commit               # acknowledge all of them
+      #   SKIP=live-file-deletion-guard git commit   # skip the hook entirely
+      # The per-path form is first because the blanket forms wave through an
+      # accidental deletion riding along with an intentional one, which is precisely
+      # the case worth catching.
+      #
+      # `python3`, not `uv run`: the checker is standard-library-and-git only so it
+      # stays copyable into any repo (and so a commit never silently provisions a
+      # venv). It does not import this package.
+      - id: live-file-deletion-guard
+        name: live-file deletion guard (no deleting files still on origin/main)
+        entry: python3 scripts/check_live_file_deletions.py
+        language: system
+        pass_filenames: false
+        always_run: true
       # doc-alignment (AI-CLI-ckzk): the other check CI's lint job ran and the local
       # gate did not. 0.26s measured, so unlike pyright it is cheap enough to run on
       # every commit rather than only before a push.
