@@ -85,9 +85,39 @@ def test_given_windows_resolution_when_only_home_is_redirected_then_the_guard_st
     ):
         os.environ.pop(OVERRIDE)
 
+        resolved = get_canonical_worktree_registry_path()
         breach = canonical_registry_breach()
 
-    assert "inside the operator's real home" in breach
+    # The PROPERTY, not one branch's wording. Which of the guard's two branches fires is a
+    # platform fact: on a real Windows host the resolved path IS the operator's registry
+    # exactly, while simulating Windows resolution from POSIX produces a path that is merely
+    # inside the real home. Asserting the "inside ... real home" phrasing passed on POSIX and
+    # failed on Windows -- on the one platform this test is actually about.
+    assert breach, "Windows resolution reaches the operator's own profile, so this must be a breach"
+    assert str(resolved) in breach, f"the breach must name the path it resolved: {breach}"
+
+
+def test_given_a_resolution_test_dropping_the_override_when_windows_branch_taken_then_no_breach(tmp_path):
+    """A test that unsets the override to exercise resolution must redirect LOCALAPPDATA too.
+
+    This is the shape ``test_canonical_worktrees.py`` uses for the SageMaker/XDG predicate, and
+    it went red on the Windows job while passing on every POSIX one: dropping the override sends
+    resolution through ``get_xdg_data_home``, which on Windows reads LOCALAPPDATA and ignores
+    XDG_DATA_HOME, so patching ``Path.home`` and XDG_DATA_HOME left it on the operator's own
+    profile. Pinned here, from POSIX, so the Windows job is not the only thing that notices.
+    """
+    with (
+        patch.dict(
+            os.environ,
+            {"XDG_DATA_HOME": str(tmp_path / "xdg-data"), "LOCALAPPDATA": str(tmp_path / "localappdata")},
+        ),
+        patch("sys.platform", "win32"),
+        patch.object(Path, "home", classmethod(lambda cls: tmp_path)),
+    ):
+        os.environ.pop(OVERRIDE)
+
+        assert canonical_registry_breach() == ""
+        assert _REAL_HOME not in get_canonical_worktree_registry_path().parents
 
 
 def test_given_a_dead_entry_when_a_worktree_is_registered_then_the_dead_entry_is_pruned(tmp_path, monkeypatch):

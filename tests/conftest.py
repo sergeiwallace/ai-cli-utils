@@ -1173,14 +1173,20 @@ def canonical_registry_breach() -> str:
     except Exception:
         return ""
     real_registry = str(_REAL_CANONICAL_WORKTREE_REGISTRY)
-    if os.path.normpath(resolved) == os.path.normpath(real_registry):
+
+    def comparable(path: str) -> str:
+        # normcase as well as normpath, because Windows paths compare case-insensitively and
+        # the same registry arrives spelled both ways -- LOCALAPPDATA as the environment sets
+        # it, and the import-time constant as pathlib built it.
+        return os.path.normcase(os.path.normpath(path))
+
+    if comparable(resolved) == comparable(real_registry):
         return f"the registry resolved to the operator's real {real_registry}"
     # Compared in string space, and under the real HOME rather than only against the one
     # POSIX path, because the resolver is platform-branched: on Windows it reads
     # LOCALAPPDATA, which the HOME redirect does not clear, so a Windows run resolves a
     # DIFFERENT file that is just as much the operator's own.
-    real_home = os.path.normpath(str(_REAL_HOME)) + os.sep
-    if os.path.normpath(resolved).startswith(real_home):
+    if comparable(resolved).startswith(comparable(str(_REAL_HOME)) + os.sep):
         return f"the registry resolved to {resolved}, inside the operator's real home"
     return ""
 

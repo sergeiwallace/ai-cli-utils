@@ -42,6 +42,13 @@ def test_given_local_user_default_efs_directory_when_resolving_then_xdg_is_used(
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     xdg = tmp_path / "xdg-data"
     monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+    # LOCALAPPDATA as well, or this test is hermetic only on POSIX: dropping the override
+    # above sends resolution through `get_xdg_data_home`, which on Windows reads
+    # LOCALAPPDATA and ignores XDG_DATA_HOME entirely -- so on a Windows host it resolved
+    # the operator's own real registry, which the isolation guard then reported (measured
+    # on CI: C:\Users\runneradmin\AppData\Local\ai-cli-utils\...). Patching `Path.home`
+    # does not cover it either, because LOCALAPPDATA outranks that fallback.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     stray = tmp_path / "user-default-efs"
     (stray / ".credo").mkdir(parents=True)  # exactly the shape credo leaves behind
 
