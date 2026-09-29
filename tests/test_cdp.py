@@ -95,11 +95,18 @@ class TestFindChromeBinary:
     # Microsoft Edge, added because some managed endpoints ship Edge and no Chrome.
     # Each platform gets its own case: the candidate lists are per-platform, so one
     # passing case says nothing about the other two.
+    #
+    # These simulate "only Edge exists" by matching a distinctive TOKEN rather than
+    # comparing a stringified Path to a literal. `str(Path(...))` is separator-dependent:
+    # on Windows, `str(WindowsPath("/Applications/Microsoft Edge.app/..."))` comes back
+    # with backslashes, so an equality check against the POSIX literal matches nothing,
+    # every candidate reports absent and the finder returns None. That is how the first
+    # version of this test passed on macOS and failed on the Windows CI runner.
 
     def test_when_only_edge_exists_on_macos_then_returns_edge(self):
         edge = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
         with patch("shutil.which", return_value=None):
-            with patch("ai_cli.main.Path.exists", lambda self: str(self) == edge):
+            with patch("ai_cli.main.Path.exists", lambda self: "Microsoft Edge.app" in str(self)):
                 with patch.object(sys, "platform", "darwin"):
                     result = _find_chrome_binary({})
         assert result == edge
@@ -107,9 +114,11 @@ class TestFindChromeBinary:
     def test_when_only_edge_exists_on_windows_then_returns_edge(self):
         edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
         with patch("shutil.which", return_value=None):
-            with patch("ai_cli.main.Path.exists", lambda self: str(self) == edge):
+            with patch("ai_cli.main.Path.exists", lambda self: "msedge.exe" in str(self)):
                 with patch.object(sys, "platform", "win32"):
                     result = _find_chrome_binary({})
+        # The x86 path is listed before the 64-bit one, so "any msedge.exe exists"
+        # must resolve to it -- which also pins the intended within-Edge ordering.
         assert result == edge
 
     def test_when_only_edge_on_path_on_linux_then_returns_edge(self):
