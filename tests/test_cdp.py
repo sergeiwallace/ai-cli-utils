@@ -92,6 +92,46 @@ class TestFindChromeBinary:
                     result = _find_chrome_binary({})
         assert result is None
 
+    # Microsoft Edge, added because some managed endpoints ship Edge and no Chrome.
+    # Each platform gets its own case: the candidate lists are per-platform, so one
+    # passing case says nothing about the other two.
+
+    def test_when_only_edge_exists_on_macos_then_returns_edge(self):
+        edge = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+        with patch("shutil.which", return_value=None):
+            with patch("ai_cli.main.Path.exists", lambda self: str(self) == edge):
+                with patch.object(sys, "platform", "darwin"):
+                    result = _find_chrome_binary({})
+        assert result == edge
+
+    def test_when_only_edge_exists_on_windows_then_returns_edge(self):
+        edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        with patch("shutil.which", return_value=None):
+            with patch("ai_cli.main.Path.exists", lambda self: str(self) == edge):
+                with patch.object(sys, "platform", "win32"):
+                    result = _find_chrome_binary({})
+        assert result == edge
+
+    def test_when_only_edge_on_path_on_linux_then_returns_edge(self):
+        with patch(
+            "shutil.which",
+            side_effect=lambda c: "/usr/bin/microsoft-edge" if c == "microsoft-edge" else None,
+        ):
+            with patch("ai_cli.main.Path.exists", return_value=False):
+                with patch.object(sys, "platform", "linux"):
+                    result = _find_chrome_binary({})
+        assert result == "/usr/bin/microsoft-edge"
+
+    def test_when_chrome_and_edge_both_exist_then_chrome_still_wins(self):
+        # Ordering control. Edge is appended last precisely so that adding it cannot
+        # change what a machine already carrying Chrome resolves to; without this case
+        # a reordering regression would pass the three cases above unnoticed.
+        with patch("shutil.which", return_value=None):
+            with patch("ai_cli.main.Path.exists", return_value=True):
+                with patch.object(sys, "platform", "darwin"):
+                    result = _find_chrome_binary({})
+        assert result == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
 
 def _simulate_linux(target):
     """Run a Linux-branch test on any host that can represent Linux paths.
@@ -152,6 +192,22 @@ class TestCmdCdpStart:
         pid_file = tmp_path / "cdp-9222.pid"
         assert pid_file.exists()
         assert json.loads(pid_file.read_text()) == {"pid": 12345, "port": 9222}
+
+    def test_launch_args_carry_remote_allow_origins_exactly_once(self, tmp_path):
+        # Chromium and Edge 111+ reject a DevTools handshake whose Origin is not allowed,
+        # and the rejection presents as a hang, so the flag's absence has no error to find.
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("urllib.request.urlopen"),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        argv = mock_popen.call_args[0][0]
+        assert argv.count("--remote-allow-origins=*") == 1
 
     def test_when_not_running_then_prints_ready(self, tmp_path, capsys):
         mock_proc = MagicMock()
@@ -229,7 +285,7 @@ class TestCmdCdpStart:
 
         assert json.loads(pid_file.read_text()) == {"pid": 66666, "port": 9222}
 
-    def test_when_no_chrome_found_then_exits_1(self, tmp_path, capsys):
+    def test_when_no_browser_found_then_exits_1_naming_all_three(self, tmp_path, capsys):
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.tunnel._find_chrome_binary", return_value=None),
@@ -238,7 +294,12 @@ class TestCmdCdpStart:
                 _cmd_cdp_start(9222, True, {})
 
         assert exc.value.code == 1
-        assert "Chrome/Chromium not found" in capsys.readouterr().err
+        # Naming every binary it looked for is the difference between "install something"
+        # and an actionable message on a machine that has Edge but no Chrome.
+        err = capsys.readouterr().err
+        assert "Chrome" in err
+        assert "Chromium" in err
+        assert "Microsoft Edge" in err
 
     def test_when_incognito_false_then_flag_not_passed(self, tmp_path):
         mock_proc = MagicMock()
@@ -358,6 +419,25 @@ class TestCmdCdpStartMacOS:
         assert cmd[:3] == ["open", "-na", "Google Chrome"]
         assert "--remote-debugging-port=9222" in cmd
         assert "--args" in cmd
+
+    def test_launch_args_carry_remote_allow_origins_exactly_once(self, tmp_path):
+        # The macOS launch goes through `open -na`, a different code path from Popen, so the
+        # Linux case for this flag does not cover it.
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch(
+                "ai_cli.tunnel._find_chrome_binary",
+                return_value="/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ),
+            patch("subprocess.run") as mock_run,
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.tunnel._find_chrome_pid_by_port", return_value=12345),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:3] == ["open", "-na", "Microsoft Edge"]
+        assert cmd.count("--remote-allow-origins=*") == 1
 
     def test_when_on_macos_with_chromium_then_derives_app_name_from_path(self, tmp_path):
         with (

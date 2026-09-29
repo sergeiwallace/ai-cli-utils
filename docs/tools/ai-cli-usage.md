@@ -488,9 +488,12 @@ ai cdp stop  [-p|--port N] [-t|--tunnel]
 ai cdp status
 ```text
 
-Launches and manages a Chrome/Chromium instance with the Chrome DevTools Protocol (CDP)
-remote debugging endpoint exposed. Useful for attaching Playwright, agent-browser, or
-any CDP-capable tool to a browser session without managing Chrome flags manually.
+Launches and manages a Chrome, Chromium or Microsoft Edge instance with the Chrome DevTools
+Protocol (CDP) remote debugging endpoint exposed. Useful for attaching Playwright,
+agent-browser, or any CDP-capable tool to a browser session without managing browser flags
+manually. Edge is supported because some managed endpoints ship Edge and no Chrome; being
+Chromium-derived it takes the same flags and is found by the same port scan, so nothing
+downstream distinguishes them.
 
 - `start` — launches Chrome in the background with `--remote-debugging-port=<port>` and
   `--user-data-dir=/tmp/chrome-debug-<port>` (required to force a fresh process). Adds
@@ -522,8 +525,17 @@ any CDP-capable tool to a browser session without managing Chrome flags manually
 # port = 9222
 ```text
 
-Chrome binary auto-detected in this order: `binary_path` config key → well-known macOS/Linux/Windows
-paths → `shutil.which` across common executable names.
+Browser binary auto-detected in this order: `binary_path` config key → well-known
+macOS/Linux/Windows paths → `shutil.which` across common executable names. Within the
+well-known paths the order is **Chrome, then Chromium, then Microsoft Edge**, so a machine
+carrying Chrome keeps resolving to it; Edge is only chosen when neither Chrome nor Chromium
+is present.
+
+Every launch also passes **`--remote-allow-origins=*`**. Chromium and Edge 111+ reject a
+DevTools WebSocket handshake whose `Origin` header is not explicitly allowed, and the
+rejection presents as a **hang rather than an error**, so a client that sends an `Origin`
+gets no diagnostic at all. The wildcard is bounded by the port: `--remote-debugging-port`
+binds loopback only, so reaching the endpoint already requires local access.
 
 ### ai tunnel
 
