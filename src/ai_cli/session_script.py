@@ -14,6 +14,18 @@ from pathlib import Path
 # not the presence of zsh, is what this list encodes.
 SESSION_SHELL_PREFERENCE = ("zsh", "bash")
 
+# How long an agent run must last before the launch loop accepts that it really
+# hosted an interactive session, and so clears the consecutive-exit breaker.
+#
+# Two separate guards sit in that loop and they need separate thresholds. A run
+# shorter than three seconds is stopped outright: nothing can have started. This
+# value answers a different question -- "was that a session, or is this
+# supervisor cycling?" -- so it has to be long enough that an agent which
+# consistently fails a few seconds in still trips the breaker, and short enough
+# that no real session is ever mistaken for a failure. Minutes is the scale of a
+# real session; seconds is the scale of a failed launch.
+HEALTHY_SESSION_SECONDS = 60
+
 # The child body's exec wrapper, run as `python3 -c CHILD_BODY_SHIM <shell> <script> --ai-cli-child-body`.
 # Extracted from the template so the terminal handoff can be exercised directly against a real pty
 # rather than asserted about as template text.
@@ -93,6 +105,43 @@ def resolve_session_shell() -> str | None:
         if found:
             return found
     return None
+
+
+def _stop_epilogue(is_remote: bool, ai_name: str) -> str:
+    """What the launch loop does once it has decided to stop restarting the agent.
+
+    A local session just exits; its terminal belongs to whatever ran ``ai c``. A
+    remote one would be abandoning the human inside a tmux pane reached over the
+    network, so it hands the pane to a shell instead, and that shell's banner is the
+    only instruction they get.
+
+    That banner used to read "Session ended. Exit shell to close tmux session." —
+    one route, and not the one people reach for. It left the restart route
+    undiscoverable and invited precisely the wrong inference, that exiting the shell
+    brings the agent back; exiting it does the opposite, because the status it
+    returns tells the supervisor to tear the session down.
+
+    So both routes are named, and the restart one is made real rather than
+    described. ``ai c`` cannot serve here: run from inside the pane it would attach a
+    live session to itself. The supervisor, though, already relaunches a child body
+    that exits with anything other than its two stop statuses, so handing 78 back is
+    an in-place restart using the contract that is already there. The consecutive-exit
+    count is cleared on the way, because asking for a restart is the same fresh start
+    a new supervisor would give.
+    """
+    if not is_remote:
+        return "exit 77"
+    banner = (
+        "Session ended — the agent will not be relaunched on its own.\\n"
+        "  exit 78   relaunch the agent in this pane\\n"
+        "  exit      close this session"
+    )
+    return (
+        f"printf '%s\\n' \"{banner}\"; "
+        '"$SHELL"; _recovery_status=$?; '
+        'if (( _recovery_status == 78 )); then rm -f "$agent_exit_count_file"; exit 78; fi; '
+        "exit 79"
+    )
 
 
 def _current_update_commit() -> str:
@@ -1013,24 +1062,46 @@ with open(path, 'w') as f:
         exit 77
       fi
 
+      _exit_elapsed=$(( $(date +%s) - start_ts ))
       if $agent_attempted; then
         # A TUI that has actually started remains alive. Whether a short-lived
-        # command returns zero or non-zero, three consecutive returns mean this
+        # command returns zero or non-zero, three CONSECUTIVE returns mean this
         # supervisor is cycling instead of hosting an interactive session. The
         # supervisor starts each replacement in a fresh shell, so retain the
         # count in its per-session state directory rather than a shell variable.
-        agent_exit_count=$(cat "$agent_exit_count_file" 2>/dev/null || echo 0)
-        [[ "$agent_exit_count" =~ ^[0-9]+$ ]] || agent_exit_count=0
-        agent_exit_count=$((agent_exit_count + 1))
-        printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
-        if (( agent_exit_count >= 3 )); then
-          echo "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c' to retry."
-          break
+        #
+        # "Consecutive" is the whole contract, and clearing the count on a run
+        # that did host a session is what makes it so. Without this reset the
+        # count was cumulative for the supervisor's entire life: it was written
+        # only ever upwards and cleared only when a NEW supervisor started, so
+        # the third agent exit stopped auto-restart for good no matter how
+        # healthy those runs were or how many hours apart. Measured: three agent
+        # runs of four seconds each, every one exiting 0, tripped a breaker
+        # whose own message says "3 consecutive agent exits". An agent that
+        # exits deliberately and expects to come straight back -- `/login` is
+        # the everyday case -- therefore stopped coming back on its third use,
+        # and on a remote session that handed the pane to the recovery shell
+        # instead of relaunching the agent (AI-CLI-tozg).
+        #
+        # The threshold is deliberately well above the "exited too quickly"
+        # stop below. Resetting at that 3-second boundary instead would make an
+        # agent that reliably fails after five seconds restart forever, trading
+        # one defect for a worse one.
+        if (( _exit_elapsed >= {HEALTHY_SESSION_SECONDS} )); then
+          rm -f "$agent_exit_count_file"
+        else
+          agent_exit_count=$(cat "$agent_exit_count_file" 2>/dev/null || echo 0)
+          [[ "$agent_exit_count" =~ ^[0-9]+$ ]] || agent_exit_count=0
+          agent_exit_count=$((agent_exit_count + 1))
+          printf '%s\n' "$agent_exit_count" > "$agent_exit_count_file"
+          if (( agent_exit_count >= 3 )); then
+            echo "AI CLI keeps failing to start (3 consecutive agent exits) — stopping. Run 'ai c $ai_name' to retry."
+            break
+          fi
         fi
       fi
 
       # Set iTerm2 status based on how CC exited + publish NATS event for gateway
-      _exit_elapsed=$(( $(date +%s) - start_ts ))
       if (( _exit_elapsed < 3 )); then
         _iterm2_status "error" "$_session_type" "$tmux_session"
         (ai internal publish-session-event "$tmux_session" "error" 2>/dev/null || true) &
@@ -1054,7 +1125,7 @@ with open(path, 'w') as f:
       tmux set-environment -t "$tmux_session" AI_SESSION_STARTED 1 2>/dev/null || true
       elapsed=$_exit_elapsed
       if (( elapsed < 3 )); then
-        echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c' to retry."
+        echo "AI CLI exited too quickly ($elapsed s) — stopping. Run 'ai c $ai_name' to retry."
         break
       fi
       _iterm2_status "resuming" "$_session_type" "$tmux_session"
@@ -1095,5 +1166,5 @@ with open(path, 'w') as f:
     done
     (ai internal publish-event "$tmux_session" "STOP" 2>/dev/null || true) &
     (ai internal publish-session-event "$tmux_session" "stopped" 2>/dev/null || true) &
-    {('echo "Session ended. Exit shell to close tmux session."; "$SHELL"; exit 79') if is_remote else "exit 77"}
+    {_stop_epilogue(is_remote, ai_name)}
     """

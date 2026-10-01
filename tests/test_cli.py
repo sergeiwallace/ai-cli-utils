@@ -2062,7 +2062,11 @@ class TestGetEngineScript:
 
     def test_get_engine_script_when_remote_then_execs_shell(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", is_remote=True)
-        assert '"$SHELL"; exit 79' in script
+        # The shell and the 79 are no longer adjacent: the recovery shell's status is
+        # inspected first, so asking for a relaunch returns 78 instead. Those statuses
+        # are pinned behaviourally in tests/test_session_restart_circuit_breaker.py.
+        assert '"$SHELL"' in script
+        assert "exit 79" in script
 
     def test_get_engine_script_when_local_then_exits(self):
         script = get_engine_script("c", "session-1", "c-session-1", "c-session-", "session", is_remote=False)
