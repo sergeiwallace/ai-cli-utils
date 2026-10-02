@@ -3871,7 +3871,9 @@ def cmd_cos(ctx, machine_key, fm_home, **options):
     except _chief_of_staff.ChiefOfStaffError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
-    if not options.get("resume") and _chief_of_staff.registration_is_live(existing):
+    # ``existing is not None`` is implied by a live registration but has to be stated:
+    # the message below reads fields off it, and nothing else proves it is a dict.
+    if not options.get("resume") and existing is not None and _chief_of_staff.registration_is_live(existing):
         print(
             "Error: a chief-of-staff is already running on this machine "
             f"(agent {existing.get('native_agent_name')!r}, tmux session {existing.get('tmux_target')!r}). "

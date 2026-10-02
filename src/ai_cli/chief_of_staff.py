@@ -166,7 +166,11 @@ def write_registration(
     stamp = (now or datetime.now(UTC)).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
     registry = _read_json_object(registry_path(home), "chief registry") or {}
     generation = int(registry.get("chief_generation") or 0) + 1
-    routes = registry.get("chief_routes") if isinstance(registry.get("chief_routes"), dict) else {}
+    # Narrow once into a local: two separate ``.get`` calls are two separate
+    # expressions, so neither the reader nor the type checker can tell that the
+    # ``isinstance`` guard applies to the value actually used.
+    stored_routes = registry.get("chief_routes")
+    routes: dict = stored_routes if isinstance(stored_routes, dict) else {}
     session = f"{machine_name}/{native_agent_name}"
     registry.update(
         {
