@@ -2281,14 +2281,12 @@ def _do_ls(show_all: bool) -> None:
             return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
         return name
 
+    # fzf is an optional nicety, never a prerequisite: a list command must not mutate
+    # the machine it runs on. Installing a system package here needed root, so on an
+    # ordinary account it printed a package-manager permission error before falling
+    # through to the plain list anyway -- and on a root account it would have silently
+    # installed software nobody asked for.
     fzf = shutil.which("fzf")
-    if fzf is None:
-        # Try to install fzf
-        apt = shutil.which("apt")
-        if apt:
-            print("fzf not found — installing with apt...")
-            subprocess.run(["apt", "install", "-y", "fzf"], check=False)
-            fzf = shutil.which("fzf")
 
     if fzf:
         lines = [f"{name}\t{_project_from_session(name)}\t{_human_age(activity)}" for name, activity in sessions]
@@ -2317,6 +2315,7 @@ def _do_ls(show_all: bool) -> None:
             project = _project_from_session(name)
             print(f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
         print("\nTo attach: ai attach <name>")
+        print("Install fzf for an interactive picker.", file=sys.stderr)
         sys.exit(0)
 
 

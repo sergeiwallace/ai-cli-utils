@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ai ls` no longer tries to install a system package. When `fzf` was missing it
+  shelled out to `apt install -y fzf`, which needs root: on an ordinary account
+  that printed a package-manager lock-file permission error and then fell through
+  to the plain list anyway, and on a root account it would have installed software
+  that nobody asked a list command to install. The picker is optional, so an absent
+  `fzf` now goes straight to the plain list and prints one line on stderr naming
+  `fzf` as the optional dependency. A test asserts no package manager is invoked.
+
 - A remote session could hang on a blank pane, ignoring repeated Ctrl+C, and
   print `ai-cli: could not promote child process group to terminal
   foreground` forever. The generated supervisor's child wrapper stops itself
