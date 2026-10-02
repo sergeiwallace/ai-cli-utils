@@ -737,12 +737,25 @@ class TestAutoUpdateIfStaleLockContention:
         ):
             winner = threading.Thread(target=_auto_update_if_stale, args=(config,))
             winner.start()
-            assert peer_pulled.wait(timeout=_RENDEZVOUS_TIMEOUT_SECONDS)
-            with patch("time.sleep", side_effect=finish_update):
-                loser_reexec = _auto_update_if_stale(config)
-            winner.join(timeout=_RENDEZVOUS_TIMEOUT_SECONDS)
+            try:
+                assert peer_pulled.wait(timeout=_RENDEZVOUS_TIMEOUT_SECONDS)
+                with patch("time.sleep", side_effect=finish_update):
+                    loser_reexec = _auto_update_if_stale(config)
+            finally:
+                # Release and join the winner INSIDE the patch context, on every exit
+                # path. `with patch(...)` restores the real functions as soon as the
+                # block is left, including by an assertion -- but it does not stop a
+                # thread started inside it. An orphaned winner therefore resumed in
+                # `_auto_update_if_stale` against the REAL `subprocess.run` and the
+                # REAL `_find_aicli_project_path`, and the call it was about to make
+                # is `[ai, "update", "--force", "--quiet"]`, which reaches
+                # `git_repair.pull_rebase_autostash` -- `git pull --rebase
+                # --autostash` against a live checkout. A test that fails must not
+                # rewrite the branch it is being run on.
+                finish_peer.set()
+                winner.join(timeout=_RENDEZVOUS_TIMEOUT_SECONDS)
+                assert not winner.is_alive(), "the winner thread outlived the patches that contain it"
 
-        assert not winner.is_alive()
         assert updates and len(updates) == 1
         assert loser_reexec is True, "the loser must restart after its peer replaced the installed files"
 
