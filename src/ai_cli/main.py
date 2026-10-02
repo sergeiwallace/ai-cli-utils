@@ -21,6 +21,7 @@ import click
 # the dynamic attribute lookup here picks up the mock. The underscore
 # prefix avoids clashing with the ``config: dict`` parameter name used by
 # several helpers in this file.
+from . import chief_of_staff as _chief_of_staff
 from . import config as _config
 from . import direnv_setup as _direnv_setup
 from . import iterm2 as _iterm2
@@ -1749,7 +1750,9 @@ def _venv_interpreter(venv: "Path") -> "Path":
 #: Environment carried into a tmux pane. Panes inherit from the long-lived tmux
 #: SERVER, not from the process running ``new-session``, so a server started
 #: before this launch would otherwise hand the pane a stale environment.
-_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM")
+#: FM_HOME and AI_SESSION_ROLE carry a chief-of-staff launch (``ai cos``) into its pane;
+#: both are forwarded only when set, so an ordinary launch is unchanged.
+_TMUX_FORWARDED_VARS = ("PATH", "XDG_STATE_HOME", "LC_TERMINAL", "TERM_PROGRAM", "FM_HOME", "AI_SESSION_ROLE")
 
 
 def build_tmux_env_flags(env: "Mapping[str, str]") -> list[str]:
@@ -2278,14 +2281,12 @@ def _do_ls(show_all: bool) -> None:
             return "-".join(parts[start:-1]) if len(parts) > start + 1 else parts[start]
         return name
 
+    # fzf is an optional nicety, never a prerequisite: a list command must not mutate
+    # the machine it runs on. Installing a system package here needed root, so on an
+    # ordinary account it printed a package-manager permission error before falling
+    # through to the plain list anyway -- and on a root account it would have silently
+    # installed software nobody asked for.
     fzf = shutil.which("fzf")
-    if fzf is None:
-        # Try to install fzf
-        apt = shutil.which("apt")
-        if apt:
-            print("fzf not found — installing with apt...")
-            subprocess.run(["apt", "install", "-y", "fzf"], check=False)
-            fzf = shutil.which("fzf")
 
     if fzf:
         lines = [f"{name}\t{_project_from_session(name)}\t{_human_age(activity)}" for name, activity in sessions]
@@ -2314,6 +2315,7 @@ def _do_ls(show_all: bool) -> None:
             project = _project_from_session(name)
             print(f"  {i}. {name}  ({project})  {_human_age(activity)} ago")
         print("\nTo attach: ai attach <name>")
+        print("Install fzf for an interactive picker.", file=sys.stderr)
         sys.exit(0)
 
 
@@ -3828,6 +3830,94 @@ def cmd_cx(ctx, **options):
     # through eight places, and missing one is silent -- click accepts the
     # option, the wrapper drops it.
     _session_command("cx")(ctx, **options)
+
+
+@_cli_group.command(
+    "cos",
+    context_settings=SESSION_CONTEXT,
+    help="Launch this machine's chief-of-staff Claude Code session (one per machine; Firstmate home under XDG state)",
+)
+@click.option(
+    "-k",
+    "--machine-key",
+    default="",
+    help=f"Machine key naming the chief home (default: ${_chief_of_staff.MACHINE_KEY_ENV})",
+)
+@click.option(
+    "-H",
+    "--fm-home",
+    default="",
+    help="Chief home directory (default: $XDG_STATE_HOME/firstmate/chief-of-staff/<machine-key>)",
+)
+@_session_options
+def cmd_cos(ctx, machine_key, fm_home, **options):
+    """Launch the chief-of-staff: validate its home, register it, then launch `ai c cos`.
+
+    Refuses rather than guesses: no home, a home without its transport policy, or a
+    chief already running on this machine (attach to it instead) all exit 1 before
+    anything is created. The session name is fixed (`cos`), it runs from the current
+    directory with worktree isolation off (it coordinates; it does not edit), and the
+    pane inherits FM_HOME and AI_SESSION_ROLE=chief-of-staff so hooks and skills can tell
+    what it is.
+    """
+    if options.get("name"):
+        raise click.UsageError("the chief-of-staff session name is fixed; do not pass a positional name")
+    if options.get("remote"):
+        raise click.UsageError("a chief-of-staff runs on the machine it coordinates; -R/--remote is not supported")
+    try:
+        home = _chief_of_staff.resolve_chief_home(fm_home or None, machine_key or None)
+        _chief_of_staff.validate_chief_home(home)
+        existing = _chief_of_staff.read_registration(home)
+    except _chief_of_staff.ChiefOfStaffError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    # ``existing is not None`` is implied by a live registration but has to be stated:
+    # the message below reads fields off it, and nothing else proves it is a dict.
+    if not options.get("resume") and existing is not None and _chief_of_staff.registration_is_live(existing):
+        print(
+            "Error: a chief-of-staff is already running on this machine "
+            f"(agent {existing.get('native_agent_name')!r}, tmux session {existing.get('tmux_target')!r}). "
+            f"Attach with `ai attach {existing.get('tmux_target')}` or resume with `ai cos -r`; "
+            "there is one chief per machine.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config = _config.load_config()
+    try:
+        prefix = options.get("project_prefix") or _session.get_project_prefix()
+    except _config.ProjectPrefixError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    is_remote = _session._resolve_is_remote(options.get("is_remote", False))
+    bare = bool(options.get("bare")) or _tmux_setup.config_opts_out(config)
+    try:
+        tmux_target, ai_name = _session.build_session_name(
+            "c", prefix, _chief_of_staff.SESSION_NAME, config, is_remote=is_remote, use_tmux=not bare
+        )
+    except _session.SessionSlotAmbiguityError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not options.get("dry_run"):
+        # The key that named the home, or the home's own directory name when -H named it.
+        machine_key_used = machine_key or (
+            home.name if not fm_home else os.environ.get(_chief_of_staff.MACHINE_KEY_ENV, home.name)
+        )
+        _chief_of_staff.write_registration(
+            home,
+            native_agent_name=ai_name,
+            tmux_target="" if bare else tmux_target,
+            machine_key=machine_key_used,
+            machine_name=_config.detect_machine_profile()["host_id"],
+            launch_cwd=str(Path.cwd()),
+        )
+        print(f"chief-of-staff registered: agent {ai_name} (FM_HOME={home})", file=sys.stderr)
+    os.environ[_chief_of_staff.FM_HOME_ENV] = str(home)
+    os.environ[_chief_of_staff.ROLE_ENV] = _chief_of_staff.ROLE
+    options["name"] = _chief_of_staff.SESSION_NAME
+    options["no_worktree"] = True
+    _session_command("c")(ctx, **options)
 
 
 @_cli_group.command("upgrade", help="Upgrade ai-cli-utils via uv tool upgrade")

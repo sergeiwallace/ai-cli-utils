@@ -1718,25 +1718,30 @@ class TestCliLsDispatch:
                             cli()
         assert "1d" in capsys.readouterr().out
 
-    def test_when_fzf_absent_but_apt_available_then_installs_fzf(self, capsys):
+    def test_given_fzf_absent_and_a_package_manager_present_when_ls_runs_then_no_install_is_attempted(self, capsys):
+        """Listing sessions must never install software as a side effect.
+
+        The picker is optional, so an absent ``fzf`` falls back to the plain list and
+        says so on stderr. It used to shell out to a system package manager instead,
+        which needs root: on an ordinary account that printed a package-manager
+        permission error and then fell through to this same list, and on a root
+        account it would have installed a package the user never asked a list command
+        to install.
+        """
         now = int(time.time())
         raw_output = f"c-session-1 {now - 60}\n"
-        apt_install_calls = []
+        package_manager_calls = []
+        package_managers = ("apt", "apt-get", "brew", "dnf", "yum", "pacman", "winget", "choco")
 
         def fake_which(cmd):
-            if cmd == "fzf":
-                return None
-            if cmd == "apt":
-                return "/usr/bin/apt"
-            return None
+            return None if cmd == "fzf" else f"/usr/bin/{cmd}"
 
         def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and any(part in package_managers for part in cmd):
+                package_manager_calls.append(cmd)
             if isinstance(cmd, list) and "tmux" in cmd:
                 return MagicMock(returncode=0, stdout=raw_output)
-            if isinstance(cmd, list) and "apt" in cmd:
-                apt_install_calls.append(cmd)
-                return MagicMock(returncode=0)
-            return MagicMock(returncode=1)
+            return MagicMock(returncode=1, stdout="")
 
         with patch("sys.argv", ["ai", "ls"]):
             with patch("ai_cli.config.load_config", return_value={}):
@@ -1745,8 +1750,11 @@ class TestCliLsDispatch:
                         with pytest.raises(SystemExit) as exc:
                             cli()
         assert exc.value.code == 0
-        assert any("fzf" in str(cmd) for cmd in apt_install_calls)
-        assert "fzf not found" in capsys.readouterr().out
+        assert package_manager_calls == [], f"ls attempted a package install: {package_manager_calls}"
+        captured = capsys.readouterr()
+        assert "c-session-1" in captured.out
+        assert "ai attach" in captured.out
+        assert "fzf" in captured.err
 
 
 class TestCliInternalMissingArgs:

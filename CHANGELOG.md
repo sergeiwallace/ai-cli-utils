@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ai cos` launches a machine's single chief-of-staff Claude Code session: it
+  resolves the chief home from `-k/--machine-key` (default `$AI_MACHINE_ID`) or
+  `-H/--fm-home`, refuses a missing or unseeded home and a second chief whose
+  tmux session is still running, writes `state/chief-session.json` and the
+  schema-2 `registry.json` (generation and route revision incremented, VP
+  entries preserved), and hands off to the ordinary Claude launch with the
+  session name fixed to `cos`, worktree isolation off, and `FM_HOME` plus
+  `AI_SESSION_ROLE=chief-of-staff` forwarded into the tmux pane. `--dry-run`
+  registers nothing.
+
 ### Changed
 
 - **CI now refuses to install from a stale lockfile.** All four jobs synced with
@@ -69,6 +81,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `Unknown config option` warning every run emitted. (`AI-CLI-f8la`, `AI-CLI-qrkr`)
 
 ### Fixed
+
+- `ai ls` no longer tries to install a system package. When `fzf` was missing it
+  shelled out to `apt install -y fzf`, which needs root: on an ordinary account
+  that printed a package-manager lock-file permission error and then fell through
+  to the plain list anyway, and on a root account it would have installed software
+  that nobody asked a list command to install. The picker is optional, so an absent
+  `fzf` now goes straight to the plain list and prints one line on stderr naming
+  `fzf` as the optional dependency. A test asserts no package manager is invoked.
 
 - A remote session could hang on a blank pane, ignoring repeated Ctrl+C, and
   print `ai-cli: could not promote child process group to terminal

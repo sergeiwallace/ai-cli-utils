@@ -266,6 +266,19 @@ ai ls -a/--all     # Show all tmux sessions, not just ai-cli sessions
 ai attach <name>   # Attach directly to a named tmux session
 ```
 
+### Chief-of-staff session
+
+One coordinating Claude Code session per machine that dispatches to your other sessions and surfaces their blockers ([Firstmate](https://github.com/kunchenguid/firstmate)-style, with its `FM_HOME` in a per-machine state directory rather than a repository):
+
+```bash
+ai cos                      # Launch this machine's chief-of-staff (session name is fixed: cos)
+ai cos -k/--machine-key K   # Machine key naming the chief home (default: $AI_MACHINE_ID)
+ai cos -H/--fm-home DIR     # Use an explicit chief home instead of $XDG_STATE_HOME/firstmate/chief-of-staff/<key>
+ai cos --dry-run            # Print the resolved plan; registers and starts nothing
+```
+
+The home must already exist with its `config/message-transports.json` (your environment's installer seeds it); `ai cos` refuses a missing or unseeded home, and refuses a second chief while the first's tmux session is running (attach to it instead). On launch it records the chief's agent name and tmux target in `<home>/state/chief-session.json` and the schema-2 `<home>/registry.json`, then starts an ordinary `ai c` session from the current directory with worktree isolation off and `FM_HOME` / `AI_SESSION_ROLE=chief-of-staff` exported into the pane.
+
 ### SSH tunnels
 
 Keep a reverse tunnel alive across network drops (useful for remote browser automation via CDP):
