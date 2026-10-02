@@ -31,6 +31,13 @@ from ai_cli.main import (
 from ai_cli.native_deps import InstallResult
 from ai_cli.session_script import resolve_session_shell
 
+# A thread rendezvous in a test needs a bound only so a broken implementation fails
+# instead of hanging the suite forever. The bound must not double as a performance
+# assertion: with the suite running under `-n auto` on a loaded machine, a 1-second
+# bound made an otherwise-correct handoff fail intermittently. Generous here costs
+# nothing when the code is right and still fails fast enough when it is not.
+_RENDEZVOUS_TIMEOUT_SECONDS = 60
+
 # --- XDG helpers ---
 
 
@@ -715,7 +722,7 @@ class TestAutoUpdateIfStaleLockContention:
                 updates.append(list(cmd))
                 source.write_text('VALUE = "after"\n')
                 peer_pulled.set()
-                assert finish_peer.wait(timeout=1)
+                assert finish_peer.wait(timeout=_RENDEZVOUS_TIMEOUT_SECONDS)
             return MagicMock(returncode=0, stdout="", stderr="")
 
         def finish_update(*_args, **_kwargs):
@@ -730,10 +737,10 @@ class TestAutoUpdateIfStaleLockContention:
         ):
             winner = threading.Thread(target=_auto_update_if_stale, args=(config,))
             winner.start()
-            assert peer_pulled.wait(timeout=1)
+            assert peer_pulled.wait(timeout=_RENDEZVOUS_TIMEOUT_SECONDS)
             with patch("time.sleep", side_effect=finish_update):
                 loser_reexec = _auto_update_if_stale(config)
-            winner.join(timeout=1)
+            winner.join(timeout=_RENDEZVOUS_TIMEOUT_SECONDS)
 
         assert not winner.is_alive()
         assert updates and len(updates) == 1
