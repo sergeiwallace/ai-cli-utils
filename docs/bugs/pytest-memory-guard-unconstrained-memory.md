@@ -96,6 +96,10 @@ the existing default guard behavior.
   reported 154 passing tests and one pre-existing consumer-fleet assertion failure for missing
   `app-portal` files. The prescribed ruff command also names an absent `src/` directory and reports
   unrelated existing lint findings outside this change.
+  - 2026-09-27: the blocker this item records no longer exists, and neither does the extra it
+    names. That Git dependency was removed from this project outright (`AI-CLI-f8la`), because
+    resolving it was what broke every dependency-bump pull request. The gate runs unobstructed
+    now; this item is left unchecked as the historical record of why it could not be run then.
 
 ## Lessons Learned
 

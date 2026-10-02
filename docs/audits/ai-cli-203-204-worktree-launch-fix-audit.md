@@ -360,7 +360,7 @@ with the outstanding audit findings and follow-up commit as the remaining scope.
 
 **Evidence:**
 
-> `project_prefix is registered as uppercase "SW" in the fleet registry`
+> `project_prefix is registered as uppercase "PROJ" in the project registry`
 
 The verification probe returned `account_specific_identifier_present= True`; the identifier is
 not repeated here because doing so would reproduce the public-package policy violation.

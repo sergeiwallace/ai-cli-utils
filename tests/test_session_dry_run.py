@@ -15,7 +15,7 @@ worst available failure, so the declaration itself is the fix and these tests
 guard it from both sides: the option must exist, and it must not mutate.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import run_cli
@@ -138,6 +138,112 @@ def test_a_dry_run_in_bare_mode_does_not_sweep_sessions(capsys):
             dry_run=True,
         )
     assert "bare" in capsys.readouterr().out
+
+
+def test_dry_run_remote_reaches_no_network_call_and_prints_the_resolved_plan(capsys):
+    """The remote counterpart of the tripwire test above (AI-CLI-shpu).
+
+    ``--remote --dry-run`` used to reach a real SSH shell probe, a real ``ai
+    update`` on the remote host, real session allocation, and a real SSH/mosh
+    handoff -- confirmed live via an actual ``ai c 4 -R --dry-run`` that created
+    a real tmux session on a real remote host. Tripwire every network call
+    instead of asserting on one specific call, so reaching ANY of them is the
+    failure.
+    """
+    config = {"remote": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"}}
+    with (
+        patch("ai_cli.main.subprocess.run", side_effect=_explode),
+        patch("os.execvp", side_effect=_explode),
+    ):
+        _do_session_launch(
+            engine="c",
+            name="1",
+            resume=False,
+            once=False,
+            bare=False,
+            notify=False,
+            sandbox=False,
+            no_worktree=False,
+            remote=True,
+            project="",
+            is_remote=False,
+            project_prefix_override="test",
+            extra_args=[],
+            config=config,
+            no_direnv=True,
+            dry_run=True,
+        )
+
+    out = capsys.readouterr().out
+    assert "dry run -- nothing was created, started, or reaped." in out
+    # The resolved values are the point, mirroring the local plan's contract.
+    assert "target host  dev@fw.example.com:22 (ssh)" in out
+    assert "remote cmd" in out
+
+
+def test_without_dry_run_the_remote_launch_still_reaches_the_network():
+    """Anti-vacuity control for the remote tripwire test above.
+
+    Without this, deleting the remote dry-run check entirely -- or misplacing
+    it below the network calls instead of above them -- would make the tripwire
+    test above pass for the wrong reason.
+
+    Not a raising tripwire like the local-path control below: the remote
+    preflight calls (``_resolve_remote_shell``, ``_update_remote_ai_cli``)
+    deliberately swallow every exception from ``subprocess.run`` and degrade
+    instead of raising, so a raising side_effect here would be silently
+    absorbed and the launch would fall through to a REAL ``os.execvp`` --
+    exactly the hang this bug's own regression test caused once already.
+    Reachability is proven by call evidence instead.
+    """
+    config = {"remote": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"}}
+    with (
+        # The SSH transport refuses outright on Windows and exits 1 before it
+        # reaches the handoff patched below, so without this the control asserted a
+        # POSIX-only path: `pytest.raises(SystemExit)` was satisfied by the refusal and
+        # `mock_exec.called` was then False, failing the whole test-windows job.
+        # Forcing the branch is the repo's established pattern for a
+        # platform-dependent path (test_remote.py does the mirror image to reach
+        # the Windows refusal from POSIX), and it is the stronger fix here: the
+        # ordering this control exists to prove is not platform-specific, so it
+        # should be proven on every platform rather than skipped on one. Nothing
+        # between here and that handoff branches on the platform -- the local tmux
+        # preflight that does is already skipped for a remote launch.
+        # Turned `main` red on test-windows at a274bcb, and two sessions fixed it the same
+        # way concurrently -- which is how this line came to be applied twice.
+        patch("ai_cli.main.sys.platform", "linux"),
+        patch(
+            "ai_cli.main.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="bash\n", stderr=""),
+        ) as mock_run,
+        # The pure-SSH handoff is `transport.run_ssh_with_reconnect`, not an exec:
+        # that path runs in-process now so a dropped link can be reattached
+        # (AI-CLI-w679). What this control proves is unchanged -- without
+        # --dry-run the launch still reaches the network -- only the boundary
+        # that evidences "reached it" moved.
+        patch("ai_cli.transport.run_ssh_with_reconnect", side_effect=SystemExit(0)) as mock_exec,
+    ):
+        with pytest.raises(SystemExit):
+            _do_session_launch(
+                engine="c",
+                name="1",
+                resume=False,
+                once=False,
+                bare=False,
+                notify=False,
+                sandbox=False,
+                no_worktree=False,
+                remote=True,
+                project="",
+                is_remote=False,
+                project_prefix_override="test",
+                extra_args=[],
+                config=config,
+                no_direnv=True,
+                dry_run=False,
+            )
+    assert mock_run.called
+    assert mock_exec.called
 
 
 def test_without_dry_run_the_launch_still_reaches_its_work():

@@ -78,7 +78,7 @@ in mind. Before installing:
 
 1. Install [MSYS2](https://www.msys2.org/) and add it to your PATH.
 2. Install tmux inside MSYS2: `pacman -S tmux`
-3. Install Python 3.11+ from [python.org](https://www.python.org/downloads/) (the standard Windows installer).
+3. Install Python 3.14 from [python.org](https://www.python.org/downloads/) (the standard Windows installer).
 4. Install [uv](https://docs.astral.sh/uv/) from PowerShell:
 
    ```powershell
@@ -169,6 +169,8 @@ ai c -o/--once         # Run once (no auto-resume loop)
 ai c -n/--notify       # Fire system notifications on task completion
 ai c -s/--sandbox      # Explicitly enable sandboxing
 ai c -W/--no-worktree  # Disable git worktree isolation
+ai c -q/--quiet        # Suppress launch progress (warnings and errors still print)
+ai c -v/--verbose      # Add skipped steps, resolved paths and timings to the launch progress
 ```
 
 #### What a new worktree tracks
@@ -197,10 +199,29 @@ first `git push` stop and ask, which is the safe direction. If the branch exists
 nowhere at all, or the repository has no `origin` remote, worktree creation fails
 loudly instead of guessing.
 
-When a worktree's `.envrc` is byte-for-byte identical to a repository-root
-`.envrc` that `direnv` can successfully execute, `ai` approves that new
-worktree path automatically.
-Changed or unapproved `.envrc` files still require an explicit `direnv allow`.
+`direnv` approvals are per-path, so a brand new worktree's `.envrc` is unapproved
+even when the repository root's identical copy is approved. When `direnv` is
+installed, `ai` therefore approves the worktree itself — after creating it and
+before starting the agent — and prints the path it approved.
+
+The scope is exactly the worktrees `ai` creates under `.worktrees/`, only their
+own `.envrc`, and only when that file is **byte-identical to the repository
+root's**. The repository root, an `.envrc` inherited from a parent directory, and
+worktrees registered anywhere else are never approved automatically: `ai` vouches
+for a directory because it created it, which is not something it can claim about a
+directory it merely launched in. It does not vouch for the file's *contents* at
+all — git writes whatever the checked-out branch carries — so an `.envrc` that
+differs from the root's keeps `direnv`'s normal prompt, including one a branch
+legitimately edits and one the session itself rewrote. Automatic approval
+therefore only ever spares you re-approving content you already have at the
+repository root.
+
+Note that this requires the root's `.envrc` to *exist and match*, not to be
+approved. Requiring an approved root would make the feature do nothing on a host
+where nothing is approved yet, which is exactly the host that needs it. A
+worktree `direnv` has already approved is left alone, and a host with no `direnv`
+skips the step silently. Set `AI_CLI_SKIP_DIRENV=1` to turn automatic approval
+off.
 Targeted session launches (`ai c <name>`, `ai g <name>`, `ai p <name>`, and `ai cx <name>`) do not pause for
 unrelated project-registry discovery prompts.
 
@@ -335,6 +356,36 @@ Two escape hatches:
   reinstalling dependencies. It never consults the fingerprint, so it is the way
   to force a refresh when the installed build is suspect.
 
+### Launch output
+
+Every line the launcher prints on its own behalf follows one grammar on stderr, so
+a launch can be read at a glance and its log replayed later:
+
+```text
+[launch] Starting Claude Code session: local, tmux
+[launch] Install: editable checkout 0.8.0; current
+[launch] tmux: 3.7c at /opt/homebrew/bin/tmux
+[launch] Mode: launching inside tmux (tmux is the default session mode)
+[launch] Session: resolved myproject-3
+[launch] Worktree: creating isolated worktree
+[launch] Worktree: still creating isolated worktree (10s elapsed)
+[launch] Worktree: created /home/user/src/myproject/.worktrees/myproject-3 (12.4s)
+[launch] Ready: handing off to Claude Code (myproject-3)
+```
+
+- A phase that may block prints a line before it starts and one with its outcome;
+  while it runs, a heartbeat with the elapsed time repeats every 10 seconds so a
+  slow worktree sync or remote probe never looks hung. Outcomes that took two
+  seconds or more carry their duration.
+- `Warning:` and `Error:` lines are never suppressed; `Ready:` is always the last
+  line before the launcher hands the terminal to the engine.
+- `-q/--quiet` keeps only warnings and errors; `-v/--verbose` adds skipped steps,
+  resolved paths and every duration.
+- Colour is used only when stderr is a terminal. Redirected output, CI logs and the
+  per-launch log under the state directory receive the plain text. Set `NO_COLOR`
+  to any non-empty value (or `TERM=dumb`) to turn colour off on a terminal too.
+- `--dry-run` prints its plan of resolved values on stdout instead of launching.
+
 ## Configuration
 
 ### Claude Code Session Config
@@ -428,7 +479,10 @@ The color palette (16 entries, configurable) is defined in `[iterm2.palette]`. E
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11 or newer. `requires-python` is `>=3.11`, with no upper bound, so a new Python release
+  does not make an already-published version uninstallable. Development and CI run on 3.14 alone —
+  that is a separate decision about this repository, not a restriction on installing the package —
+  and the shipped source is byte-compiled on 3.11 in CI so the wider claim stays falsifiable.
 - [tmux](https://github.com/tmux/tmux) (optional but the default — auto-installed on first launch where a package manager can do it unattended, and a tmux that is installed but cannot load a shared library is repaired by pointing the dynamic loader at the library where it actually is, re-derived on every launch so a wiped system directory heals itself. A launch that still cannot use tmux continues in bare mode, naming the library it could not find. Set `AI_CLI_LIBRARY_PATH` to add a library directory the search does not know about. On Windows there is no native tmux, so bare mode is the right answer: `[session] use_tmux = false`)
 - `zsh` **or** `bash` — the tmux session pane runs the generated session script under zsh when it is installed, and falls back to bash otherwise
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [pi](https://github.com/badlogic/pi-mono), and/or [Codex](https://developers.openai.com/codex/cli/)

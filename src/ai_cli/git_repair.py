@@ -4,7 +4,7 @@ Prevents the recurring ``core.bare=true`` / stale ``core.worktree`` corruption
 class on a repo's main working tree. Root cause: worktree tooling runs ``git``
 subprocesses that INHERIT the parent process's environment. When the parent is
 itself running inside a git worktree (e.g. a nested CC session launched from
-``.worktrees/sw-N``), git context env vars (``GIT_DIR``, ``GIT_WORK_TREE``, ...)
+``.worktrees/session-N``), git context env vars (``GIT_DIR``, ``GIT_WORK_TREE``, ...)
 leak into ``git worktree add/remove`` subprocess calls. Because many
 sessions/worktrees share one gitdir, this can write ``core.bare``/
 ``core.worktree`` onto the SHARED main-repo config, corrupting every session
@@ -22,7 +22,7 @@ Two layers of defense:
    of source. This covers corruption paths we don't control (e.g. Claude
    Code's own ``isolation: worktree`` sub-agent tool).
 
-A third, detection-only layer (AIH-443) covers two distinct "phantom deletion"
+A third, detection-only layer covers two distinct "phantom deletion"
 signatures found across six worktrees in three repos, both silent — ``git
 status`` reports a tracked path as deleted, with no error anywhere:
 
@@ -38,11 +38,11 @@ status`` reports a tracked path as deleted, with no error anywhere:
    half-applied tree. See ``docs/bugs/stranded-autostash.md``.
 4. ``detect_missing_tracked_symlinks()`` — a git-tracked symlink (mode
    ``120000``) that HEAD lists but that is absent from the working tree
-   (``lstat`` fails). Confirmed root cause of AIH-443 Shape A: a Claude Code
+   (``lstat`` fails). Confirmed root cause of Shape A: a Claude Code
    ``isolation: worktree`` sub-agent checkout dropped 21 tracked symlinks
    (verified via ``git ls-tree`` mode + target-resolution testing) while every
    regular file checked out correctly, with no error surfaced anywhere.
-5. ``detect_phantom_deleted_files()`` — AIH-443 Shape C, a REGULAR tracked file
+5. ``detect_phantom_deleted_files()`` — Shape C, a REGULAR tracked file
    (mode ``100644``/``100755``) that the index still holds but that is absent
    from disk, with no stranded stash anywhere. Both detectors above are blind
    to it by construction: (3) finds nothing because ``git stash list`` is
@@ -480,7 +480,7 @@ def detect_missing_tracked_symlinks(repo_root: Path) -> list[str]:
 
     A normal checkout always materializes every tracked path, symlink or not.
     A path that HEAD lists as a symlink but that fails ``lstat`` on disk is
-    exactly AIH-443 Shape A's signature: ``git status`` reports it deleted,
+    exactly Shape A's signature: ``git status`` reports it deleted,
     ``git show HEAD:<path>`` and ``origin/main`` both still have it, and
     nothing on this fleet's side ever touched it (verified by full sub-agent
     transcript audit — the checkout itself never materialized these entries).
@@ -510,7 +510,7 @@ def detect_missing_tracked_symlinks(repo_root: Path) -> list[str]:
 def detect_phantom_deleted_files(repo_root: Path) -> list[str]:
     """Return tracked REGULAR file paths the index holds but that are gone from disk.
 
-    AIH-443 Shape C. ``git ls-files --deleted`` lists exactly the index entries
+    Shape C. ``git ls-files --deleted`` lists exactly the index entries
     whose working-tree file fails ``lstat``, which is the ``" D"`` status
     signature: the index (and HEAD) still carry the blob, so committing would
     delete real content that is still live on ``origin/main``.

@@ -59,7 +59,7 @@ class TestParseUsageOutput:
         assert snap.weekly_sonnet_pct == 24.0
         assert snap.extra_pct == 0.0
 
-    # AIH-120: CC v2.1.207 replaced "Current week (Sonnet only)" with a per-model
+    # CC v2.1.207 replaced "Current week (Sonnet only)" with a per-model
     # secondary line whose label is now a model NAME ("Fable"), with NO progress bar
     # before "N% used". The old hardcoded "Sonnet only" regex matched nothing, so
     # weekly_sonnet_pct went permanently None and the statusline dropped it.
@@ -871,7 +871,7 @@ class TestScrapeUsageHiddenPane:
 
 # Real `claude -p /usage` print-mode output (CC v2.1.207): inline "label: N% used · resets"
 # form, per-model line always present. This is the deterministic replacement for the flaky
-# interactive-TUI scrape (AIH-120 follow-up).
+# interactive-TUI scrape.
 _PRINT_MODE_USAGE_OUTPUT = (
     "You are currently using your subscription to power your Claude Code usage\n\n"
     "Current session: 4% used · resets Jul 13 at 5:30pm (America/New_York)\n"
@@ -912,7 +912,7 @@ class TestGetUsageViaPrintMode:
 
 class TestGetClaudeUsageSnapshot:
     def test_print_mode_retired_scrape_is_sole_path(self):
-        """AIH-164: print mode is retired from the capture path (dead on CC 2.1.207); the
+        """Print mode is retired from the capture path (dead on CC 2.1.207); the
         hidden-pane scrape is the sole fallback and is called without consulting print mode."""
         snap = QuotaSnapshot(weekly_all_models_pct=17.0, session_pct=4.0, weekly_sonnet_pct=0.0)
         with (
@@ -2131,7 +2131,7 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "5%" in out
             assert "\033[38;2;34;197;94m" in out  # green truecolor anchor = on track
-            assert re.search(r"-\d+%", out)  # signed negative delta, plain percent (AIH-784)
+            assert re.search(r"-\d+%", out)  # signed negative delta, plain percent
             assert "→" in out  # steady: only 1 snapshot, no acceleration data
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
@@ -2157,7 +2157,7 @@ class TestQuotaStatuslinePart:
             out = capsys.readouterr().out
             assert "95%" in out
             assert "\033[38;2;220;38;38m" in out  # red truecolor anchor = significantly over pace
-            assert re.search(r"\+\d+%", out)  # signed positive delta, plain percent (AIH-784)
+            assert re.search(r"\+\d+%", out)  # signed positive delta, plain percent
         finally:
             qdb.set_db_path(None)  # type: ignore[arg-type]
 

@@ -13,6 +13,7 @@ from ai_cli.sync import (
     _detect_foreign_home,
     _detect_foreign_home_in_history,
     _find_project_worktrees,
+    _home_relative,
     _parse_flags,
     _pre_pull_push_memories,
     _push_to_remote,
@@ -71,8 +72,8 @@ def test_normalize_project_path_when_mac_prefix_then_returns_bare_name():
 
 
 def test_normalize_project_path_when_worktree_suffix_then_preserves_it():
-    result = normalize_project_path("-Users-user-projects-myproject--worktrees-sw-1", _MAC_PREFIX)
-    assert result == "myproject--worktrees-sw-1"
+    result = normalize_project_path("-Users-user-projects-myproject--worktrees-session-1", _MAC_PREFIX)
+    assert result == "myproject--worktrees-session-1"
 
 
 def test_normalize_project_path_when_server_prefix_then_returns_bare_name():
@@ -88,8 +89,8 @@ def test_normalize_project_path_when_different_project_then_correct():
 
 
 def test_normalize_project_path_when_server_worktree_then_preserves_suffix():
-    result = normalize_project_path("-home-user-projects-myproject--worktrees-sw-2", _SERVER_PREFIX)
-    assert result == "myproject--worktrees-sw-2"
+    result = normalize_project_path("-home-user-projects-myproject--worktrees-session-2", _SERVER_PREFIX)
+    assert result == "myproject--worktrees-session-2"
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +103,8 @@ def test_denormalize_project_name_when_bare_name_then_returns_mac_cc_dir():
 
 
 def test_denormalize_project_name_when_worktree_suffix_then_preserves_it():
-    result = denormalize_project_name("myproject--worktrees-sw-1", _MAC_PREFIX)
-    assert result == "-Users-user-projects-myproject--worktrees-sw-1"
+    result = denormalize_project_name("myproject--worktrees-session-1", _MAC_PREFIX)
+    assert result == "-Users-user-projects-myproject--worktrees-session-1"
 
 
 def test_denormalize_project_name_when_server_prefix_then_correct():
@@ -112,7 +113,7 @@ def test_denormalize_project_name_when_server_prefix_then_correct():
 
 
 def test_denormalize_normalize_roundtrip():
-    cc_dir = "-Users-user-projects-myproject--worktrees-sw-3"
+    cc_dir = "-Users-user-projects-myproject--worktrees-session-3"
     bare = normalize_project_path(cc_dir, _MAC_PREFIX)
     assert bare is not None
     assert denormalize_project_name(bare, _MAC_PREFIX) == cc_dir
@@ -435,7 +436,7 @@ _FOREIGN_HOME = "/home/foreign-user"  # Fake path — must not match actual home
 
 def test_detect_foreign_home_when_foreign_cwd_then_returns_home_prefix(tmp_path):
     f = tmp_path / "conv.jsonl"
-    f.write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1"}}\n')
+    f.write_text(f'{{"type":"user","cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/session-1"}}\n')
     result = _detect_foreign_home(f)
     assert result == _FOREIGN_HOME
 
@@ -443,14 +444,14 @@ def test_detect_foreign_home_when_foreign_cwd_then_returns_home_prefix(tmp_path)
 def test_detect_foreign_home_when_local_cwd_then_returns_none(tmp_path):
     f = tmp_path / "conv.jsonl"
     local_home = str(Path.home())
-    f.write_text(f'{{"type":"user","cwd":"{local_home}/projects/myproject/.worktrees/sw-1"}}\n')
+    f.write_text(f'{{"type":"user","cwd":"{local_home}/projects/myproject/.worktrees/session-1"}}\n')
     result = _detect_foreign_home(f)
     assert result is None
 
 
 def test_detect_foreign_home_when_no_cwd_then_returns_none(tmp_path):
     f = tmp_path / "conv.jsonl"
-    f.write_text('{"type":"custom-title","customTitle":"sw-1"}\n')
+    f.write_text('{"type":"custom-title","customTitle":"session-1"}\n')
     result = _detect_foreign_home(f)
     assert result is None
 
@@ -965,10 +966,10 @@ def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
     """
     staging_dir = tmp_path / "staging"
     cc_projects_dir = tmp_path / "cc_projects"
-    staged_wt = staging_dir / "myproject--worktrees-sw-1"
+    staged_wt = staging_dir / "myproject--worktrees-session-1"
     staged_wt.mkdir(parents=True)
     (staged_wt / "conv.jsonl").write_text(
-        f'{{"cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/sw-1","customTitle":"sw-1"}}\n'
+        f'{{"cwd":"{_FOREIGN_HOME}/projects/myproject/.worktrees/session-1","customTitle":"session-1"}}\n'
     )
 
     with patch("ai_cli.sync._replicate_to_worktrees", return_value=0):
@@ -981,7 +982,7 @@ def test_apply_pull_files_when_worktree_jsonl_then_translates_cwd(tmp_path):
             dry_run=False,
         )
 
-    dst = cc_projects_dir / "-Users-user-projects-myproject--worktrees-sw-1" / "conv.jsonl"
+    dst = cc_projects_dir / "-Users-user-projects-myproject--worktrees-session-1" / "conv.jsonl"
     assert dst.exists()
     content = dst.read_text()
     assert _FOREIGN_HOME not in content
@@ -994,10 +995,10 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
 
     # Remote has worktree CC dir with conversation
     remote_cc = tmp_path / "remote_cc"
-    wt_cc = remote_cc / f"{_foreign_prefix}foo--worktrees-sw-2"
+    wt_cc = remote_cc / f"{_foreign_prefix}foo--worktrees-session-2"
     wt_cc.mkdir(parents=True)
     (wt_cc / "session.jsonl").write_text(
-        f'{{"cwd":"{_FOREIGN_HOME}/projects/foo/.worktrees/sw-2","customTitle":"sw-2","type":"user"}}\n'
+        f'{{"cwd":"{_FOREIGN_HOME}/projects/foo/.worktrees/session-2","customTitle":"session-2","type":"user"}}\n'
     )
 
     # Remote stages
@@ -1011,7 +1012,7 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
         verbose=False,
         dry_run=False,
     )
-    assert (staging_dir / "foo--worktrees-sw-2" / "session.jsonl").exists()
+    assert (staging_dir / "foo--worktrees-session-2" / "session.jsonl").exists()
 
     # Local machine applies with MAC_PREFIX
     local_cc = tmp_path / "local_cc"
@@ -1026,7 +1027,7 @@ def test_apply_pull_files_worktree_cc_dir_end_to_end_roundtrip(tmp_path):
             dry_run=False,
         )
 
-    mac_wt_dir = local_cc / "-Users-user-projects-foo--worktrees-sw-2"
+    mac_wt_dir = local_cc / "-Users-user-projects-foo--worktrees-session-2"
     assert mac_wt_dir.is_dir()
     applied = (mac_wt_dir / "session.jsonl").read_text()
     assert _FOREIGN_HOME not in applied
@@ -2098,9 +2099,61 @@ def test_notify_conflicts_when_conflicts_exist_then_writes_log(tmp_path):
     assert "project1" in content
 
 
-def test_notify_conflicts_when_empty_then_noop(tmp_path):
-    with patch("ai_cli.sync.CONFLICT_LOG", tmp_path / "nonexistent-test-log.log"):
-        notify_conflicts([])  # Should not raise
+def test_notify_conflicts_when_empty_then_no_notification_and_no_log(tmp_path):
+    """An empty call must shell out to nothing and leave no log behind.
+
+    Regression: this fired a real macOS notification with an empty body on every
+    pytest run, naming a log the patched CONFLICT_LOG meant it never wrote.
+    """
+    log_path = tmp_path / "conflicts.log"
+    with (
+        patch("subprocess.run") as mock_run,
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
+        notify_conflicts([])
+
+    assert mock_run.call_args_list == []
+    assert not log_path.exists()
+
+
+def test_notify_conflicts_when_notifying_then_log_is_written_first(tmp_path):
+    """The notification names the log as the remedy, so the log must already exist."""
+    log_path = tmp_path / "conflicts.log"
+    existed_at_notify_time = []
+
+    with (
+        patch("subprocess.run", side_effect=lambda *a, **k: existed_at_notify_time.append(log_path.exists())),
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
+        notify_conflicts(["memory myproject/memory/MEMORY.md — .conflict file written"])
+
+    assert existed_at_notify_time == [True]
+
+
+def test_notify_conflicts_when_log_relocated_then_notification_names_the_real_path(tmp_path):
+    """The remedy text must name the log actually in use, not a hardcoded default."""
+    log_path = tmp_path / "relocated-conflicts.log"
+    with (
+        patch("subprocess.run") as mock_run,
+        patch("ai_cli.sync.CONFLICT_LOG", log_path),
+        patch("ai_cli.sync._is_mac", return_value=True),
+    ):
+        notify_conflicts(["a"])
+
+    subtitle = mock_run.call_args_list[0][0][0][-2]
+    assert subtitle.endswith(str(log_path))
+
+
+def test_home_relative_when_path_under_home_then_collapses_to_tilde():
+    assert _home_relative(Path.home() / "sub" / "conflicts.log") == "~/sub/conflicts.log"
+
+
+def test_home_relative_when_path_outside_home_then_returns_absolute(tmp_path):
+    outside = tmp_path / "outside-home.log"
+    assert not outside.is_relative_to(Path.home())
+    assert _home_relative(outside) == str(outside)
 
 
 # ---------------------------------------------------------------------------
@@ -5893,7 +5946,7 @@ def test_sync_repos_when_clean_worktree_then_pulls(tmp_path):
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-1"
+    wt = project / ".worktrees" / "session-1"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")  # minimal worktree marker
 
@@ -5920,7 +5973,7 @@ def test_sync_repos_when_dirty_worktree_no_session_then_skips_with_log(tmp_path,
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-2"
+    wt = project / ".worktrees" / "session-2"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")
 
@@ -5953,7 +6006,7 @@ def test_sync_repos_when_dirty_worktree_idle_session_then_skips_with_idle_log(tm
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-3"
+    wt = project / ".worktrees" / "session-3"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")
 
@@ -5992,7 +6045,7 @@ def test_sync_repos_when_dirty_worktree_active_session_then_skips_with_active_lo
 
     project = tmp_path / "myproject"
     _make_git_repo(project)
-    wt = project / ".worktrees" / "sw-4"
+    wt = project / ".worktrees" / "session-4"
     wt.mkdir(parents=True)
     (wt / ".git").write_text("gitdir: ../../.git")
 
@@ -6077,7 +6130,7 @@ def test_sync_repos_when_worktree_bare_name_then_maps_to_base_project(tmp_path):
         return m
 
     with patch("ai_cli.sync.subprocess.run", side_effect=fake_run):
-        sync_repos({"myproject--worktrees-sw-1"}, tmp_path, verbose=False)
+        sync_repos({"myproject--worktrees-session-1"}, tmp_path, verbose=False)
 
     assert any(Path(args[2]) == project for args in pulled), "base project not pulled from worktree bare name"
 
@@ -6270,13 +6323,18 @@ def test_git_env_when_containment_added_then_ai_sync_identity_is_preserved():
     assert _GIT_ENV["GIT_COMMITTER_EMAIL"] == "ai-sync@local"
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(180)
 def test_push_to_remote_when_remote_demands_credentials_then_fails_without_prompting(
     tmp_path, remote_demanding_credentials
 ):
     """The real network path, against a real 401 remote. _PUSH_TIMEOUT is 300s, so an
     unfixed git prompting on /dev/tty stalls `ai sync` for five minutes per push; the
-    60s cap here fails the test rather than letting the suite absorb the hang."""
+    cap here fails the test rather than letting the suite absorb the hang.
+
+    180s, not 60s: the budget has to cover a real git CLI's wall clock on a loaded host,
+    and the sibling test in test_workspace.py timed out at 60s in a full parallel run
+    while passing in 15-48s alone on the same machine. Still well inside _PUSH_TIMEOUT,
+    so a genuine prompt-driven hang is still caught here rather than absorbed."""
     from ai_cli.sync import _push_to_remote
 
     staging = tmp_path / "staging"

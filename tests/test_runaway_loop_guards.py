@@ -40,7 +40,9 @@ _MAX_TICKS = 4
 
 def _watcher_loop_body() -> str:
     """The per-child monitor's ``while true`` loop, verbatim from the template."""
-    script = get_engine_script("c", "sw-1", "c-sw-1", "c-sw-", "sw", worktree_dir="/tmp/wt", project_name="myproject")
+    script = get_engine_script(
+        "c", "session-1", "c-session-1", "c-session-", "session", worktree_dir="/tmp/wt", project_name="myproject"
+    )
     watcher_start = script.index("start_watcher() {")
     body_start = script.index("while true; do", watcher_start) + len("while true; do")
     body_end = script.index("done) &", body_start)
@@ -61,10 +63,10 @@ def _run_watcher_loop(tmp_path: Path) -> int:
     harness = tmp_path / "watcher_harness.sh"
     harness.write_text(
         f"""
-tmux_session="c-sw-1"
-ai_name="sw-1"
+tmux_session="c-session-1"
+ai_name="session-1"
 engine="c"
-project_prefix="sw"
+project_prefix="session"
 reload_file="{tmp_path}/reload"
 restart_file="{tmp_path}/restart"
 counter=0
@@ -124,8 +126,8 @@ def _install_session_meta(state: Path, tmux_session: str, ai_name: str) -> None:
                 "engine": "c",
                 "ai_name": ai_name,
                 "session": tmux_session,
-                "prefix": "c-sw-",
-                "project_prefix": "sw",
+                "prefix": "c-session-",
+                "project_prefix": "session",
                 "worktree_dir": "/tmp/wt",
                 "project_name": "myproject",
             }
@@ -152,8 +154,8 @@ def refresh_env(monkeypatch, tmp_path):
     monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
-    _install_session_meta(state, "c-sw-1", "sw-1")
-    fake_tmux = _FakeTmux(["c-sw-1", "c-other-9"])
+    _install_session_meta(state, "c-session-1", "session-1")
+    fake_tmux = _FakeTmux(["c-session-1", "c-other-9"])
     with patch.object(main.subprocess, "run", fake_tmux):
         yield state, fake_tmux
 
@@ -168,7 +170,7 @@ def test_given_windows_when_unchanged_template_refresh_reruns_then_script_is_not
     monkeypatch.setattr(main.os, "name", "nt")
 
     assert _refresh_live_session_scripts() == 1
-    script_path = state / "sessions" / "c-sw-1.sh"
+    script_path = state / "sessions" / "c-session-1.sh"
     first_mtime = script_path.stat().st_mtime_ns
 
     assert _refresh_live_session_scripts() == 0
@@ -179,7 +181,7 @@ def test_given_changed_template_when_refresh_runs_then_script_is_rewritten(refre
     """Idempotence must not suppress a real update — changed content still lands."""
     state, _ = refresh_env
     _refresh_live_session_scripts()
-    script_path = state / "sessions" / "c-sw-1.sh"
+    script_path = state / "sessions" / "c-session-1.sh"
     script_path.write_text("#!/bin/zsh\n# stale content from an older template\n", encoding="utf-8")
 
     assert _refresh_live_session_scripts() == 1
@@ -253,7 +255,7 @@ def test_given_unchanged_script_when_writing_stable_script_then_it_reports_succe
     monkeypatch.setattr("ai_cli.config.get_xdg_state_home", lambda: state)
     monkeypatch.setattr(main, "_REFRESH_CALL_TIMES", [], raising=False)
     monkeypatch.setattr(main, "_REFRESH_BURST_REPORTED_AT", 0.0, raising=False)
-    _install_session_meta(state, "c-sw-1", "sw-1")
+    _install_session_meta(state, "c-session-1", "session-1")
 
-    assert _write_stable_session_script("c-sw-1") is True
-    assert _write_stable_session_script("c-sw-1") is True
+    assert _write_stable_session_script("c-session-1") is True
+    assert _write_stable_session_script("c-session-1") is True

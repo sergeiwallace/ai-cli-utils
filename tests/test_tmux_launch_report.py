@@ -173,7 +173,7 @@ def test_probe_survives_a_binary_that_answers_nothing(fake_tmux) -> None:
 
 
 def _lines(**kw) -> str:
-    return "\n".join(tmux_setup.report_lines(**kw))
+    return "\n".join(f"{phase}: {outcome}" for phase, outcome in tmux_setup.report_lines(**kw))
 
 
 def test_report_states_the_mode_and_the_reason(fake_tmux) -> None:
@@ -209,10 +209,13 @@ def test_report_names_an_auto_install(fake_tmux) -> None:
 def test_report_warns_when_client_and_server_disagree(fake_tmux) -> None:
     """Silence here is how a mixed install reads as a working one."""
     fake_tmux["server"] = OLDER_SERVER
-    text = _lines(report=tmux_setup.probe(), bare=False, reason="default")
+    lines = tmux_setup.report_lines(report=tmux_setup.probe(), bare=False, reason="default")
+    text = "\n".join(f"{phase}: {outcome}" for phase, outcome in lines)
 
     assert OLDER_SERVER in text and NEWER_CLIENT in text
     assert "server" in text.lower()
+    # A "Warning" phase is what the launch reporter shows even under --quiet.
+    assert [phase for phase, _ in lines if phase == "Warning"] == ["Warning"]
 
 
 def test_report_does_not_warn_when_they_agree(fake_tmux) -> None:
@@ -298,12 +301,10 @@ def test_an_unprobed_report_does_not_claim_a_broken_binary(monkeypatch) -> None:
     monkeypatch.setattr(tmux_setup, "tmux_present", lambda: True)
     monkeypatch.setattr(tmux_setup.shutil, "which", lambda name: "/usr/bin/tmux")
 
-    text = "\n".join(
-        tmux_setup.report_lines(
-            report=tmux_setup.probe(query_versions=False),
-            bare=True,
-            reason="--bare requested",
-        )
+    text = _lines(
+        report=tmux_setup.probe(query_versions=False),
+        bare=True,
+        reason="--bare requested",
     )
 
     assert "not queried" in text

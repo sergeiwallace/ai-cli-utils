@@ -53,7 +53,7 @@ All bugs were reported 2026-04-02 after testing on freshly opened iTerm2 tabs.
 Multiple CC sessions with the same trailing session number but different project names all receive the same tab color. Examples observed:
 
 - `c-ai-cli-2`, `c-proj-2`, and `c-other-2` → all orange with white Claude logo
-- `c-sw-6` and `c-sw-7` → both blue (correct colors for their slot, but adjacent tabs should contrast)
+- `c-session-6` and `c-session-7` → both blue (correct colors for their slot, but adjacent tabs should contrast)
 
 ### Expected behavior
 
@@ -106,7 +106,7 @@ Running `ai g N -p PROJECT` from a directory that is not the target project root
 
 ```text
 Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4db0688464".
-  Searched for sessions in ~/.gemini/tmp/sw-1-1/chats.
+  Searched for sessions in ~/.gemini/tmp/session-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.
 Resuming... (Ctrl-C to exit)
 ```text
@@ -179,8 +179,8 @@ bugs I've noticed:
 2. for local cc sessions, the terminal session/tab color appears to rotate colors inconsistently or not at all, it seems. here's what I observed:
    2a. `c-ai-cli-2`, `c-proj-2`, and `c-other-2` became orange with a white claude logo
    2b. `c-ai-cli-3` became yellow with black claude logo
-   2c. `c-sw-5` became turqoise with a black claude logo. this is the only instance where i've seen a non-standard color.
-   2d. `c-sw-6` and `c-sw-7` became blue with an orange claude logo
+   2c. `c-session-5` became turqoise with a black claude logo. this is the only instance where i've seen a non-standard color.
+   2d. `c-session-6` and `c-session-7` became blue with an orange claude logo
 3. for remote cc sessions, the tab title formatting is wrong. it shows the terminal icon and the text "[mosh] * {PLAY_SYMBOL} {CC_TMUX_SESSION_NAME}". the tab/session color is always grey (the actual color, not no color). it should have the claude logo icon instead of the terminal and no "[mosh]" and no "*" unless it's a tab with split panes. that * is for the pane title, not the tab title. the tab title should already have the claude etc logo icon which should be sufficient. and we don't need to worry about signaling multiple types of terminal sessions with a single title. i asked for the previously but we can scrap that.
 4. for local gemini sessions, there are couple issues:
    4a. if you're in the correct directory and use or don't use the `-p {PROJECT_NAME`, then it's able to start and the tab color appears as a custom color lighter blue with a white gemini logo icon but no tab/session title. it just says "Default". it's able to start a new gemini session conversation or successfully resume an existing one.
@@ -196,11 +196,11 @@ YOLO mode is enabled. All tool calls will be automatically approved.
 Detected terminal background color: #121521
 Detected terminal name: tmux 3.6a
 Error resuming session: Invalid session identifier "e2c504cc-c47e-4988-a268-1b4db0688464".
-  Searched for sessions in ~/.gemini/tmp/sw-1-1/chats.
+  Searched for sessions in ~/.gemini/tmp/session-1-1/chats.
   Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.Resuming... (Ctrl-C to exit)
 ```text
    4c. if you're in a different directory than the target directory you want to launch a gemini session (e.g. `ai g 2 -p myproject` from a different project directory) and there's no existing git worktree or gemini session conversation to resume, then you just get a blank screen that never even gets to the `session context written to .gemini/signals/session-context.md` text. it just stays blank black screen indefinitely until you ctrl + C out of it. if you ctrl + C quickly enough, it's take you back to local machine shell. if you wait a bit, it'll start doing the same failure to resume existing gemini session error above in 4b. also, sometimes the custom light blue tab color and "Default" tab title persist and sometimes it goes back to terminal logo with "Default" title.
-5. for remote gemini sessions that are in different directory than the target direct you want to launch gemini session from, you get same can't resume existing gemini session error from 4b. it exiting me back to a `sw-1` git worktree root on dev server once (the tab title was the usual "[mosh] ..." and other times it kicked me back to local machine shell. not sure what to make of that inconsistency.
+5. for remote gemini sessions that are in different directory than the target direct you want to launch gemini session from, you get same can't resume existing gemini session error from 4b. it exiting me back to a `session-1` git worktree root on dev server once (the tab title was the usual "[mosh] ..." and other times it kicked me back to local machine shell. not sure what to make of that inconsistency.
 
 review this and create a bug doc (create a `docs/bugs` directory if needed) and in your words write out all the bugs/behaviors I identified and what the fixed behaviors should be (not how to fix, but just what the corrected tab/session titles & color system should be). then also propose how you might go about diagnosing the root causes of the bugs and potential ways to fix them (it's okay if this is a high level outline since you'll need to actually debug etc to identify it). i'll review to make sure you understand each of the bugs/incorrect behaviors and understand what the behaviors should actually be before you start working on diagnosing and fixing the bugs (root cause). we need a more robust and systematic implementation to do this robustly (appropriate tab/session title naming that dynamically changes depending on whether it's a cc / gemini session on either local or remote or a local shell or remote shell etc). right now it's still very buggy and the auto-color rotation to make sure colors between neighboring tabs in a iterm2 window or neighboring split terminal panes within a tab are always different and contrasting colors. also, I want more colors for the claude/gemini logos than orange (claude logo), black, and white. we should have a number of different templates for different colors to have better and more colorful contrast. sometimes black and white with a color background is fine but i want more variety. we should have templates. and ideally we don't have to rely on creating a bunch of different profiles unless that's the only way to have different color logo icons in the tab title.
 
@@ -210,11 +210,11 @@ review this and create a bug doc (create a `docs/bugs` directory if needed) and 
 
 ### Symptom
 
-After `ai c N` launches and the tab title correctly shows `c-sw-N`, opening the Edit Session dialog reveals that the **Session Name field still reads "Default"**. Closing the dialog (even without making changes) causes the tab title to revert to "Default", overwriting the correct session name that was set at launch.
+After `ai c N` launches and the tab title correctly shows `c-session-N`, opening the Edit Session dialog reveals that the **Session Name field still reads "Default"**. Closing the dialog (even without making changes) causes the tab title to revert to "Default", overwriting the correct session name that was set at launch.
 
 ### Expected behavior
 
-The Session Name field should be permanently set to the tmux session name (e.g., `c-sw-6`) at launch time, so that it persists through Edit Session interactions and is stable as the ground truth for the tab title. The Session Title dropdown should be set to `Name` (not `Shell`) so the tab always displays the Session Name value without any shell-controlled overrides.
+The Session Name field should be permanently set to the tmux session name (e.g., `c-session-6`) at launch time, so that it persists through Edit Session interactions and is stable as the ground truth for the tab title. The Session Title dropdown should be set to `Name` (not `Shell`) so the tab always displays the Session Name value without any shell-controlled overrides.
 
 ---
 
@@ -296,7 +296,7 @@ The Round 2 root cause explanation was wrong. It described a scenario where `ai 
 c-ai-cli-1: ITERM_SESSION_ID=w0t0p15:C37C7927...  ← correct owner
 c-hm-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
 g-myproject-1: ITERM_SESSION_ID=w0t0p15:C37C7927... ← stale
-g-sw-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
+g-session-1:     ITERM_SESSION_ID=w0t0p15:C37C7927...  ← stale
 ```text
 
 **Root cause:** Multiple tmux sessions accumulate the same `ITERM_SESSION_ID` GUID in their environments. This happens because `_do_session_launch` writes the current pane's GUID into the target session's tmux env (via `_iterm_env_flags` on new-session, or `tmux set-environment` on re-attach) but never removes it from other sessions that already hold the same GUID. Over time, every session that was ever attached from the same physical pane retains that pane's GUID forever.
@@ -335,9 +335,9 @@ c-hm-1:     tmux env ITERM_SESSION_ID=w0t0p15:C37C7927... (stale, holds the GUID
 **Why reopened:** Rounds 1–4 all patched a fundamentally racy design — the pane
 GUID was tracked in two places (shell env + tmux session env) and reconciled at
 *launch time* by one-directional eviction. Collisions that form *between*
-launches were never healed. Observed live: `c-sw-3` (attached, pane `w0t0p0`) and
+launches were never healed. Observed live: `c-session-3` (attached, pane `w0t0p0`) and
 `c-hm-1` (detached) both holding `w0t0p0:6A6AC15E…` — because `c-hm-1` occupied
-that physical pane after `c-sw-3`'s last launch, so no eviction ever ran. On the
+that physical pane after `c-session-3`'s last launch, so no eviction ever ran. On the
 next CC restart either session's `set-iterm2-name` would relabel the other's
 pane. This is the same failure class as Rounds 2–4, and eviction cannot close it
 (it only runs on launch).
@@ -351,9 +351,9 @@ exactly one controlling terminal, so it can never collide.
 set-name time*, by the tmux session's client tty:
 `tmux list-clients -t <session>` → tty → the iTerm2 session whose `tty` matches →
 `set name`. No stored GUID, no env propagation, no eviction, no reconciliation.
-Display name keeps the engine prefix (`c-sw-3` / `g-…`) so Claude vs Gemini
+Display name keeps the engine prefix (`c-session-3` / `g-…`) so Claude vs Gemini
 sessions stay distinguishable at a glance. (Corrected 2026-07-03 — an interim
-"strip to `sw-3`" change was reverted per user preference; the prefix is load-bearing.)
+"strip to `session-3`" change was reverted per user preference; the prefix is load-bearing.)
 
 **Files changed:**
 - `src/ai_cli/iterm2.py` — replaced `_set_iterm2_name_applescript` (matched
@@ -371,8 +371,8 @@ sessions stay distinguishable at a glance. (Corrected 2026-07-03 — an interim
   the GUID-contract tests to the tty contract.
 
 **Verified live:** every attached session's `client_tty` maps 1:1 to one iTerm2
-session tty; renaming `c-sw-3`'s pane by resolved tty (`/dev/ttys000`) set and
-read back `sw-3` via the real `ai internal set-iterm2-name` path.
+session tty; renaming `c-session-3`'s pane by resolved tty (`/dev/ttys000`) set and
+read back `session-3` via the real `ai internal set-iterm2-name` path.
 
 **Shipped:** 2026-07-02 (AI-CLI-59, final)
 
@@ -385,7 +385,7 @@ read back `sw-3` via the real `ai internal set-iterm2-name` path.
 iTerm2 shows a popup: **"Dynamic Profiles file contains invalid JSON"** for `ai-cli-session-<name>.json` immediately after or during `ai c N` session launch. The file on disk is valid JSON when inspected after the fact. Reported 2026-04-29 with the following logs:
 
 ```
-[2026-04-29 14:21:19] Error in /Users/user/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-session-sw-1.json: Dynamic Profiles file contains invalid JSON
+[2026-04-29 14:21:19] Error in /Users/user/Library/Application Support/iTerm2/DynamicProfiles/ai-cli-session-session-1.json: Dynamic Profiles file contains invalid JSON
 [2026-04-29 14:21:19] Error loading dynamic profiles: (null)
 ```
 
@@ -428,7 +428,7 @@ Could not read Dynamic Profile from file .../tmpXXXXXXXX.json.tmp: The file
 "tmpXXXXXXXX.json.tmp" couldn't be opened because there is no such file.
 Dynamic Profiles file .../tmpXXXXXXXX.json.tmp contains invalid JSON: The data
 couldn't be read because it isn't in the correct format.
-Two dynamic profiles have the same Guid: ai-cli-sw-1
+Two dynamic profiles have the same Guid: ai-cli-session-1
 ```
 
 **Root cause (Round 2 — confirmed against iTerm2's actual shipped source, not

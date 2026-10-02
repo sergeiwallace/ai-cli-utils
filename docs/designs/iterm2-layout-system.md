@@ -36,9 +36,9 @@ source: ai-cli-utils
 
 ## Problem Statement
 
-With 12–16 panes per tab across multiple projects, the current setup has no file-driven way to define, reproduce, or fine-tune layouts. Each session is hand-assembled. Colors are buried in iTerm2's binary plist preferences. There's no way to template a "sw-dev" workspace with consistent splits, directories, and colors and spin it up in one command.
+With 12–16 panes per tab across multiple projects, the current setup has no file-driven way to define, reproduce, or fine-tune layouts. Each session is hand-assembled. Colors are buried in iTerm2's binary plist preferences. There's no way to template a "session-dev" workspace with consistent splits, directories, and colors and spin it up in one command.
 
-Goal: define workspaces in YAML files. Running `ai layout sw-dev` (or launching `ai c 5` when a matching layout file exists) builds the full iTerm2 window — tabs, pane splits, profiles, colors, working directories, startup commands — exactly as specified. Colors and profile overrides are file-driven via iTerm2 Dynamic Profiles (JSON, hot-reloaded, no plist editing required).
+Goal: define workspaces in YAML files. Running `ai layout session-dev` (or launching `ai c 5` when a matching layout file exists) builds the full iTerm2 window — tabs, pane splits, profiles, colors, working directories, startup commands — exactly as specified. Colors and profile overrides are file-driven via iTerm2 Dynamic Profiles (JSON, hot-reloaded, no plist editing required).
 
 ---
 
@@ -51,7 +51,7 @@ Goal: define workspaces in YAML files. Running `ai layout sw-dev` (or launching 
 | 1 | Config file location | User home vs project repo vs XDG | XDG (`~/.config/iterm2/layouts/`) | Machine-local, easily symlinked to a dotfiles repo, consistent with existing iTerm2 config convention | Pending |
 | 2 | Color override mechanism | iTerm2 Python API per-session vs Dynamic Profiles | Dynamic Profiles (generated JSON) | Persistent across restarts; can be committed; works without a running script | Pending |
 | 3 | Pane split model | Flat list with `split` fields vs nested tree | Nested tree | Matches iTerm2's actual split hierarchy; avoids ambiguity in >2 splits | Pending |
-| 4 | `ai c N` auto-apply | Always auto-apply if layout exists vs explicit flag | Auto-apply if `sw-N.yaml` exists, skip silently if not | Zero friction for configured sessions; no change for unconfigured ones | Pending |
+| 4 | `ai c N` auto-apply | Always auto-apply if layout exists vs explicit flag | Auto-apply if `session-N.yaml` exists, skip silently if not | Zero friction for configured sessions; no change for unconfigured ones | Pending |
 | 5 | Profile inheritance | All colors inline vs inherit from named base profile | Inherit from base + only override what differs | Avoids duplication; one base profile change propagates | Pending |
 
 ### Decision Details
@@ -143,7 +143,7 @@ Nested tree. The verbosity is worth the precision — especially for 12–16 pan
 
 #### Decision 4: `ai c N` auto-apply
 
-Auto-apply if `~/.config/iterm2/layouts/sw-N.yaml` exists. If no file, launch normally (current behavior). This means zero-config for existing sessions and full templating for configured ones — no flag required.
+Auto-apply if `~/.config/iterm2/layouts/session-N.yaml` exists. If no file, launch normally (current behavior). This means zero-config for existing sessions and full templating for configured ones — no flag required.
 
 ---
 
@@ -162,19 +162,19 @@ Each layout YAML specifies a `base_profile` (e.g. `"Claude Base"`). The generate
 ### Layout file: `~/.config/iterm2/layouts/<name>.yaml`
 
 ```yaml
-# ~/.config/iterm2/layouts/sw-dev.yaml
-name: sw-dev
-description: "Main dev workspace — myproject + sw-5 CC session"
+# ~/.config/iterm2/layouts/session-dev.yaml
+name: session-dev
+description: "Main dev workspace — myproject + session-5 CC session"
 
 tabs:
-  - name: "sw-5"
+  - name: "session-5"
     base_profile: "Claude Base"          # iTerm2 profile to inherit from
     colors:
       background: "#0D0D1F"             # override only what you want
       foreground: "#E8E8F0"
       tab_color: "#3B4BC8"              # color shown in tab bar
     root:                               # root pane — becomes the tab's first session
-      dir: "~/projects/myproject/.worktrees/sw-5"
+      dir: "~/projects/myproject/.worktrees/session-5"
       command: "ai c 5"
       split:
         direction: vertical             # split this pane vertically
@@ -238,8 +238,8 @@ At layout apply time, for each tab that specifies color overrides, the system wr
 ```json
 {
   "Profiles": [{
-    "Name": "ai-cli:sw-dev:sw-5",
-    "Guid": "ai-cli-sw-dev-sw-5",
+    "Name": "ai-cli:session-dev:session-5",
+    "Guid": "ai-cli-session-dev-session-5",
     "Dynamic Profile Parent Name": "ClaudeCode",
     "Background Color": {
       "Red Component": 0.051, "Green Component": 0.051,
@@ -249,7 +249,7 @@ At layout apply time, for each tab that specifies color overrides, the system wr
       "Red Component": 0.231, "Green Component": 0.294,
       "Blue Component": 0.784, "Alpha Component": 1.0
     },
-    "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/sw-dev-sw-5.png"
+    "Custom Icon Path": "~/.local/state/ai-cli-utils/iterm2-icons/session-dev-session-5.png"
   }]
 }
 ```text
@@ -294,7 +294,7 @@ Implementation: new `layout.py` module in `src/ai_cli/`, registered as `ai layou
 
 When `ai c 5` launches:
 
-1. Check if `~/.config/iterm2/layouts/sw-5.yaml` exists
+1. Check if `~/.config/iterm2/layouts/session-5.yaml` exists
 2. If yes: run layout apply instead of bare `ai c` launch
 3. If no: existing behavior unchanged
 
@@ -326,7 +326,7 @@ The `ai c N` → layout integration happens in `main.py`'s session launch path. 
 
 ### Phase 2 — `ai c N` integration
 
-- Auto-detect `sw-N.yaml` on `ai c N` launch
+- Auto-detect `session-N.yaml` on `ai c N` launch
 - Apply layout transparently if file exists
 
 ### Phase 3 — Fine-tuning UX

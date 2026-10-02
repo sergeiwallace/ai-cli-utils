@@ -232,7 +232,7 @@ For each workspace folder path:
 Workspace: ~/projects/myproject/core-cli-local.code-workspace (13 repos)
 
 ✓  myproject          main
-✓  companion            main   +  .worktrees/sw-1   .worktrees/sw-2
+✓  companion            main   +  .worktrees/session-1   .worktrees/session-2
 ↷  ai-cli-utils    .worktrees/ai-cli-1  (dirty, skipped)
 ✓  core-cli         main
 …

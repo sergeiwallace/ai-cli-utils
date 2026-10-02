@@ -3,12 +3,15 @@ import http.server
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import types
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,11 +20,132 @@ import pytest
 import ai_cli.config as _config_module
 import ai_cli.session as _session_module
 import ai_cli.trust as _trust_module
+from ai_cli.canonical_worktrees import REGISTRY_FILENAME, get_canonical_worktree_registry_path
 from ai_cli.git_repair import _GIT_TARGETING_VARS
 from ai_cli.main import _REMOTE_SHELL_PROBE_CMD
 
 _TEST_TMUX_PREFIX = "pytest-leak-guard-"
-_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"})
+
+# Anything that puts a banner on the operator's screen or scripts their live
+# terminal. Guarded at the process boundary rather than per call site because per-call
+# discipline has now failed twice here, in two different subsystems: AI-CLI-jk7v (one
+# test of seven siblings patched the log path but not ``subprocess.run``, so EVERY
+# pytest run in this repo raised a real desktop notification, for weeks) and
+# AI-CLI-tevy (tests writing the real iTerm2 profile directory).
+#
+# ``osascript`` covers both, and on purpose: ``notifications.py`` uses it for the
+# banner and ``iterm2.py:313`` uses it to script the running terminal, which is the
+# same kind of escape. ``notify-send`` is the non-macOS branch of the same function,
+# so it is reached on Linux AND Windows and is guarded everywhere rather than only
+# where it happens to exist.
+_DESKTOP_ESCAPE_BINARIES = frozenset({"osascript", "notify-send"})
+
+_PROTECTED_TEST_BINARIES = frozenset({"tmux", "claude", "gemini", "direnv", "ssh", "mosh"}) | _DESKTOP_ESCAPE_BINARIES
+
+# Programs that RUN a command string handed to them, which is what makes a guard on the
+# program name alone insufficient (AI-CLI-013v). Measured: a test drove
+# ``os.execvp("zsh", ["zsh", "-c", "<real ssh command>; ..."])``, the program was ``zsh``
+# and so not protected, ``ssh`` was only a substring of the payload the guard never read,
+# and the exec REPLACED the pytest process -- the run ended mid-collection with exit 0, no
+# summary and no results, while a real outbound SSH connection was attempted.
+#
+# Banning the shells themselves was rejected: many tests here legitimately run one (the
+# generated engine script, the supervisor, the lease-redirection probes), and a blanket
+# ban is the kind of rule that gets switched off or worked around. So a shell stays
+# allowed and its command string is inspected instead.
+#
+# Both the bare and ``.exe`` spellings, because ``_command_program`` returns a basename and
+# Windows argv carries the suffix.
+_SHELL_PROGRAMS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ash",
+        "ksh",
+        "mksh",
+        "fish",
+        "csh",
+        "tcsh",
+        "cmd",
+        "cmd.exe",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+    }
+)
+
+# A POSIX shell takes its command STRING after an option cluster ending in ``c`` -- ``-c``,
+# but also ``-lc`` and ``-ic``, which production uses (``main.py`` builds a mosh remote
+# command as ``<shell> -l -c <cmd>``). Anything else after the options is a script PATH,
+# which is not a command string and is deliberately not scanned: a path is what the
+# supervisor and engine-script tests pass.
+_POSIX_SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
+
+# The Windows equivalents, compared lowercased. ``-encodedcommand`` takes base64 and so
+# cannot be inspected; it is listed anyway so the payload is at least consumed as a
+# command rather than mistaken for a script path.
+_WINDOWS_SHELL_COMMAND_FLAGS = frozenset({"/c", "/k", "-command", "-encodedcommand"})
+
+# Words inside a shell command string, split on the shell metacharacters that can abut a
+# program name. A regex rather than ``shlex.split`` on purpose: shlex leaves ``(ssh`` and
+# ``&&ssh`` as single tokens and raises on an unbalanced quote, and a guard that stops
+# seeing a hazard because the payload quoting is odd is not a guard.
+_SHELL_PAYLOAD_WORD = re.compile(r"[^\s;&|()<>'\"`$={}]+")
+
+# Shell-laundered spawn attempts, recorded as well as refused for the reason the desktop
+# escapes are: refusing alone does not report. A caller that swallows the exception --
+# ``cli()`` is driven under ``except SystemExit`` and ``except Exception`` in several
+# tests -- would otherwise be silently protected and never told.
+_protected_spawn_attempts: list[str] = []
+
+# The Windows branch of the same function, which the binary interception above cannot
+# see at all (AI-CLI-e9nm). ``notifications._send_os_notification`` raises a toast there
+# by calling ``plyer.notification.notify`` IN-PROCESS -- there is no subprocess to
+# intercept, so a test that reaches that branch on Windows puts a real toast on the
+# operator's screen while the guard reports nothing. Recorded under this name rather
+# than a binary name because it is not a binary.
+_DESKTOP_ESCAPE_IMPORT = "plyer"
+
+# Distinguishes "``plyer`` was absent from ``sys.modules``" from "it was present and
+# bound to ``None``", which is a real state a failed import can leave behind. ``None``
+# would restore as a module that cannot be imported from.
+_MISSING = object()
+
+# The two registry keys that hold a persisted ``Path``, lowercased for comparison. Exactly
+# the pair ``direnv_setup.refresh_windows_path`` reads and merges into this process.
+_WINDOWS_ENVIRONMENT_SUBKEYS = frozenset(
+    {
+        r"system\currentcontrolset\control\session manager\environment",
+        "environment",
+    }
+)
+
+# Attempts are RECORDED as well as refused, because refusing alone does not report.
+# ``notifications._send_os_notification`` wraps its spawn in ``except Exception`` and
+# returns a failed result, so the guard's RuntimeError never reaches the test that
+# caused it. Prevention without a report is how this class survived for weeks: the
+# notification was visible on screen and invisible in the run.
+_desktop_escape_attempts: list[str] = []
+
+# Resolved at IMPORT time, before any fixture has redirected HOME, so the guard below
+# always names the operator's own directory rather than a redirected one. Re-reading
+# ``Path.home()`` from inside a fixture would return the redirect and guard nothing.
+_REAL_HOME = Path.home()
+
+# iTerm2 is macOS-only, but ``icon_generator._dynamic_profile_dir`` and
+# ``layout._dynamic_profile_dir`` both build this path from ``Path.home()`` with no
+# platform branch, so an unredirected test creates a stray ``~/Library/...`` tree on
+# Windows and Linux too. Guarding it everywhere is therefore correct rather than a
+# macOS special case.
+_REAL_ITERM2_PROFILE_DIR = _REAL_HOME / "Library" / "Application Support" / "iTerm2" / "DynamicProfiles"
+
+# Likewise resolved at IMPORT time, through the production resolver and before any fixture
+# has redirected HOME or the registry override, so it names the file the operator's own
+# launches write rather than a redirected one (AI-CLI-u2ox).
+_REAL_CANONICAL_WORKTREE_REGISTRY = get_canonical_worktree_registry_path()
 
 # Short directory name for the relocated Windows temp root -- see
 # _windows_temproot for why the length itself is the point.
@@ -241,6 +365,37 @@ def remote_demanding_credentials():
         thread.join(timeout=5)
 
 
+#: Prefix on every skip reason that means "tmux itself could not be used here", so the
+#: session-level check below can recognise one without pattern-matching English.
+#:
+#: A plain substring search for "tmux" is NOT good enough, and that is the whole reason
+#: this marker exists. Several deliberate skips mention tmux while saying nothing about
+#: whether it is installed -- "real tmux server behavior unverified under MSYS2 CI", which
+#: fires on Windows where tmux IS provisioned, and "the real-tmux tests need POSIX process
+#: semantics, not just a tmux binary". Both would match a naive search and neither is a
+#: provisioning problem, so a naive check would fail the Windows job on every run.
+TMUX_UNUSABLE_SKIP = "tmux unusable"
+
+#: What to do about it, shared so every tmux-provisioning failure says the same thing.
+#: tmux is a HARD requirement of this suite, not an optional one (AI-CLI-qzf2): the tests
+#: that drive a real tmux server fail rather than skip without it, and every CI platform
+#: installs it explicitly.
+TMUX_REQUIRED_REMEDY = (
+    "tmux is a hard requirement of this test suite, not an optional one: install tmux and "
+    "re-run. Every CI platform provisions it explicitly -- see .github/workflows/ci.yml."
+)
+
+
+def tmux_unusable_skip_reason(detail: str) -> str:
+    """Format ``detail`` as a skip reason the session-level tmux check recognises."""
+    return f"{TMUX_UNUSABLE_SKIP}: {detail}"
+
+
+def is_tmux_unusable_skip(reason: str) -> bool:
+    """Was this skip caused by tmux being unusable, rather than merely about tmux?"""
+    return TMUX_UNUSABLE_SKIP in reason
+
+
 def tmux_runnable() -> tuple[bool, str]:
     """Can ``tmux`` actually be executed here? Returns ``(runnable, reason)``.
 
@@ -262,20 +417,25 @@ def tmux_runnable() -> tuple[bool, str]:
 
     Shared by every module that gates on a live tmux. It used to be copied per
     module, and the copies had already drifted in what they reported.
+
+    Every failure reason carries :data:`TMUX_UNUSABLE_SKIP`, so a skip taken on one
+    is machine-recognisable by :func:`pytest_sessionfinish` below.
     """
     if shutil.which("tmux") is None:
-        return False, "tmux binary not available on PATH"
+        return False, tmux_unusable_skip_reason("tmux binary not available on PATH")
 
     def _probe() -> tuple[bool, str]:
         try:
             probe = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=30, check=False)
         except OSError as exc:
-            return False, f"tmux could not be executed: {exc}"
+            return False, tmux_unusable_skip_reason(f"tmux could not be executed: {exc}")
         except subprocess.TimeoutExpired:
-            return False, "tmux -V timed out"
+            return False, tmux_unusable_skip_reason("tmux -V timed out")
         if probe.returncode != 0:
             detail = (probe.stderr or probe.stdout or "").strip().splitlines()
-            return False, f"tmux is on PATH but does not run: {detail[0] if detail else f'exit {probe.returncode}'}"
+            return False, tmux_unusable_skip_reason(
+                f"tmux is on PATH but does not run: {detail[0] if detail else f'exit {probe.returncode}'}"
+            )
         return True, ""
 
     runnable, reason = _probe()
@@ -290,16 +450,339 @@ def tmux_runnable() -> tuple[bool, str]:
     return _probe()
 
 
-def _reject_real_agent_process(command, allowed_binaries=frozenset()):
-    """Fail loudly when a test reaches a real agent, transport, or tmux boundary."""
+#: Every skip this session took because tmux was unusable, as ``(nodeid, reason)``.
+_tmux_unusable_skips: list[tuple[str, str]] = []
+
+
+def _report_skip_reason(report) -> str:
+    """The human reason from a skip report, or ``""`` if this is not a skip.
+
+    Shape-tolerant on purpose. pytest represents a skip's ``longrepr`` as a
+    ``(path, lineno, "Skipped: <reason>")`` triple, but this suite runs under
+    ``-n auto`` and xdist round-trips every report through a serializer, so the
+    triple can arrive at the controller as a list. An xfail's ``longrepr`` is
+    neither shape.
+    """
+    longrepr = report.longrepr
+    if not report.skipped or not isinstance(longrepr, (tuple, list)) or len(longrepr) != 3:
+        return ""
+    return str(longrepr[2])
+
+
+def pytest_runtest_logreport(report):
+    """Collect skips caused by an unusable tmux, for :func:`pytest_sessionfinish`."""
+    reason = _report_skip_reason(report)
+    if reason and is_tmux_unusable_skip(reason):
+        _tmux_unusable_skips.append((report.nodeid, reason))
+
+
+def tmux_skip_regression_message(skips, tmux_is_runnable: bool) -> str | None:
+    """Why this run's tmux skips are a coverage regression, or ``None`` if they are not.
+
+    Separated from the hook so the verdict is testable without driving a whole pytest
+    session: the interesting part is the pairing of the two inputs, not the plumbing.
+
+    A tmux skip on a host with no usable tmux is correct and reports nothing. The same
+    skip on a host where tmux runs fine means the suite quietly covered less than it
+    could, and that is the case worth failing on.
+    """
+    if not skips or not tmux_is_runnable:
+        return None
+    listed = "\n".join(f"  {nodeid}: {reason}" for nodeid, reason in skips)
+    return (
+        f"{len(skips)} test(s) skipped for lack of a usable tmux, on a host where tmux DOES run. "
+        "That means this run covered less than the last one while looking just as green. It is "
+        "the failure mode that hid a twelve-skip divergence until three unrelated tests happened "
+        "to fail beside it (AI-CLI-qzf2): either tmux stopped working mid-run, or one of these "
+        f"skips is misreporting its cause.\n{listed}"
+    )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail a run that skipped tmux tests despite tmux being usable (AI-CLI-qzf2).
+
+    Session-scoped rather than per test because the signal is a COUNT: each individual
+    skip looks reasonable in isolation, and it is only the total moving between two runs
+    of the same commit that reveals coverage was lost.
+
+    Under ``-n auto`` this must decide on the controller alone. Workers each see only
+    their own shard, and the controller receives every worker's reports, so a worker
+    deciding would report a fraction of the truth and set an exit status xdist does not
+    use for the run's verdict.
+
+    ``tmux_runnable`` is probed here rather than at import so the cost -- a real
+    subprocess -- is paid only by a run that has something to decide.
+    """
+    if hasattr(session.config, "workerinput"):
+        return
+    message = tmux_skip_regression_message(_tmux_unusable_skips, tmux_runnable()[0])
+    if message is None:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", "tmux coverage regression", red=True, bold=True)
+        reporter.write_line(message)
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def _command_argv(command) -> list[str]:
+    """Return ``command`` as an argv list, however subprocess was handed it."""
+    if isinstance(command, (list, tuple)):
+        return [str(part) for part in command]
+    if isinstance(command, str):
+        try:
+            return shlex.split(command)
+        except ValueError:
+            return command.split()
+    return []
+
+
+def shell_command_payloads(argv) -> list[str]:
+    """Command STRINGS this argv hands a shell to run, in argv order.
+
+    Only the argument of a command-string option is returned. A script path is not a
+    command string and is excluded on purpose -- ``zsh -o NO_BG_NICE /tmp/supervisor`` and
+    ``bash script.sh`` are how several tests here run a generated script, and scanning a
+    path would charge them for the directory they happen to sit in.
+
+    Exposed (not underscore-private) so the extraction can be tested directly rather than
+    only observed through a refusal.
+    """
+    tokens = _command_argv(argv)
+    payloads = []
+    for index, token in enumerate(tokens[1:], start=1):
+        is_command_flag = _POSIX_SHELL_COMMAND_FLAG.match(token) or token.lower() in _WINDOWS_SHELL_COMMAND_FLAGS
+        if is_command_flag and index + 1 < len(tokens):
+            payloads.append(tokens[index + 1])
+    return payloads
+
+
+def _test_temp_roots() -> tuple[str, ...]:
+    """Every root a pytest temp directory can live under, as real paths.
+
+    ``PYTEST_DEBUG_TEMPROOT`` is included because :func:`pytest_configure` relocates the
+    Windows root to a short path on the drive anchor, which is NOT under
+    ``tempfile.gettempdir()``.
+    """
+    roots = [tempfile.gettempdir()]
+    relocated = os.environ.get("PYTEST_DEBUG_TEMPROOT")
+    if relocated:
+        roots.append(relocated)
+    # normcase as well as realpath: Windows paths compare case-insensitively, and a drive
+    # letter reaches this in both spellings (``C:\aipt`` from the relocated root,
+    # ``c:\aipt\...`` from a resolved stub). A case-sensitive comparison would call a stub
+    # inside the temp tree the operator's own binary and refuse a legitimate test.
+    return tuple(os.path.normcase(os.path.realpath(root)) for root in roots)
+
+
+def payload_word_reaches_a_real_binary(word: str) -> bool:
+    """Would a shell running ``word`` reach a binary outside this run's temp tree?
+
+    The question the guard actually needs, and the reason it is not simply "does the payload
+    mention a protected name". Tests here legitimately run a protected NAME through a shell
+    after putting their own stub on a clean PATH -- ``test_session_launch_shell_resolution``
+    writes a ``claude`` and a ``direnv`` into a temp bin directory and drives the generated
+    launch command through the interpreter it chose, which is the only way that path is
+    observed end to end. Refusing those would be a regression wearing a guard's clothes, the
+    same trap :func:`_tmux_argv_is_read_only` exists to avoid for ``tmux -V``.
+
+    Resolution mirrors what the shell itself would do: a word carrying a separator is used as
+    the path it is, a bare name goes through ``PATH`` as the test has set it. An unresolvable
+    name is not a hazard, because the shell could not run it either.
+    """
+    looks_like_path = os.sep in word or (os.altsep is not None and os.altsep in word)
+    resolved = word if looks_like_path else shutil.which(word)
+    if resolved is None:
+        return False
+    try:
+        real = os.path.normcase(os.path.realpath(resolved))
+    except OSError:
+        return True  # cannot prove it is a stub, so treat it as the operator's own
+    return not any(real.startswith(root + os.sep) for root in _test_temp_roots())
+
+
+def shell_payload_protected_binary(program, argv, allowed_binaries=frozenset()) -> str | None:
+    """The protected binary a shell's command string would really run, or ``None``.
+
+    This is the AI-CLI-013v half of the guard: the program is allowed, the string it is
+    told to run is not. Matching is on each word's BASENAME, so ``/usr/bin/ssh`` and a
+    bare ``ssh`` are the same finding, and each candidate is then checked against
+    :func:`payload_word_reaches_a_real_binary` so a test's own stub stays usable.
+
+    ``allowed_binaries`` is honoured exactly as it is for a direct spawn -- a ``real_tmux``
+    test may drive tmux through a shell for the same reason it may drive it directly.
+    """
+    if program not in _SHELL_PROGRAMS:
+        return None
+    protected = _PROTECTED_TEST_BINARIES - allowed_binaries
+    for payload in shell_command_payloads(argv):
+        for word in _SHELL_PAYLOAD_WORD.findall(payload):
+            name = os.path.basename(word)  # noqa: PTH119 -- a shell word, not a filesystem path
+            if name in protected and payload_word_reaches_a_real_binary(word):
+                return name
+    return None
+
+
+def _reject_real_agent_process(command, allowed_binaries=frozenset(), argv=None):
+    """Fail loudly when a test reaches a real agent, transport, or tmux boundary.
+
+    ``argv`` carries the full argument vector when the caller cannot pass it as
+    ``command``: ``os.execvp`` takes the program and the argv as two separate arguments, so
+    the guard would otherwise see only ``zsh`` and never the ``-c`` string that is the
+    whole hazard in AI-CLI-013v.
+    """
     program = _command_program(command)
     if program == "tmux" and _tmux_argv_is_read_only(command):
         return
+    if program in _DESKTOP_ESCAPE_BINARIES - allowed_binaries:
+        _desktop_escape_attempts.append(program)
+        raise RuntimeError(
+            f"test attempted to reach the operator's desktop through a real `{program}` process. "
+            "Patch subprocess.run (or the notifier itself), not only the paths it writes: "
+            "redirecting the log while leaving the spawn live is exactly how AI-CLI-jk7v put a "
+            "banner on the screen on every run for weeks. Asserting a notification WOULD be sent "
+            "is fine -- do it against a mock."
+        )
     if program in _PROTECTED_TEST_BINARIES - allowed_binaries:
         raise RuntimeError(
             f"test attempted to spawn a real `{program}` process — "
             "mock subprocess.run, subprocess.Popen, or os.execvp explicitly in this test"
         )
+    laundered = shell_payload_protected_binary(program, argv if argv is not None else command, allowed_binaries)
+    if laundered:
+        _protected_spawn_attempts.append(laundered)
+        raise RuntimeError(
+            f"test attempted to run a real `{laundered}` through a `{program}` command string. "
+            "A shell is allowed here; using one as a laundering route to a protected binary is "
+            "not. Measured (AI-CLI-013v): an os.execvp of a shell whose -c payload ran ssh "
+            "REPLACED the pytest process, so the run ended mid-collection with exit 0, no "
+            "summary and no results, and a real outbound connection was attempted. Mock "
+            "subprocess.run, subprocess.Popen or os.execvp explicitly in this test."
+        )
+
+
+class _RefusingPlyerNotification:
+    """Stands in for ``plyer.notification`` so a Windows toast is refused and recorded."""
+
+    @staticmethod
+    def notify(**kwargs):
+        """Refuse the toast the way :func:`_reject_real_agent_process` refuses a spawn.
+
+        ``RuntimeError`` rather than ``ImportError`` on purpose, and that choice is the
+        whole mechanism: ``_send_os_notification`` wraps the plyer call in
+        ``except ImportError: pass`` to degrade silently when the optional
+        ``[notify-win]`` extra is absent, so an ``ImportError`` here would be swallowed
+        into a SUCCESS result with nothing recorded -- the exact blindness being closed.
+        A ``RuntimeError`` falls through to the outer ``except Exception``, which
+        reports failure, and the record below is what the teardown check turns into a
+        test failure.
+        """
+        del kwargs
+        _desktop_escape_attempts.append(_DESKTOP_ESCAPE_IMPORT)
+        raise RuntimeError(
+            "test attempted to reach the operator's desktop through a real plyer toast. "
+            "This branch takes no subprocess, so patch `ai_cli.notifications` itself (or "
+            "the plyer import) rather than a spawn boundary. Asserting a notification "
+            "WOULD be sent is fine -- do it against a mock."
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_real_plyer_toasts():
+    """Shadow ``plyer`` for the whole run so the Windows toast branch cannot fire.
+
+    Installed unconditionally, on every platform, for the same reason the binary guard
+    is: the branch is selected by ``sys.platform``, and tests force that value in order
+    to exercise the Windows path from a Mac or Linux host. Gating this on the host OS
+    would leave the branch unguarded on the one platform where it is the live one.
+
+    Shadowing rather than ``setdefault``: where the optional ``[notify-win]`` extra IS
+    installed, the real module would otherwise win and raise a real toast. Where it is
+    absent, the import would raise ``ImportError`` and be swallowed -- so without this,
+    neither case is observable.
+    """
+    stub = types.ModuleType(_DESKTOP_ESCAPE_IMPORT)
+    stub.notification = _RefusingPlyerNotification  # type: ignore[attr-defined]
+    saved = sys.modules.get(_DESKTOP_ESCAPE_IMPORT, _MISSING)
+    sys.modules[_DESKTOP_ESCAPE_IMPORT] = stub
+    try:
+        yield stub
+    finally:
+        if saved is _MISSING:
+            del sys.modules[_DESKTOP_ESCAPE_IMPORT]
+        else:
+            sys.modules[_DESKTOP_ESCAPE_IMPORT] = saved
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _refuse_real_windows_registry_reads():
+    """Shadow ``winreg`` for the whole run so no test can reread the real PATH (AI-CLI-8elu).
+
+    ``direnv_setup.refresh_windows_path`` is the sole consumer. It exists to merge the
+    machine's persisted ``Path`` into THIS process after an installer wrote the registry
+    rather than the environment -- so it mutates ``os.environ["PATH"]`` as its whole
+    purpose. On the launch path that runs inside ``ensure_direnv``, and a launch test
+    that blanket-mocks ``subprocess.run`` to succeed makes every package manager "exit
+    0", which is what carries the real registry into a test process' own PATH.
+
+    That produced an order-dependent, Windows-only failure. The mutation is not undone
+    unless the test happens to wrap ``os.environ`` in a restoring ``patch.dict``, so the
+    FIRST launch test to run in an xdist worker changed PATH for every later test in it.
+    A test asserting that the environment it set is the environment forwarded to ``tmux
+    new-session`` then passed or failed purely on whether it drew that first slot --
+    green on the same commit one run later.
+
+    Refusing the read, rather than the mutation, is what makes this total: with both
+    registry roots unreadable the function takes its own documented "unreadable
+    registry" branch and returns False without touching PATH. Refusing quietly, unlike
+    the desktop-escape guards, because reading a registry key harms nobody -- there is
+    no escape to report, only a shared mutable to keep out of the suite.
+
+    Only the two environment subkeys are refused, and every other key is handed to the
+    real module. ``winreg`` is shared with the standard library and with dependencies --
+    ``mimetypes`` and ``webbrowser`` both reach for it on Windows -- and any of them
+    importing it late enough to see this stub would get an unrelated, hard-to-place
+    failure from a blanket refusal. Narrowing to the keys that carry PATH leaves the
+    guard total for the hazard and invisible to everything else.
+
+    Installed on every platform, for the reason the plyer guard is: the branch is
+    selected by ``sys.platform`` and tests force that value to exercise it from a Mac or
+    Linux host, so gating the guard on the host OS would leave it off exactly where the
+    branch is live. Tests that want the behaviour inject their own fake over this one
+    (``monkeypatch.setitem(sys.modules, "winreg", ...)``), which still wins.
+    """
+    try:
+        import winreg as real
+    except ImportError:
+        real = None  # type: ignore[assignment]
+
+    def _open_key(root, subkey, *args, **kwargs):
+        if str(subkey).lower() in _WINDOWS_ENVIRONMENT_SUBKEYS:
+            raise OSError(f"{subkey!r} is shadowed in tests; inject a fake winreg to exercise this branch")
+        if real is None:
+            raise OSError("no winreg on this platform")
+        return real.OpenKey(root, subkey, *args, **kwargs)
+
+    stub = types.ModuleType("winreg")
+    if real is None:
+        # Enough surface for the Windows branch to be reachable from a POSIX host.
+        stub.HKEY_LOCAL_MACHINE = 0  # type: ignore[attr-defined]
+        stub.HKEY_CURRENT_USER = 1  # type: ignore[attr-defined]
+    else:
+        for name in dir(real):
+            if not name.startswith("__"):
+                setattr(stub, name, getattr(real, name))
+    stub.OpenKey = _open_key  # type: ignore[attr-defined]
+    stub.OpenKeyEx = _open_key  # type: ignore[attr-defined]
+    saved = sys.modules.get("winreg", _MISSING)
+    sys.modules["winreg"] = stub
+    try:
+        yield stub
+    finally:
+        if saved is _MISSING:
+            del sys.modules["winreg"]
+        else:
+            sys.modules["winreg"] = saved
 
 
 def _cleanup_test_tmux_sessions(run):
@@ -378,7 +861,10 @@ def _reject_real_agent_processes(request):
 
     def guarded_execvp(*args, **kwargs):
         command = args[0] if args else kwargs.get("file")
-        _reject_real_agent_process(command)
+        # execvp's argv is its SECOND argument, and it carries the -c payload the
+        # program name alone cannot reveal (AI-CLI-013v).
+        argv = args[1] if len(args) > 1 else kwargs.get("args")
+        _reject_real_agent_process(command, argv=argv)
         return real_execvp(*args, **kwargs)
 
     with (
@@ -389,11 +875,385 @@ def _reject_real_agent_processes(request):
         yield
 
 
+@pytest.fixture
+def expect_desktop_escape():
+    """Opt out of the teardown check below, for tests that DRIVE the guard on purpose.
+
+    Returns the record so a test can assert what was attempted. Requesting this fixture
+    is what suppresses the failure, checked by name rather than by fixture finalisation
+    order, because that order is not something to bet a guard on -- which is also why
+    this fixture has no teardown of its own to sequence.
+    """
+    return _desktop_escape_attempts
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_desktop_escape(request):
+    """Fail any test that tried to put a banner on the operator's screen (AI-CLI-8n4h).
+
+    The refusal in :func:`_reject_real_agent_process` is the prevention; this is the
+    report. Both are needed: ``notifications._send_os_notification`` catches
+    ``Exception`` and returns a failed result, so a test that reaches it would be
+    silently protected and never told. A guard that prevents without reporting leaves
+    the next author free to write the same mistake.
+    """
+    _desktop_escape_attempts.clear()
+    yield
+    attempted = list(_desktop_escape_attempts)
+    _desktop_escape_attempts.clear()
+    if "expect_desktop_escape" in request.fixturenames:
+        return
+    assert not attempted, (
+        f"this test tried to spawn {sorted(set(attempted))} and reach the operator's desktop. "
+        "The spawn was refused, so nothing appeared on screen -- but patch the notifier or "
+        "subprocess.run in the test rather than relying on this guard. Patching only the paths "
+        "the notifier writes is not enough: that is exactly AI-CLI-jk7v."
+    )
+
+
+@pytest.fixture
+def expect_protected_spawn():
+    """Opt out of the laundered-spawn report below, for tests that DRIVE that guard.
+
+    Returns the record so a test can assert what was attempted. Requesting the fixture is
+    what suppresses the failure, checked by name rather than by finalisation order, for the
+    reason :func:`expect_desktop_escape` is.
+    """
+    return _protected_spawn_attempts
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_laundered_protected_spawn(request):
+    """Fail any test that ran a protected binary through a shell command string (AI-CLI-013v).
+
+    The refusal in :func:`_reject_real_agent_process` is the prevention; this is the report,
+    and both are needed for the same reason they are for the desktop escapes: the refusal
+    travels as a ``RuntimeError`` through code that catches broadly, so a test can be
+    silently protected and never told it wrote the mistake.
+    """
+    _protected_spawn_attempts.clear()
+    yield
+    attempted = list(_protected_spawn_attempts)
+    _protected_spawn_attempts.clear()
+    if "expect_protected_spawn" in request.fixturenames:
+        return
+    assert not attempted, (
+        f"this test asked a shell to run {sorted(set(attempted))}, which is a protected binary. "
+        "The spawn was refused, so nothing real was reached -- but mock subprocess.run, "
+        "subprocess.Popen or os.execvp in the test rather than relying on this guard. An "
+        "unrefused one replaces the pytest process and the run reports success with no results."
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_test_tmux_sessions_after_suite():
     """Backstop cleanup for test-only tmux names if an explicit mock is bypassed."""
     yield
     _cleanup_test_tmux_sessions(subprocess.run)
+
+
+def snapshot_tree(path: Path) -> dict[str, tuple[int, int]] | None:
+    """Fingerprint every entry under ``path``, or return None when it does not exist.
+
+    Returns a mapping of POSIX-relative name to ``(size, mtime_ns)``. ``None`` is a
+    distinct answer from ``{}`` on purpose: "the directory is absent" and "the
+    directory exists and is empty" are different states, and a test that merely
+    *creates* the real iTerm2 profile directory has already polluted the machine
+    even though it wrote no profile into it.
+
+    Exposed (not underscore-private) so the guard's detection logic can be tested
+    directly rather than only observed in passing.
+    """
+    if not path.is_dir():
+        return None
+    snapshot: dict[str, tuple[int, int]] = {}
+    for entry in sorted(path.rglob("*")):
+        try:
+            stat = entry.stat()
+        except OSError:
+            # Vanished mid-walk: record a sentinel so it still counts as a difference.
+            snapshot[entry.relative_to(path).as_posix()] = (-1, -1)
+            continue
+        snapshot[entry.relative_to(path).as_posix()] = (stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
+def describe_tree_change(
+    before: dict[str, tuple[int, int]] | None,
+    after: dict[str, tuple[int, int]] | None,
+) -> str:
+    """Describe how two :func:`snapshot_tree` results differ; "" when identical."""
+    if before == after:
+        return ""
+    if before is None:
+        return "directory did not exist before the test and does now"
+    if after is None:
+        return "directory existed before the test and was removed"
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    modified = sorted(name for name in set(before) & set(after) if before[name] != after[name])
+    parts = []
+    if added:
+        parts.append(f"added {added}")
+    if removed:
+        parts.append(f"removed {removed}")
+    if modified:
+        parts.append(f"modified {modified}")
+    return "; ".join(parts)
+
+
+@pytest.fixture(autouse=True)
+def _redirect_home_away_from_the_operator(monkeypatch, tmp_path_factory):
+    """Point ``Path.home()`` at a per-test temp dir so no test can write the real home.
+
+    Installed at the PROCESS BOUNDARY rather than per call site, because per-call
+    discipline demonstrably failed here (AI-CLI-tevy). ``test_icon_generator.py``
+    patches ``_dynamic_profile_dir`` at every one of its ~30 call sites and is not the
+    leak; the profiles that reached the operator's real
+    ``~/Library/Application Support/iTerm2/DynamicProfiles/`` came from session-launch
+    tests that drive ``iterm2.py``'s generator indirectly and had no reason to know a
+    profile write was involved. Patching one function could not have covered them all
+    either: there are three independent real-directory paths --
+    ``icon_generator._dynamic_profile_dir`` (writes a profile),
+    ``layout._dynamic_profile_dir`` (a SECOND, separately-defined copy that writes
+    layout profiles), and ``session._sweep_stale_iterm2_profiles`` (which ``unlink()``s every
+    ``ai-cli-session-*.json`` whose tmux session is not currently live, so a test with a
+    mocked-empty session list deletes the operator's LIVE profiles). All three derive
+    from ``Path.home()``, which is the one lever that covers them by construction.
+
+    A newly written test inherits this without opting in -- the property step 1 of the
+    task asked for -- and iTerm2 hot-reloads that directory on any filesystem event, so
+    a stray write there re-parses and re-enumerates the live terminal's profile set.
+
+    ``HOME`` alone is not portable: ``ntpath.expanduser`` consults ``USERPROFILE``
+    first and never reads ``HOME``, so Windows needs it set too, and the
+    ``HOMEDRIVE``/``HOMEPATH`` pair is cleared so it cannot serve as a third route.
+    """
+    fake_home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    return fake_home
+
+
+def home_redirect_breach() -> str:
+    """Describe how the operator's real home is still reachable; "" when it is not.
+
+    The property enforced is "home is not the REAL home", deliberately NOT "home is
+    exactly this fixture's redirect target". Plenty of tests legitimately re-point
+    ``HOME`` at a ``tmp_path`` of their own; that is correct isolation reaching the same
+    end by its own route, and demanding they match this fixture's directory failed 72 of
+    them for doing the right thing. What must never happen is ``Path.home()`` resolving
+    back to the directory iTerm2 is watching.
+
+    Checks only THIS process's own environment, which is what makes it usable as a gate:
+    the answer cannot be changed by another process on the machine. Every route
+    ``Path.home()`` can take is covered -- POSIX ``expanduser`` reads ``HOME``,
+    ``ntpath.expanduser`` reads ``USERPROFILE`` and then ``HOMEDRIVE`` + ``HOMEPATH``.
+    The last two are checked as a pair because neither alone reconstructs a home.
+    """
+    real_home = str(_REAL_HOME)
+    breaches = []
+    resolved = _pathlib_home()
+    if resolved is not None and resolved == real_home:
+        breaches.append(f"Path.home() resolved to the operator's real home {real_home}")
+    breaches += [
+        f"{var} points at the real home" for var in ("HOME", "USERPROFILE") if os.environ.get(var) == real_home
+    ]
+    drive, tail = os.environ.get("HOMEDRIVE"), os.environ.get("HOMEPATH")
+    # Compared in string space, not by constructing a Path: see _pathlib_home for why
+    # pathlib cannot be relied on to answer here.
+    if drive and tail and os.path.normpath(drive + tail) == os.path.normpath(real_home):
+        breaches.append("HOMEDRIVE + HOMEPATH reconstruct the real home")
+    return "; ".join(breaches)
+
+
+def _pathlib_home() -> str | None:
+    """``Path.home()`` as a string, or None when pathlib refuses to answer.
+
+    ``pathlib.Path`` dispatches on ``os.name``, and a test that patches ``os.name``
+    to ``"nt"`` to exercise a Windows branch -- ``test_runaway_loop_guards.py`` does --
+    makes every subsequent ``Path(...)`` a ``WindowsPath``, which refuses to
+    instantiate on POSIX below Python 3.14 (``NotImplementedError`` to 3.12,
+    ``pathlib.UnsupportedOperation`` in 3.13).
+
+    The guard below runs during teardown, and its teardown runs BEFORE monkeypatch's
+    undo -- it depends on the redirect fixture, which depends on ``monkeypatch``, so
+    ``monkeypatch`` finalises last. The patch is therefore still in force here, and
+    raising would turn a PASSING test into a teardown ERROR. That is exactly how this
+    first reached CI: three Linux jobs and the macOS job went red reporting
+    ``3125 passed ... 1 error`` while a local run on 3.14, where the instantiation is
+    allowed, was clean.
+
+    Returning None loses no enforcement. On POSIX ``Path.home()`` reads ``HOME``, and
+    on Windows ``USERPROFILE`` then ``HOMEDRIVE``+``HOMEPATH``; the caller checks all
+    four directly, in string space, unaffected by ``os.name``.
+    """
+    try:
+        return str(Path.home())
+    except Exception:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_iterm2_profile_dir(_redirect_home_away_from_the_operator):
+    """Fail any test that can reach the operator's real iTerm2 Dynamic Profiles dir.
+
+    The redirect above is the prevention; this is the proof that it held.
+
+    Depending on that fixture is what orders the TEARDOWNS: pytest finalises a fixture
+    before the ones it depends on, so this check runs while the redirect is still in
+    place. Dropping the argument as unused made every test fail here, because
+    monkeypatch had already restored the real ``HOME`` by the time the check ran.
+
+    The ENFORCED check is that the real home is unreachable at teardown, because that is
+    a property of this process alone and so is deterministic. Watching the real directory
+    for changes and failing on any of them was tried first and rejected: that directory
+    has other legitimate writers -- a concurrent ``ai c`` launch, or another checkout of
+    this repo running its own suite -- and a watch cannot tell their writes from a test's.
+    Measured, it charged 53 innocent tests with strays that peer runs of this suite had
+    created, and since the operator launches sessions while tests run, it would have
+    stayed flaky permanently rather than only until peers picked up the fix. A guard that
+    cries wolf gets deleted, so it enforces the attributable half and reports the rest.
+
+    A change to the real directory is therefore still surfaced, as a warning naming the
+    likely external writer. With the real home unreachable a home-derived write is
+    impossible by construction, so such a change is provably not this test's doing; the
+    one route that would bypass it is a hardcoded absolute path, and static checking
+    closes that deterministically instead (see ``test_iterm2_profile_isolation.py``).
+    """
+    before = snapshot_tree(_REAL_ITERM2_PROFILE_DIR)
+    yield
+    breach = home_redirect_breach()
+    assert not breach, (
+        f"the operator's real home became reachable during this test, exposing "
+        f"{_REAL_ITERM2_PROFILE_DIR}: {breach}. iTerm2 watches that directory and "
+        "re-enumerates every entry on any filesystem event, so a write there mutates the "
+        "operator's live terminal, and session._sweep_stale_iterm2_profiles deletes from "
+        "it. Re-pointing HOME at a tmp_path of your own is fine; pointing it back at the "
+        "real home is not, and neither is a bare monkeypatch.undo(), which reverts this "
+        "fixture's redirect along with the test's own patches."
+    )
+    change = describe_tree_change(before, snapshot_tree(_REAL_ITERM2_PROFILE_DIR))
+    if change:
+        warnings.warn(
+            f"the real iTerm2 Dynamic Profiles directory {_REAL_ITERM2_PROFILE_DIR} "
+            f"changed while this test ran: {change}. The HOME redirect was intact, so "
+            "this test cannot have caused it via Path.home() -- the likely writer is a "
+            "concurrent `ai` session launch or another checkout of this repo running "
+            "its suite without this redirect.",
+            stacklevel=1,
+        )
+
+
+def _file_fingerprint(path: Path) -> tuple[bool, int, int]:
+    """``(exists, size, mtime_ns)`` for one file, tolerant of it being absent."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return (False, -1, -1)
+    return (True, stat.st_size, stat.st_mtime_ns)
+
+
+def canonical_registry_breach() -> str:
+    """Describe how the operator's real canonical-worktree registry is reachable; "" if not.
+
+    The enforced property is "the registry this process resolves is not the operator's own",
+    which is a fact about this process alone and so deterministic -- the same choice
+    :func:`home_redirect_breach` makes, and for the same reason: the real file has other
+    legitimate writers (a live ``ai c`` launch, another checkout running its suite), so
+    watching it for changes would charge innocent tests for a peer's write.
+
+    Resolution goes through the production resolver rather than a copy of its rules, so a
+    later change to where the registry lives cannot leave this guard checking the wrong
+    path. It answers ``""`` when pathlib refuses to construct a path at all, for the reason
+    :func:`_pathlib_home` returns None -- a test that patches ``os.name`` to ``"nt"`` is
+    still under that patch during teardown, and raising here would turn a passing test into
+    a teardown error.
+    """
+    try:
+        resolved = str(get_canonical_worktree_registry_path())
+    except Exception:
+        return ""
+    real_registry = str(_REAL_CANONICAL_WORKTREE_REGISTRY)
+
+    def comparable(path: str) -> str:
+        # normcase as well as normpath, because Windows paths compare case-insensitively and
+        # the same registry arrives spelled both ways -- LOCALAPPDATA as the environment sets
+        # it, and the import-time constant as pathlib built it.
+        return os.path.normcase(os.path.normpath(path))
+
+    if comparable(resolved) == comparable(real_registry):
+        return f"the registry resolved to the operator's real {real_registry}"
+    # Compared in string space, and under the real HOME rather than only against the one
+    # POSIX path, because the resolver is platform-branched: on Windows it reads
+    # LOCALAPPDATA, which the HOME redirect does not clear, so a Windows run resolves a
+    # DIFFERENT file that is just as much the operator's own.
+    if comparable(resolved).startswith(comparable(str(_REAL_HOME)) + os.sep):
+        return f"the registry resolved to {resolved}, inside the operator's real home"
+    return ""
+
+
+@pytest.fixture(autouse=True)
+def _redirect_canonical_worktree_registry(monkeypatch, tmp_path_factory):
+    """Point the canonical-worktree registry at a per-test file (AI-CLI-u2ox).
+
+    Measured 2026-09-27: the operator's real registry held 938 entries, 935 of them pytest
+    temp paths like ``.../pytest-of-<user>/pytest-1/popen-gw6/test_.../worktrees/<name>-1``
+    -- per-test worktrees that registered themselves into live operator state and were never
+    removed when their temp directory was. The registry is the authoritative answer to "is
+    this path a canonical session worktree", which deletion guards ask before removing one,
+    and one that is 99.7% test noise cannot answer it.
+
+    At the PROCESS BOUNDARY, not per call site, because per-call discipline has already
+    failed twice in this file for exactly this class (AI-CLI-jk7v, AI-CLI-tevy): a launch
+    test reaches ``register_canonical_worktree`` several frames down and has no reason to
+    know a registry write is involved.
+
+    Via the registry's own absolute-path override rather than by redirecting HOME or
+    XDG_DATA_HOME, because the override is consulted FIRST and on every platform. The HOME
+    redirect above happens to cover the POSIX route, but ``get_xdg_data_home`` reads
+    LOCALAPPDATA on Windows and ignores XDG_DATA_HOME entirely there, so neither of those
+    levers isolates a Windows run. Tests that exercise resolution itself set or delete this
+    variable themselves, and their inner ``monkeypatch`` still wins.
+    """
+    registry = tmp_path_factory.mktemp("canonical_worktrees") / REGISTRY_FILENAME
+    monkeypatch.setenv("AI_CLI_CANONICAL_WORKTREE_REGISTRY", str(registry))
+    return registry
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_canonical_worktree_registry(_redirect_canonical_worktree_registry):
+    """Fail any test that could still reach the operator's real registry (AI-CLI-u2ox).
+
+    The redirect above is the prevention; this is the proof that it held. Depending on that
+    fixture is what orders the teardowns -- pytest finalises a fixture before the ones it
+    depends on, so this runs while the redirect is still in force rather than after
+    ``monkeypatch`` has restored the operator's own environment.
+
+    A change to the real file is reported as a warning rather than a failure, because with
+    the resolution redirected this test provably did not cause it and the likely writer is a
+    concurrent ``ai`` launch or another checkout running its own suite.
+    """
+    before = _file_fingerprint(_REAL_CANONICAL_WORKTREE_REGISTRY)
+    yield
+    breach = canonical_registry_breach()
+    assert not breach, (
+        f"this test could write the operator's real canonical-worktree registry: {breach}. That "
+        "registry is what deletion guards read to decide whether a path is a canonical session "
+        "worktree, and test entries make it unusable for that (AI-CLI-u2ox: 935 of 938 entries "
+        "were pytest temp paths). Point AI_CLI_CANONICAL_WORKTREE_REGISTRY at a tmp_path of your "
+        "own if this test needs its own registry; do not point it back at the real one."
+    )
+    if _file_fingerprint(_REAL_CANONICAL_WORKTREE_REGISTRY) != before:
+        warnings.warn(
+            f"the operator's real canonical-worktree registry {_REAL_CANONICAL_WORKTREE_REGISTRY} "
+            "changed while this test ran. The redirect was intact, so this test cannot have "
+            "written it -- the likely writer is a concurrent `ai` session launch or another "
+            "checkout of this repo running its suite without the redirect.",
+            stacklevel=1,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -609,21 +1469,36 @@ def _suppress_auto_update():
         yield
 
 
-def _run_cli_with_args(argv, config_override=None):
+def _run_cli_with_args(argv, config_override=None, capture_ssh_runner=False):
     """Helper: invoke cli() with argv, capturing execvp calls.
 
     os.execvp replaces the process in real usage, so we raise SystemExit
     to simulate that — otherwise execution falls through to later exec calls.
+
+    ``capture_ssh_runner=True`` returns the mock for
+    ``transport.run_ssh_with_reconnect`` instead of the ``execvp`` mock. The
+    pure-SSH remote path stopped ``execvp``-ing a shell in AI-CLI-w679 -- it runs
+    in-process now so a dropped link can be reattached and the terminal handed
+    back -- so tests of THAT path assert against the ssh argv list passed to the
+    runner, rather than against a joined shell string. Every other path (mosh,
+    ``ai ssh``, tmux attach) still execs and still uses the default.
     """
     config = config_override or {}
 
     def remote_preflight(command, **_kwargs):
+        if isinstance(command, (list, tuple)) and any("dolt_server.py" in str(part) for part in command):
+            # Not a remote-SSH command at all -- _ensure_dolt_server's local advisory
+            # probe runs before every session launch and shares this same mocked
+            # subprocess.run. Its argv has no shell string to parse below.
+            return make_subprocess_result(stdout='{"status": "healthy"}')
         if _command_program(command) == "tmux":
             return make_subprocess_result(returncode=1)
         if command[-1] == _REMOTE_SHELL_PROBE_CMD:
             return make_subprocess_result(stdout="zsh\n")
         remote_command = shlex.split(command[-1])[-1]
         tokens = shlex.split(remote_command)
+        if "update" in tokens and "ai" in tokens:
+            return make_subprocess_result(stdout="current")
         allocation_index = tokens.index("allocate-session-name")
         engine, project_prefix, name = tokens[allocation_index + 1 : allocation_index + 4]
         session_id, ai_name = _session_module.build_session_name(engine, project_prefix, name, is_remote=True)
@@ -635,6 +1510,7 @@ def _run_cli_with_args(argv, config_override=None):
         patch("ai_cli.session.is_current_project_resolved", return_value=True),
         patch("ai_cli.session.get_project_prefix", return_value="test-project"),
         patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        patch("ai_cli.transport.run_ssh_with_reconnect", return_value=0) as mock_ssh_runner,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main._auto_update_if_stale"),
         patch("ai_cli.main.subprocess.run", side_effect=remote_preflight),
@@ -645,7 +1521,7 @@ def _run_cli_with_args(argv, config_override=None):
             cli()
         except SystemExit:
             pass
-        return mock_exec
+        return mock_ssh_runner if capture_ssh_runner else mock_exec
 
 
 def run_cli(argv, config=None, env=None):

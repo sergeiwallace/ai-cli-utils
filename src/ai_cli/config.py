@@ -219,7 +219,7 @@ DEFAULT_CONFIG = """## ai-cli-utils configuration
 [gemini]
 ## Projects that should NOT be sandboxed by default
 ## (Matches the project prefix in your project registry TOML)
-# sandbox_whitelist = ["sw"]
+# sandbox_whitelist = ["session"]
 ## Set true only after AI-CLI-43 confirms billing credit status.
 ## When false (default), the ai_studio_paid tier is excluded from all fallback chains.
 # paid_fallback_enabled = false
@@ -326,6 +326,22 @@ stale_after_seconds = 600
 # vscode_authority = "server"
 ## VPN poll interval in seconds for the vpn-watch daemon (default: 3)
 # vpn_poll_interval = 3
+## SSH keepalive for the interactive session (AI-CLI-w679). An established session sends
+## nothing while you read rather than type, and an idle flow is what gets reaped -- by a
+## managed SSH channel's idle timeout (20 minutes by default), or by a NAT or corporate
+## firewall on a shorter one, which shows up as `Shared connection to <host> closed.` The
+## probes both detect a dead peer and, being real traffic, stop the flow counting as idle.
+## Lower the interval on a network that disconnects sooner than the default survives.
+# server_alive_interval = 30
+## How many unanswered probes before ssh gives up (default: 3, so 3 x interval).
+# server_alive_count_max = 3
+## Reattach after a dropped link (AI-CLI-w679). The remote session runs under tmux, so a
+## dropped connection leaves it detached and intact -- reattaching loses nothing. Bounded so
+## a host that is genuinely gone produces a few attempts rather than an infinite loop.
+## Applies to the `transport = "ssh"` path; mosh already survives a drop by design.
+# reconnect_attempts = 10
+## Seconds before the first reattach; doubles per attempt, capped at 30s.
+# reconnect_backoff = 2
 
 [sync]
 ## Remote host for cc sync (SSH user@host format). Derived from the default remote machine if not set.
@@ -912,7 +928,19 @@ def resolve_project_prefix(path: Path | None = None) -> str:
 
 
 def resolve_project_prefix_by_name(project_name: str) -> str:
-    """Return one registered prefix for a project directory name, rejecting ambiguity."""
+    """Return one registered prefix for a project directory name, rejecting ambiguity.
+
+    ``-p`` accepts either a registered task prefix or a repository directory name,
+    so a value that is neither has to be reported as that: unknown *input*, not a
+    repository missing a prefix. Falling straight through to
+    ``resolve_project_prefix`` reported the latter, against the directory name
+    ``_find_project_dir`` would have used -- a path that by definition does not
+    exist -- and told the caller to ``ai register -p <that path>``, which
+    ``register_project`` rejects for exactly the same reason. With a terminal
+    attached it was worse than useless: the prompt tier accepted a prefix for the
+    absent directory and persisted it, minting the stale registry entry
+    ``_require_existing_repository`` exists to reject (AI-CLI-ok04).
+    """
     for tier in (_fleet_registry_prefix, _local_registry_prefix):
         prefix = tier(project_name)
         if prefix:
@@ -930,6 +958,12 @@ def resolve_project_prefix_by_name(project_name: str) -> str:
             f"Project name {project_name!r} matches multiple registered roots. Use a unique repository name."
         )
     candidate = _find_project_dir(project_name)
+    if not candidate.is_dir():
+        raise ProjectPrefixError(
+            f"Unknown project {project_name!r}: it is not a registered task prefix, and no repository "
+            f"of that name exists under {candidate.parent}. Pass -p with a registered prefix, or with "
+            f"the name of a repository that is checked out under {candidate.parent}."
+        )
     return resolve_project_prefix(candidate)
 
 

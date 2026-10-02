@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import psutil
 import pytest
 from conftest import _make_list_panes_output
+from process_ownership import OWNED_PROCESS_LIFETIME, reap, spawn_owned_sleeper
 
 import ai_cli.session as _session_module
 from ai_cli.main import (
@@ -43,10 +44,10 @@ def test_build_session_name_no_name_when_no_sessions_then_uses_index_1():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "")
+        session_id, ai_name = build_session_name("c", "session", "")
 
-        assert session_id == "c-sw-1"
-        assert ai_name == "sw-1"
+        assert session_id == "c-session-1"
+        assert ai_name == "session-1"
 
 
 def test_given_pi_engine_when_building_session_name_then_uses_pi_prefix():
@@ -71,10 +72,10 @@ def test_build_session_name_gemini_when_no_name_then_uses_g_prefix():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("g", "sw", "")
+        session_id, ai_name = build_session_name("g", "session", "")
 
-        assert session_id == "g-sw-1"
-        assert ai_name == "sw-1"
+        assert session_id == "g-session-1"
+        assert ai_name == "session-1"
 
 
 def test_build_session_name_with_short_prefix_when_called_then_strips_prefix():
@@ -83,10 +84,10 @@ def test_build_session_name_with_short_prefix_when_called_then_strips_prefix():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "sw-planning")
+        session_id, ai_name = build_session_name("c", "session", "session-planning")
 
-        assert session_id == "c-sw-planning-1"
-        assert ai_name == "sw-planning-1"
+        assert session_id == "c-session-planning-1"
+        assert ai_name == "session-planning-1"
 
 
 def test_build_session_name_with_old_full_prefix_when_called_then_strips_prefix():
@@ -95,10 +96,10 @@ def test_build_session_name_with_old_full_prefix_when_called_then_strips_prefix(
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "claude-sw-planning")
+        session_id, ai_name = build_session_name("c", "session", "claude-session-planning")
 
-        assert session_id == "c-sw-planning-1"
-        assert ai_name == "sw-planning-1"
+        assert session_id == "c-session-planning-1"
+        assert ai_name == "session-planning-1"
 
 
 def test_build_session_name_with_new_full_name_and_index_when_called_then_strips_all():
@@ -107,10 +108,10 @@ def test_build_session_name_with_new_full_name_and_index_when_called_then_strips
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "c-sw-1")
+        session_id, ai_name = build_session_name("c", "session", "c-session-1")
 
-        assert session_id == "c-sw-1"
-        assert ai_name == "sw-1"
+        assert session_id == "c-session-1"
+        assert ai_name == "session-1"
 
 
 @pytest.mark.parametrize("name", ["c-app-1", "c-r-app-1", "app-1"])
@@ -128,10 +129,10 @@ def test_build_session_name_with_name_when_no_sessions_then_uses_name_index_1():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "planning")
+        session_id, ai_name = build_session_name("c", "session", "planning")
 
-        assert session_id == "c-sw-planning-1"
-        assert ai_name == "sw-planning-1"
+        assert session_id == "c-session-planning-1"
+        assert ai_name == "session-planning-1"
 
 
 def test_given_uppercase_prefix_and_requested_name_when_new_session_is_built_then_outputs_are_lowercase():
@@ -148,61 +149,61 @@ def test_build_session_name_with_double_hyphens_when_called_then_cleans_up():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "research--test")
+        session_id, ai_name = build_session_name("c", "session", "research--test")
 
-        assert session_id == "c-sw-research-test-1"
-        assert ai_name == "sw-research-test-1"
+        assert session_id == "c-session-research-test-1"
+        assert ai_name == "session-research-test-1"
         assert "--" not in session_id
 
 
 def test_build_session_name_with_index_when_called_then_respects_index():
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1)
-        session_id, ai_name = build_session_name("c", "sw", "3")
-    assert session_id == "c-sw-3"
-    assert ai_name == "sw-3"
+        session_id, ai_name = build_session_name("c", "session", "3")
+    assert session_id == "c-session-3"
+    assert ai_name == "session-3"
 
 
 def test_given_custom_name_with_trailing_index_when_new_session_is_built_then_preserves_index():
     with patch("subprocess.run", return_value=MagicMock(returncode=1)):
-        session_id, ai_name = build_session_name("c", "sw", "feature-1")
+        session_id, ai_name = build_session_name("c", "session", "feature-1")
 
-    assert session_id == "c-sw-feature-1"
-    assert ai_name == "sw-feature-1"
+    assert session_id == "c-session-feature-1"
+    assert ai_name == "session-feature-1"
 
 
 def test_given_custom_name_with_trailing_index_when_tmux_session_exists_then_reuses_same_session():
-    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-sw-feature-1\n")):
-        session_id, ai_name = build_session_name("c", "sw", "feature-1")
+    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-session-feature-1\n")):
+        session_id, ai_name = build_session_name("c", "session", "feature-1")
 
-    assert session_id == "c-sw-feature-1"
-    assert ai_name == "sw-feature-1"
+    assert session_id == "c-session-feature-1"
+    assert ai_name == "session-feature-1"
 
 
 def test_given_custom_name_with_trailing_index_when_bare_worktree_exists_then_reuses_same_slot(tmp_path):
-    (tmp_path / ".worktrees" / "sw-feature-1").mkdir(parents=True)
+    (tmp_path / ".worktrees" / "session-feature-1").mkdir(parents=True)
 
     with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
-        session_id, ai_name = build_session_name("c", "sw", "feature-1", use_tmux=False)
+        session_id, ai_name = build_session_name("c", "session", "feature-1", use_tmux=False)
 
-    assert session_id == "c-sw-feature-1"
-    assert ai_name == "sw-feature-1"
+    assert session_id == "c-session-feature-1"
+    assert ai_name == "session-feature-1"
 
 
 def test_given_explicit_numeric_slot_when_session_exists_then_reuses_same_session():
-    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-sw-1\n")):
-        session_id, ai_name = build_session_name("c", "sw", "1")
+    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-session-1\n")):
+        session_id, ai_name = build_session_name("c", "session", "1")
 
-    assert session_id == "c-sw-1"
-    assert ai_name == "sw-1"
+    assert session_id == "c-session-1"
+    assert ai_name == "session-1"
 
 
 def test_given_custom_name_without_trailing_index_when_slot_is_taken_then_increments_index():
-    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-sw-feature-1\n")):
-        session_id, ai_name = build_session_name("c", "sw", "feature")
+    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="c-session-feature-1\n")):
+        session_id, ai_name = build_session_name("c", "session", "feature")
 
-    assert session_id == "c-sw-feature-2"
-    assert ai_name == "sw-feature-2"
+    assert session_id == "c-session-feature-2"
+    assert ai_name == "session-feature-2"
 
 
 @pytest.mark.parametrize("engine", ["c", "g"])
@@ -238,8 +239,8 @@ def test_build_session_name_never_produces_double_hyphen():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        for name in ["", "1", "planning", "-R", "-R-1", "research--test", "sw-1"]:
-            session_id, _ = build_session_name("c", "sw", name)
+        for name in ["", "1", "planning", "-R", "-R-1", "research--test", "session-1"]:
+            session_id, _ = build_session_name("c", "session", name)
             assert "--" not in session_id, f"Double hyphen in session_id={session_id!r} for name={name!r}"
 
 
@@ -249,10 +250,10 @@ def test_build_session_name_is_remote_when_true_then_inserts_r_segment():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "1", is_remote=True)
+        session_id, ai_name = build_session_name("c", "session", "1", is_remote=True)
 
-        assert session_id == "c-r-sw-1"
-        assert ai_name == "sw-1"  # ai_name does not include remote tag
+        assert session_id == "c-r-session-1"
+        assert ai_name == "session-1"  # ai_name does not include remote tag
 
 
 def test_build_session_name_is_remote_when_false_then_no_r_segment():
@@ -261,10 +262,10 @@ def test_build_session_name_is_remote_when_false_then_no_r_segment():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "1", is_remote=False)
+        session_id, ai_name = build_session_name("c", "session", "1", is_remote=False)
 
-        assert session_id == "c-sw-1"
-        assert ai_name == "sw-1"
+        assert session_id == "c-session-1"
+        assert ai_name == "session-1"
 
 
 def test_build_session_name_is_remote_no_name_then_finds_next_index():
@@ -273,10 +274,10 @@ def test_build_session_name_is_remote_no_name_then_finds_next_index():
         mock_res.returncode = 1
         mock_run.return_value = mock_res
 
-        session_id, ai_name = build_session_name("c", "sw", "", is_remote=True)
+        session_id, ai_name = build_session_name("c", "session", "", is_remote=True)
 
-        assert session_id == "c-r-sw-1"
-        assert ai_name == "sw-1"
+        assert session_id == "c-r-session-1"
+        assert ai_name == "session-1"
 
 
 # --- cleanup_stale_sessions tests ---
@@ -349,22 +350,22 @@ def test_given_managed_tmux_listing_when_launch_cleanup_runs_then_it_never_start
 
 def test_given_unrelated_dead_shell_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
-    panes = _make_list_panes_output(("c-sw-1", now - 61, "bash"))
+    panes = _make_list_panes_output(("c-session-1", now - 61, "bash"))
     killed = _cleanup({}, panes, now)
     assert killed == []
 
 
 def test_cleanup_when_pane_is_claude_and_recent_then_preserves_session():
     now = int(time.time())
-    panes = _make_list_panes_output(("c-sw-1", now - 60, "claude"))
+    panes = _make_list_panes_output(("c-session-1", now - 60, "claude"))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-1" not in killed
+    assert "c-session-1" not in killed
 
 
 def test_given_unrelated_detached_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
-    panes = _make_list_panes_output(("c-sw-2", now - timeout_seconds - 1, "claude"))
+    panes = _make_list_panes_output(("c-session-2", now - timeout_seconds - 1, "claude"))
     killed = _cleanup({}, panes, now)
     assert killed == []
 
@@ -372,9 +373,9 @@ def test_given_unrelated_detached_session_when_cleanup_runs_then_it_never_kills_
 def test_cleanup_when_claude_within_timeout_then_preserves_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
-    panes = _make_list_panes_output(("c-sw-2", now - timeout_seconds + 60, "claude"))
+    panes = _make_list_panes_output(("c-session-2", now - timeout_seconds + 60, "claude"))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-2" not in killed
+    assert "c-session-2" not in killed
 
 
 def test_cleanup_when_non_ai_session_then_ignores_it():
@@ -387,7 +388,7 @@ def test_cleanup_when_non_ai_session_then_ignores_it():
 def test_given_unrelated_gemini_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
-    panes = _make_list_panes_output(("g-sw-1", now - timeout_seconds - 1, "gemini"))
+    panes = _make_list_panes_output(("g-session-1", now - timeout_seconds - 1, "gemini"))
     killed = _cleanup({}, panes, now)
     assert killed == []
 
@@ -395,7 +396,7 @@ def test_given_unrelated_gemini_session_when_cleanup_runs_then_it_never_kills_th
 def test_given_unrelated_remote_session_when_cleanup_runs_then_it_never_kills_the_session():
     now = int(time.time())
     timeout_seconds = 15 * 60
-    panes = _make_list_panes_output(("c-r-sw-1", now - timeout_seconds - 1, "claude"))
+    panes = _make_list_panes_output(("c-r-session-1", now - timeout_seconds - 1, "claude"))
     killed = _cleanup({}, panes, now)
     assert killed == []
 
@@ -404,7 +405,7 @@ def test_given_unrelated_session_past_custom_timeout_when_cleanup_runs_then_it_n
     now = int(time.time())
     config = {"session": {"stale_session_timeout": 5}}  # 5 minutes
     timeout_seconds = 5 * 60
-    panes = _make_list_panes_output(("c-sw-1", now - timeout_seconds - 1, "claude"))
+    panes = _make_list_panes_output(("c-session-1", now - timeout_seconds - 1, "claude"))
     killed = _cleanup(config, panes, now)
     assert killed == []
 
@@ -420,23 +421,23 @@ def test_cleanup_when_no_tmux_then_does_nothing():
 def test_cleanup_when_session_currently_attached_then_never_kills_it():
     """Session with clients attached must never be killed — this was the root bug."""
     now = int(time.time())
-    panes = _make_list_panes_output(("c-sw-1", now - 7200, "claude", 1))
+    panes = _make_list_panes_output(("c-session-1", now - 7200, "claude", 1))
     killed = _cleanup({}, panes, now)
-    assert "c-sw-1" not in killed
+    assert "c-session-1" not in killed
 
 
 def test_given_detached_abandoned_session_when_cleanup_runs_then_it_never_kills_it():
     now = int(time.time())
     timeout_seconds = 15 * 60
-    panes = _make_list_panes_output(("c-sw-2", now - timeout_seconds - 1, "claude", 0))
+    panes = _make_list_panes_output(("c-session-2", now - timeout_seconds - 1, "claude", 0))
     killed = _cleanup({}, panes, now)
     assert killed == []
 
 
 def test_cleanup_when_old_format_session_then_ignores_it():
-    """Old claude-sw-1 format sessions are not matched by new regex — not killed."""
+    """Old claude-session-1 format sessions are not matched by new regex — not killed."""
     now = int(time.time())
-    panes = _make_list_panes_output(("claude-sw-1", now - 9999, "bash"))
+    panes = _make_list_panes_output(("claude-session-1", now - 9999, "bash"))
     killed = _cleanup({}, panes, now)
     assert killed == []
 
@@ -452,25 +453,18 @@ def bg_spare_stand_in():
         # unverified under CI (observed: TimeoutExpired and a state mismatch on
         # 2026-08-16, PR #37 first run). Same rationale as the real_tmux skips.
         pytest.skip("bg-spare stand-in process teardown timing unverified on win32 (PR #37)")
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import time; time.sleep(300)",
-            "claude",
-            "bg-spare",
-            "--bg-spare",
-            "/tmp/test-spare.sock",
-        ]
+    # Owned, and bounded well below the old 300 seconds: the group reap below is
+    # the normal path, but a killed xdist worker or a suite timeout skips
+    # teardown entirely, and then the sleep is the only thing that ends it.
+    process = spawn_owned_sleeper(
+        OWNED_PROCESS_LIFETIME,
+        "claude",
+        "bg-spare",
+        "--bg-spare",
+        "/tmp/test-spare.sock",
     )
     yield process
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=2)
+    reap(process)
 
 
 def _write_claude_session_state(sessions_dir, process, *, name="test-1", started_at=None):
@@ -587,8 +581,8 @@ class TestSessionMap:
 
         path = tmp_path / "test_sessions.json"
         with patch("ai_cli.config.get_session_map_path", return_value=path):
-            save_session_map({"sw-1": "uuid123"}, engine="c")
-        assert json.loads(path.read_text()) == {"sw-1": "uuid123"}
+            save_session_map({"session-1": "uuid123"}, engine="c")
+        assert json.loads(path.read_text()) == {"session-1": "uuid123"}
 
 
 class TestSessionMapEdgeCases:
@@ -982,8 +976,8 @@ class TestResolveSession:
         mock_result = MagicMock()
         mock_result.returncode = 0
         with patch("subprocess.run", return_value=mock_result):
-            result = resolve_session("c-sw-", "3")
-        assert result == "c-sw-3"
+            result = resolve_session("c-session-", "3")
+        assert result == "c-session-3"
 
     def test_resolve_session_when_name_not_found_then_finds_recent(self):
         def mock_run(cmd, **kwargs):
@@ -999,7 +993,7 @@ class TestResolveSession:
             return m
 
         with patch("subprocess.run", side_effect=mock_run):
-            result = resolve_session("c-sw-", "99")
+            result = resolve_session("c-session-", "99")
         assert result == ""
 
     def test_given_lowercase_existing_session_when_prefix_is_uppercase_then_returns_actual_session_name(self):
@@ -1017,15 +1011,15 @@ class TestResolveSessionEdgeCases:
             m = MagicMock()
             if "display-message" in cmd:
                 m.returncode = 0
-                m.stdout = "c-sw-5"
+                m.stdout = "c-session-5"
             else:
                 m.returncode = 0
                 m.stdout = ""
             return m
 
         with patch("subprocess.run", side_effect=mock_run):
-            result = resolve_session("c-sw-", "")
-        assert result == "c-sw-5"
+            result = resolve_session("c-session-", "")
+        assert result == "c-session-5"
 
     def test_given_lowercase_current_session_when_prefix_is_uppercase_then_returns_actual_session_name(self):
         current_session = MagicMock(returncode=0, stdout="c-app-5")
@@ -1046,14 +1040,14 @@ class TestResolveSessionFallback:
                 m.stdout = "other-session"  # doesn't match prefix
             elif "list-sessions" in cmd:
                 m.returncode = 0
-                m.stdout = "c-sw-1 100\n"
+                m.stdout = "c-session-1 100\n"
             else:
                 m.returncode = 1
             return m
 
         with patch("subprocess.run", side_effect=mock_run):
-            result = resolve_session("c-sw-", "")
-        assert result == "c-sw-1"
+            result = resolve_session("c-session-", "")
+        assert result == "c-session-1"
 
 
 # --- detect_repo_root ---
@@ -1080,9 +1074,9 @@ class TestDetectRepoRoot:
         mock_result.returncode = 0
         mock_result.stdout = "../../.git\n"
         cwd = (
-            Path("C:/Users/user/projects/myapp/.worktrees/sw-1")
+            Path("C:/Users/user/projects/myapp/.worktrees/session-1")
             if os.name == "nt"
-            else Path("/home/user/projects/myapp/.worktrees/sw-1")
+            else Path("/home/user/projects/myapp/.worktrees/session-1")
         )
         expected = Path("C:/Users/user/projects/myapp") if os.name == "nt" else Path("/home/user/projects/myapp")
         with patch("subprocess.run", return_value=mock_result):
@@ -1113,6 +1107,11 @@ def _porcelain(*worktree_paths):
     """
     blocks = [f"worktree {path}\nHEAD {'a' * 40}\nbranch refs/heads/wt-{Path(path).name}" for path in worktree_paths]
     return "\n\n".join(blocks) + "\n\n"
+
+
+def _direnv_status(*, allowed: bool) -> str:
+    """``direnv status --json`` output. ``state.foundRC.allowed`` is 0 only when approved."""
+    return json.dumps({"state": {"foundRC": {"allowed": 0 if allowed else 1, "path": ".envrc"}}})
 
 
 def _stub_worktree_base(upstream="main"):
@@ -1151,11 +1150,11 @@ class TestCreateWorktree:
 
     def test_create_worktree_when_no_repo_then_returns_none(self):
         with patch("ai_cli.session.detect_repo_root", return_value=None):
-            result = create_worktree("sw-1")
+            result = create_worktree("session-1")
         assert result is None
 
     def test_create_worktree_when_existing_valid_wt_then_returns_it(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "sw-1"
+        wt_dir = tmp_path / ".worktrees" / "session-1"
         wt_dir.mkdir(parents=True)
 
         mock_prune = MagicMock(returncode=0)
@@ -1170,11 +1169,11 @@ class TestCreateWorktree:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path):
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("sw-1")
+                result = create_worktree("session-1")
         assert result == wt_dir
 
     def test_create_worktree_when_new_then_creates_and_returns(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "sw-2"
+        wt_dir = tmp_path / ".worktrees" / "session-2"
 
         call_log = []
 
@@ -1188,22 +1187,22 @@ class TestCreateWorktree:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("sw-2")
+                result = create_worktree("session-2")
         assert result == wt_dir
 
-    def test_create_worktree_when_matching_root_envrc_is_usable_then_allows_new_worktree(self, tmp_path):
+    def test_create_worktree_when_new_worktree_carries_an_envrc_then_direnv_allows_that_path(self, tmp_path):
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         wt_dir = repo_root / ".worktrees" / "session-1"
         calls = []
-        direnv_calls = []
+        probes = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd[:2] == ["direnv", "export"]:
-                direnv_calls.append((cmd, kwargs["cwd"]))
-                return MagicMock(returncode=0 if kwargs["cwd"] == repo_root else 1, stdout="")
+            if cmd == ["direnv", "status", "--json"]:
+                probes.append(kwargs["cwd"])
+                return MagicMock(returncode=0, stdout=_direnv_status(allowed=False))
             if cmd[:3] == ["git", "worktree", "add"]:
                 wt_dir.mkdir(parents=True, exist_ok=True)
                 (wt_dir / ".envrc").write_text((repo_root / ".envrc").read_text())
@@ -1212,6 +1211,7 @@ class TestCreateWorktree:
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            patch("ai_cli.session.direnv_available", return_value=True),
             _stub_worktree_base(),
             patch("subprocess.run", side_effect=fake_run),
         ):
@@ -1219,12 +1219,17 @@ class TestCreateWorktree:
 
         assert result == wt_dir
         assert ["direnv", "allow", str(wt_dir)] in calls
-        assert direnv_calls == [
-            (["direnv", "export", "json"], wt_dir),
-            (["direnv", "export", "json"], repo_root),
-        ]
+        # Only the worktree is probed, and only for its approval state: `direnv
+        # export` would EVALUATE the .envrc and hit its credential provider.
+        assert probes == [wt_dir]
+        assert not any(call[:2] == ["direnv", "export"] for call in calls)
 
-    def test_create_worktree_when_root_envrc_is_unusable_then_does_not_allow_worktree(self, tmp_path):
+    def test_create_worktree_when_the_root_envrc_is_unapproved_then_the_worktree_is_still_allowed(self, tmp_path):
+        """An unapproved repository root must not veto the worktree the tool created.
+
+        Treating root approval as a precondition is what made this a silent no-op on
+        a host where no .envrc is approved at all -- the reported defect.
+        """
         repo_root = tmp_path / "repo"
         wt_dir = repo_root / ".worktrees" / "session-1"
         wt_dir.mkdir(parents=True)
@@ -1234,47 +1239,50 @@ class TestCreateWorktree:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd == ["direnv", "export", "json"] and kwargs["cwd"] in (wt_dir, repo_root):
-                return MagicMock(returncode=1, stdout="")
+            if cmd == ["direnv", "status", "--json"]:
+                return MagicMock(returncode=0, stdout=_direnv_status(allowed=False))
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
             return MagicMock(returncode=0, stdout="")
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            patch("ai_cli.session.direnv_available", return_value=True),
             patch("subprocess.run", side_effect=fake_run),
         ):
             result = create_worktree("session-1")
 
         assert result == wt_dir
-        assert not any(call[:2] == ["direnv", "allow"] for call in calls)
+        assert ["direnv", "allow", str(wt_dir)] in calls
+        assert not any(call[:2] == ["direnv", "allow"] and call[2] == str(repo_root) for call in calls)
 
-    def test_create_worktree_when_worktree_envrc_is_usable_then_skips_root_check(self, tmp_path):
+    def test_create_worktree_when_the_worktree_is_already_approved_then_nothing_is_reallowed(self, tmp_path):
         repo_root = tmp_path / "repo"
         wt_dir = repo_root / ".worktrees" / "session-1"
         wt_dir.mkdir(parents=True)
         (repo_root / ".envrc").write_text("export EXAMPLE=value\n")
         (wt_dir / ".envrc").write_text("export EXAMPLE=value\n")
         calls = []
-        direnv_calls = []
+        probes = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            if cmd == ["direnv", "export", "json"]:
-                direnv_calls.append((cmd, kwargs["cwd"]))
-                return MagicMock(returncode=0, stdout="")
+            if cmd == ["direnv", "status", "--json"]:
+                probes.append(kwargs["cwd"])
+                return MagicMock(returncode=0, stdout=_direnv_status(allowed=True))
             if cmd[:3] == ["git", "worktree", "list"]:
                 return MagicMock(returncode=0, stdout=_porcelain(wt_dir))
             return MagicMock(returncode=0, stdout="")
 
         with (
             patch("ai_cli.session.detect_repo_root", return_value=repo_root),
+            patch("ai_cli.session.direnv_available", return_value=True),
             patch("subprocess.run", side_effect=fake_run),
         ):
             result = create_worktree("session-1")
 
         assert result == wt_dir
-        assert direnv_calls == [(["direnv", "export", "json"], wt_dir)]
+        assert probes == [wt_dir]
         assert not any(call[:2] == ["direnv", "allow"] for call in calls)
 
 
@@ -1282,7 +1290,7 @@ class TestCreateWorktreeEdgeCases:
     def test_given_a_plain_populated_worktree_slot_when_created_then_it_is_recovered_and_recreated(
         self, tmp_path, capsys
     ):
-        wt_dir = tmp_path / ".worktrees" / "sw-3"
+        wt_dir = tmp_path / ".worktrees" / "session-3"
         wt_dir.mkdir(parents=True)
         (wt_dir / "leftover.txt").write_text("do not remove\n")
         add_calls = []
@@ -1300,15 +1308,15 @@ class TestCreateWorktreeEdgeCases:
             _stub_worktree_base(),
             patch("subprocess.run", side_effect=mock_run),
         ):
-            result = create_worktree("sw-3")
+            result = create_worktree("session-3")
 
-        recovered = wt_dir.with_name("sw-3-orphaned-1725143900123456789")
+        recovered = wt_dir.with_name("session-3-orphaned-1725143900123456789")
         assert result == wt_dir
         assert (recovered / "leftover.txt").read_text() == "do not remove\n"
         assert wt_dir.is_dir()
-        assert add_calls == [["git", "worktree", "add", str(wt_dir), "-b", "wt-sw-3", "refs/remotes/origin/main"]]
+        assert add_calls == [["git", "worktree", "add", str(wt_dir), "-b", "wt-session-3", "refs/remotes/origin/main"]]
         assert (
-            f"[launch] Recovered orphaned directory: moved {wt_dir} -> {recovered} (not deleted; review manually)"
+            f"[launch] Worktree: recovered orphaned directory: moved {wt_dir} -> {recovered} (not deleted; review manually)"
             in capsys.readouterr().err
         )
 
@@ -1316,7 +1324,7 @@ class TestCreateWorktreeEdgeCases:
 class TestCreateWorktreeEdgeCases2:
     def test_create_worktree_when_first_add_fails_then_retries_existing_branch(self, tmp_path):
         """Covers line 444: fallback to existing branch."""
-        wt_dir = tmp_path / ".worktrees" / "sw-4"
+        wt_dir = tmp_path / ".worktrees" / "session-4"
         calls = []
 
         def mock_run(cmd, **kwargs):
@@ -1330,17 +1338,17 @@ class TestCreateWorktreeEdgeCases2:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("sw-4")
+                result = create_worktree("session-4")
         assert result == wt_dir
         add_calls = [c for c in calls if "worktree" in c and "add" in c]
         assert len(add_calls) == 2
         # The retry checks out the existing branch with NO start-point, so a previous
-        # session's commits on wt-sw-4 are never reset to origin/main.
-        assert add_calls[1] == ["git", "worktree", "add", str(wt_dir), "wt-sw-4"]
+        # session's commits on wt-session-4 are never reset to origin/main.
+        assert add_calls[1] == ["git", "worktree", "add", str(wt_dir), "wt-session-4"]
 
     def test_create_worktree_when_src_not_exists_then_skips_symlink(self, tmp_path):
         """Covers lines 454-455: src doesn't exist, so no symlink."""
-        wt_dir = tmp_path / ".worktrees" / "sw-5"
+        wt_dir = tmp_path / ".worktrees" / "session-5"
 
         def mock_run(cmd, **kwargs):
             m = MagicMock(returncode=0, stdout="")
@@ -1350,7 +1358,7 @@ class TestCreateWorktreeEdgeCases2:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("sw-5")
+                result = create_worktree("session-5")
         assert result == wt_dir
         assert not (wt_dir / ".venv").exists()
 
@@ -1366,13 +1374,13 @@ class TestCreateWorktreeEdgeCases2:
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 with pytest.raises(RuntimeError, match=r"branch already exists.*permission denied"):
-                    create_worktree("sw-6")
+                    create_worktree("session-6")
 
     def test_create_worktree_when_adds_fail_after_another_process_creates_slot_then_does_not_claim_creation(
         self, tmp_path
     ):
         """A directory appearing after failed adds is not this launch's creation."""
-        wt_dir = tmp_path / ".worktrees" / "sw-7"
+        wt_dir = tmp_path / ".worktrees" / "session-7"
 
         def mock_run(cmd, **kwargs):
             if cmd[:3] == ["git", "worktree", "add"]:
@@ -1383,7 +1391,7 @@ class TestCreateWorktreeEdgeCases2:
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 with pytest.raises(RuntimeError, match="slot already exists"):
-                    create_worktree("sw-7", with_status=True)
+                    create_worktree("session-7", with_status=True)
 
     def test_given_initialization_is_blocked_when_second_launch_starts_then_it_waits_for_reuse(self, tmp_path):
         """A second launcher cannot return a worktree before its creator initializes it."""
@@ -1492,7 +1500,7 @@ class TestCreateWorktreeEdgeCases2:
             patch("ai_cli.session.detect_repo_root", return_value=tmp_path),
             _stub_worktree_base(),
             patch("ai_cli.session._set_upstream_or_raise", side_effect=fail_creator_upstream) as set_upstream,
-            patch("ai_cli.session._allow_trusted_worktree_envrc") as allow_envrc,
+            patch("ai_cli.session._authorize_session_worktree_envrc") as authorize_envrc,
             patch("ai_cli.trust.ensure_workspace_trusted") as ensure_trusted,
             patch("portalocker.Lock", SlotLock),
             patch("subprocess.run", side_effect=fake_run),
@@ -1515,7 +1523,7 @@ class TestCreateWorktreeEdgeCases2:
         else:
             assert (wt_dir / ".venv").is_symlink()
         ensure_trusted.assert_called_once_with([tmp_path, wt_dir])
-        allow_envrc.assert_called_once_with(tmp_path, wt_dir)
+        authorize_envrc.assert_called_once_with(tmp_path, wt_dir)
         assert set_upstream.call_count == 1
         assert [
             "git",
@@ -1563,7 +1571,7 @@ class TestCreateWorktreeSymlink:
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".venv").mkdir()
-        wt_dir = repo_root / ".worktrees" / "sw-1"
+        wt_dir = repo_root / ".worktrees" / "session-1"
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
@@ -1571,9 +1579,9 @@ class TestCreateWorktreeSymlink:
             return MagicMock(returncode=0, stdout="")
 
         with patch("ai_cli.session.detect_repo_root", return_value=repo_root), _stub_worktree_base():
-            with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.session.get_project_prefix", return_value="session"):
                 with patch("subprocess.run", side_effect=fake_run):
-                    result = create_worktree("sw-1")
+                    result = create_worktree("session-1")
 
         # On Windows without Developer Mode, the code falls back to junctions
         # which report as directories, not symlinks. On other platforms, symlinks work.
@@ -1593,7 +1601,7 @@ class TestCreateWorktreeSymlink:
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".venv").mkdir()
-        wt_dir = repo_root / ".worktrees" / "sw-2"
+        wt_dir = repo_root / ".worktrees" / "session-2"
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
@@ -1609,10 +1617,10 @@ class TestCreateWorktreeSymlink:
             raise err
 
         with patch("ai_cli.session.detect_repo_root", return_value=repo_root), _stub_worktree_base():
-            with patch("ai_cli.session.get_project_prefix", return_value="sw"):
+            with patch("ai_cli.session.get_project_prefix", return_value="session"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch.object(Path, "symlink_to", mock_symlink_to):
-                        result = create_worktree("sw-2")
+                        result = create_worktree("session-2")
 
         # On Windows, the .venv link should exist as a junction (directory), not a symlink
         assert (wt_dir / ".venv").exists()
@@ -1626,7 +1634,7 @@ class TestCreateWorktreeUpstreamGuard:
     """AI-CLI-128: --set-upstream-to=origin/main must not fail silently."""
 
     def test_create_worktree_when_set_upstream_fails_once_then_retries_and_succeeds(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "sw-1"
+        wt_dir = tmp_path / ".worktrees" / "session-1"
         upstream_attempts = []
 
         def mock_run(cmd, **kwargs):
@@ -1640,13 +1648,13 @@ class TestCreateWorktreeUpstreamGuard:
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
-                result = create_worktree("sw-1")
+                result = create_worktree("session-1")
 
         assert result == wt_dir
         assert len(upstream_attempts) == 2
 
     def test_create_worktree_when_set_upstream_fails_twice_then_raises(self, tmp_path):
-        wt_dir = tmp_path / ".worktrees" / "sw-2"
+        wt_dir = tmp_path / ".worktrees" / "session-2"
 
         def mock_run(cmd, **kwargs):
             m = MagicMock(returncode=0, stdout="", stderr=b"")
@@ -1654,13 +1662,13 @@ class TestCreateWorktreeUpstreamGuard:
                 wt_dir.mkdir(parents=True, exist_ok=True)
             elif cmd[:2] == ["git", "branch"] and "--set-upstream-to=origin/main" in cmd:
                 m.returncode = 1
-                m.stderr = b"fatal: branch 'wt-sw-2' does not exist"
+                m.stderr = b"fatal: branch 'wt-session-2' does not exist"
             return m
 
         with patch("ai_cli.session.detect_repo_root", return_value=tmp_path), _stub_worktree_base():
             with patch("subprocess.run", side_effect=mock_run):
                 with pytest.raises(RuntimeError, match="AI-CLI-128"):
-                    create_worktree("sw-2")
+                    create_worktree("session-2")
 
 
 # --- find_next_index ---
@@ -1672,10 +1680,10 @@ class TestFindNextIndex:
 
         def mock_run(cmd, **kwargs):
             assert cmd == ["tmux", "list-sessions", "-F", "#{session_name}"]
-            return MagicMock(returncode=0, stdout="c-sw-1\n")
+            return MagicMock(returncode=0, stdout="c-session-1\n")
 
         with patch("subprocess.run", side_effect=mock_run):
-            result = find_next_index("c-sw-")
+            result = find_next_index("c-session-")
         assert result == 2
 
     def test_given_legacy_remote_session_when_finding_index_then_skips_occupied_slot(self):
@@ -1698,15 +1706,15 @@ class TestFindRecentSession:
         """Covers line 276 (returncode != 0 early return path)."""
         m = MagicMock(returncode=1, stdout="")
         with patch("subprocess.run", return_value=m):
-            result = find_recent_session("c-sw-")
+            result = find_recent_session("c-session-")
         assert result == ""
 
     def test_find_recent_session_when_empty_lines_then_skips(self):
         """Covers lines 278-279: empty line in output."""
-        m = MagicMock(returncode=0, stdout="\n\nc-sw-1 100\n\nc-sw-2 200\n")
+        m = MagicMock(returncode=0, stdout="\n\nc-session-1 100\n\nc-session-2 200\n")
         with patch("subprocess.run", return_value=m):
-            result = find_recent_session("c-sw-")
-        assert result == "c-sw-2"
+            result = find_recent_session("c-session-")
+        assert result == "c-session-2"
 
     def test_given_lowercase_session_when_prefix_is_uppercase_then_returns_actual_session_name(self):
         m = MagicMock(returncode=0, stdout="c-app-1 100\n")
@@ -1717,16 +1725,16 @@ class TestFindRecentSession:
 
     def test_find_recent_session_when_bad_timestamp_then_skips(self):
         """Covers lines 284-285: ValueError parsing timestamp."""
-        m = MagicMock(returncode=0, stdout="c-sw-1 notanumber\nc-sw-2 200\n")
+        m = MagicMock(returncode=0, stdout="c-session-1 notanumber\nc-session-2 200\n")
         with patch("subprocess.run", return_value=m):
-            result = find_recent_session("c-sw-")
-        assert result == "c-sw-2"
+            result = find_recent_session("c-session-")
+        assert result == "c-session-2"
 
     def test_find_recent_session_when_no_matching_sessions_then_returns_empty(self):
         """Covers lines 286-287: no sessions match prefix."""
         m = MagicMock(returncode=0, stdout="other-1 100\nother-2 200\n")
         with patch("subprocess.run", return_value=m):
-            result = find_recent_session("c-sw-")
+            result = find_recent_session("c-session-")
         assert result == ""
 
 
@@ -1748,7 +1756,7 @@ class TestCleanupStaleSessions:
 
     def test_cleanup_stale_when_bad_timestamp_then_skips(self):
         """Covers lines 334-335: ValueError parsing last_attached."""
-        m = MagicMock(returncode=0, stdout="c-sw-1|notanumber|0|bash\n")
+        m = MagicMock(returncode=0, stdout="c-session-1|notanumber|0|bash\n")
         with patch("subprocess.run", return_value=m):
             cleanup_stale_sessions({})
 

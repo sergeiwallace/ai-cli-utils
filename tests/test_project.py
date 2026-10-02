@@ -73,7 +73,7 @@ def test_get_current_project_name_when_in_normal_dir_then_returns_dir_name():
 
 
 def test_get_current_project_name_when_in_worktree_then_returns_project_name():
-    with patch("pathlib.Path.cwd", return_value=Path("/home/user/projects/myproject/.worktrees/sw-2")):
+    with patch("pathlib.Path.cwd", return_value=Path("/home/user/projects/myproject/.worktrees/session-2")):
         assert get_current_project_name() == "myproject"
 
 

@@ -138,7 +138,7 @@ NEVER generate binary images.
 
 - [Pending / Ready](#pending--ready)
 - [Completed](#completed)
-  - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672)
+  - [R-1: Open-source Python CLI package best practices (SW-672)](#r-1-open-source-python-cli-package-best-practices--sw-672) <!-- public-hygiene: allow: anchor mirrors a heading whose dev-tracking id is handled by AI-CLI-wpdd -->
   - [R-2: GitHub repo automation & ecosystem tooling (AI-CLI-3)](#r-2-github-repository-automation--ecosystem-tooling)
   - [R-50: Terminal tab/pane title, color, and icon customization for AI fleet management (AI-CLI)](#r-50-terminal-tabpane-title-color-and-icon-customization-for-ai-fleet-management--ai-cli) ✅
 - [Deprecated / Archived](#deprecated--archived)

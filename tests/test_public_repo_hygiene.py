@@ -14,7 +14,22 @@ import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
-_SCANNED_PATHS = ("src", "tests", "docs", "README.md", "CONTRIBUTING.md", "LICENSE", "pyproject.toml", ".github")
+_SCANNED_PATHS = (
+    "src",
+    "tests",
+    "docs",
+    # ``scripts`` was omitted until AI-CLI-2jwm, and the omission was invisible
+    # rather than documented: ``_EXPECTED_TOP_LEVEL_DIRS`` below lists "scripts",
+    # so a grep for the name in this file finds a hit and suggests it is covered.
+    # It is a different guard. Every file here is tracked and published, so a
+    # private name in a maintenance script is as public as one in the package.
+    "scripts",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "pyproject.toml",
+    ".github",
+)
 
 # Every top-level directory this repository legitimately tracks. Anything else
 # appearing in the index is a generated or machine-specific artefact until proven
@@ -75,6 +90,44 @@ _PRIVATE_PLATFORM_NAMES = ("aido", "ai-core")  # public-hygiene: allow
 # information to a reader who does not have the machine.
 _PRIVATE_MACHINE_NAMES = ("sem-kg", "bms")  # public-hygiene: allow
 
+# The personal session prefix. Session, pane and worktree names are built from a
+# two-letter prefix -- ``<prefix>-1``, ``c-<prefix>-1``, ``.worktrees/<prefix>-3``
+# -- and those two letters are one operator's initials. So every such name is a
+# personal identifier wearing an innocuous shape, which is how 750 of them sat in
+# a public package while every guard above passed: none of them was looking for a
+# name that reads like a generated slug.
+#
+# Two patterns rather than one entry in _FORBIDDEN, because the bare token cannot
+# be forbidden outright. A word-bounded case-insensitive match on it hits a
+# third-party documentation URL (the Kitty terminal's ``sw.kovidgoyal.net``) and  # public-hygiene: allow
+# an unrelated two-letter column abbreviation in a design table -- so a single
+# rule would be noisy enough to be switched off, which is the failure the
+# platform-name comment above describes. These two forms are the ones that
+# actually carry the prefix, and neither can match prose or a hostname.
+_PRIVATE_SESSION_PREFIX = "sw"  # public-hygiene: allow
+
+# Form 1: the prefix followed by a separator, anywhere a name is built. Nothing
+# is required *after* the dash, and that is load-bearing rather than lax: the
+# prefix also ships as a bare 51 times in the argument form ``"c-<prefix>-"``,
+# where the name is completed by the callee, and as a format placeholder
+# (``<prefix>-{n}``, ``<prefix>-*``). A rule requiring a trailing alphanumeric
+# reads as the obvious one and misses all 80 of those.
+#
+# Deliberately case-SENSITIVE, which is the one boundary in this file drawn by
+# case rather than by shape. The uppercase form ``SW-1234`` is not a session name  # public-hygiene: allow
+# at all: it is a private dev-tracking issue id, and it belongs to a class this
+# repository also carries 149 instances of under a *different* prefix
+# (``AIH-1234``). Folding the uppercase form in here would produce a guard that  # public-hygiene: allow
+# forbids one private tracker's ids and silently permits the other's -- an
+# incoherent rule that reads as complete. That class is tracked as its own issue.
+_SESSION_NAME = re.compile(rf"(?:^|[^A-Za-z0-9]){re.escape(_PRIVATE_SESSION_PREFIX)}-")
+
+# Form 2: the prefix as a quoted string literal -- a config value or a test
+# argument (``task_prefix = "sw"``). Case-insensitive is safe here where it was  # public-hygiene: allow
+# not above: a bare two-character quoted string is never prose, never a URL, and
+# never a tracker id, so this rule has no false-positive surface to speak of.
+_SESSION_PREFIX_LITERAL = re.compile(rf"[\"']{re.escape(_PRIVATE_SESSION_PREFIX)}[\"']", re.IGNORECASE)
+
 _FORBIDDEN = re.compile(
     "|".join(
         [
@@ -126,6 +179,11 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _line_has_forbidden_name(line: str) -> bool:
+    """True if ``line`` carries any forbidden name, in any of the three patterns."""
+    return bool(_FORBIDDEN.search(line) or _SESSION_NAME.search(line) or _SESSION_PREFIX_LITERAL.search(line))
+
+
 def _line_is_exempted(relative_path: Path, line: str) -> bool:
     """Allow documented evidence lines, but never let source code suppress the guard."""
     return _LINE_EXEMPTION_MARKER in line and any(
@@ -133,13 +191,19 @@ def _line_is_exempted(relative_path: Path, line: str) -> bool:
     )
 
 
-def _scanned_text_files(root: Path) -> Iterator[tuple[Path, Path, str]]:
+def _scanned_text_files(
+    root: Path, scanned_paths: tuple[str, ...] = _SCANNED_PATHS
+) -> Iterator[tuple[Path, Path, str]]:
     """Yield ``(path, path relative to root, text)`` for every scanned text file.
 
     Files that are not UTF-8 text (images, compiled artefacts) are skipped, so
     the scan needs no extension allowlist that a new file type could slip past.
+
+    ``scanned_paths`` is a parameter because the tracker-id guard below covers a
+    deliberately narrower set than the name guard, and defaults to the full set so
+    every existing caller is unchanged.
     """
-    for scanned_path in _SCANNED_PATHS:
+    for scanned_path in scanned_paths:
         candidate = root / scanned_path
         if not candidate.exists():
             continue
@@ -167,7 +231,7 @@ def scan_for_private_names(root: Path) -> list[str]:
     for path, relative_path, text in _scanned_text_files(root):
         del path
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if _FORBIDDEN.search(line) and not _line_is_exempted(relative_path, line):
+            if _line_has_forbidden_name(line) and not _line_is_exempted(relative_path, line):
                 findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
     return findings
 
@@ -175,6 +239,104 @@ def scan_for_private_names(root: Path) -> list[str]:
 def test_given_the_shipped_package_and_its_tests_when_scanned_then_no_private_names_remain():
     findings = scan_for_private_names(_repo_root())
     assert not findings, "private project names in a public package:\n" + "\n".join(findings)
+
+
+# Identifiers from private issue trackers. A published reference to a tracker no reader can
+# open names work they cannot see, so these belong to the same rule as the names above --
+# but they are scanned over a NARROWER set of paths, on purpose.
+#
+# `AI-CLI-` is deliberately absent from the pattern: it is this repository's own prefix, its
+# issues ship in `.beads/issues.jsonl`, and the ids already appear in merged commit messages.
+# Forbidding them would delete references a reader can actually follow.
+_PRIVATE_TRACKER_ID = re.compile(r"\b(?:AIH|SW|CORE)-[0-9A-Za-z]{2,}\b")  # public-hygiene: allow
+
+# `src`, `scripts` and now `tests`. The omission of `docs` remains a measured scope
+# decision rather than an oversight -- the mistake the `scripts` gap above taught.
+#
+# Measured 2026-09-27 with `grep -r`: after the shipped-source scrub `src` and `scripts`
+# both hold 0. `tests` held 22 occurrences across 8 files and is now scrubbed, so it joins
+# the scan. `docs` still holds 224 across 33 files and deliberately does NOT: there, an id
+# is often the only provenance link a maintainer has, so removing one is a judgement call
+# nobody has made rather than a cleanup, and folding a 224-occurrence documentation rewrite
+# into any other change would make it unreviewable.
+#
+# Measure with `grep -r`, NOT `git grep`: git's regex engine does not honour `\b` on every
+# host, and the same pattern that matches 42 files under `grep -rlE` matched 0 under
+# `git grep -lE`. Re-confirmed on `tests` while scrubbing it -- 8 files under `grep -rlE`,
+# 0 under `git grep -lE`. A future reader re-measuring with `git grep` will wrongly conclude
+# the remaining work is already done.
+_TRACKER_ID_SCANNED_PATHS = ("src", "scripts", "tests")
+
+# One file inside a scanned path is held out, and it is named here rather than exempted
+# with an inline marker so the debt is visible in one place instead of hidden at the line.
+#
+# `tests/conftest.py` carries a single id in a comment. It is excluded only because a
+# delegated agent is editing that file right now, and editing another session's file is
+# what produced the one merge collision earlier in this batch. An inline
+# `public-hygiene: allow` marker would have been the wrong tool: it says "this line is
+# legitimate", and this line is not -- it is pending.
+#
+# Removing the entry is the whole remaining task for `tests`, and the test below asserts
+# the set's exact contents, so it cannot silently grow into a general escape hatch.
+_TRACKER_ID_PENDING_PATHS = frozenset({Path("tests") / "conftest.py"})
+
+
+def scan_for_private_tracker_ids(root: Path) -> list[str]:
+    """Return ``path:lineno: line`` for every private tracker id under the scanned paths."""
+    findings: list[str] = []
+    for path, relative_path, text in _scanned_text_files(root, _TRACKER_ID_SCANNED_PATHS):
+        del path
+        if relative_path in _TRACKER_ID_PENDING_PATHS:
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _PRIVATE_TRACKER_ID.search(line) and not _line_is_exempted(relative_path, line):
+                findings.append(f"{relative_path.as_posix()}:{lineno}: {line.strip()}")
+    return findings
+
+
+def test_given_the_pending_holdout_set_when_read_then_it_is_exactly_the_known_debt():
+    """The held-out set is pinned so it cannot quietly become a general escape hatch.
+
+    A per-file exclusion is the kind of mechanism that starts as one pending file and ends
+    as the reason the guard enforces nothing. Pinning the exact contents means adding a
+    second file has to be deliberate and reviewed, and means deleting the last entry --
+    the actual goal -- shows up here as a required edit rather than being forgotten.
+    """
+    held_out = sorted(path.as_posix() for path in _TRACKER_ID_PENDING_PATHS)
+
+    assert held_out == ["tests/conftest.py"], (
+        f"the pending holdout set changed: {held_out}. Scrub the file and remove it from the set; "
+        "do not add new entries to work around the guard."
+    )
+
+
+def test_given_the_shipped_package_and_its_scripts_when_scanned_then_no_private_tracker_ids_remain():
+    """Locks in the scrub so a future comment cannot quietly republish a private id."""
+    findings = scan_for_private_tracker_ids(_repo_root())
+    assert not findings, "private tracker ids in a public package:\n" + "\n".join(findings)
+
+
+class TestTheTrackerIdGuardCanActuallyFail:
+    """Positive controls. A guard nobody has watched go red enforces nothing.
+
+    These drive the pattern rather than the file walk, because the walk is already
+    covered by the name guard's own controls and re-walking a temp tree here would
+    test the shared helper twice instead of testing this pattern once.
+    """
+
+    def test_given_a_line_carrying_a_private_tracker_id_when_matched_then_it_is_flagged(self):
+        for identifier in ("AIH-443", "SW-873", "CORE-196", "AIH-emit-safe-subset-jznr"):  # public-hygiene: allow
+            assert _PRIVATE_TRACKER_ID.search(f"# fixed in {identifier}"), identifier
+
+    def test_given_this_repositorys_own_id_when_matched_then_it_is_not_flagged(self):
+        """The whole point of the exclusion: these references are followable."""
+        assert not _PRIVATE_TRACKER_ID.search("# Robust primary path (AI-CLI-94).")
+        assert not _PRIVATE_TRACKER_ID.search("# see AI-CLI-2jwm for the scripts gap")
+
+    def test_given_an_ordinary_word_when_matched_then_it_is_not_flagged(self):
+        """Guards against the pattern being loose enough to fire on prose."""
+        for line in ("# a software-defined switch", "# SWITCH-case handling", "# core-196 lowercase"):
+            assert not _PRIVATE_TRACKER_ID.search(line), line
 
 
 def _ip_is_allowed(address: str) -> bool:
@@ -577,6 +739,89 @@ def test_given_a_longer_identifier_containing_a_platform_name_when_scanned_then_
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "src" / "identifiers.py").write_text(f"{token}s = 1\nplaid{token} = 2\nmy{token}thing = 3\n")
+
+    assert scan_for_private_names(tmp_path) == []
+
+
+def test_given_a_session_name_built_from_the_private_prefix_when_scanned_then_it_is_flagged(tmp_path):
+    """Positive control per shape the prefix actually appears in.
+
+    Each string below is a real shape from the leak: a bare session name, an
+    engine-prefixed pane name, a worktree directory path, a placeholder written
+    with a capital placeholder letter, a named (non-numeric) worktree, and the
+    bare argument form whose name the callee completes. A guard that matched only
+    ``<prefix>-<digit>`` passes four of these six, and that is not hypothetical --
+    it is the pattern the occurrence count was twice measured with, which is why
+    it undercounted by 154 occurrences and six files.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    prefix = _PRIVATE_SESSION_PREFIX
+    shapes = (
+        f"{prefix}-1",
+        f"c-{prefix}-1",
+        f".worktrees/{prefix}-3",
+        f"{prefix}-N",
+        f"{prefix}-feature",
+        f"c-{prefix}-",
+    )
+    for index, shape in enumerate(shapes):
+        (tmp_path / "src" / f"session_{index}.py").write_text(f'name = "{shape}"\n')
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == len(shapes)
+    for index, shape in enumerate(shapes):
+        assert any(finding.startswith(f"src/session_{index}.py:1:") for finding in findings), (
+            f"scan did not flag {shape!r}"
+        )
+
+
+def test_given_the_private_prefix_as_a_quoted_literal_when_scanned_then_either_case_is_flagged(tmp_path):
+    """The prefix also ships as a bare config value, in both cases.
+
+    Both cases are asserted because both leaked: the lowercase form as a session
+    prefix in test arguments, the uppercase form as a task prefix quoted in a
+    design document. A lowercase-only rule here would leave the second in place.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    lower, upper = _PRIVATE_SESSION_PREFIX, _PRIVATE_SESSION_PREFIX.upper()
+    (tmp_path / "src" / "config_example.py").write_text(
+        f'session_prefix = "{lower}"\ntask_prefix = "{upper}"\nsingle_quoted = \'{lower}\'\n'
+    )
+
+    findings = scan_for_private_names(tmp_path)
+
+    assert len(findings) == 3
+    assert [finding.split(":")[1] for finding in findings] == ["1", "2", "3"]
+
+
+def test_given_text_that_merely_contains_the_prefix_letters_when_scanned_then_it_is_not_flagged(tmp_path):
+    """Negative control, using the exact strings that forced the two-pattern design.
+
+    Every line here matches a word-bounded case-insensitive rule on the bare
+    prefix and none may be flagged:
+
+    * a third-party documentation URL whose host begins with those two letters;
+    * a two-letter column abbreviation for an unrelated subsystem in a table;
+    * identifiers that merely start with them, where ``_`` is a word character
+      and so the boundary alone does not decide;
+    * a private dev-tracking id in the uppercase form, which is a **different**
+      leak class with its own prefixes and its own issue -- asserting it here
+      pins the boundary this guard deliberately draws, so narrowing or widening
+      that boundary cannot happen silently.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    upper = _PRIVATE_SESSION_PREFIX.upper()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "notes.md").write_text(
+        "See https://sw.kovidgoyal.net/kitty/keyboard-protocol/ for the protocol.\n"  # public-hygiene: allow
+        f"| # | System | {upper} | Built? |\n"
+        "sw_client = build()\nhandoff = sw_handoff_dir / name\n"  # public-hygiene: allow
+        f"Tracked as {upper}-644 in the other repository's store.\n"
+    )
 
     assert scan_for_private_names(tmp_path) == []
 

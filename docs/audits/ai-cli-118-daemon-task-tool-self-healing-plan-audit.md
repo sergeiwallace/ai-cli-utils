@@ -563,7 +563,7 @@ regardless (implementation cannot start until then).
 
 Full verbatim Codex Round 1 output (all finding detail sections, the complete verification matrix
 with commands+expected+actual, Files Read, and Commands Run) preserved at:
-`/private/tmp/claude-501/-Users-user-projects-myproject--worktrees-sw-1/79e30993-e987-48ce-bd6b-342cc23032a4/scratchpad/ai-cli-118-round1-output.txt`
+`/private/tmp/claude-501/-Users-user-projects-myproject--worktrees-session-1/79e30993-e987-48ce-bd6b-342cc23032a4/scratchpad/ai-cli-118-round1-output.txt`
 (session-scratch path, not repo-tracked — the summarized tables/sections above capture every
 finding's core evidence and recommendation; consult the raw file for the full quoted verification
 matrix output and the complete Appendix: Files Read / Appendix: Commands Run listings if needed).

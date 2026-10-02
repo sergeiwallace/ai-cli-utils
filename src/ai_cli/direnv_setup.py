@@ -17,12 +17,14 @@ tool: ``AI_CLI_SKIP_DIRENV=1``, ``-D/--no-direnv``, or ``[direnv] enabled =
 false`` in config.toml.
 """
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from . import launch_reporter
 from .native_deps import Candidate, InstallResult, attempt_installs
 
 BYPASS_ENV = "AI_CLI_SKIP_DIRENV"
@@ -158,6 +160,63 @@ def envrc_loads(directory: Path, timeout: int = 60) -> bool:
     return probe.returncode == 0
 
 
+def envrc_allowed(directory: Path, timeout: int = 30) -> bool | None:
+    """Whether direnv has already approved the ``.envrc`` applying to ``directory``.
+
+    ``None`` means the approval state could not be read -- direnv absent, or a
+    build predating ``direnv status --json`` -- so callers decide what to do with
+    "unknown" instead of receiving a guess dressed up as a fact.
+
+    Unlike :func:`envrc_loads` this asks only about approval and never *evaluates*
+    the file, so it cannot contact whatever credential provider the ``.envrc``
+    uses. That is why it, and not ``envrc_loads``, is the right probe before
+    approving: the cheaper question is also the one actually being asked.
+
+    The printed form of ``direnv status`` is useless here -- it exits 0 even for a
+    blocked ``.envrc`` -- but the JSON carries ``state.foundRC.allowed``, which is
+    0 only when direnv will load the file.
+    """
+    try:
+        probe = subprocess.run(
+            ["direnv", "status", "--json"],
+            capture_output=True,
+            text=True,
+            cwd=directory,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    try:
+        found = json.loads(probe.stdout)["state"]["foundRC"]
+        return found["allowed"] == 0
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def allow_envrc(directory: Path, timeout: int = 60) -> bool:
+    """Approve ``directory``'s ``.envrc`` with ``direnv allow``. True on success.
+
+    Output is captured rather than inherited: direnv writes its own
+    ``.envrc is blocked`` diagnostics to stderr, and letting those through would
+    put the complaint on the terminal ahead of the notice saying it has just been
+    fixed. Never raises -- this runs mid-launch, and direnv is an enhancement.
+    """
+    try:
+        result = subprocess.run(
+            ["direnv", "allow", str(directory)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def find_envrc(start: Path) -> Path | None:
     """Return the nearest ``.envrc`` at or above ``start``, else None.
 
@@ -214,7 +273,16 @@ def refresh_windows_path() -> bool:
 
     current = [part for part in os.environ.get("PATH", "").split(os.pathsep) if part]
     seen = {part.rstrip("\\").lower() for part in current}
-    added = [part for part in persisted if part.rstrip("\\").lower() not in seen]
+    added: list[str] = []
+    for part in persisted:
+        key = part.rstrip("\\").lower()
+        if key in seen:
+            continue
+        # Growing ``seen`` as we go, not just checking the starting PATH: the two roots
+        # overlap on real machines, and an entry missing from PATH but present in both
+        # would otherwise clear the check once per root and be appended twice.
+        seen.add(key)
+        added.append(part)
     if not added:
         return False
     os.environ["PATH"] = os.pathsep.join([*current, *added])
@@ -245,7 +313,7 @@ def remediation(envrc: Path | None = None, result: InstallResult | None = None) 
     exact command for *this* OS, the bash requirement, how to hook the shell,
     and how to carry on without direnv.
     """
-    lines = ["", "=" * 72, "ai-cli-utils: direnv is not usable on this machine."]
+    lines = ["direnv is not usable on this machine."]
     if envrc is not None:
         lines.append(f"  A project environment exists at {envrc}, so it will NOT be loaded.")
     if result is not None and result.detail:
@@ -292,8 +360,6 @@ def remediation(envrc: Path | None = None, result: InstallResult | None = None) 
         f"      {BYPASS_ENV}=1        (env var; PowerShell: $env:{BYPASS_ENV}='1')",
         "      ai c <n> -D                (per-launch flag)",
         "      [direnv] enabled = false   (config.toml, permanent)",
-        "=" * 72,
-        "",
     ]
     return "\n".join(lines)
 
@@ -324,8 +390,8 @@ def ensure_direnv(
 
     result = install_direnv() if auto_install and not have_direnv else InstallResult(False, detail="")
     if result.installed and bash_available():
-        print(f"ai-cli-utils: installed direnv via {result.tool}.", file=sys.stderr)
+        launch_reporter.active().phase("direnv").outcome(f"installed via {result.tool}")
         return result
 
-    print(remediation(envrc, result), file=sys.stderr)
+    launch_reporter.active().warning(remediation(envrc, result))
     return InstallResult(False, tool=result.tool, detail=result.detail)

@@ -527,7 +527,7 @@ def _run_copier_update(
 # ---------------------------------------------------------------------------
 
 # Temp worktree lives under the repo's own (globally-gitignored) .worktrees/ dir so
-# it can never collide with a session worktree (`sw-N`) or leak into git status.
+# it can never collide with a session worktree (`session-N`) or leak into git status.
 _WT_NAME = "copier-update"
 _WT_BRANCH = "copier-update-tmp"
 _COMMIT_MSG = "chore: copier update from project-template"

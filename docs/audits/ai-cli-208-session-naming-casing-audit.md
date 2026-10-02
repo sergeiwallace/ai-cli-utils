@@ -409,10 +409,10 @@ for p in sorted(prefixes_to_strip, key=len, reverse=True):
 # tests/test_session.py:87-96
 def test_build_session_name_with_new_full_name_and_index_when_called_then_strips_all():
     # ...
-    session_id, ai_name = build_session_name("c", "sw", "c-sw-1")
+    session_id, ai_name = build_session_name("c", "session", "c-session-1")
 
-    assert session_id == "c-sw-1"
-    assert ai_name == "sw-1"
+    assert session_id == "c-session-1"
+    assert ai_name == "session-1"
 ```
 
 **Why it matters:** Full generated names are a documented/tested accepted input,

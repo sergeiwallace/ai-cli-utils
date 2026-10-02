@@ -367,9 +367,9 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
-                return (128, "", "fatal: no upstream configured for branch 'wt-sw-1'")
+                return (128, "", "fatal: no upstream configured for branch 'wt-session-1'")
             return (0, "", "")
 
         with patch("ai_cli.workspace._run", side_effect=run):
@@ -381,9 +381,9 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
-                return (0, "origin/wt-sw-1\n", "")
+                return (0, "origin/wt-session-1\n", "")
             return (0, "", "")
 
         with (
@@ -392,7 +392,7 @@ class TestUpstreamDrift:
         ):
             result = _upstream_drift(tmp_path)
         assert result is not None
-        assert "origin/wt-sw-1" in result
+        assert "origin/wt-session-1" in result
 
     def test_wt_branch_tracking_repo_integration_branch_returns_none(self, tmp_path):
         """A worktree tracking a non-main integration branch is NOT drift (AI-CLI-193).
@@ -404,7 +404,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/workspace\n", "")
             return (0, "", "")
@@ -421,7 +421,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/main\n", "")
             return (0, "", "")
@@ -441,7 +441,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/anything\n", "")
             return (0, "", "")
@@ -456,7 +456,7 @@ class TestUpstreamDrift:
         def run(cmd):
             joined = " ".join(cmd)
             if "--abbrev-ref" in joined and "HEAD" in joined:
-                return (0, "wt-sw-1\n", "")
+                return (0, "wt-session-1\n", "")
             if "@{u}" in joined:
                 return (0, "origin/main\n", "")
             return (0, "", "")
@@ -569,13 +569,18 @@ def _real_repo_with_remote(path: Path, url: str) -> Path:
     return path
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(180)
 def test_pull_rebase_when_remote_demands_credentials_then_fails_without_prompting(
     tmp_path, remote_demanding_credentials
 ):
     """Drives the real `git` CLI against a real 401 remote, because the defect IS
     git's prompting behaviour -- a mocked _run would only assert what the mock said.
-    Unattended, git must fail fast; prompting instead blocks `ai ws` forever."""
+    Unattended, git must fail fast; prompting instead blocks `ai ws` forever.
+
+    180s, not 60s: every step here is a real git subprocess, and measured on one host this
+    test takes 15-48s alone and exceeded 60s inside a full parallel run -- the timeout was
+    firing on host load rather than on the hang it exists to catch. The failure mode it
+    guards against is an unbounded block, which a longer budget still catches."""
     repo = _real_repo_with_remote(tmp_path / "repo", remote_demanding_credentials)
 
     rc, output = _pull_rebase(repo)

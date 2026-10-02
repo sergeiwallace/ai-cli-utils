@@ -156,7 +156,7 @@ Already implemented. signal-watch scans pending queue before NATS subscribe, cla
 
 **Alert thresholds and mechanism:**
 - Pending >5 minutes without pickup → warning banner in target session terminal
-- Pending >30 minutes without pickup → **P0 alert banner in ALL sw-\* sessions** via NATS `handoff.stale` event (signal-watch in every session subscribes and prints the banner)
+- Pending >30 minutes without pickup → **P0 alert banner in ALL session-\* sessions** via NATS `handoff.stale` event (signal-watch in every session subscribes and prints the banner)
 - Session restart with pending task that isn't picked up within 2 minutes → warning banner in that session
 - Nudge sent but no pickup within 2 minutes → warning banner (send-keys may have failed)
 
@@ -164,7 +164,7 @@ Already implemented. signal-watch scans pending queue before NATS subscribe, cla
 ```text
 ==========================================
 ⚠ STALE HANDOFF: #42 "Fix login regression"
-  Pending 32 min — not picked up by c-sw-1
+  Pending 32 min — not picked up by c-session-1
 
   To resolve: direct the target CC session to
   create a P0 task in its project roadmap with

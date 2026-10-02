@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from process_ownership import spawn_owned_python
 
 from ai_cli.main import (
     _bare_engine_command,
@@ -93,7 +94,7 @@ def _write_proc_stat(proc_dir: Path, pid: int, starttime: int, comm: str = "clau
 
 def _reaped_pid() -> int:
     """A pid that has exited and been reaped -- i.e. one that is provably dead."""
-    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc = spawn_owned_python("")
     proc.wait()
     return proc.pid
 
@@ -863,7 +864,7 @@ def test_given_bare_launch_when_repo_has_envrc_then_execs_under_direnv(real_repo
         patch("ai_cli.config.get_current_project_name", return_value="myproject"),
         patch("ai_cli.config.validate_registry_completeness", return_value=True),
         patch("ai_cli.session._resolve_is_remote", return_value=False),
-        patch("ai_cli.session._allow_trusted_worktree_envrc"),
+        patch("ai_cli.session._authorize_session_worktree_envrc"),
         patch("ai_cli.trust.ensure_workspace_trusted"),
     ):
         with pytest.raises(SystemExit):

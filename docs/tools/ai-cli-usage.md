@@ -83,8 +83,13 @@ ai c [N] [-p PROJECT] [-R] [--dry-run] [--verbose]
 
 Launch (or resume) a Claude Code session in a tmux worktree. The primary command.
 
-- `N` — session number (default: auto-assigned). Creates worktree `.worktrees/sw-N` on branch `wt-sw-N`.
-- `-p PROJECT` — project alias (from `~/.config/ai-cli/config.toml` `[projects]` section)
+- `N` — session number (default: auto-assigned). Creates worktree `.worktrees/session-N` on branch `wt-session-N`.
+- `-p PROJECT` — the project to launch in, given either as a registered task prefix or as the
+  name of a repository directory under the projects directory. The launcher enters that
+  directory before it creates the worktree, and refuses the launch when the directory is not
+  there — naming the resolved path and the host it was sought on — rather than continuing in
+  whatever directory it started in. A value that is neither a registered prefix nor an
+  existing repository is reported as unknown input.
 - `-R` — remote session: mosh + tmux on the configured remote host (auto-switches to SSH when VPN is active)
 - `--dry-run` — print the resolved launch plan and exit. Reports the values you cannot
   read off the command line: the session index actually free, the tmux-vs-bare decision
@@ -148,7 +153,7 @@ no live engine process as a reusable slot.
 - `allow-passthrough all` — enables DCS passthrough so iTerm2-specific escape sequences (OSC 1, `SetProfile`, etc.) sent from inside tmux reach the outer terminal. Without this, name-setting sequences are silently dropped.
 - `automatic-rename off` — prevents tmux from sending OSC 0/2 sequences for the running process name (e.g. `zsh`, `claude`), which would override the session name and flip the Session Title dropdown from "Name" to "Shell".
 
-The result: the Session Name field in iTerm2's Edit Session → General tab is always set to the tmux session name (e.g. `c-ai-cli-2`, `c-r-sw-1`), and the Session Title dropdown stays on "Name".
+The result: the Session Name field in iTerm2's Edit Session → General tab is always set to the tmux session name (e.g. `c-ai-cli-2`, `c-r-session-1`), and the Session Title dropdown stays on "Name".
 
 ### ai g
 
@@ -328,7 +333,7 @@ Default falls back to `core-cli-local.code-workspace` if not configured.
 Workspace: ~/projects/myproject/core-cli-local.code-workspace (13 repos)
 
   ✓  myproject          main
-  ✓  companion            main   +  .worktrees/sw-1   .worktrees/sw-2
+  ✓  companion            main   +  .worktrees/session-1   .worktrees/session-2
   ⚠  core-cli         main  (stashed+pulled)
   ✓  ai-cli-utils    main
   ↷  ai-cli-utils/ai-cli-1  (dirty, skipped)
@@ -445,6 +450,36 @@ Polls `_is_vpn_active()` every `remote.vpn_poll_interval` seconds (default: 3). 
 
 Logs VPN transitions to `~/.local/state/ai-cli-utils/vpn-transitions.log` (JSONL).
 
+**Connection durability (AI-CLI-w679).** On the `transport = "ssh"` path a dropped link no
+longer ends the session. The remote side runs under `tmux`, so a drop leaves it detached and
+intact — `ai c -R` reattaches, bounded by `[remote] reconnect_attempts` (default 10) with
+`reconnect_backoff` seconds before the first retry, doubling to a 30s cap. A clean exit (ssh
+0) or an interrupt (130) is treated as *you* ending the session and is never reconnected;
+anything else, 255 above all, is a transport failure. mosh needs none of this: it survives a
+dropped link and a roaming address by design.
+
+This is deliberately indifferent to *why* the link dropped, because from the client side an
+intermediary's idle timeout, its absolute session cap and a real network failure are not
+distinguishable — reattaching covers all three.
+
+The interactive session also sets `ServerAliveInterval` (default 30s) and
+`ServerAliveCountMax` (default 3), configurable as `[remote] server_alive_interval` and
+`server_alive_count_max`. That is **hardening, not the fix** for the above: it makes
+behaviour independent of whatever `~/.ssh/config` a machine carries, and stops an idle
+session being collected by a NAT or firewall that reaps silent flows. On the setup that
+produced the original report, `ssh -G` showed those options were *already* in effect, so a
+missing keepalive was not the cause there. The effective give-up time is
+`interval × count_max`.
+
+**Terminal restore on exit.** Both transports restore the local terminal when a session
+ends, however it ended. A remote `tmux` or agent enables mouse reporting, bracketed paste,
+focus reporting and an extended key mode, and clears them only on its own clean exit — so a
+dropped connection used to leave them set locally, at which point mouse movement arrives in
+your shell as literal text like `35;66;6M` (an SGR mouse report) and the only fix was
+killing the terminal. The mosh path restores in the transport loop's `finally`; the pure-SSH
+path appends the restore to its own `zsh -c` command line, because that path `exec`s and no
+Python cleanup survives it.
+
 ### ai cdp
 
 ```bash
@@ -453,9 +488,12 @@ ai cdp stop  [-p|--port N] [-t|--tunnel]
 ai cdp status
 ```text
 
-Launches and manages a Chrome/Chromium instance with the Chrome DevTools Protocol (CDP)
-remote debugging endpoint exposed. Useful for attaching Playwright, agent-browser, or
-any CDP-capable tool to a browser session without managing Chrome flags manually.
+Launches and manages a Chrome, Chromium or Microsoft Edge instance with the Chrome DevTools
+Protocol (CDP) remote debugging endpoint exposed. Useful for attaching Playwright,
+agent-browser, or any CDP-capable tool to a browser session without managing browser flags
+manually. Edge is supported because some managed endpoints ship Edge and no Chrome; being
+Chromium-derived it takes the same flags and is found by the same port scan, so nothing
+downstream distinguishes them.
 
 - `start` — launches Chrome in the background with `--remote-debugging-port=<port>` and
   `--user-data-dir=/tmp/chrome-debug-<port>` (required to force a fresh process). Adds
@@ -487,8 +525,17 @@ any CDP-capable tool to a browser session without managing Chrome flags manually
 # port = 9222
 ```text
 
-Chrome binary auto-detected in this order: `binary_path` config key → well-known macOS/Linux/Windows
-paths → `shutil.which` across common executable names.
+Browser binary auto-detected in this order: `binary_path` config key → well-known
+macOS/Linux/Windows paths → `shutil.which` across common executable names. Within the
+well-known paths the order is **Chrome, then Chromium, then Microsoft Edge**, so a machine
+carrying Chrome keeps resolving to it; Edge is only chosen when neither Chrome nor Chromium
+is present.
+
+Every launch also passes **`--remote-allow-origins=*`**. Chromium and Edge 111+ reject a
+DevTools WebSocket handshake whose `Origin` header is not explicitly allowed, and the
+rejection presents as a **hang rather than an error**, so a client that sends an `Origin`
+gets no diagnostic at all. The wildcard is bounded by the port: `--remote-debugging-port`
+binds loopback only, so reaching the endpoint already requires local access.
 
 ### ai tunnel
 

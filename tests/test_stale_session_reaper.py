@@ -24,6 +24,8 @@ from unittest.mock import patch
 import portalocker
 import psutil
 import pytest
+from conftest import TMUX_REQUIRED_REMEDY, tmux_unusable_skip_reason
+from process_ownership import reap, spawn_owned_sleeper
 
 from ai_cli.process_probe import ProcessIdentity, ProcessProbe, ProcfsProbe, PsutilProbe
 from ai_cli.session_script import get_engine_script
@@ -172,13 +174,19 @@ def isolated_tmux_socket() -> Iterator[str]:
     if not _POSIX_HOST:
         pytest.skip("the real-tmux tests need POSIX process semantics, not just a tmux binary")
     if shutil.which("tmux") is None:
-        pytest.skip("tmux binary not available on PATH")
+        pytest.skip(tmux_unusable_skip_reason("tmux binary not available on PATH"))
     socket_dir = Path(tempfile.mkdtemp(prefix="ai-cli-tmux-", dir=_SOCKET_PARENT))
     socket = str(socket_dir / "socket")
     try:
         probe = _tmux_run(socket, "new-session", "-d", "-s", "probe", "sleep", "30")
         if probe.returncode != 0 or _tmux_run(socket, "has-session", "-t", "probe").returncode != 0:
-            pytest.skip(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
+            # Marked as a tmux-provisioning skip, unlike the POSIX check above: tmux is
+            # installed here and still cannot host a session, so the coverage this
+            # module provides has silently gone away and the session-level check in
+            # conftest should say so rather than let the run look green.
+            pytest.skip(
+                tmux_unusable_skip_reason(f"isolated tmux server unavailable: {(probe.stderr or probe.stdout).strip()}")
+            )
         yield socket
     finally:
         _tmux_run(socket, "kill-server")
@@ -474,6 +482,76 @@ fi
     ):
         pass
     assert record.stat().st_mtime_ns == final_mtime, "a crashed supervisor must stop its detached ticker"
+
+
+def _find_detached_ticker(supervisor_script: Path) -> psutil.Process:
+    """Return the detached heartbeat ticker that ``supervisor_script`` spawned.
+
+    Matched on the script path, which is unique per ``tmp_path``. Matching on
+    ``--ai-cli-heartbeat-ticker`` alone would also match a concurrent xdist worker's
+    ticker, and -- worse -- a ticker stranded by an EARLIER run, which is the exact
+    thing the caller is asserting does not survive.
+    """
+    target = str(supervisor_script)
+    deadline = time.monotonic() + _PROCESS_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        for process in psutil.process_iter(["cmdline"]):
+            with contextlib.suppress(psutil.Error):
+                cmdline = process.info["cmdline"] or []
+                if "--ai-cli-heartbeat-ticker" in cmdline and target in cmdline:
+                    return process
+        time.sleep(0.05)
+    pytest.fail("the supervisor never spawned its detached heartbeat ticker")
+
+
+@pytest.mark.real_tmux
+def test_given_real_supervisor_crash_when_the_ticker_is_detached_then_the_ticker_process_exits(
+    real_tmux_socket: str, tmp_path: Path, real_supervisor_shell: str
+):
+    """A crashed pane leader must not leave its heartbeat ticker process running.
+
+    The sibling test above asserts the heartbeat RECORD stops moving, and the ticker
+    satisfies that while looping forever: ``publish-heartbeat`` merely refuses once the
+    generation lease is gone, and ``|| true`` swallows the refusal. So that assertion
+    stayed green for as long as this defect existed, while one immortal ticker per
+    pytest run accumulated behind it -- 21 of them, from 21 distinct run directories,
+    when this was measured.
+
+    Nothing outside the ticker can end it. The supervisor's EXIT trap kills it, but
+    SIGKILL never runs a trap, and the ticker is spawned through ``os.setsid()`` so
+    that foreground-group changes cannot reach it -- which also places it outside every
+    process group a reaper could signal. It has to exit on its own, so the assertion is
+    on the PROCESS and not on the record it stopped writing.
+    """
+    child_body = f"""#!{real_supervisor_shell}
+if [[ "${{1:-}}" == "--ai-cli-child-body" ]]; then
+  printf '%s\\n' "$$" > "$AI_CLI_TEST_CHILD_READY"
+  while true; do sleep 0.05; done
+fi
+"""
+    session_id, state_home, _ = _start_real_tmux_supervisor(
+        real_tmux_socket, tmp_path, real_supervisor_shell, is_remote=False, child_body=child_body
+    )
+    _wait_for_condition("the live child", lambda: (tmp_path / "child-ready").exists())
+    generation = _tmux_generation(real_tmux_socket, session_id)
+    _wait_for_condition("the initial heartbeat", heartbeat_path(state_home, session_id, generation).exists)
+    ticker = _find_detached_ticker(tmp_path / "supervisor.sh")
+    pane = _tmux_run(real_tmux_socket, "display-message", "-p", "-t", session_id, "#{pane_pid}")
+    assert pane.returncode == 0, pane.stderr
+
+    try:
+        os.kill(int(pane.stdout.strip()), signal.SIGKILL)
+        _wait_for_missing_session(real_tmux_socket, session_id)
+        _wait_for_condition(
+            "the detached heartbeat ticker to exit once its supervisor was killed",
+            lambda: not ticker.is_running() or ticker.status() == psutil.STATUS_ZOMBIE,
+        )
+    finally:
+        # This test is the one proving the ticker ends itself, so it cannot assume that:
+        # reap it here whichever way the assertion went, or a red run leaks the very
+        # process the run was measuring.
+        with contextlib.suppress(psutil.Error):
+            ticker.kill()
 
 
 @pytest.mark.real_tmux
@@ -1026,7 +1104,7 @@ def test_given_real_pid_with_changed_identity_during_revalidation_then_evaluator
     reaper_state: Path, candidate: SessionCandidate
 ):
     """A controlled reuse mutation must reject a real live process boundary."""
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    process = spawn_owned_sleeper()
 
     class IdentityChangesDuringRevalidation(ProcessProbe):
         ended_states = frozenset({"Z"})
@@ -1078,8 +1156,7 @@ def test_given_real_pid_with_changed_identity_during_revalidation_then_evaluator
         assert _reaper(reaper_state, tmux, IdentityChangesDuringRevalidation()).evaluate_once() == []
         assert tmux.kills == []
     finally:
-        process.kill()
-        process.wait()
+        reap(process)
 
 
 def test_given_token_or_name_mismatch_when_heartbeat_is_stale_then_preserves_session(
@@ -1320,7 +1397,11 @@ def _zsh_rc_free_home(tmp_path: Path) -> Path:
 
 def _write_isolated_tmux_wrapper(path: Path) -> None:
     tmux_binary = shutil.which("tmux")
-    assert tmux_binary is not None, "tmux binary not available on PATH"
+    # Deliberately an assertion and not a skip: the test below is one of the three that
+    # treat tmux as guaranteed (AI-CLI-qzf2). The message therefore has to name the
+    # missing binary AND what to do about it, because a reader who sees only a failure
+    # here has no reason to suspect provisioning.
+    assert tmux_binary is not None, f"tmux binary not available on PATH. {TMUX_REQUIRED_REMEDY}"
     _write_executable(
         path,
         f'#!/bin/sh\nexec {shlex.quote(tmux_binary)} -S "$AI_CLI_TEST_TMUX_SOCKET" "$@"\n',
@@ -1420,7 +1501,14 @@ def _start_generated_supervisor(
     fast_heartbeat: bool = False,
     child_group_delay: float = 0,
     pseudo_terminal: bool = False,
-    ready_timeout: float = 15,
+    # 45s, not 15s: every test through here starts a REAL supervisor, under `script` and a
+    # pseudo-terminal, and a reload test starts two children in sequence. Measured on one
+    # host, `test_given_reload_exit_when_supervisor_starts_second_child_then_it_is_promoted`
+    # completed in 6-8s alone and exceeded 15s in two of three full `-n auto` runs, so the
+    # budget was failing on wall clock rather than on the promotion defect it exists to
+    # catch. A child that genuinely is left STOPPED never writes its ready file at all, so a
+    # longer budget still fails -- only later.
+    ready_timeout: float = 45,
     extra_commands: dict[str, str] | None = None,
     stdin_fd: int | None = None,
     fast_promotion_retry: bool = False,
@@ -1948,7 +2036,20 @@ def test_given_live_generated_supervisor_when_sigterm_is_repeated_then_child_rec
     process, events, _ = _start_generated_supervisor(tmp_path, supported_session_shell, lease_acquired=False)
 
     os.kill(process.pid, signal.SIGTERM)
-    time.sleep(0.05)
+    # Wait for the relay to be OBSERVABLE rather than sleeping a guessed 50ms. The sibling
+    # test below already does this; this one did not, and it was the difference between a
+    # stable test and an intermittently red macOS job -- 50ms is not enough for the child's
+    # TERM trap to create the file on a loaded runner, so `events.read_text()` below raised
+    # FileNotFoundError while the supervisor was behaving correctly.
+    #
+    # It also makes the assertion mean what it says. The subject is that a REPEATED SIGTERM
+    # still produces exactly one relay, so the first relay has to have happened before the
+    # second signal is sent; with a fixed sleep, a fast machine could deliver the second
+    # TERM first and the test would be measuring a different sequence than it describes.
+    #
+    # _wait_for_path cannot mask the defect it guards: it fails if the supervisor exits
+    # early, and fails on timeout, so a child that never relays still fails -- only later.
+    _wait_for_path(events, process)
     if process.poll() is None:
         os.kill(process.pid, signal.SIGTERM)
     stdout, stderr = _communicate_supervisor(process)
@@ -2067,7 +2168,6 @@ def test_given_delayed_child_process_group_when_supervisor_promotes_then_it_wait
         lease_acquired=False,
         child_group_delay=12.0,
         pseudo_terminal=True,
-        ready_timeout=30,
     )
 
     assert process.poll() is None

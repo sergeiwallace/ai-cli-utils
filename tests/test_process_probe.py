@@ -114,9 +114,18 @@ def sleeper():
     The leader is returned as its ``Popen``, which gives each test an exit oracle
     (``poll()``) that owes nothing to the code under test -- and reaps it, so a
     terminated child never lingers as a zombie that the next assertion misreads.
+
+    The wrapped grandchild has no ``Popen`` here, so it is held as a
+    ``psutil.Process`` captured while it was still alive. That is what arms
+    psutil's own pid-reuse guard: the object caches ``(pid, create_time)`` and
+    ``kill()`` refuses once that no longer identifies the pid's occupant. Reaping
+    it by bare number instead cannot refuse, because most of these tests end the
+    grandchild themselves and its number is already free by teardown -- measured,
+    the ordinary path rather than a rare race -- so the reap would aim at whatever
+    the OS had since given that number to.
     """
     leaders: list[subprocess.Popen] = []
-    wrapped: list[int] = []
+    wrapped: list[psutil.Process] = []
 
     def spawn(with_child: bool = False) -> tuple[subprocess.Popen, int]:
         if not with_child:
@@ -129,14 +138,15 @@ def sleeper():
         assert proc.stdout is not None
         child_pid = int(proc.stdout.readline())
         proc.stdout.close()
-        wrapped.append(child_pid)
+        with contextlib.suppress(psutil.Error, OSError):
+            wrapped.append(psutil.Process(child_pid))
         return proc, child_pid
 
     yield spawn
 
-    for pid in wrapped:
+    for child in wrapped:
         with contextlib.suppress(psutil.Error, OSError):
-            psutil.Process(pid).kill()
+            child.kill()
     for proc in leaders:
         with contextlib.suppress(OSError):
             proc.kill()
@@ -166,6 +176,28 @@ def _report_stopped(monkeypatch, pid: int) -> None:
         return actual
 
     monkeypatch.setattr(psutil.Process, "status", status)
+
+
+def _record_aimed_pids(monkeypatch) -> list[int]:
+    """Record every pid the escalation aims a psutil termination call at.
+
+    The real call still runs, so a guard that stopped excluding a pid would really
+    end that process -- this only adds an account of what was aimed at, which
+    answers "was it signalled" directly instead of inferring it from whether the
+    process is still alive afterwards.
+    """
+    aimed: list[int] = []
+
+    for action in ("terminate", "resume", "kill"):
+        real = getattr(psutil.Process, action)
+
+        def record(self, _real=real):
+            aimed.append(self.pid)
+            return _real(self)
+
+        monkeypatch.setattr(psutil.Process, action, record)
+
+    return aimed
 
 
 # --- inspection: presence, state, and what those states mean --------------------
@@ -322,11 +354,46 @@ def test_given_a_procfs_tick_count_when_matched_without_procfs_then_unrecorded(s
     assert PsutilProbe().start_time_match(proc.pid, 777) is StartTimeMatch.UNRECORDED
 
 
-def test_given_a_pid_that_no_longer_exists_when_matched_then_unproven(sleeper):
+def test_given_psutil_cannot_see_the_process_when_matched_then_unproven(monkeypatch):
+    """The branch is "psutil cannot see it", so simulate exactly that and nothing else.
+
+    This used to kill a real sleeper and assert UNPROVEN on its pid, which is a POSIX-only
+    observation dressed as a portable one. On Windows a pid stays queryable while ANY handle
+    to it is open, and the ``sleeper`` fixture deliberately holds the ``Popen`` for teardown
+    -- so ``create_time()`` still returned the dead process's real birth time, it still
+    matched ``recorded``, and the probe answered MATCH. Correctly: that pid genuinely was
+    still identified as the recorded process. Measured on main at ``c27c983``, test-windows
+    of run 36368188335.
+
+    Mocking at the psutil boundary is the honest way to reach this branch, because the
+    branch is about what the probe does with an unavailable answer, not about how the OS
+    decides to release a pid. The real-process behaviour is covered by the test below.
+    """
+
+    def raise_no_such_process(_pid):
+        raise psutil.NoSuchProcess(4242)
+
+    monkeypatch.setattr(psutil, "Process", raise_no_such_process)
+
+    assert PsutilProbe().start_time_match(4242, _filetime(time.time())) is StartTimeMatch.UNPROVEN
+
+
+def test_given_a_live_pid_and_a_mismatched_record_when_matched_then_never_claims_a_match(sleeper):
+    """The safety property that must hold on every platform: no MATCH for a wrong identity.
+
+    That is what would otherwise let a reclaim signal the wrong process after a pid was
+    reused. Asserted against a LIVE process on purpose. A first attempt killed the process
+    first, which looked stronger and was actually weaker: on POSIX the dead pid raises
+    ``NoSuchProcess`` and the probe returns UNPROVEN from the exception path, so the
+    comparison under test was never reached and the assertion passed for the wrong reason.
+    Measured -- widening ``_START_TIME_TOLERANCE_SECONDS`` to 999999 left that version
+    green, which is the definition of a test that cannot fail.
+
+    A live process forces the comparison on every platform, so the same widening now turns
+    this red.
+    """
     proc, _ = sleeper()
-    recorded = _filetime(psutil.Process(proc.pid).create_time())
-    proc.kill()
-    proc.wait(timeout=15)
+    recorded = _filetime(psutil.Process(proc.pid).create_time() - 3600)
 
     assert PsutilProbe().start_time_match(proc.pid, recorded) is StartTimeMatch.UNPROVEN
 
@@ -450,18 +517,62 @@ def test_given_a_pid_that_is_already_gone_when_ended_then_it_reports_ended(sleep
     assert PsutilProbe().end_process(proc.pid, identity, timeout=0.5) is True
 
 
+def test_given_the_callers_own_pid_when_targets_are_collected_then_it_is_excluded(sleeper):
+    """The guard itself, read off the target set, with nothing impersonated.
+
+    The caller here is the pytest worker, whose liveness is not in question because
+    it is running this assertion. So this covers the exclusion unconditionally, on
+    every platform, whatever happens to any other process on the host.
+    """
+    sleeper()  # a real child, so the descendant walk has something to return
+
+    targets = PsutilProbe()._tree(os.getpid())
+
+    assert os.getpid() not in [target.pid for target in targets]
+
+
 def test_given_the_recorded_pid_is_the_caller_when_ended_then_it_is_not_signalled(sleeper, monkeypatch):
     """``ai c`` can be launched from inside the session being reclaimed.
 
     The launcher is impersonated by pointing ``os.getpid`` at the sleeper, so the
     guard can be driven through the real entry point without the test asking a
     process to kill the pytest worker it is running in.
+
+    The oracle is which pids the escalation aims at, never whether the sleeper is
+    still breathing afterwards. A real process can be ended by something outside
+    this test, and was: on Windows CI this test failed twice while the guard was
+    working perfectly, both times reporting the sleeper as ``status='terminated'``
+    -- so ``end_process`` honestly answered "it has ended" and the old
+    ``is False`` assertion, which read the sleeper's liveness rather than this
+    code's behavior, failed for it (AI-CLI-l6hv).
     """
     proc, _ = sleeper()
+    probe = PsutilProbe()
+    identity = psutil.Process(proc.pid).create_time()
+    aimed = _record_aimed_pids(monkeypatch)
     monkeypatch.setattr(os, "getpid", lambda: proc.pid)
 
-    assert PsutilProbe().end_process(proc.pid, psutil.Process(proc.pid).create_time(), timeout=0.3) is False
-    assert proc.poll() is None, "the caller's own process must never be signalled"
+    # The property is that the CALLER was excluded, not that the tree is empty.
+    #
+    # `== []` was the same environment-falsifiable oracle AI-CLI-l6hv removed from the
+    # assertion below, left behind in the precondition: it also claims no unrelated
+    # process on the host reports this pid as its parent. Windows cannot promise that.
+    # It never reparents an orphan, so a process whose parent has exited keeps the dead
+    # parent's pid recorded, and Windows recycles pids aggressively -- so once our
+    # sleeper is given a recently-freed number, unrelated processes start looking like
+    # its children. Measured on Windows CI (run 36360403720): `assert [1820] == []`,
+    # with the guard working correctly. Intermittent on main for the same reason,
+    # failing at 843811f and 466984d while passing at 34f5f57, 209e554 and 564d3c1.
+    #
+    # Asserting the caller's absence is falsifiable by this code and by nothing else:
+    # only a regression in _tree's own "the current process is never a target" filter
+    # can break it, which is exactly the behavior under test.
+    assert proc.pid not in [target.pid for target in probe._tree(proc.pid)], (
+        "_tree must exclude the calling process, since `ai c` can be launched from inside the session being reclaimed"
+    )
+    probe.end_process(proc.pid, identity, timeout=0)
+
+    assert proc.pid not in aimed, "the caller's own process must never be signalled"
 
 
 def test_given_a_platform_without_procfs_when_a_manual_hint_is_asked_for_then_it_is_ascii(sleeper):

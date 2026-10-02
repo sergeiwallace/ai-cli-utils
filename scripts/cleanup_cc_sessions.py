@@ -21,38 +21,58 @@ from pathlib import Path
 STUB_SIZE_THRESHOLD = 10 * 1024  # 10KB
 STUB_LINE_THRESHOLD = 30  # files with fewer lines than this are stubs
 
-# Maps customTitle prefix patterns to expected staging subdir names.
-# Order matters: more specific patterns first (sw-N-suffix before sw-N).
-TITLE_PATTERNS: list[tuple[re.Pattern, callable]] = [
-    (re.compile(r"^sw-(\d+)", re.IGNORECASE), lambda m: f"myproject--worktrees-sw-{m.group(1)}"),
-    (re.compile(r"^aido-(\d+)", re.IGNORECASE), lambda m: f"aido--worktrees-aido-{m.group(1)}"),
-    (re.compile(r"^art-(\d+)", re.IGNORECASE), lambda m: f"artelier--worktrees-art-{m.group(1)}"),
-    (re.compile(r"^aurion-(\d+)", re.IGNORECASE), lambda m: f"aurion--worktrees-aurion-{m.group(1)}"),
-    (re.compile(r"^aur-(\d+)", re.IGNORECASE), lambda m: f"aurion--worktrees-aur-{m.group(1)}"),
-    (re.compile(r"^ai-cli-(\d+)", re.IGNORECASE), lambda m: f"ai-cli-utils--worktrees-ai-cli-{m.group(1)}"),
-    (re.compile(r"^aq-(\d+)", re.IGNORECASE), lambda m: f"ai-cli-quickstart--worktrees-aq-{m.group(1)}"),
-    (re.compile(r"^mobile-(\d+)", re.IGNORECASE), lambda m: f"ai-ide-mobile--worktrees-mobile-{m.group(1)}"),
-    (re.compile(r"^hwosx-(\d+)", re.IGNORECASE), lambda m: f"ai-ide-macos--worktrees-hwosx-{m.group(1)}"),
-    (re.compile(r"^macos-(\d+)", re.IGNORECASE), lambda m: f"ai-ide-macos--worktrees-macos-{m.group(1)}"),
-    (re.compile(r"^dojo-(\d+)", re.IGNORECASE), lambda m: f"ai-dojo--worktrees-dojo-{m.group(1)}"),
-    (re.compile(r"^ps-(\d+)", re.IGNORECASE), lambda m: f"personal-site--worktrees-ps-{m.group(1)}"),
-    (re.compile(r"^site-(\d+)", re.IGNORECASE), lambda m: f"personal-site--worktrees-site-{m.group(1)}"),
-    (re.compile(r"^job-(\d+)", re.IGNORECASE), lambda m: f"job-pilot--worktrees-job-{m.group(1)}"),
-    (re.compile(r"^apt-(\d+)", re.IGNORECASE), lambda m: f"apt-switch--worktrees-apt-{m.group(1)}"),
-    (re.compile(r"^trip-(\d+)", re.IGNORECASE), lambda m: f"trip-planner--worktrees-trip-{m.group(1)}"),
-    (re.compile(r"^fin-(\d+)", re.IGNORECASE), lambda m: f"aurion--worktrees-fin-{m.group(1)}"),
-    (re.compile(r"^acn-(\d+)", re.IGNORECASE), lambda m: f"acn-automation--worktrees-acn-{m.group(1)}"),
-    (re.compile(r"^agora-(\d+)", re.IGNORECASE), lambda m: f"agora--worktrees-agora-{m.group(1)}"),
-]
+# A session worktree directory, as Claude Code encodes it: '<repo>--worktrees-<prefix>-<n>',
+# optionally with a trailing segment. Used in two directions -- to LEARN that a prefix belongs
+# to a repository, and to BUILD the directory a titled session is expected to live in.
+_WORKTREE_DIR_RE = re.compile(r"^(?P<repo>.+?)--worktrees-(?P<prefix>[A-Za-z0-9-]+?)-(?P<n>\d+)(?:-.*)?$")
+
+# A session title: '<prefix>-<n>', optionally with a trailing segment ('myapp-1-suffix'). The
+# non-greedy prefix plus the anchored digits is what makes a multi-segment prefix resolve
+# correctly -- 'ai-cli-1' yields prefix 'ai-cli' and n '1', because 'ai' would require '-cli-1'
+# to be digits and the match backtracks.
+_SESSION_TITLE_RE = re.compile(r"^(?P<prefix>[A-Za-z0-9-]+?)-(?P<n>\d+)(?:-.*)?$")
 
 
-def get_expected_staging_dir(custom_title: str) -> str | None:
-    """Return the expected staging subdir name for a customTitle, or None if unknown."""
-    for pattern, resolver in TITLE_PATTERNS:
-        m = pattern.match(custom_title)
-        if m:
-            return resolver(m)
-    return None
+def build_prefix_repo_map(base_dir: Path, is_staging: bool) -> dict[str, str]:
+    """Learn which repository each session prefix belongs to, from the directories present.
+
+    This replaced a hardcoded table of prefix-to-repository pairs (AI-CLI-2jwm). That table
+    was a published roster of one operator's private projects in a public repository, and it
+    was also duplicating information already on disk: a directory named
+    '<repo>--worktrees-<prefix>-<n>' states the pairing itself. Deriving it covers projects
+    added after this script was written, which the table silently could not.
+
+    Only the first pairing seen for a prefix is kept, so a single contaminated directory
+    cannot redefine a prefix that legitimate directories already establish.
+    """
+    mapping: dict[str, str] = {}
+    if not base_dir.is_dir():
+        return mapping
+    for project_dir in sorted(base_dir.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        match = _WORKTREE_DIR_RE.match(extract_project_subdir(project_dir.name, is_staging))
+        if match:
+            mapping.setdefault(match["prefix"].lower(), match["repo"])
+    return mapping
+
+
+def get_expected_staging_dir(custom_title: str, prefix_repo_map: dict[str, str]) -> str | None:
+    """Return the expected staging subdir name for a customTitle, or None if unknown.
+
+    ``None`` means "cannot tell", and the caller must leave the file in place on it. That
+    fail-safe direction is the contract, not an implementation detail: the alternative is
+    archiving a session that is exactly where it belongs. So an unrecognised title, and a
+    prefix no directory has established a repository for, both decline to answer.
+    """
+    match = _SESSION_TITLE_RE.match(custom_title)
+    if match is None:
+        return None
+    prefix = match["prefix"].lower()
+    repo = prefix_repo_map.get(prefix)
+    if repo is None:
+        return None
+    return f"{repo}--worktrees-{prefix}-{match['n']}"
 
 
 def get_custom_title_and_linecount(jsonl_path: Path) -> tuple[str | None, int]:
@@ -115,6 +135,10 @@ def scan_dir(
         print(f"  [{label}] Directory not found: {base_dir}")
         return counts
 
+    # Built once per base directory, before any file is judged: the map is evidence about
+    # which repository each prefix belongs to, and a per-file scan could only see part of it.
+    prefix_repo_map = build_prefix_repo_map(base_dir, is_staging)
+
     for project_dir in sorted(base_dir.iterdir()):
         if not project_dir.is_dir():
             continue
@@ -147,7 +171,7 @@ def scan_dir(
 
             # Check cross-project contamination (only for named sessions)
             if custom_title:
-                expected_dir = get_expected_staging_dir(custom_title)
+                expected_dir = get_expected_staging_dir(custom_title, prefix_repo_map)
                 if expected_dir is not None and expected_dir != project_subdir:
                     reason = "cross-project"
                     archive_dest = archive_base / dir_name / jsonl_path.name

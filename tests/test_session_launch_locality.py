@@ -403,7 +403,7 @@ def test_given_a_new_worktree_when_launched_then_its_creation_is_announced(tmp_p
     _launch_in(monkeypatch, tmp_path, engine=engine)
 
     err = capsys.readouterr().err
-    assert "Creating isolated worktree for this session" in err
+    assert "[launch] Worktree: created" in err
     # The message must name WHERE, or it does not remove the surprise.
     assert str(repo / ".worktrees" / "kg-1") in err
     assert (repo / ".worktrees" / "kg-1").is_dir()
@@ -502,4 +502,4 @@ def test_given_an_existing_worktree_when_launched_then_its_reuse_is_announced(tm
     _launch_in(monkeypatch, tmp_path, engine=engine)
 
     err = capsys.readouterr().err
-    assert f"Using existing worktree: {repo / '.worktrees' / 'kg-1'}" in err
+    assert f"[launch] Worktree: reusing {repo / '.worktrees' / 'kg-1'}" in err

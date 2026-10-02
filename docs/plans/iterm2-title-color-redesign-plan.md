@@ -188,7 +188,7 @@ Do not implement anything. Read-only. Output is one design doc.
 
 1. No multi-pane combined titles. Drop the abbreviation/aggregation logic from the
    prior plan entirely. Each pane shows only its own session info. Tab title =
-   focused pane's title. There is no combined "c-sw-{▶1|⏸2}" format.
+   focused pane's title. There is no combined "c-session-{▶1|⏸2}" format.
 
 2. Type symbols are pane-header only, not tab title. The *, ✦, $ symbols are
    meaningful in split-pane headers where the profile icon may not be visible. In

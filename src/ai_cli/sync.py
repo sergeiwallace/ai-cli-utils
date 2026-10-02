@@ -202,6 +202,14 @@ def _is_mac() -> bool:
     return sys.platform == "darwin"
 
 
+def _home_relative(path: Path) -> str:
+    """Render a path as ``~/...`` when it is under home, else absolute."""
+    try:
+        return f"~/{path.relative_to(Path.home()).as_posix()}"
+    except ValueError:
+        return str(path)
+
+
 def get_local_prefix() -> str:
     """Derive the CC project directory prefix for this machine from the home path.
 
@@ -351,7 +359,7 @@ def normalize_project_path(cc_dir_name: str, local_prefix: str) -> str | None:
     """Convert a CC project dir name to a bare project name.
 
     E.g. '-Users-username-projects-myproject' -> 'myproject'
-    '-Users-username-projects-myproject--worktrees-sw-1' -> 'myproject--worktrees-sw-1'
+    '-Users-username-projects-myproject--worktrees-session-1' -> 'myproject--worktrees-session-1'
     Returns None if the dir name does not match the local prefix.
     """
     if cc_dir_name.startswith(local_prefix):
@@ -1515,7 +1523,7 @@ def _replicate_to_worktrees(
             wt_cc_dir.mkdir(parents=True, exist_ok=True)
             wt_cwd = str(wt_path)
 
-            # Worktree name is the directory name (e.g. "sw-5" from .worktrees/sw-5)
+            # Worktree name is the directory name (e.g. "session-5" from .worktrees/session-5)
             wt_session_name = wt_path.name
 
             # Copy and translate JSONL files — only those belonging to this worktree's session.
@@ -1934,27 +1942,13 @@ def notify_conflicts(conflicts: list[str], events: list[dict[str, str]] | None =
     ``events`` is supplied by ``apply_pull_files`` at the point the conflict is
     classified.  The fallback retains useful logs for programmatic callers that
     only have legacy display strings.
-    """
-    summary = ", ".join(conflicts[:3])
-    if len(conflicts) > 3:
-        summary += f" (+{len(conflicts) - 3} more)"
 
-    if _is_mac():
-        subprocess.run(
-            [
-                "osascript",
-                "-e",
-                "on run argv\n"
-                "display notification (item 3 of argv) with title (item 1 of argv) "
-                "subtitle (item 2 of argv)\n"
-                "end run",
-                "ai sync: conflict detected",
-                "Review .conflict files or check ~/.claude-sync-conflicts.log",
-                summary,
-            ],
-            capture_output=True,
-            check=False,
-        )
+    Nothing to report is a no-op — no notification, no log file.  The log is
+    written *before* the notification so the remedy the notification names
+    always exists by the time the user can act on it.
+    """
+    if not conflicts:
+        return
 
     if events is None:
         events = [
@@ -1978,6 +1972,27 @@ def notify_conflicts(conflicts: list[str], events: list[dict[str, str]] | None =
                 )
                 + "\n"
             )
+
+    summary = ", ".join(conflicts[:3])
+    if len(conflicts) > 3:
+        summary += f" (+{len(conflicts) - 3} more)"
+
+    if _is_mac():
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                "on run argv\n"
+                "display notification (item 3 of argv) with title (item 1 of argv) "
+                "subtitle (item 2 of argv)\n"
+                "end run",
+                "ai sync: conflict detected",
+                f"Review .conflict files or check {_home_relative(CONFLICT_LOG)}",
+                summary,
+            ],
+            capture_output=True,
+            check=False,
+        )
 
 
 # ---------------------------------------------------------------------------

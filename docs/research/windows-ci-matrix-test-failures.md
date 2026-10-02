@@ -12,7 +12,7 @@ delegation_provenance:
   effort: high
   persona: research
   worktree: /Users/user/projects/ai-cli-utils/.worktrees/sw6-win-ci-research
-  session: sw-6
+  session: session-6
 task: AI-CLI-6ibt
 ---
 

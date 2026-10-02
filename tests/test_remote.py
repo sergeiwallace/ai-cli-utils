@@ -1,12 +1,14 @@
 import io
 import json
+import shlex
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import _run_cli_with_args
 
-from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _resolve_remote_shell, cli
+from ai_cli.main import _REMOTE_SHELL_PROBE_CMD, _resolve_remote_shell, _update_remote_ai_cli, cli
 from ai_cli.session import build_session_name
 
 # --- --remote flag tests ---
@@ -67,14 +69,15 @@ def test_given_windows_when_remote_flag_used_then_exits_with_documented_error(ca
 
 def test_remote_flag_when_host_configured_then_sshs_to_host():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)
-    mock_exec.assert_called_once()
-    cmd, args = mock_exec.call_args[0]
-    assert cmd == "zsh"
-    bash_cmd = args[2]
-    assert "ubuntu@1.2.3.4" in bash_cmd
-    assert "-t" in bash_cmd
-    assert "--is-remote" in bash_cmd and "1" in bash_cmd
+    # Asserted against the ssh argv list rather than a joined shell string: this
+    # path runs in-process now so a dropped link can be reattached (AI-CLI-w679).
+    runner = _run_cli_with_args(["ai", "c", "1", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    ssh_args = runner.call_args[0][0]
+    assert ssh_args[0] == "ssh"
+    assert "ubuntu@1.2.3.4" in ssh_args
+    assert "-t" in ssh_args
+    assert "--is-remote" in ssh_args[-1] and "1" in ssh_args[-1]
 
 
 def test_given_named_remote_default_when_remote_flag_used_then_ssh_uses_default_machine():
@@ -87,9 +90,10 @@ def test_given_named_remote_default_when_remote_flag_used_then_ssh_uses_default_
             },
         }
     }
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "-R"], config)
-    assert "dev@framework.example.com" in mock_exec.call_args[0][1][2]
-    assert "-p 2222" in mock_exec.call_args[0][1][2]
+    runner = _run_cli_with_args(["ai", "c", "1", "-R"], config, capture_ssh_runner=True)
+    ssh_args = runner.call_args[0][0]
+    assert "dev@framework.example.com" in ssh_args
+    assert ssh_args[ssh_args.index("-p") + 1] == "2222"
 
 
 def test_given_named_remote_alias_when_remote_machine_selected_then_ssh_uses_selected_machine():
@@ -102,9 +106,10 @@ def test_given_named_remote_alias_when_remote_machine_selected_then_ssh_uses_sel
             },
         }
     }
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "-R", "-m", "hz"], config)
-    assert "root@server.example.com" in mock_exec.call_args[0][1][2]
-    assert "-p 2200" in mock_exec.call_args[0][1][2]
+    runner = _run_cli_with_args(["ai", "c", "1", "-R", "-m", "hz"], config, capture_ssh_runner=True)
+    ssh_args = runner.call_args[0][0]
+    assert "root@server.example.com" in ssh_args
+    assert ssh_args[ssh_args.index("-p") + 1] == "2200"
 
 
 def test_given_unknown_remote_alias_when_remote_machine_selected_then_prints_configured_aliases(capsys):
@@ -221,12 +226,11 @@ def test_given_alias_with_no_host_when_ssh_called_then_exits_without_exec(capsys
 
 def test_remote_flag_when_host_configured_then_passes_is_remote_flag():
     config = {"remote": {"host": "hetzner-dev", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "g", "research", "--remote"], config)
-    mock_exec.assert_called_once()
-    _, args = mock_exec.call_args[0]
-    bash_cmd = args[2]
-    assert "ubuntu@hetzner-dev" in bash_cmd
-    assert "ai g --is-remote" in bash_cmd and "research" in bash_cmd
+    runner = _run_cli_with_args(["ai", "g", "research", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    ssh_args = runner.call_args[0][0]
+    assert "ubuntu@hetzner-dev" in ssh_args
+    assert "ai g --is-remote" in ssh_args[-1] and "research" in ssh_args[-1]
 
 
 def test_remote_flag_when_called_then_passes_project_prefix_to_server():
@@ -235,24 +239,24 @@ def test_remote_flag_when_called_then_passes_project_prefix_to_server():
     with (
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
-        patch("ai_cli.session.get_project_prefix", return_value="sw"),
-        patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        patch("ai_cli.session.get_project_prefix", return_value="session"),
+        patch("ai_cli.transport.run_ssh_with_reconnect", return_value=0) as runner,
         patch("ai_cli.main.trigger_background_update"),
     ):
         try:
             cli()
         except SystemExit:
             pass
-    _, args = mock_exec.call_args[0]
-    assert any("--project-prefix sw" in a for a in args)
+    ssh_args = runner.call_args[0][0]
+    assert any("--project-prefix session" in a for a in ssh_args)
 
 
 def test_remote_flag_with_resume_when_called_then_forwards_resume_to_server():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "c", "-r", "1", "--remote"], config)
-    mock_exec.assert_called_once()
-    _, args = mock_exec.call_args[0]
-    assert any("--resume" in a for a in args)
+    runner = _run_cli_with_args(["ai", "c", "-r", "1", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    ssh_args = runner.call_args[0][0]
+    assert any("--resume" in a for a in ssh_args)
 
 
 # --- remote shell resolution (AI-CLI-gg9s regression) ---
@@ -303,6 +307,65 @@ class TestResolveRemoteShell:
         assert result == "bash"
 
 
+# --- remote host auto-update (AI-CLI-dw1g deployment-gap follow-up) ---
+#
+# A remote launch runs the generated supervisor entirely from the REMOTE
+# host's own installed ai-cli-utils. A fix merged to this repo's own main does
+# nothing for a remote session until that host's checkout is pulled and
+# reinstalled, and nothing else keeps a remote host's checkout current --
+# measured stale on both configured remote machines by the time this was
+# written. `_update_remote_ai_cli` closes that gap by running `ai update
+# --quiet` on the remote host before every remote launch.
+
+
+class TestUpdateRemoteAiCli:
+    def test_given_update_succeeds_when_called_then_returns_true_with_its_output(self):
+        with patch(
+            "ai_cli.main.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="0.8.0 → 0.8.0.post20260927120000\n", stderr=""),
+        ) as mock_run:
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is True
+        assert "0.8.0.post20260927120000" in detail
+        remote_command = mock_run.call_args[0][0][-1]
+        assert "ai update --quiet" in remote_command
+
+    def test_given_update_fails_when_called_then_returns_false_without_raising(self):
+        with patch(
+            "ai_cli.main.subprocess.run",
+            return_value=MagicMock(returncode=1, stdout="", stderr="git pull failed: no network"),
+        ):
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is False
+        assert "no network" in detail
+
+    def test_given_update_times_out_when_called_then_returns_false_without_raising(self):
+        with patch("ai_cli.main.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=30)):
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is False
+        assert "timed out" in detail
+
+    def test_given_update_raises_unexpectedly_when_called_then_returns_false_without_raising(self):
+        """A preflight step must never crash the launch -- any failure degrades, never raises."""
+        with patch("ai_cli.main.subprocess.run", side_effect=RuntimeError("unexpected")):
+            ok, detail = _update_remote_ai_cli(["ssh", "-T", "user@host"], "zsh")
+        assert ok is False
+        assert "unexpected" in detail
+
+
+def test_given_dry_run_when_remote_launch_previewed_then_remote_update_is_not_attempted():
+    """A dry run must not mutate the remote host any more than it may mutate this one.
+
+    Full network-call coverage for the remote dry-run path (AI-CLI-shpu) lives
+    in ``test_session_dry_run.py`` alongside its local-path sibling; this test
+    pins the cli()-level integration through ``_run_cli_with_args``.
+    """
+    config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
+    with patch("ai_cli.main._update_remote_ai_cli") as mock_update:
+        _run_cli_with_args(["ai", "c", "1", "--remote", "--dry-run"], config)
+    mock_update.assert_not_called()
+
+
 def test_given_remote_host_lacks_zsh_when_launched_then_uses_probed_shell_not_hardcoded_zsh():
     config = {"remote": {"host": "fw.example.com", "user": "dev", "port": 22, "identity_file": "", "transport": "ssh"}}
 
@@ -314,25 +377,27 @@ def test_given_remote_host_lacks_zsh_when_launched_then_uses_probed_shell_not_ha
     with (
         patch("sys.argv", ["ai", "c", "1", "--remote"]),
         patch("ai_cli.config.load_config", return_value=config),
-        patch("ai_cli.session.get_project_prefix", return_value="sw"),
-        patch("os.execvp", side_effect=SystemExit(0)) as mock_exec,
+        patch("ai_cli.session.get_project_prefix", return_value="session"),
+        patch("ai_cli.transport.run_ssh_with_reconnect", return_value=0) as runner,
         patch("ai_cli.main.trigger_background_update"),
         patch("ai_cli.main.subprocess.run", side_effect=fake_probe),
     ):
         with pytest.raises(SystemExit):
             cli()
 
-    _, args = mock_exec.call_args[0]
-    bash_cmd = args[2]
-    assert "bin/bash -l -c" in bash_cmd
-    assert "zsh" not in bash_cmd
+    # The remote command is the last argv element. "zsh" must be absent from the
+    # whole argv now, not merely from that element: this path no longer wraps the
+    # session in a `zsh -c`, so a stray "zsh" anywhere would be the old hardcoding.
+    ssh_args = runner.call_args[0][0]
+    assert "bin/bash -l -c" in ssh_args[-1]
+    assert not any("zsh" in a for a in ssh_args)
 
 
 def test_remote_flag_without_resume_when_called_then_no_resume_in_cmd():
     config = {"remote": {"host": "1.2.3.4", "user": "ubuntu", "port": 22, "identity_file": "", "transport": "ssh"}}
-    mock_exec = _run_cli_with_args(["ai", "c", "1", "--remote"], config)
-    _, args = mock_exec.call_args[0]
-    assert not any("--resume" in a for a in args)
+    runner = _run_cli_with_args(["ai", "c", "1", "--remote"], config, capture_ssh_runner=True)
+    ssh_args = runner.call_args[0][0]
+    assert not any("--resume" in a for a in ssh_args)
 
 
 def test_remote_flag_when_identity_file_set_then_passes_i_flag():
@@ -345,9 +410,9 @@ def test_remote_flag_when_identity_file_set_then_passes_i_flag():
             "transport": "ssh",
         }
     }
-    mock_exec = _run_cli_with_args(["ai", "c", "--remote"], config)
-    mock_exec.assert_called_once()
-    bash_cmd = mock_exec.call_args[0][1][2]
+    runner = _run_cli_with_args(["ai", "c", "--remote"], config, capture_ssh_runner=True)
+    runner.assert_called_once()
+    bash_cmd = shlex.join(runner.call_args[0][0])
     assert "-i" in bash_cmd
 
 
@@ -437,7 +502,7 @@ class TestRemoteSessionIterm2Emit:
             with (
                 patch("sys.argv", argv),
                 patch("ai_cli.config.load_config", return_value=config),
-                patch("ai_cli.session.get_project_prefix", return_value="sw"),
+                patch("ai_cli.session.get_project_prefix", return_value="session"),
                 patch("ai_cli.config.get_project_aliases", return_value={}),
                 patch("ai_cli.main.trigger_background_update"),
                 patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
@@ -452,25 +517,29 @@ class TestRemoteSessionIterm2Emit:
                 with pytest.raises(SystemExit):
                     cli()
             return mock_slot, mock_emit, None, call_order
-        mock_exec = MagicMock()
+        # The SSH branch's handoff is `transport.run_ssh_with_reconnect`, not an exec:
+        # it runs in-process so a dropped link can be reattached (AI-CLI-w679). The
+        # ordering under test is unchanged -- the profile must be emitted before the
+        # session is handed off -- only the boundary that marks the handoff moved.
+        mock_handoff = MagicMock()
         mock_emit = MagicMock()
         mock_slot = MagicMock(return_value="#ff0000")
         mock_emit.side_effect = lambda *a, **kw: call_order.append("emit")
-        mock_exec.side_effect = lambda *a, **kw: (call_order.append("exec"), (_ for _ in ()).throw(SystemExit(0)))[1]
+        mock_handoff.side_effect = lambda *a, **kw: (call_order.append("exec"), 0)[1]
         with (
             patch("sys.argv", argv),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", mock_slot),
             patch("ai_cli.iterm2._emit_iterm2_profile_setup", mock_emit),
             patch("ai_cli.main.subprocess.run", mock_preflight_run),
-            patch("os.execvp", mock_exec),
+            patch("ai_cli.transport.run_ssh_with_reconnect", mock_handoff),
         ):
             with pytest.raises(SystemExit):
                 cli()
-        return mock_slot, mock_emit, mock_exec, call_order
+        return mock_slot, mock_emit, mock_handoff, call_order
 
     def test_given_remote_host_lacks_zsh_when_mosh_launched_then_uses_probed_shell_not_hardcoded_zsh(self):
         """The mosh_args path is the one that actually broke against Framework
@@ -492,7 +561,7 @@ class TestRemoteSessionIterm2Emit:
         with (
             patch("sys.argv", ["ai", "c", "1", "--remote"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
@@ -521,7 +590,7 @@ class TestRemoteSessionIterm2Emit:
         with (
             patch("sys.argv", ["ai", "c", "1", "--remote"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.iterm2._assign_iterm2_color_slot", return_value=None),
@@ -566,31 +635,41 @@ class TestRemoteSessionIterm2Emit:
                 return MagicMock(returncode=1, stdout="")
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="zsh\n", stderr="")
+            if "ai update" in command[-1]:
+                return MagicMock(returncode=0, stdout="current", stderr="")
             remote_allocations.append(command)
-            session_id, ai_name = build_session_name("c", "sw", "Planning", is_remote=True)
+            session_id, ai_name = build_session_name("c", "session", "Planning", is_remote=True)
             return MagicMock(returncode=0, stdout=json.dumps({"session_id": session_id, "ai_name": ai_name}), stderr="")
 
         with patch("ai_cli.session._matching_tmux_sessions", return_value=[]):
             mock_slot, mock_emit, mock_exec, _ = self._run_remote(
                 ["ai", "c", "Planning", "--remote"], transport="ssh", preflight_run=remote_preflight
             )
-            remote_session_id, _ = build_session_name("c", "sw", "Planning", is_remote=True)
+            remote_session_id, _ = build_session_name("c", "session", "Planning", is_remote=True)
 
         assert mock_exec is not None
         assert mock_slot.call_args[0][0] == remote_session_id
         assert mock_emit.call_args[0][0] == remote_session_id
         assert mock_emit.call_args[0][2] == remote_session_id
-        assert remote_session_id in mock_exec.call_args[0][1][2]
+        # Both argv lists the handoff receives, joined. The old form read a single
+        # index of a joined `zsh -c` string that carried the ssh command and the
+        # cleanup command together; the handoff now takes them as two arguments, so
+        # searching both preserves the original claim -- the locally-allocated
+        # identity reaches the handoff -- without betting on which half holds it.
+        handoff = shlex.join([*mock_exec.call_args[0][0], *mock_exec.call_args[0][1]])
+        assert remote_session_id in handoff
         assert len(remote_allocations) == 1
 
     def test_given_unnamed_remote_launches_when_dispatched_then_each_uses_its_own_remote_identity(self):
         """Closing one wrapper must not clean up another wrapper's transport state."""
-        allocations = iter(["c-r-sw-1", "c-r-sw-2"])
+        allocations = iter(["c-r-session-1", "c-r-session-2"])
         transport_calls = []
 
         def remote_preflight(command, **_kwargs):
             if command[-1] == _REMOTE_SHELL_PROBE_CMD:
                 return MagicMock(returncode=0, stdout="zsh\n", stderr="")
+            if "ai update" in command[-1]:
+                return MagicMock(returncode=0, stdout="current", stderr="")
             session_id = next(allocations)
             return MagicMock(
                 returncode=0,
@@ -605,7 +684,7 @@ class TestRemoteSessionIterm2Emit:
         with (
             patch("sys.argv", ["ai", "c", "-R"]),
             patch("ai_cli.config.load_config", return_value=config),
-            patch("ai_cli.session.get_project_prefix", return_value="sw"),
+            patch("ai_cli.session.get_project_prefix", return_value="session"),
             patch("ai_cli.config.get_project_aliases", return_value={}),
             patch("ai_cli.main.trigger_background_update"),
             patch("ai_cli.main.subprocess.run", side_effect=remote_preflight),
@@ -621,8 +700,8 @@ class TestRemoteSessionIterm2Emit:
                     cli()
 
         assert transport_calls == [
-            ("c-r-sw-1", ["ai", "internal", "cleanup-session-files", "c-r-sw-1"]),
-            ("c-r-sw-2", ["ai", "internal", "cleanup-session-files", "c-r-sw-2"]),
+            ("c-r-session-1", ["ai", "internal", "cleanup-session-files", "c-r-session-1"]),
+            ("c-r-session-2", ["ai", "internal", "cleanup-session-files", "c-r-session-2"]),
         ]
 
     def test_when_remote_gemini_then_emit_called_with_gemini_engine(self):

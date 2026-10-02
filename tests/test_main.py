@@ -235,10 +235,10 @@ class TestGetEngineScript:
         ):
             result = get_engine_script(
                 engine="c",
-                ai_name="sw-1",
-                session="c-sw-1",
-                prefix="c-sw-",
-                project_prefix="sw",
+                ai_name="session-1",
+                session="c-session-1",
+                prefix="c-session-",
+                project_prefix="session",
                 session_id_uuid="",
                 sandbox=False,
                 notify=False,
@@ -1254,7 +1254,7 @@ class TestDoSessionLaunchTmuxGuard:
             with pytest.raises(SystemExit):
                 _do_session_launch(**self._base_kwargs())
         err = capsys.readouterr().err
-        assert "installed tmux via brew" in err
+        assert "[launch] tmux: installed via brew" in err
         assert "launching in bare mode instead" not in err
 
     def test_when_darwin_and_tmux_unavailable_then_hint_is_homebrew(self, capsys):

@@ -21,6 +21,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI now refuses to install from a stale lockfile.** All four jobs synced with
+  `uv sync --dev`, which RE-RESOLVES silently whenever `pyproject.toml` and `uv.lock`
+  disagree — so a pull request could pass every required check having installed versions
+  that were not the ones it shipped, and merge a stale lock, with no log line saying so.
+  Every sync step now passes `--locked`, which fails with ``The lockfile at `uv.lock`
+  needs to be updated`` and names `uv lock` as the remedy. `--frozen` was rejected as the
+  alternative on measurement: against one deliberately staled lock, `--frozen` exited 0
+  and installed the stale versions while `--locked` exited 1, so `--frozen` makes the
+  disagreement quiet rather than loud. Local `uv sync --dev` is unchanged and still
+  re-resolves, so an edit-and-run loop needs no relock at every step; CI is the boundary
+  where it stops. `tests/test_ci_lock_assertion.py` fails if any workflow sync step stops
+  asserting the lock, since the flag is one word that a later unrelated step rewrite would
+  drop silently. (`AI-CLI-qqnx`)
+- **BREAKING: Python 3.14 is now the only supported version.** `requires-python` was
+  `>=3.11` and is now `>=3.14,<3.15`, so installing under 3.11, 3.12 or 3.13 is refused
+  rather than silently unsupported, and installing under a future 3.15 will be refused
+  until that version is adopted deliberately. The trove classifiers advertise only 3.14.
+  The reason is that the version was declared in six independent places that disagreed —
+  the local venv on 3.14 while CI ran 3.11/3.12/3.13 — and under that arrangement a defect
+  could be *unobservable* locally rather than merely unobserved: `pathlib` allows a
+  `WindowsPath` on POSIX on 3.14 and refuses it at or below 3.13, so a test passed every
+  local run and went red on four CI jobs. Every CI job now pins 3.14, matching the
+  interpreter `.python-version` gives the local venv, so a local run predicts CI.
+  `scripts/check_python_version_sync.py` runs as a pre-commit hook and as CI's first lint
+  step and fails if `.python-version`, `requires-python`, the pyright target, the
+  classifiers, any workflow's pinned version or the running interpreter disagree. The cost
+  is real and is not hidden: CI no longer runs more than one interpreter, so
+  version-dependent behaviour has to be pinned down by a test that forces it explicitly
+  instead of by the matrix. (`AI-CLI-6rwp`)
 - Documentation, tests and one source comment no longer name a real machine or
   network. A VPN-range IP address was used as a test fixture and appeared in an
   archived plan document's example config, and several provenance notes
@@ -33,6 +62,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enumerated list of synthetic values plus the RFC 5737 ranges, and the private
   host-name prefixes are matched with a left-only word boundary so a suffixed
   hostname cannot slip past.
+
+### Removed
+
+- The optional `internal-testkit` extra and dependency group, which pinned a package
+  to a private git repository. Nothing about it was reachable for a public
+  contributor, and its presence in the resolution graph made every dependency bump
+  fail: an optional, never-installed extra is still resolved, so a change to
+  `pyproject.toml` with no matching relock forced `uv` to re-resolve and fetch a
+  revision from a repository the runner cannot read. All four required checks then
+  failed before a single test ran, with a git clone error naming neither the cause
+  nor the remedy, and the automated dependency updater's own lock-file update failed
+  the same way — which is why its pull requests arrived without the relock that would
+  have avoided the fetch at all. A new guard
+  (`tests/test_dependency_source_hygiene.py`) fails if any dependency or locked
+  package is reintroduced from a VCS or direct URL rather than a package index.
+  The now-orphaned `testkit_enabled` pytest option went with it, which also silences
+  the `Unknown config option` warning every run emitted. (`AI-CLI-f8la`, `AI-CLI-qrkr`)
 
 ### Fixed
 
@@ -47,6 +93,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also sends `SIGCONT` to the child's process group, so it wakes, processes
   the queued terminate signal, and the supervisor exits normally instead of
   hanging. (`AI-CLI-jpnd`)
+- The fix above could itself be silently defeated. The supervisor promoted
+  `$!` — the pid it backgrounded — as a process group id, but `$!` is the pid
+  that calls `setpgrp()` only if every wrapper in between execs through, and
+  where `python3` resolves through a `uv run` shim, `uv` spawns the
+  interpreter as a child of its own and `setpgrp()` runs a level further down.
+  The promoted group had no members, so the earlier fix's `SIGCONT` went to an
+  empty group and the child never resumed. The child now reports its real
+  pgid through the readiness file; the supervisor promotes the reported group
+  instead of the pid it backgrounded. (`AI-CLI-dw1g`)
+- A remote launch (`ai c`/`g`/`p`/`cx -R`) runs the generated supervisor
+  entirely from the remote host's own installed `ai-cli-utils`, not the local
+  one, and nothing kept that installation current — measured 40 and 34
+  commits stale on the two configured remote machines, including missing
+  both fixes above. Every remote launch now runs `ai update --quiet` on it
+  first; a failed or timed-out update degrades to a warning rather than
+  blocking the launch, and `--dry-run` skips it. (`AI-CLI-qmnd`)
+- `ai c/g/p/cx <name> --remote --dry-run` performed a real launch: a real SSH
+  shell probe, a real `ai update` on the remote host, real session allocation,
+  and a real SSH/mosh handoff — confirmed live, where it created a real tmux
+  session and used a real, pre-existing worktree on the target host. The
+  documented dry-run contract ("nothing was created, started, or reaped") was
+  implemented only for the local launch path; the `if remote:` branch exited
+  via `sys.exit(0)` (mosh) or `os.execvp` (SSH) long before ever reaching that
+  shared check. `--dry-run` now exits before any remote network call and
+  prints the resolved plan (target host, transport, session identity, the
+  remote command that would run) instead. (`AI-CLI-shpu`)
 
 ## [0.8.0] - 2026-09-22
 

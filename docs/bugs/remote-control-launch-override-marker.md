@@ -230,7 +230,7 @@ another session succeeds, capture the exact Claude Code footer/diagnostic and re
 asymmetry to Anthropic as a Remote Control bridge lifecycle issue. Do not copy registry or pairing
 state between sessions.
 
-### Pairing-history follow-up (sw-4, 2026-08-15)
+### Pairing-history follow-up (session-4, 2026-08-15)
 
 The `bridgeSessionId` field noted above has no associated timestamp in
 `~/.claude/sessions/*.json` or elsewhere in the registry, so its presence cannot establish
@@ -252,19 +252,19 @@ already covers.
 ### 2026-08-15 late correction (independent verification, orchestrating Claude session)
 
 Direct inspection of the live state directory
-(`~/.local/state/ai-cli-utils/sessions/c-sw-{1,2,4,6}.sh`) does **not** support the "stale
+(`~/.local/state/ai-cli-utils/sessions/c-session-{1,2,4,6}.sh`) does **not** support the "stale
 template predates commit `3254431`" framing above as the *current* state: all four stable session
 scripts are present, same size, same `mtime` (regenerated together, well after `3254431`), and
-**none of the four** — including `c-sw-4.sh`, the session where RC reportedly works — contains a
-`DISABLE_GROWTHBOOK` block at all. So whatever currently distinguishes sw-4's working auto-reconnect
-from sw-1/sw-2/sw-6's failure, it is not explained by a template-version skew at this snapshot; the
+**none of the four** — including `c-session-4.sh`, the session where RC reportedly works — contains a
+`DISABLE_GROWTHBOOK` block at all. So whatever currently distinguishes session-4's working auto-reconnect
+from session-1/session-2/session-6's failure, it is not explained by a template-version skew at this snapshot; the
 templates are already uniform. This does not necessarily mean the investigation above was wrong at
 the moment it ran — the state directory may have been refreshed between that pass and this
 verification (unclear by which mechanism/actor) — but the specific root-cause claim should not be
 carried forward as settled without live re-verification. The asymmetry remains **unexplained**.
 The research grounding (no documented Claude Code pairing-history/device-trust dependency; no
 programmatic RC status API) still stands as useful context for any upstream report. Next step is a
-live test: with all four templates now confirmed current and identical, have each of sw-1/sw-2/sw-6
+live test: with all four templates now confirmed current and identical, have each of session-1/session-2/session-6
 restart and manually attempt `/rc`, and record whether the asymmetry persists — that is the only
 way to distinguish "fixed by the incidental template refresh" from "a real, still-unexplained
 per-session difference."

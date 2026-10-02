@@ -248,7 +248,13 @@ def _cmd_tunnel_status() -> None:
 
 
 def _find_chrome_binary(config: dict) -> str | None:
-    """Return path to Chrome/Chromium binary, or None if not found."""
+    """Return path to a Chrome, Chromium or Microsoft Edge binary, or None if not found.
+
+    Edge is last on every platform so a machine carrying both keeps its existing Chrome
+    behaviour. It is a candidate at all because some managed endpoints ship Edge and no
+    Chrome, and Edge is Chromium-derived: it takes the same launch flags and is found by
+    the same `--remote-debugging-port` scan, so nothing downstream distinguishes them.
+    """
     configured = config.get("cdp", {}).get("binary_path", "")
     if configured:
         return str(configured) if Path(configured).exists() else None
@@ -257,14 +263,24 @@ def _find_chrome_binary(config: dict) -> str | None:
         candidates = [
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         ]
     elif sys.platform == "win32":
         candidates = [
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         ]
     else:
-        candidates = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+        candidates = [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "microsoft-edge",
+            "microsoft-edge-stable",
+        ]
 
     for c in candidates:
         found = shutil.which(c)
@@ -397,7 +413,7 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
     chrome = _find_chrome_binary(config)
     if not chrome:
         print(
-            "Chrome/Chromium not found. Install it or set [cdp] binary_path in config.",
+            "Chrome, Chromium or Microsoft Edge not found. Install one or set [cdp] binary_path in config.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -416,6 +432,12 @@ def _cmd_cdp_start(port: int, incognito: bool, config: dict, tunnel: bool = Fals
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-default-apps",
+        # Chromium and Edge 111+ reject a DevTools WebSocket handshake whose Origin header is
+        # not explicitly allowed, and the rejection presents as a hang rather than an error --
+        # so a client that sends an Origin gets no diagnostic at all. The wildcard is bounded
+        # by the port itself: --remote-debugging-port binds loopback only, so reaching this
+        # endpoint already requires local access.
+        "--remote-allow-origins=*",
     ]
     if incognito:
         chrome_args.append("--incognito")

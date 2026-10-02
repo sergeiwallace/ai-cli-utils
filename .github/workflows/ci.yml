@@ -4,6 +4,23 @@ name: CI
 # repositories. This workflow was previously restricted to workflow_dispatch on the
 # belief that Actions billing blocked it; that was measured false --
 # docs/procedures/github-actions-status.md records the evidence.
+#
+# SINGLE PYTHON VERSION (AI-CLI-6rwp). Every job below pins the one version this
+# project supports, and it is the same version `.python-version` gives the local
+# venv, so a local run predicts CI. Do not reintroduce a `python-version` matrix
+# here: `scripts/check_python_version_sync.py` runs in the lint job and fails if
+# any workflow names a version other than the one `.python-version` declares.
+#
+# WHAT THIS GIVES UP, stated plainly rather than discovered later. The matrices
+# this replaced (3.11/3.12/3.13 on Linux and Windows) had already caught a real
+# defect: on PR #190, `pathlib` refuses to instantiate a `WindowsPath` on POSIX
+# up to 3.13 but ALLOWS it on 3.14, so a test that passed on the local 3.14 venv
+# went red on every job at or below 3.13. Under a single-version policy that
+# whole class of divergence is no longer detected by CI at all -- the way to
+# catch it now is a version-independent test that forces the behaviour under
+# test explicitly instead of relying on the interpreter to exhibit it, which is
+# what #190 ultimately did. Cross-OS coverage is unchanged and is still the
+# reason `test-windows` and `test-macos` exist.
 on:
   push:
     branches: [main]
@@ -20,26 +37,42 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.12"
-      - run: uv sync --dev
+          # Kept in sync with `.python-version` by the version-sync step below.
+          python-version: "3.14"
+      # `--locked` refuses to re-resolve: it fails with "the lockfile at `uv.lock`
+      # needs to be updated" and names `uv lock` as the remedy. Without it, `uv sync`
+      # silently RE-RESOLVES whenever `pyproject.toml` and `uv.lock` disagree, so a
+      # pull request could go green having tested versions that are not the ones it
+      # ships, and nothing in the log said so (AI-CLI-qqnx). Every sync step in this
+      # file carries the flag, and `tests/test_ci_lock_assertion.py` fails if one
+      # stops carrying it.
+      - run: uv sync --locked --dev
+      # Runs BEFORE the other checks on purpose: if the interpreter this job is
+      # running does not match what the repo declares, every result below it is
+      # about the wrong Python and a green tick would be misleading.
+      - run: uv run python scripts/check_python_version_sync.py
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
       - run: uv run pyright src/
       - run: python scripts/lint_doc_alignment.py
+      # The published package declares `requires-python = ">=3.11"` while this repo
+      # develops and tests on 3.14 alone (AI-CLI-dgbd). Those are different claims,
+      # but the wider one still has to be falsifiable or it is just an assertion --
+      # so the floor interpreter byte-compiles the shipped source here.
+      #
+      # This is not a second test matrix and must not grow into one: no dependencies
+      # are installed and no tests run, which is why it costs seconds. What it catches
+      # is the realistic regression -- somebody uses syntax newer than the floor and
+      # the published package stops importing for every user below 3.14, silently,
+      # because nothing else in CI ever parses the source as an older Python.
+      #
+      # `--no-project` keeps uv from refusing the interpreter for disagreeing with
+      # `requires-python`'s own project context.
+      - name: Shipped source parses on the declared floor interpreter
+        run: uv run --python 3.11 --no-project python -m compileall -q src/
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      # Without this the matrix defaults to fail-fast, and the FIRST Python version
-      # to fail cancels its still-running siblings. Measured on run 35909917879: the
-      # 3.13 job reached 97% carrying only 3 failures and then reported
-      # `##[error]The operation was canceled`, so its result was unreadable and the
-      # partial output was easy to misread as a far larger failure surface than it
-      # was. `test-windows` below already sets this for the same reason; the two
-      # matrices should agree.
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
     services:
       nats:
         image: nats:latest
@@ -49,11 +82,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: ${{ matrix.python-version }}
-      - run: uv sync --dev
+          # Kept in sync with `.python-version` by the lint job's version-sync step.
+          python-version: "3.14"
+      # tmux is a HARD requirement of this suite (AI-CLI-qzf2), so every platform
+      # provisions it explicitly and this was the last job that did not. It relied on
+      # the runner image happening to ship one, which is the same implicit dependency
+      # `test-macos` below removed -- and "happens to be there" is not a dependency, it
+      # is a coincidence that decides how much this job covers. `tmux -V` is part of the
+      # step rather than a nicety: an install that succeeds while producing a binary
+      # that cannot run is a real failure mode here (AI-CLI-i2ih), and it would
+      # otherwise surface as unexplained test failures much later in the job.
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - run: uv sync --locked --dev
       - run: uv run pytest --cov=ai_cli --cov-report=xml --tb=short -q
       - name: Upload coverage
-        if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: coverage.xml
@@ -65,16 +111,13 @@ jobs:
     # 30 minutes with no sign of progress (killed manually, PR #35) -- bound
     # the blast radius of any future hang instead of burning hours of CI time.
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: ${{ matrix.python-version }}
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+          # Kept in sync with `.python-version` by the lint job's version-sync step.
+          python-version: "3.14"
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: MSYS
           update: true
@@ -84,17 +127,31 @@ jobs:
           install: >-
             tmux
             python
+      # `--python` stays explicit even though `.python-version` would supply it:
+      # this MSYS2 shell also has MSYS2's own `python` on PATH (installed above
+      # for tmux's sake), and naming the interpreter is what keeps uv from
+      # picking that one up. The version-sync check reads these flags too, so
+      # they cannot drift away from `.python-version`.
       - shell: msys2 {0}
-        run: uv sync --dev --python ${{ matrix.python-version }}
+        run: uv sync --locked --dev --python 3.14
       - shell: msys2 {0}
-        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+        run: uv run --python 3.14 pytest --tb=short -q
 
   test-macos:
     runs-on: macos-latest
-    # NON-BLOCKING ON PURPOSE, and expected to be RED when first added
-    # (AI-CLI-3cai). `continue-on-error` keeps a macOS-only failure from turning
-    # the whole workflow red, because adding a red job to a required matrix is
-    # how a required check gets quietly disabled. It is a signal job, not a gate.
+    # A REQUIRED CHECK as of AI-CLI-66mk, alongside `lint`, `test` and
+    # `test-windows`. It used to carry `continue-on-error: true` because it was
+    # expected to be red when first added (AI-CLI-3cai) and a job permitted to fail
+    # cannot gate anything -- so promoting it meant removing that flag, not merely
+    # naming it in branch protection. Requiring a job that is allowed to fail is how
+    # a required check gets quietly disabled.
+    #
+    # The promotion trigger the flag used to carry was "once AI-CLI-3cai is fixed and
+    # this job stays green across two weeks of PRs". It was met early on the first
+    # half and short on the second: the operator chose all three platform tiers
+    # deliberately, and the pytest step itself (not merely the job conclusion, which
+    # `continue-on-error` would have painted green regardless) passed on run
+    # 36290320909 and on PR #193.
     #
     # Why it exists at all: two recent defects were invisible to a
     # ubuntu + windows matrix. AI-CLI-ta1l's macOS half, and AI-CLI-3cai, where
@@ -102,31 +159,31 @@ jobs:
     # platforms pass. macOS is also the platform the iTerm2 and tmux surface
     # actually targets, so it was the least covered and most exercised OS.
     #
-    # PROMOTION TRIGGER, so this does not sit ignored forever: once AI-CLI-3cai
-    # is fixed and this job stays green across two weeks of PRs, delete
-    # `continue-on-error` and make it a required check. Decide that alongside
-    # AI-CLI-66mk, which owns which checks are required.
-    continue-on-error: true
     # macOS runners are the slowest and the most expensive per minute, so bound a
     # hang rather than discovering it on the bill.
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        # ONE version deliberately, not the three the other platforms run. This
-        # job's job is to reveal macOS-specific breakage, which is a property of
-        # the OS rather than of the interpreter, and 3.12 is already the version
-        # the Linux job uploads coverage from. Widen it if a macOS-only failure
-        # ever turns out to be version-dependent.
-        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: ${{ matrix.python-version }}
+          # Kept in sync with `.python-version` by the lint job's version-sync step.
+          python-version: "3.14"
       # No `services:` block, unlike the Linux job above: GitHub service
       # containers are Linux-only, so a NATS sidecar cannot run here. The suite
       # tolerates NATS being absent -- a full local run on macOS with no broker
       # passed 3020 tests -- so the tests that need it skip rather than fail.
-      - run: uv sync --dev
+      #
+      # tmux is NOT guaranteed on the macOS runner image, and its absence is not
+      # benign here: two consecutive runs of this job differed only in that, and
+      # produced 3034 passed / 33 skipped / 0 failed versus 3041 passed /
+      # 45 skipped / 3 failed. The three failures were tests that use tmux
+      # without guarding for it ("tmux binary not available on PATH"), and the
+      # twelve extra skips were tests that do guard. So the job silently changed
+      # what it covered from run to run, which makes a red result unreadable.
+      # Installing it makes coverage deterministic, and every other job now does
+      # the same -- MSYS2 for `test-windows`, apt for `test`. The suite enforces the
+      # converse too: it fails a run that skips a tmux test while tmux IS usable,
+      # so this install going missing can no longer pass as a smaller green run.
+      - run: brew install tmux
+      - run: uv sync --locked --dev
       - run: uv run pytest --tb=short -q

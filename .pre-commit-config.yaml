@@ -51,7 +51,7 @@ repos:
 
   # ── Python: ruff (check, report-only + format) ───────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.5
+    rev: v0.16.9
     hooks:
       # Exclude .githooks/ — those .py files are vendored from project-template and
       # are re-linted at each repo's own line-length (88/100/120/150 vary across the
@@ -135,12 +135,67 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # python-version unification (AI-CLI-6rwp, 2026-09-27): this project
+      # supports exactly ONE Python version, and it used to be declared in six
+      # independent places that disagreed -- local venv on 3.14, CI on
+      # 3.11/3.12/3.13. That is not untidiness: `pathlib` allows a WindowsPath
+      # on POSIX on 3.14 and refuses it at or below 3.13, so a defect passed
+      # every local run and went red on four CI jobs, unobservable locally at
+      # any effort. `.python-version` is now canonical and this gate fails the
+      # commit if `requires-python`, the pyright target, the classifiers, any
+      # workflow's pinned version or the interpreter running the check
+      # disagrees with it.
+      #
+      # `uv run --no-sync`, not bare `python3`: the check's whole point includes
+      # the interpreter, and a `language: system` hook otherwise runs under
+      # whatever python3 is first on the committing shell's PATH -- measuring
+      # the wrong environment, which is the exact conflation being guarded
+      # against. `--no-sync` so a commit never silently provisions a venv; a
+      # missing or wrong-version environment fails loudly instead.
+      - id: python-version-sync
+        name: python version sync (.python-version == CI == requires-python == interpreter)
+        entry: uv run --no-sync python scripts/check_python_version_sync.py
+        language: system
+        pass_filenames: false
+        always_run: true
       # docs-index-check REMOVED (CORE-55). The generated docs/README.md index had
       # no reader -- nothing in the fleet consumed it -- yet the gate blocked every
       # docs commit until it was regenerated. It also could not be regenerated
       # correctly from a linked worktree (AIH-396), so the only in-worktree remedy
       # was its own forbidden SKIP=docs-index-check bypass. Removed deliberately,
       # gate-first: docs/README.md content is untouched by this change.
+      # pyright (AI-CLI-ckzk, 2026-09-27): CI's lint job runs FOUR checks and the
+      # local gate ran two of them, so a type error passed every local gate and
+      # landed on main. That is not hypothetical -- it was caught here by running
+      # pyright by hand on a branch whose author's gate had reported clean:
+      # `main.py:3156` passed `Path | None` where `Path` was required.
+      #
+      # pre-push, not pre-commit: 5.3s warm on this repo, which is too slow to pay on
+      # every commit and fast enough to pay before code leaves the machine. That also
+      # matches the actual failure mode -- the defect is type errors reaching `main`,
+      # not type errors existing briefly in a local commit.
+      #
+      # `uv run --no-sync` for the reason python-version-sync uses it: a
+      # `language: system` hook otherwise resolves whatever pyright is first on the
+      # committing shell's PATH, which is a different binary and possibly a different
+      # version than the one CI runs, and `--no-sync` keeps a push from silently
+      # provisioning a venv.
+      - id: pyright
+        name: pyright (type check src/ -- parity with CI's lint job)
+        entry: uv run --no-sync pyright src/
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+      # doc-alignment (AI-CLI-ckzk): the other check CI's lint job ran and the local
+      # gate did not. 0.26s measured, so unlike pyright it is cheap enough to run on
+      # every commit rather than only before a push.
+      - id: doc-alignment
+        name: doc alignment (shared CLAUDE.md/GEMINI.md sections match)
+        entry: python3 scripts/lint_doc_alignment.py
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: test-gate
         name: test gate (mise-aware, tech-stack auto-detect)
         entry: test-gate

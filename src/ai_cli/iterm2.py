@@ -410,8 +410,8 @@ def _emit_iterm2_profile_setup(
         return
 
     cfg = _load_iterm2_config()
-    # Display the full session id WITH its engine prefix (e.g. "c-sw-1" for Claude,
-    # "g-sw-1" for Gemini/agy) so panes are visually distinguishable by engine.
+    # Display the full session id WITH its engine prefix (e.g. "c-session-1" for Claude,
+    # "g-session-1" for Gemini/agy) so panes are visually distinguishable by engine.
     # Matches the in-session rename, which uses "$tmux_session".
     session_name = session or ai_name
     session_type = _iterm2_session_type(engine)

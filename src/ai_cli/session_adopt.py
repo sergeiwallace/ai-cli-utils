@@ -69,7 +69,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .cc_migrate import MigrationResult, cc_project_dir, find_transcript, migrate_session, transcript_title
+from .cc_migrate import (
+    MigrationResult,
+    cc_project_dir,
+    find_transcript,
+    migrate_session,
+    transcript_title,
+    transcript_titles,
+)
 
 #: Headroom demanded on top of the bytes an adoption actually plans to write.
 #: An adoption copies before it verifies and only then removes the source, so a
@@ -850,6 +857,34 @@ def migrate_resume_artifacts(
     return planned
 
 
+def resume_source_keys(transcript: Path, target_key: str) -> list[str]:
+    """Every key this session's resume artifacts could be filed under, except the target.
+
+    A rename is not the only way artifacts end up under a key the session no
+    longer answers to, which is why migrating only ``old_key -> new_key`` was not
+    enough. Two other sources, both measured:
+
+    * **Earlier names.** A session renamed more than once leaves a trail. One
+      transcript here had artifacts under FOUR keys — 35 files under its original
+      generated name, 11 under an intermediate, 1 under its current one. Adopting
+      it without this would have carried 1 file and orphaned 46.
+    * **The session UUID.** A bare ``claude`` session has no registry name, so its
+      key falls back to the session id. Adoption then makes a name authoritative,
+      and every UUID-keyed artifact is stranded.
+
+    Ordered oldest-first so the earliest name is migrated first and the most
+    recent wins any conflict over a shared filename — the newer artifact is the
+    one the next window actually wants.
+    """
+    keys = [*transcript_titles(transcript), transcript.stem]
+    # Preserve order, drop duplicates and the target (nothing to do for itself).
+    seen: list[str] = []
+    for key in keys:
+        if key and key != target_key and key not in seen:
+            seen.append(key)
+    return seen
+
+
 # --- the post-adopt probe ---------------------------------------------------
 
 
@@ -857,8 +892,11 @@ def probe_resolves(dest_root: Path, title: str, claude_home: Path | None = None)
     """Return the transcript ``ai c`` would resume for ``title`` in ``dest_root``.
 
     This is the *same* lookup the launcher performs — a newest-first scan of the
-    destination project directory for the first transcript whose first
-    ``customTitle`` matches — so a pass means resume genuinely finds the file,
+    destination project directory for the first transcript whose *current* title
+    matches (see :func:`~ai_cli.cc_migrate.transcript_title`: a rename APPENDS a
+    ``customTitle`` record rather than rewriting the first one, so the last record
+    is the live name and the first is only the original) — so a pass means resume
+    genuinely finds the file,
     and a miss returns None. It reports failure whenever adoption did nothing,
     landed the transcript in the wrong project directory, or left it under the
     wrong title.
@@ -1011,6 +1049,12 @@ def adopt_session(
     dest_project_dir = cc_project_dir(dest_root_guess, home)
     check_free_space(dest_project_dir, needed)
 
+    # Read the naming history BEFORE `migrate_session` runs. It MOVES the
+    # transcript, so reading titles off `src_jsonl` afterwards finds nothing and
+    # the resume migration below would silently do nothing at all — the same
+    # class of silent no-op it exists to fix.
+    resume_keys = resume_source_keys(src_jsonl, target_title)
+
     dest_root, worktree_created = _ensure_worktree(repo_root, target_title, dry_run)
 
     migration: MigrationResult | None
@@ -1054,9 +1098,30 @@ def adopt_session(
 
     memory_copied, memory_conflicts = adopt_memory(source_dir, dest_project_dir, dry_run)
 
-    # Keyed by the session *name*, so only a retitle has anything to move; an
-    # adoption that keeps the name leaves the tree already correctly keyed.
-    resume_moves = migrate_resume_artifacts(ai_name, target_title, claude_home=home, dry_run=dry_run)
+    # Keyed by the session *name*, and a rename is NOT the only way artifacts end
+    # up under a key the session no longer answers to. Migrating just
+    # `ai_name -> target_title` covered the retitle path and silently did nothing
+    # for every other case: a session renamed twice, or a bare one keyed by UUID,
+    # kept its hand-off stranded. Measured on a real adoption whose title was
+    # already correct: 1 artifact under the current key and 46 under three older
+    # ones, all of which the retitle-only version would have left behind. So every
+    # historical key is migrated, always, whether or not this adoption renames
+    # anything.
+    resume_moves: list[ResumeMove] = []
+    claimed: set[Path] = set()
+    for source_key in resume_keys:
+        for move in migrate_resume_artifacts(source_key, target_title, claude_home=home, dry_run=dry_run):
+            # A dry run moves nothing, so a second key claiming a destination the
+            # first already planned would not see it there and would report two
+            # moves where a real run performs one move and one conflict. Tracking
+            # the claims keeps the preview honest about what the real run will do,
+            # which is the only reason to offer a preview at all.
+            if dry_run and move.action == "move" and move.dest is not None:
+                if move.dest in claimed:
+                    move = ResumeMove(source=move.source, dest=move.dest, action="conflict")
+                else:
+                    claimed.add(move.dest)
+            resume_moves.append(move)
 
     # ``migrate_session`` warns when the transcript's title differs from the
     # destination worktree's name. In the retitle path that mismatch is the
@@ -1083,11 +1148,21 @@ def adopt_session(
                 f"{target_title!r}, not the adopted {migration.dest_jsonl}"
             )
         if retitled_from:
-            original = probe_resolves(repo_root / ".worktrees" / retitled_from, retitled_from, home)
-            if original is None:
+            # Stepping aside from a taken title only makes sense if whoever already
+            # holds it still resolves, so this checks that they do. It has to look in
+            # BOTH places a holder can live, because the two are not alternatives:
+            # an already-adopted session resolves from its own worktree, while a bare
+            # session — the population this command exists to migrate — never had one
+            # and resolves from the project root.
+            #
+            # Probing only the worktree path made the warning fire on every
+            # successful bare adoption, which is worse than no warning: it trains the
+            # operator to ignore the channel meant to carry real failures.
+            searched = [repo_root / ".worktrees" / retitled_from, source_root]
+            if all(probe_resolves(root, retitled_from, home) is None for root in searched):
                 warnings.append(
-                    f"post-adopt check: title {retitled_from!r} no longer resolves in "
-                    f"{repo_root / '.worktrees' / retitled_from} — the transcript that kept the "
+                    f"post-adopt check: title {retitled_from!r} no longer resolves in any of "
+                    f"{', '.join(str(root) for root in searched)} — the transcript that kept the "
                     f"original title may live elsewhere; verify it by hand"
                 )
 

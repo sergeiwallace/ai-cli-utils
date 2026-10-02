@@ -128,7 +128,7 @@ Remove all hardcoded references to `<private-project-name>`, `core-cli`, and per
 
 3. **`DEFAULT_SERVER_HOST`**: Remove the hardcoded personal `user@host` default. If `[sync] remote_host` is not set in config.toml, sync commands should print a helpful error message pointing to config setup.
 
-4. **`core-cli` section reference**: The code reads `config.get("core-cli", {}).get("task_prefix", "SW")` for the main project. Generalize: read `config.get("project", {}).get("task_prefix")` — or better, just look up the project name in the `[[projects]]` list like all other projects.
+4. **`core-cli` section reference**: The code reads `config.get("core-cli", {}).get("task_prefix", "PROJ")` for the main project. Generalize: read `config.get("project", {}).get("task_prefix")` — or better, just look up the project name in the `[[projects]]` list like all other projects.
 
 5. **Comments/docstrings**: Replace personal home-dir path examples with generic `/home/user/...` and `/Users/username/...`.
 

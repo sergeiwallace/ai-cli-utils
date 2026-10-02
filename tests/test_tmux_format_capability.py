@@ -77,12 +77,12 @@ def test_given_no_running_server_when_compared_then_not_a_mismatch() -> None:
 def test_given_a_server_echoing_formats_when_lines_built_then_the_fault_is_named() -> None:
     report = tmux_setup.TmuxReport(present=True, path="/usr/bin/tmux", client_version="3.7c", server_version="#version")
     lines = tmux_setup.report_lines(report=report, bare=True, reason="formats do not expand")
-    joined = "\n".join(lines)
+    joined = "\n".join(f"{phase}: {outcome}" for phase, outcome in lines)
     assert "does not expand format strings" in joined
     # It must NOT be presented as the server's version, which is what made the
     # condition read as a mismatch.
     assert "server reports #version" not in joined
-    assert "WARNING" not in joined
+    assert "Warning" not in joined
 
 
 # --- capability resolution ---------------------------------------------------

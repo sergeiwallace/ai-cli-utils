@@ -1,4 +1,4 @@
-"""AIH-164 T-06: rate-limit-aware Fable (secondary per-model cap) scrape.
+"""Rate-limit-aware Fable (secondary per-model cap) scrape.
 
 The Fable `Current week (<model>)` line is the only per-model datum /usage exposes and is NOT
 in the stdin rate_limits, so it still needs the TUI scrape. Because T-02's env path keeps the

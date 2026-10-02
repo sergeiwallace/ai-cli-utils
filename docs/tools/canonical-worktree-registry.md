@@ -35,3 +35,13 @@ The file is ignored if it is ever placed in a checkout. It has this schema:
 Consumers must reject destructive requests when the registry is missing,
 unreadable, invalid, or locked. Paths, rather than naming patterns, determine
 which worktrees are canonical.
+
+Registration prunes entries whose path no longer exists, so a worktree that has
+been removed stops occupying the file. Reads do not prune: the reader is the
+fail-closed one a deletion guard consults, and a path that is temporarily
+unreachable must not be reported as unprotected. A live worktree pruned because
+its storage was briefly unavailable is re-added by its next launch.
+
+`AI_CLI_CANONICAL_WORKTREE_REGISTRY` is also how a test suite keeps out of this
+file. It is the only lever that works on every platform, because the default
+location is platform-branched and reads `%LOCALAPPDATA%` on Windows.

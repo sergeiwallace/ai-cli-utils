@@ -394,7 +394,7 @@ class TestReconnectTransportError:
     def test_given_corrupt_transport_file_when_reconnect_then_suppresses_and_continues(self, tmp_path, capsys):
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        (state_dir / "transport-c-r-sw-1.json").write_text("{not-json}")
+        (state_dir / "transport-c-r-session-1.json").write_text("{not-json}")
         probe = MagicMock()
         probe.returncode = 0
         probe.stdout = "c-r-myproject-1\n"

@@ -1,12 +1,9 @@
 """Tests for ai cdp start/stop/status subcommand."""
 
-import contextlib
 import json
 import os
 import shutil
-import signal
 import socket
-import subprocess
 import sys
 import time
 import urllib.request
@@ -15,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
+from process_ownership import owned_sleeper, reap, spawn_owned, spawn_owned_sleeper
 
 from ai_cli import tunnel
 from ai_cli.main import (
@@ -94,6 +92,55 @@ class TestFindChromeBinary:
                     result = _find_chrome_binary({})
         assert result is None
 
+    # Microsoft Edge, added because some managed endpoints ship Edge and no Chrome.
+    # Each platform gets its own case: the candidate lists are per-platform, so one
+    # passing case says nothing about the other two.
+    #
+    # These simulate "only Edge exists" by matching a distinctive TOKEN rather than
+    # comparing a stringified Path to a literal. `str(Path(...))` is separator-dependent:
+    # on Windows, `str(WindowsPath("/Applications/Microsoft Edge.app/..."))` comes back
+    # with backslashes, so an equality check against the POSIX literal matches nothing,
+    # every candidate reports absent and the finder returns None. That is how the first
+    # version of this test passed on macOS and failed on the Windows CI runner.
+
+    def test_when_only_edge_exists_on_macos_then_returns_edge(self):
+        edge = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+        with patch("shutil.which", return_value=None):
+            with patch("ai_cli.main.Path.exists", lambda self: "Microsoft Edge.app" in str(self)):
+                with patch.object(sys, "platform", "darwin"):
+                    result = _find_chrome_binary({})
+        assert result == edge
+
+    def test_when_only_edge_exists_on_windows_then_returns_edge(self):
+        edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        with patch("shutil.which", return_value=None):
+            with patch("ai_cli.main.Path.exists", lambda self: "msedge.exe" in str(self)):
+                with patch.object(sys, "platform", "win32"):
+                    result = _find_chrome_binary({})
+        # The x86 path is listed before the 64-bit one, so "any msedge.exe exists"
+        # must resolve to it -- which also pins the intended within-Edge ordering.
+        assert result == edge
+
+    def test_when_only_edge_on_path_on_linux_then_returns_edge(self):
+        with patch(
+            "shutil.which",
+            side_effect=lambda c: "/usr/bin/microsoft-edge" if c == "microsoft-edge" else None,
+        ):
+            with patch("ai_cli.main.Path.exists", return_value=False):
+                with patch.object(sys, "platform", "linux"):
+                    result = _find_chrome_binary({})
+        assert result == "/usr/bin/microsoft-edge"
+
+    def test_when_chrome_and_edge_both_exist_then_chrome_still_wins(self):
+        # Ordering control. Edge is appended last precisely so that adding it cannot
+        # change what a machine already carrying Chrome resolves to; without this case
+        # a reordering regression would pass the three cases above unnoticed.
+        with patch("shutil.which", return_value=None):
+            with patch("ai_cli.main.Path.exists", return_value=True):
+                with patch.object(sys, "platform", "darwin"):
+                    result = _find_chrome_binary({})
+        assert result == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
 
 def _simulate_linux(target):
     """Run a Linux-branch test on any host that can represent Linux paths.
@@ -154,6 +201,22 @@ class TestCmdCdpStart:
         pid_file = tmp_path / "cdp-9222.pid"
         assert pid_file.exists()
         assert json.loads(pid_file.read_text()) == {"pid": 12345, "port": 9222}
+
+    def test_launch_args_carry_remote_allow_origins_exactly_once(self, tmp_path):
+        # Chromium and Edge 111+ reject a DevTools handshake whose Origin is not allowed,
+        # and the rejection presents as a hang, so the flag's absence has no error to find.
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch("ai_cli.tunnel._find_chrome_binary", return_value="/usr/bin/chromium"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("urllib.request.urlopen"),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        argv = mock_popen.call_args[0][0]
+        assert argv.count("--remote-allow-origins=*") == 1
 
     def test_when_not_running_then_prints_ready(self, tmp_path, capsys):
         mock_proc = MagicMock()
@@ -231,7 +294,7 @@ class TestCmdCdpStart:
 
         assert json.loads(pid_file.read_text()) == {"pid": 66666, "port": 9222}
 
-    def test_when_no_chrome_found_then_exits_1(self, tmp_path, capsys):
+    def test_when_no_browser_found_then_exits_1_naming_all_three(self, tmp_path, capsys):
         with (
             patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
             patch("ai_cli.tunnel._find_chrome_binary", return_value=None),
@@ -240,7 +303,12 @@ class TestCmdCdpStart:
                 _cmd_cdp_start(9222, True, {})
 
         assert exc.value.code == 1
-        assert "Chrome/Chromium not found" in capsys.readouterr().err
+        # Naming every binary it looked for is the difference between "install something"
+        # and an actionable message on a machine that has Edge but no Chrome.
+        err = capsys.readouterr().err
+        assert "Chrome" in err
+        assert "Chromium" in err
+        assert "Microsoft Edge" in err
 
     def test_when_incognito_false_then_flag_not_passed(self, tmp_path):
         mock_proc = MagicMock()
@@ -360,6 +428,25 @@ class TestCmdCdpStartMacOS:
         assert cmd[:3] == ["open", "-na", "Google Chrome"]
         assert "--remote-debugging-port=9222" in cmd
         assert "--args" in cmd
+
+    def test_launch_args_carry_remote_allow_origins_exactly_once(self, tmp_path):
+        # The macOS launch goes through `open -na`, a different code path from Popen, so the
+        # Linux case for this flag does not cover it.
+        with (
+            patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path),
+            patch(
+                "ai_cli.tunnel._find_chrome_binary",
+                return_value="/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ),
+            patch("subprocess.run") as mock_run,
+            patch("urllib.request.urlopen"),
+            patch("ai_cli.tunnel._find_chrome_pid_by_port", return_value=12345),
+        ):
+            _cmd_cdp_start(9222, True, {})
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:3] == ["open", "-na", "Microsoft Edge"]
+        assert cmd.count("--remote-allow-origins=*") == 1
 
     def test_when_on_macos_with_chromium_then_derives_app_name_from_path(self, tmp_path):
         with (
@@ -543,8 +630,12 @@ class TestCdpStartRealChromeBoundary:
         stdout_log = tmp_path / "chrome-stdout.log"
         stderr_log = tmp_path / "chrome-stderr.log"
         popen_env = {**os.environ, **tunnel._linux_display_env()}
+        # Owned, because Chrome is a process TREE: it forks a zygote, a GPU
+        # process and a renderer per tab, and `proc.terminate()` on the launcher
+        # alone leaves every one of them running and reparented. Only a group
+        # reap ends the whole browser.
         with stdout_log.open("wb") as out_fh, stderr_log.open("wb") as err_fh:
-            proc = subprocess.Popen(
+            proc = spawn_owned(
                 [
                     chrome,
                     f"--remote-debugging-port={port}",
@@ -576,9 +667,7 @@ class TestCdpStartRealChromeBoundary:
                     f"stdout={stdout_log.read_text(errors='replace')!r}"
                 )
         finally:
-            if proc.poll() is None:
-                proc.terminate()
-                proc.wait(timeout=5)
+            reap(proc)
 
 
 # ---------------------------------------------------------------------------
@@ -615,30 +704,22 @@ class TestCmdCdpStop:
         assert "No CDP process registered" in capsys.readouterr().out
 
     def test_given_legacy_pid_reused_when_cdp_stop_runs_then_live_process_survives(self, tmp_path, capsys):
-        sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        pid_file = tmp_path / "cdp-9222.pid"
-        pid_file.write_text(str(sibling.pid))
-        try:
+        with owned_sleeper() as sibling:
+            pid_file = tmp_path / "cdp-9222.pid"
+            pid_file.write_text(str(sibling.pid))
             with patch("ai_cli.tunnel.get_xdg_state_home", return_value=tmp_path):
                 _cmd_cdp_stop(9222)
 
             assert sibling.poll() is None
             assert not pid_file.exists()
             assert "no process was stopped" in capsys.readouterr().out
-        finally:
-            if sibling.poll() is None:
-                sibling.terminate()
-            sibling.wait(timeout=5)
 
     def test_given_full_process_identity_when_cdp_stop_runs_then_terminates_exact_process(self, tmp_path):
-        # `start_new_session` so this sleeper is its own process group and can be reaped as one: a
-        # test owns every process it starts, and the cleanup below must not depend on the assertions
-        # passing. Without it a failure here left a 60-second sleeper running, which is precisely how
-        # this suite accumulated orphans across runs.
-        sibling = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
-            start_new_session=True,
-        )
+        # Owned so this sleeper is its own process group and can be reaped as one: a test owns every
+        # process it starts, and the cleanup below must not depend on the assertions passing. Without
+        # it a failure here left a 60-second sleeper running, which is precisely how this suite
+        # accumulated orphans across runs.
+        sibling = spawn_owned_sleeper(60)
         try:
             # Record the identity only once it has STOPPED CHANGING. On macOS psutil's `exe()` and
             # `cmdline()[0]` both change within a process's first moments -- from the venv symlink
@@ -703,25 +784,13 @@ class TestCmdCdpStop:
             )
             assert not pid_file.exists()
         finally:
-            # Reap the GROUP where there is one. `os.killpg`, `os.getpgid` and `signal.SIGKILL` are
-            # all POSIX-only, so the escalation is guarded on `os.killpg` existing -- referencing
-            # `signal.SIGKILL` unconditionally here raised `AttributeError: module 'signal' has no
-            # attribute 'SIGKILL'` and took all three Windows jobs red, which is the same
-            # platform-assumption defect this commit set out to remove from the macOS side.
-            #
-            # Windows has no process group to signal in this sense, and `start_new_session` is
-            # ignored there, so the `Popen` handle is the whole story. `kill()` covers both
-            # platforms and is harmless once the process has already exited.
-            if hasattr(os, "killpg"):
-                for sig in (signal.SIGTERM, signal.SIGKILL):
-                    try:
-                        os.killpg(os.getpgid(sibling.pid), sig)
-                    except OSError:
-                        break
-            with contextlib.suppress(OSError):
-                sibling.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                sibling.wait(timeout=10)
+            # Reap the GROUP, through the shared helper rather than by hand here. The hand-rolled
+            # version of this referenced `signal.SIGKILL` unconditionally and raised
+            # `AttributeError: module 'signal' has no attribute 'SIGKILL'` on Windows, taking all
+            # three Windows jobs red: `os.killpg`, `os.getpgid` and `signal.SIGKILL` are POSIX-only,
+            # and `start_new_session` is ignored on Windows. One implementation of that platform
+            # split, in `tests/process_ownership.py`, is the point.
+            reap(sibling)
 
     def test_when_process_already_dead_then_still_removes_pid_file(self, tmp_path):
         import psutil as _psutil

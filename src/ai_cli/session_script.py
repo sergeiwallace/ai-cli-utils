@@ -202,6 +202,18 @@ def get_engine_script(
       generation_token="$2"
       supervisor_pid="$3"
       while true; do
+        # This ticker must end itself, because nothing else can. The supervisor's
+        # EXIT trap kills it on a clean exit, but SIGKILL never runs a trap, and it
+        # is spawned through os.setsid() below so that foreground-group changes
+        # cannot reach it -- which equally places it outside every process group a
+        # reaper could signal. Without this check a crashed pane leader left one
+        # immortal ticker behind for the uptime of the machine, waking to spawn a
+        # publish-heartbeat process twice a minute forever.
+        #
+        # kill -0 can be fooled by pid reuse, which would extend one ticker's life
+        # rather than shorten it; checking once per iteration bounds the leak to a
+        # single sleep interval either way.
+        kill -0 "$supervisor_pid" 2>/dev/null || exit 0
         heartbeat_json=$(printf '{{"status": "WORKING", "project": "%s", "ai_name": "%s"}}' {shell["project_prefix"]} {shell["ai_name"]})
         ai internal publish-heartbeat "$tmux_session" "$heartbeat_json" "$generation_token" "$supervisor_pid" 2>/dev/null || true
         sleep 30 || exit 0
@@ -829,7 +841,7 @@ def get_engine_script(
       _iterm2_rename "${{type_sym}}${{sym}}$sname"
     }}
 
-    # Extract session number from ai_name (e.g., "sw-3" → "3") for downstream hooks.
+    # Extract session number from ai_name (e.g., "session-3" → "3") for downstream hooks.
     _session_num=$(echo "$ai_name" | grep -oE '[0-9]+$' || echo "1")
     _session_type="cc"
     [[ "$engine" == "g" ]] && _session_type="gemini"

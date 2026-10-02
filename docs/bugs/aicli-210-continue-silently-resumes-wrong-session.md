@@ -29,7 +29,7 @@ task: AI-CLI-210
 
 ## Summary
 
-A live interactive `ai c` session (custom title `sw-6`, session id `e708efd4-…`)
+A live interactive `ai c` session (custom title `session-6`, session id `e708efd4-…`)
 was exited by the user intending to relaunch in bypass-permissions mode. It did
 not actually terminate — it kept running as a detached background agent. When
 the user then ran `ai c 6` to relaunch, `ai c` silently resumed a completely
@@ -46,7 +46,7 @@ before the actual cause surfaced.
 ## Reproduction
 
 1. Launch `ai c <n>` and have an active conversation (session A, e.g. custom
-   title `sw-6`).
+   title `session-6`).
 2. Exit the session in a way that leaves it running as a background agent
    rather than terminating it cleanly (exact trigger not yet isolated — observed
    once during a bypass-permissions-mode relaunch flow; not yet reproduced
@@ -81,7 +81,7 @@ appears to silently fall through to the next-most-recent transcript for the
 same cwd instead of surfacing the conflict — with zero signal to the user that
 a substitution occurred. From the user's perspective this is indistinguishable
 from a normal, correct resume: the wrong conversation loads, and the launcher
-re-applies the expected custom title (e.g. `sw-6`) onto it, actively erasing the
+re-applies the expected custom title (e.g. `session-6`) onto it, actively erasing the
 one piece of metadata (a manually-renamed title) that could have made the mixup
 visible.
 
@@ -121,15 +121,15 @@ Two separable problems:
 ## Appendix: Evidence
 
 Two transcripts, same project directory
-(`-Users-user-projects-user--worktrees-sw-6`), only two candidates
+(`-Users-user-projects-user--worktrees-session-6`), only two candidates
 total:
 
 ```
--rw-------  17274590  Aug 12 01:05  e708efd4-bdb7-4a55-a1c8-997e9747adc8.jsonl  (correct — custom title "sw-6")
--rw-------  79513021  Aug 12 01:30  e2184270-60ed-44f2-b198-3b16abfa6dc3.jsonl  (wrong — custom title "sw-6-2", then re-titled "sw-6" by a later `ai c 6` launch)
+-rw-------  17274590  Aug 12 01:05  e708efd4-bdb7-4a55-a1c8-997e9747adc8.jsonl  (correct — custom title "session-6")
+-rw-------  79513021  Aug 12 01:30  e2184270-60ed-44f2-b198-3b16abfa6dc3.jsonl  (wrong — custom title "session-6-2", then re-titled "session-6" by a later `ai c 6` launch)
 ```
 
-`claude --resume e708efd4-bdb7-4a55-a1c8-997e9747adc8 --name sw-6
+`claude --resume e708efd4-bdb7-4a55-a1c8-997e9747adc8 --name session-6
 --dangerously-skip-permissions` output:
 
 ```

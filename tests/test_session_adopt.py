@@ -21,15 +21,16 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import psutil
 import pytest
 from conftest import run_cli
+from process_ownership import reap, spawn_owned_python, spawn_owned_sleeper
 
 from ai_cli.cc_migrate import cc_project_dir, transcript_title
 from ai_cli.session_adopt import (
@@ -50,6 +51,7 @@ from ai_cli.session_adopt import (
     next_free_index,
     probe_resolves,
     resume_artifacts,
+    resume_source_keys,
     retitle_transcript,
     split_ai_name,
     task_namespace_candidates,
@@ -175,11 +177,6 @@ def _mark_live(world, pid: int, name: str, cwd: Path) -> None:
 # ``sessionId`` / ``cwd``. One must refuse and the other must succeed, so the
 # outcome can only be explained by the code having read that payload.
 
-#: Seconds the owned process sleeps for. It exits on its own well inside a test
-#: run, so a killed worker or a timeout that skips teardown entirely still
-#: cannot leave the process behind.
-_OWNED_PROCESS_LIFETIME = 30
-
 
 def _registry_payload(pid: int, name: str, cwd: Path, session_id: str) -> dict:
     """A full-shaped ``~/.claude/sessions/<pid>.json`` payload.
@@ -214,79 +211,24 @@ def _register(world, pid: int, *, name: str, cwd: Path, session_id: str) -> Path
     return record
 
 
-def _spawn_owned(*code: str) -> subprocess.Popen:
-    """Spawn a python child in its OWN session, so its group can be signalled safely.
-
-    ``start_new_session=True`` is not optional here. Without it the child shares
-    the pytest worker's process group, and the ``os.killpg`` in :func:`_reap`
-    then signals the test runner itself — observed live while writing these
-    tests: the suite died at SIGTERM part-way through the file.
-    """
-    return subprocess.Popen(
-        [sys.executable, "-c", *code],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-
-def _reap(proc: subprocess.Popen) -> None:
-    """Reap the process GROUP: SIGTERM, wait, then SIGKILL.
-
-    The group rather than the child, because killing only the direct child
-    orphans any grandchildren it started. Always ends in a ``wait()`` so the
-    child is not left a zombie — a zombie keeps its ``/proc/<pid>`` entry and
-    would therefore still read as *live*.
-    """
-    if sys.platform == "win32":
-        proc.terminate()
-        proc.wait(timeout=5)
-        return
-
-    try:
-        group = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        group = None
-    # Refuse to signal our own group even if the spawn somehow did not detach:
-    # that would take down the test runner rather than the child.
-    if group == os.getpgrp():
-        group = None
-
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        if proc.poll() is not None:
-            break
-        try:
-            if group is not None:
-                os.killpg(group, sig)
-            else:
-                proc.send_signal(sig)
-        except (ProcessLookupError, PermissionError):
-            break
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            continue
-    proc.wait()
-
-
 @pytest.fixture
 def owned_process():
     """A real process this test owns, spawned in its own session and reaped here.
 
-    ``start_new_session=True`` puts it in a fresh process group so the whole
-    group can be signalled, and it sleeps for a bounded time so that even a
-    teardown that never runs — a killed xdist worker, a suite-level timeout —
-    cannot leave it behind. Never a pattern-matched ``pkill``, which would also
+    The group ownership and the group reap both come from
+    ``tests/process_ownership.py``, which is the single implementation of the
+    rule for the whole suite and is the only place that knows how the reap
+    differs on Windows. Never a pattern-matched ``pkill``, which would also
     match processes this suite does not own.
     """
-    proc = _spawn_owned(f"import time; time.sleep({_OWNED_PROCESS_LIFETIME})")
+    proc = spawn_owned_sleeper()
     # Assert liveness with psutil rather than with the code under test, so a
     # process that failed to start cannot be mistaken for a passing refusal.
     assert psutil.pid_exists(proc.pid), "the spawned process must really be running"
     try:
         yield proc
     finally:
-        _reap(proc)
+        reap(proc)
 
 
 @pytest.fixture
@@ -297,9 +239,9 @@ def reaped_pid():
     a ``/proc/<pid>`` entry, so an unreaped pid would read as live and the
     negative control would pass for the wrong reason.
     """
-    proc = _spawn_owned("")
+    proc = spawn_owned_python("")
     pid = proc.pid
-    _reap(proc)
+    reap(proc)
     deadline = time.monotonic() + 5
     while psutil.pid_exists(pid) and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -659,7 +601,6 @@ def test_retitle_given_a_transcript_when_retitled_then_every_matching_record_is_
 
 
 def test_retitle_given_a_transcript_when_retitled_then_mtime_is_preserved(world):
-    import os
 
     path = world["src_dir"] / f"{UUID}.jsonl"
     os.utime(path, (1_000_000_000, 1_000_000_000))
@@ -767,6 +708,33 @@ def test_adopt_given_a_retitle_whose_original_stops_resolving_when_adopted_then_
     monkeypatch.setattr("ai_cli.session_adopt.probe_resolves", _probe)
     result = adopt(on_collision="retitle", new_title="myproject-1")
     assert any("no longer resolves" in w for w in result.warnings)
+
+
+def test_adopt_given_the_title_holder_is_a_bare_session_when_retitled_then_it_is_not_reported_as_lost(world, adopt):
+    """A holder that never had a worktree still counts as resolving (AI-CLI-37a7).
+
+    The probe used to look only in ``.worktrees/<old title>``. A bare session — the
+    population this command exists to migrate — never had a worktree, so that path
+    cannot exist and the warning fired on every successful bare adoption. Measured
+    on a real adoption before the fix.
+
+    A warning that always fires is worse than none: it trains the operator to
+    ignore the channel meant to carry real failures. Deliberately does NOT patch
+    ``probe_resolves`` -- the whole point is which directories the real one is
+    pointed at.
+    """
+    _add_worktree(world["repo"], "myproject-1")
+    # A SECOND claimant on the same title, in the repo ROOT's project dir rather
+    # than in a worktree. That is what makes it the bare case: the `collision`
+    # fixture puts its claimant inside .worktrees/myproject-2, where the old probe
+    # happened to be looking.
+    _write_transcript(world["src_dir"], OTHER_UUID, "myproject-2", world["repo"], extra_lines=40)
+
+    result = adopt(on_collision="retitle", new_title="myproject-1")
+
+    assert result.retitled_from == "myproject-2"
+    assert not (world["repo"] / ".worktrees" / "myproject-2").exists()
+    assert not any("no longer resolves" in w for w in result.warnings), result.warnings
 
 
 def test_adopt_given_move_semantics_when_adopted_then_source_transcript_is_gone(world, adopt, existing_worktree):
@@ -2032,3 +2000,73 @@ def test_adopt_given_no_resume_tree_when_adopted_then_it_succeeds_with_no_moves(
 
     assert result.resume_moves == []
     assert not (world["home"] / "resume").exists()
+
+
+# ---- artifacts under an EARLIER key, with no retitle in sight ---------------
+#
+# Migrating only `old_key -> new_key` covered the retitle path and quietly did
+# nothing for every other case. Measured on a real adoption whose title was already
+# correct: 1 artifact under the current key and 46 under three older ones, every one
+# of which the retitle-only version left behind.
+
+
+def _give_transcript_a_naming_history(world, *earlier_titles: str) -> Path:
+    """Rewrite this world's transcript so it carries ``earlier_titles`` before its current one."""
+    path = world["src_dir"] / f"{UUID}.jsonl"
+    prelude = "\n".join(
+        _record(type="user", sessionId=UUID, cwd=str(world["repo"]), customTitle=title) for title in earlier_titles
+    )
+    path.write_text(prelude + "\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    return path
+
+
+def test_source_keys_given_a_renamed_transcript_when_collected_then_history_and_uuid_are_included(world):
+    """The naming history IS the record of where older artifacts were filed."""
+    path = _give_transcript_a_naming_history(world, "myproject-7", "myproject-8")
+
+    keys = resume_source_keys(path, "myproject-2")
+
+    # Oldest first, the current title dropped as the target, and the UUID last
+    # because a bare session's key falls back to it.
+    assert keys == ["myproject-7", "myproject-8", UUID]
+
+
+def test_adopt_given_no_retitle_when_adopted_then_an_earlier_name_s_artifacts_still_move(world, adopt):
+    """The regression this exists for: no rename happens, and the hand-off must STILL follow."""
+    _give_transcript_a_naming_history(world, "myproject-9")
+    root = _adopt_resume_tree(world["home"], "myproject-9")
+
+    result = adopt()  # adopting under its CURRENT title, so nothing is retitled
+
+    assert resume_artifacts(root, "myproject-9") == [], "artifacts were left under the old key"
+    assert len(resume_artifacts(root, "myproject-2")) == 4
+    assert {m.action for m in result.resume_moves} == {"move"}
+
+
+def test_adopt_given_uuid_keyed_artifacts_when_adopted_then_they_move_to_the_name(world, adopt):
+    """A bare session has no registry name, so its key is the session id."""
+    root = _adopt_resume_tree(world["home"], UUID)
+
+    result = adopt()
+
+    assert resume_artifacts(root, UUID) == []
+    assert len(resume_artifacts(root, "myproject-2")) == 4
+    assert {m.action for m in result.resume_moves} == {"move"}
+
+
+def test_adopt_given_two_earlier_names_sharing_a_filename_when_dry_run_then_the_second_is_a_conflict(world, adopt):
+    """A dry run must predict what the real run does, including the collision between two old keys.
+
+    Nothing moves during a dry run, so without tracking claims the second key would
+    not see the destination the first already planned and both would report as
+    moves — while a real run performs one move and one conflict.
+    """
+    _give_transcript_a_naming_history(world, "myproject-7", "myproject-8")
+    _adopt_resume_tree(world["home"], "myproject-7")
+    _adopt_resume_tree(world["home"], "myproject-8")
+
+    result = adopt(dry_run=True)
+
+    actions = Counter(m.action for m in result.resume_moves)
+    assert actions["move"] == 4, actions
+    assert actions["conflict"] == 4, actions

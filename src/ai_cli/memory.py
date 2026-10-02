@@ -4,7 +4,7 @@ Publishes memory.dream.started on first write and memory.dream.completed
 after 2 seconds of silence (debounce). Used by ai sync push guard to
 avoid syncing during active auto-dream writes.
 
-Linux-only (inotify via watchdog). Mac follow-up: SW-655.
+Linux-only (inotify via watchdog). macOS support is tracked separately.
 """
 
 import asyncio
