@@ -9,15 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `ai cos` launches a machine's single chief-of-staff Claude Code session: it
-  resolves the chief home from `-k/--machine-key` (default `$AI_MACHINE_ID`) or
-  `-H/--fm-home`, refuses a missing or unseeded home and a second chief whose
-  tmux session is still running, writes `state/chief-session.json` and the
-  schema-2 `registry.json` (generation and route revision incremented, VP
-  entries preserved), and hands off to the ordinary Claude launch with the
-  session name fixed to `cos`, worktree isolation off, and `FM_HOME` plus
-  `AI_SESSION_ROLE=chief-of-staff` forwarded into the tmux pane. `--dry-run`
-  registers nothing.
+- `-F/--firstmate` launches a machine's single chief-of-staff session on **any**
+  engine (`ai c`, `ai g`, `ai p`, `ai cx`), with `ai cos` kept as the Claude
+  shorthand. It resolves the chief home from `-k/--machine-key` (default
+  `$AI_MACHINE_ID`) or `-H/--fm-home` — both refused without `-F` rather than
+  silently ignored — refuses a missing or unseeded home, `-R/--remote`, and a
+  second chief whose tmux session is still running, writes
+  `state/chief-session.json` and the schema-2 `registry.json` (generation and
+  route revision incremented, VP entries preserved), and hands off to the
+  ordinary launch with `FM_HOME` plus `AI_SESSION_ROLE=chief-of-staff` forwarded
+  into the tmux pane. `--dry-run` registers nothing.
+
+  The session is named `{project-prefix}-firstmate-[suffix-]{index}` (the
+  positional NAME is the optional suffix) off the ordinary index allocator, and
+  it gets a worktree at `.worktrees/{project-prefix}-firstmate-[suffix-]{index}`:
+  with every main tree read-only under the worktree model, a chief running in a
+  repo root was the anomaly. `-W/--no-worktree` still turns isolation off.
 
 ### Changed
 
@@ -81,6 +88,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `Unknown config option` warning every run emitted. (`AI-CLI-f8la`, `AI-CLI-qrkr`)
 
 ### Fixed
+
+- **`ai cx` could only ever be session 1.** Three places matched the engine
+  segment of a session name with `[cgp]`, which matches the `c` of `cx-…` and
+  then fails on the `x`, so the prefix stopped parsing for every Codex launch:
+  `find_next_index` returned 1 however many Codex sessions were live, its
+  bare-mode fallback looked for worktrees under the wrong name, and a
+  case-insensitive `ai cx <N>` resolve found nothing. One shared pattern now
+  spells `cx` before the single-letter class.
+
+- The `ruff-version-sync` pre-commit hook refused every commit in the repo: the
+  renovate bump to ruff 0.16.10 moved `pyproject.toml`'s pins and left
+  `.pre-commit-config.yaml` on v0.16.9. The gate's own tests only ever ran
+  against synthetic trees, so the suite stayed green while the real pins
+  disagreed; it now also asserts the invariant on this repository.
 
 - `ai ls` no longer tries to install a system package. When `fzf` was missing it
   shelled out to `apt install -y fzf`, which needs root: on an ordinary account

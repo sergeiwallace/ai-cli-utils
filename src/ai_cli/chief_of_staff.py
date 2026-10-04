@@ -37,7 +37,7 @@ MACHINE_KEY_ENV = "AI_MACHINE_ID"
 ROLE_ENV = "AI_SESSION_ROLE"
 ROLE = "chief-of-staff"
 FM_HOME_ENV = "FM_HOME"
-SESSION_NAME = "cos"
+SESSION_NAME = "firstmate"
 REGISTRY_SCHEMA_VERSION = 2
 REGISTRATION_SCHEMA_VERSION = 1
 # The installer seeds these; a home without them has no transport policy and must not
